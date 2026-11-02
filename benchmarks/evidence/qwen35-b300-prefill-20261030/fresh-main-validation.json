@@ -1,0 +1,1560 @@
+{
+  "schema": "qwen35-fresh-main-publication-evidence/v1",
+  "runtime": {
+    "source_sha": "e6b1fe2bb8e5847c3f6eee0ed6c5c4042b290dc8",
+    "source_status": "",
+    "python_package": "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate/__init__.py",
+    "python": "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/.venv/bin/python",
+    "shim_path": "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate_core/_native.py",
+    "shim_sha256": "8540bc1054a9b0b5acf17512361921da68a294bc1c04bb4f7fbe0dde042f620a",
+    "native_path": "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+    "native_sha256": "67ae1963467a327fc6f8b884b3a119c7948f5c0927bdc76b3fa8231a76f309c9"
+  },
+  "calibration_applied": false,
+  "fresh_results": {
+    "main-data": {
+      "planned_cases": 36,
+      "qualified_cases": 36,
+      "planned_requests": 2016,
+      "observed_completed_requests": 2016,
+      "replay_completed_requests": 2016,
+      "cache_gate_counts": {
+        "passed": 36,
+        "failed": 0,
+        "missing": 0
+      },
+      "case_issue_counts": {},
+      "metrics": {
+        "ttft_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 555.8433021455246,
+          "predicted_mean": 62117.99471564285,
+          "paired_observed_mean": 555.8433021455246,
+          "paired_predicted_mean": 62117.99471564285,
+          "mean_signed_error": 61562.151413497326,
+          "mean_signed_percentage_error": 4367.3659217465665,
+          "mape_percent": 4367.3659217465665,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "tpot_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 11.085844760470044,
+          "predicted_mean": 229.18844313783336,
+          "paired_observed_mean": 11.085844760470044,
+          "paired_predicted_mean": 229.18844313783336,
+          "mean_signed_error": 218.1025983773633,
+          "mean_signed_percentage_error": 1018.2297015753451,
+          "mape_percent": 1034.5793093901304,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "e2e_latency_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 3382.7943071796435,
+          "predicted_mean": 120561.04771579035,
+          "paired_observed_mean": 3382.7943071796435,
+          "paired_predicted_mean": 120561.04771579035,
+          "mean_signed_error": 117178.25340861072,
+          "mean_signed_percentage_error": 1556.9034786253164,
+          "mape_percent": 1556.9034786253164,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "requests_per_s": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 2.1781618842612716,
+          "predicted_mean": 0.5730800607417303,
+          "paired_observed_mean": 2.1781618842612716,
+          "paired_predicted_mean": 0.5730800607417303,
+          "mean_signed_error": -1.605081823519541,
+          "mean_signed_percentage_error": -74.01077390413921,
+          "mape_percent": 74.01077390413921,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        },
+        "output_tokens_per_s": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 557.6094423708855,
+          "predicted_mean": 146.70849554988297,
+          "paired_observed_mean": 557.6094423708855,
+          "paired_predicted_mean": 146.70849554988297,
+          "mean_signed_error": -410.9009468210025,
+          "mean_signed_percentage_error": -74.01077390413921,
+          "mape_percent": 74.01077390413921,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        },
+        "cohort_makespan_ms": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 22224.753541056998,
+          "predicted_mean": 551849.0372981674,
+          "paired_observed_mean": 22224.753541056998,
+          "paired_predicted_mean": 551849.0372981674,
+          "mean_signed_error": 529624.2837571104,
+          "mean_signed_percentage_error": 1646.793432407309,
+          "mape_percent": 1646.793432407309,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        }
+      }
+    },
+    "main-plus-qwen-data": {
+      "planned_cases": 36,
+      "qualified_cases": 36,
+      "planned_requests": 2016,
+      "observed_completed_requests": 2016,
+      "replay_completed_requests": 2016,
+      "cache_gate_counts": {
+        "passed": 36,
+        "failed": 0,
+        "missing": 0
+      },
+      "case_issue_counts": {},
+      "metrics": {
+        "ttft_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 555.8433021455246,
+          "predicted_mean": 253.9687975669641,
+          "paired_observed_mean": 555.8433021455246,
+          "paired_predicted_mean": 253.9687975669641,
+          "mean_signed_error": -301.87450457856045,
+          "mean_signed_percentage_error": -61.85450836050878,
+          "mape_percent": 64.66063121960373,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "tpot_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 11.085844760470044,
+          "predicted_mean": 8.940280427964513,
+          "paired_observed_mean": 11.085844760470044,
+          "paired_predicted_mean": 8.940280427964513,
+          "mean_signed_error": -2.14556433250553,
+          "mean_signed_percentage_error": -18.33022707134669,
+          "mape_percent": 18.803697462678983,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "e2e_latency_ms": {
+          "observed_count": 2016,
+          "predicted_count": 2016,
+          "paired_count": 2016,
+          "observed_mean": 3382.7943071796435,
+          "predicted_mean": 2533.740306697915,
+          "paired_observed_mean": 3382.7943071796435,
+          "paired_predicted_mean": 2533.740306697915,
+          "mean_signed_error": -849.0540004817287,
+          "mean_signed_percentage_error": -25.121362543612502,
+          "mape_percent": 25.121362543612502,
+          "ape_defined_count": 2016,
+          "zero_observed_pairs": 0
+        },
+        "requests_per_s": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 2.1781618842612716,
+          "predicted_mean": 2.9125958519303707,
+          "paired_observed_mean": 2.1781618842612716,
+          "paired_predicted_mean": 2.9125958519303707,
+          "mean_signed_error": 0.7344339676690992,
+          "mean_signed_percentage_error": 43.30211089348675,
+          "mape_percent": 43.30211089348675,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        },
+        "output_tokens_per_s": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 557.6094423708855,
+          "predicted_mean": 745.6245380941749,
+          "paired_observed_mean": 557.6094423708855,
+          "paired_predicted_mean": 745.6245380941749,
+          "mean_signed_error": 188.0150957232894,
+          "mean_signed_percentage_error": 43.30211089348675,
+          "mape_percent": 43.30211089348675,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        },
+        "cohort_makespan_ms": {
+          "observed_count": 36,
+          "predicted_count": 36,
+          "paired_count": 36,
+          "observed_mean": 22224.753541056998,
+          "predicted_mean": 15846.77251608333,
+          "paired_observed_mean": 22224.753541056998,
+          "paired_predicted_mean": 15846.77251608333,
+          "mean_signed_error": -6377.981024973667,
+          "mean_signed_percentage_error": -29.624083024665772,
+          "mape_percent": 29.624083024665772,
+          "ape_defined_count": 36,
+          "zero_observed_pairs": 0
+        }
+      }
+    }
+  },
+  "audit_counts": {
+    "before_cache_checks": 2142,
+    "before_measured_pairs": 2016,
+    "after_cache_checks": 2142,
+    "after_measured_pairs": 2016,
+    "cases": 36,
+    "measured_requests": 2016,
+    "kernel_warmup_excluded": 252
+  },
+  "archived_results_separate": {
+    "scope": "Historical Python fad97a78/native6618b91, not predictions from fresh main",
+    "mape_percent": {
+      "original-baseline": {
+        "ttft_ms": 4041.090630268113,
+        "tpot_ms": 1019.8767321259407,
+        "e2e_latency_ms": 1490.367107802405
+      },
+      "original-recollected": {
+        "ttft_ms": 62.8854935703103,
+        "tpot_ms": 18.70807523912527,
+        "e2e_latency_ms": 24.775450695044018
+      }
+    }
+  },
+  "worsened_operating_point_metrics": [
+    {
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "metric": "requests_per_s",
+      "before_mape_percent": 50.89532716749778,
+      "after_mape_percent": 51.57957184909864,
+      "delta_percentage_points": 0.6842446816008589
+    },
+    {
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "metric": "output_tokens_per_s",
+      "before_mape_percent": 50.89532716749778,
+      "after_mape_percent": 51.57957184909864,
+      "delta_percentage_points": 0.6842446816008589
+    },
+    {
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "metric": "tpot_ms",
+      "before_mape_percent": 26.136585320576618,
+      "after_mape_percent": 29.55347488616356,
+      "delta_percentage_points": 3.416889565586942
+    },
+    {
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "metric": "requests_per_s",
+      "before_mape_percent": 44.666632275415715,
+      "after_mape_percent": 52.553615505075875,
+      "delta_percentage_points": 7.88698322966016
+    },
+    {
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "metric": "output_tokens_per_s",
+      "before_mape_percent": 44.666632275415715,
+      "after_mape_percent": 52.553615505075875,
+      "delta_percentage_points": 7.88698322966016
+    }
+  ],
+  "limitations": [
+    "No numerical acceptance threshold; timing scores are diagnostic.",
+    "Existing B300/vLLM0.31 silicon reused unchanged; no fresh GPU collection.",
+    "Collector graph measurement and serving eager execution differ.",
+    "Existing prefix-ratio approximation and GDN/MoE donor sources retained.",
+    "Non-Qwen check covers attention lookup impact only, not full-model accuracy.",
+    "One-token context lane priority and kernel-page-size keying are not changed."
+  ],
+  "artifact_hashes": {
+    "main-data/comparison.json": "0b00e9c7adb4f9152b673f63e716d9fbd613e13b26d4ac9df3a11278bf89dfa2",
+    "main-plus-qwen-data/comparison.json": "c05c5748c0d3fce07adb9c09c20e593bb2caf22245da83aad8044dfbf275d9ac",
+    "input-manifest.json": "eab647aacc7aeadd2523541c366ad3edd79d013fd450f91b5838cae46976dc49",
+    "independent-score-audit.json": "9b1bac59d720cc66cec52f0c704ab223279dea269c27222f8ec9280c724ccd0e",
+    "data-variant-manifest.json": "94699b84bb600191096a5e6957f0869c3da3ba567092969e3762ff2fdce92630",
+    "scripts/summarize.py": "8a6af4fc45b0231817ed9a9f63e6749ddef170408f529b679f716d743dfdec0c"
+  },
+  "attention_impact": {
+    "main-data": [
+      {
+        "requested_slot": "current",
+        "resolved_version": "0.30.0",
+        "lane_order": [
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+          "vllm_flashinfer_trtllmprefill",
+          "vllm_flashinfer_flashinfertrtllmapidecode",
+          "vllm_flashinfer_trtllmdecode",
+          "vllm_flashinfer",
+          "vllm_triton_attn",
+          "vllm_flash_attn_fa2",
+          "fa3",
+          "fla",
+          "flashinfer",
+          "triton",
+          "trtllm_mha",
+          "default"
+        ],
+        "primary_lane_density": {
+          "vllm_flash_attn_fa2": [
+            9,
+            1626
+          ],
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen": [
+            86,
+            3847
+          ],
+          "vllm_flashinfer_trtllmprefill": [
+            86,
+            46660
+          ],
+          "vllm_triton_attn": [
+            13,
+            2324
+          ]
+        },
+        "geometries": [
+          {
+            "geometry": "qwen35_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 4,
+                "n_kv": 1,
+                "head_size": 256,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              16
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 248.13797093955466,
+                "native_result": [
+                  "context_attention",
+                  248.13797093955466,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3970.0475170297664,
+                "native_result": [
+                  "context_attention",
+                  3970.0475170297664,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 251.95249242391756,
+                "native_result": [
+                  "context_attention",
+                  251.95249242391756,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 4031.0641163593887,
+                "native_result": [
+                  "context_attention",
+                  4031.0641163593887,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          },
+          {
+            "geometry": "llama31_70b_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 8,
+                "n_kv": 1,
+                "head_size": 128,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8,
+              12,
+              16,
+              24,
+              32,
+              40,
+              48,
+              64
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 234.76071744602206,
+                "native_result": [
+                  "context_attention",
+                  234.76071744602206,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3756.1437490412627,
+                "native_result": [
+                  "context_attention",
+                  3756.1437490412627,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 233.2906621759104,
+                "native_result": [
+                  "context_attention",
+                  233.2906621759104,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3732.635899704036,
+                "native_result": [
+                  "context_attention",
+                  3732.635899704036,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "requested_slot": "next",
+        "resolved_version": "0.31.0",
+        "lane_order": [
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+          "vllm_flashinfer_flashinfertrtllmapidecode",
+          "vllm_flashinfer_trtllmprefill",
+          "vllm_flashinfer_trtllmdecode",
+          "vllm_flashinfer",
+          "fa3",
+          "fla",
+          "flashinfer",
+          "triton",
+          "trtllm_mha",
+          "default",
+          "vllm_triton_attn",
+          "vllm_flash_attn_fa2"
+        ],
+        "primary_lane_density": {},
+        "geometries": [
+          {
+            "geometry": "qwen35_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 4,
+                "n_kv": 1,
+                "head_size": 256,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              16
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 248.13797093955466,
+                "native_result": [
+                  "context_attention",
+                  248.13797093955466,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3970.0475170297664,
+                "native_result": [
+                  "context_attention",
+                  3970.0475170297664,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 251.95249242391756,
+                "native_result": [
+                  "context_attention",
+                  251.95249242391756,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 4031.0641163593887,
+                "native_result": [
+                  "context_attention",
+                  4031.0641163593887,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          },
+          {
+            "geometry": "llama31_70b_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 8,
+                "n_kv": 1,
+                "head_size": 128,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/aisimulate-agentic-pr-validation-20261101/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8,
+              12,
+              16,
+              24,
+              32,
+              40,
+              48,
+              64
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 234.76071744602206,
+                "native_result": [
+                  "context_attention",
+                  234.76071744602206,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3756.1437490412627,
+                "native_result": [
+                  "context_attention",
+                  3756.1437490412627,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 233.2906621759104,
+                "native_result": [
+                  "context_attention",
+                  233.2906621759104,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3732.635899704036,
+                "native_result": [
+                  "context_attention",
+                  3732.635899704036,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "main-plus-qwen-data": [
+      {
+        "requested_slot": "current",
+        "resolved_version": "0.30.0",
+        "lane_order": [
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+          "vllm_flashinfer_trtllmprefill",
+          "vllm_flashinfer_flashinfertrtllmapidecode",
+          "vllm_flashinfer_trtllmdecode",
+          "vllm_flashinfer",
+          "vllm_triton_attn",
+          "vllm_flash_attn_fa2",
+          "fa3",
+          "fla",
+          "flashinfer",
+          "triton",
+          "trtllm_mha",
+          "default"
+        ],
+        "primary_lane_density": {
+          "vllm_flash_attn_fa2": [
+            9,
+            1626
+          ],
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen": [
+            86,
+            3847
+          ],
+          "vllm_flashinfer_trtllmprefill": [
+            86,
+            46660
+          ],
+          "vllm_triton_attn": [
+            13,
+            2324
+          ]
+        },
+        "geometries": [
+          {
+            "geometry": "qwen35_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 4,
+                "n_kv": 1,
+                "head_size": 256,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              16
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 248.13797093955466,
+                "native_result": [
+                  "context_attention",
+                  248.13797093955466,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3970.0475170297664,
+                "native_result": [
+                  "context_attention",
+                  3970.0475170297664,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 251.95249242391756,
+                "native_result": [
+                  "context_attention",
+                  251.95249242391756,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 4031.0641163593887,
+                "native_result": [
+                  "context_attention",
+                  4031.0641163593887,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          },
+          {
+            "geometry": "llama31_70b_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 8,
+                "n_kv": 1,
+                "head_size": 128,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8,
+              12,
+              16,
+              24,
+              32,
+              40,
+              48,
+              64
+            ],
+            "selected_lane_sequence_lengths": [
+              1
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 234.76071744602206,
+                "native_result": [
+                  "context_attention",
+                  234.76071744602206,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3756.1437490412627,
+                "native_result": [
+                  "context_attention",
+                  3756.1437490412627,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 233.2906621759104,
+                "native_result": [
+                  "context_attention",
+                  233.2906621759104,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 3732.635899704036,
+                "native_result": [
+                  "context_attention",
+                  3732.635899704036,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "requested_slot": "next",
+        "resolved_version": "0.31.0",
+        "lane_order": [
+          "vllm_flashinfer_trtllmprefill",
+          "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+          "vllm_flashinfer_flashinfertrtllmapidecode",
+          "vllm_flashinfer_trtllmdecode",
+          "vllm_flashinfer",
+          "fa3",
+          "fla",
+          "flashinfer",
+          "triton",
+          "trtllm_mha",
+          "default",
+          "vllm_triton_attn",
+          "vllm_flash_attn_fa2"
+        ],
+        "primary_lane_density": {
+          "vllm_flashinfer_trtllmprefill": [
+            1,
+            95
+          ]
+        },
+        "geometries": [
+          {
+            "geometry": "qwen35_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 4,
+                "n_kv": 1,
+                "head_size": 256,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_trtllmprefill",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+              "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.31.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              16
+            ],
+            "selected_lane_sequence_lengths": [
+              16,
+              32,
+              64,
+              128,
+              256,
+              512,
+              1024,
+              1536,
+              2048,
+              3072,
+              4096,
+              6144,
+              8192,
+              10240,
+              12288,
+              16384,
+              24576,
+              32768,
+              40960
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 0.05587733288606008,
+                "native_result": [
+                  "context_attention",
+                  0.05587733288606008,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.31.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 1,
+                  "isl": 4096,
+                  "num_heads": 4,
+                  "num_key_value_heads": 1,
+                  "head_dim": 256,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.05587733288606008,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.31.0/context_attention_perf.parquet",
+                  "source_version": "0.31.0",
+                  "source_channel": "primary",
+                  "source_sha256": "d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700"
+                }
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 0.49725866317749023,
+                "native_result": [
+                  "context_attention",
+                  0.49725866317749023,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.31.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 1,
+                  "isl": 16384,
+                  "num_heads": 4,
+                  "num_key_value_heads": 1,
+                  "head_dim": 256,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.49725866317749023,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.31.0/context_attention_perf.parquet",
+                  "source_version": "0.31.0",
+                  "source_channel": "primary",
+                  "source_sha256": "d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700"
+                }
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 0.15963199734687805,
+                "native_result": [
+                  "context_attention",
+                  0.15963199734687805,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.31.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 4,
+                  "isl": 4096,
+                  "num_heads": 4,
+                  "num_key_value_heads": 1,
+                  "head_dim": 256,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.15963199734687805,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.31.0/context_attention_perf.parquet",
+                  "source_version": "0.31.0",
+                  "source_channel": "primary",
+                  "source_sha256": "d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700"
+                }
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 1.7450613975524902,
+                "native_result": [
+                  "context_attention",
+                  1.7450613975524902,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.31.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 4,
+                  "isl": 16384,
+                  "num_heads": 4,
+                  "num_key_value_heads": 1,
+                  "head_dim": 256,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 1.7450613975524902,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.31.0/context_attention_perf.parquet",
+                  "source_version": "0.31.0",
+                  "source_channel": "primary",
+                  "source_sha256": "d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700"
+                }
+              }
+            ]
+          },
+          {
+            "geometry": "llama31_70b_tp8",
+            "op": {
+              "ContextAttention": {
+                "name": "context_attention",
+                "scale_factor": 1.0,
+                "n": 8,
+                "n_kv": 1,
+                "head_size": 128,
+                "window_size": 0,
+                "kv_cache_dtype": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "use_qk_norm": false,
+                "cp_size": 1,
+                "lane_order": [
+                  "vllm_flashinfer_trtllmprefill",
+                  "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+                  "vllm_flashinfer_flashinfertrtllmapidecode",
+                  "vllm_flashinfer_trtllmdecode",
+                  "vllm_flashinfer",
+                  "fa3",
+                  "fla",
+                  "flashinfer",
+                  "triton",
+                  "trtllm_mha",
+                  "default",
+                  "vllm_triton_attn",
+                  "vllm_flash_attn_fa2"
+                ],
+                "apply_rope": true,
+                "dcp_size": 1
+              }
+            },
+            "selected_lane": "vllm_flashinfer_trtllmprefill",
+            "selected_slice_source_paths": [
+              "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet"
+            ],
+            "selected_lane_num_heads": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              8,
+              12,
+              16,
+              24,
+              32,
+              40,
+              48,
+              64
+            ],
+            "selected_lane_sequence_lengths": [
+              16,
+              32,
+              64,
+              128,
+              256,
+              512,
+              1024,
+              1536,
+              2048,
+              3072,
+              4096,
+              6144,
+              8192,
+              10240,
+              12288,
+              16384
+            ],
+            "probes": [
+              {
+                "batch_size": 1,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 0.054101333022117615,
+                "native_result": [
+                  "context_attention",
+                  0.054101333022117615,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.30.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 1,
+                  "isl": 4096,
+                  "num_heads": 8,
+                  "num_key_value_heads": 1,
+                  "head_dim": 128,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.054101333022117615,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+                  "source_version": "0.30.0",
+                  "source_channel": "fallback",
+                  "source_sha256": "e073031085dcfc75b42d49d3be3ee6fd744726bb107b73b96fe1531866007b7e"
+                }
+              },
+              {
+                "batch_size": 1,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 0.4102720022201538,
+                "native_result": [
+                  "context_attention",
+                  0.4102720022201538,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.30.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 1,
+                  "isl": 16384,
+                  "num_heads": 8,
+                  "num_key_value_heads": 1,
+                  "head_dim": 128,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.4102720022201538,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+                  "source_version": "0.30.0",
+                  "source_channel": "fallback",
+                  "source_sha256": "e073031085dcfc75b42d49d3be3ee6fd744726bb107b73b96fe1531866007b7e"
+                }
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 4096,
+                "new_tokens": 4096,
+                "prefix": 0,
+                "latency_ms": 0.12754133343696594,
+                "native_result": [
+                  "context_attention",
+                  0.12754133343696594,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.30.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 4,
+                  "isl": 4096,
+                  "num_heads": 8,
+                  "num_key_value_heads": 1,
+                  "head_dim": 128,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 0.12754133343696594,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+                  "source_version": "0.30.0",
+                  "source_channel": "fallback",
+                  "source_sha256": "e073031085dcfc75b42d49d3be3ee6fd744726bb107b73b96fe1531866007b7e"
+                }
+              },
+              {
+                "batch_size": 4,
+                "full_sequence_length": 16384,
+                "new_tokens": 16384,
+                "prefix": 0,
+                "latency_ms": 1.3951786359151204,
+                "native_result": [
+                  "context_attention",
+                  1.3951786359151204,
+                  0.0,
+                  "silicon"
+                ],
+                "forced_selected_lane_matches": true,
+                "exact_anchor": {
+                  "framework": "VLLM",
+                  "version": "0.30.0",
+                  "device": "NVIDIA B300 SXM6 AC",
+                  "op_name": "context_attention",
+                  "kernel_source": "vllm_flashinfer_trtllmprefill",
+                  "batch_size": 4,
+                  "isl": 16384,
+                  "num_heads": 8,
+                  "num_key_value_heads": 1,
+                  "head_dim": 128,
+                  "beam_width": 1,
+                  "attn_dtype": "bfloat16",
+                  "kv_cache_dtype": "bfloat16",
+                  "step": 0,
+                  "window_size": 0,
+                  "latency": 1.3951786359151204,
+                  "source_path": "/home/simonec/repo/agentic-pr-validation-20261101/qwen-replay/systems-main-plus-qwen/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+                  "source_version": "0.30.0",
+                  "source_channel": "fallback",
+                  "source_sha256": "e073031085dcfc75b42d49d3be3ee6fd744726bb107b73b96fe1531866007b7e"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
