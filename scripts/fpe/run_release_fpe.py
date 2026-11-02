@@ -113,7 +113,14 @@ def load_tool(name: str):
 
 
 def required_probe_selectors() -> list[dict]:
-    selectors = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+    manifest = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != 1
+    ):
+        raise ValueError("unsupported required FPE probe manifest schema_version; expected integer 1")
+    selectors = manifest["probes"]
     if not selectors or any(p["backend_version"] != "current" for p in selectors):
         raise ValueError("required FPE probes must select the source wheel's current versions")
     if len({json.dumps(p, sort_keys=True) for p in selectors}) != len(selectors):

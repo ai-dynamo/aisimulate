@@ -313,6 +313,26 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, prob
     assert all(row["SourceSHA"] == SHA for row in rows)
 
 
+@pytest.mark.parametrize("schema_version", [2, 0, None, "1", True, 1.0, "missing"])
+def test_packaging_rejects_unsupported_manifest_schema_before_creating_output(
+    tmp_path, monkeypatch, probe_plan, schema_version
+):
+    source = tmp_path / "reports"
+    shards = reports(source, probe_plan["probes"])
+    tooling = tmp_path / "tooling"
+    manifest_path = tooling / ".github/fpe-required-probes.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest = {"probes": probe_plan["selectors"]}
+    if schema_version != "missing":
+        manifest["schema_version"] = schema_version
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(RELEASE, "ROOT", tooling)
+    destination = tmp_path / "web"
+    with pytest.raises(ValueError, match="unsupported required FPE probe manifest schema_version"):
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
+    assert not destination.exists()
+
+
 def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path, probe_plan):
     source = tmp_path / "reports"
     shards = reports(source, probe_plan["probes"])
