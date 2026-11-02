@@ -728,6 +728,7 @@ above the Dashboard charts and separate all-variant concurrency summaries from
 the selected run. Preparation remains unscored. The Request accounting section
 is omitted; request records remain available through timeline inspection. Older
 Accuracy-tab links open the Dashboard. Qwen selectors stay visible.
+A left-arrow link returns to the AgentX overview on the selected branch.
 System/Light/Dark preferences are shared with the overview.
 Manual theme choices on FPM and feature-support pages also set this shared override.
 AgentX availability is independent of InfX; InfX snapshot labels do not appear on
