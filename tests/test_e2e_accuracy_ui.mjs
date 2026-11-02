@@ -1106,15 +1106,26 @@ test(`HF campaigns show pinned provenance and source-resolved settings (${policy
 test("AgentX pools requests directly and averages run errors equally", () => {
   const context = vm.createContext({window: {addEventListener() {}}});
   vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
-  const run = (point, sum, count) => ({
+  const run = (point, sum, count, silicon, prediction) => ({
     point_errors: {ttft_ms:point,tpot_ms:point,output_tokens_s:point},
+    silicon: {ttft_ms:silicon,tpot_ms:silicon,output_tokens_s:silicon},
+    prediction: {ttft_ms:prediction,tpot_ms:prediction,output_tokens_s:prediction},
     request_errors: {ttft_ms:{sum_ape:sum,count},tpot_ms:{sum_ape:sum,count}},
     coverage:{measured:count,matched:count},
   });
-  context.input = [run(100,100,1),run(0,0,3),run(null,0,0)];
+  context.input = [run(100,100,1,100,200),run(0,0,3,900,900),run(null,0,0,5000,null)];
   const result = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
   assert.equal(result.point_errors.ttft_ms,50);
   assert.equal(result.point_counts.ttft_ms,2);
+  for (const metric of ["ttft_ms", "tpot_ms", "output_tokens_s"]) {
+    assert.equal(result.silicon[metric],500);
+    assert.equal(result.prediction[metric],550);
+  }
   assert.equal(result.request_errors.ttft_ms.mape,25);
   assert.equal(result.request_errors.ttft_ms.count,4);
+  context.input = [run(null,0,0,0,null)];
+  const unavailable = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(unavailable.silicon.ttft_ms,null);
+  assert.equal(unavailable.prediction.ttft_ms,null);
+  assert.equal(unavailable.point_errors.ttft_ms,null);
 });

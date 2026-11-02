@@ -216,14 +216,18 @@ async def check():
                     ["Dashboard", "Request timeline", "Evidence"]
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
-                await expect(frame.locator("#profile-accuracy")).to_contain_text("Selected run accuracy · Profile")
-                await expect(frame.locator(".agentx-run-table thead th")).to_have_text(
-                    ["Metric", "Silicon", "AISim", "Point error", "Request MAPE"]
-                )
-                await expect(frame.locator(".agentx-run-table tbody tr")).to_have_count(3)
-                await expect(frame.locator(".agentx-run-table tbody tr").last.locator("td").last).to_contain_text(
-                    "Not applicable"
-                )
+                await expect(frame.locator("#profile-accuracy h2")).to_have_text("Concurrency summary")
+                await expect(frame.locator("#profile-accuracy table")).to_have_count(1)
+                await expect(frame.locator(".agentx-summary-table thead th")).to_have_count(8)
+                await expect(frame.locator("#profile-accuracy")).not_to_contain_text("Selected run accuracy")
+                values = frame.locator(".agentx-point-values")
+                await expect(values).to_have_count(3)
+                await expect(values.nth(0)).to_have_text("Silicon10 ms/tokenAISim15 ms/token")
+                await expect(values.nth(1)).to_have_text("Silicon100 msAISim120 ms")
+                await expect(values.nth(2)).to_contain_text("output tokens/s")
+                await expect(frame.locator(".comparison-source-dot.silicon")).to_have_count(3)
+                await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(3)
+                concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator("#profile-accuracy ul")).to_have_count(0)
                 await expect(frame).not_to_contain_text("Request accounting")
                 await expect(frame).not_to_contain_text("All measured request comparisons")
@@ -276,6 +280,7 @@ async def check():
                 await page.locator("#cache").select_option("warm")
                 await page.locator("#repeat").select_option("2")
                 await expect(page.locator("#selected-run-label")).to_contain_text("warm · repeat 2")
+                await expect(frame.locator(".agentx-summary-table")).to_have_text(concurrency_summary)
                 assert "length=32768" in page.url and "repeat=2" in page.url
                 await page.reload()
                 await expect(page.locator("#repeat")).to_have_value("2")

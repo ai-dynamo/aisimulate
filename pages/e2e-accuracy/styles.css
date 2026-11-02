@@ -792,11 +792,13 @@ dialog::backdrop { background: #0009; }
 #profile-accuracy tbody th { background:transparent; color:var(--text); font-weight:600; }
 #profile-accuracy tbody tr:last-child > * { border-bottom:0; }
 #profile-accuracy .agentx-table th:nth-child(n+3), #profile-accuracy .agentx-table td:nth-child(n+3) { text-align:right; }
-#profile-accuracy .agentx-run-table { min-width:640px; table-layout:fixed; }
-#profile-accuracy .agentx-run-table th:first-child { width:32%; }
-#profile-accuracy .agentx-run-table thead th:not(:first-child), #profile-accuracy .agentx-run-table td { text-align:right; }
-#profile-accuracy .agentx-run-table td { color:var(--text); font-size:13px; }
-#profile-accuracy .agentx-run-table small { display:block; margin-top:3px; color:var(--muted); font-size:11px; font-weight:400; }
+#profile-accuracy .agentx-summary-table tbody > tr > * { padding:18px 16px; vertical-align:middle; }
+#profile-accuracy .agentx-summary-table td { color:var(--text); font-size:13px; }
+#profile-accuracy .agentx-point-values { display:grid; gap:7px; margin-bottom:14px; min-width:180px; font-size:12px; }
+#profile-accuracy .agentx-source-value { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+#profile-accuracy .agentx-source-value strong { font-weight:600; }
+#profile-accuracy .agentx-value-unit { font-size:11px; font-weight:400; color:var(--muted); }
+#profile-accuracy .agentx-point-error { font-size:15px; font-weight:600; }
 #profile-accuracy .comparison-source-dot { display:inline-block; width:8px; height:8px; margin-right:6px; border-radius:50%; }
 #profile-accuracy .comparison-source-dot.silicon { background:var(--silicon); }
 #profile-accuracy .comparison-source-dot.aisim { background:var(--aisim); }

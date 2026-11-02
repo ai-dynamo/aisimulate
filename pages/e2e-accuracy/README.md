@@ -729,9 +729,9 @@ The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
 agreement. Detail JSON loads on demand. The shared native renderer mounts directly
 inside the site header and theme, without an iframe. Dashboard, Request timeline,
-and Evidence tabs preserve their state in the URL. Profile accuracy tables appear
-above the Dashboard charts and separate all-variant concurrency summaries from
-the selected run. Preparation remains unscored. The Request accounting section
+and Evidence tabs preserve their state in the URL. One Concurrency summary table
+appears above the Dashboard charts, covering all variants and repeats. The charts
+follow the selected run. Preparation remains unscored. The Request accounting section
 is omitted; request records remain available through timeline inspection. Older
 Accuracy-tab links open the Dashboard. Qwen selectors stay visible.
 A left-arrow link returns to the AgentX overview on the selected branch.
@@ -751,8 +751,12 @@ The comparison timeline fits the full phase into the panel, with a compact
 hash and request ID on one line, with silicon and AISim intervals on separate
 lines. Full identifiers and pairing status remain in the row tooltip and request
 inspection; untimed and unmatched requests retain their rows.
-The selected-run table places request MAPE and its scored-request count beside
-point error for each latency metric. Output-throughput request MAPE is not applicable.
+Taller point-metric cells show blue Silicon and yellow AISim values above each
+point error, with ms/token, ms, and output tokens/s units. Both source values use
+equal-run averages over the metric's scored runs; point errors still average each
+run's error, not the error between those displayed averages. Request MAPE columns
+retain pooled-request scores and counts. The separate selected-run accuracy table
+is omitted; changing the selected workload does not change the concurrency summary.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 
