@@ -1502,7 +1502,7 @@ impl EstimatorConfig {
         Ok(())
     }
 
-    /// `longest_split` and `eager` read their constant from `fit.linear`,
+    /// `longest_split` and `eager` read a positive constant from `fit.linear`,
     /// whether fitting or sampling selects them.
     fn validate_axis_constants(&self) -> Result<(), AicError> {
         let regression = &self.fpm_regression;
@@ -1524,10 +1524,10 @@ impl EstimatorConfig {
         ] {
             let selected =
                 regression.sampling.axes.contains(&axis) || linear.feature_axes.contains(&axis);
-            if selected && constant.is_none() {
+            if selected && !constant.is_some_and(|value| value > 0) {
                 return Err(invalid_regression_config(
                     &format!("fit.linear.{field}"),
-                    &format!("is required by the {name} axis"),
+                    &format!("must be positive when the {name} axis is selected"),
                 ));
             }
         }
@@ -2329,7 +2329,9 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            message.contains("fit.linear.max_kv_splits is required by the longest_split axis"),
+            message.contains(
+                "fit.linear.max_kv_splits must be positive when the longest_split axis is selected"
+            ),
             "{message}"
         );
         // Retention reads the same constants from fit.linear.
@@ -2340,6 +2342,12 @@ mod tests {
         assert!(
             message.contains("fit.linear.max_cudagraph_capture_size"),
             "{message}"
+        );
+        assert!(
+            validated(serde_json::json!({
+                "fit": {"linear": {"feature_axes": ["eager"], "max_cudagraph_capture_size": 0}}
+            }))
+            .is_err()
         );
         let linear = serde_json::json!({
             "feature_axes": ["E", "P2", "F", "logN", "longest_split", "eager"],
