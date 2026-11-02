@@ -30,7 +30,7 @@ from typing import Any
 SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
 SUPPORTED_VERSION = "0.27.0"
-EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0")
+EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.31.0")
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
 _UNIFORM_SPEC = _SPEC_MODULE + "UniformTypeKVCacheSpecs"
@@ -312,6 +312,14 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
     The same read-only interfaces were verified for vLLM 0.28.0 at:
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/gpu_model_runner.py#L7155
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/utils.py#L241
+    The same read-only interfaces were verified for vLLM 0.31.0 at db9527a46873454610df6dbedf79a36d6bf1a7f6.
+    The V1 runner declares attn_groups and fills it in initialize_attn_backend. The V2 runner takes it from
+    init_attn_backend. AttentionGroup declares backend, layer_names and kv_cache_group_id:
+    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L589
+    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L6961-L7064
+    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu/model_runner.py#L639-L690
+    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu/attn_utils.py#L193-L260
+    https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L259-L263
     It does not infer a backend from requested flags or trace per-point dispatch.
 
     Ordinary serving can use FpmExecutionWorker with absolute
@@ -354,7 +362,9 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
         payload.update(
             attention_groups=groups,
             graph_config=compilation_config(worker.vllm_config),
-            resolved_config=execution_config(worker.vllm_config),
+            resolved_config=execution_config(
+                worker.vllm_config, hybrid_evidence=payload["backend_version"] == "0.31.0"
+            ),
             status="observed",
         )
     except Exception as error:
@@ -389,9 +399,17 @@ def execution_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str,
         for section, fields in sections.items()
         if getattr(config, section, None) is not None
     }
+    # Read the commit that the loaded config object holds itself. vLLM 0.31.0 Glm5NextConfig forwards the
+    # attribute read to its text config, whose _commit_hash is None for a Hub ID launch
+    # (transformers_utils/configs/glm5_next.py:385-392, :406-420).
     hf_config = getattr(config.model_config, "hf_config", None)
-    if hf_config is not None and getattr(hf_config, "_commit_hash", None) is not None:
-        result["model_config"]["loaded_config_commit_hash"] = hf_config._commit_hash
+    try:
+        attributes = object.__getattribute__(hf_config, "__dict__")
+    except AttributeError:
+        attributes = {}
+    commit = attributes.get("_commit_hash")
+    if commit is not None:
+        result["model_config"]["loaded_config_commit_hash"] = commit
     quant = config.quant_config
     result["quantization_config"] = (
         {

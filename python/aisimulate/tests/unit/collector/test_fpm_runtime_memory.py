@@ -1333,6 +1333,110 @@ def _pending_plan(version="0.27.0"):
     return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.31.0", "0.30.0"])
+def test_execution_observation_supports_vllm_0_31_0(tmp_path, monkeypatch, version):
+    output = tmp_path / "observations"
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps({"run_id": "serving-123", "purpose": "matched_serving_accuracy"}))
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+    config = _vllm_config(tp=1, dp=1)
+    # The cache config holds the hybrid settings for every version here, and only a 0.31.0 record keeps them.
+    vars(config.cache_config).update(mamba_cache_mode="align", prefix_match_unit=None)
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["layer.0"],
+        kv_cache_group_id=0,
+    )
+    worker = SimpleNamespace(vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]]))
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    record = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    if version == "0.30.0":
+        # An unaudited version stays unresolved, and the error names the audited versions.
+        assert record["status"] == "unresolved"
+        assert "0.31.0" in record["error"]
+    else:
+        assert record["status"] == "observed"
+        assert record["backend_version"] == version
+        assert record["attention_groups"][0]["kv_cache_group_id"] == 0
+        cache = record["resolved_config"]["cache_config"]
+        if version == "0.31.0":
+            assert cache["mamba_cache_mode"] == "align"
+            assert "prefix_match_unit" in cache
+        else:
+            assert {"mamba_cache_mode", "prefix_match_unit"}.isdisjoint(cache)
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.30.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_inspection_audits_vllm_0_31_0(tmp_path, version):
+    from collector.fpm_forward.execution_evidence import inspect_execution_evidence
+    from collector.fpm_forward.native_artifact import NativeCollection
+
+    plan = _pending_plan(version)
+    cell = plan.cells[0]
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    collection = NativeCollection(
+        points=(),
+        rank_timings=(),
+        backend_version=version,
+        collector_attempt_id="attempt",
+        runtime_run_id=cell.cell_id,
+        runtime_grid_digest="grid",
+    )
+    # Evidence version 1 skips the measurement evidence, which this audit does not read.
+    missing = inspect_execution_evidence(cell, raw, collection, plan=plan, evidence_version=1)["missing_evidence"]
+    unaudited = [item for item in missing if item.startswith("execution configuration inspection is unaudited")]
+    assert unaudited == ([] if version == "0.31.0" else ["execution configuration inspection is unaudited for 0.30.0"])
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_runner_stages_the_execution_observer_for_0_31_0_without_a_bundle():
+    plan = replace(_pending_plan("0.31.0"), _fpm_profile_json=None)
+    assert plan.runtime_instrumentation is None
+    for cell in plan.cells:
+        assert not cell.execution_identity[0]
+        assert runner._observe_runtime_execution(plan, cell) is True
+        assert runner._observe_runtime_memory(plan, cell) is False
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
+        assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
+
+
+def test_execution_config_reads_the_commit_from_the_config_object():
+    class Config:
+        # transformers PreTrainedConfig stores _commit_hash on every config that it builds.
+        def __init__(self, commit_hash):
+            self._commit_hash = commit_hash
+
+    class ForwardingConfig(Config):
+        # Like vLLM 0.31.0 Glm5NextConfig, it reads a key that its text config holds from the text config
+        # (transformers_utils/configs/glm5_next.py:406-420).
+        def __init__(self, commit_hash, text_commit_hash):
+            super().__init__(commit_hash)
+            self.text_config = Config(text_commit_hash)
+
+        def __getattribute__(self, key):
+            text = object.__getattribute__(self, "__dict__").get("text_config")
+            if text is not None and key in vars(text):
+                return getattr(text, key)
+            return object.__getattribute__(self, key)
+
+    def model_record(hf_config):
+        config = _vllm_config()
+        config.model_config.hf_config = hf_config
+        return observer.execution_config(config)["model_config"]
+
+    assert model_record(Config("a" * 40))["loaded_config_commit_hash"] == "a" * 40
+    # The commit of the loaded config is the one that it holds itself, and its text config holds None.
+    assert model_record(ForwardingConfig("e" * 40, None))["loaded_config_commit_hash"] == "e" * 40
+    # A commit that only the text config holds is not the commit of the loaded config.
+    assert "loaded_config_commit_hash" not in model_record(ForwardingConfig(None, "f" * 40))
+    assert "loaded_config_commit_hash" not in model_record(None)
+
+
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_pending_memory_plans_without_model_and_renders_audited_hooks(tmp_path):
     plan = _pending_plan()

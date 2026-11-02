@@ -13,7 +13,7 @@ try:
 except ImportError as error:
     raise RuntimeError(
         "FPM observation requires a compatible vLLM V1 GPU-worker image; "
-        "execution observation supports vLLM 0.27.0/0.28.0, memory supports 0.27.0"
+        "execution observation supports vLLM 0.27.0, 0.28.0 and 0.31.0, memory supports 0.27.0"
     ) from error
 
 
