@@ -1088,6 +1088,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           : null;
       }
       function renderTimeline() {
+        root.querySelector("#view-timeline .timeline-panel > .hint").textContent = `${comparedPhase() ? "Full phase shown" : "Scroll horizontally through time"} · click an interval or row label for details`;
         if (comparedPhase()) return renderComparedTimeline();
         const end = timelineWindow(),
           all = rows(),
@@ -1191,11 +1192,22 @@ window.AISimReplay = { mount(root, report, options = {}) {
           pair.forEach(r=>used.add(r.uuid));
           if (!state.search || pair.some(r=>[r.request_id,r.uuid,r.group_id,r.origin,r.terminal_status].join(" ").toLowerCase().includes(state.search))) pairs.push(pair);
         }
-        const end = Math.max(data.native_duration_s,data.silicon_duration_s,1), scale=end>120?8:24, width=Math.max(900,end*scale);
+        const end = Math.max(data.native_duration_s,data.silicon_duration_s,1);
         $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Blue solid: silicon; yellow dashed: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
-        const group = state.group === "conversation" ? "conversation" : "worker";
         $("timeline-plot").dataset.requestCount = String(all.length);
-        $("timeline-plot").innerHTML = `<div class="timeline-content" style="width:${width+230}px"><div class="timeline-axis"><div class="timeline-label">Seconds since each ${state.stage} started</div><div class="timeline-track">${Array.from({length:Math.floor(end/(end>120?30:5))+1},(_,i)=>{const t=i*(end>120?30:5);return `<span class="timeline-tick" style="left:${t*scale}px">${fmt(t,0)}s</span>`;}).join("")}</div></div>${pairs.map((pair,i)=>`<div class="timeline-row comparison-row"><div class="timeline-label"><small>${group === "conversation" ? "Conversation …"+esc(pair[0].group_id?.slice(-8)||"unknown") : "Worker unavailable in silicon"}</small><button data-request="${pair[0].uuid}">Request ${i+1} · ${pair.length===2?"paired":"unmatched"}</button></div><div class="timeline-track">${pair.map(r=>{if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";const start=r.arrival_time_ms/1000-origin(),stop=r.terminal_time_ms/1000-origin();if(stop<start)return "";return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${Math.max(0,start)*scale}px;width:${Math.max(2,(stop-Math.max(0,start))*scale)}px;top:${r.origin==="silicon"?4:23}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${i+1}"></button>`;}).join("")}</div></div>`).join("")}</div>`;
+        const axis = Array.from({length:7},(_,i)=>`<span class="timeline-tick" style="left:${i/6*100}%;transform:translateX(${i===0?0:i===6?-100:-50}%)">${fmt(end*i/6,end<60?1:0)}s</span>`).join("");
+        const content = pairs.map(pair=>{
+          const row = pair[0], requestId = row.request_id || row.uuid;
+          const label = `Conversation ${row.group_id || "unknown"} · Request ${requestId} · ${pair.length===2?"paired":"unmatched"}`;
+          const intervals = pair.map(r=>{
+            if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";
+            const start=Math.max(0,r.arrival_time_ms/1000-origin()),stop=Math.min(end,r.terminal_time_ms/1000-origin());
+            if(stop<start)return "";
+            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${start/end*100}%;width:max(2px,${(stop-start)/end*100}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
+          }).join("");
+          return `<div class="timeline-row comparison-row"><div class="timeline-label"><button data-request="${row.uuid}" title="${esc(label)}" aria-label="${esc(label)}"><span class="conversation-id">${row.group_id?"…"+esc(row.group_id.slice(-8)):"Unknown"}</span> · ${esc(requestId)}</button></div><div class="timeline-track">${intervals}</div></div>`;
+        }).join("");
+        $("timeline-plot").innerHTML = `<div class="timeline-content comparison-timeline"><div class="timeline-axis" title="Seconds since each ${state.stage} started"><div class="timeline-label">Conversation · Request</div><div class="timeline-track">${axis}</div></div>${content}</div>`;
       }
       const metric = (label, value) =>
         `<div class="stat"><small>${esc(label)}</small><strong>${esc(value ?? "N/A")}</strong></div>`;

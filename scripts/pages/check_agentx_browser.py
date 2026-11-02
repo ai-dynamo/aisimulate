@@ -19,11 +19,12 @@ from playwright.async_api import async_playwright, expect
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+from test_agentx_accuracy import bundle, result
+
 from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import canonical
 from scripts.pages.agentx_pages import write_assets
 from scripts.pages.prepare_e2e_accuracy_pages import artifact_key
-from test_agentx_accuracy import bundle, result
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -61,7 +62,10 @@ def fixtures(site):
         "metadata": {"title": "Replay", "model": "Test model"},
         "prediction": {},
         "telemetry": {"completion_status": "completed", "profile_start_ms": 1000},
-        "phases": {"preparation": {"start_ms": 0, "end_ms": 1000}, "profile": {"start_ms": 1000, "end_ms": 3000}},
+        "phases": {
+            "preparation": {"start_ms": 0, "end_ms": 1000},
+            "profile": {"start_ms": 1000, "end_ms": 3_601_000},
+        },
         "requests": [
             {
                 "uuid": "0123456789abcdef",
@@ -239,11 +243,25 @@ async def check():
                 await frame.locator('[aria-label="Close expanded chart"]').click()
                 await frame.locator('[data-view="timeline"]').click()
                 await expect(page).to_have_url(re.compile("view=timeline"))
+                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("Full phase shown")
                 await expect(frame.locator("#view-timeline .legend")).to_contain_text("Silicon · solid")
                 await expect(frame.locator("#view-timeline .legend")).to_contain_text("AISim · dashed")
                 await expect(frame.locator("#plot-reference_ttft .legend")).not_to_contain_text("Failed")
                 await expect(frame.locator('[data-origin="silicon"]')).to_have_count(1)
                 await expect(frame.locator('[data-origin="simulated"]')).to_have_count(1)
+                assert await frame.locator("#timeline-plot").evaluate(
+                    "node => node.scrollWidth <= node.clientWidth + 2"
+                )
+                row = frame.locator(".comparison-row").first
+                assert (await row.bounding_box())["height"] == 22
+                await expect(row.locator(".timeline-label button")).to_have_text(
+                    re.compile(r"^…[a-f0-9]{8} · [a-f0-9]{16}$")
+                )
+                await expect(row.locator(".timeline-label small")).to_have_count(0)
+                await row.locator(".timeline-label button").focus()
+                await page.keyboard.press("Enter")
+                await expect(frame.locator("#request-details")).to_be_visible()
+                await frame.locator('[aria-label="Close request details"]').click()
                 await frame.locator('[data-origin="silicon"]').click()
                 await expect(frame.locator("#request-details")).to_contain_text("20%")
                 await frame.locator('[aria-label="Close request details"]').click()
