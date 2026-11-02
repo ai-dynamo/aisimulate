@@ -24,8 +24,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, field_validator, model_validator
 
-from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
-
 from ..power import POWER_FIELDS, normalize_power_summary, power_unavailable_reason
 from .config import Candidate, SmartSearchConfig
 from .replay import ReplaySpec, canonical_json, validate_json_value
@@ -558,6 +556,10 @@ def make_candidate_provenance(
             if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("config"), dict):
                 identity_config, identity_role = raw_metadata["config"], role
                 break
+    # Imported here: the SDK loads the Rust runtime, and result reports are
+    # read where it is not built, such as the Pages site build.
+    from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
     hardware = identity_config.get("system")
     if hardware is None or hardware == UNKNOWN_IDENTITY:
         # A regression or learned identity may not know its hardware; the
