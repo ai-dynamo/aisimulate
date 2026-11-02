@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 from copy import deepcopy
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -702,7 +703,7 @@ def test_a_planner_regression_snapshot_times_its_role_in_its_explicit_shape(plan
     assert candidate.metrics["power_w"] is None
 
 
-def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes(planner_snapshots):
+def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes(planner_snapshots, tmp_path):
     raw = _planner_request(planner_snapshots["aggregated"], mode="aggregated")
     result = _planner_run(raw)
     baseline = _planner_run(_planner_request(None, mode="aggregated"))
@@ -724,6 +725,19 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
     assert spec.backend_deployment.backend_version == resolve_query_version(_SYSTEM, "vllm", "current")
     assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["backend_version"] == "unknown"
     assert _replay(aliased).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+    # Roles that name no systems root resolve it on the engine's, here the
+    # only root that defines the hardware.
+    packaged = Path(str(resources.files("aisimulate_core") / "systems"))
+    custom = tmp_path / "systems"
+    custom.mkdir()
+    for entry in packaged.iterdir():
+        (custom / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+    (custom / "review_h200.yaml").write_text((packaged / f"{_SYSTEM}.yaml").read_text())
+    aliased["engine"].update(hardware="review_h200", systems_paths=[str(custom)])
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(aliased))
+    assert spec.backend_deployment.backend_version == resolve_query_version(
+        "review_h200", "vllm", "current", systems_paths=[str(custom)]
+    )
 
 
 @pytest.mark.parametrize(

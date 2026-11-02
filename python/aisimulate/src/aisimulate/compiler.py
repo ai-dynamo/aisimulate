@@ -179,7 +179,7 @@ def _pin_estimator_version_aliases(
                     worker.hardware or engine.hardware,
                     deployment.backend,
                     deployment.backend_version,
-                    systems_paths=list(resolve_systems_paths(worker.timing.systems_paths)),
+                    systems_paths=list(resolve_systems_paths(worker.timing.systems_paths or engine.systems_paths)),
                 )
             )
     if len(versions) > 1:
