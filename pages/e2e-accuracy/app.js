@@ -481,7 +481,7 @@ function snapshotEvidence(branch, snapshot) {
 }
 
 function branchOption(entry) {
-  const suffix = { historical: " — historical only", inherited: " — inherited evidence", unavailable: " — no snapshot" };
+  const suffix = state.tab === "agentx" ? {} : { historical: " — historical only", inherited: " — inherited evidence", unavailable: " — no snapshot" };
   return `<option value="${escapeHtml(entry.branch)}">${escapeHtml(entry.branch + (suffix[entry.status] || ""))}</option>`;
 }
 
@@ -926,6 +926,11 @@ function filterField(key, title, values, selected) {
 
 function renderView() {
   const details = state.tab === "details", agentx = state.tab === "agentx";
+  if (state.catalog) {
+    const selected = branchSelect.value;
+    branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");
+    branchSelect.value = selected;
+  }
   document.getElementById("tab-agentx").setAttribute("aria-pressed", String(agentx));
   document.getElementById("agentx-view").hidden = !agentx;
   for (const node of document.querySelectorAll(".topology-control, .exclusions, #filter-note, #evidence-brief, .public-notes")) node.hidden = agentx;

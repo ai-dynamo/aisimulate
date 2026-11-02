@@ -179,6 +179,7 @@ async def check():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 await page.goto(f"http://127.0.0.1:{server.server_port}/e2e-accuracy/?tab=agentx&branch=main")
                 await expect(page.locator("#agentx-view")).to_be_visible()
+                await expect(page.locator("#branch-select option:checked")).to_have_text("main")
                 await expect(page.locator(".agentx-table")).to_have_count(1)
                 await expect(page.locator("#tab-agentx .agentx-new")).to_have_text("NEW")
                 await expect(page.locator(".agentx-beta a")).to_have_attribute(

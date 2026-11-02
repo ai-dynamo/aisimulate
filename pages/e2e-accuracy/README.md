@@ -727,6 +727,8 @@ Accuracy, and Evidence tabs preserve their state in the URL. Accuracy separates
 all-variant concurrency summaries from the selected run; Qwen selectors stay
 visible. System/Light/Dark preferences are shared with the overview.
 Manual theme choices on FPM and feature-support pages also set this shared override.
+AgentX availability is independent of InfX; InfX snapshot labels do not appear on
+the AgentX branch selector.
 
 Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
 qualified numerical series, scores, phase-aligned requests and opaque joins.
@@ -769,11 +771,15 @@ private dataset candidate, plus op-data dependencies #664, #665, and #666 landin
 Failed/unsupported outcomes remain in complete campaign
 accounting; accuracy is advisory. Source intake lives in `aisim-hf-dataset-ci`.
 
-The initial CPU preview completed all 42 replays using wheel source commit
-`49584d9e38032e68e16f6c110464f6f0d7046d3f` and private candidate revision
-`2cf1dacf9187462f6921d70ccf3d23dcad03f22c`. All 2,016 Qwen measured requests
-matched. GLM retained 8,747 measured requests: 8,545 matched, 37 measured failures,
-and 165 missing predictions. The two complete imports produced the same catalog
-checksum `4a0191e32522856e0580e4e3a624bcf7689fa604cce3f264a3cd08bbe6fc5121`.
-This validates pipeline accounting, not numerical accuracy. Daily CI must generate
-new predictions; the preview is not a production snapshot.
+The refreshed CPU preview completed all 42 replays using integration commit
+`1c753e4668310705b6451ba1ebf3061b3d5b30de` (dashboard plus pinned #664/#665/#666)
+and private candidate revision `da115d648f0be20a1c4e0408d552a4a1e8bebf9d`.
+Wheel SHA256: `dff8896a4c374c4e21597076cbf356e8611a0f021ba57ba85313e4ec6fa0530c`.
+All 2,016 Qwen measured requests matched. GLM retained 8,747 measured requests:
+8,624 matched, 37 measured failures, and 86 missing predictions; 295 extra
+predictions remain counted separately. An independent raw-record audit reproduced
+the five metrics, 828 curve scores, 21,907 native timestamp checks, and 2,142 Qwen
+cache checks. Two complete imports produced identical catalog checksum
+`02b2b26ff3dbaa1d83ee868903cce64c81dad655f6276d831b9337b8d14c96ec`.
+This validates provenance and arithmetic; accuracy remains advisory. Daily CI must
+generate new predictions. This preview is not a production snapshot.
