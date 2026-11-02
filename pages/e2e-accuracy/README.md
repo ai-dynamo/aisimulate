@@ -734,7 +734,7 @@ AgentX availability is independent of InfX; InfX snapshot labels do not appear o
 the AgentX branch selector.
 Model summary rows use the overview's full-width tinted background and brighter
 text. Concurrency subrows use the page surface, with the same hover/focus accent.
-Source labels use compact blue pills sized to their text, like the NEW badge.
+Source labels use compact, padded blue pills sized to their text, like the NEW badge.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 
