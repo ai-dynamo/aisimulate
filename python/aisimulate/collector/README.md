@@ -50,6 +50,16 @@ budget are needed to reduce extrapolation. This coverage is enabled by default
 for vLLM; it does not add an agentic mode, a prefix-length axis or cached-tail
 measurements. Other frameworks retain their existing dense-context sweep limits.
 
+The additional anchors cost GPU time. The original 95-case Qwen collection
+used 52.751 seconds of collector wall time; its 18 added anchors were not
+timed separately. A separate B300 qualification of this collector measured a
+batch-1, 262,144-token GQA prefill at 132.734 ms per forward and 4.461 seconds
+inside the collector call (11.357 seconds including isolated process startup).
+All eight prefill/decode qualification cases passed in a 139-second one-GPU
+allocation. See the [qualification evidence](../../../benchmarks/evidence/collector/agentic-20261101/README.md)
+for exact source, image, shapes, costs and limits. These probes do not qualify
+the full default grid or establish its marginal collection cost.
+
 The SGLang attention-module collector targets 0.5.21 and admits batches
 between serving capture buckets when graph padding is enabled. It captures
 the actual module shape; serving may execute a padded bucket. See the
