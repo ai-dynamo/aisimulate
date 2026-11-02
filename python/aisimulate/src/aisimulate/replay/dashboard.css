@@ -469,3 +469,4 @@
 .replay-dashboard .comparison-row [data-status="failed"] { border-color:var(--red); }
 .replay-dashboard.embedded { --bg:inherit; --panel:inherit; --border:inherit; --text:inherit; --muted:inherit; --accent:inherit; --raised:var(--elevated); --grid:var(--border); font:inherit; }
 .replay-dashboard.embedded .main-tabs { margin-top:12px; }
+.replay-dashboard #profile-accuracy { margin-bottom:24px; }

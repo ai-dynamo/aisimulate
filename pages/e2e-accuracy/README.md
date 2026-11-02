@@ -723,9 +723,12 @@ The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
 agreement. Detail JSON loads on demand. The shared native renderer mounts directly
 inside the site header and theme, without an iframe. Dashboard, Request timeline,
-Accuracy, and Evidence tabs preserve their state in the URL. Accuracy separates
-all-variant concurrency summaries from the selected run; Qwen selectors stay
-visible. System/Light/Dark preferences are shared with the overview.
+and Evidence tabs preserve their state in the URL. Profile accuracy tables appear
+above the Dashboard charts and separate all-variant concurrency summaries from
+the selected run. Preparation remains unscored. The Request accounting section
+is omitted; request records remain available through timeline inspection. Older
+Accuracy-tab links open the Dashboard. Qwen selectors stay visible.
+System/Light/Dark preferences are shared with the overview.
 Manual theme choices on FPM and feature-support pages also set this shared override.
 AgentX availability is independent of InfX; InfX snapshot labels do not appear on
 the AgentX branch selector.

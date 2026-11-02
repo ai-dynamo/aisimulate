@@ -22,10 +22,9 @@ window.AISimReplay = { mount(root, report, options = {}) {
       if (options.accuracy !== undefined) {
         $("stage-profile").textContent = "Profile";
         $("stage-preparation").textContent = "Preparation";
-        for (const [view, label] of [["accuracy", "Accuracy"], ["evidence", "Evidence"]]) {
-          root.querySelector(".main-tabs").insertAdjacentHTML("beforeend", `<button role="tab" id="tab-${view}" aria-controls="view-${view}" data-view="${view}" aria-selected="false">${label}</button>`);
-          root.querySelector("main").insertAdjacentHTML("beforeend", `<section id="view-${view}" role="tabpanel" aria-labelledby="tab-${view}" hidden>${options[view] || ""}</section>`);
-        }
+        $("view-dashboard").insertAdjacentHTML("afterbegin", `<section id="profile-accuracy" aria-label="Profile accuracy">${options.accuracy}</section>`);
+        root.querySelector(".main-tabs").insertAdjacentHTML("beforeend", '<button role="tab" id="tab-evidence" aria-controls="view-evidence" data-view="evidence" aria-selected="false">Evidence</button>');
+        root.querySelector("main").insertAdjacentHTML("beforeend", `<section id="view-evidence" role="tabpanel" aria-labelledby="tab-evidence" hidden>${options.evidence || ""}</section>`);
       }
       const finite = (value) =>
         typeof value === "number" && Number.isFinite(value);
@@ -592,7 +591,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           });
           axes = layout("Requests", {xaxis: {title: metric === "ttft_ms" ? "TTFT (ms)" : "TPOT (ms/token)"}, barmode: "group"});
           note = "Successful, uniquely matched requests with equal recorded output lengths";
-          foot = `${pairs.length} scored pairs; ${options.accuracy ? "full request accounting is in the Accuracy tab" : "only valid equal-output-length pairs are shown"}.`;
+          foot = `${pairs.length} scored pairs; only valid equal-output-length pairs are shown.`;
         } else if (id === "input" || id === "output") {
           const key = id === "input" ? "input_length" : "output_length",
             values = r.map((row) => row[key]).filter(finite);
@@ -1334,7 +1333,8 @@ window.AISimReplay = { mount(root, report, options = {}) {
               String(button.dataset.group === state.group),
             ),
           );
-        ["dashboard", "timeline", "accuracy", "evidence"].forEach(view => {if ($("view-"+view)) $("view-"+view).hidden = view !== state.view;});
+        ["dashboard", "timeline", "evidence"].forEach(view => {if ($("view-"+view)) $("view-"+view).hidden = view !== state.view;});
+        if ($("profile-accuracy")) $("profile-accuracy").hidden = state.stage !== "profile";
         $("stagebar").hidden = !["dashboard","timeline"].includes(state.view);
         renderSummary();
         if (state.view === "dashboard") await renderGrid();
