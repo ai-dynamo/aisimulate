@@ -888,11 +888,11 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
-        if native_host_offload
+        if let Some(order) = native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::holds_store_sources)
+            .and_then(VllmHostOffloadAdapter::store_source_hold)
         {
-            kv_manager.hold_native_store_sources();
+            kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(

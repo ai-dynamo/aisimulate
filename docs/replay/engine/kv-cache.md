@@ -198,7 +198,7 @@ eviction rules G2 follows:
 | A hit another request is loading | Defers the request | Defers the request | Both requests load it |
 | The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
 | A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
-| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes |
+| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes, then freed first block first |
 | A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
 
 vLLM main has changed some of these rules since v0.32.0; each profile follows

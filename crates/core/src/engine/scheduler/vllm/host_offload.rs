@@ -42,7 +42,8 @@ use crate::engine::host_offload::{
     StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
-    BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
+    BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
+    SourceReuseDependency,
 };
 use crate::engine::{G2Connector, HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
@@ -367,10 +368,17 @@ impl VllmHostOffloadAdapter {
     }
 
     /// Whether a store keeps a reference on the G1 blocks it copies until the
-    /// copy completes: a cluster-shared pool, like Mooncake Store and LMCache
-    /// MP, or SimpleCPU, which touches its GPU source blocks for the copy.
-    pub(super) fn holds_store_sources(&self) -> bool {
-        self.shared || self.connector == G2Connector::SimpleCpuV032
+    /// copy completes, and the order it frees them in: a cluster-shared pool,
+    /// like Mooncake Store and LMCache MP, or SimpleCPU, which touches its GPU
+    /// source blocks for the copy.
+    pub(super) fn store_source_hold(&self) -> Option<SourceReleaseOrder> {
+        if self.connector == G2Connector::SimpleCpuV032 {
+            Some(SourceReleaseOrder::HeadFirst)
+        } else if self.shared {
+            Some(SourceReleaseOrder::TailFirst)
+        } else {
+            None
+        }
     }
 
     /// Whether requests must retain router identities for residency events.
@@ -1478,7 +1486,7 @@ mod tests {
         };
         let (mut adapter, mut peer) = (join(), join());
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
-        manager.hold_native_store_sources();
+        manager.hold_native_store_sources(SourceReleaseOrder::TailFirst);
         let source_id = Uuid::from_u128(6);
         let (_, source_lease, source_host) =
             stored(&mut adapter, &mut manager, source_id, vec![1, 2, 3, 4], 0.0);
@@ -2553,15 +2561,19 @@ mod tests {
 
     #[test]
     fn simple_cpu_holds_a_finished_request_s_blocks_until_their_copy_completes() {
+        use crate::engine::{KvEventData, KvEventTier};
         // SimpleCPU touches the GPU blocks it copies (manager.py
-        // `_prepare_eager_store_specs`) and frees them when the copy completes
-        // (`_process_store_completion`); the offloading connector frees them
-        // with the request and fences their next owner.
-        for (connector, held) in [
-            (G2Connector::SimpleCpuV032, 2),
-            (G2Connector::OffloadingV032, 0),
+        // `_prepare_eager_store_specs`) and frees them in block order when the
+        // copy completes (`_process_store_completion`); the offloading
+        // connector frees them with the request, tail first, and fences their
+        // next owner.
+        let (_, _, blocks) = request(Uuid::nil(), (1..=8).collect());
+        for (connector, held, evicted) in [
+            (G2Connector::SimpleCpuV032, 2, blocks.prompt_keys[0]),
+            (G2Connector::OffloadingV032, 0, blocks.prompt_keys[1]),
         ] {
             let mut args = connector_args(connector);
+            args.num_gpu_blocks = 3;
             args.native_host_offload = Some(
                 NativeHostOffloadConfig::new(16)
                     .with_bandwidths(1.0, 1.0)
@@ -2583,12 +2595,33 @@ mod tests {
                 held,
                 "{connector:?}"
             );
-            core.process_internal_work(core.next_internal_deadline_ms().unwrap());
+            let now_ms = core.next_internal_deadline_ms().unwrap();
+            core.process_internal_work(now_ms);
             assert_eq!(
                 core.mocker_metrics().active_decode_blocks,
                 0,
                 "{connector:?}"
             );
+            // A two-block request takes the free block and evicts the oldest
+            // freed one.
+            core.receive(DirectRequest {
+                tokens: (11..=18).collect(),
+                max_output_tokens: 1,
+                uuid: Some(Uuid::from_u128(2)),
+                arrival_timestamp_ms: Some(now_ms),
+                ..Default::default()
+            });
+            let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+            let removed = pass
+                .kv_events
+                .into_iter()
+                .filter(|event| event.tier == KvEventTier::Device)
+                .flat_map(|event| match event.data {
+                    KvEventData::Removed { block_hashes } => block_hashes,
+                    KvEventData::Stored(_) => Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(removed, [evicted.sequence_hash()], "{connector:?}");
         }
     }
 
