@@ -27,6 +27,9 @@ pub(crate) struct AggregateRegression {
     non_negative: bool,
     fit: Option<LinearFit<D>>,
     update: update::LinearUpdateState,
+    /// Configuration-only; snapshots rebuild it from the canonical configuration.
+    #[serde(skip)]
+    constants: feature_axes::AxisConstants,
 }
 
 impl AggregateRegression {
@@ -48,6 +51,7 @@ impl AggregateRegression {
             non_negative: linear.non_negative,
             fit: None,
             update: update::LinearUpdateState::new(linear.update_policy),
+            constants: feature_axes::AxisConstants::of(fit),
         }
     }
 
@@ -60,7 +64,8 @@ impl AggregateRegression {
         target: f64,
         metrics: &[ForwardPassMetrics],
     ) -> Result<bool, AicError> {
-        let projected = feature_axes::project(scores, metrics, &self.sampling_axes)?;
+        let projected =
+            feature_axes::project(scores, metrics, &self.sampling_axes, self.constants)?;
         let bucket = projected[..self.sampling_axes.len()]
             .iter()
             .map(|value| value.ln_1p())
@@ -122,6 +127,7 @@ impl AggregateRegression {
     }
 
     pub(super) fn restore_snapshot(&mut self, fresh: &Self) -> Result<(), String> {
+        self.constants = fresh.constants;
         if self.sampling_axes != fresh.sampling_axes
             || self.min_observations != fresh.min_observations
             || self.ridge_scale.to_bits() != fresh.ridge_scale.to_bits()
