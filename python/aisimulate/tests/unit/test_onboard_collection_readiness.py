@@ -348,13 +348,15 @@ def test_consistent_but_wrong_observed_runtime_version_is_blocked(quality_case):
     assert all(item["status"] == "blocked" for item in report["selected_cells"])
 
 
-def _bounded_source(case, tmp_path, *, explicit=False):
+def _bounded_source(case, tmp_path, *, explicit=False, warmup_iterations=None):
     from aisimulate.support.plan import create_plan
     from aisimulate.support.schema import SupportRequest
 
     request_payload = case["request"].model_dump(mode="json")
     if explicit:
         request_payload["collection"].update(prefill_cudagraph_policy="explicit", max_prefill_cudagraph_size=16)
+    if warmup_iterations is not None:
+        request_payload["collection"]["warmup_iterations"] = warmup_iterations
     request = SupportRequest.model_validate(request_payload)
     root = tmp_path / "bounded"
     create_plan(request, root)
@@ -377,6 +379,7 @@ def _bounded_source(case, tmp_path, *, explicit=False):
             benchmark_points_sha256=None,
             prefill_cudagraph_policy=request.collection.prefill_cudagraph_policy,
             max_prefill_cudagraph_size=request.collection.max_prefill_cudagraph_size,
+            **({"warmup_iterations": warmup_iterations} if warmup_iterations is not None else {}),
         ),
     )
     return request, root, plan, overrides
@@ -455,6 +458,22 @@ def test_public_smoke_covers_both_phases_then_matching_full_collection_can_start
     assert all(
         item["campaign"] == "formal" for item in json.loads((root / "fpm-readiness.json").read_text())["selected_cells"]
     )
+
+
+def test_readiness_matches_the_request_warmup_iterations(quality_case, tmp_path):
+    request, root, plan, overrides = _bounded_source(quality_case, tmp_path, warmup_iterations=0)
+    assert plan.options.warmup_iterations == 0
+    _write_bounded_native(plan, root, overrides, smoke=True)
+    assert assess_readiness(request, root, root / "fpm-checkpoint")["ready_for_full_collection"]
+    # A request without the field asks for the default count, and a request with a count asks for that count, so
+    # neither one matches the saved plan of the other.
+    differs = "saved collection differs from the reviewed onboarding request"
+    report = assess_readiness(quality_case["request"], root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    assert f"smoke: {differs}" in report["blockers"]
+    report = assess_readiness(request, quality_case["root"], quality_case["checkpoint"].parent)
+    assert not report["ready_for_full_collection"]
+    assert f"formal: {differs}" in report["blockers"]
 
 
 def test_old_explicit_smoke_with_missing_or_changed_capture_flags_is_blocked(quality_case, tmp_path):

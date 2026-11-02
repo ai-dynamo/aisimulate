@@ -436,8 +436,9 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 status="runtime_memory_pending",
                 detail=(
                     "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
-                    "during worker initialization for supported vLLM 0.27.0 layouts; other versions can collect "
-                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
+                    "during worker initialization for supported vLLM 0.27.0 layouts, and for other bundled versions "
+                    "through an accepted runtime probe. Other versions can collect timings but leave memory "
+                    "unresolved. No activation or non-KV byte declaration is required. "
                     "Run onboard finalize after successful collection, then review the resolved profile."
                 ),
             )

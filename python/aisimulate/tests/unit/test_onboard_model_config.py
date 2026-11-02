@@ -786,14 +786,18 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
 
 
-# Collection observes pending memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory and
-# support/plan.py). The bundled vLLM 0.31.0 instrumentation observes it in runtime probes only.
+# Collection observes pending memory on vLLM 0.27.0 (collector runner._observe_runtime_memory and
+# support/plan.py). The bundled vLLM 0.31.0 instrumentation observes it in runtime probes, and in a collection
+# bound to an accepted probe.
 _PENDING_MEMORY_LINES = {
     "0.27.0": [
         "  Memory is observed during initialized vLLM 0.27.0 probes and collection.",
         "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
     ],
-    "0.31.0": ["  Memory is observed during initialized vLLM 0.31.0 probes only."],
+    "0.31.0": [
+        "  Memory is observed during initialized vLLM 0.31.0 probes, "
+        "and again in collection bound to an accepted probe."
+    ],
     "0.28.0": [
         "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM version. "
         "Without one, this version can collect timings only."
