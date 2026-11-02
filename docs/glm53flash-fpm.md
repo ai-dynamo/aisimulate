@@ -44,7 +44,9 @@ The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blo
 
 `python/aisimulate/collector/fpm_forward/runtime/glm53flash/` contains the
 producer. It is staged next to `fpm_exec.sh` and `preflight.py` and runs with
-the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`.
+the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The overlay
+is the `ai-dynamo 1.6.0.dev20261010` build, whose scheduler file equals
+`ai-dynamo/dynamo@395f0240`, and `runtime-source-sha256.json` pins that file.
 
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
   `runtime-source-sha256.json` before the scheduler loads. It then replaces
@@ -66,6 +68,16 @@ the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`.
   median.
 - Request tokens come from `collector/glm53flash_attention_tokens.py`
   (seed 53, ordinary BPE vocabulary of the pinned tokenizer).
+- A pinned revision needs the configuration of its own checkpoint. The
+  producer accepts any other revision whose configuration equals the
+  configuration of a pinned checkpoint. `DYN_FPM_TOKENIZER_REVISION` is the
+  40-hex revision that was loaded. A folder launch reads its folder, and a
+  launch by Hub ID reads that revision's snapshot in the local Hugging Face
+  cache. The artifact records the loaded revision and the pinned checkpoint
+  that matched.
+- `--max-model-len` must be at least the measured context plus 7 internal
+  positions, and a larger value is accepted. `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT`
+  sets the measured context (131,072 at most).
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3

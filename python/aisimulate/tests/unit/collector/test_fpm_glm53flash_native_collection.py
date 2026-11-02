@@ -151,6 +151,9 @@ def glm_native_payload(phase: str, *, points: list[dict], rank: int = 0, dp: int
             "vocab_high_exclusive": seeded.VOCAB_HIGH,
             "tokenizer_json_sha256": seeded.TOKENIZER_JSON_SHA256,
             "tokenizer_revision": MODEL_REVISIONS[GLM_MODEL],
+            "pinned_model": GLM_MODEL,
+            "pinned_revision": MODEL_REVISIONS[GLM_MODEL],
+            "checkpoint_dir": f"/hf-hub/models--zai-org--GLM-5.3-Flash/snapshots/{MODEL_REVISIONS[GLM_MODEL]}",
             "token_ids_sha256": hashlib.sha256(b"seeded token ids").hexdigest(),
             "unique_token_count": 100000,
             "sampling": "prompt = concatenated [offset, length] rotations of the seeded stream (see prompt specs)",
@@ -185,6 +188,8 @@ def glm_native_payload(phase: str, *, points: list[dict], rank: int = 0, dp: int
         },
         producer={
             "instrumentation_revision": "54960177085413259859c88bd34ed0734d4c2ea9",
+            "runtime_scheduler_revision": "395f02405c1dd1835ab73a39f7a5984ae5fd4552",
+            "runtime_distribution": "ai-dynamo 1.6.0.dev20261010",
             "real_seed_port_source": "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea "
             "instrumented_scheduler._bench_realseed_*",
             "queued_metrics_port_source": "ai-dynamo/dynamo@395f02405c1dd1835ab73a39f7a5984ae5fd4552 "
