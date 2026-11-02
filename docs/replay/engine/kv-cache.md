@@ -471,10 +471,11 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 ## Agentic traffic with G2
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
-one aggregated worker, or one prefill and one decode worker, all with
-`attention_data: 1`, static workers and no speculative decoding. Either G2 scope
-works; G3 is not supported. `kvcr` is accepted, but with one rank per role there
-is no peer, so it stays idle. Results are qualified `functional_only`.
+one aggregated worker, one prefill and one decode worker, or several aggregated
+workers that each own a `dp_rank_local` G2. All need `attention_data: 1`, static
+workers and no speculative decoding. Either G2 scope works with one worker per
+role; G3 is not supported. `kvcr` is accepted; it pulls only when a router hint
+names a peer worker. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 

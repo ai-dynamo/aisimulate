@@ -331,8 +331,21 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
     else:
         raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
-    if any(type(count) is not int or count != 1 for count in counts):
-        raise ValueError("agentic host offload requires one aggregated worker or one prefill and one decode worker")
+    # Each aggregated worker owns a private G2; a shared pool and P/D keep one
+    # worker per role.
+    shared = any(
+        isinstance(rank, Mapping)
+        and isinstance(rank.get("native_host_offload"), Mapping)
+        and rank["native_host_offload"].get("scope", "dp_rank_local") != "dp_rank_local"
+        for _, _, rank in ranks
+    )
+    if any(type(count) is not int or count < 1 for count in counts) or (
+        any(count != 1 for count in counts) and (deployment.deployment_mode != "agg" or shared)
+    ):
+        raise ValueError(
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, "
+            "or static aggregated workers with scope=dp_rank_local"
+        )
     if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
         raise ValueError("agentic host offload requires static worker pools without a scaling policy")
     for role, args, rank in ranks:

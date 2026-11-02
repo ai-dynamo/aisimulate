@@ -187,6 +187,10 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         workers_field = "num_workers" if aggregated else f"num_{role}_workers"
         spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{workers_field: 2}))
         payload["spec"]["topology"]["workers" if aggregated else role]["initial_workers"] = 2
+        if aggregated:
+            # Several aggregated workers need a private pool each.
+            for host in (args["native_host_offload"], rank["native_host_offload"]):
+                host.update(scope="cluster_shared", kv_layout_id="agentx-test")
     elif fault == "dp":
         args["aic_attention_dp_size"] = 2
         engine["dp_size"] = 2
@@ -220,6 +224,19 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
     )
     with pytest.raises(RuntimeError, match=native_message):
         _runtime.run_replay_json(json.dumps(payload))
+
+
+def test_agentic_g2_runs_on_several_aggregated_workers_with_private_pools() -> None:
+    """Each aggregated worker owns a dp_rank_local G2, so both checks accept several workers."""
+    config = _config("agentx-g2-local.yaml")
+    config["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = 2
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    payload = _materialize_engine_execution_spec(spec, trace_block_size=4, record_per_request=True)
+    assert payload["spec"]["topology"]["workers"]["initial_workers"] == 2
+    report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
+    assert report["completed_requests"] == 4
+    assert report["agentic_qualification"] == "functional_only"
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
