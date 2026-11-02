@@ -3569,6 +3569,17 @@ def test_explicit_eager_collection_admission():
 def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
     architecture = "Glm5NextForConditionalGeneration"
     path = _mixed_attention_config(tmp_path, architecture, True)
+    # Without an accepted profile the planner cannot generate the GLM point list, so these plans bring their own.
+    points = tmp_path / "points.json"
+    points.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+                "decode": [{"batch_size": 1, "total_kv_read_tokens": 4096}],
+            }
+        )
+    )
 
     def build(**overrides):
         return build_collection_plan(
@@ -3576,7 +3587,7 @@ def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
             model_path=str(path),
             system="b200_sxm",
             selected_ops={"attention_context", "attention_generation"},
-            options=FPMCollectionOptions.from_args(_args(**overrides)),
+            options=FPMCollectionOptions.from_args(_args(**{"fpm_benchmark_points_file": str(points), **overrides})),
             model_architecture=architecture,
             has_model_cases=False,
             model_config_path=str(path),
@@ -3587,6 +3598,8 @@ def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
 
     assert plan.options.enforce_eager is False
     assert "enforce_eager" not in plan.to_dict()["options"]
+    # A user list keeps its explicit meaning.
+    assert plan.to_dict()["point_generation"]["source"] == "frozen_explicit_manifest"
     digest = plan.cells[0].execution_identity[0]
     assert len(digest) == 64
     assert set(digest) <= set("0123456789abcdef")
@@ -3595,6 +3608,9 @@ def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
     with pytest.raises(ValueError) as error:
         build(fpm_enforce_eager=True)
     assert str(error.value) == "explicit eager FPM collection is currently qualified only for DeepSeek V4.1"
+    with pytest.raises(ValueError) as error:
+        build(fpm_benchmark_points_file=None)
+    assert str(error.value) == "GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens"
 
 
 def test_deepseek_v41_plan_keeps_its_eager_rule():

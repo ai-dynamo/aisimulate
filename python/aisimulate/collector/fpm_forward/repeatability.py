@@ -120,6 +120,8 @@ def load_repeatability_source(source_campaign_dir: str | Path) -> FPMCollectionP
         options.update(
             benchmark_points_json=json.dumps(points["payload"], sort_keys=True, separators=(",", ":")),
             benchmark_points_sha256=points["sha256"],
+            # A list that the planner generated names its generator. A user file has no origin.
+            benchmark_points_origin=points.get("origin"),
         )
     capability = copy.deepcopy(saved["capability"])
     config = capability.pop("model_config")

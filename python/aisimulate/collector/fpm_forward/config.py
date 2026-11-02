@@ -393,6 +393,8 @@ class FPMCollectionOptions:
     enforce_eager: bool = False
     benchmark_points_json: str | None = None
     benchmark_points_sha256: str | None = None
+    # Names the generator of a list that the planner froze. None for a user point file, which keeps its meaning.
+    benchmark_points_origin: str | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
@@ -751,6 +753,8 @@ class FPMCollectionOptions:
                 "payload": json.loads(self.benchmark_points_json),
                 "sha256": self.benchmark_points_sha256,
             }
+            if self.benchmark_points_origin is not None:
+                result["benchmark_points"]["origin"] = self.benchmark_points_origin
         return result
 
 

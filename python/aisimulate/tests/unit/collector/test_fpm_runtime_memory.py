@@ -13,13 +13,15 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import planner, runner, runtime_memory
+from collector.fpm_forward import cli, planner, runner, runtime_memory
 from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
+from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
 
 from aisimulate_core.fpm_profile import FpmResourceProfile
 
+from .test_fpm_forward import _args, _mixed_attention_config
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
 
@@ -1492,6 +1494,166 @@ def test_glm5next_launch_loads_the_language_model_only(architecture):
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
         # GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
         assert ("--language-model-only" in args) == (architecture is not None)
+
+
+def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, **changes):
+    """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
+
+    The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
+    8,192 tokens, 256 sequences and a 1,048,576-token context. The producer runs no global warm-up iterations.
+    ``changes`` replace option fields before planning.
+    """
+    from .test_runtime_observations import glm_tp4_cache_groups
+
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+    memory = {
+        "kv_cache_bytes": 180_218_332_800,
+        "gpu_memory_utilization": 0.9,
+        "max_model_len": 1_048_576,
+        "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
+        "enable_prefix_caching": True,
+        "mamba_cache_mode": "align",
+    }
+    if hash_block_size_tokens is not None:
+        memory["hash_block_size_tokens"] = hash_block_size_tokens
+    profile = {
+        "schema_version": 1,
+        "model": str(path),
+        "model_revision": "collector-test-snapshot",
+        "architecture": architecture,
+        "context_length": 1_048_576,
+        "num_experts": 8,
+        "provenance": "Collector test declaration; not a measured memory qualification.",
+        "deployments": [
+            {
+                "system": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.31.0",
+                "tp": 4,
+                "dp": 1,
+                "moe_tp": 4,
+                "moe_ep": 1,
+                "gemm_quant_mode": "bfloat16",
+                "moe_quant_mode": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "comm_quant_mode": "half",
+                "kv_cache_dtype": "bfloat16",
+                "resources": {
+                    "runtime_memory": memory,
+                    "cache_layout": "grouped",
+                    "cache_groups": glm_tp4_cache_groups(),
+                    "max_num_tokens": 8192,
+                    "max_batch_size": 256,
+                    "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
+                },
+            }
+        ],
+    }
+    argv = [
+        "--model-path",
+        str(path),
+        "--gpu",
+        "b200_sxm",
+        "--fpm-max-gpus",
+        "4",
+        "--fpm-gpu-counts",
+        "4",
+        "--fpm-parallel-presets",
+        "pure_tp",
+        "--fpm-max-model-len",
+        "1048576",
+        "--fpm-max-num-batched-tokens",
+        "8192",
+        "--fpm-max-num-seqs",
+        "256",
+        "--fpm-max-prefill-isl",
+        "8192",
+        "--fpm-max-prefill-batch-size",
+        "256",
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-warmup-iterations",
+        "0",
+    ]
+    return _plan(
+        profile,
+        model_path=str(path),
+        model_architecture=architecture,
+        model_config_path=str(path),
+        has_model_cases=False,
+        selected_ops={"attention_context", "attention_generation"},
+        options=replace(FPMCollectionOptions.from_args(cli._parser().parse_args(argv)), **changes),
+    )
+
+
+def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
+    from collector.fpm_forward.glm53flash_points import glm_point_manifest
+
+    plan = _glm_plan(tmp_path)
+    _, canonical, digest = glm_point_manifest(
+        hash_block_size=2176,
+        token_budget=8192,
+        prefill_batch_limit=256,
+        decode_batch_limit=256,
+        measured_context=131072,
+        kv_cache_bytes=180_218_332_800,
+        page_size_bytes=13_045_120,
+        state_groups=5,
+    )
+    saved = plan.to_dict()
+
+    assert plan.options.vllm_max_model_len == 1_048_576
+    assert plan.options.benchmark_points_origin == "glm53flash_grid_v1"
+    assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
+    assert saved["point_generation"]["source"] == "generated_glm53flash_grid"
+    assert saved["point_generation"]["planned_point_count"] == 592
+    assert saved["point_generation"]["manifest_sha256"] == digest
+    assert saved["options"]["benchmark_points"]["origin"] == "glm53flash_grid_v1"
+    # The plan hash covers the list and its origin, so a saved plan validates and a second build reproduces it.
+    runtime_memory.validate_saved_plan(saved)
+    assert _glm_plan(tmp_path).sha256 == plan.sha256
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, hash_block_size_tokens=None)
+    assert str(error.value) == "GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens"
+    deepseek = planner.build_collection_plan(
+        backend="vllm",
+        model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=True)),
+        model_architecture="DeepseekV41ForCausalLM",
+        has_model_cases=False,
+        collector_config={"aic_database_version": "0.27.0"},
+    )
+    for other in (_pending_plan(), deepseek):
+        assert "benchmark_points" not in other.to_dict()["options"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"max_num_seqs": None}, {"max_num_seqs": None, "max_prefill_batch_size": None, "max_decode_batch_size": 256}],
+    ids=["decode", "prefill"],
+)
+def test_glm_collection_plan_requires_batch_limits(tmp_path, changes):
+    # The runtime falls back to the profile's batch size, but the list needs the limit of each phase.
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, **changes)
+    assert str(error.value) == "GLM-5.3-Flash collection requires --fpm-max-num-seqs or the per-phase batch limits"
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_saved_glm_plan_reloads_with_its_generated_point_list(tmp_path):
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    # Readiness and the runtime bindings reload every saved campaign and compare its hash with the checkpoint.
+    for plan, origin in ((_glm_plan(tmp_path), "glm53flash_grid_v1"), (_pending_plan(), None)):
+        campaign = tmp_path / "fpm-artifacts" / plan.sha256[:16]
+        runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+        loaded = load_repeatability_source(campaign)
+        assert loaded.sha256 == plan.sha256
+        assert loaded.options.benchmark_points_origin == origin
+        assert loaded.to_dict() == plan.to_dict()
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

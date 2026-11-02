@@ -37,6 +37,7 @@ from .config import (
     semantic_generator_overrides,
     with_kv_warmup_defaults,
 )
+from .glm53flash_points import GLM_ARCHITECTURE, GLM_POINTS_ORIGIN, glm_plan_manifest
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .topology import enumerate_fpm_topologies, topology_strategy
@@ -602,7 +603,13 @@ class FPMCollectionPlan:
             "point_generation": {
                 "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
                 "method": "native_self_benchmark",
-                "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
+                "source": (
+                    "generated_glm53flash_grid"
+                    if self.options.benchmark_points_origin == GLM_POINTS_ORIGIN
+                    else "frozen_explicit_manifest"
+                    if explicit_points is not None
+                    else "native_auto_grid"
+                ),
                 "manifest_sha256": self.options.benchmark_points_sha256,
                 "coordinates": [
                     "batch_size",
@@ -871,6 +878,18 @@ def build_collection_plan(
                     options.max_prefill_batch_size or options.max_num_seqs or resources.max_batch_size,
                 ),
             )
+    if capability.architecture == GLM_ARCHITECTURE and options.benchmark_points_json is None:
+        # The GLM-5.3-Flash producer measures an explicit point list only. Generate it from the resolved limits and
+        # the accepted profile, and freeze it into the options, so the plan hash covers it.
+        if profile is None:
+            raise ValueError("GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens")
+        points_json, points_sha256 = glm_plan_manifest(options, deployments)
+        options = replace(
+            options,
+            benchmark_points_json=points_json,
+            benchmark_points_sha256=points_sha256,
+            benchmark_points_origin=GLM_POINTS_ORIGIN,
+        )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
