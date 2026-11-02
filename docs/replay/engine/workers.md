@@ -308,7 +308,14 @@ independently of the next launch. `launch` moves no pass. With
 detokenizing when vLLM returns them. Only offline replay (`--stack engine`)
 releases the outputs a rank holds, so other runners reject `launch`. Behavior
 follows `EngineCore.step_with_batch_queue` in vLLM
-[v0.30.0](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py).
+[v0.30.0](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py),
+its
+[uniprocess executor](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/executor/uniproc_executor.py),
+which
+[`ParallelConfig`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/config/parallel.py)
+selects for one GPU, and the CUDA-graph
+[`dispatch`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py)
+of v0.32.0.
 
 <a id="sglang-prefilldecode-interval"></a>
 

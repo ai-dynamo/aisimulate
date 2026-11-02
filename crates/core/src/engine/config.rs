@@ -680,6 +680,9 @@ pub struct EngineConfig {
     /// vLLM async scheduling's CPU launch costs: a pass's outputs leave once
     /// the next pass is launched, and an arrival joins the first pass decided
     /// after it. `None` keeps outputs at the pass end and the pass-count rule.
+    /// A rank holds the outputs until the driver releases them through
+    /// `GeneralizedMockerEngine::take_due_emissions`, as offline replay does;
+    /// other drivers must leave this unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<PassLaunchConfig>,
     /// Whether complete blocks remain reusable after request release.
