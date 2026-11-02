@@ -123,11 +123,11 @@ class TestGetBackends:
 
 class TestGetContextTestCases:
     def test_memory_guard(self):
-        """No test case exceeds batch_size * seq_len > 128K."""
+        """MLA full-history context honors its separate 1M-token budget."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod.get_context_test_cases("mla"):
-                assert case[0] * case[1] <= 128 * 1024
+                assert case[0] * case[1] <= 1048576
 
     def test_large_seq_guard(self):
         """seq_len >= 8192 only with batch_size <= 8."""
@@ -926,12 +926,13 @@ class TestGetMlaBackendList:
 
 
 class TestBuildWideepMlaTestCases:
-    def test_format_length_10(self):
+    def test_context_format_includes_exact_manifest(self):
         """Each wideep MLA test case has 9 elements (6 + model_path + attn_type + backend)."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod._build_wideep_mla_test_cases("context"):
-                assert len(case) == 9
+                assert len(case) == 12
+                assert case[11]
                 assert case[7] == "mla"
 
     def test_context_filename(self):
@@ -974,6 +975,33 @@ class TestBuildWideepMlaTestCases:
 
 @pytest.mark.unit
 class TestFailClosedOrchestration:
+    def test_context_executes_exact_planned_manifest(self, monkeypatch):
+        mod = _import_module()
+        manifest = ((1, 24576, 0), (2, 40960, 0))
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("A queued manifest must not be expanded or filtered again")
+
+        captured = {}
+        monkeypatch.setattr(mod, "get_context_test_cases", unexpected)
+        monkeypatch.setattr(mod, "_filter_cases_from_env", unexpected)
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+        monkeypatch.setattr(mod, "load_model_runner", lambda **_kwargs: object())
+        monkeypatch.setattr(mod, "run_attention_torch", lambda **kwargs: captured.update(kwargs) or 2)
+        mod.run_mla_module(
+            "mla",
+            8,
+            "deepseek-ai/DeepSeek-V3",
+            "bfloat16",
+            "bfloat16",
+            "bfloat16",
+            True,
+            0,
+            attention_backend="fa3",
+            inner_manifest=manifest,
+        )
+        assert captured["test_cases"] == [(b, s, True, p) for b, s, p in manifest]
+
     def test_empty_case_list_raises_before_model_load(self, monkeypatch):
         mod = _import_module()
         monkeypatch.setattr(mod, "get_context_test_cases", lambda _attn_type: [])

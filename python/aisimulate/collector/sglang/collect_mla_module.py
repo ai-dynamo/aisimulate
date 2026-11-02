@@ -50,6 +50,8 @@ from importlib.metadata import version as get_version
 
 import torch
 
+from collector.attention_memory import filter_attention_cases
+from collector.module_memory import module_footprint_bytes, module_model_config
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
@@ -499,15 +501,22 @@ def get_context_test_cases(attn_type: str):
                      compute_dtype, gemm_type].
     """
     sweep = get_mla_module_sweep_spec("sglang")
+    sequence_lengths = (
+        getattr(sweep, "mla_context_sequence_lengths", None) if attn_type == "mla" else None
+    ) or sweep.context_sequence_lengths
+    max_tokens = (
+        getattr(sweep, "context_mla_max_tokens", None) if attn_type == "mla" else None
+    ) or sweep.context_max_tokens
     cases = []
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
         for num_heads in sweep.inner_sweep_head_counts:
             for batch_size in sweep.context_batch_sizes:
-                for seq_len in sweep.context_sequence_lengths:
-                    if batch_size * seq_len > sweep.context_max_tokens:
+                for seq_len in sequence_lengths:
+                    if batch_size * seq_len > max_tokens:
                         continue
                     if (
-                        seq_len >= sweep.context_large_sequence_min
+                        attn_type != "mla"
+                        and seq_len >= sweep.context_large_sequence_min
                         and batch_size > sweep.context_large_sequence_max_batch_size
                     ):
                         continue
@@ -835,6 +844,37 @@ def _estimated_generation_kv_bytes_per_token(model_path: str, attn_type: str, kv
     return layers * (main + index)
 
 
+def _mla_context_manifest(num_heads, kv_dtype, compute_dtype, gemm_type, model_path):
+    """Keep the expanded dense-MLA context grid fixed before loading a runner."""
+    shapes = [
+        (tc[1], tc[0], 0)
+        for tc in get_context_test_cases("mla")
+        if tc[2:] == [num_heads, kv_dtype, compute_dtype, gemm_type]
+    ]
+    shapes = [
+        (b, sequence, prefix)
+        for b, sequence, _, prefix in _filter_cases_from_env(
+            [(b, sequence, True, prefix) for b, sequence, prefix in shapes], is_prefill=True, attn_type="mla"
+        )
+    ]
+    per_token = _estimated_generation_kv_bytes_per_token(model_path, "mla", kv_dtype, None)
+    config = module_model_config(model_path)
+    single_entry = (int(config["kv_lora_rank"]) + int(config["qk_rope_head_dim"])) * (1 if kv_dtype == "fp8" else 2)
+
+    def footprint(shape):
+        batch, sequence, prefix = shape
+        # Reuse the one-layer activation estimate, then add the runner's
+        # remaining KV layers and its page padding. No framework buffers change.
+        case = [sequence, batch, num_heads, kv_dtype, compute_dtype, gemm_type, model_path]
+        visible = module_footprint_bytes(case, backend="sglang", attention_type="mla", is_context=True, page_size=64)
+        single_cache = batch * ((sequence + 64) // 64) * 64 * single_entry
+        pool = required_kv_alloc_tokens(batch, sequence, prefix, 64, is_prefill=True) + 64
+        pool += max(1024, pool // 20)  # run_mla_module's native runner reserve
+        return visible - single_cache + pool * per_token
+
+    return tuple(filter_attention_cases(shapes, footprint, torch.cuda, "mla_context_module"))
+
+
 def _generation_manifest(attn_type, num_heads, kv_dtype, compute_dtype, gemm_type, model_path, dsa_backend=None):
     """Resolve a generation task's exact (batch, past KV, prefix) list before queueing."""
     shapes = [
@@ -963,6 +1003,13 @@ def _build_module_test_cases(attn_type: str, mode: str):
                             if not manifest:
                                 print(f"[{attn_type.upper()}] plan: empty generation manifest; group not queued")
                                 continue
+                        elif attn_type == "mla":
+                            manifest = _mla_context_manifest(
+                                num_heads, kv_dtype, compute_dtype, gemm_type, model_spec.model_path
+                            )
+                            if not manifest:
+                                print("[MLA] plan: empty context manifest; group not queued")
+                                continue
                         cases.append(
                             [
                                 0,
@@ -977,7 +1024,7 @@ def _build_module_test_cases(attn_type: str, mode: str):
                                 target_tp_size,
                                 dsa_backend,
                             ]
-                            + ([manifest] if mode == "generation" else [])
+                            + ([manifest] if manifest is not None else [])
                         )
     return cases
 
@@ -1026,6 +1073,13 @@ def _build_wideep_mla_test_cases(mode: str):
                     if not manifest:
                         print("[MLA] plan: empty generation manifest; group not queued")
                         continue
+                else:
+                    manifest = _mla_context_manifest(
+                        num_heads, "bfloat16", "bfloat16", "bfloat16", model_spec.model_path
+                    )
+                    if not manifest:
+                        print("[MLA] plan: empty context manifest; group not queued")
+                        continue
                 # Single precision: run with bfloat16, log as fp8_block/fp8
                 cases.append(
                     [
@@ -1039,7 +1093,7 @@ def _build_wideep_mla_test_cases(mode: str):
                         "mla",
                         backend,
                     ]
-                    + ([1, None, manifest] if mode == "generation" else [])
+                    + [1, None, manifest]
                 )
     return cases
 
@@ -2889,7 +2943,7 @@ def run_mla_module(
         attention_backend = _get_backends(attn_type)
 
     if is_prefill:
-        all_cases = get_context_test_cases(attn_type)
+        all_cases = [] if inner_manifest is not None else get_context_test_cases(attn_type)
         phase_name = "Context"
     else:
         if not inner_manifest:
@@ -2907,7 +2961,9 @@ def run_mla_module(
     ]
     if batch_size_filter:
         base_cases = [(bs, seq_len, ip) for bs, seq_len, ip in base_cases if bs == batch_size_filter]
-    if is_prefill and attn_type == "dsa":
+    if is_prefill and attn_type == "mla" and inner_manifest is not None:
+        cases = [(b, sequence, True, prefix) for b, sequence, prefix in inner_manifest]
+    elif is_prefill and attn_type == "dsa":
         _sweep = get_mla_module_sweep_spec("sglang")
         prefix_lens = _sweep.context_prefix_lengths
         # Per-request context cap = the model's max_position_embeddings (the RoPE
@@ -2952,7 +3008,7 @@ def run_mla_module(
         cases = [(bs, seq_len, False, prefix_len) for bs, seq_len, prefix_len in inner_manifest]
     else:
         cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
-    if is_prefill:
+    if is_prefill and inner_manifest is None:
         cases = _filter_cases_from_env(cases, is_prefill=True, attn_type=attn_type)
 
     print(f"\n{'=' * 60}")
@@ -3224,10 +3280,10 @@ def run_mla_module_worker(
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
-    Each generation call executes its exact planned inner manifest; context
-    retains the existing sweep for the given precision/model in a subprocess.
-    DSA context uses batch_size to shard the prefix sweep across subprocesses;
-    other module cases keep batch_size as a placeholder.
+    Generation and dense MLA context execute their exact planned inner
+    manifests. DSA context retains its existing sweep and uses batch_size
+    to shard the prefix sweep across subprocesses; other module cases keep
+    batch_size as a placeholder.
 
     For wideep MLA test cases, attention_backend is the 9th positional
     element specifying which backend to benchmark (e.g. "flashinfer", "fa3").

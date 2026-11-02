@@ -137,6 +137,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import get_mla_module_model_specs, get_mla_module_sweep_spec
 from collector.helper import (
     PeriodicGarbageCollector,
@@ -145,6 +146,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
 )
+from collector.module_memory import module_footprint_bytes, validate_module_position
 from collector.registry_types import PerfFile
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
@@ -224,14 +226,21 @@ def get_context_test_cases(attn_type: str):
     """
     cases = []
     sweep = get_mla_module_sweep_spec("trtllm")
+    sequence_lengths = (
+        getattr(sweep, "mla_context_sequence_lengths", None) if attn_type == "mla" else None
+    ) or sweep.context_sequence_lengths
+    max_tokens = (
+        getattr(sweep, "context_mla_max_tokens", None) if attn_type == "mla" else None
+    ) or sweep.context_max_tokens
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
         for num_heads in sweep.inner_sweep_head_counts:
             for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
+                for s in sequence_lengths:
+                    if b * s > max_tokens:
                         continue
                     if (
-                        sweep.context_large_sequence_min
+                        attn_type != "mla"
+                        and sweep.context_large_sequence_min
                         and s >= sweep.context_large_sequence_min
                         and b > sweep.context_large_sequence_max_batch_size
                     ):
@@ -303,7 +312,18 @@ def _build_module_test_cases(attn_type: str, mode: str):
             f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_non_shard_heads} cases whose "
             "per-rank heads no declared tensor_parallel_sizes shard produces"
         )
-    return cases
+    return filter_attention_cases(
+        cases,
+        lambda case: module_footprint_bytes(
+            case,
+            backend="trtllm",
+            attention_type=attn_type,
+            is_context=mode == "context",
+            page_size=(64 if get_sm_version() == 90 else 32),
+        ),
+        torch.cuda,
+        f"{attn_type}_{mode}_module",
+    )
 
 
 def get_mla_context_module_test_cases():
@@ -488,6 +508,8 @@ def create_attention_layer(
     use_fp8_kv_cache: bool = False,
     gemm_type: str = "bfloat16",
     device: str = "cuda:0",
+    max_seq_len: int = 163840,
+    max_num_tokens: int = 131072,
 ):
     """
     Create a single attention layer from TRT-LLM's own modeling code.
@@ -554,8 +576,8 @@ def create_attention_layer(
         force_dynamic_quantization=False,
         spec_config=None,
         sparse_attention_config=sparse_attention_config,
-        max_num_tokens=131072,
-        max_seq_len=163840,
+        max_num_tokens=max_num_tokens,
+        max_seq_len=max_seq_len,
         moe_max_num_tokens=None,
         moe_load_balancer=None,
         lora_config=None,
@@ -658,7 +680,7 @@ def create_attention_layer(
 # One attention layer per (model, heads, kv dtype, gemm type) per worker. The layer
 # build (ModelConfig.from_pretrained, DeepseekV3DecoderLayer, dummy weights,
 # post_load_weights) does not depend on the point: create_attention_layer sizes
-# the config with fixed max_num_tokens / max_seq_len, so one layer serves every
+# the config for its token and sequence capacities, so one layer serves every
 # (batch, seq, prefix) of its key exactly as serving reuses one module. The
 # per-case KV cache manager, metadata, dry run, CUDA-graph capture and timing are
 # untouched. Same pattern as collect_dsv4_attn._cached_dsv4_attention_module
@@ -668,8 +690,16 @@ def create_attention_layer(
 _LAYER_CACHE: dict = {}
 
 
-def _cached_attention_layer(model_path: str, num_heads: int, use_fp8_kv_cache: bool, gemm_type: str, device: str):
-    key = (model_path, int(num_heads), bool(use_fp8_kv_cache), gemm_type, device)
+def _cached_attention_layer(
+    model_path: str,
+    num_heads: int,
+    use_fp8_kv_cache: bool,
+    gemm_type: str,
+    device: str,
+    max_seq_len: int = 163840,
+    max_num_tokens: int = 131072,
+):
+    key = (model_path, int(num_heads), bool(use_fp8_kv_cache), gemm_type, device, int(max_seq_len), int(max_num_tokens))
     hit = _LAYER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -683,6 +713,8 @@ def _cached_attention_layer(model_path: str, num_heads: int, use_fp8_kv_cache: b
         use_fp8_kv_cache=use_fp8_kv_cache,
         gemm_type=gemm_type,
         device=device,
+        max_seq_len=max_seq_len,
+        max_num_tokens=max_num_tokens,
     )
     _LAYER_CACHE[key] = entry
     return entry
@@ -932,6 +964,8 @@ def run_mla_module(
 
     is_context = "context" in perf_filename
     prefix_len = int(prefix_len) if is_context else 0
+    full_length = prefix_len + seq_len if is_context else seq_len + 1
+    validate_module_position(model_path, full_length)
     phase = "context" if is_context else "generation"
     variant = attn_type.upper()
     print(
@@ -954,7 +988,13 @@ def run_mla_module(
 
     # 1. Create attention layer (from_pretrained reads config.json)
     attn_module, model_config, original_architecture = _cached_attention_layer(
-        model_path, num_heads, use_fp8_kv_cache, gemm_type, device
+        model_path,
+        num_heads,
+        use_fp8_kv_cache,
+        gemm_type,
+        device,
+        max_seq_len=max(163840, full_length + 1),
+        max_num_tokens=max(131072, batch_size * (seq_len if is_context else 1)),
     )
     _mark("layer")
 

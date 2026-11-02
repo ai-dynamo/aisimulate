@@ -63,24 +63,6 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from collector.case_generator import (
-    get_mla_module_model_specs,
-    get_mla_module_precision_specs,
-    get_mla_module_sweep_spec,
-)
-from collector.helper import benchmark_with_power as _benchmark_with_power
-from collector.helper import get_sm_version, log_perf
-from collector.registry_types import PerfFile
-from collector.vllm.utils import (
-    BatchSpec,
-    create_and_prepopulate_kv_cache_mla,
-    create_common_attn_metadata,
-    create_vllm_config,
-    enable_engine_fused_ops,
-    framework_kv_block_size,
-    setup_distributed,
-    with_exit_stack,
-)
 from vllm.config import set_current_vllm_config
 from vllm.forward_context import set_forward_context
 
@@ -94,6 +76,27 @@ from vllm.forward_context import set_forward_context
 from vllm.transformers_utils.config import _CONFIG_REGISTRY
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.version import __version__ as vllm_version
+
+from collector.attention_memory import filter_attention_cases
+from collector.case_generator import (
+    get_mla_module_model_specs,
+    get_mla_module_precision_specs,
+    get_mla_module_sweep_spec,
+)
+from collector.helper import benchmark_with_power as _benchmark_with_power
+from collector.helper import get_sm_version, log_perf
+from collector.module_memory import module_footprint_bytes
+from collector.registry_types import PerfFile
+from collector.vllm.utils import (
+    BatchSpec,
+    create_and_prepopulate_kv_cache_mla,
+    create_common_attn_metadata,
+    create_vllm_config,
+    enable_engine_fused_ops,
+    framework_kv_block_size,
+    setup_distributed,
+    with_exit_stack,
+)
 
 # Keep graph lifetime handling local to the MLA/DSA module collector. Other
 # collectors retain benchmark_with_power's default cleanup and synchronization.
@@ -245,6 +248,12 @@ def get_context_test_cases(attn_type: str):
     """
     cases = []
     sweep = get_mla_module_sweep_spec("vllm")
+    sequence_lengths = (
+        getattr(sweep, "mla_context_sequence_lengths", None) if attn_type == "mla" else None
+    ) or sweep.context_sequence_lengths
+    max_tokens = (
+        getattr(sweep, "context_mla_max_tokens", None) if attn_type == "mla" else None
+    ) or sweep.context_max_tokens
     # DSA context mirrors serving's chunked prefill (matches DSV4 sparse +
     # sglang DSA): cap the per-forward NEW-token budget (b*s) at the chunk
     # prefill size and let the long context enter via prefix, bounded by the
@@ -257,7 +266,7 @@ def get_context_test_cases(attn_type: str):
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
         for num_heads in sweep.inner_sweep_head_counts:
             for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
+                for s in sequence_lengths:
                     if attn_type == "dsa":
                         # new-token budget per chunk (not the shared memory cap) and the
                         # full-sequence budget; the per-model max_position cap is applied
@@ -274,7 +283,7 @@ def get_context_test_cases(attn_type: str):
                                 continue
                             cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
                     else:
-                        if b * s > sweep.context_max_tokens:
+                        if b * s > max_tokens:
                             continue
                         cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
     return cases
@@ -473,6 +482,15 @@ def _build_module_test_cases(attn_type: str, mode: str):
             if rest:
                 case.append(rest[0])
             cases.append(case)
+    if attn_type == "mla":
+        cases = filter_attention_cases(
+            cases,
+            lambda case: module_footprint_bytes(
+                case, backend="vllm", attention_type="mla", is_context=mode == "context", page_size=64
+            ),
+            torch.cuda,
+            f"mla_{mode}_module",
+        )
     if dropped_over_ceiling or dropped_non_shard_heads:
         print(
             f"[vllm-mla-module-cases] {attn_type}/{mode}: dropped "

@@ -35,12 +35,20 @@ SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "suppo
 
 
 def _load_mla_adapter(module_path: str, globals_dict: dict):
+    from collector.attention_memory import filter_attention_cases
+    from collector.module_memory import standalone_mla_footprint_bytes
+
     source_path = REPO_ROOT / module_path
     tree = ast.parse(source_path.read_text(), filename=str(source_path))
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_mla_test_cases"
     )
     namespace = dict(globals_dict)
+    namespace.update(
+        filter_attention_cases=filter_attention_cases,
+        standalone_mla_footprint_bytes=standalone_mla_footprint_bytes,
+        torch=SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+    )
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace["_build_mla_test_cases"]
 
@@ -1082,8 +1090,8 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
 
     # Kimi-K3 declares the native 96-head MLA profile (DeepSeek geometry),
     # expanding the MLA spec grids.
-    assert len(get_context_mla_case_specs()) == 330
-    assert len(get_generation_mla_case_specs()) == 543
+    assert len(get_context_mla_case_specs()) == 531
+    assert len(get_generation_mla_case_specs()) == 597
     mamba_cases = get_common_mamba2_test_cases()
     assert len(mamba_cases) == 12
     assert {case.model_name for case in mamba_cases} >= {"MAMBA2_GENERIC_4K", "MAMBA2_GENERIC_1K"}
@@ -1214,8 +1222,30 @@ def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
     from collector.case_generator import get_mla_module_sweep_spec
 
     assert 128 in get_mla_module_sweep_spec("sglang").context_prefix_lengths
-    assert get_mla_module_sweep_spec("trtllm").context_prefix_lengths == [0, 128]
-    assert get_mla_module_sweep_spec("vllm").context_prefix_lengths == [0, 128]
+    assert get_mla_module_sweep_spec("trtllm").context_prefix_lengths == [
+        0,
+        128,
+        4096,
+        16384,
+        32768,
+        65536,
+        131072,
+        262144,
+        524288,
+        1048575,
+    ]
+    assert get_mla_module_sweep_spec("vllm").context_prefix_lengths == [
+        0,
+        128,
+        4096,
+        16384,
+        32768,
+        65536,
+        131072,
+        262144,
+        524288,
+        1048575,
+    ]
 
 
 def test_vllm_moe_quantization_metadata_is_yaml_backed():
@@ -1362,7 +1392,7 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
     trtllm_sweep = get_mla_module_sweep_spec("trtllm")
     assert trtllm_sweep.context_batch_sizes == [1, 2, 4, 8, 16, 32, 64, 128, 256]
     assert trtllm_sweep.context_sequence_lengths[-1] == 32768
-    assert trtllm_sweep.generation_sequence_lengths[-1] == 131072
+    assert trtllm_sweep.generation_sequence_lengths[-1] == 1048575
     assert trtllm_sweep.inner_sweep_head_counts == [128, 64, 32, 16, 8, 4, 2, 1]
     assert trtllm_sweep.generation_max_tokens == 33554432
 
@@ -1401,7 +1431,7 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
 
     vllm_sweep = get_mla_module_sweep_spec("vllm")
     assert vllm_sweep.context_sequence_lengths[-1] == 32768
-    assert vllm_sweep.generation_sequence_lengths[-1] == 131072
+    assert vllm_sweep.generation_sequence_lengths[-1] == 1048575
     assert vllm_sweep.inner_sweep_head_counts == [128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]
     assert vllm_sweep.generation_max_tokens == 33554432
     assert vllm_sweep.generation_large_cache_tokens == 16777216
@@ -1893,6 +1923,8 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
         return [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3")]
 
     namespace = {
+        "filter_attention_cases": filter_attention_cases,
+        "torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
         "get_context_test_cases": lambda _attention_type: [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]],
         "get_generation_test_cases": lambda _attention_type: [],
         "get_mla_module_model_specs": get_model_specs,
@@ -1909,6 +1941,8 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
 def _load_module_case_builder(backend: str, namespace: dict):
     from types import SimpleNamespace
 
+    namespace.setdefault("filter_attention_cases", filter_attention_cases)
+    namespace.setdefault("torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)))
     source_path = REPO_ROOT / f"collector/{backend}/collect_mla_module.py"
     tree = ast.parse(source_path.read_text(), filename=str(source_path))
     wanted = {"_build_module_test_cases"}

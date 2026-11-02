@@ -47,6 +47,8 @@ def test_mla_layer_is_built_once_per_key_and_evicted_on_a_new_key():
         "use_fp8_kv_cache": True,
         "gemm_type": "fp8_block",
         "device": "cuda:0",
+        "max_seq_len": 163840,
+        "max_num_tokens": 131072,
     }
     second = cached("deepseek-ai/DeepSeek-V3.2", 16, True, "fp8_block", "cuda:0")
     assert second is not first and len(builds) == 2
@@ -62,6 +64,24 @@ def test_msa_layer_cache_keys_on_model_heads_gemm_and_device():
     a = cached("MiniMaxAI/MiniMax-M3", 64, "bfloat16", "cuda:0")
     assert cached("MiniMaxAI/MiniMax-M3", 64, "bfloat16", "cuda:0") is a and len(builds) == 1
     expected = {"model_path": "MiniMaxAI/MiniMax-M3", "num_heads": 64, "gemm_type": "bfloat16", "device": "cuda:0"}
+    expected.update(max_seq_len=163840, max_num_tokens=131072)
     assert builds[0] == expected
     cached("MiniMaxAI/MiniMax-M3", 64, "fp8_block", "cuda:0")
     assert len(builds) == 2 and evictions == ["gc", "empty_cache"]
+
+
+@pytest.mark.parametrize("family", ["mla", "msa"])
+def test_layer_cache_separates_sequence_and_token_capacities(family):
+    helper = "_cached_attention_layer" if family == "mla" else "_cached_msa_attention_layer"
+    builder = "create_attention_layer" if family == "mla" else "create_msa_attention_layer"
+    cached, builds, evictions = _load(f"collect_{family}_module.py", helper, builder)
+    args = ("model", 8, False, "bfloat16", "cuda:0") if family == "mla" else ("model", 8, "bfloat16", "cuda:0")
+    short = cached(*args)
+    long = cached(*args, max_seq_len=524289)
+    assert long is not short
+    assert builds[-1]["max_seq_len"] == 524289
+    assert cached(*args, max_seq_len=524289) is long
+    wider = cached(*args, max_seq_len=524289, max_num_tokens=262144)
+    assert wider is not long
+    assert builds[-1]["max_num_tokens"] == 262144
+    assert len(evictions) == 4

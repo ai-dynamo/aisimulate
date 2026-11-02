@@ -43,8 +43,9 @@ FP8 storage, and index-K buffers. Index buffers are conservatively counted for
 all loaded layers, including skip-indexer runs: their timed-layer toggle does
 not remove the runner's cache allocation. Without a visible CUDA device,
 planning retains all shapes. The retained manifest is part of task identity;
-workers execute that plan without rebuilding or filtering it. Prefill planning
-keeps its existing separate contract.
+workers execute that plan without rebuilding or filtering it. Dense MLA context
+now carries the same exact manifest, with its expanded full-history range and
+visible activation estimate. DSA prefill keeps its existing separate contract.
 
 This filter is an admission estimate, not a guarantee of runtime fit. Model
 weights, request tables, graphs and workspaces also consume memory. SGLang
@@ -65,6 +66,36 @@ and 56; the microbenchmark captures 52 directly. Serving may execute the padded
 56-request bucket, whose padding overhead is not included in the row keyed 52.
 Disabling graph padding requires explicit bucket membership. This follows the
 [native decode eligibility check](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py#L714).
+
+## Agentic MLA and sparse-module coverage
+
+`mla_module.yaml` declares a shared dense-MLA context sequence axis
+(`mla_context_sequence_lengths`) and token budget (`context.mla_max_tokens`).
+They cover full-history queries through 1,048,576 tokens on vLLM, SGLang and
+TRT-LLM. Sparse modules retain their existing new-token/chunk axes; their
+cached histories use the prefix and decode axes instead. TRT-LLM DSA and
+TRT-LLM/vLLM MSA now include 4K through 1M prefix anchors, and their decode
+axes reach 1,048,575 cached tokens. SGLang's existing DSA/MSA history coverage
+and measured GLM decode execution path remain unchanged.
+
+The standalone MLA adapters share the expanded `mla.yaml` grid. SGLang's
+mock runner now advertises the actual case length. TRT-LLM's standalone
+harness still uses its fixed DeepSeek Scenario RoPE capacity (163,840); larger
+queued shapes raise a classified native-limit error. Full TRT-LLM modules use
+the real model's positional limit, size token/sequence capacities for each
+case, and evict the old cached layer when those capacities change. Expanding
+a sweep never extends a checkpoint's RoPE model definition.
+
+Admission uses 90% of the collecting GPU's total memory. Single-layer
+TRT-LLM/vLLM estimates count page-rounded caches, cached source tensors and
+visible attention activations and top-k buffers; TRT-LLM estimates also include
+DSA logits tiles and MSA index-score buffers. Its MSA collector retains the
+native double-pool allocation and spare pages. SGLang estimates all loaded KV layers. The native
+workspace, model weights, allocator fragmentation and backend limits can still
+reject an admitted case. CPU coverage and memory-boundary tests establish the
+plan only; new long-history paths require GPU qualification. The larger
+context budget also admits larger batches at existing shorter anchors, so
+collection-cost estimates must count those cells as well as new lengths.
 
 ## GLM AgentX decode coverage
 

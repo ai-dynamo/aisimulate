@@ -111,6 +111,8 @@ if _REPO_ROOT not in sys.path:
 # name) (config_utils.py:493-498@1.3.0rc20), so expose the base class there
 # before registering the model_type.
 import tensorrt_llm._torch.configs as _trtllm_configs
+
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
@@ -124,6 +126,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
 )
+from collector.module_memory import module_footprint_bytes, validate_module_position
 from collector.registry_types import PerfFile
 
 if not hasattr(_trtllm_configs, "PretrainedConfig"):
@@ -252,7 +255,18 @@ def _build_module_test_cases(mode: str):
             if rest:
                 case.append(rest[0])
             cases.append(case)
-    return cases
+    return filter_attention_cases(
+        cases,
+        lambda case: module_footprint_bytes(
+            case,
+            backend="trtllm",
+            attention_type="msa",
+            is_context=mode == "context",
+            page_size=128 if _msa_implementation(get_sm_version()) == "msa" else 32,
+        ),
+        torch.cuda,
+        f"msa_{mode}_module",
+    )
 
 
 def get_msa_context_module_test_cases():
@@ -345,6 +359,8 @@ def create_msa_attention_layer(
     num_heads: int = 64,
     gemm_type: str = "bfloat16",
     device: str = "cuda:0",
+    max_seq_len: int = 163840,
+    max_num_tokens: int = 131072,
 ):
     """Create a single MiniMax-M3 sparse attention layer from TRT-LLM's own
     modeling code.
@@ -434,8 +450,8 @@ def create_msa_attention_layer(
         use_cuda_graph=False,
         force_dynamic_quantization=False,
         spec_config=None,
-        max_num_tokens=131072,
-        max_seq_len=163840,
+        max_num_tokens=max_num_tokens,
+        max_seq_len=max_seq_len,
         moe_max_num_tokens=None,
         moe_load_balancer=None,
         lora_config=None,
@@ -600,13 +616,20 @@ def _resolve_attention_backend_cls(model_config: ModelConfig):
 # One MiniMax-M3 sparse attention layer per (model, heads, gemm type) per worker —
 # same pattern and rationale as collect_mla_module._cached_attention_layer /
 # collect_dsv4_attn._cached_dsv4_attention_module: the layer build does not depend
-# on the point; the per-case KV cache manager, metadata, dry run and timing are
+# on capacity as well as model/precision; the per-case KV manager and timing are
 # untouched (b300 base run: msa_context_module 1.8 GPU-s per one-row case).
 _LAYER_CACHE: dict = {}
 
 
-def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str, device: str):
-    key = (model_path, int(num_heads), gemm_type, device)
+def _cached_msa_attention_layer(
+    model_path: str,
+    num_heads: int,
+    gemm_type: str,
+    device: str,
+    max_seq_len: int = 163840,
+    max_num_tokens: int = 131072,
+):
+    key = (model_path, int(num_heads), gemm_type, device, int(max_seq_len), int(max_num_tokens))
     hit = _LAYER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -614,7 +637,14 @@ def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str,
         _LAYER_CACHE.clear()
         gc.collect()
         torch.cuda.empty_cache()
-    entry = create_msa_attention_layer(model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device)
+    entry = create_msa_attention_layer(
+        model_path=model_path,
+        num_heads=num_heads,
+        gemm_type=gemm_type,
+        device=device,
+        max_seq_len=max_seq_len,
+        max_num_tokens=max_num_tokens,
+    )
     _LAYER_CACHE[key] = entry
     return entry
 
@@ -897,6 +927,8 @@ def run_msa_module(
 
     is_context = "context" in perf_filename
     prefix_len = int(prefix_len) if is_context else 0
+    full_length = prefix_len + seq_len if is_context else seq_len + 1
+    validate_module_position(model_path, full_length)
     phase = "context" if is_context else "generation"
     print(
         f"\n[MSA module] {phase} b={batch_size}, s={seq_len}, "
@@ -905,7 +937,12 @@ def run_msa_module(
     )
 
     attn_module, model_config, original_architecture = _cached_msa_attention_layer(
-        model_path, num_heads, gemm_type, device
+        model_path,
+        num_heads,
+        gemm_type,
+        device,
+        max_seq_len=max(163840, full_length + 1),
+        max_num_tokens=max(131072, batch_size * (seq_len if is_context else 1)),
     )
 
     kv_cache_manager, attn_metadata, kernel_source = create_kv_cache_and_metadata(

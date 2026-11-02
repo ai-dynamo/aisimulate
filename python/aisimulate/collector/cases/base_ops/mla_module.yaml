@@ -33,6 +33,9 @@ common_case_values:
       - 4096
       - 8192
       - 16384
+    # Dense MLA is queried at the full sequence, including cached history.
+    # Sparse modules retain their existing new-token/chunk axes below.
+    mla_context_sequence_lengths: [1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384, 24576, 32768, 40960, 65536, 131072, 262144, 524288, 1048576]
     inner_sweep_head_counts:
       - 128
       - 64
@@ -46,6 +49,7 @@ common_case_values:
         kv_cache_dtype: bfloat16
         gemm_type: bfloat16
     context:
+      mla_max_tokens: &mla_context_budget 1048576
       max_tokens: 131072
       large_sequence_min: 8192
       large_sequence_max_batch_size: 8
@@ -131,6 +135,7 @@ common_case_values:
       - 655360
       - 720896
     context:
+      mla_max_tokens: *mla_context_budget
       max_tokens: 131072
       large_sequence_min: 8192
       large_sequence_max_batch_size: 8
@@ -261,6 +266,9 @@ common_case_values:
       - 32768
       - 65536
       - 131072
+      - 262144
+      - 524288
+      - 1048575
     head_counts:
       - 128
       - 64
@@ -271,6 +279,7 @@ common_case_values:
       - 2
       - 1
     context:
+      mla_max_tokens: *mla_context_budget
       max_tokens: 131072
       # MSA (MiniMax-M3) on TRT-LLM has two implementations: the fmha_sm100
       # kernels (implementation="msa", SM100/103 only — msa_availability.py
@@ -289,11 +298,10 @@ common_case_values:
       # re-verify on every TRT-LLM version bump (a real sparse prefill kernel
       # for these SMs lifts it).
       msa_triton_max_tokens: 32768
-      prefix_lengths:
-        - 0
-        - 128
+      prefix_lengths: [0, 128, 4096, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
     generation:
       max_tokens: 33554432
+      large_sequence_max_batch_size: 1024
   mla_module_vllm:
     description: Exact vLLM full MLA/DSA module micro-benchmark sweep for the current vLLM collector.
     context_batch_sizes:
@@ -355,6 +363,9 @@ common_case_values:
       - 32768
       - 65536
       - 131072
+      - 262144
+      - 524288
+      - 1048575
     head_counts:
       - 128
       - 96
@@ -473,10 +484,9 @@ common_case_values:
         phases: [context]
         attention_types: [mla]
     context:
+      mla_max_tokens: *mla_context_budget
       max_tokens: 131072
-      prefix_lengths:
-        - 0
-        - 128
+      prefix_lengths: [0, 128, 4096, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
       # DSA context follows serving's chunked-prefill shape, matching the
       # DeepSeek-V4 sparse + sglang-DSA convention (DeepseekV4ForCausalLM_cases
       # sparse_chunk_prefill_size / sparse_past_kv_lengths; mla_module_sglang
@@ -520,4 +530,5 @@ common_case_values:
         - 1048575
     generation:
       max_tokens: 33554432
+      large_sequence_max_batch_size: 1024
       large_cache_tokens: 16777216
