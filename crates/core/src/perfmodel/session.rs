@@ -523,14 +523,15 @@ pub(crate) fn generation_op_runtime(
 ///    context-attention ops, with `batch=1`, `isl=ctx_tokens+gen_tokens`,
 ///    `prefix=combined_prefix`.
 /// 2. Context attention contribution: re-run only context-attention ops with
-///    the prefill batch shape (`batch = ceil(ctx_tokens/isl)`).
+///    the prefill batch shape (`batch = prefill_batch` requests of
+///    `new_tokens_per_prefill_req` tokens).
 /// 3. Decode attention contribution: iterate `generation_ops`, only
 ///    generation-attention ops, with the decode batch shape.
 ///
 /// `on_op` observes each queried op: whether it runs in a context pass
-/// (passes 1 and 2) or the decode pass, the op, its runtime context, its RAW
-/// result and the divisor the total applies to it (pass 2's `scale_factor`,
-/// otherwise 1).
+/// (passes 1 and 2) or the decode pass, its index in its op list, the op,
+/// its runtime context, its RAW result and the divisor the total applies to
+/// it (pass 2's `scale_factor`, otherwise 1).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_mix_step_ops<'a>(
     context_ops: &'a [Op],
@@ -539,11 +540,12 @@ pub(crate) fn get_mix_step_ops<'a>(
     ctx_tokens: u32,
     gen_tokens: u32,
     new_tokens_per_prefill_req: u32,
+    prefill_batch: u32,
     prefix_per_req: u32,
     combined_prefix: u32,
     kv_per_decode_req: u32,
     decode_batch: u32,
-    mut on_op: impl FnMut(bool, &'a Op, &RuntimeContext, PerformanceResult, f64),
+    mut on_op: impl FnMut(bool, usize, &'a Op, &RuntimeContext, PerformanceResult, f64),
 ) -> Result<f64, AicError> {
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
@@ -564,7 +566,7 @@ pub(crate) fn get_mix_step_ops<'a>(
     // ignored, so threading it through is harmless.
     let effective_isl_combined = (ctx_tokens + gen_tokens).max(1);
     let mut total = 0.0_f64;
-    for op in context_ops {
+    for (index, op) in context_ops.iter().enumerate() {
         if op.is_context_attention() {
             continue;
         }
@@ -585,7 +587,7 @@ pub(crate) fn get_mix_step_ops<'a>(
         };
         let result = op.query(db, &ctx)?;
         total += result.latency_ms;
-        on_op(true, op, &ctx, result, 1.0);
+        on_op(true, index, op, &ctx, result, 1.0);
     }
 
     // ---- Pass 2: context attention with prefill batch ----
@@ -597,13 +599,15 @@ pub(crate) fn get_mix_step_ops<'a>(
     // The FPM only carries this chunk's metrics. For the common
     // un-chunked path (chunk == one request's new tokens) we treat
     // `new_tokens_per_prefill_req` as the per-request ISL and the
-    // ceil/scale cancel to 1; chunked-prefill callers should encode
-    // their full ISL through the packing if they need exact parity
-    // with Python's chunked path.
+    // scale is 1; chunked-prefill callers should encode their full ISL
+    // through the packing if they need exact parity with Python's
+    // chunked path. The batch is the pass's own request count: with the
+    // integer mean as the ISL, `ceil(ctx_tokens / isl)` would add a request
+    // whenever the count does not divide `ctx_tokens`.
     let isl_eff_pass2 = new_tokens_per_prefill_req.max(1);
-    let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
+    let ctx_attn_batch = prefill_batch.max(1);
     let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
-    for op in context_ops {
+    for (index, op) in context_ops.iter().enumerate() {
         if !op.is_context_attention() {
             continue;
         }
@@ -619,7 +623,7 @@ pub(crate) fn get_mix_step_ops<'a>(
         };
         let result = op.query(db, &ctx)?;
         total += result.latency_ms / scale_factor;
-        on_op(true, op, &ctx, result, scale_factor);
+        on_op(true, index, op, &ctx, result, scale_factor);
     }
 
     // ---- Pass 3: generation attention with decode batch ----
@@ -630,7 +634,7 @@ pub(crate) fn get_mix_step_ops<'a>(
     // than query at the `decode_batch.max(1)` floor, which would add a spurious
     // batch-1 generation_attention and inflate the step latency.
     if decode_batch > 0 {
-        for op in generation_ops {
+        for (index, op) in generation_ops.iter().enumerate() {
             if !op.is_generation_attention() {
                 continue;
             }
@@ -646,7 +650,7 @@ pub(crate) fn get_mix_step_ops<'a>(
             };
             let result = op.query(db, &ctx)?;
             total += result.latency_ms;
-            on_op(false, op, &ctx, result, 1.0);
+            on_op(false, index, op, &ctx, result, 1.0);
         }
     }
 
