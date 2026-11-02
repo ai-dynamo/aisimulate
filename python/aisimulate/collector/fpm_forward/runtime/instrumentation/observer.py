@@ -87,7 +87,16 @@ def _loaded_config(owner: Any, payload: dict) -> None:
     elif not candidate.is_file():
         # Resolve only the already-loaded immutable HF revision. Never download
         # another config during observation or hash a caller-supplied host copy.
-        commit = getattr(getattr(model, "hf_config", None), "_commit_hash", None)
+        # Read the commit that the loaded config object holds itself. vLLM 0.31.0
+        # Glm5NextConfig forwards the attribute read to its text config, whose
+        # _commit_hash is None when config.json nests text_config
+        # (transformers_utils/configs/glm5_next.py:359-360, :385-392, :406-420).
+        hf_config = getattr(model, "hf_config", None)
+        try:
+            attributes = object.__getattribute__(hf_config, "__dict__")
+        except AttributeError:
+            attributes = {}
+        commit = attributes.get("_commit_hash")
         if not isinstance(commit, str) or len(commit) != 40:
             raise ValueError("loaded remote config has no immutable cache commit")
         from huggingface_hub import try_to_load_from_cache

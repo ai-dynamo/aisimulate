@@ -985,6 +985,100 @@ def test_missing_model_sidecar_keeps_primary_config_evidence_unresolved(tmp_path
         assert record["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
 
 
+def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit):
+    """Load the campaign's model by Hub ID through a config that forwards like vLLM 0.31.0 Glm5NextConfig.
+
+    Once ``text_config`` is set, Glm5NextConfig reads every instance or class attribute of its text
+    config from the text config, and writes the instance attributes there, except the keys of
+    ``_UNMIRRORED_KEYS``. ``_commit_hash`` is not one of them (transformers_utils/configs/glm5_next.py:385-420).
+    The base-class constructor runs first, so the top-level config keeps the ``_commit_hash`` that
+    transformers gives it (:350-366). huggingface_hub is not installed in the test environment, so a
+    stand-in module answers the cache lookups. Returns the cached config.json and the lookups.
+    """
+    import sys
+    from types import ModuleType
+
+    unmirrored = (
+        "_name_or_path",
+        "model_type",
+        "dtype",
+        "torch_dtype",
+        "architectures",
+        "_attn_implementation_internal",
+    )
+
+    class Config:
+        # transformers PreTrainedConfig stores _commit_hash on every config that it builds.
+        def __init__(self, commit_hash):
+            self._commit_hash = commit_hash
+
+    class TextConfig(Config):
+        pass
+
+    class ForwardingConfig(Config):
+        def __init__(self):
+            super().__init__(commit)
+            self.text_config = TextConfig(text_commit)
+
+        def __getattribute__(self, key):
+            text = object.__getattribute__(self, "__dict__").get("text_config")
+            if text is not None and key not in unmirrored and (key in vars(text) or key in vars(type(text))):
+                return getattr(text, key)
+            return object.__getattribute__(self, key)
+
+        def __setattr__(self, key, value):
+            text = object.__getattribute__(self, "__dict__").get("text_config")
+            if text is not None and key not in unmirrored and key in vars(text):
+                setattr(text, key, value)
+            else:
+                object.__setattr__(self, key, value)
+
+    model = campaign.config.model_config
+    model.model, model.hf_config = "zai-org/GLM-5.3-Flash", ForwardingConfig()
+    cached = campaign.root / "hf-cache" / "config.json"
+    cached.parent.mkdir()
+    cached.write_text('{"model_type":"glm5_next"}')
+    lookups = []
+
+    def try_to_load_from_cache(repo_id, filename, *, revision=None):
+        lookups.append((repo_id, filename, revision))
+        return str(cached) if filename == "config.json" else None
+
+    hub = ModuleType("huggingface_hub")
+    hub.try_to_load_from_cache = try_to_load_from_cache
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    return cached, lookups
+
+
+def test_hub_loaded_config_commit_is_read_from_the_config_itself(tmp_path, monkeypatch):
+    import hashlib
+
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    # The top-level config holds the cache commit, and its text config holds None.
+    cached, lookups = _hub_loaded_config(campaign, monkeypatch, commit="e" * 40, text_commit=None)
+    digest = hashlib.sha256(cached.read_bytes()).hexdigest()
+    for record in campaign.run():
+        assert record["unresolved_fields"] == [], record.get("error")
+        assert record["model_config_sha256"] == digest
+        assert record["loaded_model_config"] == {"path": str(cached.resolve()), "sha256": digest}
+    hub_id = "zai-org/GLM-5.3-Flash"
+    assert lookups == [(hub_id, "params.json", "e" * 40), (hub_id, "config.json", "e" * 40)] * 2
+
+
+@pytest.mark.parametrize("case", ["text_config_commit_only", "no_config_object"])
+def test_hub_loaded_config_without_its_own_commit_is_unresolved(tmp_path, monkeypatch, case):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    _, lookups = _hub_loaded_config(campaign, monkeypatch, commit=None, text_commit="e" * 40)
+    if case == "no_config_object":
+        # An object without an instance dictionary has no commit of its own either.
+        campaign.config.model_config.hf_config = None
+    for record in campaign.run():
+        assert record["unresolved_fields"] == ["model_config_sha256"]
+        assert "loaded remote config has no immutable cache commit" in record["error"]
+        assert "model_config_sha256" not in record
+    assert lookups == []
+
+
 def _glm_campaign(tmp_path, monkeypatch):
     return _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=2, layout="glm_tp4")
 
