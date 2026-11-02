@@ -112,6 +112,28 @@ def test_resolved_probe_plan_cannot_change_required_coverage(probe_plan, change)
         RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
 
 
+@pytest.mark.parametrize("extra_fields", [{}, {"note": "same identity with different metadata"}])
+def test_required_probe_identities_reject_duplicates_even_with_extra_fields(probe_plan, extra_fields):
+    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
+    probes = [*probe_plan["probes"], {**probe_plan["probes"][0], **extra_fields}]
+    with pytest.raises(ValueError, match="required probes must be unique"):
+        qualifier.required_probe_identities(probes)
+
+
+@pytest.mark.parametrize("field", ["model", "system", "backend", "backend_version", "forward_model"])
+def test_required_probe_identities_preserve_each_identity_field(probe_plan, field):
+    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
+    probe = probe_plan["probes"][0]
+    probes = [probe, {**probe, field: "different"}]
+    assert len(qualifier.required_probe_identities(probes)) == 2
+
+
+def test_required_probe_identities_reject_empty_list():
+    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
+    with pytest.raises(ValueError, match="required probes must not be empty"):
+        qualifier.required_probe_identities([])
+
+
 def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True, stderr=subprocess.DEVNULL).strip()
