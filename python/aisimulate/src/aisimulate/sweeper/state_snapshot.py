@@ -329,6 +329,10 @@ def _validate_fitted(snapshot: SnapshotRole) -> None:
             f"replay prices every {_WORKER_TYPES[role]} iteration with it, so tune it with observed forward passes "
             "of that work before saving it"
         )
+    if int(identity.get("nextn") or 0) > 0 and identity["backend"] != "vllm":
+        raise ValueError(
+            f"{snapshot.describe()} records nextn={identity['nextn']}; only a vLLM {mode} model prices MTP rounds"
+        )
     if identity.get("backend_version") is None:
         raise ValueError(
             f"{snapshot.describe()} records no backend_version; save it with the deployed version or 'unknown'"

@@ -832,7 +832,7 @@ reports them whatever chunk of a prompt the pass computes, and of the decode
 requests' past KV; those passes are not reused from the iteration cache. Each
 rank's metrics carry its position in the group as `dp_rank`.
 
-A regression fitted at `nextn > 0` was trained on measured MTP rounds, so its
+A vLLM regression fitted at `nextn > 0` was trained on measured MTP rounds, so its
 estimate already includes drafting and verification, as a measured
 speculative-round profile's does. Replay times such a role only at that depth:
 the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
@@ -849,8 +849,9 @@ is not modeled), so it does not. Every aggregated worker whose engine runs
 attention DP above one also needs cross-rank aggregated. A regression store is
 ready with a usable fit and a learned store when the forest has it. It rejects
 a rank hosting the vision encoder, a speculation scheme, `nextn > 0` for a
-learned model, bounded decoder replay, and an automatic selection that would
-fall back to an untrained regression. Replay also rejects such a role
+learned model or a non-vLLM regression (SGLang's telemetry reports an MTP
+decode request's extend as 1), bounded decoder replay, and an automatic selection that
+would fall back to an untrained regression. Replay also rejects such a role
 whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
 each rank's phases, which these estimators never do. A pass on which no rank
 computes model work takes no time without a query, as for every estimator; so
@@ -1003,7 +1004,7 @@ handled as follows:
 | `tp`, `pp`, `attention_dp`, `moe_tp_size` or `moe_ep_size` `unknown` | The role needs one explicit value for each unknown width, such as `parallelism: {preset: false, tensor: 1, pipeline: 1, attention_data: 1}`; known widths are still pinned. `tp * pp * attention_dp` must equal `deployment_limits.num_gpus` when known. |
 | `deployment_limits.max_kv_tokens` | Required. The role's KV capacity is fixed to that many tokens in whole `kv_block_size` blocks and KV memory is not searched; a different fixed capacity or a `memory_fraction` search is a conflict. |
 | `deployment_limits.max_num_batched_tokens`, `max_num_seqs` | Required. The role's `max_batched_tokens` and `max_sequences` domains keep only values at most the recorded limit; an empty domain is an error. |
-| `nextn > 0` | Pinned as for a native snapshot: `engine.nextn` takes the saved depth, and `engine.nextn_accepted` is required. |
+| `nextn > 0` | For a vLLM regression, pinned as for a native snapshot: `engine.nextn` takes the saved depth, and `engine.nextn_accepted` is required. Rejected for other backends. |
 
 A snapshot whose `backend_version` is unset (`null`) is rejected: save the
 deployed version or `"unknown"`. `deployment_limits.num_gpus` and

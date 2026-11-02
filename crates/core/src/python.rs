@@ -982,15 +982,17 @@ impl AicTimingModel {
     /// A role a regression or learned estimator times. It prices every pass
     /// through [`TimingModel::predict_iteration_ms`] and never a phase, so
     /// work the iteration query cannot describe is rejected here: a vision
-    /// tower, speculative decoding other than the MTP rounds a regression was
-    /// fitted to, and bounded decoder replay. Such a regression pins its
-    /// `nextn`, which the scheduler's `aic_nextn` must match.
+    /// tower, speculative decoding other than the MTP rounds a vLLM regression
+    /// was fitted to, and bounded decoder replay. Such a regression pins its
+    /// `nextn`, which the scheduler's `aic_nextn` must match. Only vLLM's
+    /// telemetry gives an MTP decode request its verification width as extend.
     fn require_fitted_role(
         config: &AicTimingConfig,
         mode: EstimationMode,
         vision: bool,
     ) -> Result<()> {
-        let nextn_priced = config.nextn == 0 || mode == EstimationMode::FpmRegression;
+        let nextn_priced = config.nextn == 0
+            || (mode == EstimationMode::FpmRegression && config.backend == "vllm");
         let mode = wire_name(mode);
         ensure!(
             !vision,
@@ -1002,8 +1004,9 @@ impl AicTimingModel {
                     .speculation
                     .as_ref()
                     .is_none_or(|speculation| speculation.kind == "none"),
-            "{mode} replay does not support speculative decoding (nextn or speculation); \
-             only fpm_regression prices MTP rounds, at the nextn it was fitted at"
+            "{mode} replay does not support speculative decoding here: speculation schemes are \
+             rejected, and nextn > 0 is priced only by a vLLM fpm_regression snapshot, at the \
+             nextn it was fitted at"
         );
         ensure!(
             !config.decoder_replay,
@@ -6644,6 +6647,23 @@ mod tests {
                 true
             ))
             .contains("vision encoder")
+        );
+        // SGLang's telemetry reports an MTP decode request's extend as 1, so
+        // only a vLLM regression is priced at nextn > 0.
+        let mut identity = unknown_sglang_identity(ForwardPassWorkerType::Decode);
+        identity.nextn = 1;
+        let mut sglang = ForwardPassPerfModel::best_available(identity).unwrap();
+        sglang
+            .tune_with_fpms(&fitted_training_iterations(&[IterationKind::Decode], false))
+            .unwrap();
+        let mut config = snapshot_timing_config(&sglang, &dir.path().join("sglang-mtp"));
+        assert!(
+            message(AicTimingModel::build(
+                &mut config,
+                ForwardPassWorkerType::Decode,
+                false
+            ))
+            .contains("does not support speculative decoding")
         );
     }
 
