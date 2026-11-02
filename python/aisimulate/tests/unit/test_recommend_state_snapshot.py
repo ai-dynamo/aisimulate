@@ -755,7 +755,7 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
             lambda raw, w: w.update(scheduler={"max_batched_tokens": 16384}),
             r"max_batched_tokens=\[16384\] exceeds .*max_num_batched_tokens=8192",
         ),
-        ("nextn", lambda raw, w: None, r"records nextn=1; an fpm_regression model prices no speculative decoding"),
+        ("nextn", lambda raw, w: None, r"saved with nextn=1; set engine.nextn=1 and engine.nextn_accepted"),
         ("no-kv", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-limits", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-sequences", lambda raw, w: None, r"does not record deployment_limits.max_num_seqs"),
