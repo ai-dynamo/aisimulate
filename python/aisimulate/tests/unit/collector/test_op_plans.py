@@ -24,7 +24,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
-
 from collector import skips
 from collector.case_generator import without_models
 from collector.op_plans import OP_PLANS, GemmCase, ModuleCase, OpPlan, _Run, _runners, plan, summarize

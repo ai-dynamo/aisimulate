@@ -161,7 +161,6 @@ def _execution_status(frozen: dict[str, Any]) -> str:
 def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, Path, list[dict[str, Any]]]:
     """Verify formal publication against every native row before qualification."""
     import pyarrow.parquet as pq
-
     from collector.fpm_forward.config import PrefillSamplingProfile
     from collector.fpm_forward.database import (
         aggregate_cell,
