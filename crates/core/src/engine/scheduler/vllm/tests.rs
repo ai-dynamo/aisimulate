@@ -2957,7 +2957,10 @@ mod core_behavior {
 
     #[test]
     fn test_mtp_recomputes_last_prefix_cache_block() {
-        fn second_request_admission_reuse(mtp_enabled: bool) -> (usize, u64, u64) {
+        fn second_request_admission_reuse(
+            mtp_enabled: bool,
+            disable_eagle_block_drop: bool,
+        ) -> (usize, u64, u64) {
             let mut builder = MockEngineArgs::builder()
                 .block_size(4)
                 .num_gpu_blocks(16)
@@ -2968,7 +2971,8 @@ mod core_behavior {
             if mtp_enabled {
                 builder = builder
                     .aic_nextn(Some(1))
-                    .aic_nextn_accept_rates(Some("1".to_string()));
+                    .aic_nextn_accept_rates(Some("1".to_string()))
+                    .disable_eagle_block_drop(disable_eagle_block_drop);
             }
             let mut core = VllmCore::new(builder.build().unwrap());
             let mut collector = crate::engine::trace::TraceCollector::default();
@@ -3005,8 +3009,10 @@ mod core_behavior {
             )
         }
 
-        assert_eq!(second_request_admission_reuse(false), (8, 4, 8));
-        assert_eq!(second_request_admission_reuse(true), (4, 8, 4));
+        assert_eq!(second_request_admission_reuse(false, false), (8, 4, 8));
+        assert_eq!(second_request_admission_reuse(true, false), (4, 8, 4));
+        // vLLM's `disable_eagle_block_drop` keeps the last matched block.
+        assert_eq!(second_request_admission_reuse(true, true), (8, 4, 8));
     }
 }
 

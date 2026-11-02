@@ -2832,15 +2832,17 @@ mod tests {
             let manager = G1Manager::new_with_caching(16, 4, KvEventPublishers::default(), 0, true);
             let (sequence, lease, mut host) = request(Uuid::from_u128(1), (1..=21).collect());
             let blocks = host.prompt_keys.clone();
-            // G2 holds blocks 0..5, both slots of the state after block 1 and
-            // one slot of the state after block 3.
+            // G2 holds blocks 0..5, both slots of the states after blocks 0
+            // and 1, and one slot of the state after block 3.
             let state =
                 |block: usize, slot| HostBlockKey::state(blocks[block].sequence_hash(), slot);
-            for key in blocks
-                .iter()
-                .copied()
-                .chain([state(1, 0), state(1, 1), state(3, 0)])
-            {
+            for key in blocks.iter().copied().chain([
+                state(0, 0),
+                state(0, 1),
+                state(1, 0),
+                state(1, 1),
+                state(3, 0),
+            ]) {
                 seed_host(&mut adapter, key);
             }
             let cost = raw_cost(&manager, &sequence, &lease);
@@ -2936,11 +2938,22 @@ mod tests {
         // publishes its state at 20, and still offers it: vLLM takes a pass's
         // boundary hand-offs before a request can finish in it. A filler then
         // evicts the turn from G1, and the follow-up loads blocks 0..5 and
-        // that state.
+        // that state. 20 is the follow-up's last boundary before its final
+        // token, so the load also caches the state in G1 (vLLM's post-load
+        // `cache_blocks`), and the next turn resumes there without a load.
         for connector in [G2Connector::SimpleCpuV032, G2Connector::OffloadingV032] {
-            let turns = [(1, 0..22, 1), (2, 1000..1040, 1), (3, 0..30, 2)];
+            let turns = [
+                (1, 0..22, 1),
+                (2, 1000..1040, 1),
+                (3, 0..21, 1),
+                (4, 0..30, 2),
+            ];
             let admissions = run_turns(hybrid_args(connector, 16), &turns);
-            assert_eq!(admissions[2], [(20, 0, 20)], "{connector:?}");
+            assert_eq!(
+                admissions[2..],
+                [[(20, 0, 20)], [(20, 20, 0)]],
+                "{connector:?}"
+            );
         }
     }
 
