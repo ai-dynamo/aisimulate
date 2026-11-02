@@ -63,6 +63,7 @@ the current SA convention.
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
 | `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
+| `traffic.source.client` | `recorded` | `x` | `-` | `recorded` or `agentx`; Weka only. See [Weka client](#weka-client). |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -251,6 +252,38 @@ AgentX traces are absolute. Set `traffic.source.nested_timestamp_basis` to
 default), AISimulate picks `relative` for the whole corpus if any child request
 is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
 is reported as `weka_nested_timestamp_basis`.
+
+<a id="weka-client"></a>
+
+`traffic.source.client` chooses whose replay of the corpus AISimulate follows.
+With `recorded` (the default), a subagent starts at its recorded offset from
+the request before it, a joining turn waits its recorded gap after each child,
+and the streams of a play share their whole common hash prefix. `agentx`
+follows the AgentX client, the AIPerf fork in the
+[behavioral reference](agentic/continuous-profiles.md#behavioral-reference):
+
+- Every subagent and flattened chain is a child of the main conversation. The
+  spawning turn is the latest main turn listed before the child; the joining
+  turn is the first main turn listed after it that starts at or after the
+  child's recorded end. Subagents with the same spawning and joining turns form
+  one group, and so do flattened chains.
+- A group starts when its spawning turn returns, and each child starts at its
+  offset from the group's earliest start. A group that started before the
+  spawning turn's recorded end starts with that turn instead, each child at its
+  offset from the turn's start.
+- The joining turn waits for every child with no added gap, and for its own
+  recorded delay after the previous main turn.
+- A subagent that no main turn precedes is dropped. A flattened chain that no
+  main turn precedes is spawned by the first one.
+- Each stream is its own chat conversation: its first request is one user
+  message, and a later request cuts the message list where its hash prefix
+  diverges from the previous request's. Streams therefore share prompt blocks
+  only inside their first user message, at block granularity and without
+  chat-template header tokens. Corpora that declare tool or system tokens are
+  rejected.
+
+The engine stack supports the option. Other runners must advertise
+`supports_weka_client`, or they reject it.
 
 A Weka corpus can name several source models. Replay runs every request on
 `engine.model` and records the source models and target under

@@ -90,6 +90,7 @@ TraceFormat = Literal[
     "weka",
 ]
 WekaNestedTimestampBasis = Literal["auto", "absolute", "relative"]
+WekaClient = Literal["recorded", "agentx"]
 
 
 class TraceSource(StrictModel):
@@ -98,6 +99,7 @@ class TraceSource(StrictModel):
     format: TraceFormat = "mooncake"
     block_size: PositiveInt | None = None
     nested_timestamp_basis: WekaNestedTimestampBasis | None = None
+    client: WekaClient | None = None
 
     @field_validator("paths")
     @classmethod
@@ -114,6 +116,8 @@ class TraceSource(StrictModel):
             self.block_size = 512
         if self.nested_timestamp_basis is not None and self.format != "weka":
             raise ValueError("nested_timestamp_basis is only valid for trace format 'weka'")
+        if self.client is not None and self.format != "weka":
+            raise ValueError("client is only valid for trace format 'weka'")
         return self
 
 

@@ -850,6 +850,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "client": "agentx",
                 },
                 "load": {"type": "trace_timestamps"},
             },
@@ -857,6 +858,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
         }
     )
     assert configured_weka.traffic.source.nested_timestamp_basis == "relative"
+    assert configured_weka.traffic.source.client == "agentx"
 
     with pytest.raises(ValidationError, match="only valid for trace format 'weka'"):
         CorePredictionConfig.model_validate(
@@ -868,6 +870,16 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                         "format": "mooncake",
                         "nested_timestamp_basis": "absolute",
                     },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": _engine(),
+            }
+        )
+    with pytest.raises(ValidationError, match="client is only valid for trace format 'weka'"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {"type": "trace", "paths": ["trace.jsonl"], "format": "mooncake", "client": "agentx"},
                     "load": {"type": "trace_timestamps"},
                 },
                 "engine": _engine(),

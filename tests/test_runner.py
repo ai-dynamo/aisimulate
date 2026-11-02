@@ -805,6 +805,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "client": "agentx",
                 },
                 "load": {
                     "type": "trace_timestamps",
@@ -827,6 +828,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["arrival_speedup_ratio"] == 2.0
     assert workload["agentic_lanes"] == 3
     assert workload["weka_nested_timestamp_basis"] == "relative"
+    assert workload["weka_client"] == "agentx"
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -967,6 +969,14 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
                 "weka_nested_timestamp_basis": "guess",
             },
             "must be 'auto', 'absolute', or 'relative'",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "mooncake", "weka_client": "agentx"},
+            "weka_client requires Weka input",
+        ),
+        (
+            {"source_type": "trace", "trace_format": "weka", "weka_client": "aiperf"},
+            "must be 'recorded' or 'agentx'",
         ),
     ],
 )
@@ -2707,6 +2717,24 @@ def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_nat
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
     assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
+
+
+def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "weka_client": "agentx",
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_weka_client
+    with pytest.raises(ValueError, match="does not support weka_client"):
+        replace(capabilities, supports_weka_client=False).require_compatible(_spec(workload=workload))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["weka_client"] == "agentx"
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])

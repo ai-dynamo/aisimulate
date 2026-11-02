@@ -54,9 +54,16 @@ modified re-implementations of the pinned `agentic_replay.py`,
 continuations, spawns and joins, joins gated by the parent's own replay
 deadline, detected chains released when their replay barrier clears, and
 uniform idle shifts of every pending replay timer, repeated when a shift lands
-on a request still held by its replay barrier. NVIDIA modified these rules to
-operate on the native dependency graph. The original NVIDIA copyright and
-Apache-2.0 license apply; no upstream implementation is vendored.
+on a request still held by its replay barrier. The `agentx` Weka client in
+repository-root `crates/core/src/replay/loadgen/weka.rs`, its regression tests
+there, and its descriptions in the same two documents likewise re-implement
+the pinned `branch_orchestrator.py` branch dispatch with
+`src/aiperf/dataset/loader/weka_trace.py` and
+`src/aiperf/dataset/loader/weka_synth_buf.py`: subagents and flattened chains
+spawned and joined in groups by main-conversation turn, and each stream
+rendered as its own chat conversation. NVIDIA modified these rules to operate
+on the native dependency graph. The original NVIDIA copyright and Apache-2.0
+license apply; no upstream implementation is vendored.
 
 ## AIConfigurator
 
