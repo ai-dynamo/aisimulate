@@ -49,6 +49,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         getComputedStyle(root)
           .getPropertyValue("--" + key)
           .trim();
+      const sourceColor = (origin) => color(origin === "silicon" ? "silicon" : "aisim");
       const phase = () => report.phases?.[state.stage] || {};
       const origin = () =>
         finite(phase().start_ms) ? phase().start_ms / 1000 : 0;
@@ -551,13 +552,14 @@ window.AISimReplay = { mount(root, report, options = {}) {
       function comparisonChart(id) {
         const c = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         if (!c) return null;
+        const labels = [...new Set(c.series.map(s=>s.label))];
         const traces = c.series.map(s=>({name:`${s.label} · ${s.origin === "silicon" ? "Silicon" : "AISim"}`, x:s.x,y:s.y,
           type:s.kind === "bar" ? "bar" : "scatter",mode:"lines",connectgaps:false,
-          line:{color:color(s.color),dash:s.origin === "silicon"?"solid":"dot",shape:s.step?"hv":"linear"},
-          marker:{color:color(s.color),opacity:s.origin === "silicon"?1:0.5},
+          line:{color:sourceColor(s.origin),dash:(s.origin === "silicon"?["solid","dash","longdash"]:["dot","dashdot","longdashdot"])[labels.indexOf(s.label)%3],shape:s.step?"hv":"linear"},
+          marker:{color:sourceColor(s.origin)},
           hovertemplate:`%{x}<br>%{y:,.3f} ${esc(c.unit)}<extra>%{fullData.name}</extra>`}));
         return {traces,axes:layout(c.unit,{barmode:"group"}),note:c.note,
-          foot:c.foot + " Silicon: solid. AISim: dotted. Phase origins are recorded independently; no clock fitting.",
+          foot:c.foot + " Silicon: yellow. AISim: blue. Line patterns distinguish metrics. Phase origins are recorded independently; no clock fitting.",
           empty:traces.some(t=>t.y.some(finite))?null:"No comparable observations in this phase."};
       }
       function chart(id) {
@@ -583,7 +585,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           const maximum = values.reduce((a, b) => Math.max(a, b), 0);
           const width = (maximum || 1) / 32;
           if (state.stage !== "profile" || !pairs.length) empty = "No scored silicon comparisons in this phase.";
-          traces = [["silicon", "Silicon", orange], ["predicted", "AISim", blue]].map(([key, name, color]) => {
+          traces = [["silicon", "Silicon", sourceColor("silicon")], ["predicted", "AISim", sourceColor("simulated")]].map(([key, name, color]) => {
             const counts = Array(32).fill(0);
             pairs.forEach(p => counts[Math.min(31, Math.floor(p[key + "_" + metric] / width))]++);
             return {type: "bar", name, x: counts.map((_, i) => (i + 0.5) * width), y: counts,
@@ -1177,7 +1179,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const workerControl = root.querySelector('[data-group="worker"]');
         workerControl.disabled = true;
         workerControl.title = "Silicon worker placement is unavailable";
-        root.querySelector(".legend").innerHTML = "<span>Silicon: solid</span><span>AISim: dashed</span><span>Failed: red</span>";
+        root.querySelector("#view-timeline .legend").innerHTML = '<span><i class="dot" style="background:var(--silicon)"></i>Silicon · solid</span><span><i class="dot" style="background:var(--aisim)"></i>AISim · dashed</span><span>Failed · red outline</span>';
         const byId = new Map(all.map(r=>[r.uuid,r])), used = new Set(), pairs = [];
         for (const row of [...all.filter(r=>r.origin==="silicon"),...all.filter(r=>r.origin!=="silicon")]) {
           if (used.has(row.uuid)) continue;
@@ -1186,7 +1188,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           if (!state.search || pair.some(r=>[r.request_id,r.uuid,r.group_id,r.origin,r.terminal_status].join(" ").toLowerCase().includes(state.search))) pairs.push(pair);
         }
         const end = Math.max(data.native_duration_s,data.silicon_duration_s,1), scale=end>120?8:24, width=Math.max(900,end*scale);
-        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Solid: silicon; dashed: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
+        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Yellow solid: silicon; blue dashed: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
         const group = state.group === "conversation" ? "conversation" : "worker";
         $("timeline-plot").dataset.requestCount = String(all.length);
         $("timeline-plot").innerHTML = `<div class="timeline-content" style="width:${width+230}px"><div class="timeline-axis"><div class="timeline-label">Seconds since each ${state.stage} started</div><div class="timeline-track">${Array.from({length:Math.floor(end/(end>120?30:5))+1},(_,i)=>{const t=i*(end>120?30:5);return `<span class="timeline-tick" style="left:${t*scale}px">${fmt(t,0)}s</span>`;}).join("")}</div></div>${pairs.map((pair,i)=>`<div class="timeline-row comparison-row"><div class="timeline-label"><small>${group === "conversation" ? "Conversation …"+esc(pair[0].group_id?.slice(-8)||"unknown") : "Worker unavailable in silicon"}</small><button data-request="${pair[0].uuid}">Request ${i+1} · ${pair.length===2?"paired":"unmatched"}</button></div><div class="timeline-track">${pair.map(r=>{if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";const start=r.arrival_time_ms/1000-origin(),stop=r.terminal_time_ms/1000-origin();if(stop<start)return "";return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${Math.max(0,start)*scale}px;width:${Math.max(2,(stop-Math.max(0,start))*scale)}px;top:${r.origin==="silicon"?4:23}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${i+1}"></button>`;}).join("")}</div></div>`).join("")}</div>`;
