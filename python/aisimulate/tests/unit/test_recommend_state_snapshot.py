@@ -593,6 +593,7 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "aggregated": save("aggregated", _planner("aggregated")),
         "unready": save("unready", _planner("aggregated", kinds=("decode",))),
         "nextn": save("nextn", _planner("decode", kinds=("decode",), nextn=1)),
+        "sglang-nextn": save("sglang-nextn", _planner("decode", kinds=("decode",), backend="sglang", nextn=1)),
         "no-kv": save(
             "no-kv", _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_kv_tokens": "unknown"})
         ),
@@ -756,6 +757,11 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
             r"max_batched_tokens=\[16384\] exceeds .*max_num_batched_tokens=8192",
         ),
         ("nextn", lambda raw, w: None, r"saved with nextn=1; set engine.nextn=1 and engine.nextn_accepted"),
+        (
+            "sglang-nextn",
+            lambda raw, w: raw["engine"].update(backend="sglang"),
+            r"records nextn=1; only a vLLM fpm_regression model prices MTP rounds",
+        ),
         ("no-kv", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-limits", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-sequences", lambda raw, w: None, r"does not record deployment_limits.max_num_seqs"),
