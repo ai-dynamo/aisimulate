@@ -589,6 +589,9 @@ requires the complete catalog cohort and matching evaluated wheel, driver, and H
 revisions. The Pages publisher independently validates the trusted producer and
 public field allowlist. Numerical accuracy remains advisory.
 
+AgentX contract tests share the E2E forward-pass-engine, replay, infra, and
+maintainer ownership in `.github/codeowners/areas.yaml`.
+
 The private dataset worker imports silicon into `data/e2e/agentx/` and opens an HF
 candidate. A reviewed catalog update is required to enroll later measurements.
 Deploy the dashboard/CI changes after promoting the initial dataset candidate;

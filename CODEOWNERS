@@ -109,6 +109,7 @@
 /tests/test_pages_site.py                                @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_release_fpe.py                               @ai-dynamo/aisimulate-infra-codeowners
 /tests/e2e_accuracy_source/                              @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_source_compliance.py                         @ai-dynamo/aisimulate-infra-codeowners
@@ -198,6 +199,7 @@
 /tests/test_host_resources.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_power_contract.py                            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /benchmarks/reports/perf-data/                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_host_offload_cli.py                          @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
