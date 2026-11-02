@@ -2560,6 +2560,58 @@ mod tests {
     }
 
     #[test]
+    fn simple_cpu_rescans_an_admitted_request_from_block_0() {
+        // On admission SimpleCPU scans from block 0 and counts the reused
+        // prefix as computed, so a block served from G1 that G2 evicted is
+        // stored in the request's first pass, even after a load. A stores a0
+        // and a1; X's stores evict a0 from G2 and its blocks evict a1 from G1,
+        // so B (A's prompt plus a block) reuses a0 from G1 and loads a1.
+        let mut args = connector_args(G2Connector::SimpleCpuV032);
+        args.num_gpu_blocks = 4;
+        args.native_host_offload = Some(
+            NativeHostOffloadConfig::new(3)
+                .with_bandwidths(0.0, 0.0)
+                .with_connector(G2Connector::SimpleCpuV032),
+        );
+        let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, true, None).unwrap();
+        let mut now_ms = 0.0;
+        let mut b_admission = None;
+        for (id, tokens) in [(1, 1..=8), (2, 11..=18), (3, 1..=12)] {
+            let uuid = Uuid::from_u128(id);
+            core.receive(DirectRequest {
+                tokens: tokens.collect(),
+                max_output_tokens: 3,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: Some(now_ms),
+                ..Default::default()
+            });
+            while !core.is_empty() {
+                let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+                now_ms = pass.end_ms;
+                core.complete_engine_boundary(now_ms);
+                if id == 3
+                    && let Some(admission) = pass
+                        .admissions
+                        .iter()
+                        .find(|admission| admission.uuid == uuid)
+                {
+                    b_admission = Some((
+                        admission
+                            .cache_tier_attribution
+                            .map(|tiers| tiers.host_reused_input_tokens),
+                        host_stored(pass.kv_events.into_iter().chain(core.drain_kv_events())),
+                    ));
+                }
+            }
+        }
+        let (_, _, a) = request(Uuid::nil(), (1..=8).collect());
+        assert_eq!(
+            b_admission,
+            Some((Some(4), vec![a.prompt_keys[0].sequence_hash()]))
+        );
+    }
+
+    #[test]
     fn simple_cpu_holds_a_finished_request_s_blocks_until_their_copy_completes() {
         use crate::engine::{KvEventData, KvEventTier};
         // SimpleCPU touches the GPU blocks it copies (manager.py
