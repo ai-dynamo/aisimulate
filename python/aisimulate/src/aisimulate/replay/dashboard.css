@@ -479,3 +479,5 @@
 .replay-dashboard.embedded { --bg:inherit; --panel:inherit; --border:inherit; --text:inherit; --muted:inherit; --accent:inherit; --raised:var(--elevated); --grid:var(--border); font:inherit; }
 .replay-dashboard.embedded .main-tabs { margin-top:12px; }
 .replay-dashboard #profile-accuracy { margin-bottom:24px; }
+.replay-dashboard .plot.footprint-comparison { height:420px; }
+.replay-dashboard .chart-controls button:disabled { opacity:0.45; cursor:default; }

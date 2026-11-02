@@ -128,6 +128,26 @@ def fixtures(site):
     report["comparison"] = build_comparison(
         {"reference": reference, "silicon": silicon, "namespace_map": {}}, report, report, runs[0]
     )
+    # Display fixture: zeros, one-sided and shared gaps, and a final five-second bucket.
+    footprint = next(c for c in report["comparison"]["phases"]["profile"]["charts"] if c["id"] == "unique")
+    footprint["score_window_end_s"] = 125.5
+    for series in footprint["series"]:
+        predicted = series["origin"] == "simulated"
+        series["x"] = [t for t in range(1, 126) if t != 100 and not (predicted and t == 65)]
+        levels = (1000, 5000, 9000) if predicted else (2000, 4000, 6000)
+        series["y"] = [
+            0 if t <= 30 else levels[0] if t <= 60 else levels[1] if t <= 120 else levels[2] for t in series["x"]
+        ]
+    footprint["scores"][0].update(
+        count=93,
+        denominator_count=125,
+        missing_count=2,
+        zero_reference_count=30,
+        mape_percent=3200 / 93,
+        mae=103000 / 123,
+        coverage=93 / 125,
+        window_seconds=[0, 125.5],
+    )
     summary = json.loads(bundle()["summary.json"])
     summary["runs"] = []
     for run in runs:
@@ -239,6 +259,34 @@ async def check():
                 assert await frame.locator("#plot-footprint").evaluate(
                     "plot => plot.data.some(trace => trace.name.includes('Silicon'))"
                 )
+                footprint = frame.locator("#plot-footprint")
+                assert await footprint.evaluate("plot => plot.data.map(t => t.y)") == [
+                    [1, None, 6],
+                    [0.5, None, 9],
+                    [-0.5, None, 3],
+                ]
+                footprint_score = await frame.locator("#scores-footprint").text_content()
+                await expect(frame.locator("#scores-footprint")).to_contain_text("Original 1s · Curve MAPE 34.41%")
+                await frame.locator('#controls-footprint [data-value="raw"]').click()
+                assert await footprint.evaluate("plot => plot.data[0].y[29]") == 0
+                assert await footprint.evaluate("plot => plot.data[1].y[64]") is None
+                assert await footprint.evaluate("plot => plot.data[2].y[64]") is None
+                assert await footprint.evaluate("plot => plot.data[0].y[99]") is None
+                assert await footprint.evaluate("plot => plot.data[2].y[99]") is None
+                await footprint.evaluate("plot => Plotly.relayout(plot, {'xaxis2.range': [0.5, 1]})")
+                assert await footprint.evaluate("plot => plot._fullLayout.xaxis.range") == [0.5, 1]
+                await expect(frame.locator("#scores-footprint")).to_have_text(footprint_score)
+                await frame.locator('[data-expand="footprint"]').click()
+                await expect(frame.locator('#expanded-controls [data-value="raw"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                await frame.locator('#expanded-controls [data-value="average"]').click()
+                await expect(frame.locator('#controls-footprint [data-value="average"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                assert await frame.locator("#expanded-plot").evaluate("plot => plot.data[2].y") == [-0.5, None, 3]
+                await expect(frame.locator("#expanded-scores")).to_have_text(footprint_score)
+                await frame.locator('[aria-label="Close expanded chart"]').click()
                 await expect(frame.locator("#note-cache")).to_contain_text("Silicon reference unavailable")
                 await expect(frame.locator("#note-input")).to_contain_text("select In-flight")
                 await expect(frame.locator("#scores-reference_ttft")).to_contain_text("Request MAPE 20%")
@@ -293,6 +341,10 @@ async def check():
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
                 await frame.locator('[data-view="dashboard"]').click()
                 await expect(frame.locator("#profile-accuracy")).to_be_hidden()
+                await expect(frame.locator('#controls-footprint [data-value="average"]')).to_be_disabled()
+                await expect(frame.locator('#controls-footprint [data-value="raw"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
                 await frame.locator('[data-stage="profile"]').click()
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator("#profile-accuracy")).to_contain_text("Concurrency summary")

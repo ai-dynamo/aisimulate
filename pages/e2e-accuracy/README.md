@@ -785,6 +785,17 @@ Charts without usable silicon observations explicitly label the prediction-only
 view. Input/output histograms describe AISim requests; their In-flight mode
 compares recorded silicon and AISim observations. The conversation footprint
 proxy also uses the retained silicon reference.
+The footprint comparison uses two stacked panels: Silicon/AISim above and their
+signed difference (AISim minus Silicon) below, in thousands of tokens. Long
+profiles default to 60-second averages of aligned one-second observations over
+the common recorded window. Zeros are included, bins missing any paired
+observation remain gaps, and a final shorter bin uses its available whole-second
+ticks. Raw mode retains the original observations, including each source's tail;
+differences require a paired timestamp within common coverage. Profiles shorter
+than a minute use Raw mode automatically. The toggle is available on the card
+and expanded chart; both panels share zoom. Curve MAPE continues using the
+original qualified one-second observations regardless of display mode or zoom.
+Ordinary replay exports without silicon comparisons retain their existing chart.
 
 The reviewed input configuration's `prediction_database_version` selects SGLang
 0.5.21 and vLLM 0.31.0 for this cohort, independently of measured framework

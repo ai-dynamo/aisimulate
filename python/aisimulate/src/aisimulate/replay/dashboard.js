@@ -14,6 +14,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           cache: "aggregate",
           queue: "queue",
           throughput: "executed",
+          footprint: "average",
         },
         percentiles: { interactivity: 90, latency: 90 },
       };
@@ -234,7 +235,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         { id: "hits", title: "Prefix cache hit rate per interval" },
         { id: "throughput", title: "Token throughput", control: "throughput" },
         { id: "source", title: "Cumulative prompt token sources" },
-        { id: "footprint", title: "Conversation input footprint proxy" },
+        { id: "footprint", title: "Conversation input footprint proxy", control: "footprint" },
         { id: "acceptance", title: "Speculative acceptance length" },
         { id: "completion", title: "Request completion status" },
       ];
@@ -249,14 +250,20 @@ window.AISimReplay = { mount(root, report, options = {}) {
           '<div class="segments">' +
           options
             .map(
-              ([value, label]) =>
-                `<button data-${kind}="${id}" data-value="${value}" aria-pressed="${String(selected) === String(value)}">${label}</button>`,
+              ([value, label, disabled = false]) =>
+                `<button data-${kind}="${id}" data-value="${value}" aria-pressed="${String(selected) === String(value)}"${disabled ? " disabled" : ""}>${label}</button>`,
             )
             .join("") +
           "</div>"
         );
       }
       function controls(spec) {
+        if (spec.control === "footprint") {
+          const chart = comparedPhase()?.charts.find(c => c.id === "unique");
+          if (!chart) return "";
+          const enabled = canAverageFootprint(chart);
+          return segments("footprint", [["average", "60s average", !enabled], ["raw", "Raw"]], enabled ? state.modes.footprint : "raw");
+        }
         if (report.comparison && spec.control === "throughput")
           return `<select data-select-mode="throughput" aria-label="Throughput accounting">${[["executed", "Input and output"], ["completion", "Output at completion"], ["delivered", "Live output"]].map(([value,label])=>`<option value="${value}" ${state.modes.throughput===value?"selected":""}>${label}</option>`).join("")}</select>`;
         if (spec.control === "shape")
@@ -544,15 +551,85 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const chart = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         return chart?.scores || [{label:"Comparison",mape_percent:null,count:0,reason:state.stage !== "profile" ? "Preparation is unscored" : "No compatible silicon comparison for this view"}];
       }
+      function canAverageFootprint(chart) {
+        return finite(chart.score_window_end_s) && chart.score_window_end_s - chart.score_window_start_s >= 60 &&
+          ["silicon", "simulated"].every(origin => chart.series.some(s => s.origin === origin));
+      }
+      function footprintChart(chart) {
+        const sources = ["silicon", "simulated"].map(origin => chart.series.find(s => s.origin === origin));
+        const maps = sources.map(s => new Map(s ? s.x.map((t, i) => [t, s.y[i]]) : []));
+        const allTimes = [...new Set(sources.flatMap(s => s?.x || []))].sort((a, b) => a - b);
+        // An absent timestamp is a gap, not a line across unrecorded time.
+        const times = allTimes.flatMap((t, i) => i && t > allTimes[i - 1] + 1 ? [allTimes[i - 1] + 1, t] : [t]);
+        const averaged = canAverageFootprint(chart) && state.modes.footprint !== "raw";
+        const minutes = (allTimes.at(-1) || 0) >= 120, scale = minutes ? 60 : 1;
+        const start = chart.score_window_start_s, end = chart.score_window_end_s;
+        const x = [], values = [[], []], difference = [];
+        if (averaged) {
+          for (let left = Math.floor(start); left < Math.floor(end); left += 60) {
+            const right = Math.min(left + 60, Math.floor(end)), sums = [0, 0];
+            let complete = true;
+            for (let t = left + 1; t <= right; t++) {
+              const pair = maps.map(m => m.get(t));
+              if (!pair.every(finite)) { complete = false; break; }
+              pair.forEach((v, i) => sums[i] += v);
+            }
+            x.push((left + right) / 2 / scale);
+            values.forEach((v, i) => v.push(complete ? sums[i] / (right - left) / 1000 : null));
+            difference.push(complete ? values[1].at(-1) - values[0].at(-1) : null);
+          }
+        } else {
+          for (const t of times) {
+            const pair = maps.map(m => m.get(t));
+            x.push(t / scale);
+            values.forEach((v, i) => v.push(finite(pair[i]) ? pair[i] / 1000 : null));
+            difference.push(finite(end) && t >= start && t <= end && pair.every(finite) ? (pair[1] - pair[0]) / 1000 : null);
+          }
+        }
+        const unit = minutes ? "min" : "s";
+        const traces = sources.flatMap((s, i) => s ? [{
+          ...line(i === 0 ? "Silicon" : "AISim", x, values[i], sourceColor(s.origin)),
+          mode: values[i].filter(finite).length === 1 ? "lines+markers" : "lines",
+          line: {color: sourceColor(s.origin), width: 2.5, dash: "solid", shape: averaged ? "linear" : "hv"},
+          hovertemplate: `%{x:.2f} ${unit}<br>%{y:,.2f}k tokens<extra>${i === 0 ? "Silicon" : "AISim"}</extra>`,
+        }] : []);
+        traces.push({
+          ...line("AISim − Silicon", x, difference, color("muted")),
+          xaxis: "x2", yaxis: "y2", showlegend: false,
+          mode: difference.filter(finite).length === 1 ? "lines+markers" : "lines",
+          line: {color: color("muted"), width: 1.7, dash: "solid", shape: averaged ? "linear" : "hv"},
+          fill: "tozeroy", fillcolor: "rgba(148,163,184,0.15)",
+          hovertemplate: `%{x:.2f} ${unit}<br>AISim − Silicon: %{y:+,.2f}k tokens<extra></extra>`,
+        });
+        const base = layout();
+        return {
+          traces,
+          axes: layout("", {
+            margin: {l: 70, r: 15, t: 34, b: 42},
+            legend: {orientation: "h", x: 1, xanchor: "right", y: 1.15, font: {size: 11}},
+            xaxis: {...base.xaxis, title: {text: ""}, showticklabels: false, matches: "x2", anchor: "y"},
+            xaxis2: {...base.xaxis, title: {text: `${minutes ? "Minutes" : "Seconds"} since phase start`}, ticksuffix: "", anchor: "y2", range: [0, Math.max(1, allTimes.at(-1) || 1) / scale]},
+            yaxis: {...base.yaxis, title: {text: "Footprint (k tokens)"}, domain: [0.42, 1]},
+            yaxis2: {...base.yaxis, title: {text: "AISim − Silicon<br>(k tokens)"}, domain: [0, 0.26], zeroline: true, zerolinecolor: color("muted"), zerolinewidth: 1},
+            annotations: difference.some(finite) ? [] : [{xref: "paper", yref: "paper", x: 0.5, y: 0.13, text: "No common recorded observations", showarrow: false}],
+          }),
+          note: averaged ? "60-second averages · common recorded coverage" : "Raw observations" + (canAverageFootprint(chart) ? "" : " · 60s averaging requires at least one minute of common coverage"),
+          foot: "Positive differences mean AISim is higher; negative differences mean it is lower. " +
+            (averaged ? "Averages include zeros; incomplete bins remain gaps, and the final bin may be shorter. " : "Missing observations remain gaps. ") +
+            "Curve MAPE uses the original 1-second observations, independent of display mode and zoom. Request-lifetime proxy; terminal-only captures may omit unfinished work.",
+          empty: values.some(v => v.some(finite)) ? null : "No footprint observations in this phase.",
+        };
+      }
       function scoreMarkup(id) {
         if (!report.comparison && !options.accuracy) return "";
         const metric = id === "latency" ? (state.modes.latency === "ttft_ms" ? "ttft_ms" : "e2e_ms") : id === "interactivity" ? "tpot_ms" : id === "reference_ttft" ? "ttft_ms" : id === "reference_tpot" ? "tpot_ms" : null;
         const request = comparedPhase()?.request_scores[metric];
-        return scoresFor(id).map(s=>`<span class="score-badge" title="${esc(s.reason || "Full selected profile; zoom does not change the score")}">${esc(s.label)} · Curve MAPE ${fmt(s.mape_percent)}${finite(s.mape_percent)?"%":""} · n=${fmt(s.count,0)}</span>`).join("") + (request ? `<span class="score-badge">${metric === "tpot_ms" ? "TPOT" : metric === "ttft_ms" ? "TTFT" : "E2E"} · Request MAPE ${fmt(request.mape)}${finite(request.mape)?"%":""} · n=${fmt(request.count,0)}</span>` : "");
+        return scoresFor(id).map(s=>`<span class="score-badge" title="${esc(s.reason || "Full selected profile; zoom does not change the score")}">${id === "footprint" && comparedPhase() ? "Original 1s" : esc(s.label)} · Curve MAPE ${fmt(s.mape_percent)}${finite(s.mape_percent)?"%":""} · n=${fmt(s.count,0)}</span>`).join("") + (request ? `<span class="score-badge">${metric === "tpot_ms" ? "TPOT" : metric === "ttft_ms" ? "TTFT" : "E2E"} · Request MAPE ${fmt(request.mape)}${finite(request.mape)?"%":""} · n=${fmt(request.count,0)}</span>` : "");
       }
       function comparisonChart(id) {
         const c = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         if (!c) return null;
+        if (id === "footprint") return footprintChart(c);
         const hasSilicon = c.series.some(s=>s.origin === "silicon" && s.y.some(finite));
         const traces = c.series.map(s=>({name:`${s.label} · ${s.origin === "silicon" ? "Silicon" : "AISim"}`, x:s.x,y:s.y,
           type:s.kind === "bar" ? "bar" : "scatter",mode:"lines",connectgaps:false,
@@ -1027,6 +1104,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
       async function draw(id, target) {
         const result = chart(id),
           node = $(target);
+        node.classList.toggle("footprint-comparison", id === "footprint" && !!comparedPhase()?.charts.some(c => c.id === "unique"));
         if (result.empty) {
           Plotly.purge(node);
           node.classList.add("empty");
@@ -1047,6 +1125,19 @@ window.AISimReplay = { mount(root, report, options = {}) {
         $("controls-" + id).innerHTML = controls(
           specs.find((spec) => spec.id === id),
         );
+      }
+      async function renderExpanded(id) {
+        $("expanded-title").textContent = title(id);
+        if (!$("expanded-controls")) $("expanded-scores").insertAdjacentHTML("beforebegin", '<div id="expanded-controls" class="chart-controls"></div>');
+        $("expanded-controls").innerHTML = controls(specs.find(spec => spec.id === id));
+        const result = await draw(id, "expanded-plot");
+        $("expanded-scores").innerHTML = scoreMarkup(id);
+        $("expanded-note").textContent = result.note;
+        $("expanded-foot").textContent = result.foot;
+      }
+      async function refreshChart(id) {
+        await renderCard(id);
+        if ($("chart-dialog").open && $("chart-dialog").dataset.chart === id) await renderExpanded(id);
       }
       async function renderGrid() {
         if (!$("chart-grid").children.length)
@@ -1356,6 +1447,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         renderSummary();
         if (state.view === "dashboard") await renderGrid();
         if (state.view === "timeline") renderTimeline();
+        if ($("chart-dialog").open) await renderExpanded($("chart-dialog").dataset.chart);
         root.dataset.ready = "true";
         options.onState?.(state);
       }
@@ -1377,20 +1469,17 @@ window.AISimReplay = { mount(root, report, options = {}) {
           await render();
         } else if (button.dataset.mode) {
           state.modes[button.dataset.mode] = button.dataset.value;
-          await renderCard(button.dataset.mode);
+          await refreshChart(button.dataset.mode);
         } else if (button.dataset.percentile) {
           state.percentiles[button.dataset.percentile] = Number(
             button.dataset.value,
           );
-          await renderCard(button.dataset.percentile);
+          await refreshChart(button.dataset.percentile);
         } else if (button.dataset.expand) {
           const id = button.dataset.expand;
-          $("expanded-title").textContent = title(id);
+          $("chart-dialog").dataset.chart = id;
           $("chart-dialog").showModal();
-          const result = await draw(id, "expanded-plot");
-          $("expanded-scores").innerHTML = scoreMarkup(id);
-          $("expanded-note").textContent = result.note;
-          $("expanded-foot").textContent = result.foot;
+          await renderExpanded(id);
         } else if (button.dataset.request) showRequest(button.dataset.request);
         else if (button.dataset.row) showRow(button.dataset.row);
       });
@@ -1401,7 +1490,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
       root.addEventListener("change", async (event) => {
         if (event.target.dataset.selectMode) {
           state.modes[event.target.dataset.selectMode] = event.target.value;
-          await renderCard(event.target.dataset.selectMode);
+          await refreshChart(event.target.dataset.selectMode);
         }
       });
       root.addEventListener("keydown", event => {
