@@ -55,7 +55,9 @@ implementation, while the product layers above describe user capabilities.
 ## Support and accuracy
 
 [Performance-model coverage](perf-model/support-matrix.md) and
-[Replay features](replay/features.md) answer different questions. The public
+[Replay features](replay/features.md) answer different questions. The
+[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/)
+summarizes Replay features per engine. The public
 [FPE matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) probes a
 specific strict-native op-level query surface. It does not certify all FPM
 methods, orchestration paths, or end-to-end accuracy.

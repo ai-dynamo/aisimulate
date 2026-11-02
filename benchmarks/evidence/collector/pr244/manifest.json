@@ -253,8 +253,8 @@
         "failed": 10739,
         "unattempted": 0
       },
-      "rows": 420111,
-      "table_count": 17,
+      "rows": 416193,
+      "table_count": 16,
       "tables": {
         "context_attention_perf.parquet": {
           "anomalies": {
@@ -569,7 +569,7 @@
           ],
           "rows": 5840,
           "sha256": "63e9b6b89418403e1998e691e2f93a5be67fd930a7997dac0d248ba0f577d7c3",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+          "sidecar_sha256": "1ec714136ae98e456690f8773a44feba01be9e9a6f89f549b312a57596174af3"
         },
         "dsv4_csa_generation_module_perf.parquet": {
           "anomalies": {
@@ -731,177 +731,7 @@
           ],
           "rows": 1544,
           "sha256": "632a9063ce5f857ab95731449176045fbde3551efcaefb35a93feea29549e5da",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
-        },
-        "dsv4_hca_attn_module_perf.parquet": {
-          "anomalies": {
-            "duplicate_physical_keys": 0,
-            "nonfinite_latency": 0,
-            "nonpositive_latency": 0,
-            "null_cells": 0
-          },
-          "columns": {
-            "architecture": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "DeepseekV4ForCausalLM"
-              ]
-            },
-            "batch_size": {
-              "distinct": 11,
-              "max": 1024,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "compress_ratio": {
-              "distinct": 1,
-              "max": 128,
-              "min": 128,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "device": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "NVIDIA B300 SXM6 AC"
-              ]
-            },
-            "framework": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "VLLM"
-              ]
-            },
-            "gemm_type": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8_block"
-              ]
-            },
-            "isl": {
-              "distinct": 16,
-              "max": 8192,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "kernel_source": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "FLASHMLA_SPARSE_DSV4"
-              ]
-            },
-            "kv_cache_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8"
-              ]
-            },
-            "latency": {
-              "distinct": 1955,
-              "max": 5.2688,
-              "min": 0.0086,
-              "nulls": 0,
-              "type": "double"
-            },
-            "local_num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "mla_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "bfloat16"
-              ]
-            },
-            "model": {
-              "distinct": 2,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "sgl-project/DeepSeek-V4-Flash-FP8",
-                "sgl-project/DeepSeek-V4-Pro-FP8"
-              ]
-            },
-            "num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "op_name": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "dsv4_hca_attn_module"
-              ]
-            },
-            "step": {
-              "distinct": 26,
-              "max": 1048575,
-              "min": 0,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "tp_size": {
-              "distinct": 1,
-              "max": 1,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "version": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "0.25.0"
-              ]
-            }
-          },
-          "latency_unit": "ms",
-          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
-          "physical_key_columns": [
-            "framework",
-            "version",
-            "op_name",
-            "kernel_source",
-            "model",
-            "architecture",
-            "mla_dtype",
-            "kv_cache_dtype",
-            "gemm_type",
-            "num_heads",
-            "local_num_heads",
-            "batch_size",
-            "isl",
-            "tp_size",
-            "step",
-            "compress_ratio"
-          ],
-          "rows": 3918,
-          "sha256": "cc616dbae378df19da3788d0d0b632b220144a60fb6067bbcb95cc94afe79513",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+          "sidecar_sha256": "1ec714136ae98e456690f8773a44feba01be9e9a6f89f549b312a57596174af3"
         },
         "dsv4_hca_context_module_perf.parquet": {
           "anomalies": {
@@ -1063,7 +893,7 @@
           ],
           "rows": 5840,
           "sha256": "fe349c63ed6445f442f2298e47456c37ffef5f1c43d458cf5d57538d282e581e",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+          "sidecar_sha256": "1ec714136ae98e456690f8773a44feba01be9e9a6f89f549b312a57596174af3"
         },
         "dsv4_hca_generation_module_perf.parquet": {
           "anomalies": {
@@ -1225,7 +1055,7 @@
           ],
           "rows": 1544,
           "sha256": "cdc48ea8a89e6b5543720df991f5f11d691b56349b1ab6a042bf6cbb550e6f62",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+          "sidecar_sha256": "1ec714136ae98e456690f8773a44feba01be9e9a6f89f549b312a57596174af3"
         },
         "dsv4_paged_mqa_logits_module_perf.parquet": {
           "anomalies": {
@@ -1395,7 +1225,7 @@
           ],
           "rows": 3918,
           "sha256": "64de2420ed80948ca068da0fc1e014734e53e6a77d71ab224e566b350be2280f",
-          "sidecar_sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+          "sidecar_sha256": "1ec714136ae98e456690f8773a44feba01be9e9a6f89f549b312a57596174af3"
         },
         "encoder_attention_perf.parquet": {
           "anomalies": {
@@ -3034,8 +2864,8 @@
         "failed": 10766,
         "unattempted": 0
       },
-      "rows": 420134,
-      "table_count": 17,
+      "rows": 416216,
+      "table_count": 16,
       "tables": {
         "context_attention_perf.parquet": {
           "anomalies": {
@@ -3350,7 +3180,7 @@
           ],
           "rows": 5840,
           "sha256": "76719d88e0481b5153c89ef0e1024435597f660de305bdb9f01750e9273189d3",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_csa_generation_module_perf.parquet": {
           "anomalies": {
@@ -3512,177 +3342,7 @@
           ],
           "rows": 1544,
           "sha256": "b1a09a8e004ebed907e1d6d85379c51f5ec4ca2c5812bb59a62327c99f2dc505",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
-        },
-        "dsv4_hca_attn_module_perf.parquet": {
-          "anomalies": {
-            "duplicate_physical_keys": 0,
-            "nonfinite_latency": 0,
-            "nonpositive_latency": 0,
-            "null_cells": 0
-          },
-          "columns": {
-            "architecture": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "DeepseekV4ForCausalLM"
-              ]
-            },
-            "batch_size": {
-              "distinct": 11,
-              "max": 1024,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "compress_ratio": {
-              "distinct": 1,
-              "max": 128,
-              "min": 128,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "device": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "NVIDIA GB200"
-              ]
-            },
-            "framework": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "VLLM"
-              ]
-            },
-            "gemm_type": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8_block"
-              ]
-            },
-            "isl": {
-              "distinct": 16,
-              "max": 8192,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "kernel_source": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "FLASHMLA_SPARSE_DSV4"
-              ]
-            },
-            "kv_cache_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8"
-              ]
-            },
-            "latency": {
-              "distinct": 1985,
-              "max": 5.0301,
-              "min": 0.0106,
-              "nulls": 0,
-              "type": "double"
-            },
-            "local_num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "mla_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "bfloat16"
-              ]
-            },
-            "model": {
-              "distinct": 2,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "sgl-project/DeepSeek-V4-Flash-FP8",
-                "sgl-project/DeepSeek-V4-Pro-FP8"
-              ]
-            },
-            "num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "op_name": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "dsv4_hca_attn_module"
-              ]
-            },
-            "step": {
-              "distinct": 26,
-              "max": 1048575,
-              "min": 0,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "tp_size": {
-              "distinct": 1,
-              "max": 1,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "version": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "0.25.0"
-              ]
-            }
-          },
-          "latency_unit": "ms",
-          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb200/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
-          "physical_key_columns": [
-            "framework",
-            "version",
-            "op_name",
-            "kernel_source",
-            "model",
-            "architecture",
-            "mla_dtype",
-            "kv_cache_dtype",
-            "gemm_type",
-            "num_heads",
-            "local_num_heads",
-            "batch_size",
-            "isl",
-            "tp_size",
-            "step",
-            "compress_ratio"
-          ],
-          "rows": 3918,
-          "sha256": "0abf339525484c011c1c57508bbf01d1338f98f93cbc3d0debc6b2b383b2d0dc",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_hca_context_module_perf.parquet": {
           "anomalies": {
@@ -3844,7 +3504,7 @@
           ],
           "rows": 5840,
           "sha256": "633e6a30fc69935c0edd9fb672d26a02ba3d13a36e5412f5dab57571b37c7ec1",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_hca_generation_module_perf.parquet": {
           "anomalies": {
@@ -4006,7 +3666,7 @@
           ],
           "rows": 1544,
           "sha256": "9807d59d5b0e6a14a5d82feb7b81c8529fbe2d0d65120fd32706a7b68fe4cf2a",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_paged_mqa_logits_module_perf.parquet": {
           "anomalies": {
@@ -4176,7 +3836,7 @@
           ],
           "rows": 3918,
           "sha256": "e62d12cc3c8a125b66ad066de2abfda101c06a6acdbf9f7d0e9bebd4f442f4c3",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "encoder_attention_perf.parquet": {
           "anomalies": {
@@ -5815,8 +5475,8 @@
         "failed": 10699,
         "unattempted": 0
       },
-      "rows": 420226,
-      "table_count": 17,
+      "rows": 416308,
+      "table_count": 16,
       "tables": {
         "context_attention_perf.parquet": {
           "anomalies": {
@@ -6131,7 +5791,7 @@
           ],
           "rows": 5840,
           "sha256": "81276eea4e424b2146b58256cd1697529a3a00c8bf3ee7c6613d54d6094972fc",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_csa_generation_module_perf.parquet": {
           "anomalies": {
@@ -6293,177 +5953,7 @@
           ],
           "rows": 1544,
           "sha256": "eb54cfe271dc3d15d0849745c17cb1979da4ac4afc63504acece52bcf4482d08",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
-        },
-        "dsv4_hca_attn_module_perf.parquet": {
-          "anomalies": {
-            "duplicate_physical_keys": 0,
-            "nonfinite_latency": 0,
-            "nonpositive_latency": 0,
-            "null_cells": 0
-          },
-          "columns": {
-            "architecture": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "DeepseekV4ForCausalLM"
-              ]
-            },
-            "batch_size": {
-              "distinct": 11,
-              "max": 1024,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "compress_ratio": {
-              "distinct": 1,
-              "max": 128,
-              "min": 128,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "device": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "NVIDIA GB300"
-              ]
-            },
-            "framework": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "VLLM"
-              ]
-            },
-            "gemm_type": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8_block"
-              ]
-            },
-            "isl": {
-              "distinct": 16,
-              "max": 8192,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "kernel_source": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "FLASHMLA_SPARSE_DSV4"
-              ]
-            },
-            "kv_cache_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8"
-              ]
-            },
-            "latency": {
-              "distinct": 1920,
-              "max": 4.9961,
-              "min": 0.0106,
-              "nulls": 0,
-              "type": "double"
-            },
-            "local_num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "mla_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "bfloat16"
-              ]
-            },
-            "model": {
-              "distinct": 2,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "sgl-project/DeepSeek-V4-Flash-FP8",
-                "sgl-project/DeepSeek-V4-Pro-FP8"
-              ]
-            },
-            "num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "op_name": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "dsv4_hca_attn_module"
-              ]
-            },
-            "step": {
-              "distinct": 26,
-              "max": 1048575,
-              "min": 0,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "tp_size": {
-              "distinct": 1,
-              "max": 1,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "version": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "0.25.0"
-              ]
-            }
-          },
-          "latency_unit": "ms",
-          "path": "python/aisimulate/src/aisimulate_core/systems/data/gb300/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
-          "physical_key_columns": [
-            "framework",
-            "version",
-            "op_name",
-            "kernel_source",
-            "model",
-            "architecture",
-            "mla_dtype",
-            "kv_cache_dtype",
-            "gemm_type",
-            "num_heads",
-            "local_num_heads",
-            "batch_size",
-            "isl",
-            "tp_size",
-            "step",
-            "compress_ratio"
-          ],
-          "rows": 3918,
-          "sha256": "49ecc0d7e34e1503f7bdbea1c3599bb20a219488786a22fef43cf216de641383",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_hca_context_module_perf.parquet": {
           "anomalies": {
@@ -6625,7 +6115,7 @@
           ],
           "rows": 5840,
           "sha256": "56d026f2e2b5b843c0afbe6b6c0d9b3489abf5db256d5d61ee065f7bcd72d15f",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_hca_generation_module_perf.parquet": {
           "anomalies": {
@@ -6787,7 +6277,7 @@
           ],
           "rows": 1544,
           "sha256": "3dee3c879fe7fdd9fd1e111d2f8df79cf15d8e635ebe32f123b94adc441fc31e",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "dsv4_paged_mqa_logits_module_perf.parquet": {
           "anomalies": {
@@ -6957,7 +6447,7 @@
           ],
           "rows": 3918,
           "sha256": "12f3aa8b290193bf97e2f144c9bdda347eeba8ab10698669bc41d1fa617280fd",
-          "sidecar_sha256": "ff4b25e84cb1c03a7c2b6bec9adc91e731a2dd57bb96d72089e13a4440d0d674"
+          "sidecar_sha256": "7fa57194fb7ad77faea184f07ef6c07ed293371aa4ac9429a9becf2fb2b4782d"
         },
         "encoder_attention_perf.parquet": {
           "anomalies": {
@@ -8586,8 +8076,8 @@
         "failed": 3495,
         "unattempted": 0
       },
-      "rows": 353449,
-      "table_count": 17,
+      "rows": 349531,
+      "table_count": 16,
       "tables": {
         "context_attention_perf.parquet": {
           "anomalies": {
@@ -8901,7 +8391,7 @@
           ],
           "rows": 5789,
           "sha256": "fd4664e02b104be261b238db5dd571544dc35018ffa6e5fdda700f68e0503a79",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
+          "sidecar_sha256": "c17befda9060286fc7bcbe28d086e8964c47644c700e1f60d604ccbed20d6486"
         },
         "dsv4_csa_generation_module_perf.parquet": {
           "anomalies": {
@@ -9063,177 +8553,7 @@
           ],
           "rows": 1544,
           "sha256": "c9a6ff6f081dee79ff3053d32a8e85d550ee7aaab0c3d080bb2d33d7ca4ab839",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
-        },
-        "dsv4_hca_attn_module_perf.parquet": {
-          "anomalies": {
-            "duplicate_physical_keys": 0,
-            "nonfinite_latency": 0,
-            "nonpositive_latency": 0,
-            "null_cells": 0
-          },
-          "columns": {
-            "architecture": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "DeepseekV4ForCausalLM"
-              ]
-            },
-            "batch_size": {
-              "distinct": 11,
-              "max": 1024,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "compress_ratio": {
-              "distinct": 1,
-              "max": 128,
-              "min": 128,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "device": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "NVIDIA H100 80GB HBM3"
-              ]
-            },
-            "framework": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "VLLM"
-              ]
-            },
-            "gemm_type": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8_block"
-              ]
-            },
-            "isl": {
-              "distinct": 16,
-              "max": 8192,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "kernel_source": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "FLASHMLA_SPARSE_DSV4"
-              ]
-            },
-            "kv_cache_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8"
-              ]
-            },
-            "latency": {
-              "distinct": 2358,
-              "max": 14.2497,
-              "min": 0.01,
-              "nulls": 0,
-              "type": "double"
-            },
-            "local_num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "mla_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "bfloat16"
-              ]
-            },
-            "model": {
-              "distinct": 2,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "sgl-project/DeepSeek-V4-Flash-FP8",
-                "sgl-project/DeepSeek-V4-Pro-FP8"
-              ]
-            },
-            "num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "op_name": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "dsv4_hca_attn_module"
-              ]
-            },
-            "step": {
-              "distinct": 26,
-              "max": 1048575,
-              "min": 0,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "tp_size": {
-              "distinct": 1,
-              "max": 1,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "version": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "0.25.0"
-              ]
-            }
-          },
-          "latency_unit": "ms",
-          "path": "python/aisimulate/src/aisimulate_core/systems/data/h100_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
-          "physical_key_columns": [
-            "framework",
-            "version",
-            "op_name",
-            "kernel_source",
-            "model",
-            "architecture",
-            "mla_dtype",
-            "kv_cache_dtype",
-            "gemm_type",
-            "num_heads",
-            "local_num_heads",
-            "batch_size",
-            "isl",
-            "tp_size",
-            "step",
-            "compress_ratio"
-          ],
-          "rows": 3918,
-          "sha256": "86ca415600d3f4b468d683a689403ca298739cc65967c22c66fc2108ae6aa2fe",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
+          "sidecar_sha256": "c17befda9060286fc7bcbe28d086e8964c47644c700e1f60d604ccbed20d6486"
         },
         "dsv4_hca_context_module_perf.parquet": {
           "anomalies": {
@@ -9395,7 +8715,7 @@
           ],
           "rows": 5793,
           "sha256": "9b0d69b9a9634ffd2d58b8e38d402db292ab003f5d4a59cab77a15c983f13d0d",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
+          "sidecar_sha256": "c17befda9060286fc7bcbe28d086e8964c47644c700e1f60d604ccbed20d6486"
         },
         "dsv4_hca_generation_module_perf.parquet": {
           "anomalies": {
@@ -9557,7 +8877,7 @@
           ],
           "rows": 1544,
           "sha256": "ddeed06756d6e93d3afa9d372587ed19edae41f6051435816b27fc265e7689a8",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
+          "sidecar_sha256": "c17befda9060286fc7bcbe28d086e8964c47644c700e1f60d604ccbed20d6486"
         },
         "dsv4_paged_mqa_logits_module_perf.parquet": {
           "anomalies": {
@@ -9727,7 +9047,7 @@
           ],
           "rows": 3918,
           "sha256": "8eaca4d81931d542e879f8e1cd9728dda466ecd5d9c19449eef7be5876e90270",
-          "sidecar_sha256": "19017dfd3c09a7df0dc5dd4d47e01ff0d9324998f3fe4f93b999effe36bfe8aa"
+          "sidecar_sha256": "c17befda9060286fc7bcbe28d086e8964c47644c700e1f60d604ccbed20d6486"
         },
         "encoder_attention_perf.parquet": {
           "anomalies": {
@@ -11343,8 +10663,8 @@
         "failed": 3394,
         "unattempted": 0
       },
-      "rows": 353658,
-      "table_count": 17,
+      "rows": 349740,
+      "table_count": 16,
       "tables": {
         "context_attention_perf.parquet": {
           "anomalies": {
@@ -11658,7 +10978,7 @@
           ],
           "rows": 5840,
           "sha256": "8fec19f573b830fd854b0feb199cc6841f8070a86308dc892eec80afdaf93c29",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
+          "sidecar_sha256": "2c8891395cac294aadefdfe36aa81da7915eb5fb14a581f6a1cc5722957c6d43"
         },
         "dsv4_csa_generation_module_perf.parquet": {
           "anomalies": {
@@ -11820,177 +11140,7 @@
           ],
           "rows": 1544,
           "sha256": "a4c1dc94f505ba0360125de51735948185b0e9bd44128a42668613875ae7741a",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
-        },
-        "dsv4_hca_attn_module_perf.parquet": {
-          "anomalies": {
-            "duplicate_physical_keys": 0,
-            "nonfinite_latency": 0,
-            "nonpositive_latency": 0,
-            "null_cells": 0
-          },
-          "columns": {
-            "architecture": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "DeepseekV4ForCausalLM"
-              ]
-            },
-            "batch_size": {
-              "distinct": 11,
-              "max": 1024,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "compress_ratio": {
-              "distinct": 1,
-              "max": 128,
-              "min": 128,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "device": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "NVIDIA H200"
-              ]
-            },
-            "framework": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "VLLM"
-              ]
-            },
-            "gemm_type": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8_block"
-              ]
-            },
-            "isl": {
-              "distinct": 16,
-              "max": 8192,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "kernel_source": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "FLASHMLA_SPARSE_DSV4"
-              ]
-            },
-            "kv_cache_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "fp8"
-              ]
-            },
-            "latency": {
-              "distinct": 2307,
-              "max": 14.4426,
-              "min": 0.0096,
-              "nulls": 0,
-              "type": "double"
-            },
-            "local_num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "mla_dtype": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "bfloat16"
-              ]
-            },
-            "model": {
-              "distinct": 2,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "sgl-project/DeepSeek-V4-Flash-FP8",
-                "sgl-project/DeepSeek-V4-Pro-FP8"
-              ]
-            },
-            "num_heads": {
-              "distinct": 2,
-              "max": 128,
-              "min": 64,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "op_name": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "dsv4_hca_attn_module"
-              ]
-            },
-            "step": {
-              "distinct": 26,
-              "max": 1048575,
-              "min": 0,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "tp_size": {
-              "distinct": 1,
-              "max": 1,
-              "min": 1,
-              "nulls": 0,
-              "type": "int64"
-            },
-            "version": {
-              "distinct": 1,
-              "nulls": 0,
-              "type": "string",
-              "values": [
-                "0.25.0"
-              ]
-            }
-          },
-          "latency_unit": "ms",
-          "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
-          "physical_key_columns": [
-            "framework",
-            "version",
-            "op_name",
-            "kernel_source",
-            "model",
-            "architecture",
-            "mla_dtype",
-            "kv_cache_dtype",
-            "gemm_type",
-            "num_heads",
-            "local_num_heads",
-            "batch_size",
-            "isl",
-            "tp_size",
-            "step",
-            "compress_ratio"
-          ],
-          "rows": 3918,
-          "sha256": "3b0d87916ae3f6414cbe92966632b9133fb162a596ffce6b44cfeb916da3a4af",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
+          "sidecar_sha256": "2c8891395cac294aadefdfe36aa81da7915eb5fb14a581f6a1cc5722957c6d43"
         },
         "dsv4_hca_context_module_perf.parquet": {
           "anomalies": {
@@ -12152,7 +11302,7 @@
           ],
           "rows": 5840,
           "sha256": "39fa711b357b5c72251862cc741ae81e6a486f6ad0adb2ae29e25565d99642b1",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
+          "sidecar_sha256": "2c8891395cac294aadefdfe36aa81da7915eb5fb14a581f6a1cc5722957c6d43"
         },
         "dsv4_hca_generation_module_perf.parquet": {
           "anomalies": {
@@ -12314,7 +11464,7 @@
           ],
           "rows": 1544,
           "sha256": "d9683b5d8a43df2f023bfb4ac50d38f8717b0c447d2ed3962b3ae5eaa64fbf00",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
+          "sidecar_sha256": "2c8891395cac294aadefdfe36aa81da7915eb5fb14a581f6a1cc5722957c6d43"
         },
         "dsv4_paged_mqa_logits_module_perf.parquet": {
           "anomalies": {
@@ -12484,7 +11634,7 @@
           ],
           "rows": 3918,
           "sha256": "ad63707a693a23b190807366e1c6eb65cacc33ef42a92b070c23f6985ed0514b",
-          "sidecar_sha256": "23f9cb39768514c0ef6f079e9bc43abc2719cd464638e371fda85f2922ce7bc1"
+          "sidecar_sha256": "2c8891395cac294aadefdfe36aa81da7915eb5fb14a581f6a1cc5722957c6d43"
         },
         "encoder_attention_perf.parquet": {
           "anomalies": {

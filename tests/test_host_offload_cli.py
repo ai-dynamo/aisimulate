@@ -459,7 +459,7 @@ def _kvcr_defaults() -> dict:
         ),
     ],
 )
-def test_kvcr_requires_private_host_offload_and_no_g3(cache, message) -> None:
+def test_kvcr_requires_per_rank_host_offload_and_no_g3(cache, message) -> None:
     with pytest.raises(ValueError, match=message):
         KvCachePredictionConfig.model_validate(cache)
 

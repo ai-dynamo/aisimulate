@@ -1612,6 +1612,7 @@ impl SglangCore {
                 .count(),
             output_signals,
             admissions,
+            g1_prefix_cache_lookup: None,
             pressure_events: decode.pressure_events,
             lifecycle_events: std::mem::take(&mut self.lifecycle_events),
             mocker_metrics: self

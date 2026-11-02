@@ -73,6 +73,8 @@ def cli(monkeypatch):
     names = {
         "_supported_model_map",
         "_get_precision_combos",
+        "_dsa_context_point_allowed",
+        "_dsa_context_budgets",
         "get_context_test_cases",
         "get_generation_test_cases",
         "run_mla_module_worker",
@@ -110,10 +112,12 @@ def test_explicit_checkpoint_alias_is_preserved(cli):
 
 
 def test_dsa_context_cli_passes_declared_cached_prefix_to_native_worker(cli):
-    calls = cli("--mode", "context", "--model", "zai-org/GLM-5.2", "--gemm-type", "fp8", "--kv-cache-dtype", "fp8")
+    calls = cli(
+        "--mode", "context", "--model", "zai-org/GLM-5.2", "--gemm-type", "fp8_block", "--kv-cache-dtype", "fp8"
+    )
     assert [(row["seq_len"], row["prefix_len"]) for row in calls] == [(128, 0), (128, 131072)]
     assert all(row["batch_size"] == 1 and row["num_heads"] == 8 for row in calls)
-    assert all(row["gemm_type"] == "fp8" and row["perf_filename"] == PerfFile.DSA_CONTEXT_MODULE for row in calls)
+    assert all(row["gemm_type"] == "fp8_block" and row["perf_filename"] == PerfFile.DSA_CONTEXT_MODULE for row in calls)
 
 
 @pytest.mark.parametrize(

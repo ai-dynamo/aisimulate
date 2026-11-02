@@ -3,17 +3,19 @@
 
 """Release package isolation and producer-to-publisher contract tests."""
 
+import copy
 import csv
 import importlib.util
 import io
 import json
 import shlex
 import subprocess
+import sys
 import zipfile
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -35,6 +37,79 @@ SHA = "a" * 40
 TOOLING = "b" * 40
 WHEEL = "c" * 64
 IDENTITY = {"schema_version": 1, "source_branch": "release/0.12.0", "source_sha": SHA, "tooling_sha": TOOLING}
+
+
+@pytest.fixture
+def probe_plan():
+    selectors = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+    return {
+        **IDENTITY,
+        "wheel_sha256": WHEEL,
+        "selectors": selectors,
+        "probes": [{**selector, "backend_version": "1.0"} for selector in selectors],
+    }
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_required_probes_follow_selected_source_current_version(probe_plan, version):
+    expected = [{**p, "backend_version": version} for p in probe_plan["probes"]]
+    combinations = [tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in expected]
+    # A higher development version is also queryable. The source's current
+    # resolver, rather than lexical ordering or report successes, decides.
+    combinations += [(m, s, b, "99.0") for m, s, b, _ in combinations]
+    resolver = Mock(return_value=version)
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    plan = RELEASE.discover_required_probes(combinations, receipt, resolver)
+    assert plan == {**receipt, "selectors": probe_plan["selectors"], "probes": expected}
+    assert resolver.call_args_list == [call(p["system"], p["backend"], "current") for p in expected]
+    assert RELEASE.validate_required_probes(plan, receipt) == expected
+
+
+def test_required_probe_discovery_rejects_missing_current_version(probe_plan):
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    resolver = Mock(side_effect=ValueError("no queryable versions defined"))
+    with pytest.raises(ValueError, match="no queryable versions"):
+        RELEASE.discover_required_probes([], receipt, resolver)
+
+
+@pytest.mark.parametrize("missing_index", range(4))
+def test_required_probe_discovery_cannot_drop_an_absent_identity(probe_plan, missing_index):
+    combinations = [
+        tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in probe_plan["probes"]
+    ]
+    combinations.pop(missing_index)
+    with pytest.raises(ValueError, match="absent from the selected-source inventory"):
+        RELEASE.discover_required_probes(combinations, {**IDENTITY, "wheel_sha256": WHEEL}, Mock(return_value="1.0"))
+
+
+@pytest.mark.parametrize("field", ["source_sha", "tooling_sha", "source_branch", "schema_version", "wheel_sha256"])
+def test_resolved_probe_plan_rejects_mixed_provenance(probe_plan, field):
+    probe_plan[field] = "different"
+    with pytest.raises(ValueError, match="provenance or policy"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
+
+
+@pytest.mark.parametrize("version", [None, "", " ", "current", "previous", "next", True])
+def test_resolved_probe_plan_requires_concrete_versions(probe_plan, version):
+    probe_plan["probes"][0]["backend_version"] = version
+    with pytest.raises(ValueError, match="invalid resolved FPE probe"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
+
+
+@pytest.mark.parametrize("change", ["missing", "empty", "duplicate", "wrong_model", "wrong_policy"])
+def test_resolved_probe_plan_cannot_change_required_coverage(probe_plan, change):
+    if change == "missing":
+        probe_plan["probes"].pop()
+    elif change == "empty":
+        probe_plan["probes"] = []
+    elif change == "duplicate":
+        probe_plan["probes"][1] = probe_plan["probes"][0]
+    elif change == "wrong_model":
+        probe_plan["probes"][0]["model"] = "test/unrelated"
+    else:
+        probe_plan["selectors"][0]["backend_version"] = "previous"
+    with pytest.raises(ValueError, match="every selector|invalid resolved|provenance or policy"):
+        RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
 
 
 def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
@@ -159,8 +234,7 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
         RELEASE.verify_installed_wheel(wheel, distribution=dist)
 
 
-def reports(root):
-    required = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+def reports(root, required):
     groups = defaultdict(list)
     for probe in required:
         row = {
@@ -210,16 +284,17 @@ def reports(root):
     return [{"system": s, "backend": b} for s, b in sorted(groups)]
 
 
-def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
+def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, probe_plan):
     source = tmp_path / "reports"
-    shards = reports(source)
+    shards = reports(source, probe_plan["probes"])
     destination = tmp_path / "web"
-    RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+    RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
     qualification = json.loads((destination / "fpe-qualification.json").read_text())
     assert qualification["source_sha"] == SHA
     assert qualification["tooling_sha"] == TOOLING
     assert qualification["source_branch"] == "release/0.12.0"
     assert qualification["required_probe_count"] == 4
+    assert qualification["required_probes"] == probe_plan["probes"]
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         for path in destination.rglob("*"):
@@ -238,14 +313,105 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
     assert all(row["SourceSHA"] == SHA for row in rows)
 
 
-def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path):
+def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path, probe_plan):
     source = tmp_path / "reports"
-    shards = reports(source)
+    shards = reports(source, probe_plan["probes"])
     next(source.rglob("fpe_support_matrix.json")).unlink()
     destination = tmp_path / "web"
     with pytest.raises(ValueError, match="missing shards"):
-        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
     assert not destination.exists()
+
+
+def test_passing_previous_version_cannot_replace_a_failed_current_probe(tmp_path, probe_plan):
+    source = tmp_path / "reports"
+    shards = reports(source, probe_plan["probes"])
+    for path in source.rglob("fpe_support_matrix.json"):
+        payload = json.loads(path.read_text())
+        previous_rows = [{**row, "backend_version": "0.9"} for row in payload["results"]]
+        for row in payload["results"]:
+            row.update(status="PERF_DATA_MISSING", latency_ms=None)
+        payload["results"].extend(previous_rows)
+        payload["metadata"]["plan_count"] *= 2
+        path.write_text(json.dumps(payload))
+    destination = tmp_path / "web"
+    with pytest.raises(ValueError, match="required known-good probes no longer pass"):
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
+    assert not destination.exists()
+
+
+def test_packaging_rejects_another_wheels_probe_plan_before_creating_output(tmp_path, probe_plan):
+    source = tmp_path / "reports"
+    shards = reports(source, probe_plan["probes"])
+    wrong_plan = copy.deepcopy(probe_plan)
+    wrong_plan["wheel_sha256"] = "d" * 64
+    destination = tmp_path / "web"
+    with pytest.raises(ValueError, match="provenance or policy"):
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=wrong_plan)
+    assert not destination.exists()
+
+
+def test_discovery_plan_round_trips_through_packaging_cli(tmp_path, monkeypatch, probe_plan):
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    receipt = {**IDENTITY, "wheel_sha256": WHEEL}
+    (wheel_dir / "provenance.json").write_text(json.dumps(receipt))
+    report_dir = tmp_path / "reports"
+    reports(report_dir, probe_plan["probes"])
+    combinations = [
+        tuple(p[k] for k in ("model", "system", "backend", "backend_version")) for p in probe_plan["probes"]
+    ]
+    verified = Mock()
+
+    def resolve_version(system, backend, alias):
+        verified.assert_called_once()
+        assert alias == "current"
+        return "1.0"
+
+    # The source harness exports its own SDK (including older release package
+    # names); discovery must resolve through that module after wheel validation.
+    selected_source = SimpleNamespace(
+        SupportMatrix=lambda: SimpleNamespace(generate_combinations=lambda: combinations),
+        perf_database=SimpleNamespace(resolve_query_version=resolve_version),
+    )
+    monkeypatch.setitem(sys.modules, "tools.support_matrix.support_matrix", selected_source)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(RELEASE, "identity", Mock(return_value=IDENTITY))
+    monkeypatch.setattr(RELEASE, "wheel_identity", Mock(return_value=(wheel_dir / "test.whl", WHEEL)))
+    monkeypatch.setattr(RELEASE, "verify_installed_wheel", verified)
+    monkeypatch.setattr(RELEASE, "prepare_harness", Mock(return_value=tmp_path / "harness"))
+    for name, value in (("FPE_SOURCE_SHA", SHA), ("FPE_TOOLING_SHA", TOOLING), ("FPE_BRANCH", "release/0.12.0")):
+        monkeypatch.setenv(name, value)
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    destination = tmp_path / "web"
+    plan_path = tmp_path / "resolved-probes.json"
+    arguments = [
+        "--wheel-dir",
+        str(wheel_dir),
+        "--shards",
+        str(tmp_path / "shards.json"),
+        "--required-probes",
+        str(plan_path),
+        "--reports",
+        str(report_dir),
+        "--destination",
+        str(destination),
+    ]
+    monkeypatch.setattr(sys, "argv", ["run_release_fpe.py", "discover", *arguments])
+    RELEASE.main()
+    assert json.loads(plan_path.read_text()) == probe_plan
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert json.loads(outputs["required_probes"]) == probe_plan
+
+    # The packaging job has no installed SDK; it must consume the captured plan.
+    monkeypatch.delitem(sys.modules, "tools.support_matrix.support_matrix")
+    verified.reset_mock()
+    monkeypatch.setattr(sys, "argv", ["run_release_fpe.py", "package", *arguments])
+    RELEASE.main()
+    verified.assert_not_called()
+    result = json.loads((destination / "fpe-qualification.json").read_text())
+    assert result["required_probes"] == probe_plan["probes"]
 
 
 @pytest.mark.parametrize("branch", ["main", "release/0.12.0"])

@@ -33,6 +33,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
+[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 AISimulate is the successor to the
@@ -133,6 +134,17 @@ aisimulate predict \
   --config prediction.yaml \
   --output-dir ./aisimulate-prediction
 ```
+
+For offline `--stack engine` replay with vLLM/SGLang, `--capture-telemetry`
+also exports all-phase request records, periodic scheduler/cache/traffic samples,
+and agentic lifecycle events. Sampling defaults to 1,000 simulated milliseconds;
+adjust it with `--telemetry-sample-interval-ms`. See the
+[telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
+
+Add `--export-html` to `aisimulate predict` to capture telemetry and write a
+standalone `report.html` dashboard with profiling, warmup, and request timelines.
+Open it directly in a browser; charts and data are embedded for offline use.
+See the [dashboard guide](docs/getting-started/understand-results.md#replay-dashboard).
 
 ### Python prediction API
 

@@ -125,7 +125,12 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             self._q_scale_float = self._k_scale_float = self._v_scale_float = 1.0
 
     config = SimpleNamespace(
-        cache_config=SimpleNamespace(block_size=64, num_gpu_blocks=8192),
+        cache_config=SimpleNamespace(
+            block_size=64,
+            num_gpu_blocks=8192,
+            # resolved layout (772728f3): identity order = HND
+            get_resolved_kv_cache_layout=lambda: SimpleNamespace(name="LBHNC", layer_view_order=(0, 1, 2, 3)),
+        ),
         model_config=SimpleNamespace(get_sliding_window=lambda: None),
     )
 
@@ -164,6 +169,15 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
         "vllm_version": "0.24.0",
+        # 1d0492eb: the page is asked from the framework per backend (collect_attn:201
+        # -> utils.framework_kv_block_size); the test pins the same 16
+        "framework_kv_block_size": lambda _backend_cls: 16,
+        # framework-resolved KV layout (collect_attn:248-270, 772728f3): identity order = HND
+        "get_supported_kv_cache_layouts": lambda _backends: [SimpleNamespace(name="LBHNC")],
+        "resolve_kv_cache_layout": lambda _cfg, _layouts, _specs: None,
+        "get_kv_cache_layout": lambda: SimpleNamespace(name="LBHNC", layer_view_order=(0, 1, 2, 3)),
+        # spy: the paged KV must be laid out in the framework-RESOLVED layout order
+        "kv_cache_in_resolved_layout": lambda kv, order: (calls.setdefault("kv_layout_order", order), kv)[1],
     }
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
@@ -186,6 +200,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     assert calls["log"]["item_list"][0]["isl"] == 1
     assert calls["log"]["item_list"][0]["step"] == 64
     assert calls["log"]["kernel_source"] == "vllm_flash_attn_fa3"
+    assert calls["kv_layout_order"] == (0, 1, 2, 3)  # cache_config.get_resolved_kv_cache_layout()
     assert [event[0] for event in events] == ["update", "update", "forward", "update", "forward"]
     assert events[0][5] is history_slot_mapping
     for update, forward in zip(events[1::2], events[2::2], strict=True):

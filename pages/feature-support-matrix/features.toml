@@ -1,0 +1,293 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Feature Support Matrix: serving techniques AISimulate simulates for each engine.
+#
+# Update a cell in the pull request that changes the feature, and keep the
+# composition boundaries in docs/replay/features.md in step. A cell reflects
+# what this branch's configuration validators accept, not what is planned.
+# Values:
+#   "supported"      replayed event by event; limits on the linked page are edge cases.
+#   "limited"        modeled, but common configurations are rejected or only an
+#                    analytical estimate exists; the row's note names the limits.
+#   "not_supported"  rejected, or not modeled.
+#   "na"             the upstream engine has no such feature.
+# Append ":<tag>" to qualify a cell, as in "limited:analytical".
+# `doc` is a path under docs/, optionally with an anchor that exists there.
+
+schema_version = 1
+engines = ["vLLM", "SGLang", "TensorRT-LLM"]
+
+[[sections]]
+id = "topology"
+title = "Topology and parallelism"
+
+[[sections.rows]]
+name = "Aggregated serving"
+doc = "replay/engine/workers.md"
+cells = ["supported", "supported", "supported"]
+note = "Engine-specific scheduler and cache admission."
+
+[[sections.rows]]
+name = "Prefill/decode disaggregation"
+doc = "replay/engine/kv-transfer.md"
+cells = ["supported", "supported", "supported"]
+note = "Independently sized prefill and decode pools."
+
+[[sections.rows]]
+name = "Tensor and expert parallelism"
+doc = "perf-model/configuration.md"
+cells = ["supported", "supported", "supported"]
+note = "Priced by the performance model; see the FPE matrix per model and GPU."
+
+[[sections.rows]]
+name = "Attention data parallelism"
+doc = "replay/engine/workers.md#replicas-and-attention-dp"
+cells = ["supported", "supported", "supported"]
+note = "Rank-local scheduling; a grouped pass ends at the slowest rank."
+
+[[sections.rows]]
+name = "Context parallelism"
+doc = "perf-model/configuration.md#decode-context-parallelism"
+# TensorRT-LLM CP has no performance data (generator/config/backend_config_mapping.yaml).
+cells = ["limited", "limited", "not_supported"]
+note = "Prediction only; decode CP depends on the model family."
+
+[[sections.rows]]
+name = "Attention–FFN disaggregation"
+doc = "replay/engine/analytical.md#afd"
+cells = ["limited:analytical", "limited:analytical", "limited:analytical"]
+note = "Analytical estimate only, for fixed-length synthetic requests; no trace replay."
+
+[[sections.rows]]
+name = "Encoder disaggregation (multimodal)"
+doc = "replay/engine/analytical.md#epd"
+# Native encoder pools are SGLang-only; analytical pools accept every engine.
+cells = ["limited:analytical", "limited", "limited:analytical"]
+note = "SGLang replays static Qwen3-VL encoder pools event by event; the analytical estimate adds mean encoder latency for Qwen3-VL and Kimi K3 towers."
+
+[[sections]]
+id = "scheduling"
+title = "Scheduling and batching"
+
+[[sections.rows]]
+name = "Continuous batching, chunked prefill"
+doc = "replay/engine/workers.md#batch-limits"
+cells = ["supported", "supported", "supported"]
+note = "Engine-specific admission and token budgets; SGLang --enable-mixed-chunk (off upstream by default) is not modeled."
+
+[[sections.rows]]
+name = "Prefix caching (G1 reuse)"
+doc = "replay/engine/kv-cache.md#gpu-cache-g1"
+cells = ["supported", "supported", "supported"]
+note = "Backend block and admission rules apply."
+
+[[sections.rows]]
+name = "Sub-block prefix reuse"
+doc = "replay/engine/kv-cache.md#gpu-cache-g1"
+# Upstream vLLM caches only full blocks (docs/design/prefix_caching.md); its hybrid-KV align
+# mode matches at a finer unit (prefix_match_unit here). SGLang pages default to one token.
+# TensorRT-LLM reuses partially matched blocks by default (enable_partial_reuse); Replay
+# reuses only complete blocks.
+cells = ["limited:hybrid KV", "supported", "not_supported"]
+note = "vLLM reuses whole blocks, except hybrid KV models at prefix_match_unit; SGLang matches per token at page size 1; TensorRT-LLM's default partial block reuse is not modeled."
+
+[[sections.rows]]
+name = "Hybrid KV cache (per-request state)"
+doc = "replay/engine/kv-cache.md#state-cache"
+# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated, G1 only.
+cells = ["limited", "not_supported", "not_supported"]
+note = "Kimi K3 and DeepSeek V4 state in G1, aggregated and P/D; prefix reuse resumes from state snapshots. No G2/G3 or recommend."
+
+[[sections.rows]]
+name = "Frontend tokenization cost"
+doc = "replay/engine/README.md#request-tokenization"
+cells = ["supported", "supported", "supported"]
+note = "Each worker's tokenizer servers add a fixed plus per-input-token delay."
+
+[[sections.rows]]
+name = "Response detokenization cost"
+doc = "replay/engine/README.md#detokenization"
+cells = ["supported", "supported", "supported"]
+note = "Each emitting worker's detokenizer servers add a fixed plus per-output-token delay before the client sees tokens."
+
+[[sections]]
+id = "speculation"
+title = "Speculative decoding"
+
+[[sections.rows]]
+name = "MTP"
+doc = "replay/engine/speculation.md#mtp"
+cells = ["limited", "limited", "limited"]
+note = "1–5 drafts with a supplied acceptance rate; TensorRT-LLM keeps its legacy scheduling approximation."
+
+[[sections.rows]]
+name = "EAGLE-3, DSPARK"
+doc = "replay/engine/speculation.md#registered-schemes"
+# config/engine.py _validate_speculation: vLLM and SGLang only.
+cells = ["limited", "limited", "not_supported"]
+note = "Linear 1–5 token drafts with a supplied acceptance rate; no tree drafting; model-family gates apply."
+
+[[sections.rows]]
+name = "DFlash, draft model"
+doc = "replay/engine/speculation.md#registered-schemes"
+# aisimulate_core/sdk/speculation/{dflash,draft_model}.py: _SUPPORTED_BACKENDS = ("vllm",).
+cells = ["limited", "not_supported", "not_supported"]
+note = "Linear 1–5 token drafts from a draft checkpoint; DFlash covers Llama and DeepSeek V4."
+
+[[sections.rows]]
+name = "N-gram prompt lookup"
+doc = "replay/engine/speculation.md#prompt-lookup-ngram"
+cells = ["limited", "not_supported", "not_supported"]
+note = "Fixed draft length and acceptance assumption."
+
+[[sections]]
+id = "kv-cache"
+title = "KV cache hierarchy"
+intro = "With KVCR, a worker fetches a cached prefix from a peer worker's G2."
+row_header = "Tier"
+columns = ["vLLM", "SGLang / HiCache", "TensorRT-LLM", "KVCR vLLM", "KVCR SGLang", "KVCR TensorRT-LLM"]
+
+[[sections.rows]]
+name = "G1"
+detail = "Device memory"
+doc = "replay/engine/kv-cache.md#gpu-cache-g1"
+cells = ["supported", "supported", "supported", "na", "na", "na"]
+
+[[sections.rows]]
+name = "G2 local"
+detail = "Host memory per DP rank"
+doc = "replay/engine/kv-cache.md#g2-scope"
+cells = ["limited", "not_supported", "not_supported", "na", "na", "na"]
+note = "Requires prefix caching; generic speculation schemes are rejected."
+
+[[sections.rows]]
+name = "G2 shared"
+detail = "Host memory pool across workers"
+doc = "replay/engine/kv-cache.md#g2-scope"
+# KVCR shares G2 through peer fetch; it rejects the cluster_shared pool scope.
+cells = ["limited", "not_supported", "not_supported", "limited:peer fetch", "na", "na"]
+note = "A shared pool needs matching geometry on every role. KVCR needs router hints (idle on CLI traffic), aggregated or P/D prefill pools, no G3."
+
+[[sections.rows]]
+name = "G3 local"
+detail = "Storage per worker"
+doc = "replay/engine/kv-cache.md#g3-offload"
+cells = ["limited", "not_supported", "not_supported", "not_supported", "na", "na"]
+note = "Aggregated worker with attention DP 1 only; no P/D, agentic traffic, speculation or recommend."
+
+[[sections.rows]]
+name = "G3 shared"
+detail = "Storage shared by workers"
+doc = "replay/engine/kv-cache.md#g3-offload"
+cells = ["limited", "not_supported", "not_supported", "na", "na", "na"]
+note = "Same limits as G3 local."
+
+[[sections]]
+id = "routing"
+title = "KV transfer and routing"
+
+[[sections.rows]]
+name = "P/D KV transfer timing"
+doc = "replay/engine/kv-transfer.md#link-sharing"
+cells = ["supported", "supported", "supported"]
+note = "Concurrent transfers share per-rank links max-min fairly. vLLM and TensorRT-LLM reserve source-first; SGLang destination-first."
+
+[[sections.rows]]
+name = "KV-aware routing (Dynamo Router)"
+doc = "replay/dynamo.md#router-configuration"
+cells = ["supported", "supported", "supported"]
+note = "Requires the optional Dynamo stack."
+
+[[sections.rows]]
+name = "Autoscaling (Dynamo Planner)"
+doc = "replay/dynamo.md#planner-dynamo-adapter"
+cells = ["supported", "supported", "supported"]
+note = "Requires the optional Dynamo stack."
+
+[[sections]]
+id = "workloads"
+title = "Workloads"
+
+[[sections.rows]]
+name = "Synthetic and trace replay"
+doc = "replay/workloads.md#trace-source"
+cells = ["supported", "supported", "supported"]
+note = "Mooncake and compatible trace formats."
+
+[[sections.rows]]
+name = "Multi-turn sessions"
+doc = "replay/workloads.md#synthetic-session-source"
+cells = ["supported", "supported", "supported"]
+note = "Think time between turns."
+
+[[sections.rows]]
+name = "Vision-language on the language worker"
+doc = "replay/engine/workers.md#sglang-host-loop-frontend-and-vision"
+cells = ["not_supported", "limited", "not_supported"]
+note = "Fixed synthetic images, PP 1 and attention DP 1; frontend costs from a host cost table."
+
+[[sections]]
+id = "agentx"
+title = "AgentX (agentic replay)"
+intro = "Offline engine stack only. Results are qualified functional_only, not hardware accuracy. Rows in other sections do not automatically compose with agentic traffic; these rows do."
+
+[[sections.rows]]
+name = "Weka, Agentic Mooncake and agentic Dynamo traces"
+doc = "replay/workloads.md#agentic-load-controls"
+# runner.py supported_agentic_backends: vLLM and SGLang; agentic_qualification="functional_only".
+cells = ["supported:functional", "supported:functional", "not_supported"]
+note = "Dependency-graph replay in lanes; Weka is the AgentX source format."
+
+[[sections.rows]]
+name = "Seeded snapshots"
+doc = "replay/workloads.md#agentic-snapshot"
+cells = ["supported", "supported", "not_supported"]
+note = "Cut sampled uniformly between 25% and 75% of each play; import AIPerf cuts for parity runs."
+
+[[sections.rows]]
+name = "Warmup, continuous profile"
+doc = "replay/workloads.md#agentic-profile"
+cells = ["limited", "limited", "not_supported"]
+note = "Sequential lane recycling only (no random or shuffle); AIPerf --cache-bust is not implemented; engine.detokenization is rejected with a profile."
+
+[[sections.rows]]
+name = "G2 host offload"
+doc = "replay/engine/kv-cache.md#agentic-g2"
+# crates/core/src/python.rs agentic host-offload checks.
+cells = ["limited", "not_supported", "not_supported"]
+note = "One aggregated worker or 1P1D, attention DP 1 on every role, static pools, no speculation."
+
+[[sections.rows]]
+name = "G3 offload, KVCR"
+doc = "replay/engine/kv-cache.md#agentic-g2"
+cells = ["not_supported", "not_supported", "not_supported"]
+note = "G3 is rejected; KVCR stays idle without router hints."
+
+[[sections.rows]]
+name = "Speculative decoding"
+doc = "replay/engine/speculation.md#mtp"
+cells = ["limited:HBM only", "limited:HBM only", "not_supported"]
+note = "MTP and EAGLE-family schemes with KV kept in GPU memory."
+
+[[sections.rows]]
+name = "KV-aware routing, Planner"
+doc = "replay/dynamo.md"
+cells = ["not_supported", "not_supported", "not_supported"]
+note = "The engine stack places requests round-robin without conversation affinity; AgentX on the Dynamo stack needs downstream qualification; agentic formats require planner.policy: disabled."
+
+[[sections]]
+id = "search"
+title = "Deployment search"
+
+[[sections.rows]]
+name = "Configuration search (recommend)"
+doc = "sweeper/README.md"
+cells = ["supported", "supported", "supported"]
+note = "Ranks candidates under a GPU budget and SLA."
+
+[[sections.rows]]
+name = "Dynamo deployment generation"
+doc = "sweeper/deployment-generation.md"
+cells = ["supported", "supported", "supported"]
+note = "Renders the selected candidate for a pinned serving image."
