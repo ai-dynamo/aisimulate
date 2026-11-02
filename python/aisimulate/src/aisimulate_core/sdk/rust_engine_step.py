@@ -114,7 +114,10 @@ class ForwardPassPerfModelConfig:
     ``sampling.axes`` selects 1 to 6 retention coordinates; its length must
     match ``sampling.bins_per_axis``. The defaults remain attention/MoE,
     ``[4, 4]`` bins, and 64 retained observations per store. Independent
-    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates. Omitted
+    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates; alternatively,
+    ``fit.linear.feature_set="fpm5"`` fits the 17 cross-rank aggregates of the
+    learned ``fpm5`` preset from scalar counters (it needs
+    ``sampling.max_observations >= 18`` and default ``feature_axes``). Omitted
     ``fit.linear`` retains the existing attention/MoE fit, nonnegative slopes,
     and eager updates. ``fit.linear.non_negative=False`` permits signed slopes.
     ``fit.linear.update_policy`` accepts ``{"kind": "always"}`` or an explicit
