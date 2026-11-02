@@ -734,12 +734,14 @@ async function fetchSummary(path) {
 async function loadBranch(branchName, restoreSelection = false, previewData = null) {
   const loadId = ++state.loadId;
   const params = new URL(location.href).searchParams;
+  if (restoreSelection) restoreView(params);
   const entry = state.catalog.branches.find((item) => item.branch === branchName);
   clearSnapshot("Loading accuracy snapshot…");
   state.branch = entry ?? null;
   try {
     if (!entry) throw new Error(`Unknown branch: ${branchName}`);
     branchSelect.value = entry.branch;
+    renderView();
     branchStatus.textContent = `Loading ${entry.branch}…`;
     if (!restoreSelection) updateLocation();
     if (entry.summary_path === null) {
@@ -917,7 +919,7 @@ function filterSnapshot(data) {
 
 function restoreView(params) {
   state.specMethod = ["none", "mtp"].includes(params.get("spec")) ? params.get("spec") : "all";
-  state.tab = params.get("tab") === "details" ? "details" : "overview";
+  state.tab = ["details", "agentx"].includes(params.get("tab")) ? params.get("tab") : "overview";
   state.excludeOutliers = params.get("outliers") === "1";
   state.excludeAbnormal = params.get("abnormal") === "1";
   state.excludeMultinode = params.get("multinode") === "1";
@@ -942,13 +944,17 @@ function filterField(key, title, values, selected) {
 }
 
 function renderView() {
-  const details = state.tab === "details";
-  document.getElementById("tab-overview").setAttribute("aria-pressed", String(!details));
+  const details = state.tab === "details", agentx = state.tab === "agentx";
+  document.getElementById("tab-agentx").setAttribute("aria-pressed", String(agentx));
+  document.getElementById("agentx-view").hidden = !agentx;
+  for (const node of document.querySelectorAll(".topology-control, .exclusions, #filter-note, #evidence-brief, .public-notes")) node.hidden = agentx;
+  if (agentx) window.AgentX.load(branchSelect.value || new URL(location.href).searchParams.get("branch") || "main");
+  document.getElementById("tab-overview").setAttribute("aria-pressed", String(!details && !agentx));
   document.getElementById("tab-details").setAttribute("aria-pressed", String(details));
-  matrixLayout.hidden = details;
-  summaryGrid.hidden = details;
-  document.getElementById("framework-summary").hidden = details;
-  document.getElementById("hardware-summary").hidden = details;
+  matrixLayout.hidden = details || agentx;
+  summaryGrid.hidden = details || agentx;
+  document.getElementById("framework-summary").hidden = details || agentx;
+  document.getElementById("hardware-summary").hidden = details || agentx;
   document.getElementById("details-view").hidden = !details;
   document.getElementById("detail-filters").hidden = !details;
   for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
@@ -1096,7 +1102,7 @@ function bindCharts(container, topology) {
 }
 
 function refreshCharts() { renderDrilldown(); if (state.tab === "details") renderDetails(); updateLocation(); }
-for (const tab of ["overview", "details"]) document.getElementById(`tab-${tab}`).addEventListener("click", () => {
+for (const tab of ["overview", "details", "agentx"]) document.getElementById(`tab-${tab}`).addEventListener("click", () => {
   state.tab = tab; renderView(); if (state.data) {renderMatrix(); renderDrilldown();} updateLocation();
 });
 for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {

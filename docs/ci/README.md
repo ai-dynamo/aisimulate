@@ -572,3 +572,29 @@ a `review_pic` **User ID** variable inserted as a mention in the channel
 message, and must be republished after template changes. Missing or invalid
 rotation configuration stops delivery. See the
 [setup and configuration guide](../../DEVELOPMENT.md#slack-review-digest-and-weekly-pic).
+
+### AgentX accuracy extension
+
+The daily E2E branch matrix also evaluates the reviewed AgentX catalog. Each branch
+uses its exact wheel and the same single resolved HF revision as InfX. Two bounded
+CPU shards run one replay at a time; no new GPU measurements are collected.
+Native request/sample/lifecycle telemetry is required. Older wheels retain explicit
+unsupported or failed outcomes rather than inheriting main's predictions.
+
+Private outputs use the existing encrypted-artifact helper and seven-day retention.
+The separate `e2e-agentx-web-<branch-key>` artifact contains qualified numerical
+summaries, lazy detail payloads, and provenance; preview artifacts use
+`e2e-agentx-preview-<branch-key>` and cannot enter production Pages. Qualification
+requires the complete catalog cohort and matching evaluated wheel, driver, and HF
+revisions. The Pages publisher independently validates the trusted producer and
+public field allowlist. Numerical accuracy remains advisory.
+
+AgentX contract tests share the E2E forward-pass-engine, replay, infra, and
+maintainer ownership in `.github/codeowners/areas.yaml`.
+
+The private dataset worker imports silicon into `data/e2e/agentx/` and opens an HF
+candidate. A reviewed catalog update is required to enroll later measurements.
+Deploy the dashboard/CI changes after promoting the initial dataset candidate;
+until that catalog exists, AgentX input fetching fails explicitly while the
+independent InfX jobs retain their existing behavior. See the
+[AgentX dashboard contract](../../pages/e2e-accuracy/README.md#agentx-beta).

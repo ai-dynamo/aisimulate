@@ -1102,3 +1102,19 @@ test(`HF campaigns show pinned provenance and source-resolved settings (${policy
 });
 
 }
+
+test("AgentX pools requests directly and averages run errors equally", () => {
+  const context = vm.createContext({window: {addEventListener() {}}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const run = (point, sum, count) => ({
+    point_errors: {ttft_ms:point,tpot_ms:point,output_tokens_s:point},
+    request_errors: {ttft_ms:{sum_ape:sum,count},tpot_ms:{sum_ape:sum,count}},
+    coverage:{measured:count,matched:count},
+  });
+  context.input = [run(100,100,1),run(0,0,3),run(null,0,0)];
+  const result = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(result.point_errors.ttft_ms,50);
+  assert.equal(result.point_counts.ttft_ms,2);
+  assert.equal(result.request_errors.ttft_ms.mape,25);
+  assert.equal(result.request_errors.ttft_ms.count,4);
+});

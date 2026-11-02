@@ -659,3 +659,88 @@ change predictions, cohort selection, or accuracy metrics.
 
 The browser smoke check verifies that MTP summary values survive a page reload,
 as well as the selected filter.
+
+## AgentX beta
+
+The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
+It does not change InfX snapshots or calculate shape errors. The beta notice links
+to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
+
+Initial coverage is explicitly selected in the reviewed private HF catalog
+`catalog/e2e/agentx.json`:
+
+- **AgentX:** B300, SGLang, GLM-5.3 NVFP4, TP8; points 446063, 446068,
+  446069, 446060, 446061, 446062 at 1, 4, 8, 10, 13, 14 lanes.
+- **Self-collected:** B300, vLLM, Qwen3.5-397B-A17B BF16, TP8; 4K/32K initial
+  prompts × cold/warm cache × 1/4/16 lanes × three repeats (36 runs).
+  The public dataset link is intentionally **coming soon**. TODO: add its public
+  HF URL after migration; never expose the private cache URL in the dashboard.
+
+Model rows expand. Concurrency rows open details; Qwen has exactly three such
+rows, combining all prompt/cache variants and repeats. Detail selectors default
+to 4K, cold, repeat 0 and persist in the URL. The selected run is labeled separately
+from the concurrency summary. Branches retain their own evidence, including
+unsupported outcomes; a release never borrows main's AgentX results.
+
+### Accuracy and accounting
+
+The five columns are point TPOT error, point TTFT error, point output-throughput
+error, request TTFT MAPE, and request TPOT MAPE. Throughput is **output tokens/s**.
+
+- Point error is `100 * abs(prediction - silicon) / silicon`, computed separately
+  for every run's mean metric. Model/concurrency rows average those errors equally,
+  not errors derived from averaged latencies. Null errors are not zeroes.
+- Request MAPE pools individual request errors directly across repeats and
+  variants. Each eligible request has equal weight, including in model summaries.
+  TTFT and TPOT have separate denominators; undefined or zero-denominator errors
+  remain unavailable.
+- Every measured request has a comparison record. Success, unique identity,
+  positive recorded output lengths, equal output lengths, and valid measurements
+  determine eligibility. Missing, failed, ambiguous, invalid-output, and
+  output-length-mismatched observations retain explicit counts. Different input
+  lengths are reported and do not imply identical prompts or cache histories.
+- GLM retains the successful profiling cohort span. Qwen retains the complete
+  finite measured cohort, including between-turn delays. Preparation and warmup
+  remain outside scoring. Qwen additionally requires native cache receipts to
+  match the measured trajectory before publishing accuracy.
+
+### Publication and detail data
+
+The runner fetches checksum-pinned inputs at one immutable HF revision, then runs
+observed-output replays using the evaluated wheel's native request, sample, and
+lifecycle telemetry. Measured framework versions and prediction database versions
+are recorded separately. No historical predictions, timing calibration, or GPU
+collection are used.
+
+`summary.json`, `details/<run-id>.json`, and `qualification.json` form one complete
+campaign. Qualification requires every catalog identity, consistent wheel,
+dataset, evaluated commit, and driver digests, and reconciled request accounting.
+Raw traces, token arrays, local paths, and logs remain private. Only explicit
+numerical projections and approved source links enter the public payload.
+
+The trusted Pages publisher checks the producer workflow and qualification job,
+branch ancestry, checksums, safe paths, allowed fields, and overview/detail
+agreement. Detail JSON loads on demand. `replay.html` uses the shared native replay
+renderer and one Plotly asset; no reference report HTML is copied. Optional
+`report.reference.pairs` adds silicon/prediction distributions and reference values
+in request inspection; ordinary replay exports omit it and retain their behavior.
+
+Validation:
+
+```bash
+python -m pytest -c /dev/null tests/test_agentx_accuracy.py -q
+python scripts/pages/check_agentx_browser.py
+```
+
+Public rollout requires a complete 42-replay preview and review/promotion of the
+private dataset candidate. Failed/unsupported outcomes remain in complete campaign
+accounting; accuracy is advisory. Source intake lives in `aisim-hf-dataset-ci`.
+
+The initial CPU preview completed all 42 replays using wheel source commit
+`49584d9e38032e68e16f6c110464f6f0d7046d3f` and private candidate revision
+`2cf1dacf9187462f6921d70ccf3d23dcad03f22c`. All 2,016 Qwen measured requests
+matched. GLM retained 8,747 measured requests: 8,545 matched, 37 measured failures,
+and 165 missing predictions. The two complete imports produced the same catalog
+checksum `4a0191e32522856e0580e4e3a624bcf7689fa604cce3f264a3cd08bbe6fc5121`.
+This validates pipeline accounting, not numerical accuracy. Daily CI must generate
+new predictions; the preview is not a production snapshot.
