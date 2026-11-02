@@ -688,6 +688,9 @@ where
 #[derive(Debug)]
 struct TraceRequestStats {
     arrival_time_ms: f64,
+    /// Position in this reporting epoch's arrival order. Unlike the request
+    /// UUID, which may be random, it orders the summary deterministically.
+    arrival_ordinal: u64,
     first_admit_ms: Option<f64>,
     terminal_time_ms: Option<f64>,
     terminal_status: Option<ReplayTerminalStatus>,
@@ -1190,6 +1193,7 @@ pub struct TraceCollector {
     bounded_summary: Option<bounded::BoundedSummary>,
     completed_to_retire: Vec<Uuid>,
     prepared_report: Option<ReplayReport>,
+    arrivals: u64,
     /// Absolute simulated timestamp at which this reporting epoch began.
     /// Collection uses the runtime clock; aggregate rates use elapsed epoch
     /// time. Warmed reports rebase measured request and play outcome timestamps
@@ -1473,10 +1477,13 @@ impl TraceCollector {
         input_length: usize,
         requested_output_length: usize,
     ) {
+        let arrival_ordinal = self.arrivals;
+        self.arrivals += 1;
         self.requests.insert(
             uuid,
             TraceRequestStats {
                 arrival_time_ms,
+                arrival_ordinal,
                 first_admit_ms: None,
                 terminal_time_ms: None,
                 terminal_status: None,
@@ -2037,7 +2044,7 @@ impl TraceCollector {
             left.authored_id
                 .as_deref()
                 .cmp(&right.authored_id.as_deref())
-                .then_with(|| left_uuid.cmp(right_uuid))
+                .then_with(|| left.arrival_ordinal.cmp(&right.arrival_ordinal))
         });
 
         for uuid in &request_order {
@@ -3647,6 +3654,28 @@ mod tests {
                 vec!["request-a", "request-b", "request-c"]
             );
         }
+    }
+
+    #[test]
+    fn anonymous_summary_is_independent_of_runtime_uuid() {
+        fn report(uuids: [u128; 3]) -> ReplayReport {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(true);
+            for (uuid, ttft_ms) in uuids.into_iter().zip([1.0e16, 1.0, 1.0]) {
+                let uuid = Uuid::from_u128(uuid);
+                collector.on_arrival(uuid, 0.0, 100, 1);
+                collector.on_admit(uuid, 0.0, 0);
+                collector.on_token(uuid, ttft_ms);
+                collector.on_terminal(uuid, ttft_ms, ReplayTerminalStatus::Completed);
+            }
+            collector.finish()
+        }
+
+        // The same arrivals under different UUIDs must sum in the same order.
+        assert_eq!(
+            serde_json::to_value(report([1, 2, 3])).unwrap(),
+            serde_json::to_value(report([3, 1, 2])).unwrap()
+        );
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental
