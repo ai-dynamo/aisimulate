@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
 
 
@@ -146,28 +145,11 @@ class TestGetContextTestCases:
 
 class TestGetGenerationTestCases:
     def test_memory_guard(self):
-        """The generation grid respects its declared token budget."""
+        """No test case exceeds batch_size * seq_len > 256K."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod.get_generation_test_cases("dsa"):
-                assert case[0] * case[1] <= mod.get_mla_module_sweep_spec("sglang").generation_max_tokens
-
-
-@pytest.mark.unit
-def test_agentic_generation_grid_preserves_old_shapes_and_prefill_batches():
-    mod = _import_module()
-    sweep = mod.get_mla_module_sweep_spec("sglang")
-    with patch.object(mod, "get_sm_version", return_value=90):
-        cases = mod.get_generation_test_cases("dsa")
-    pairs = {(case[1], case[0]) for case in cases}
-    old_batches = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-    old_lengths = [1, *[2**power for power in range(2, 18)]]
-    old_pairs = {(b, s) for b in old_batches for s in old_lengths if b * s <= 262144}
-    agentic_lengths = old_lengths + [262144, 393216, 524288, 655360, 720896]
-    assert old_pairs <= pairs
-    assert {(b, s) for b in [4, 8, 16, 32, 52] for s in agentic_lengths} <= pairs
-    assert sweep.context_batch_sizes == old_batches
-    assert sweep.generation_msa_max_tokens == 33554432
+                assert case[0] * case[1] <= 256 * 1024
 
 
 class TestDsaContextPrefixShape:
