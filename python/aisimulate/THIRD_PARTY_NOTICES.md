@@ -210,19 +210,23 @@ The full Apache-2.0 license text is reproduced in `LICENSE`. This section
 records provenance for NVIDIA-authored predecessor code; it is not a claim
 that Dynamo is owned by an unaffiliated third party.
 
-## SGLang decode-graph eligibility
+## SGLang decode-graph eligibility and cache planning
 
-The graph-eligibility and request-bound checks in `collector/sglang/collect_mla_module.py` and
+The graph-eligibility, request-bound checks and cache planning in `collector/sglang/collect_mla_module.py` and
 its synthetic regressions in `tests/unit/collector/sglang/test_collect_mla_module.py`
 adapt SGLang 0.5.21 at immutable commit
 `e00930c5489053f26d86b179cee0d087f846acbb`:
 `python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py:714-719`
 `python/sglang/srt/arg_groups/cuda_graph_hook.py:649-657`, and
 `python/sglang/srt/managers/tokenizer_manager.py:1290-1330`, and
-`python/sglang/srt/mem_cache/kv_cache_configurator.py:2264-2280`.
+`python/sglang/srt/mem_cache/kv_cache_configurator.py:2264-2280,2572-2627`,
+`python/sglang/srt/mem_cache/memory_pool.py:4395-4464,4869-4958`, and
+`python/sglang/srt/mem_cache/index_key_cache.py:13-39`.
 NVIDIA modified the check for isolated module collection: padding-enabled
 serving eligibility selects an exact-shape module graph, not a padded serving
-bucket. The native runtime and prefill policy remain unchanged.
+bucket. Cache planning applies the native layout arithmetic to exclude
+physically infeasible cases before queueing. The native runtime and prefill
+policy remain unchanged.
 
 Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
 Copyright 2023-2026 SGLang Team and contributors. Licensed under Apache-2.0:

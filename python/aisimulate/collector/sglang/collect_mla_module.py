@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2023-2026 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
-# NVIDIA modifications adapt native decode graph eligibility for module collection.
+# NVIDIA modifications adapt native decode graph eligibility and cache planning for module collection.
 
 """
 MLA Module Collector for SGLang — unified MLA and DSA benchmarking.
@@ -807,12 +807,82 @@ def _dedup_dsa_consumer_models(model_specs):
 _DSA_CEILING_MAX_POSITIONS = (163840, 202752, 1048576)  # DeepSeek-V3.2, GLM-5, GLM-5.2
 
 
+def _estimated_generation_kv_bytes_per_token(model_path: str, attn_type: str, kv_dtype: str, dsa_backend: str | None):
+    """Conservative cache footprint across every loaded layer, not just the timed layer.
+
+    SGLang e00930c5: memory_pool.py:4395-4464 (MLA), :4869-4958 (DSA),
+    index_key_cache.py:13-39 (132-byte index K), and
+    kv_cache_configurator.py:2572-2627 (raw TRTLLM vs scaled FlashMLA FP8).
+    Index sharing may elide consumer-layer buffers; counting all layers is an
+    upper bound. The timed skip-indexer variant loads the same native pools.
+    """
+    config_file = os.path.join(_MODEL_CONFIG_DIR, f"{model_path.replace('/', '--')}_config.json")
+    with open(config_file) as f:
+        config = json.load(f)
+    layers = int(os.environ.get("SGLANG_TEST_NUM_LAYERS", "2"))
+    if layers <= 0 or os.environ.get("SGLANG_LOAD_FORMAT", "dummy") != "dummy":
+        layers = int(config["num_hidden_layers"])
+    rank, rope = int(config["kv_lora_rank"]), int(config["qk_rope_head_dim"])
+    if kv_dtype not in SGLANG_KV_DTYPE or min(layers, rank, rope) <= 0:
+        raise ValueError(f"Invalid MLA/DSA cache geometry or dtype for {model_path}: {kv_dtype}")
+    main = (rank + rope) * (1 if kv_dtype == "fp8" else 2)
+    index = 0
+    if attn_type == "dsa":
+        index_dim = int(config["index_head_dim"])
+        index = index_dim + index_dim // 128 * 4
+        if kv_dtype == "fp8" and dsa_backend != "trtllm":
+            main = rank + rank // 128 * 4 + rope * 2
+    return layers * (main + index)
+
+
+def _generation_manifest(attn_type, num_heads, kv_dtype, compute_dtype, gemm_type, model_path, dsa_backend=None):
+    """Resolve a generation task's exact (batch, past KV, prefix) list before queueing."""
+    shapes = [
+        (tc[1], tc[0], 0)
+        for tc in get_generation_test_cases(attn_type)
+        if tc[2:] == [num_heads, kv_dtype, compute_dtype, gemm_type]
+    ]
+    if attn_type == "dsa":
+        sweep = get_mla_module_sweep_spec("sglang")
+        max_pos = _model_max_position_embeddings(model_path)
+        extra_kv = set(sweep.context_prefix_lengths) if 1 in sweep.generation_batch_sizes else set()
+        if max_pos is not None and 1 in sweep.generation_batch_sizes:
+            extra_kv.update(pos - 1 for pos in _DSA_CEILING_MAX_POSITIONS)
+        have = set(shapes)
+        for length in sorted(extra_kv):
+            shape = (1, length, 0)
+            if length > 0 and (max_pos is None or length < max_pos) and shape not in have:
+                shapes.append(shape)
+                have.add(shape)
+    # Match MSA's sanctioned plan-time memory filter. No CUDA during head-node
+    # planning leaves coverage intact; the worker's actual-pool guard remains.
+    if torch.cuda.is_available():
+        total = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+        per_token = _estimated_generation_kv_bytes_per_token(model_path, attn_type, kv_dtype, dsa_backend)
+        # Page 64 is native DSA and upper-bounds this collector's MLA defaults
+        # (arg_groups/overrides.py:1071-1104 @e00930c5). Include the pool's
+        # padding page (memory_pool.py:4459, index_key_cache.py:16).
+        kept = [
+            (b, s, p)
+            for b, s, p in shapes
+            if (required_kv_alloc_tokens(b, s, p, 64, is_prefill=False) + 64) * per_token <= int(total * 0.9)
+        ]
+        if len(kept) != len(shapes):
+            print(
+                f"[{attn_type.upper()}] plan: dropped {len(shapes) - len(kept)}/{len(shapes)} shapes "
+                f"(memory budget, device={total / 2**30:.0f}GB, model={model_path}, kv={kv_dtype})"
+            )
+        shapes = kept
+    return tuple(shapes)
+
+
 def _build_module_test_cases(attn_type: str, mode: str):
     """Build one test case per unique (local heads, target TP, precision, model) group.
 
     Output format: [seq_len, batch_size, num_heads, kv_cache_dtype,
                     compute_dtype, gemm_type, model_path,
-                    attn_type, attention_backend, target_tp_size]
+                    attn_type, attention_backend, target_tp_size, dsa_backend,
+                    inner_manifest (generation only)]
 
     Each test case triggers a subprocess that sweeps all (batch_size, seq_len)
     combinations internally, so we only need one entry per group — not one per
@@ -879,6 +949,20 @@ def _build_module_test_cases(attn_type: str, mode: str):
                     else:
                         dsa_backends = (None,)
                     for dsa_backend in dsa_backends:
+                        manifest = None
+                        if mode == "generation":
+                            manifest = _generation_manifest(
+                                attn_type,
+                                num_heads,
+                                kv_dtype,
+                                compute_dtype,
+                                gemm_type,
+                                model_spec.model_path,
+                                dsa_backend,
+                            )
+                            if not manifest:
+                                print(f"[{attn_type.upper()}] plan: empty generation manifest; group not queued")
+                                continue
                         cases.append(
                             [
                                 0,
@@ -893,6 +977,7 @@ def _build_module_test_cases(attn_type: str, mode: str):
                                 target_tp_size,
                                 dsa_backend,
                             ]
+                            + ([manifest] if mode == "generation" else [])
                         )
     return cases
 
@@ -933,6 +1018,14 @@ def _build_wideep_mla_test_cases(mode: str):
                 if consumer_key in seen_consumer_keys:
                     continue
                 seen_consumer_keys.add(consumer_key)
+                manifest = None
+                if mode == "generation":
+                    manifest = _generation_manifest(
+                        "mla", num_heads, "bfloat16", "bfloat16", "bfloat16", model_spec.model_path
+                    )
+                    if not manifest:
+                        print("[MLA] plan: empty generation manifest; group not queued")
+                        continue
                 # Single precision: run with bfloat16, log as fp8_block/fp8
                 cases.append(
                     [
@@ -946,6 +1039,7 @@ def _build_wideep_mla_test_cases(mode: str):
                         "mla",
                         backend,
                     ]
+                    + ([1, None, manifest] if mode == "generation" else [])
                 )
     return cases
 
@@ -2771,6 +2865,7 @@ def run_mla_module(
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
     chunked_prefill_size: int | None = None,
+    inner_manifest=None,
 ):
     """Run MLA/DSA module benchmark — called inside a subprocess.
 
@@ -2797,7 +2892,9 @@ def run_mla_module(
         all_cases = get_context_test_cases(attn_type)
         phase_name = "Context"
     else:
-        all_cases = get_generation_test_cases(attn_type)
+        if not inner_manifest:
+            raise RuntimeError("MLA/DSA generation requires a nonempty planned inner manifest")
+        all_cases = []
         phase_name = "Generation"
 
     # Filter to matching precision combo.
@@ -2849,36 +2946,14 @@ def run_mla_module(
                         and _dsa_context_prefix_shape_is_valid(bs, seq_len, _ceil, max_position_embeddings=_max_pos)
                     ):
                         cases.append((bs, seq_len, ip, _ceil))
-    elif attn_type == "dsa":
-        # Generation (decode): the perf "step" is the past-KV length (logged as
-        # seq_length here, prefix stays 0). Mirror ctx's prefix coverage beyond
-        # the declared generation anchors: extend the KV-length
-        # grid with ctx's context_prefix_lengths plus the hardcoded DSA
-        # max_position ceilings (_DSA_CEILING_MAX_POSITIONS) minus 1 (= last valid
-        # KV position), capped below to < this model's max_position. High-context
-        # decode is small-batch, so the extension runs at bs=1 (keeps bs*seq
-        # within the decode budget) — GLM-5.2 thus also lands a KV point at
-        # GLM-5's 202752 max.
-        _sweep = get_mla_module_sweep_spec("sglang")
-        _max_pos = _model_max_position_embeddings(model_path)
-        cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
-        _have = {(bs, sl) for bs, sl, _ in base_cases}
-        _extra_kv = set(_sweep.context_prefix_lengths) if 1 in _sweep.generation_batch_sizes else set()
-        # Only extend with the hardcoded DSA max_position ceilings when this
-        # model's context limit is known; otherwise (unknown model) we would add
-        # ~1M-KV shapes and risk OOM / wasted collection. Mirrors the context path.
-        if _max_pos is not None and 1 in _sweep.generation_batch_sizes:
-            for _cover_pos in _DSA_CEILING_MAX_POSITIONS:
-                _extra_kv.add(_cover_pos - 1)
-        for _sl in sorted(_extra_kv):
-            if _sl <= 0 or (_max_pos is not None and _sl > _max_pos - 1):
-                continue
-            if (1, _sl) not in _have:
-                cases.append((1, _sl, False, 0))
-                _have.add((1, _sl))
+    elif not is_prefill:
+        # Queued generation cases bind their retained shapes in task identity.
+        # Never re-expand or re-filter them using the worker's current device.
+        cases = [(bs, seq_len, False, prefix_len) for bs, seq_len, prefix_len in inner_manifest]
     else:
         cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
-    cases = _filter_cases_from_env(cases, is_prefill=is_prefill, attn_type=attn_type)
+    if is_prefill:
+        cases = _filter_cases_from_env(cases, is_prefill=True, attn_type=attn_type)
 
     print(f"\n{'=' * 60}")
     print(
@@ -3064,6 +3139,7 @@ def _run_mla_subprocess(
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
     chunked_prefill_size: int | None = None,
+    inner_manifest=None,
 ):
     """Run MLA/DSA benchmark in a subprocess with CUDA_VISIBLE_DEVICES isolation."""
     env = os.environ.copy()
@@ -3081,7 +3157,7 @@ def _run_mla_subprocess(
         f'"{kv_cache_dtype}", "{compute_dtype}", "{gemm_type}", {is_prefill}, '
         f"0, {output_repr}, {backend_repr}, {batch_filter_repr}, {target_tp_size}, "
         f"{dsa_backend_repr}, skip_indexer={skip_indexer}, ordinary_mla={ordinary_mla}, "
-        f"chunked_prefill_size={chunked_prefill_size!r})\n"
+        f"chunked_prefill_size={chunked_prefill_size!r}, inner_manifest={inner_manifest!r})\n"
     )
 
     # Per-subprocess timeout is OFF by default. A DSA context subprocess sweeps
@@ -3139,6 +3215,7 @@ def run_mla_module_worker(
     attention_backend: str | None = None,
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
+    inner_manifest=None,
     *,
     perf_filename: str,
     device: str = "cuda:0",
@@ -3147,8 +3224,8 @@ def run_mla_module_worker(
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
-    Each call runs ALL (batch_size, seq_len) combos for the given
-    (attn_type, num_heads, precision, model) combo in a subprocess.
+    Each generation call executes its exact planned inner manifest; context
+    retains the existing sweep for the given precision/model in a subprocess.
     DSA context uses batch_size to shard the prefix sweep across subprocesses;
     other module cases keep batch_size as a placeholder.
 
@@ -3212,6 +3289,7 @@ def run_mla_module_worker(
         skip_indexer=skip_indexer,
         ordinary_mla=os.path.basename(perf_filename) == "mla_context_module_perf.txt",
         chunked_prefill_size=chunked_prefill_size,
+        inner_manifest=inner_manifest,
     )
 
 
@@ -3296,6 +3374,15 @@ def main():
                     is_prefill = args.mode == "context"
                     gpu_id = int(args.device.split(":")[-1]) if ":" in args.device else 0
                     try:
+                        # Direct diagnostics resolve the same plan before entering
+                        # the worker, just as collect.py's generation getters do.
+                        manifest = None
+                        if not is_prefill:
+                            torch.cuda.set_device(gpu_id)
+                            dsa_backend = "trtllm" if get_sm_version() >= 100 else "flashmla_kv"
+                            manifest = _generation_manifest(
+                                attn_type, head_num, kv_dtype, compute_dtype, gemm_type, model_path, dsa_backend
+                            )
                         run_mla_module(
                             attn_type=attn_type,
                             head_num=head_num,
@@ -3309,6 +3396,7 @@ def main():
                             target_tp_size=target_tp_size,
                             ordinary_mla=args.ordinary_mla,
                             chunked_prefill_size=args.chunked_prefill_size,
+                            inner_manifest=manifest,
                         )
                     except Exception as e:
                         failed_dispatches += 1

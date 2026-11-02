@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
+from collector.helper import PhaseClock, create_test_case_id, render_phase_totals, run_measurement_subprocess
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +36,7 @@ def _mock_helper_imports(monkeypatch):
         get_device_capability=lambda *_a, **_kw: (9, 0),
         get_device_name=lambda *_a, **_kw: "Fake GPU",
         is_available=lambda: False,
+        current_device=lambda: 0,
         set_device=lambda *_a, **_kw: None,
     )
     fake_torch.randn = lambda *_a, **_kw: None
@@ -156,34 +157,6 @@ class TestGetGenerationTestCases:
 
 @pytest.mark.unit
 class TestAgenticGenerationCoverage:
-    @pytest.mark.parametrize("attn_type", ["mla", "dsa"])
-    @pytest.mark.parametrize("model", ["deepseek-ai/DeepSeek-V3.2", "zai-org/GLM-5", "nvidia/GLM-5.2-NVFP4"])
-    def test_generation_preserves_old_grid_and_long_anchors(self, monkeypatch, attn_type, model):
-        mod = _import_module()
-        max_position = mod._model_max_position_embeddings(model)
-        assert max_position is not None
-        captured = []
-        monkeypatch.setattr(mod, "load_model_runner", lambda **kwargs: object())
-        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
-        monkeypatch.setattr(
-            mod,
-            "run_attention_torch",
-            lambda **kwargs: captured.extend(kwargs["test_cases"]) or len(kwargs["test_cases"]),
-        )
-        mod.run_mla_module(attn_type, 8, model, "fp8", "bfloat16", "bfloat16", False, 0)
-        pairs = {(batch, length) for batch, length, _, _ in captured}
-        # Out-of-context declarations stay visible; the worker reports errors.
-        assert (1, 720896) in pairs
-        old_batches = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-        old_lengths = [1, *[2**power for power in range(2, 18)]]
-        assert {
-            (batch, length) for batch in old_batches for length in old_lengths if batch * length <= 262144
-        }.issubset(pairs)
-        if model == "nvidia/GLM-5.2-NVFP4":
-            target_lengths = old_lengths + [262144, 393216, 524288, 655360, 720896]
-            assert {(batch, length) for batch in [4, 8, 16, 32, 52] for length in target_lengths}.issubset(pairs)
-        assert (52, 131072) in pairs
-
     @pytest.mark.parametrize(("past_kv", "capacity"), [(15, 64), (16, 64), (15, 63)])
     def test_decode_bounds_report_errors_before_request_allocation(self, monkeypatch, capsys, past_kv, capacity):
         mod = _import_module()
@@ -266,16 +239,169 @@ class TestAgenticGenerationCoverage:
             ),
         )
         monkeypatch.setattr(mod, "_model_max_position_embeddings", lambda model: 1048576)
-        monkeypatch.setattr(mod, "load_model_runner", lambda **kwargs: object())
-        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
-        captured = []
+        assert mod._generation_manifest("dsa", 8, "fp8", "bfloat16", "bfloat16", "test") == ((52, 720896, 0),)
+
+
+@pytest.mark.unit
+class TestGenerationMemoryManifest:
+    @pytest.mark.parametrize(
+        "attn_type,kv_dtype,backend,expected",
+        [
+            ("mla", "bfloat16", None, 2304),
+            ("dsa", "bfloat16", None, 2568),
+            ("dsa", "fp8", "trtllm", 1416),
+            ("dsa", "fp8", "flashmla_kv", 1576),
+        ],
+    )
+    def test_native_pool_bytes_across_loaded_layers(self, monkeypatch, attn_type, kv_dtype, backend, expected):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        assert mod._estimated_generation_kv_bytes_per_token("zai-org/GLM-5.2", attn_type, kv_dtype, backend) == expected
+
+    @pytest.mark.parametrize("layers,load_format", [("0", "dummy"), ("2", "auto")])
+    def test_untrimmed_runner_uses_full_layer_count(self, monkeypatch, layers, load_format):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", layers)
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", load_format)
+        assert mod._estimated_generation_kv_bytes_per_token("zai-org/GLM-5.2", "dsa", "bfloat16", None) == 78 * 1284
+
+    @pytest.mark.parametrize("device_gib,expected_count", [(80, 1), (268, 2)])
+    def test_expanded_grid_drops_only_device_memory_shapes(self, monkeypatch, capsys, device_gib, expected_count):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=device_gib * 2**30),
+            raising=False,
+        )
+        # Explicit expanded fixture: the large cell needs 80.29 GiB of KV
+        # allocation alone, including fresh-token and padding pages.
         monkeypatch.setattr(
             mod,
-            "run_attention_torch",
-            lambda **kwargs: captured.extend(kwargs["test_cases"]) or len(kwargs["test_cases"]),
+            "get_generation_test_cases",
+            lambda _: [
+                [720896, 1, 8, "bfloat16", "bfloat16", "bfloat16"],
+                [131072, 256, 8, "bfloat16", "bfloat16", "bfloat16"],
+            ],
         )
-        mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", False, 0)
-        assert captured == [(52, 720896, False, 0)]
+        monkeypatch.setattr(
+            mod,
+            "get_mla_module_sweep_spec",
+            lambda _: types.SimpleNamespace(
+                generation_batch_sizes=[256],
+                context_prefix_lengths=[],
+            ),
+        )
+        manifest = mod._generation_manifest("dsa", 8, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2")
+        assert len(manifest) == expected_count
+        assert manifest[0] == (1, 720896, 0)  # context bounds are NOT a planning filter
+        output = capsys.readouterr().out
+        assert ("dropped 1/2 shapes (memory budget" in output) == (device_gib == 80)
+
+    def test_no_cuda_preserves_plan_without_estimating(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "_estimated_generation_kv_bytes_per_token", lambda *_: pytest.fail("no device"))
+        assert mod._generation_manifest("mla", 8, "bfloat16", "bfloat16", "bfloat16", "unknown")
+
+    def test_generation_getters_bind_nonempty_manifests(self):
+        mod = _import_module()
+        for getter in (mod.get_dsa_generation_module_test_cases, mod.get_wideep_mla_generation_test_cases):
+            cases = getter()
+            assert cases
+            assert all(len(case) == 12 and case[11] for case in cases)
+
+    def test_manifest_changes_task_identity(self):
+        mod = _import_module()
+        case = mod.get_dsa_generation_module_test_cases()[0]
+        smaller = [*case[:11], case[11][:-1]]
+        assert create_test_case_id(case, "generation", mod.__name__) != create_test_case_id(
+            smaller, "generation", mod.__name__
+        )
+
+    def test_cli_resolves_generation_manifest_before_dispatch(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "collect_mla_module",
+                "--mode",
+                "generation",
+                "--attn-type",
+                "dsa",
+                "--model",
+                "test",
+                "--num-heads",
+                "8",
+            ],
+        )
+        monkeypatch.setattr(mod, "_get_precision_combos", lambda _: [("bfloat16", "fp8", "bfloat16")])
+        manifest = ((52, 131072, 0),)
+        monkeypatch.setattr(mod, "_generation_manifest", lambda *_: manifest)
+        dispatched = []
+        monkeypatch.setattr(mod, "run_mla_module", lambda **kw: dispatched.append(kw["inner_manifest"]))
+        mod.main()
+        assert dispatched == [manifest]
+
+    def test_empty_manifests_are_not_queued(self, monkeypatch, capsys):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "_generation_manifest", lambda *_: ())
+        assert mod.get_dsa_generation_module_test_cases() == []
+        assert mod.get_wideep_mla_generation_test_cases() == []
+        assert "empty generation manifest; group not queued" in capsys.readouterr().out
+
+    def test_worker_executes_manifest_without_replanning(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "get_generation_test_cases", lambda *_: pytest.fail("must not rebuild queued plan"))
+        monkeypatch.setattr(
+            mod, "_filter_cases_from_env", lambda *_a, **_kw: pytest.fail("must not filter queued plan")
+        )
+        monkeypatch.setenv("AIC_DSA_CONTEXT_BATCH_SIZES", "1")
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+        monkeypatch.setattr(mod, "load_model_runner", lambda **_: object())
+        captured = []
+        monkeypatch.setattr(mod, "run_attention_torch", lambda **kw: captured.extend(kw["test_cases"]) or len(captured))
+        manifest = ((52, 131072, 0), (1, 720896, 0))
+        mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", False, 0, inner_manifest=manifest)
+        assert captured == [(52, 131072, False, 0), (1, 720896, False, 0)]
+        with pytest.raises(RuntimeError, match="nonempty planned inner manifest"):
+            mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", False, 0)
+
+    def test_generation_manifest_reaches_subprocess(self, monkeypatch):
+        mod = _import_module()
+        captured = {}
+
+        def run_child(argv, **_kwargs):
+            call = ast.Expression(ast.parse(argv[2]).body[-1].value)
+            eval(
+                compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": lambda *_args, **kw: captured.update(kw)}
+            )
+            return 0, b""
+
+        monkeypatch.setattr(mod, "run_measurement_subprocess", run_child)
+        manifest = ((52, 131072, 0),)
+        mod.run_mla_module_worker(
+            0,
+            0,
+            8,
+            "fp8",
+            "bfloat16",
+            "bfloat16",
+            "test",
+            "dsa",
+            None,
+            8,
+            "trtllm",
+            manifest,
+            perf_filename="dsa_generation_module_perf.txt",
+            skip_indexer=True,
+        )
+        assert captured["inner_manifest"] == manifest
+        assert captured["skip_indexer"] is True
 
 
 class TestDsaContextPrefixShape:
@@ -510,7 +636,7 @@ class TestBuildModuleTestCases:
             cases = mod._build_module_test_cases("dsa", "generation")
 
         assert cases
-        assert calls == [("sglang", "generation", 89)]
+        assert set(calls) == {("sglang", "generation", 89)}
 
     def test_full_dsa_sweep_canonicalizes_consumer_equivalent_checkpoints(self):
         mod = _import_module()
@@ -567,12 +693,12 @@ class TestBuildModuleTestCases:
         assert cases
         assert {case[6] for case in cases} == {"nvidia/GLM-5-NVFP4"}
 
-    def test_format_length_11(self):
-        """Each DSA module case includes target TP and prefill backend."""
+    def test_generation_case_format(self):
+        """Each DSA decode task includes target TP, backend and exact manifest."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod._build_module_test_cases("dsa", "generation"):
-                assert len(case) == 11
+                assert len(case) == 12
                 assert case[7] == "dsa"
                 assert case[8] is None  # DSA backend resolved at runtime
                 assert case[9] in {1, 2, 4, 8}
