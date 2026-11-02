@@ -1218,7 +1218,7 @@ class Task:
                 if self._role_attr(role, "moe_quant_mode") == common.MoEQuantMode.nvfp4:
                     self._set_role_attr(role, "moe_quant_mode", common.MoEQuantMode.nvfp4_wo)
 
-        # TRT-LLM runs MLA attention in FP8 on an FP8 KV cache on SM90/100/103/107/120
+        # TRT-LLM runs MLA attention in FP8 on an FP8 KV cache on SM90/100/103/120
         # (helpers.trtllm_mla_runs_fp8), so a bfloat16 FMHA there, explicit or not,
         # means the FP8 it runs.
         for role in roles:

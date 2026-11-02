@@ -2673,7 +2673,11 @@ def run_mla_module(
                 page_size = kv_pool_page_size(model_runner)
                 _refuse(cases, refused, lambda case: _over_kv_pool(case, page_size, kv_capacity))
             if is_prefill:
-                sglang_dsa_mqa_logits_chunking_supported()
+                if not sglang_dsa_mqa_logits_chunking_supported():
+                    raise RuntimeError(
+                        "FIXME(kernel-limit): this SGLang build's DSA indexer does not chunk MQA logits, "
+                        "so a prefill workspace has no bound; the collector relies on that chunking"
+                    )
                 print("[DSA] SGLang MQA logits chunk path detected; no heuristic workspace pre-filter")
             runnable = [case for case in cases if case not in refused]
             if not runnable:
@@ -2916,6 +2920,7 @@ def _run_dsa_plan_rows(args, gpu_id: int) -> int:
     if args.model:
         os.environ["COLLECTOR_MODEL_PATH"] = args.model
     failed = 0
+    dispatched = 0
     for row in plan(f"dsa_{args.mode}_module", "sglang", get_sm_version()).rows:
         _seq, _batch, heads, kv_dtype, compute, gemm, model_path, _attn, _backend, target_tp, pinned, points = row
         if args.num_heads is not None and heads != args.num_heads:
@@ -2924,6 +2929,7 @@ def _run_dsa_plan_rows(args, gpu_id: int) -> int:
             continue
         if args.kv_cache_dtype and kv_dtype != args.kv_cache_dtype:
             continue
+        dispatched += 1
         try:
             run_mla_module(
                 attn_type="dsa",
@@ -2944,6 +2950,10 @@ def _run_dsa_plan_rows(args, gpu_id: int) -> int:
             failed += 1
             print(f"  FAILED: {e}")
             traceback.print_exc()
+    if dispatched == 0:
+        raise RuntimeError(
+            "no DSA plan row matches --num-heads/--target-tp-size/--kv-cache-dtype/--model on this SM; nothing ran"
+        )
     return failed
 
 

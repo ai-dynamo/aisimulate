@@ -145,7 +145,8 @@ def run_mla(
     device="cuda:0",
 ):
     # collector/skips.py leaves SM80-89 out: AttentionOp aborts there on every case.
-    assert get_sm_version() >= 90, "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
+    if get_sm_version() < 90:
+        raise ValueError("FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)")
     scenario = Scenario()
     q_lora_rank = scenario.q_lora_rank
     kv_lora_rank = scenario.kv_lora_rank

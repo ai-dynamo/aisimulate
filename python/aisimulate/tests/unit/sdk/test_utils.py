@@ -815,6 +815,17 @@ class TestParseHFConfig:
         result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=2))
         assert result["extra_params"].attn_layer_pattern == (0, 1, 0, 1, 0, 1, 0, 1)
 
+    def test_llama4_pattern_inputs_are_validated(self):
+        """A non-positive interval or a non-list no_rope_layers raises instead of producing a wrong pattern."""
+        for interval in (0, -1, None, "4"):
+            with pytest.raises(ValueError, match="no_rope_layer_interval"):
+                _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=interval))
+        with pytest.raises(TypeError, match="no_rope_layers"):
+            _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=0))
+        # An empty list means the interval rule, as in transformers.
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=[]))
+        assert result["extra_params"].attn_layer_pattern == (0, 0, 0, 1, 0, 0, 0, 1)
+
     def test_llama4_no_rope_layers_length_mismatch_raises(self):
         """A no_rope_layers list that does not cover every layer raises ValueError."""
         with pytest.raises(ValueError, match="no_rope_layers"):

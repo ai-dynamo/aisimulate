@@ -887,6 +887,35 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     assert not any("context_mla_granular" in r.message for r in caplog.records)
 
 
+def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_fp8(monkeypatch, caplog):
+    """The negative case of the test above: the granular context_mla table has no fp8 slice while the
+    fused regime's module table has one. The inferred fp8 falls back to bfloat16, and the warning names
+    the granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
+    import logging
+
+    from aisimulate.sdk import common
+
+    supported = {"context_mla": ["fp8", "bfloat16"], "context_mla_granular": ["bfloat16"]}
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda self, role, ctx_op=None: supported[ctx_op])
+    monkeypatch.setattr(
+        Task,
+        "_reachable_attention_op_keys",
+        lambda self, role: [("context_mla", "generation_mla"), ("context_mla_granular", "generation_mla")],
+    )
+    with caplog.at_level(logging.WARNING):
+        t = Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="gb200",
+            backend_name="trtllm",
+            gemm_quant_mode=common.GEMMQuantMode.nvfp4,
+            moe_quant_mode=common.MoEQuantMode.nvfp4,
+        )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
+    assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]
+
+
 def test_nextn_never_auto_enabled(caplog):
     """MTP is never auto-enabled: nextn stays 0 even for checkpoints that ship
     MTP layers; a hint log surfaces the unused capability."""

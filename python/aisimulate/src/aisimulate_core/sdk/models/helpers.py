@@ -1305,14 +1305,14 @@ def resolve_sglang_mla_compute(
 # SMs on which TRT-LLM's attention op runs FP8 context MLA for an FP8 KV cache
 # (mFP8ContextMLA in thop/attentionOp.cpp). Generation MLA runs FP8 for an FP8
 # KV cache on every SM (mFP8GenerationMLA), and no generation table keys on fmha.
-_TRTLLM_FP8_CONTEXT_MLA_SMS = (90, 100, 103, 107, 120)
+_TRTLLM_FP8_CONTEXT_MLA_SMS = (90, 100, 103, 120)
 _TRTLLM_MLA_FAMILIES = ("DEEPSEEK", "KIMIK25", "KIMIK3")
 
 
 def trtllm_mla_runs_fp8(backend_name: str, sm_version: int | None, model_path: str, kv_mode) -> bool:
     """Whether TRT-LLM runs this model's MLA context attention in FP8.
 
-    TRT-LLM has no separate precision for MLA attention: on SM90/100/103/107/120
+    TRT-LLM has no separate precision for MLA attention: on SM90/100/103/120
     an FP8 KV cache makes context MLA run FP8 FMHA, so BF16 compute on an FP8
     KV cache is not a configuration it can run there.
     """

@@ -703,9 +703,8 @@ def run_mla_module(
     # collector/skips.py leaves out SM80-89, where AttentionOp aborts on every case,
     # and SM120 DSA, which TRT-LLM runs only on the packed fp8_ds_mla KV pool that
     # this module does not build.
-    assert attn_type != "mla" or get_sm_version() >= 90, (
-        "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
-    )
+    if attn_type == "mla" and get_sm_version() < 90:
+        raise ValueError("FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)")
     # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
     # (forward_context_default, attention.py:2015-2040 — SM100/103
     # route to the absorbed/trtllm-gen path instead), whose

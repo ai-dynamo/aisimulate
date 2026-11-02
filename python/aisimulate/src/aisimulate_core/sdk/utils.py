@@ -1055,7 +1055,13 @@ def _parse_hf_config_json(config: dict) -> dict:
         if not isinstance(step, int) or step <= 0:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
         interval = config.get("no_rope_layer_interval", 4)
-        no_rope_layers = config.get("no_rope_layers") or [int((i + 1) % interval != 0) for i in range(layers)]
+        if not isinstance(interval, int) or isinstance(interval, bool) or interval <= 0:
+            raise ValueError(f"no_rope_layer_interval must be a positive integer, got {interval!r}")
+        no_rope_layers = config.get("no_rope_layers")
+        if no_rope_layers is not None and not isinstance(no_rope_layers, list):
+            raise TypeError(f"no_rope_layers must be a list of 0/1 values, got {no_rope_layers!r}")
+        if not no_rope_layers:  # absent or empty: every interval-th layer has no RoPE, as in transformers
+            no_rope_layers = [int((i + 1) % interval != 0) for i in range(layers)]
         if len(no_rope_layers) != layers or any(v not in (0, 1) for v in no_rope_layers):
             raise ValueError(f"no_rope_layers must hold {layers} values of 0 or 1, got {no_rope_layers}")
         attn_pattern = tuple(1 - v for v in no_rope_layers)

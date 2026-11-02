@@ -2920,7 +2920,9 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
     from collector.op_plans import OP_PLANS, plan, summarize
 
     registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
-    run_funcs = {entry.op: entry.run_func for entry in registry}
+    # The WideEP ops (moe_ep, deepep_*) have op plans but live in the backend's
+    # wideep registry, which a run merges in the same way.
+    run_funcs = {entry.op: entry.run_func for entry in [*registry, *_wideep_registry_for_backend(backend)]}
     report = {}
     for op in ops:
         if op not in OP_PLANS or op not in run_funcs:

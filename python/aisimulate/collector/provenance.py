@@ -29,6 +29,8 @@ import yaml
 # because the TRT-LLM MoE autotuners write their caches there.
 _HASHED_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("collector", (".patch", ".py", ".sh", ".yaml", ".yml")),
+    # The extensionless wrappers the vLLM WideEP collector executes on the hosts.
+    ("collector/wideep/vllm/slurm/host_tools", ("",)),
     ("src/aisimulate_core/sdk", (".py",)),
     ("src/aisimulate_core/model_configs", (".json",)),
 )

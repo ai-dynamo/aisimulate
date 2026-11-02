@@ -24,6 +24,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
+
 from collector import skips
 from collector.case_generator import without_models
 from collector.op_plans import OP_PLANS, GemmCase, ModuleCase, OpPlan, _Run, _runners, plan, summarize
@@ -609,3 +610,23 @@ def test_plan_table_carries_the_dispatch_of_each_case(tmp_path):
     assert Counter(row["dispatch"] for row in table) == Counter(plans["by_dispatch"])
     # SGLang serves Kimi-K2.5 INT4 on SM90 through Marlin.
     assert {row["dispatch"] for row in table if row["model_name"] == "moonshotai/Kimi-K2.5"} == {"marlin"}
+
+
+def test_plan_only_report_includes_the_wideep_ops():
+    """The WideEP ops have op plans but live in the wideep registries; the report merges them like a run does."""
+    script = """
+import json
+from collector.collect import _op_plan_report
+report = _op_plan_report("sglang", ["gemm", "moe_ep", "deepep_ll", "deepep_normal"], 100, None)
+print(json.dumps({op: summary["cases"] for op, summary in report.items()}))
+"""
+    env = dict(os.environ)
+    env.pop("COLLECTOR_MODEL_PATH", None)
+    env["PYTHONPATH"] = os.pathsep.join([str(PKG_ROOT), str(PKG_ROOT / "collector"), str(PKG_ROOT / "src")])
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=PKG_ROOT, env=env, capture_output=True, text=True, timeout=300
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    cases = json.loads(result.stdout.strip().splitlines()[-1])
+    assert set(cases) == {"gemm", "moe_ep", "deepep_ll", "deepep_normal"}
+    assert cases["moe_ep"] > 0
