@@ -367,15 +367,15 @@ def write_replay_dashboard(
     assets = Path(__file__).parent
     template = (assets / "dashboard.html").read_text(encoding="utf-8")
     replacements = {
-        "__REPORT_DATA_JSON__": None,
         "__PLOTLY_JS__": get_plotlyjs(),
         "__PLOTLY_LICENSE__": html.escape((assets / "plotly-js-LICENSE.txt").read_text(encoding="utf-8")),
     }
-    for token in replacements:
+    tokens = ("__REPORT_DATA_JSON__", *replacements)
+    for token in tokens:
         if template.count(token) != 1:
             raise ValueError(f"Expected exactly one {token} in dashboard template")
-    # Split at template tokens once, never tokens inside request text; odd pieces are tokens.
-    pieces = re.split(f"({'|'.join(re.escape(token) for token in replacements)})", template)
+    # Split at template tokens once, never tokens inside request text.
+    pieces = re.split(f"({'|'.join(re.escape(token) for token in tokens)})", template)
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -384,13 +384,11 @@ def write_replay_dashboard(
         # Exclusive creation honors the caller's umask, as other replay outputs do.
         with candidate.open("x", encoding="utf-8") as out:
             temporary = candidate
-            for index, piece in enumerate(pieces):
-                if index % 2 == 0:
-                    out.write(piece)
-                elif piece == "__REPORT_DATA_JSON__":
+            for piece in pieces:
+                if piece == "__REPORT_DATA_JSON__":
                     _write_script_json(out, data)
                 else:
-                    out.write(replacements[piece])
+                    out.write(replacements.get(piece, piece))
         target = root / "report.html"
         temporary.replace(target)
         return target
