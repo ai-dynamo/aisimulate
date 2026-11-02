@@ -31,7 +31,7 @@ from collector.vllm.utils import (
 )
 from vllm.config import set_current_vllm_config
 from vllm.platforms import current_platform
-from vllm.utils.flashinfer import use_trtllm_attention
+from vllm.utils.flashinfer import can_use_trtllm_attention, use_trtllm_attention
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -469,7 +469,15 @@ def _attention_memory_bytes(case):
         # v0.31 flashinfer.py:1368-1381 asks this native dispatch helper.
         # The wrapper workspace scales with Q, while the TRTLLM API uses
         # the fixed VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE buffer (:109-115).
-        native = use_trtllm_attention(n, kv, tokens, total, 1, "fp8" if fp8 else "auto", q_dtype, context)
+        if context and s > 1:
+            native = use_trtllm_attention(n, kv, tokens, total, 1, "fp8" if fp8 else "auto", q_dtype, True)
+        else:
+            # v0.31 flashinfer.py:813-845 chooses decode statically for graph
+            # capture, without the older helper's batch<=256 preference.
+            native = can_use_trtllm_attention(n, kv, is_prefill=False)
+            if native and (get_sm_version() == 90 or get_sm_version() // 10 == 12):
+                supported = resolve_obj_by_qualname("vllm.v1.attention.backends.flashinfer._is_xqa_head_dim_supported")
+                native = supported(d)
         configured = int(os.getenv("VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE", str(394 << 20)))
         workspace = max(workspace, configured)
         if not native:

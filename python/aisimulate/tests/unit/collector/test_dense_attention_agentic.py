@@ -52,6 +52,7 @@ def collector_functions(backend, memory_gib=None):
         "_deployment_tokens_per_block": lambda: 32,
         "_attention_memory_backend": lambda *_args: ("FLASHINFER", 16),
         "use_trtllm_attention": lambda *_args: True,
+        "can_use_trtllm_attention": lambda *_args, **_kwargs: True,
     }
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), ns)
     return ns
@@ -125,3 +126,15 @@ def test_vllm_workspace_estimate_distinguishes_native_and_wrapper_paths():
     wrapper = ns["_attention_memory_bytes"](case)
     assert wrapper - native == 16 * 40960 * 96 * 256 * 16
     assert native < 268 * 2**30 * 0.9 < wrapper
+
+
+def test_vllm_large_batch_decode_uses_static_native_dispatch():
+    ns = collector_functions("vllm", 268)
+    # Runtime decode selection remains native above the old 256-token
+    # preference threshold in use_trtllm_attention.
+    ns["use_trtllm_attention"] = lambda *_args: pytest.fail("prefill selector used for decode")
+    case = [512, 32767, 32, 1, 128, False, False, 0]
+    native = ns["_attention_memory_bytes"](case)
+    ns["can_use_trtllm_attention"] = lambda *_args, **_kwargs: False
+    wrapper = ns["_attention_memory_bytes"](case)
+    assert wrapper - native == 8192 * 32 * 128 * 16
