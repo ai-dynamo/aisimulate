@@ -841,7 +841,7 @@ prefix caching and speculative token count for this checklist, so the other six
 AISim settings remain Unknown. No silicon state or model-specific default fills
 that gap, and the UI makes no general capability claim from an On setting.
 When speculation is On, both source columns show compact Method and Draft length
-badges. AISim's method comes only from an explicit `Speculative method` setting;
+badges with each label and value on one line. AISim's method comes only from an explicit `Speculative method` setting;
 the historical preview has no such field and displays Method: Unknown. A token
 count or model name never supplies a method. Off and Unsupported cells omit these
 badges. Missing draft lengths also retain an explicit Unknown badge.

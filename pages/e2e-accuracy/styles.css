@@ -820,7 +820,7 @@ dialog::backdrop { background: #0009; }
 #profile-accuracy .agentx-feature-scope { margin:5px 0 14px; color:var(--muted); font-size:11px; }
 #profile-accuracy .agentx-feature-table { min-width:0; width:100%; table-layout:fixed; white-space:normal; }
 #profile-accuracy .agentx-feature-table th, #profile-accuracy .agentx-feature-table td { padding:11px 5px; vertical-align:top; font-size:11px; }
-#profile-accuracy .agentx-feature-table th:first-child { width:48%; }
+#profile-accuracy .agentx-feature-table th:first-child { width:44%; }
 #profile-accuracy .agentx-feature-table thead th { font-size:11px; }
 #profile-accuracy .agentx-feature-table .agentx-feature-name { white-space:normal; font-size:12px; font-weight:400; }
 #profile-accuracy .agentx-feature-table td, #profile-accuracy .agentx-feature-table thead th:not(:first-child) { text-align:center; }
@@ -831,7 +831,7 @@ dialog::backdrop { background: #0009; }
 #profile-accuracy .agentx-feature-status.unknown, #profile-accuracy .agentx-feature-status.na { color:var(--muted); }
 #profile-accuracy .agentx-feature-detail { display:block; margin-top:4px; color:var(--muted); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
 #profile-accuracy .agentx-feature-badges { display:flex; flex-wrap:wrap; justify-content:center; gap:5px; margin-top:6px; }
-#profile-accuracy .agentx-feature-badge { display:inline-flex; flex-direction:column; gap:1px; max-width:100%; padding:3px 6px; border:1px solid var(--border); border-radius:5px; background:var(--accent-soft); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
+#profile-accuracy .agentx-feature-badge { display:inline-flex; align-items:baseline; gap:4px; max-width:100%; padding:3px 4px; border:1px solid var(--border); border-radius:5px; background:var(--accent-soft); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
 #profile-accuracy .agentx-feature-badge-key { color:var(--muted); font-size:9px; }
 #profile-accuracy .agentx-feature-badge-value { color:var(--text); font-weight:600; }
 #profile-accuracy .agentx-feature-revision { margin:auto 0 0; padding-top:14px; color:var(--muted); font-size:10px; }
