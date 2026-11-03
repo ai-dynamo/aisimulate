@@ -2669,3 +2669,34 @@ pricing, API submission/receipt timing and historical cache/replay differences.
 - E047-frozen-all-six-audit.json: SHA256 `05e687a74d6d2b58c580bc0e5e209666f57761eb5941877b78a50b9df1bc7d10`.
 - E047-independent-all-six-audit.json: SHA256 `7a0d26cd7a549400ce1aa9ec3affbedf5cddfae24e9d586121cec0e686e5100f`.
 - E047-config-qualification.json: SHA256 `46e227b77e84fa2ce1718142524ec9460c6153d34b17995874d974d754400d75`.
+
+## H5 — E048 retained full-batch cadence and verification-path gate (predeclared)
+
+- **Hypothesis:** DSA packs a four-query verification block per request while
+  the current MLA/DSA price uses four one-query requests. This known schema
+  limitation may overprice steady decode, particularly as concurrency grows.
+  Competing explanations: host/scheduler cadence, heterogeneous KV histories,
+  draft compute and the historical0.5.20 versus database0.5.21 difference.
+  Confidence moderate in geometry difference, low in its request-MAPE impact.
+- **Experiment:** reuse all eight instrumented-MTP native controls from
+  GPU1005806: lanes8/14 × input8192/131072 × repeats0/1,128 delivered outputs.
+  Freeze checksums of all eight scheduler logs and client observations before
+  execution. No new GPU allocation, wheel, input, acceptance or op-data change.
+  Use frozen EDDB canonical best_available op/SILICON/deny queries at packed
+  verify batch4N with incoming context boundsinput..input+132. Preserve all
+  cases, requests, raw generated excess, and intervals outside the diagnostic.
+- Compare adjacent rank-zero output-ready groups only when both contain every
+  declared request and batch_requests==N, after all first outputs and before
+  any delivered cap. Count incomplete/terminal/other intervals explicitly.
+  Report cadence mean/median/tails and canonical cost bounds per case; these
+  are serving-cadence diagnostics, not matched kernel timing or request MAPE.
+  Do not infer precise per-step KV from output counters. Report empty common
+  coverage as unavailable, not a passing score. A large disagreement motivates
+  native TARGET_VERIFY measurement; small disagreement weakens the need for
+  a broad op correction but cannot establish full request accuracy.
+- Source gate: exact SGLang94602 DSA backend routes TARGET_VERIFY through
+  forward_extend using decode implementation, builds width4 expanded metadata,
+  and on eligible hardware uses a two-dimensional paged-indexer schedule. The
+  existing one-query collector uses NONE/decode; ordinary EXTEND instead uses
+  the prefill path. It cannot be relabeled as a verification measurement.
+- **Conclusion:** pending independent cadence extraction and canonical pricing.
