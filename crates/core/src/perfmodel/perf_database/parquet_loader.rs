@@ -126,6 +126,13 @@ impl PerfReader {
         self.column_names.iter().position(|n| n == name)
     }
 
+    /// Row count from the file footer; decodes no data. A negative count in
+    /// a corrupt footer reads as 0.
+    pub fn num_rows(&self) -> u64 {
+        let rows = self.file_reader.metadata().file_metadata().num_rows();
+        u64::try_from(rows).unwrap_or(0)
+    }
+
     /// Iterate over every row, in file order. A decode error (corrupt page,
     /// invalid UTF-8 in a string column) is yielded as an `Err` item and ends
     /// the iteration.
@@ -275,27 +282,9 @@ impl ColumnCursor {
     fn read(&mut self, len: usize) -> Result<ColumnBatch, ParquetError> {
         let (max_def, def_levels) = (self.max_def, &mut self.def_levels);
         Ok(match &mut self.kind {
-            CursorKind::Bool(r) => {
-                let (values, nulls) = read_typed(r, len, max_def, def_levels)?;
-                ColumnBatch {
-                    values: Values::Bool(spread(values, &nulls)),
-                    nulls,
-                }
-            }
-            CursorKind::Long(r) => {
-                let (values, nulls) = read_typed(r, len, max_def, def_levels)?;
-                ColumnBatch {
-                    values: Values::Long(spread(values, &nulls)),
-                    nulls,
-                }
-            }
-            CursorKind::Double(r) => {
-                let (values, nulls) = read_typed(r, len, max_def, def_levels)?;
-                ColumnBatch {
-                    values: Values::Double(spread(values, &nulls)),
-                    nulls,
-                }
-            }
+            CursorKind::Bool(r) => read_spread(r, len, max_def, def_levels, Values::Bool)?,
+            CursorKind::Long(r) => read_spread(r, len, max_def, def_levels, Values::Long)?,
+            CursorKind::Double(r) => read_spread(r, len, max_def, def_levels, Values::Double)?,
             CursorKind::Str(r) => {
                 let (values, nulls) = read_typed(r, len, max_def, def_levels)?;
                 let mut text = String::new();
@@ -326,6 +315,21 @@ impl ColumnCursor {
             },
         })
     }
+}
+
+/// Reads `len` rows of a fixed-width column as row-aligned values.
+fn read_spread<T: DataType>(
+    reader: &mut ColumnReaderImpl<T>,
+    len: usize,
+    max_def: i16,
+    def_levels: &mut Vec<i16>,
+    wrap: fn(Vec<T::T>) -> Values,
+) -> Result<ColumnBatch, ParquetError> {
+    let (values, nulls) = read_typed(reader, len, max_def, def_levels)?;
+    Ok(ColumnBatch {
+        values: wrap(spread(values, &nulls)),
+        nulls,
+    })
 }
 
 /// Reads `len` rows of one column: the present values, packed, and a null
@@ -395,17 +399,18 @@ enum Values {
     Other(PhysicalType),
 }
 
-impl Values {
-    /// The record API's `Field` type name, for type-mismatch errors.
-    fn type_name(&self) -> String {
-        match self {
-            Values::Bool(_) => "Bool".to_string(),
-            Values::Long(_) => "Long".to_string(),
-            Values::Double(_) => "Double".to_string(),
-            Values::Str { .. } => "Str".to_string(),
-            Values::Other(physical) => physical.to_string(),
-        }
-    }
+/// One cell of a decoded row, as the record API's `Field` would hold it.
+#[derive(Debug, PartialEq)]
+enum Cell<'a> {
+    Null,
+    Bool(bool),
+    Long(i64),
+    Double(f64),
+    Str(&'a str),
+    /// Any cell, null or not, of a column the reader does not decode. Type
+    /// errors name its physical type (`INT32`) where the record API named
+    /// the `Field` (`Int`, or `Null` for a null cell).
+    Other(PhysicalType),
 }
 
 /// One row of a decoded batch with positional, typed accessors. Cloning the
@@ -416,74 +421,78 @@ pub struct PerfRow {
 }
 
 impl PerfRow {
-    fn path(&self) -> PathBuf {
-        self.batch.path.clone()
-    }
-
-    /// Typed cell access with the record API's error contract: a null cell
-    /// or a column of another type is `General`, a column past the last
-    /// `IndexOutOfBound`.
-    fn cell<'a, T>(
-        &'a self,
-        col: usize,
-        want: &str,
-        get: impl FnOnce(&'a Values, usize) -> Option<T>,
-    ) -> Result<T, ParquetError> {
-        let columns = &self.batch.columns;
+    /// The cell at `col`; a column past the last is `IndexOutOfBound`.
+    fn cell(&self, col: usize) -> Result<Cell<'_>, AicError> {
+        let (columns, row) = (&self.batch.columns, self.row);
         let column = columns
             .get(col)
-            .ok_or(ParquetError::IndexOutOfBound(col, columns.len()))?;
-        if column.nulls.get(self.row).copied().unwrap_or(false) {
-            return Err(ParquetError::General(format!(
-                "Cannot access Null as {want}"
-            )));
+            .ok_or_else(|| self.error(ParquetError::IndexOutOfBound(col, columns.len())))?;
+        if column.nulls.get(row).copied().unwrap_or(false) {
+            return Ok(Cell::Null);
         }
-        get(&column.values, self.row).ok_or_else(|| {
-            ParquetError::General(format!(
-                "Cannot access {} as {want}",
-                column.values.type_name()
-            ))
-        })
-    }
-
-    fn get_bool(&self, col: usize) -> Result<bool, ParquetError> {
-        self.cell(col, "Bool", |values, row| match values {
-            Values::Bool(v) => Some(v[row]),
-            _ => None,
-        })
-    }
-
-    fn get_long(&self, col: usize) -> Result<i64, ParquetError> {
-        self.cell(col, "Long", |values, row| match values {
-            Values::Long(v) => Some(v[row]),
-            _ => None,
-        })
-    }
-
-    fn get_double(&self, col: usize) -> Result<f64, ParquetError> {
-        self.cell(col, "Double", |values, row| match values {
-            Values::Double(v) => Some(v[row]),
-            _ => None,
-        })
-    }
-
-    fn get_string(&self, col: usize) -> Result<&str, ParquetError> {
-        self.cell(col, "Str", |values, row| match values {
+        Ok(match &column.values {
+            Values::Bool(v) => Cell::Bool(v[row]),
+            Values::Long(v) => Cell::Long(v[row]),
+            Values::Double(v) => Cell::Double(v[row]),
             Values::Str { text, ends } => {
                 let start = if row == 0 { 0 } else { ends[row - 1] };
-                Some(&text[start..ends[row]])
+                Cell::Str(&text[start..ends[row]])
             }
-            _ => None,
+            Values::Other(physical) => Cell::Other(*physical),
+        })
+    }
+
+    /// `cell` for a column that may be absent; `None` when it is.
+    fn cell_optional(&self, col: Option<usize>) -> Result<Option<Cell<'_>>, AicError> {
+        col.map(|col| self.cell(col)).transpose()
+    }
+
+    /// The record API's error for reading `cell` as `want`: `General`, also
+    /// for a null cell.
+    fn mismatch(&self, cell: Cell<'_>, want: &str) -> AicError {
+        let have = match cell {
+            Cell::Null => "Null",
+            Cell::Bool(_) => "Bool",
+            Cell::Long(_) => "Long",
+            Cell::Double(_) => "Double",
+            Cell::Str(_) => "Str",
+            Cell::Other(physical) => &physical.to_string(),
+        };
+        self.error(ParquetError::General(format!(
+            "Cannot access {have} as {want}"
+        )))
+    }
+
+    fn error(&self, source: ParquetError) -> AicError {
+        AicError::Parquet {
+            path: self.batch.path.clone(),
+            source,
+        }
+    }
+
+    fn long(&self, col: usize) -> Result<i64, AicError> {
+        match self.cell(col)? {
+            Cell::Long(v) => Ok(v),
+            cell => Err(self.mismatch(cell, "Long")),
+        }
+    }
+
+    fn fit_u32(&self, col: usize, v: i64) -> Result<u32, AicError> {
+        u32::try_from(v).map_err(|_| {
+            AicError::PerfDatabase(format!(
+                "parquet column[{col}] = {v} does not fit in u32 at {}",
+                self.batch.path.display()
+            ))
         })
     }
 
     /// Borrowed string view into the row. Use this when the value is parsed
     /// or compared but not stored.
     pub fn str(&self, col: usize) -> Result<&str, AicError> {
-        self.get_string(col).map_err(|source| AicError::Parquet {
-            path: self.path(),
-            source,
-        })
+        match self.cell(col)? {
+            Cell::Str(s) => Ok(s),
+            cell => Err(self.mismatch(cell, "Str")),
+        }
     }
 
     /// Cloned String for BTreeMap keys.
@@ -493,16 +502,7 @@ impl PerfRow {
 
     /// Narrow INT64 to u32; the AIC perf tables always fit. Errors if not.
     pub fn u32(&self, col: usize) -> Result<u32, AicError> {
-        let v = self.get_long(col).map_err(|source| AicError::Parquet {
-            path: self.path(),
-            source,
-        })?;
-        u32::try_from(v).map_err(|_| {
-            AicError::PerfDatabase(format!(
-                "parquet column[{col}] = {v} does not fit in u32 at {}",
-                self.batch.path.display()
-            ))
-        })
+        self.fit_u32(col, self.long(col)?)
     }
 
     /// Optional INT64 → u32. Returns None when the cell is missing/null.
@@ -510,19 +510,9 @@ impl PerfRow {
         let Some(idx) = col else {
             return Ok(None);
         };
-        // `get_long` errors when the field is null; treat NullFound as absence.
-        match self.get_long(idx) {
-            Ok(v) => u32::try_from(v).map(Some).map_err(|_| {
-                AicError::PerfDatabase(format!(
-                    "parquet column[{idx}] = {v} does not fit in u32 at {}",
-                    self.batch.path.display()
-                ))
-            }),
-            Err(parquet::errors::ParquetError::General(_)) => Ok(None),
-            Err(source) => Err(AicError::Parquet {
-                path: self.path(),
-                source,
-            }),
+        match self.cell(idx)? {
+            Cell::Long(v) => self.fit_u32(idx, v).map(Some),
+            _ => Ok(None),
         }
     }
 
@@ -531,26 +521,16 @@ impl PerfRow {
     /// this to mirror Python's `int(row[...])`, which never narrowed: a
     /// negative key cell loaded as a negative key instead of erroring.
     pub fn i64_optional(&self, col: Option<usize>) -> Result<Option<i64>, AicError> {
-        let Some(idx) = col else {
-            return Ok(None);
-        };
-        match self.get_long(idx) {
-            Ok(v) => Ok(Some(v)),
-            Err(parquet::errors::ParquetError::General(_)) => Ok(None),
-            Err(source) => Err(AicError::Parquet {
-                path: self.path(),
-                source,
-            }),
-        }
+        Ok(match self.cell_optional(col)? {
+            Some(Cell::Long(v)) => Some(v),
+            _ => None,
+        })
     }
 
     /// INT64 → u64. Used by columns that legitimately need the full range
     /// (e.g. NCCL `message_size`).
     pub fn u64(&self, col: usize) -> Result<u64, AicError> {
-        let v = self.get_long(col).map_err(|source| AicError::Parquet {
-            path: self.path(),
-            source,
-        })?;
+        let v = self.long(col)?;
         u64::try_from(v).map_err(|_| {
             AicError::PerfDatabase(format!(
                 "parquet column[{col}] = {v} is negative; expected u64 at {}",
@@ -560,27 +540,25 @@ impl PerfRow {
     }
 
     pub fn f64(&self, col: usize) -> Result<f64, AicError> {
-        self.get_double(col).map_err(|source| AicError::Parquet {
-            path: self.path(),
-            source,
-        })
+        match self.cell(col)? {
+            Cell::Double(v) => Ok(v),
+            cell => Err(self.mismatch(cell, "Double")),
+        }
     }
 
     /// BOOLEAN column, with fallbacks mirroring Python's `_to_bool` string
     /// coercion (`str(value).strip().lower() in {"1","true","yes","y"}`) for
     /// files that store flags as INT64 or strings.
     pub fn bool(&self, col: usize) -> Result<bool, AicError> {
-        if let Ok(v) = self.get_bool(col) {
-            return Ok(v);
+        match self.cell(col)? {
+            Cell::Bool(v) => Ok(v),
+            Cell::Long(v) => Ok(v == 1),
+            Cell::Str(s) => Ok(matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "y"
+            )),
+            cell => Err(self.mismatch(cell, "Str")),
         }
-        if let Ok(v) = self.get_long(col) {
-            return Ok(v == 1);
-        }
-        let s = self.str(col)?;
-        Ok(matches!(
-            s.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "y"
-        ))
     }
 
     /// BOOLEAN column with NO type coercion: identity flags (FPM schema v6
@@ -588,10 +566,10 @@ impl PerfRow {
     /// else, so coercing a stringly-typed flag here would silently diverge
     /// from it. A type mismatch is a loud data bug.
     pub fn bool_strict(&self, col: usize) -> Result<bool, AicError> {
-        self.get_bool(col).map_err(|source| AicError::Parquet {
-            path: self.path(),
-            source,
-        })
+        match self.cell(col)? {
+            Cell::Bool(v) => Ok(v),
+            cell => Err(self.mismatch(cell, "Bool")),
+        }
     }
 
     /// Optional double. Returns None when the column lookup is None OR the
@@ -599,33 +577,19 @@ impl PerfRow {
     /// can legitimately be absent for one mode of the schema (DeepEP normal
     /// vs LL).
     pub fn f64_optional(&self, col: Option<usize>) -> Result<Option<f64>, AicError> {
-        let Some(idx) = col else {
-            return Ok(None);
-        };
-        match self.get_double(idx) {
-            Ok(v) => Ok(Some(v)),
-            Err(parquet::errors::ParquetError::General(_)) => Ok(None),
-            Err(source) => Err(AicError::Parquet {
-                path: self.path(),
-                source,
-            }),
-        }
+        Ok(match self.cell_optional(col)? {
+            Some(Cell::Double(v)) => Some(v),
+            _ => None,
+        })
     }
 
     /// Borrowed string accessor for columns that may be absent or null.
     /// Returns None if the column lookup is None OR the cell is null.
     pub fn str_optional(&self, col: Option<usize>) -> Result<Option<&str>, AicError> {
-        let Some(idx) = col else {
-            return Ok(None);
-        };
-        match self.get_string(idx) {
-            Ok(s) => Ok(Some(s)),
-            Err(parquet::errors::ParquetError::General(_)) => Ok(None),
-            Err(source) => Err(AicError::Parquet {
-                path: self.path(),
-                source,
-            }),
-        }
+        Ok(match self.cell_optional(col)? {
+            Some(Cell::Str(s)) => Some(s),
+            _ => None,
+        })
     }
 }
 
@@ -635,85 +599,92 @@ mod tests {
 
     use parquet::data_type::{ByteArray, Int32Type};
     use parquet::file::properties::WriterProperties;
-    use parquet::file::writer::SerializedFileWriter;
-    use parquet::record::RowAccessor;
+    use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
+    use parquet::record::{Field, Row, RowAccessor};
     use parquet::schema::parser::parse_message_type;
 
     use super::*;
 
     const ROWS_PER_GROUP: usize = BATCH_ROWS + 476;
 
-    /// Writes two row groups of OPTIONAL columns (nulls on different rows
-    /// per column) plus one REQUIRED string and one INT32 column, a type the
-    /// columnar reader does not decode.
-    fn write_fixture(path: &Path) {
-        let schema = "message fixture { OPTIONAL BYTE_ARRAY s (UTF8); REQUIRED BYTE_ARRAY r (UTF8); \
-             OPTIONAL INT64 i; OPTIONAL DOUBLE d; OPTIONAL BOOLEAN b; OPTIONAL INT32 x; }";
+    /// Writes `groups` row groups of `schema`; `fill` writes each group's
+    /// columns in schema order.
+    fn write_file(
+        path: &Path,
+        schema: &str,
+        props: WriterProperties,
+        groups: usize,
+        mut fill: impl FnMut(usize, &mut SerializedRowGroupWriter<'_, File>),
+    ) {
         let schema = Arc::new(parse_message_type(schema).unwrap());
-        let props = Arc::new(WriterProperties::builder().build());
-        let mut writer =
-            SerializedFileWriter::new(File::create(path).unwrap(), schema, props).unwrap();
-        for group in 0..2 {
-            let rows: Vec<usize> = (group * ROWS_PER_GROUP..(group + 1) * ROWS_PER_GROUP).collect();
-            let defs = |every: usize| -> Vec<i16> {
-                rows.iter().map(|r| i16::from(r % every != 0)).collect()
-            };
-            let present = |every: usize| rows.iter().copied().filter(move |r| r % every != 0);
+        let file = File::create(path).unwrap();
+        let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props)).unwrap();
+        for group in 0..groups {
             let mut rg = writer.next_row_group().unwrap();
-            let strings: Vec<ByteArray> = present(7)
-                .map(|r| ByteArray::from(format!("µs-{}", r % 5).as_str()))
-                .collect();
-            let required: Vec<ByteArray> = rows
-                .iter()
-                .map(|r| ByteArray::from(format!("k{r}").as_str()))
-                .collect();
-            let longs: Vec<i64> = present(5).map(|r| r as i64 - 1000).collect();
-            let doubles: Vec<f64> = present(3).map(|r| r as f64 * 0.1).collect();
-            let bools: Vec<bool> = present(11).map(|r| r % 2 == 0).collect();
-            let ints: Vec<i32> = present(13).map(|r| r as i32).collect();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<ByteArrayType>()
-                .write_batch(&strings, Some(&defs(7)), None)
-                .unwrap();
-            col.close().unwrap();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<ByteArrayType>()
-                .write_batch(&required, None, None)
-                .unwrap();
-            col.close().unwrap();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<Int64Type>()
-                .write_batch(&longs, Some(&defs(5)), None)
-                .unwrap();
-            col.close().unwrap();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<DoubleType>()
-                .write_batch(&doubles, Some(&defs(3)), None)
-                .unwrap();
-            col.close().unwrap();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<BoolType>()
-                .write_batch(&bools, Some(&defs(11)), None)
-                .unwrap();
-            col.close().unwrap();
-            let mut col = rg.next_column().unwrap().unwrap();
-            col.typed::<Int32Type>()
-                .write_batch(&ints, Some(&defs(13)), None)
-                .unwrap();
-            col.close().unwrap();
+            fill(group, &mut rg);
             rg.close().unwrap();
         }
         writer.close().unwrap();
     }
 
-    /// `Ok` values compare exactly; errors compare by kind (`General` for a
-    /// null or a type mismatch, `IndexOutOfBound` past the last column).
-    fn outcome<T: std::fmt::Debug>(result: Result<T, ParquetError>) -> String {
-        match result {
-            Ok(v) => format!("{v:?}"),
-            Err(ParquetError::General(_)) => "General".to_string(),
-            Err(other) => format!("{other:?}"),
-        }
+    fn column<T: DataType>(
+        rg: &mut SerializedRowGroupWriter<'_, File>,
+        values: &[T::T],
+        defs: Option<&[i16]>,
+        reps: Option<&[i16]>,
+    ) {
+        let mut col = rg.next_column().unwrap().unwrap();
+        col.typed::<T>().write_batch(values, defs, reps).unwrap();
+        col.close().unwrap();
+    }
+
+    /// Two row groups of OPTIONAL columns (nulls on different rows per
+    /// column), a REQUIRED string, the annotations the reader decodes
+    /// (INT_64, ENUM) and types it leaves undecoded (INT32, TIMESTAMP_MICROS,
+    /// raw BYTE_ARRAY, REPEATED). 64-row pages and a small dictionary limit
+    /// make every batch cross pages and a dictionary-to-plain fallback.
+    fn write_fixture(path: &Path) {
+        let schema = "message fixture { OPTIONAL BYTE_ARRAY s (UTF8); REQUIRED BYTE_ARRAY r (UTF8); \
+             OPTIONAL INT64 i; OPTIONAL DOUBLE d; OPTIONAL BOOLEAN b; OPTIONAL INT32 x; \
+             OPTIONAL INT64 a (INT_64); OPTIONAL INT64 ts (TIMESTAMP_MICROS); \
+             OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY e (ENUM); REPEATED INT64 rep; }";
+        let props = WriterProperties::builder()
+            .set_write_batch_size(64)
+            .set_data_page_row_count_limit(64)
+            .set_dictionary_page_size_limit(512)
+            .build();
+        write_file(path, schema, props, 2, |group, rg| {
+            let rows: Vec<usize> = (group * ROWS_PER_GROUP..(group + 1) * ROWS_PER_GROUP).collect();
+            let defs = |every: usize| -> Vec<i16> {
+                rows.iter().map(|r| i16::from(r % every != 0)).collect()
+            };
+            let present = |every: usize| rows.iter().copied().filter(move |r| r % every != 0);
+            let bytes = |s: String| ByteArray::from(s.into_bytes());
+            let strings: Vec<_> = present(7).map(|r| bytes(format!("µs-{}", r % 5))).collect();
+            let required: Vec<_> = rows.iter().map(|r| bytes(format!("k{r}"))).collect();
+            let raw: Vec<_> = present(23).map(|r| bytes(format!("b{r}"))).collect();
+            let enums: Vec<_> = present(29).map(|r| bytes(format!("e{}", r % 3))).collect();
+            let longs: Vec<i64> = present(5).map(|r| r as i64 - 1000).collect();
+            let doubles: Vec<f64> = present(3).map(|r| r as f64 * 0.1).collect();
+            let bools: Vec<bool> = present(11).map(|r| r % 2 == 0).collect();
+            let ints: Vec<i32> = present(13).map(|r| r as i32).collect();
+            let annotated: Vec<i64> = present(17).map(|r| r as i64).collect();
+            let micros: Vec<i64> = present(19).map(|r| r as i64 * 1000).collect();
+            let repeated: Vec<i64> = rows.iter().map(|&r| r as i64).collect();
+            column::<ByteArrayType>(rg, &strings, Some(&defs(7)), None);
+            column::<ByteArrayType>(rg, &required, None, None);
+            column::<Int64Type>(rg, &longs, Some(&defs(5)), None);
+            column::<DoubleType>(rg, &doubles, Some(&defs(3)), None);
+            column::<BoolType>(rg, &bools, Some(&defs(11)), None);
+            column::<Int32Type>(rg, &ints, Some(&defs(13)), None);
+            column::<Int64Type>(rg, &annotated, Some(&defs(17)), None);
+            column::<Int64Type>(rg, &micros, Some(&defs(19)), None);
+            column::<ByteArrayType>(rg, &raw, Some(&defs(23)), None);
+            column::<ByteArrayType>(rg, &enums, Some(&defs(29)), None);
+            // One element per row: present (def 1), each starting a record (rep 0).
+            let ones = vec![1; rows.len()];
+            column::<Int64Type>(rg, &repeated, Some(&ones), Some(&vec![0; rows.len()]));
+        });
     }
 
     #[test]
@@ -722,7 +693,7 @@ mod tests {
         let path = tmp.path().join("fixture.parquet");
         write_fixture(&path);
         let reader = PerfReader::open(&path).unwrap();
-        let oracle: Vec<parquet::record::Row> = reader
+        let oracle: Vec<Row> = reader
             .file_reader
             .get_row_iter(None)
             .unwrap()
@@ -731,33 +702,63 @@ mod tests {
         let rows: Vec<PerfRow> = reader.rows().unwrap().map(Result::unwrap).collect();
         assert_eq!(rows.len(), 2 * ROWS_PER_GROUP);
         assert_eq!(rows.len(), oracle.len());
+        assert_eq!(reader.num_rows(), oracle.len() as u64);
         for (index, (row, expected)) in rows.iter().zip(&oracle).enumerate() {
-            for col in 0..=reader.column_names.len() {
-                let at = format!("row {index} column {col}");
-                assert_eq!(
-                    outcome(row.get_string(col)),
-                    outcome(expected.get_string(col).map(String::as_str)),
-                    "{at}"
-                );
-                assert_eq!(
-                    outcome(row.get_long(col)),
-                    outcome(expected.get_long(col)),
-                    "{at}"
-                );
-                assert_eq!(
-                    outcome(row.get_double(col).map(f64::to_bits)),
-                    outcome(expected.get_double(col).map(f64::to_bits)),
-                    "{at}"
-                );
-                assert_eq!(
-                    outcome(row.get_bool(col)),
-                    outcome(expected.get_bool(col)),
-                    "{at}"
-                );
+            assert_eq!(expected.len(), reader.column_names.len());
+            for (col, (_, field)) in expected.get_column_iter().enumerate() {
+                let want = match field {
+                    Field::Null => Some(Cell::Null),
+                    Field::Bool(v) => Some(Cell::Bool(*v)),
+                    Field::Long(v) => Some(Cell::Long(*v)),
+                    Field::Double(v) => Some(Cell::Double(*v)),
+                    Field::Str(s) => Some(Cell::Str(s)),
+                    _ => None,
+                };
+                match (row.cell(col).unwrap(), want) {
+                    // An undecoded column reads every cell as `Other`, nulls too.
+                    (Cell::Other(_), None | Some(Cell::Null)) => {}
+                    (cell, want) => assert_eq!(Some(cell), want, "row {index} column {col}"),
+                }
             }
         }
-        // A null cell keeps the record API's message, which loaders surface.
-        let null = rows[0].get_long(2).unwrap_err().to_string();
-        assert_eq!(null, oracle[0].get_long(2).unwrap_err().to_string());
+        let past = reader.column_names.len();
+        assert!(matches!(
+            rows[0].cell(past),
+            Err(AicError::Parquet {
+                source: ParquetError::IndexOutOfBound(col, len),
+                ..
+            }) if col == past && len == past
+        ));
+        // Nulls and type mismatches keep the record API's messages, which
+        // loaders surface: `i` is null in row 0 and a Long in row 1.
+        for index in [0, 1] {
+            let Err(AicError::Parquet { source, .. }) = rows[index].f64(2) else {
+                panic!("row {index} column 2 read as Double");
+            };
+            let expected = oracle[index].get_double(2).unwrap_err();
+            assert_eq!(source.to_string(), expected.to_string());
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_ends_rows_with_one_path_qualified_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bad.parquet");
+        let schema = "message bad { REQUIRED BYTE_ARRAY s (UTF8); }";
+        let props = WriterProperties::builder().build();
+        write_file(&path, schema, props, 1, |_, rg| {
+            let values = [ByteArray::from(b"ok".to_vec()), ByteArray::from(vec![0xff])];
+            column::<ByteArrayType>(rg, &values, None, None);
+        });
+        let reader = PerfReader::open(&path).unwrap();
+        let mut rows = reader.rows().unwrap();
+        assert!(matches!(
+            rows.next(),
+            Some(Err(AicError::Parquet {
+                path: at,
+                source: ParquetError::General(_),
+            })) if at == path
+        ));
+        assert!(rows.next().is_none());
     }
 }
