@@ -7,13 +7,15 @@ use std::sync::{Arc, OnceLock};
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
-    Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, Metrics,
+    Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, KvHintSource, Metrics,
     PassCompletionEffects, Request,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use uuid::Uuid;
 
-use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
+use super::super::core::{
+    EngineEventBatch, EngineProgress, NoEngineEvents, Placement, WorkerTopology,
+};
 use super::super::events::{EnginePassCompletion, SimulationWorkerStage, WorkerCompletionPayload};
 use super::{
     EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
@@ -37,7 +39,6 @@ struct PendingPass {
     committed_request_index: OnceLock<BTreeSet<Uuid>>,
     pass_id: PassId,
     started_at_ms: f64,
-    end_ms: f64,
 }
 
 struct LogicalWorker {
@@ -107,7 +108,7 @@ impl RankMetricsState {
                 .checked_add_assign(ReplaySchedulerIntervalMetrics {
                     cache_hit_tokens: metrics.sglang_cache_hit_tokens,
                     cache_total_tokens: metrics.sglang_cache_total_tokens,
-                    preemptions: 0,
+                    ..ReplaySchedulerIntervalMetrics::default()
                 })?;
         }
         self.latest = metrics.clone();
@@ -194,6 +195,9 @@ where
                 factory.g3_block_bytes,
             )?);
         }
+        if let Some(config) = factory.kvcr_config.clone() {
+            factory.kvcr = Some(crate::engine::kvcr::KvcrRegistry::new(config));
+        }
         let mut component = Self {
             stage,
             _pass_mode: pass_mode,
@@ -269,6 +273,13 @@ where
             .map(|r| r.lock().unwrap().snapshot())
     }
 
+    pub(crate) fn kvcr_stats(&self) -> Option<crate::engine::KvcrStats> {
+        self.factory
+            .kvcr
+            .as_ref()
+            .map(|r| r.lock().unwrap().stats())
+    }
+
     pub(crate) fn g2_domains(&self) -> Vec<crate::replay::G2DomainStats> {
         self.factory
             .g2_registry()
@@ -282,6 +293,37 @@ where
             )
             .into_iter()
             .collect()
+    }
+
+    /// Observe each host ownership domain once. A disaggregated deployment
+    /// disables `include_shared` for its second role when the first role
+    /// already sampled the deployment's shared pool.
+    pub(crate) fn host_cache_snapshots(
+        &self,
+        include_shared: bool,
+    ) -> Vec<crate::engine::HostCacheMetrics> {
+        if self.telemetry.is_none() {
+            return Vec::new();
+        }
+        let mut snapshots = Vec::new();
+        if include_shared
+            && let Some(metrics) = self
+                .factory
+                .g2_registry()
+                .and_then(|registry| registry.metrics())
+        {
+            snapshots.push(metrics);
+        }
+        for (worker_id, worker) in self.workers.iter().enumerate() {
+            let Some(worker) = worker else { continue };
+            for rank in worker.engine.ranks() {
+                if let Some(mut metrics) = rank.per_rank_host_cache_metrics() {
+                    metrics.worker_id = Some(worker_id);
+                    snapshots.push(metrics);
+                }
+            }
+        }
+        snapshots
     }
 
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
@@ -416,6 +458,12 @@ where
         // without leaving a half-tombstoned worker behind.
         if let Some(registry) = &self.factory.g3_tier {
             registry.lock().unwrap().unregister_worker(worker_id)?;
+        }
+        if let Some(registry) = &self.factory.kvcr {
+            registry
+                .lock()
+                .unwrap()
+                .unregister_worker(worker_id as u64)?;
         }
         self.ready_workers.remove(&worker_id);
         self.deferred_ready_workers.remove(&worker_id);
@@ -554,6 +602,7 @@ where
         Some(WorkerTopology {
             worker_id,
             scheduler_ids: self.workers.get(worker_id)?.as_ref()?.scheduler_ids.clone(),
+            router_hint: self.accepts_kv_hints(),
         })
     }
 
@@ -574,6 +623,46 @@ where
             .get(scheduler_id)
             .and_then(|owner| *owner)?;
         Some((owner.worker_id, owner.dp_rank))
+    }
+
+    /// Whether this pool's engines act on router hints (it configures `kvcr`).
+    pub(crate) fn accepts_kv_hints(&self) -> bool {
+        self.factory.kvcr_config.is_some()
+    }
+
+    /// The source a placement's `kv.fetch` hint names, for the receiving engine.
+    /// `None` without KVCR in this pool, without a hint, for a self-hint and
+    /// for a source that is draining or has left the pool: new pulls from a
+    /// draining source would hold off its removal.
+    pub(crate) fn kv_hint_source(&self, placement: &Placement) -> Result<Option<KvHintSource>> {
+        let Some(hints) = placement.kv_hints.filter(|_| self.accepts_kv_hints()) else {
+            return Ok(None);
+        };
+        let source = hints.fetch.source_scheduler_id;
+        ensure!(
+            source < self.scheduler_owners.len(),
+            "offline {:?} placement: kv_hints source scheduler {source} never existed",
+            self.stage
+        );
+        if source == placement.scheduler_id {
+            return Ok(None);
+        }
+        Ok(self
+            .rank_identity(source)
+            .filter(|(worker_id, _)| !self.pending_removal.contains(worker_id))
+            .map(|(worker_id, dp_rank)| KvHintSource {
+                worker_id: worker_id as u64,
+                dp_rank,
+            }))
+    }
+
+    /// Drop a hint resolved before a delay (such as tokenization) whose source
+    /// has since started draining, so a late pull does not hold off its removal.
+    pub(crate) fn live_kv_hint(&self, hint: Option<KvHintSource>) -> Option<KvHintSource> {
+        hint.filter(|hint| {
+            usize::try_from(hint.worker_id)
+                .is_ok_and(|worker_id| !self.pending_removal.contains(&worker_id))
+        })
     }
 
     fn update_scheduler_metrics(
@@ -698,6 +787,7 @@ where
         &mut self,
         scheduler_id: usize,
         request: DirectRequest,
+        kv_hint: Option<KvHintSource>,
         now_ms: f64,
     ) -> Result<()> {
         let expected = request
@@ -705,7 +795,7 @@ where
             .context("offline replay request must have a UUID before dispatch")?;
         let effects = self.apply_command(
             scheduler_id,
-            Command::Submit(native_request(request)?),
+            Command::Submit(native_request(request, kv_hint)?),
             now_ms,
         )?;
         if !matches!(effects.result, CommandResult::Submitted(id) if id == expected) {
@@ -844,6 +934,12 @@ where
                 self.refresh_worker(worker_id);
                 continue;
             };
+            if let Some(registry) = &self.factory.kvcr {
+                registry
+                    .lock()
+                    .unwrap()
+                    .note_pass(worker_id as u64, started.end_ms);
+            }
 
             let same_timestamp_retry = started.same_timestamp_retry;
             let mut pending = PendingPass {
@@ -851,11 +947,18 @@ where
                 committed_request_index: OnceLock::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
-                end_ms: started.end_ms,
             };
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
+                if let Some(telemetry) = self.required_worker_mut(worker_id)?.telemetry.as_mut() {
+                    telemetry[rank.dp_rank as usize]
+                        .interval
+                        .checked_add_assign(ReplaySchedulerIntervalMetrics {
+                            g1_prefix_cache_lookup: rank.effects.g1_prefix_cache_lookup,
+                            ..ReplaySchedulerIntervalMetrics::default()
+                        })?;
+                }
                 if pending.committed_requests.is_empty() {
                     pending.committed_requests = rank.effects.committed_requests;
                 } else {
@@ -986,7 +1089,20 @@ where
             }
             return Ok(effects);
         }
+        self.start_parked_kvcr_pulls();
         Ok(EngineEffects::default())
+    }
+
+    /// Start the KVCR pulls staged at `now_ms` once the scan has run every
+    /// pass starting then, so a pull waits for a source pass at the same
+    /// instant whatever the worker order. No worker needs a refresh: the
+    /// ready set does not depend on when a pull starts (a staged pull already
+    /// counts as registry work), and `next_internal_deadline_ms` reads each
+    /// target's deadline from the registry when the driver asks.
+    fn start_parked_kvcr_pulls(&self) {
+        if let Some(registry) = &self.factory.kvcr {
+            registry.lock().unwrap().start_parked();
+        }
     }
 
     pub(crate) fn on_scheduled_completion(
@@ -1187,7 +1303,7 @@ where
     }
 }
 
-fn native_request(request: DirectRequest) -> Result<Request> {
+fn native_request(request: DirectRequest, kv_hint: Option<KvHintSource>) -> Result<Request> {
     Ok(Request {
         request_id: request
             .uuid
@@ -1198,6 +1314,8 @@ fn native_request(request: DirectRequest) -> Result<Request> {
         session_id: request
             .replay_context
             .and_then(|context| context.session_id().map(str::to_owned)),
+        images: request.images,
+        kv_hint,
     })
 }
 
@@ -1210,7 +1328,6 @@ fn lower_completion<Observation: ReplayEngineObservation>(
     capture_artifact_kv_events: bool,
     effects: PassCompletionEffects,
 ) -> WorkerCompletionPayload<Observation::Batch> {
-    let wall_time_secs = (pass.end_ms - pass.started_at_ms).max(0.0) / 1_000.0;
     let completed_requests = effects
         .outputs
         .iter()
@@ -1256,17 +1373,15 @@ fn lower_completion<Observation: ReplayEngineObservation>(
             made_progress,
             had_raw_observations,
         },
-        fpm: Some(native_fpm(
-            dp_rank,
-            wall_time_secs,
-            effects.forward_pass_metrics,
-        )),
+        fpm: Some(native_fpm(dp_rank, effects.forward_pass_metrics)),
         accept_length_output_tokens,
         accept_length_decode_forwards,
     }
 }
 
-fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
+/// The forward-pass snapshot's wall time is the forward's own device time, which
+/// the engine already separates from the pass under the SGLang host loop.
+fn native_fpm(dp_rank: u32, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
     ForwardPassSnapshot {
         version: 0,
         worker_id: String::new(),
@@ -1285,16 +1400,34 @@ fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> For
         num_queued_decode: fpm.num_queued_decode,
         sum_queued_decode_kv_tokens: fpm.sum_queued_decode_kv_tokens,
         var_queued_decode_kv_tokens: fpm.var_queued_decode_kv_tokens,
-        wall_time_secs,
+        wall_time_secs: fpm.duration_ms / 1_000.0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Backend, EngineConfig, KvEvent, SglangConfig, TimingModelConfig};
+    use crate::engine::{
+        Backend, EngineConfig, FrontendConfig, FrontendStage, KvEvent, KvcrConfig,
+        NativeHostOffloadConfig, SglangConfig, TimingModelConfig,
+    };
     use crate::replay::components::AdmissionEvent;
+    use crate::replay::core::{KvFetchAction, KvHints};
     use crate::replay::{ReplayEngineConfig, ReplayEngineFactory, WorkerStage};
+
+    #[test]
+    fn fpm_snapshot_wall_time_is_the_forward_duration() {
+        // Under the host loop a 7 ms prefill is launched by a pass that returns at
+        // once; the snapshot must carry the forward's 7 ms, not the pass's 0.
+        let snapshot = native_fpm(
+            0,
+            ForwardPassMetrics {
+                duration_ms: 7.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(snapshot.wall_time_secs, 0.007);
+    }
 
     #[derive(Debug, Default)]
     struct KvEventBatch(Vec<KvEvent>);
@@ -1409,6 +1542,7 @@ mod tests {
                             uuid: Some(uuid),
                             ..Default::default()
                         },
+                        None,
                         0.0,
                     )
                     .unwrap();
@@ -1525,6 +1659,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(32)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1537,6 +1672,69 @@ mod tests {
         assert!(!component.process_internal_work(0.5).unwrap().made_progress);
         assert!(component.process_internal_work(1.0).unwrap().made_progress);
         assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
+    }
+
+    #[test]
+    fn frontend_stage_delivers_a_parked_request_at_its_deadline() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                sglang: SglangConfig {
+                    host_loop: true,
+                    ..SglangConfig::default()
+                },
+                frontend: Some(FrontendConfig {
+                    stages: vec![FrontendStage {
+                        workers: 1,
+                        service_ms: 4.0,
+                        concurrency_scale: Vec::new(),
+                    }],
+                }),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(Backend::Sglang)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            1,
+            None,
+        )
+        .unwrap();
+        let uuid = Uuid::from_u128(7);
+        component
+            .dispatch(
+                0,
+                DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 1,
+                    uuid: Some(uuid),
+                    ..Default::default()
+                },
+                None,
+                0.0,
+            )
+            .unwrap();
+        // The request sits in the frontend pool: the scheduler has nothing to run
+        // and wakes through the pool's deadline rather than an effect-free pass.
+        assert!(component.drive_ready(0.0, None).unwrap().is_empty());
+        assert_eq!(component.next_internal_deadline_ms(), Some(4.0));
+        assert!(component.process_internal_work(4.0).unwrap().made_progress);
+        let admitted = component
+            .drive_ready(4.0, None)
+            .unwrap()
+            .admissions
+            .into_iter()
+            .map(|admission| admission.uuid)
+            .collect::<Vec<_>>();
+        assert_eq!(admitted, vec![uuid]);
     }
 
     #[test]
@@ -1577,7 +1775,7 @@ mod tests {
         };
         // One 1 MB block per prompt: each D2H or H2D takes 1 ms at 1 GB/s.
         let run = |component: &mut EngineComponent, worker, id, now: f64| {
-            component.dispatch(worker, request(id), now).unwrap();
+            component.dispatch(worker, request(id), None, now).unwrap();
             let mut admissions = component.drive_ready(now, None).unwrap().admissions;
             assert_eq!(component.next_internal_deadline_ms(), Some(now + 1.0));
             assert!(
@@ -1599,7 +1797,7 @@ mod tests {
         });
 
         // Worker 1 computes the block; scale-in marks it while its D2H runs.
-        component.dispatch(1, request(1), 0.0).unwrap();
+        component.dispatch(1, request(1), None, 0.0).unwrap();
         component.drive_ready(0.0, None).unwrap();
         assert_eq!(component.in_flight(), 0);
         assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
@@ -1717,6 +1915,139 @@ mod tests {
     }
 
     #[test]
+    fn host_cache_snapshots_follow_pool_ownership_without_shared_duplicates() {
+        for dp_size in [2, 4] {
+            for scope in ["dp_rank_local", "cluster_shared"] {
+                let config = serde_json::from_value(serde_json::json!({
+                    "dp_size": dp_size,
+                    "rank": {
+                        "num_gpu_blocks": 8, "block_size": 4,
+                        "max_num_seqs": 1, "max_num_batched_tokens": 8,
+                        "enable_prefix_caching": true,
+                        "kv_cache_bytes_per_token": 256,
+                        "native_host_offload": {
+                            "scope": scope, "num_host_blocks": 16, "kv_layout_id": "tp1"
+                        },
+                        "timing_model": {"type": "fixed", "prefill_ms": 0.0, "decode_ms": 0.0}
+                    }
+                }))
+                .unwrap();
+                let factory = ReplayEngineFactory::new()
+                    .role_factory(&config, WorkerStage::Aggregated, false)
+                    .unwrap();
+                let mut component: EngineComponent = EngineComponent::new_with_factory(
+                    SimulationWorkerStage::Aggregated,
+                    EnginePassMode::Visible,
+                    factory,
+                    2,
+                    None,
+                )
+                .unwrap();
+                assert!(component.host_cache_snapshots(true).is_empty());
+                component.enable_telemetry();
+                let snapshots = component.host_cache_snapshots(true);
+                let shared = scope == "cluster_shared";
+                assert_eq!(snapshots.len(), if shared { 1 } else { 2 * dp_size });
+                for (index, row) in snapshots.iter().enumerate() {
+                    assert_eq!(row.capacity_blocks, 16);
+                    assert_eq!(row.capacity_bytes, 16 * 4 * 256);
+                    assert_eq!(row.used_blocks, 0);
+                    assert_eq!(row.resident_bytes, 0);
+                    assert_eq!(row.worker_id, (!shared).then_some(index / dp_size));
+                    assert_eq!(row.dp_rank, (!shared).then_some((index % dp_size) as u32));
+                }
+                assert_eq!(
+                    component.host_cache_snapshots(false).len(),
+                    if shared { 0 } else { 2 * dp_size }
+                );
+                component
+                    .dispatch(
+                        0,
+                        DirectRequest {
+                            tokens: vec![1, 2, 3, 4],
+                            max_output_tokens: 0,
+                            uuid: Some(Uuid::from_u128(32)),
+                            ..Default::default()
+                        },
+                        None,
+                        0.0,
+                    )
+                    .unwrap();
+                component.drive_ready(0.0, None).unwrap();
+                let occupied = component.host_cache_snapshots(true);
+                assert_eq!(occupied.iter().map(|row| row.used_blocks).sum::<u64>(), 1);
+                assert_eq!(occupied.iter().map(|row| row.used_bytes).sum::<u64>(), 1024);
+            }
+        }
+    }
+
+    #[test]
+    fn g1_lookup_observations_do_not_make_a_blocked_worker_progress() {
+        for capture in [false, true] {
+            let config = ReplayEngineConfig {
+                rank: EngineConfig {
+                    num_gpu_blocks: 16,
+                    block_size: 4,
+                    max_num_batched_tokens: 4,
+                    max_num_seqs: 1,
+                    enable_prefix_caching: true,
+                    enable_chunked_prefill: false,
+                    timing_model: TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    },
+                    ..EngineConfig::for_backend(Backend::Vllm)
+                },
+                ..ReplayEngineConfig::default()
+            };
+            let factory = ReplayEngineFactory::new()
+                .role_factory(&config, WorkerStage::Aggregated, false)
+                .unwrap();
+            let mut component: EngineComponent = EngineComponent::new_with_factory(
+                SimulationWorkerStage::Aggregated,
+                EnginePassMode::Visible,
+                factory,
+                1,
+                None,
+            )
+            .unwrap();
+            if capture {
+                component.enable_telemetry();
+            }
+            component
+                .dispatch(
+                    0,
+                    DirectRequest {
+                        tokens: (0..8).collect(),
+                        max_output_tokens: 1,
+                        uuid: Some(Uuid::from_u128(33)),
+                        ..Default::default()
+                    },
+                    None,
+                    0.0,
+                )
+                .unwrap();
+            for _ in 0..2 {
+                let effects = component.drive_ready(0.0, None).unwrap();
+                assert!(effects.is_empty());
+                assert!(!effects.progress.made_progress);
+                assert_eq!(component.in_flight(), 1);
+                let (_, interval) = component.take_telemetry_snapshot().unwrap();
+                assert_eq!(
+                    interval.g1_prefix_cache_lookup,
+                    capture.then_some(crate::engine::PrefixCacheLookupCounts {
+                        query_count: 1,
+                        queried_tokens: 8,
+                        matched_tokens: 0,
+                    })
+                );
+                assert_eq!(interval.cache_hit_tokens, 0);
+                assert_eq!(interval.cache_total_tokens, 0);
+            }
+        }
+    }
+
+    #[test]
     fn scheduler_metrics_follow_command_and_completion_boundaries() {
         let config = ReplayEngineConfig {
             rank: EngineConfig {
@@ -1755,6 +2086,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(31)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1904,6 +2236,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(1)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1949,6 +2282,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(20)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1961,6 +2295,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(21)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1990,6 +2325,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(22)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -2044,6 +2380,7 @@ mod tests {
                         uuid: Some(uuid),
                         ..Default::default()
                     },
+                    None,
                     0.0,
                 )
                 .unwrap();
@@ -2108,6 +2445,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(2)),
                     ..Default::default()
                 },
+                None,
                 37.0,
             )
             .unwrap();
@@ -2143,5 +2481,126 @@ mod tests {
             !EngineEffects::<()>::default()
                 .should_retain_immediate_completion(EngineProgress::default())
         );
+    }
+
+    fn placement_with_hint(scheduler_id: usize, source_scheduler_id: Option<usize>) -> Placement {
+        Placement {
+            request_id: Uuid::from_u128(1),
+            scheduler_id,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            kv_hints: source_scheduler_id.map(|source_scheduler_id| KvHints {
+                fetch: KvFetchAction {
+                    source_scheduler_id,
+                },
+            }),
+            placement_replica_id: None,
+        }
+    }
+
+    fn attention_dp_component(
+        num_workers: usize,
+        dp_size: u32,
+        kvcr: Option<KvcrConfig>,
+    ) -> EngineComponent {
+        let config = ReplayEngineConfig {
+            dp_size,
+            rank: EngineConfig {
+                kv_cache_bytes_per_token: Some(250_000),
+                native_host_offload: Some(NativeHostOffloadConfig::new(4)),
+                kvcr,
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            num_workers,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn kv_hint_source_resolves_the_source_scheduler_to_worker_and_rank() {
+        let mut component = attention_dp_component(2, 2, Some(KvcrConfig::default()));
+        let source = |component: &EngineComponent, target, source| {
+            component.kv_hint_source(&placement_with_hint(target, source))
+        };
+        let (worker0, worker1) = (
+            component.worker_topology(0).unwrap(),
+            component.worker_topology(1).unwrap(),
+        );
+        assert!(worker0.router_hint && worker1.router_hint);
+        let (worker0, worker1) = (worker0.scheduler_ids, worker1.scheduler_ids);
+
+        // No hint, no source.
+        assert_eq!(source(&component, worker0[0], None).unwrap(), None);
+        // A peer on another worker and a peer rank on the same worker.
+        let worker1_rank0 = Some(KvHintSource {
+            worker_id: 1,
+            dp_rank: 0,
+        });
+        assert_eq!(
+            source(&component, worker0[1], Some(worker1[0])).unwrap(),
+            worker1_rank0
+        );
+        assert_eq!(
+            source(&component, worker1[1], Some(worker1[0])).unwrap(),
+            worker1_rank0
+        );
+        // A rank never fetches from itself.
+        assert_eq!(
+            source(&component, worker1[1], Some(worker1[1])).unwrap(),
+            None
+        );
+        // A scheduler id that never existed is a placement-policy error that
+        // names the pool.
+        let never = component.scheduler_owners.len();
+        let error = source(&component, worker0[0], Some(never)).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "offline Aggregated placement: kv_hints source scheduler {never} never existed"
+            )),
+            "{error}"
+        );
+        // A draining source and one that has left the pool are ignored.
+        assert_eq!(worker1[0], 2);
+        let resolved = source(&component, worker0[0], Some(2)).unwrap();
+        assert!(resolved.is_some());
+        component.mark_for_removal(1);
+        assert_eq!(source(&component, worker0[0], Some(2)).unwrap(), None);
+        // A hint resolved before the drain is dropped when it is finally dispatched.
+        assert_eq!(component.live_kv_hint(resolved), None);
+        assert!(component.tombstone_worker(1).unwrap());
+        assert_eq!(source(&component, worker0[0], Some(2)).unwrap(), None);
+
+        // Without KVCR no worker advertises router hints and every hint is ignored.
+        let plain = attention_dp_component(2, 2, None);
+        assert!(!plain.worker_topology(0).unwrap().router_hint);
+        for hinted in [worker1[0], worker0[0], never] {
+            assert_eq!(source(&plain, worker0[1], Some(hinted)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn kvcr_workers_join_the_registry_at_build_and_leave_at_removal() {
+        // Build registers a worker's ranks; its removal unregisters them and no others.
+        let mut component = attention_dp_component(2, 2, Some(KvcrConfig::default()));
+        let registry = component.factory.kvcr.clone().unwrap();
+        let rank1 = |worker_id| KvHintSource {
+            worker_id,
+            dp_rank: 1,
+        };
+        assert!(registry.lock().unwrap().source(rank1(1)).is_some());
+        assert!(component.tombstone_worker(1).unwrap());
+        let registry = registry.lock().unwrap();
+        assert!(registry.source(rank1(1)).is_none());
+        assert!(registry.source(rank1(0)).is_some());
     }
 }

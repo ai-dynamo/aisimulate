@@ -15,6 +15,8 @@ from aisimulate.runner import (
     InvalidRunnerError,
 )
 from aisimulate.sweeper import (
+    AFDForegroundEngine,
+    AFDPhase,
     AFDTopology,
     BackendDeploymentSpec,
     ReplayOutputRequirements,
@@ -141,6 +143,29 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert report.metadata["native_report"]["summary"] == report.metrics
     assert report.metadata["native_report"]["per_request"] == report.metadata["per_request"]
     assert "afd_report" in report.metadata
+
+
+def test_afd_runner_plans_one_pass_per_phase_and_counts_every_pass(monkeypatch):
+    planned_phases = []
+    execute_pass = AFDForegroundEngine.execute_pass
+
+    def recording_execute_pass(self, **kwargs):
+        planned_phases.append(kwargs["phase"])
+        return execute_pass(self, **kwargs)
+
+    monkeypatch.setattr(AFDForegroundEngine, "execute_pass", recording_execute_pass)
+    spec = _spec(_topology())
+    # Two decode layers give decode its own step and interval count.
+    spec.backend_deployment.performance_model_metadata["afd"]["measurements"][1]["num_layers"] = 2
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+
+    assert planned_phases == [AFDPhase.PREFILL, AFDPhase.DECODE]
+    # Each of two batches runs one 3 ms prefill pass and two 5 ms decode passes.
+    assert report.metrics["duration_ms"] == pytest.approx(26.0)
+    assert report.metrics["mean_tpot_ms"] == pytest.approx(5.0)
+    assert report.metadata["afd_replay"]["afd_passes"] == 6
+    # Four stages for each layer and microbatch: 8 per prefill pass, 16 per decode pass.
+    assert report.metadata["afd_replay"]["afd_stage_intervals"] == 2 * (8 + 2 * 16)
 
 
 @pytest.mark.parametrize(

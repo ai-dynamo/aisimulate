@@ -49,6 +49,7 @@ fn spec(
     };
     ReplaySpec {
         version: CURRENT_REPLAY_SPEC_VERSION,
+        encoder: None,
         topology: if disagg {
             ReplayTopology::Disaggregated {
                 prefill: pool,
@@ -305,7 +306,7 @@ fn agentic_driver(
         return WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     };
     let prepared = graph
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let play = prepared.context().prepare_play_from_start(0, 0).unwrap();
     let snapshots = PreparedAgenticSnapshots::from_plays(vec![play]).unwrap();

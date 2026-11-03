@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 
 import pytest
 
+from aisimulate import _runtime
 from aisimulate.runner import canonical_performance_config, materialize_engine_launch_config
+from aisimulate_core.sdk import RustForwardPassPerfModel
 
 pytestmark = pytest.mark.unit
 
@@ -55,10 +58,8 @@ def test_canonical_timing_metadata_preserves_controls_and_role():
         canonical_performance_config(raw, worker_type="decode")
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
-@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
-@pytest.mark.parametrize("kind", ["mtp", "eagle3"])
-def test_generic_speculation_survives_canonical_launch(tmp_path, backend, role, kind):
+@pytest.fixture
+def local_target(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
     (target / "config.json").write_text(
@@ -77,15 +78,16 @@ def test_generic_speculation_survives_canonical_launch(tmp_path, backend, role, 
             }
         )
     )
-    version = "0.24.0" if backend == "vllm" else "0.5.14"
-    selection = {
+    return str(target)
+
+
+def _speculative_cost(kind):
+    cost = {
         "kind": kind,
         "params": {"depth": 3} if kind == "mtp" else {"num_speculative_tokens": 3},
-        "expected_accepted_tokens": 2.4,
-        "seed": 73,
     }
     if kind == "eagle3":
-        selection["draft_config"] = {
+        cost["draft_config"] = {
             "num_hidden_layers": 1,
             "hidden_size": 2048,
             "intermediate_size": 5632,
@@ -94,35 +96,134 @@ def test_generic_speculation_survives_canonical_launch(tmp_path, backend, role, 
             "head_dim": 128,
             "vocab_size": 32000,
         }
-    config = materialize_engine_launch_config(
-        backend,
-        version,
-        {},
-        {
-            "block_size": 16,
-            "num_gpu_blocks": 64,
-            "speculation": selection,
-            "timing_model": {
-                "type": "external",
-                "provider": "aic",
-                "config": {
-                    "model": str(target),
-                    "backend_version": version,
-                    "system": "h200_sxm",
-                    "backend": backend,
-                    "worker_type": role,
-                    "estimation_mode": "op_level",
-                },
-            },
-        },
-        role,
+    return cost
+
+
+def _timing_config(model, backend="vllm", role="decode"):
+    return {
+        "model": model,
+        "backend_version": "0.24.0" if backend == "vllm" else "0.5.14",
+        "system": "h200_sxm",
+        "backend": backend,
+        "worker_type": role,
+        "estimation_mode": "op_level",
+    }
+
+
+def _native_launch(engine, *, explicit_capacity=True):
+    return json.loads(
+        _runtime.engine_launch_from_replay_role_json(
+            json.dumps({"rank": engine, "num_gpu_blocks_is_explicit": explicit_capacity})
+        )
     )
-    rank = config["engine"]
-    assert rank["aic_nextn"] == 3
-    assert rank["aic_mtp_seed"] == 73
-    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == pytest.approx([1, 1, 0.4])
-    cost = rank["timing_model"]["config"]
-    assert cost["speculation"]["kind"] == kind
-    assert cost["nextn"] == 0
-    assert cost["worker_type"] == role
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+@pytest.mark.parametrize("kind", ["mtp", "eagle3"])
+@pytest.mark.parametrize("canonical_only", [False, True], ids=["public-selection", "nested-cost-only"])
+def test_generic_speculation_survives_canonical_launch(local_target, backend, role, kind, canonical_only):
+    timing = _timing_config(local_target, backend, role)
+    cost = _speculative_cost(kind)
+    rank = {
+        "block_size": 16,
+        "num_gpu_blocks": 64,
+        "timing_model": {"type": "external", "provider": "aic", "config": timing},
+    }
+    if canonical_only:
+        timing["speculation"] = cost
+        rank.update(aic_nextn_accept_rates="1,1,0.4", aic_mtp_seed=73)
+        # A canonical cost identity must derive scheduler depth even when no
+        # public selection or legacy aic_nextn field accompanies it.
+        raw = {"rank": rank}
+    else:
+        rank["speculation"] = {**cost, "expected_accepted_tokens": 2.4, "seed": 73}
+        raw = rank
+
+    config = materialize_engine_launch_config(backend, timing["backend_version"], {}, raw, role)
+    engine = config["engine"]
+    assert engine["aic_nextn"] == 3
+    assert engine["aic_mtp_seed"] == 73
+    assert [float(rate) for rate in engine["aic_nextn_accept_rates"].split(",")] == pytest.approx([1, 1, 0.4])
+    saved_cost = engine["timing_model"]["config"]
+    assert saved_cost["speculation"] == cost
+    assert saved_cost["nextn"] == 0
+    assert saved_cost["worker_type"] == role
     assert config["num_gpu_blocks_is_explicit"] is True
+    assert RustForwardPassPerfModel.config_engine_launch_mismatches(config, config=saved_cost) == []
+    # A serialized native descriptor retains cost identity and workload inputs.
+    restored = _native_launch(engine)
+    assert restored["engine"] == engine
+    assert restored["num_gpu_blocks_is_explicit"] is True
+
+
+@pytest.mark.parametrize("kind", ["mtp", "eagle3"])
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ("capacity-inferred", "generic speculation requires explicitly configured positive num_gpu_blocks"),
+        ("capacity-zero", "num_gpu_blocks must be positive"),
+        ("acceptance-missing", "generic speculative replay requires explicit aic_nextn_accept_rates"),
+        ("depth-conflict", "canonical speculative depth conflicts with scheduler aic_nextn"),
+        ("backend-conflict", "AIS backend must match engine backend"),
+        ("unsupported-backend", "generic speculation requires backend=vllm or backend=sglang"),
+    ],
+)
+def test_speculative_launch_and_mismatch_query_enforce_same_controls(local_target, kind, change, message):
+    timing = {**_timing_config(local_target), "speculation": _speculative_cost(kind)}
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "block_size": 16,
+        "num_gpu_blocks": 64,
+        "aic_nextn": 3,
+        "aic_nextn_accept_rates": "1,1,0.4",
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    explicit_capacity = change != "capacity-inferred"
+    if change == "capacity-zero":
+        engine["num_gpu_blocks"] = 0
+    elif change == "acceptance-missing":
+        engine.pop("aic_nextn_accept_rates")
+    elif change == "depth-conflict":
+        engine.update(aic_nextn=2, aic_nextn_accept_rates="1,1")
+    elif change == "unsupported-backend":
+        engine["backend"] = timing["backend"] = "trtllm"
+        timing.pop("backend_version")
+    elif change == "backend-conflict":
+        engine["backend"] = "trtllm"
+    arguments = {"engine": engine, "num_gpu_blocks_is_explicit": explicit_capacity}
+    if change == "capacity-zero":
+        # Invalid scheduler inputs are errors, not timing-identity mismatches.
+        with pytest.raises(ValueError, match=re.escape(message)):
+            RustForwardPassPerfModel.config_engine_launch_mismatches(arguments, config=timing)
+    else:
+        assert RustForwardPassPerfModel.config_engine_launch_mismatches(arguments, config=timing) == [message]
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _native_launch(engine, explicit_capacity=explicit_capacity)
+
+
+@pytest.mark.parametrize(
+    "kind,params",
+    [
+        ("mtp", {"depth": 6}),
+        ("eagle3", {"tree_shape": [1, 2], "verify_token_budget": 4}),
+        ("eagle3", {"tree_shape": [1, 1], "verify_token_budget": 4}),
+    ],
+)
+def test_speculative_launch_and_mismatch_query_reject_unsupported_chain(local_target, kind, params):
+    timing = {
+        **_timing_config(local_target),
+        "speculation": {**_speculative_cost(kind), "params": params},
+    }
+    engine = {
+        "backend": "vllm",
+        "worker_type": "decode",
+        "num_gpu_blocks": 64,
+        "aic_nextn_accept_rates": "1,1,0.4",
+        "timing_model": {"type": "external", "provider": "ais", "config": timing},
+    }
+    with pytest.raises(ValueError, match="speculative replay requires"):
+        RustForwardPassPerfModel.config_engine_launch_mismatches({"engine": engine}, config=timing)
+    with pytest.raises(ValueError, match="speculative replay requires"):
+        _native_launch(engine)

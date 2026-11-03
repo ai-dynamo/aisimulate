@@ -18,8 +18,10 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
+use crate::engine::host_offload::HostTierHandle;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, PressureEvent,
+    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, IterationMs, KvEvent,
+    KvHintSource, PressureEvent, RankWork, modeled_duration_ms,
 };
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
@@ -30,6 +32,7 @@ pub use source_holds::{
     SchedulerCommand, SchedulerCommandEffects, SchedulerCommandResult, SchedulerLifecycleEvent,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Welford's online algorithm for count / sum / population-variance.
@@ -123,6 +126,48 @@ pub(crate) fn build_fpm_snapshot(
 
 pub(crate) use sglang::SglangCore;
 pub(crate) use vllm::VllmCore;
+
+/// A pass's forward time: its prefill, then the decode work it adds.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ForwardTime {
+    /// The prefill, or the whole forward of a group iteration.
+    pub(crate) prefill: Duration,
+    pub(crate) decode: Duration,
+}
+
+impl ForwardTime {
+    /// End of the forward started at `start_ms`, adding prefill, then decode.
+    pub(crate) fn end_ms(self, start_ms: f64) -> f64 {
+        start_ms + self.prefill.as_secs_f64() * 1000.0 + self.decode.as_secs_f64() * 1000.0
+    }
+
+    /// The shared forward time of a group iteration under `speedup_ratio`.
+    /// A group is priced as one iteration only while `decode_speedup_ratio`
+    /// is 1, so prefill and decode work take the same speedup and the
+    /// iteration needs no split.
+    pub(crate) fn from_iteration(
+        iteration: &IterationMs,
+        speedup_ratio: f64,
+        decode_speedup_ratio: f64,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            decode_speedup_ratio == 1.0,
+            "a group iteration takes one speedup; decode_speedup_ratio {decode_speedup_ratio} \
+             requires per-rank phase pricing"
+        );
+        Ok(Self {
+            prefill: modeled_duration(iteration.total_ms, speedup_ratio)?,
+            decode: Duration::ZERO,
+        })
+    }
+}
+
+/// `raw_ms` of provider time under a modeled speedup, at the nanosecond
+/// resolution every scheduler duration uses.
+pub(crate) fn modeled_duration(raw_ms: f64, speedup_ratio: f64) -> anyhow::Result<Duration> {
+    let modeled_ms = modeled_duration_ms(raw_ms, speedup_ratio)?;
+    Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
+}
 
 /// Rank-local scheduler and native-G1 occupancy metrics.
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -234,6 +279,7 @@ pub(crate) struct EnginePassResult {
     pub(crate) completed_requests: usize,
     pub(crate) output_signals: Vec<OutputSignal>,
     pub(crate) admissions: Vec<AdmissionEvent>,
+    pub(crate) g1_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
     /// KV-pressure actions committed while selecting this pass.
     pub(crate) pressure_events: Vec<PressureEvent>,
     pub(crate) lifecycle_events: Vec<SchedulerLifecycleEvent>,
@@ -306,6 +352,15 @@ impl EngineCore {
         matches!(self, Self::Sglang(core) if core.model_work_in_pass())
     }
 
+    /// Device time of the forward the last pass launched, when the SGLang host
+    /// loop separates it from the pass end.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        match self {
+            Self::Sglang(core) => core.last_forward_ms(),
+            Self::Vllm(_) => None,
+        }
+    }
+
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
         if let Self::Sglang(core) = self {
             core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
@@ -319,6 +374,18 @@ impl EngineCore {
     ) {
         if let Self::Vllm(core) = self {
             core.set_g3_offload(registry, node);
+        }
+    }
+
+    /// The rank's own G2 for peers to pull from; `None` for SGLang.
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> Option<HostTierHandle> {
+        match self {
+            Self::Vllm(core) => Some(core.set_kvcr(registry, rank)),
+            Self::Sglang(_) => None,
         }
     }
 
@@ -354,20 +421,21 @@ impl EngineCore {
     pub(crate) fn is_ready(&self) -> bool {
         match self {
             Self::Vllm(core) => core.is_ready(),
-            Self::Sglang(core) => !core.is_drained(),
+            Self::Sglang(core) => core.is_ready(),
         }
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
         match self {
             Self::Vllm(core) => core.next_internal_deadline_ms(),
-            Self::Sglang(_) => None,
+            Self::Sglang(core) => core.next_internal_deadline_ms(),
         }
     }
 
     pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.process_internal_work(now_ms);
+        match self {
+            Self::Vllm(core) => core.process_internal_work(now_ms),
+            Self::Sglang(core) => core.process_internal_work(now_ms),
         }
     }
 
@@ -417,7 +485,9 @@ impl EngineCore {
             Self::Vllm(core) => {
                 core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
             }
-            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
         }
     }
 
@@ -449,6 +519,7 @@ impl EngineCore {
             .expect("engine hidden scheduler pass failed")
     }
 
+    #[cfg(test)]
     pub(crate) fn try_execute_hidden_pass(
         &mut self,
         now_ms: f64,
@@ -456,6 +527,27 @@ impl EngineCore {
         match self {
             Self::Vllm(core) => core.try_execute_hidden_pass(now_ms),
             Self::Sglang(core) => core.try_execute_hidden_pass(now_ms),
+        }
+    }
+
+    /// Commit one pass's scheduling and return its model work, leaving the
+    /// pass unpriced until [`Self::resolve_pass`].
+    pub(crate) fn schedule_pass(&mut self, now_ms: f64) -> anyhow::Result<RankWork> {
+        match self {
+            Self::Vllm(core) => core.schedule_pass(None, now_ms),
+            Self::Sglang(core) => core.schedule_pass(None, now_ms),
+        }
+    }
+
+    /// Finish the scheduled pass with a group iteration's shared price, or
+    /// with the core's own phase pricing when `iteration` is `None`.
+    pub(crate) fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> anyhow::Result<EnginePassResult> {
+        match self {
+            Self::Vllm(core) => core.resolve_pass(iteration),
+            Self::Sglang(core) => core.resolve_pass(iteration),
         }
     }
 }

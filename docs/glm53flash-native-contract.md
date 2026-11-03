@@ -14,15 +14,21 @@ maximum context is retained as metadata, not a measured-coverage claim.
 
 Construct production models through
 `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
-The initial topology is TP 1/2/4, MoE TP equal to attention TP,
-DP=PP=CP=EP=1, `nextn=0`, and full decoder execution. GB300 TP2/TP4 are the
-formal targets; TP1 acceptance requires measured allocator admission.
-NVFP4 TP1 has that admission on one GB300 (Mamba block size 8576), and its
-FPM and Ops data were collected. FP8 TP1 does not fit on one GB300: the
-native runtime runs out of memory while creating weights. The model accepts
-FP8 TP1, but its resident-weight inventory (about 298-299 GiB) already
-exceeds GB300's 277.5 GiB, so memory checks report it as out of memory.
-TensorRT-LLM fails explicitly. No new estimator constructor is introduced.
+The topology is TP 1/2/4/8 attention with DP=PP=CP=1, routed experts on the
+same ranks with MoE TP x EP = TP (vLLM expert parallelism is MoE TP=1, EP=TP;
+SGLang also accepts MoE TP = TP/EP), `nextn=0`, and full decoder execution.
+Dense FFN and shared experts stay TP-sharded. In this layout every rank holds
+all tokens, so EP adds no all-to-all: only the expert weights are sharded.
+Data-parallel attention, sequence-parallel MoE and DeepEP/megamoe/wideep
+backends are rejected. FPM profiles are pure TP, so an EP request finds no FPM
+cell. There is no system
+gate: whether a deployment fits a system is a capacity question, decided by
+measured allocator admission at collection time and by the memory checks at
+prediction time. For example, NVFP4 TP1 was admitted on one GB300 (Mamba
+block size 8576). The model accepts FP8 TP1, but its resident-weight
+inventory (about 298-299 GiB) exceeds one GPU of every supported system, so
+memory checks report it as out of memory. TensorRT-LLM fails explicitly.
+No new estimator constructor is introduced.
 
 The appended native variants are `Glm53Attention`, `Glm53Mhc`, and
 `Glm53Router` (diagnostic), `Glm53Ffn`, and `Glm53Primitive`. Their serialized bodies include `backend` and
@@ -59,8 +65,9 @@ over existing state is a decode in vLLM's KDA metadata, so it is priced by the
 rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. Known approximation: the router is priced by the BF16 (288 x 4096) GEMM row.
 The serving gate (vLLM `GateLinear`, SGLang `MoEGate`) uses BF16 weights with
 FP32 output; no generic `gemm_perf` dtype captures the FP32 output and the
-difference is negligible at this shape; pure-TP MoE dispatch and combine
-are the explicit all-reduces, so no `MoEDispatch` op is emitted.
+difference is negligible at this shape; with TP attention (pure TP or EP)
+MoE dispatch and combine are the explicit all-reduces, so no `MoEDispatch` op
+is emitted.
 
 - Attention includes local projections, KDA gates/convolution/recurrence/output
   norm, or NoPE sparse MLA and its IndexPool. Block input norm and output
@@ -70,7 +77,7 @@ are the explicit all-reduces, so no `MoEDispatch` op is emitted.
   for short prefill and also omits index query/head-gate projections there. KDA uses BF16 projections
   and FP32 recurrent state. vLLM also materializes sparse MLA projections in
   BF16; SGLang retains FP8 main sparse projections for the native FP8 checkpoint.
-- mHC requires explicit `tp_size` and `is_context` in its native identity: TP1/2/4 cannot
+- mHC requires explicit `tp_size` and `is_context` in its native identity: TP sizes cannot
   borrow one another's measured dispatch. Its replicated local SOL work is
   unchanged by this identity field. Missing TP or phase metadata is rejected.
   mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
@@ -136,11 +143,12 @@ Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
 shards.
 
 The pinned runtimes are data coordinates `vllm/0.31.0` (stock v0.31.0, no overlay)
-and `sglang/0.5.20`. GLM Ops data is not shipped in this package; it is
-supplied through the separate data-integration path as a systems root with
-its own `gb300.yaml` and `data/gb300/<family>/<backend>/<version>/`. Select
-it with `systems_paths=[<root>]`, the explicit `backend_version` and
-`enable_shared_layer=False`:
+and `sglang/0.5.20`. The GLM Ops tables for GB300, GB200, B300 (`b300_sxm`),
+H200 (`h200_sxm`) and H100 (`h100_sxm`) are packaged under
+`systems/data/<system>/<family>/<backend>/<version>/`. Because they are the
+newest data-backed vLLM and SGLang versions in the tree, they are the fleet
+`next` slot (`systems/query_versions.yaml`). Select them with the explicit
+`backend_version` (or `next`) and `enable_shared_layer=False`:
 
 ```python
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
@@ -151,7 +159,6 @@ model = RustForwardPassPerfModel.best_available(
         system="gb300",
         backend="vllm",  # or "sglang"
         backend_version="0.31.0",  # "0.5.20" for SGLang
-        systems_paths=["/path/to/glm53flash-ops"],  # root holding gb300.yaml and data/
         enable_shared_layer=False,
         worker_type="aggregated",
         tp=2,
@@ -164,14 +171,84 @@ model = RustForwardPassPerfModel.best_available(
 )
 ```
 
-Without that root, strict SILICON construction fails: with the default
-version it raises `PerfDataNotAvailableError` naming the missing exact-runtime
-table, a root without GLM tables raises `PerfDataNotAvailableError`, and the
-pinned version against the packaged root is rejected as not queryable. It
-never falls back to SOL or to other runtimes' rows. Keeping the data out of
-the general `systems/data` tree leaves the fleet `current`/`previous`/`next`
-version slots, backward fill, support matrices and every other model's
-defaults unchanged. The GLM attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
+Hopper deployments using these pinned runtimes pass
+`kvcache_quant_mode="bfloat16"`. FP8 KV is also available for op-level modeling
+on H100/H200 with **vLLM >= 0.32.0** or **SGLang >= 0.5.22**. Select the
+`backend_version` explicitly and retain `kvcache_quant_mode="fp8"`; the engine
+does not silently convert KV precision. Earlier runtimes still reject the
+FP8 request with a version-specific diagnostic.
+
+These newer versions are not yet in the packaged queryable-version slots.
+For an analytical evaluation, opt in with `AIC_ALLOW_UNLISTED_VERSIONS=1`
+and select `database_mode="SOL"`. For example:
+
+```bash
+AIC_ALLOW_UNLISTED_VERSIONS=1 python - <<'PY'
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available(
+    ForwardPassPerfModelConfig(
+        model="zai-org/GLM-5.3-Flash",
+        system="h200_sxm",
+        backend="sglang",
+        backend_version="0.5.22",  # "0.32.0" for vLLM
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        kvcache_quant_mode="fp8",
+        database_mode="SOL",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+    )
+)
+try:
+    print(model.static_phase_latency(
+        batch_size=32, input_tokens=4096, output_tokens=2, prefill=False
+    ))
+finally:
+    model.close()
+PY
+```
+
+SGLang serving requires all three flags below. Its Hopper default backend
+does not select this path automatically:
+
+```bash
+--kv-cache-dtype fp8_e4m3 \
+--dsa-prefill-backend tilelang \
+--dsa-decode-backend tilelang
+```
+
+The SGLang CUDA TileLang path excludes decode context parallelism greater than
+one and HiSparse; the modeled TP-attention baseline uses neither. Support
+comes from [SGLang #42957](https://github.com/sgl-project/sglang/pull/42957)
+(merge `9336681310c7a7153c4fbd7c2b9ae62011899014`, included in v0.5.22).
+The vLLM SM90 plan-dtype fix is
+[#55222](https://github.com/vllm-project/vllm/pull/55222)
+(merge `c37f86e5721f089a27c8e4358c30e435805fcaab`, included in v0.32.0).
+
+Opening this runtime path does not add performance measurements. SOL remains
+an analytical estimate; for Hopper SGLang FP8 KV, its latent attention QK/PV
+terms use FP8 tensor-core throughput to match the TileLang implementation.
+Projection and KDA precision remain unchanged. SILICON still requires
+exact-runtime FP8-KV rows;
+the packaged Hopper BF16-KV data cannot satisfy an FP8 request, and prior
+runtime data cannot establish coverage for the new version. HYBRID retains
+its existing source labels and fallback behavior.
+
+The packaged systems keep their own `nccl_version`, so the NCCL vocab gather is priced from the
+packaged NCCL table, not from the campaign's NCCL 2.30.7 collection.
+
+An external systems root remains optional: a root with its own `<system>.yaml`
+and `data/<system>/<family>/<backend>/<version>/`, selected with
+`systems_paths=[<root>]`, replaces the packaged tree, for example to evaluate
+a recollection. Strict SILICON never falls back to SOL or to other runtimes'
+rows: with the default version it raises `PerfDataNotAvailableError` naming
+the missing exact-runtime table, and a root without GLM tables raises
+`PerfDataNotAvailableError`.
+
+The GLM attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
 canonical sorted `geometry` JSON of the `Glm53Attention` body without
 `name`/`measured`, `batch_size`, `prefix`, `x` = new tokens for prefill or
 absolute KV length for decode, local-compute `latency` in ms, and complete

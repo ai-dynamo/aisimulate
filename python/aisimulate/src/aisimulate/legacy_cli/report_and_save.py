@@ -164,11 +164,8 @@ def _plot_worker_setup_table(
     buf.append(f"\n{exp_name} Top Configurations: (Ranked by {ranking_label})")
     table = PrettyTable()
 
-    # AFD frames also carry (p)-prefixed columns for the paired static
-    # prefill pool, so the AFD check must run before the disagg one.
-    is_afd = "(a)nodes" in top_configs.columns
     # Check if it is disagg config by checking for prefill/decode specific columns
-    is_disagg = "(p)tp" in top_configs.columns and not is_afd
+    is_disagg = "(p)tp" in top_configs.columns
 
     top_configs["cluster_request_rate"] = top_configs["request_rate"] * top_configs["replicas"]
 
@@ -176,67 +173,7 @@ def _plot_worker_setup_table(
     # pool; show it only when present.
     has_encoder_pool = "(e)workers" in top_configs.columns and (top_configs["(e)workers"].fillna(0) > 0).any()
 
-    if is_afd:
-        field_names = [
-            "Rank",
-            "backend",
-            _cli_bold("tokens/s/gpu"),
-            "tokens/s/user",
-            "req/s",
-            "TTFT",
-            "TPOT",
-            "request_latency",
-            "concurrency",
-            "total_gpus (used)",
-            "replicas",
-            "gpus/replica",
-            "(a)nodes",
-            "(a)tp",
-            "(a)bs",
-            "(f)nodes",
-            "(f)ep",
-            "(p)workers",
-        ]
-        if show_power:
-            field_names.append("power_w")
-        table.field_names = field_names
-        for i, row in enumerate(top_configs.to_dict("records")):
-            a_gpus = int(row["(a)workers"]) * int(row["(a)tp"])
-            f_gpus = int(row["(f)workers"])
-            prefill_workers = row.get("(p)workers")
-            has_prefill_pool = prefill_workers is not None and not pd.isna(prefill_workers)
-            if has_prefill_pool:
-                p_workers = int(prefill_workers)
-                p_gpus = p_workers * int(row["(p)num_gpus"])
-                gpus_replica_str = f"{row['num_total_gpus']} (=A{a_gpus}+F{f_gpus}+P{p_gpus})"
-                p_workers_str = f"{p_workers} (tp{int(row.get('(p)tp', 1))})"
-            else:
-                gpus_replica_str = f"{row['num_total_gpus']} (=A{a_gpus}+F{f_gpus})"
-                p_workers_str = "-"
-            row_data = [
-                i + 1,
-                row["backend"],
-                _cli_bold(f"{row['tokens/s/gpu_cluster']:.2f}"),
-                f"{row['tokens/s/user']:.2f}",
-                f"{row['cluster_request_rate']:.2f}",
-                f"{row['ttft']:.2f}",
-                f"{row['tpot']:.2f}",
-                f"{row['request_latency']:.2f}",
-                f"{row['concurrency'] * row['replicas']} (={row['concurrency']}x{row['replicas']})",
-                f"{total_gpus} ({row['total_gpus_used']}={row['replicas']}x{row['num_total_gpus']})",
-                row["replicas"],
-                gpus_replica_str,
-                row["(a)nodes"],
-                row["(a)tp"],
-                row["(a)bs"],
-                row["(f)nodes"],
-                row["(f)ep"],
-                p_workers_str,
-            ]
-            if show_power:
-                row_data.append(_format_power(row["power_w"]))
-            table.add_row(row_data)
-    elif is_disagg:
+    if is_disagg:
         field_names = [
             "Rank",
             "backend",
@@ -439,10 +376,6 @@ def _plot_worker_setup_table(
     return "\n".join(buf)
 
 
-def _task_gpu_budget(task: Task) -> int | None:
-    return task.effective_total_gpus if task.serving_mode == "afd" else task.total_gpus
-
-
 def _auto_result_tasks(
     exp_name: str,
     tasks: dict[str, Task],
@@ -560,7 +493,7 @@ def log_final_summary(
             chosen_task = tasks[chosen_exp]
     else:
         chosen_task = tasks[chosen_exp]
-    chosen_total_gpus = _task_gpu_budget(chosen_task)
+    chosen_total_gpus = chosen_task.total_gpus
 
     summary_box.append(f"    Model: {chosen_task.primary_model_path} (is_moe: {chosen_task.is_moe})")
     if not load_match:
@@ -600,11 +533,6 @@ def log_final_summary(
         else:
             bold_msg = _cli_bold(f"{chosen_exp} at {best_throughputs[chosen_exp]:.2f} tokens/s/gpu")
         summary_box.append(f"    Best Experiment Chosen: {bold_msg}")
-        afd_value = best_throughputs.get("afd")
-        if afd_value is not None and afd_value > 0:
-            reference = max((v for k, v in best_throughputs.items() if k != "afd" and v > 0), default=0.0)
-            if reference > 0:
-                summary_box.append(f"    AFD vs best non-AFD: {afd_value / reference:.2f}x")
     else:
         bold_msg = _cli_bold(f"{chosen_exp} at {best_throughputs[chosen_exp]:.2f} tokens/s/gpu")
         summary_box.append(f"    Best Experiment Chosen: {bold_msg}")
@@ -724,7 +652,7 @@ def log_final_summary(
             config_df["backend"] = tasks[task_key].primary_backend_name
 
         exp_task = tasks[task_key]
-        total_gpus = _task_gpu_budget(exp_task) or 0
+        total_gpus = exp_task.total_gpus or 0
         table_buf = _plot_worker_setup_table(
             exp_name,
             config_df,
@@ -1065,7 +993,6 @@ def save_results(
             # 4. Save the generated config for this experiment, sub-directory for each best config
             # Use original (non-display) data so --inclusive-tpot does not affect deployment artifacts.
             artifact_config_df = best_configs.get(exp_name)
-            afd_artifact_warning_emitted = False
             if artifact_config_df is not None:
                 for i, (idx, result_df) in enumerate(artifact_config_df.iterrows()):
                     # For multi-backend mode, get the task for this row's backend
@@ -1078,16 +1005,6 @@ def save_results(
                     else:
                         row_task = exp_task
                         row_backend_version = effective_generated_version
-
-                    if row_task.serving_mode == "afd":
-                        if not afd_artifact_warning_emitted:
-                            logger.warning(
-                                "Skipping deployment artifact generation for AFD experiment '%s': "
-                                "the current generator schema does not represent A/F worker topology.",
-                                exp_name,
-                            )
-                            afd_artifact_warning_emitted = True
-                        continue
 
                     top_config_dir = os.path.join(exp_dir, f"top{i + 1}")
                     safe_mkdir(top_config_dir, exist_ok=True)

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::trace::synthesize_validated_trace_tokens;
 use crate::engine::{
-    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    ImageSpec, XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
 };
 use crate::replay::protocol::DirectRequest;
 
@@ -48,6 +48,7 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    pub(super) conversation_lineage: Vec<Option<crate::replay::AgenticConversationLineage>>,
     /// Source hash for each graph-local hash ID in `AgenticNode::hash_ids`.
     pub(super) hash_values: Arc<[u64]>,
 }
@@ -228,6 +229,8 @@ pub struct TurnTrace {
     /// one. Replay keeps it as the request's report identity but never passes it
     /// to placement as a session.
     pub synthetic_session_id: bool,
+    /// Prompt-order image placeholders; empty for text-only turns.
+    pub images: Vec<ImageSpec>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -444,6 +447,27 @@ pub struct SyntheticTraceSpec {
     pub inter_turn_delays: DelaySpec,
     pub seed: u64,
     pub arrival_seed: u64,
+    /// Fixed image workload attached to every turn; `None` for text-only traffic.
+    pub images: Option<SyntheticImages>,
+}
+
+/// Fixed per-request image workload for synthetic traffic.
+///
+/// The geometry is resolved by the caller from the model's processor rules;
+/// the trace only lays the placeholders out in the prompt and hands identities
+/// to the scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntheticImages {
+    /// Images per request.
+    pub count: usize,
+    /// Placeholder tokens each image occupies in the prompt.
+    pub visual_tokens: usize,
+    /// Encoder sequences and per-sequence token counts behind each image.
+    pub encoder: crate::engine::EncoderShape,
+    pub embedding_bytes: u64,
+    /// Reuse identities round-robin over this many distinct images; `None`
+    /// gives every image a fresh identity so no request shares one.
+    pub identity_pool: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]

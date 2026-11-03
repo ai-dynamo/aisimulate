@@ -28,8 +28,10 @@ than the retired implementation rollout document.
 
 The independent [E2E Accuracy Matrix](../../.github/workflows/e2e-accuracy.yml)
 evaluates the scheduled main SHA and every discovered `release/*` head against
-the latest published InferenceX database dump. The resolver freezes one manifest
-with verified part checksums for all branches and retains it as a 90-day artifact.
+the private `ai-dynamo/aisim-infx-cache` HF dataset. The resolver freezes one full
+HF commit for all branches and retains the manifest as a 90-day artifact.
+`HF_READ_AISIM_INFX_CACHE` is a read-only Actions secret passed explicitly to the
+reusable workflow. The cache refreshes weekly; prediction campaigns remain daily.
 A branch matrix runs at most two campaigns
 at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
 amd64 wheel for its exact SHA when available, even while nightly staging waits for
@@ -38,25 +40,34 @@ AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manu
 runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
 
 Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
-`sudo` to install the PostgreSQL 18 client from the official PGDG repository,
-plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
-user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+`sudo` to install `libgomp1`. The HF reader downloads only the source index,
+snapshot manifest and observation Parquet files at the pinned commit. It verifies
+artifact sizes, hashes, schemas and identities before producing local tables.
 The evaluated wheel's baseline CLI and config adapter are selected from its own
 package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
 namespace migration. Ambiguous wheels with both baseline APIs are rejected.
 Baseline provenance records the selected API, adapter, and actual console entry point;
 the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
-The client reads the dump without starting a database server. Artifact upload
+No PostgreSQL client or database dump is needed. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 
 Each branch prepares measurements once and runs four independent prediction
 shards, with two CPU workers per shard and `fail-fast: false`. Results and
-incremental checkpoints are retained as internal Actions artifacts for seven days.
+incremental checkpoints are encrypted before upload and retained for seven days.
+Actions artifacts in a public repository are not private. AES-256-GCM encryption
+uses a key derived from the HF secret and workflow identity; it authenticates each
+relative filename. Source rows and resolved evidence are never uploaded in plaintext.
 `gh run rerun RUN_ID --failed` reuses successful shard artifacts from that run;
 only failed partitions repeat. A separate qualification job verifies full coverage
 and matching provenance before combining per-point results. Preview runs also
 retain resolved source evidence per shard. Actual concurrency depends on runner
 capacity (up to eight shard jobs across the two admitted branches).
+
+To inspect an encrypted artifact locally, set `HF_TOKEN` to the token used by
+that run, plus `GITHUB_REPOSITORY=ai-dynamo/aisimulate` and its `GITHUB_RUN_ID`.
+Run `python scripts/e2e_accuracy/private_artifacts.py open DOWNLOADED_DIR OUTPUT_DIR`
+in the campaign environment. Token rotation requires a new complete workflow run;
+old ciphertext cannot be opened with the replacement token.
 
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact

@@ -13,7 +13,7 @@
 pub(super) const P: usize = 8;
 pub(super) type Row = [f64; 3];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct Model {
     pub(super) knots: [Vec<f64>; 2],
     pub(super) slopes: [f64; P],
@@ -37,7 +37,25 @@ pub(super) fn features(x: [f64; 2], knots: &[Vec<f64>; 2]) -> [f64; P] {
     out
 }
 
+/// Knot vectors must fit the fixed basis width and be finite and ordered;
+/// evaluation indexes `slopes` by knot position.
+pub(super) fn validate_knots(knots: &[Vec<f64>; 2]) -> Result<usize, String> {
+    let p = 2 + knots[0].len() + knots[1].len();
+    if p > P
+        || knots
+            .iter()
+            .any(|axis| axis.iter().any(|v| !v.is_finite()) || axis.windows(2).any(|w| w[0] > w[1]))
+    {
+        return Err("spline knots are invalid".into());
+    }
+    Ok(p)
+}
+
 impl Model {
+    pub(super) fn validate_shape(&self) -> Result<(), String> {
+        validate_knots(&self.knots).map(|_| ())
+    }
+
     #[inline]
     pub(super) fn predict(&self, x: [f64; 2]) -> f64 {
         let mut prediction = self.intercept;

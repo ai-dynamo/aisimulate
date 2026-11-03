@@ -171,7 +171,7 @@ def test_shared_roots_with_custom_timing_preserve_estimator_control_guards(confi
 
 
 @pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
-@pytest.mark.parametrize("unsupported", ["AFD", "analytical encoder pools"])
+@pytest.mark.parametrize("unsupported", ["AFD", "encoder pools"])
 def test_systems_root_rejects_modes_that_cannot_consume_it(config_type, unsupported, tmp_path):
     raw = _request()
     if unsupported == "AFD":

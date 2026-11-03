@@ -420,6 +420,28 @@ def test_aligned_state_config_allows_zero_nextn_through_engine_handoff(forbid_es
     assert rank["prefix_match_unit"] == 16
 
 
+@pytest.mark.parametrize("canonical", [False, True])
+def test_full_block_aligned_state_allows_mtp_through_engine_handoff(forbid_estimators, canonical):
+    raw = _public(timing="default", prefix_match_unit=64)
+    if canonical:
+        raw["engine"]["speculation"] = {
+            "kind": "mtp",
+            "params": {"depth": 3},
+            "expected_accepted_tokens": 2.12,
+            "seed": 42,
+        }
+    else:
+        raw["engine"].update(nextn=3, nextn_accepted=2.12)
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    spec = prediction_to_replay_spec(config)
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["aic_nextn"] == 3
+    assert rank["prefix_match_unit"] == rank["block_size"] == 64
+
+
 @pytest.mark.parametrize(
     "shared_prefix_tokens, expected_reused_tokens",
     [

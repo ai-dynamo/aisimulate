@@ -156,7 +156,7 @@ def test_default_dense_domain_matches_legacy_candidate_order():
 
     assert actual == expected
     assert result.provenance["complete"] is True
-    assert result.provenance["source"].endswith("build_afd_parallel_lists")
+    assert result.provenance["source"] == "aisimulate.sdk.task_v2.build_afd_parallel_lists"
 
 
 def test_moe_domain_resolves_symbolic_ep_and_filters_expert_divisibility():

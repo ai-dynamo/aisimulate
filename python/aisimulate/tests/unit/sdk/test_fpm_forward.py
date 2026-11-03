@@ -41,6 +41,7 @@ from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
@@ -199,6 +200,103 @@ def _model_config(**overrides) -> sdk_config.ModelConfig:
     return sdk_config.ModelConfig(**defaults)
 
 
+@pytest.fixture
+def fpm_database_probe(tmp_path, request):
+    """Invented K3 timings with real loader identity, not measured GPU data."""
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+    from aisimulate_core.sdk.fpm_identity import (
+        EXECUTION_COLUMNS,
+        LEGACY_EXECUTION_IDENTITY,
+        speculative_execution_identity,
+    )
+
+    speculative = getattr(request, "param", True)
+    execution = speculative_execution_identity(
+        "1" * 40,
+        {
+            "kind": "speculative_round",
+            "method": "eagle3",
+            "num_draft_tokens": 3,
+            "draft_model": "test/draft",
+            "draft_revision": "2" * 40,
+            "timing_scope": "model_step_cuda",
+        },
+    )
+    if not speculative:
+        execution = LEGACY_EXECUTION_IDENTITY
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", tmp_path / f"{SYSTEM}.yaml")
+    policy = "vllm_native_fpm_model_step_cuda_v1" if speculative else "dynamo_native_single_sample_v1"
+    rows, ops = [], {}
+    for phase, tokens, kv, latency in [("prefill", 32, 0, 11.0), ("decode", 0, 128, 7.0)]:
+        op = FPMForwardOp(phase, _model_config(), MODEL_PATH, sol_ops=[], execution=execution)
+        identity = dict(zip(_CELL_MATCH_COLUMNS, op._match_identity, strict=True))
+        row = _row(phase, 1, tokens, kv, latency if speculative else 2.0, identity=identity)
+        row.update(dict(zip(EXECUTION_COLUMNS, execution, strict=True)))
+        if speculative:
+            row.update(
+                kv_seed_regime="real_kv",
+                measurement_policy=policy,
+                timing_scope="model_step_cuda",
+                measurement_reduction="single_sample",
+                source_sample_count=1,
+            )
+        rows.append(row)
+        ops[phase] = _fpm_spec_dict(op)
+        ops[phase]["FpmForward"]["interpolation"] = "direct"
+    _write_pair(
+        str(tmp_path / "data" / SYSTEM / BACKEND / VERSION),
+        rows,
+        sidecar_overrides={
+            "schema_version": 7,
+            "measurement_policy": policy,
+            **({"timing_scope": "model_step_cuda"} if speculative else {}),
+        },
+    )
+    database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=str(tmp_path))
+    return EngineHandle.for_database(database, systems_path=str(tmp_path)), ops
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("entry", ["evaluate_ops_json", "evaluate_ops_sol_json"])
+@pytest.mark.parametrize("shape", ["direct", "nested", "sol_ops"])
+def test_database_probe_rejects_ad_hoc_sd_rounds(fpm_database_probe, phase, entry, shape):
+    handle, ops = fpm_database_probe
+    op = ops[phase]
+    if shape == "nested":
+        op = {"TokenScale": {"op": op, "numerator": 1, "denominator": 1}}
+        op = {"Overlap": {"name": "nested_overlap", "group_a": [], "group_b": [op]}}
+        op = {"Fallback": {"name": "nested_fallback", "primary": op, "fallback": []}}
+        op = {
+            "Dsv41Stage": {
+                "name": "nested_stage",
+                "is_context": phase == "prefill",
+                "decoder_replay": False,
+                "bounded": False,
+                "window_size": 128,
+                "children": [op],
+            }
+        }
+    elif shape == "sol_ops":
+        outer = dict(op["FpmForward"], sol_ops=[op])
+        outer["match_identity"] = list(outer["match_identity"])
+        outer["match_identity"][16] = "full"
+        op = {"FpmForward": outer}
+    with pytest.raises(ValueError, match="SD-round"):
+        getattr(handle, entry)(
+            json.dumps([op]), is_context=phase == "prefill", batch_size=1, s=32 if phase == "prefill" else 128
+        )
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("fpm_database_probe", [False], indirect=True)
+def test_database_probe_keeps_ad_hoc_ar_queries(fpm_database_probe, phase):
+    handle, ops = fpm_database_probe
+    result = handle.evaluate_ops_json(
+        json.dumps([ops[phase]]), is_context=phase == "prefill", batch_size=1, s=32 if phase == "prefill" else 128
+    )
+    assert result[0][1] == 2.0  # Synthetic AR row, not the 7/11 ms full K3 round.
+
+
 _NATIVE_FPM_CONTRACTS = {
     "vllm": (
         "vllm_native_fpm_prefix_seed_median_v1",
@@ -284,6 +382,95 @@ def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash
     return config, rows, metadata
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("model_path", ["Qwen/Qwen3-0.6B", "zai-org/GLM-5.3-Flash"])
+def test_speculative_fpm_query_scales_widened_stp_once(tmp_path, backend, model_path):
+    import copy
+
+    # TEST_ONLY anchors: latency = B + K_total/1024 ms. Different batch and
+    # KV coordinates distinguish the intended mapping from B-only scaling,
+    # double widening and accidental multiplication of total KV.
+    points = [("prefill", 1, 512, 0, 13.0)] + [
+        ("decode", batch, 0, kv, batch + kv / 1024) for batch in range(1, 11) for kv in (1024, 2048)
+    ]
+    config, _, _ = _median_pair_request(tmp_path, backend, model_path=model_path, points=points)
+    model = RustForwardPassPerfModel.best_available(config)
+    ranks = [
+        {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1024}},
+        {"scheduled_requests": {"num_decode_requests": 2, "sum_decode_kv_tokens": 2048}},
+    ]
+    original = copy.deepcopy(ranks)
+    try:
+        assert model.estimate_forward_pass_time_ms(ranks) == 4.0
+        for depth, factor in [(1, 1.33), (2, 1.41), (3, 1.49), (4, 1.57)]:
+            # The second rank has the largest STP latency: 2*(d+1) + 2 ms.
+            baseline = 2 * (depth + 1) + 2
+            expected = baseline * factor
+            assert model.estimate_forward_pass_time_ms(ranks, draft_length=depth) == pytest.approx(expected)
+            detail = model.estimate_forward_pass_detailed(ranks, draft_length=depth)
+            assert detail["latency_ms"] == pytest.approx(expected)
+            assert detail["scaling_factor"] == pytest.approx(factor)
+            assert detail["draft_length"] == depth
+            assert detail["stp_reference"]["latency_ms"] == baseline
+            assert detail["stp_reference"]["max_rank"] == 1
+        assert ranks == original
+        # A fully prefix-cached prefill schedules no fresh token: decode-only.
+        cached = copy.deepcopy(ranks)
+        cached[1]["scheduled_requests"].update(num_prefill_requests=1, sum_prefill_kv_tokens=4096)
+        assert model.estimate_forward_pass_time_ms(cached, draft_length=2) == pytest.approx(8 * 1.41)
+        assert model.estimate_forward_pass_time_ms(ranks) == 4.0
+        assert "stp_reference" not in model.estimate_forward_pass_detailed(ranks)
+        assert model.estimate_forward_pass_time_ms({}, draft_length=2) == 0.0
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 2.0, "3", 2**32 - 1, 2**32])
+def test_speculative_fpm_rejects_invalid_draft_length(invalid):
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "test/model",
+            "system": "test",
+            "backend": "vllm",
+            "worker_type": "decode",
+            "estimation_mode": "fpm_regression",
+        }
+    )
+    try:
+        for query in [model.estimate_forward_pass_time_ms, model.estimate_forward_pass_detailed]:
+            with pytest.raises(ValueError, match="draft_length must be a positive integer"):
+                query({}, draft_length=invalid)
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("decode_requests", [0, 2])
+def test_speculative_fpm_rejects_prefill_and_mixed_work(decode_requests):
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "test/model",
+            "system": "test",
+            "backend": "vllm",
+            "worker_type": "aggregated",
+            "estimation_mode": "fpm_regression",
+        }
+    )
+    try:
+        with pytest.raises(ValueError, match="pure decode"):
+            model.estimate_forward_pass_time_ms(
+                {
+                    "scheduled_requests": {
+                        "num_prefill_requests": 1,
+                        "sum_prefill_tokens": 8,
+                        "num_decode_requests": decode_requests,
+                    }
+                },
+                draft_length=2,
+            )
+    finally:
+        model.close()
+
+
 # TEST_ONLY invented values on and off the 4-token grid; never measured data.
 _UNALIGNED_PREFIXES = (122, 125, 131, 134, 4346, 4349, 4355, 4358)
 
@@ -304,6 +491,22 @@ def test_public_glm_fpm_predicts_unaligned_prefixes(tmp_path):
             assert predictor.estimate_forward_pass_time_ms(_prefix_metrics(1, 32, prefix)) == 15.0
     finally:
         predictor.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_public_glm_fpm_refuses_expert_parallel_without_an_ep_cell(tmp_path, backend):
+    # Only a pure-TP4 cell exists. EP4 with TP4 attention has the same
+    # attention TP but a different MoE identity: it must find no cell instead
+    # of borrowing the TP4 measurements.
+    config, _, _ = _median_pair_request(tmp_path, backend, tp=4)
+    tp4 = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert tp4.estimate_forward_pass_time_ms(_median_metrics("decode", 512)) == 7.125
+    finally:
+        tp4.close()
+    ep4 = ForwardPassPerfModelConfig(**(config.to_dict() | {"moe_tp_size": 1, "moe_ep_size": 4}))
+    with pytest.raises(PerfDataNotAvailableError, match=r'No FPM cell matches .*moe_tp="1", moe_ep="4"'):
+        RustForwardPassPerfModel.best_available(ep4)
 
 
 def _median_metrics(phase, tokens):
@@ -480,6 +683,7 @@ def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_pat
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("error:Hybrid FPM/OP:FutureWarning")
 class TestForwardModelRewrite:
     def test_default_keeps_op_level_lists(self):
         model = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
@@ -645,7 +849,9 @@ class TestForwardModelRewrite:
                 kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path="Qwen/Qwen3-0.6B"
             ),
         )
-        model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert len(caught) == 1
         assert model.generation_ops[0]._verify_width == 4
         assert model.generation_ops[1:]
         assert all(not isinstance(op, FPMForwardOp) for op in model.generation_ops[1:])
@@ -668,7 +874,15 @@ class TestForwardModelRewrite:
         )
         baseline = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
         target_weights = float(sum(op.get_weights() for op in baseline.context_ops))
-        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+        guidance = str(caught[0].message)
+        assert "Option 1" in guidance and "draft_length" in guidance
+        assert "Option 2" in guidance and "measured SD-round" in guidance
+        assert "Pure OP-based SD remains supported" in guidance
+        assert "no removal release is set" in guidance
 
         # Phase lists LEAD with the whole-model op; draft ops follow op-level.
         assert isinstance(model.generation_ops[0], FPMForwardOp)

@@ -40,6 +40,37 @@ from aisimulate_core.sdk.step_estimate import MixedStepInput, StepEstimate
 logger = logging.getLogger(__name__)
 
 
+QWEN_SMART_RESIZE_MAX_RATIO = 200
+
+
+def _qwen_smart_resize(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> tuple[int, int]:
+    """Resized height and width of the Qwen VL image processors' ``smart_resize``.
+
+    Modified adaptation, Apache-2.0, copyright 2024 the HuggingFace Inc. team:
+    https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+    Each side is rounded to the patch-and-merge stride; an image above
+    ``max_pixels`` is scaled down (floor) and one below ``min_pixels`` scaled up
+    (ceil) to the budget first. A bound of zero is left unset.
+    """
+    factor = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+    if max(height, width) / max(min(height, width), 1) > QWEN_SMART_RESIZE_MAX_RATIO:
+        raise ValueError(
+            f"absolute aspect ratio must be smaller than {QWEN_SMART_RESIZE_MAX_RATIO}, "
+            f"got {max(height, width) / max(min(height, width), 1):.1f}"
+        )
+    h_bar = max(factor, round(height / factor) * factor)
+    w_bar = max(factor, round(width / factor) * factor)
+    if enc_cfg.max_pixels > 0 and h_bar * w_bar > enc_cfg.max_pixels:
+        beta = math.sqrt((height * width) / enc_cfg.max_pixels)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif enc_cfg.min_pixels > 0 and h_bar * w_bar < enc_cfg.min_pixels:
+        beta = math.sqrt(enc_cfg.min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return h_bar, w_bar
+
+
 def _kimi_resized_spatial_tokens(
     height: int, width: int, enc_cfg: common.VisionEncoderConfig, *, is_video: bool = False
 ) -> tuple[int, int]:
@@ -69,6 +100,93 @@ def _kimi_resized_spatial_tokens(
             f"got {padded_height // patch}x{padded_width // patch}"
         )
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
+
+
+@dataclasses.dataclass(frozen=True)
+class ImageGeometry:
+    """Encoder work and byte volumes of one preprocessed image.
+
+    ``sequences`` independent encoder sequences (tiles, or one for a
+    dynamic-resolution tower) of ``patch_tokens`` patch embeddings,
+    ``transformer_tokens`` ViT tokens and ``output_tokens`` merged tokens each;
+    ``visual_tokens`` is the prompt placeholder span including structural
+    tokens; ``feature_bytes`` the processor output (fp32 patch pixels) and
+    ``embedding_bytes`` the encoder output kept by the embedding cache (bf16,
+    one copy per projector instance)."""
+
+    sequences: int
+    patch_tokens: int
+    transformer_tokens: int
+    output_tokens: int
+    visual_tokens: int
+    feature_bytes: int
+    embedding_bytes: int
+
+
+def image_geometry(
+    model_path: str,
+    height: int,
+    width: int,
+    *,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+) -> ImageGeometry:
+    """Geometry of one ``height`` x ``width`` image under the checkpoint's preprocessing.
+
+    Shares the token math of the encoder phase for the processors the replay
+    lays out: Qwen's dynamic resize and Llama 4's fixed tiles. A dynamic-resolution
+    processor rescales images outside its pixel budget before patchify; the
+    checkpoint's bounds apply unless ``min_pixels``/``max_pixels`` override them,
+    and a checkpoint whose bounds are unknown is rejected rather than assumed to
+    keep the raw resolution."""
+    from aisimulate_core.sdk.utils import (
+        get_model_config_from_model_path,
+        get_vision_encoder_config_from_model_info,
+    )
+
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = get_vision_encoder_config_from_model_info(model_info)
+    if not isinstance(enc_cfg, common.VisionEncoderConfig):
+        raise ValueError(f"{model_path} has no vision encoder configuration")
+    # Gemma 4 sizes images from its soft-token budget and Kimi from its own
+    # patch limits; neither follows a Qwen pixel budget or Llama 4 tiles.
+    dynamic_qwen = (
+        enc_cfg.image_size == 0
+        and enc_cfg.resize_mode == "qwen"
+        and not isinstance(enc_cfg, common.Gemma4VisionEncoderConfig)
+    )
+    fixed_tiles = enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0
+    if not (dynamic_qwen or fixed_tiles):
+        raise ValueError(
+            f"{model_path}: the {model_info['architecture']} vision family is not supported by native VL replay"
+        )
+    overrides = {
+        name: int(value)
+        for name, value in (("min_pixels", min_pixels), ("max_pixels", max_pixels))
+        if value is not None
+    }
+    if overrides:
+        enc_cfg = dataclasses.replace(enc_cfg, **overrides)
+    if dynamic_qwen and (enc_cfg.min_pixels <= 0 or enc_cfg.max_pixels <= 0):
+        raise ValueError(
+            f"{model_path}: the processor's min_pixels/max_pixels budget is unknown; "
+            "set images.min_pixels and images.max_pixels to the served processor's values"
+        )
+    workload = BaseBackend._encoder_workload_per_visual(
+        RuntimeConfig(image_height=int(height), image_width=int(width), num_images_per_request=1), enc_cfg
+    )
+    if workload.output_tokens_per_image <= 0:
+        raise ValueError(f"{height}x{width} resolves to no visual tokens for {model_path}")
+    patch_pixels = enc_cfg.in_channels * enc_cfg.temporal_patch_size * enc_cfg.patch_size**2
+    return ImageGeometry(
+        sequences=workload.sequences_per_image,
+        patch_tokens=workload.patch_tokens_per_sequence,
+        transformer_tokens=workload.transformer_tokens_per_sequence,
+        output_tokens=workload.output_tokens_per_sequence,
+        visual_tokens=workload.context_tokens_per_image,
+        feature_bytes=workload.patch_tokens_per_sequence * workload.sequences_per_image * patch_pixels * 4,
+        embedding_bytes=workload.output_tokens_per_image * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances * 2,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -205,6 +323,59 @@ class BaseBackend:
         beyond layer count. Default: 0.0 (no correction).
         """
         return 0.0
+
+    def _compute_ttft(
+        self,
+        model: "BaseModel",
+        database: "PerfDatabase",
+        runtime_config: "RuntimeConfig",
+        b: int,
+        isl: int,
+        osl: int,
+        ctx_tokens: int,
+        prefix: int,
+        *,
+        prefill_step_ms: float,
+        genonly_step_latency_ms: float,
+        encoder_latency_ms: float,
+        steps_to_finish_ctx: float,
+        decode_iterations: float,
+    ) -> float:
+        """TTFT (ms) for an agg point. Default: per-request prefill time
+        (chunk count x mix step) x queuing factor + dispatch + encoder. Subclasses
+        with a different queue model override this whole computation."""
+        qf = self._ttft_queuing_factor(b, steps_to_finish_ctx)
+        logger.debug(f"ttft: prefill_step={prefill_step_ms:.2f}ms qf={qf:.2f}")
+        ttft_per_request = prefill_step_ms * np.ceil(isl / ctx_tokens) + self._prefill_dispatch_overhead_ms(model)
+        return encoder_latency_ms + ttft_per_request * qf
+
+    def _compute_tpot(
+        self,
+        *,
+        b: int,
+        isl: int,
+        osl: int,
+        ctx_tokens: int,
+        num_mix_steps: float,
+        num_genonly_steps: float,
+        num_mix_steps_for_tpot_calc: float,
+        mix_step_latency_ms: float,
+        genonly_step_latency_ms: float,
+        model: "BaseModel | None" = None,
+        database: "PerfDatabase | None" = None,
+        runtime_config: "RuntimeConfig | None" = None,
+    ) -> float:
+        """Per-step TPOT (ms) for an agg point, before the speculative
+        per-iteration division applied by the caller. Default: step-weighted
+        average of the mix- and generation-only step latencies. Subclasses whose
+        scheduler amortizes the mix step differently override this whole
+        computation. Guards osl==1 (no decode) where both denominators are zero."""
+        _tpot_steps = num_mix_steps_for_tpot_calc + num_genonly_steps
+        if _tpot_steps <= 0:
+            return 0.0
+        return (
+            mix_step_latency_ms * num_mix_steps_for_tpot_calc + genonly_step_latency_ms * num_genonly_steps
+        ) / _tpot_steps
 
     def _throughput_cap(self, step_throughput: float, ttft: float, tpot: float, b: int, osl: int) -> float:
         """Return the effective output throughput after any engine-specific cap.
@@ -595,13 +766,11 @@ class BaseBackend:
         def _smart_resized_spatial_tokens(height: int, width: int, *, is_video: bool = False) -> tuple[int, int]:
             if enc_cfg.resize_mode == "kimi":
                 return _kimi_resized_spatial_tokens(height, width, enc_cfg, is_video=is_video)
-            # Upstream VL processors (Qwen smart_resize) round each raw
-            # dimension to the nearest patch-and-merge stride before
-            # patchify. The processor's min/max_pixels rescaling is a
-            # preprocessor knob AIC does not model.
+            # The video processor budgets pixels per clip, not per frame; that rule is
+            # not modeled, so frames keep the stride rounding alone.
+            budget = dataclasses.replace(enc_cfg, min_pixels=0, max_pixels=0) if is_video else enc_cfg
+            h_bar, w_bar = _qwen_smart_resize(height, width, budget)
             spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
-            h_bar = max(spatial_stride, round(height / spatial_stride) * spatial_stride)
-            w_bar = max(spatial_stride, round(width / spatial_stride) * spatial_stride)
             post_merge = (h_bar // spatial_stride) * (w_bar // spatial_stride)
             pre_merge = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
             return post_merge, pre_merge
@@ -703,19 +872,16 @@ class BaseBackend:
         # or non-pooled temporal patch is an independent transformer sequence;
         # pooled Kimi video uses one spatial-temporal sequence per video.
 
+        tokens_per_sequence = {
+            "patch": workload.patch_tokens_per_sequence,
+            "transformer": workload.transformer_tokens_per_sequence,
+            "output": workload.output_tokens_per_sequence,
+        }
+
+        from aisimulate_core.sdk.models.blocks.vit import encoder_shape_class
+
         def _encoder_shape(op) -> tuple[int, int]:
-            name = op._name
-            if "encoder_patch_embedding" in name:
-                return sequences_local, workload.patch_tokens_per_sequence
-            if "encoder_attention" in name:
-                return sequences_local, workload.transformer_tokens_per_sequence
-            if (
-                "encoder_projector" in name
-                or "encoder_gemma4_pool_postprocess" in name
-                or name == "encoder_dp_all_gather"
-            ):
-                return sequences_local, workload.output_tokens_per_sequence
-            return sequences_local, workload.transformer_tokens_per_sequence
+            return sequences_local, tokens_per_sequence[encoder_shape_class(op._name)]
 
         self._require_rust_engine_step(runtime_config, database, surface="encoder")
         encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(
@@ -736,11 +902,13 @@ class BaseBackend:
     ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
         """Compiled-engine path of the encoder per-op loop.
 
-        Encoder ops are deliberately NOT in the compiled ``EngineSpec`` (the
-        compile path threads no image configuration), so they travel through
-        the ad-hoc op-list evaluation FFI: ops are grouped by their resolved
-        ``(batch, eff_s)`` (the shape math above), each group serialized to
-        OpSpec JSON and evaluated at ``x=batch*s``.
+        The static encoder loop (``run_static`` / ``run_encoder_static``) keeps
+        its shape math in Python and prices the ops through the ad-hoc op-list
+        evaluation FFI: ops are grouped by their resolved ``(batch, eff_s)``
+        (the shape math above), each group serialized to OpSpec JSON and
+        evaluated at ``x=batch*s``. The canonical estimator compiles the same
+        encoder ops into ``EngineSpec.vision`` and prices them in
+        ``Engine::evaluate_vision``, which mirrors this loop.
         Latency/energy fold with ``+=``; sources are last-wins ACROSS shape
         groups, while duplicate names WITHIN one group would merge to
         ``"mixed"`` inside the engine (``build_encoder_ops`` never emits
@@ -1833,20 +2001,39 @@ class BaseBackend:
         # decode tokens in the step. For TTFT we need the pure prefill cost (no decode
         # tokens alongside), so we undo that efficiency reduction first.
         _prefill_step_ms = mix_step_latency_ms / mix_efficiency if mix_efficiency > 0 else mix_step_latency_ms
-        _ttft_per_request = _prefill_step_ms * np.ceil(isl / ctx_tokens) + self._prefill_dispatch_overhead_ms(model)
-        ttft = encoder_latency_ms + _ttft_per_request * self._ttft_queuing_factor(b, steps_to_finish_ctx)
-        logger.debug(
-            f"ttft: prefill_step={_prefill_step_ms:.2f}ms qf={self._ttft_queuing_factor(b, steps_to_finish_ctx):.2f}"
+        ttft = self._compute_ttft(
+            model,
+            database,
+            runtime_config,
+            b,
+            isl,
+            osl,
+            ctx_tokens,
+            prefix,
+            prefill_step_ms=_prefill_step_ms,
+            genonly_step_latency_ms=genonly_step_latency_ms,
+            encoder_latency_ms=encoder_latency_ms,
+            steps_to_finish_ctx=steps_to_finish_ctx,
+            decode_iterations=decode_iterations,
         )
 
         # Guard against osl == 1 (no-decode), which makes both denominators zero.
-        _tpot_steps = num_mix_steps_for_tpot_calc + num_genonly_steps
         tpot = (
-            (mix_step_latency_ms * num_mix_steps_for_tpot_calc + genonly_step_latency_ms * num_genonly_steps)
-            / _tpot_steps
+            self._compute_tpot(
+                b=b,
+                isl=isl,
+                osl=osl,
+                ctx_tokens=ctx_tokens,
+                num_mix_steps=num_mix_steps,
+                num_genonly_steps=num_genonly_steps,
+                num_mix_steps_for_tpot_calc=num_mix_steps_for_tpot_calc,
+                mix_step_latency_ms=mix_step_latency_ms,
+                genonly_step_latency_ms=genonly_step_latency_ms,
+                model=model,
+                database=database,
+                runtime_config=runtime_config,
+            )
             / decode_tokens_per_iteration
-            if _tpot_steps > 0
-            else 0.0
         )
         _total_step_latency_ms = (
             encoder_latency_ms + num_mix_steps * mix_step_latency_ms + num_genonly_steps * genonly_step_latency_ms

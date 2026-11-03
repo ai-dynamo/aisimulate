@@ -234,6 +234,29 @@ def test_runner_capabilities_preserve_existing_positional_constructor():
     )
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"vision": True},
+        {"frontend": {"stages": [{"workers": 1, "service_ms": 3.0}]}},
+        {"sglang": {"host_loop": True}},
+        {"rank": {"sglang": {"vlm_cache_bytes": 100 << 20}}},
+    ],
+)
+def test_runner_capabilities_gate_host_aware_sglang_arguments(args):
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="sglang", backend_version="0.5.19", agg_engine_args=args, num_workers=1
+        ),
+        workload={"isl": 128, "osl": 32, "concurrency": 2},
+        goal={},
+    )
+    topologies = (("sglang", "agg"),)
+    with pytest.raises(ValueError, match="SGLang host loop"):
+        RunnerCapabilities(supported_backend_topologies=topologies).require_compatible(spec)
+    RunnerCapabilities(supported_backend_topologies=topologies, supports_sglang_host_loop=True).require_compatible(spec)
+
+
 def test_runner_capabilities_require_explicit_online_support():
     spec = _replay_spec()
     spec = ReplaySpec(

@@ -9,6 +9,24 @@ use crate::AicError;
 
 use super::samples::integer_sqrt;
 
+/// Online correction policy. Automatic selection uses hybrid calibration
+/// for learned forests and preserves the fixed grid for native estimates.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionMode {
+    #[default]
+    Auto,
+    Fixed,
+    DynamicLocal,
+    Hybrid,
+}
+
+impl CorrectionMode {
+    pub(crate) fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 pub(crate) const DEFAULT_MAX_OBSERVATIONS: usize = 64;
 pub(crate) const DEFAULT_MIN_OBSERVATIONS: usize = 5;
 pub(crate) const DEFAULT_MIN_FASTER_CORRECTION_FACTOR: f64 = 0.5;
@@ -31,10 +49,17 @@ pub(crate) const DEFAULT_REGRESSION_FFN_TOKEN_WEIGHT: f64 = 1.0;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassPerfOptions {
+    /// `auto` selects hybrid correction for learned forests and fixed correction
+    /// for native estimates. Hybrid uses fixed correction inside its configured
+    /// limits and dynamic local correction outside them.
+    #[serde(default, skip_serializing_if = "CorrectionMode::is_auto")]
+    pub correction_mode: CorrectionMode,
     /// Maximum retained observations across the feature-space buckets in each
     /// logical store. The cap applies per inferred workload kind for Native
     /// and per workload store for Regression. At the default of 64, Aggregated
     /// regression can retain up to 256 observations across its four stores.
+    /// Hybrid gives each of its fixed and dynamic policies this full budget,
+    /// retaining at most twice this many slots per inferred workload kind.
     #[serde(default = "default_max_observations")]
     pub max_observations: usize,
     /// Minimum retained observations required before a regression fit or
@@ -209,6 +234,7 @@ pub(crate) mod regression_weight_serde {
 impl Default for ForwardPassPerfOptions {
     fn default() -> Self {
         Self {
+            correction_mode: CorrectionMode::Auto,
             max_observations: DEFAULT_MAX_OBSERVATIONS,
             min_observations: DEFAULT_MIN_OBSERVATIONS,
             min_faster_correction_factor: default_min_faster_correction_factor(),

@@ -170,6 +170,7 @@ fn spec(disagg: bool, max_in_flight: Option<usize>) -> ReplaySpec {
         ..Default::default()
     };
     ReplaySpec {
+        encoder: None,
         version: CURRENT_REPLAY_SPEC_VERSION,
         topology: if disagg {
             ReplayTopology::Disaggregated {
@@ -414,6 +415,7 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                         turn_index: None,
                         metadata: serde_json::Value::Null,
                         session_id: (attributed && i < 2).then(|| format!("session-{i}")),
+                        kv_hints: None,
                     })
                     .collect();
                 let events = Rc::new(RefCell::new(Vec::new()));

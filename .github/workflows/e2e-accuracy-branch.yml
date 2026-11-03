@@ -4,6 +4,9 @@ name: E2E Accuracy Branch
 
 on:
   workflow_call:
+    secrets:
+      HF_READ_AISIM_INFX_CACHE:
+        required: true
     inputs:
       sha:
         required: true
@@ -140,14 +143,7 @@ jobs:
       - name: Install the CPU campaign environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-common ca-certificates
-          # Enable the official PGDG repository for the required dump reader.
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client-18 zstd libgomp1
-          echo "/usr/lib/postgresql/18/bin" >> "${GITHUB_PATH}"
-          /usr/lib/postgresql/18/bin/pg_restore --version
-          zstd --version
+          sudo apt-get install -y --no-install-recommends ca-certificates libgomp1
           python -m venv "${RUNNER_TEMP}/accuracy-venv"
           echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
       - name: Install measurement tooling
@@ -156,14 +152,22 @@ jobs:
         with:
           name: e2e-accuracy-dataset
           path: ${{ runner.temp }}/accuracy-dataset
-      - name: Fetch checksum-pinned public measurements
+      - name: Fetch checksum-pinned private HF measurements
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+          HF_HOME: ${{ runner.temp }}/accuracy-hf
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           python scripts/e2e_accuracy/fetch_accuracy_measurements.py \
             --manifest "${RUNNER_TEMP}/accuracy-dataset/e2e-accuracy-dataset.json" --output "${RUNNER_TEMP}/accuracy-measurements"
+      - name: Encrypt private measurements
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: python scripts/e2e_accuracy/private_artifacts.py seal "${RUNNER_TEMP}/accuracy-measurements" "${RUNNER_TEMP}/accuracy-measurements-encrypted"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-measurements-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-measurements/tables.json
+          path: ${{ runner.temp }}/accuracy-measurements-encrypted/
           overwrite: true
           if-no-files-found: error
           retention-days: 7
@@ -229,7 +233,11 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: e2e-accuracy-measurements-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-measurements
+          path: ${{ runner.temp }}/accuracy-measurements-encrypted
+      - name: Decrypt private measurements
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: python scripts/e2e_accuracy/private_artifacts.py open "${RUNNER_TEMP}/accuracy-measurements-encrypted" "${RUNNER_TEMP}/accuracy-measurements"
       - name: Run both predictors for this shard
         shell: bash
         env:
@@ -256,10 +264,20 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard }}
         run: test -s "${RUNNER_TEMP}/accuracy-shard/shard-${SHARD_INDEX}.json"
+      - name: Encrypt private shard outputs and checkpoints
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: |
+          for kind in shard evidence; do
+            if test -d "${RUNNER_TEMP}/accuracy-${kind}"; then
+              python scripts/e2e_accuracy/private_artifacts.py seal "${RUNNER_TEMP}/accuracy-${kind}" "${RUNNER_TEMP}/accuracy-${kind}-encrypted"
+            fi
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-results-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/accuracy-shard/
+          path: ${{ runner.temp }}/accuracy-shard-encrypted/
           overwrite: true
           if-no-files-found: error
           retention-days: 7
@@ -268,7 +286,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-checkpoints-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/accuracy-evidence/results.jsonl
+          path: ${{ runner.temp }}/accuracy-evidence-encrypted/results.jsonl.enc
           overwrite: true
           if-no-files-found: warn
           retention-days: 7
@@ -277,7 +295,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/accuracy-evidence/
+          path: ${{ runner.temp }}/accuracy-evidence-encrypted/
           if-no-files-found: warn
           overwrite: true
           retention-days: 7
@@ -312,8 +330,12 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: e2e-accuracy-results-${{ inputs.artifact_key }}-shard-*
-          path: ${{ runner.temp }}/accuracy-shards
+          path: ${{ runner.temp }}/accuracy-shards-encrypted
           merge-multiple: true
+      - name: Decrypt private shard results
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: python scripts/e2e_accuracy/private_artifacts.py open "${RUNNER_TEMP}/accuracy-shards-encrypted" "${RUNNER_TEMP}/accuracy-shards"
       - name: Verify every shard and qualify the complete cohort
         shell: bash
         env:

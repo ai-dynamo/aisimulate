@@ -31,8 +31,14 @@ from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.e2e_accuracy.build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
-from scripts.e2e_accuracy.fetch_accuracy_measurements import RESOLVED_POLICY, digest, validate_manifest
+from scripts.e2e_accuracy.build_e2e_accuracy_overview import (
+    GPUS_PER_NODE_BY_FAMILY,
+    build_summary,
+    measurement_source_url,
+)
+from scripts.e2e_accuracy.fetch_accuracy_measurements import MTP_POLICY, RESOLVED_POLICY, digest, validate_manifest
+from scripts.e2e_accuracy.hf_measurements import MTP_POLICY as HF_MTP_POLICY
+from scripts.e2e_accuracy.hf_measurements import POLICY as HF_POLICY
 from scripts.e2e_accuracy.source.cohort import select_points as select_resolved_points
 from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime_evidence
 from scripts.pages.build_pages_site import _accuracy_summary
@@ -496,6 +502,13 @@ def replay_chart_metrics(metrics, total_gpus):
 
 
 def predict_resolved_point(point):
+    if point.get("resolution_error"):
+        return {
+            "id": point["id"],
+            "outcome": "unsupported",
+            "reason": "source_unresolved",
+        }
+
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
     from scripts.e2e_accuracy.source.estimate import estimate_kwargs
@@ -503,8 +516,6 @@ def predict_resolved_point(point):
     from scripts.e2e_accuracy.source.replay import replay_spec as resolved_replay_spec
     from scripts.e2e_accuracy.source.schema import SiliconRow
 
-    if point.get("resolution_error"):
-        return {"id": point["id"], "outcome": "unsupported", "reason": "source_unresolved"}
     deployment = point["deployment"]
     config, bench = point["config"], point["benchmark"]
     api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
@@ -560,9 +571,18 @@ def predict_resolved_point(point):
             )
         },
     }
+    if mtp := roles["decode" if config["disagg"] else "aggregated"].get("mtp"):
+        row["configuration"].update(
+            mtp_depth=mtp["depth"],
+            mtp_accepted_draft_tokens=mtp["accepted_draft_tokens"],
+            mtp_acceptance_source=mtp["kind"],
+        )
     total_gpus = row["aisimulate_total_gpus"]
     row.update(measurement_chart_metrics(bench["metrics"], total_gpus))
     try:
+        if config["spec_method"] == "mtp":
+            row["aic_status"] = "unsupported"
+            raise ValueError("MTP is not projected into the legacy estimate adapter")
         adapter = importlib.import_module(adapter_name)
         model_path = (
             materialize_model_config(deployment["checkpoint_config"])
@@ -624,22 +644,41 @@ def predict_resolved_point(point):
 
 
 def resolve_points(points, cache_dir, workers, *, allow_estimated_defaults=False):
-    from scripts.e2e_accuracy.source.deployment import inspect_deployment
+    from scripts.e2e_accuracy.source.deployment import inspect_deployment, read_deployment_recipe
+    from scripts.e2e_accuracy.source.mtp import log_files, runtime_inputs
     from scripts.e2e_accuracy.source.recipes.inferencex_recipe import GitHubRecipeSource
     from scripts.e2e_accuracy.source.schema import SiliconRow
 
     source = GitHubRecipeSource(cache_dir=cache_dir, archived_runtime=True)
 
     def resolve(point):
+        evidence = {}
+        stage = "source_unresolved"
         try:
+            parsed, mtp = None, None
+            if point["config"]["spec_method"] == "mtp":
+                stage = "mtp_source_unresolved"
+                parsed = read_deployment_recipe(SiliconRow(**point["source_row"]), source)
+                logs = log_files(point, cache_dir / "mtp-logs")
+                evidence["mtp_runtime_logs"] = {role: [proof for _, proof in files] for role, files in logs.items()}
+                stage = "mtp_configuration_unresolved"
+                parsed, mtp = runtime_inputs(point, parsed, logs)
+                if point.get("server_log_uses", 0) != 1 and any(
+                    value["kind"] != "configured_synthetic" for value in mtp.values()
+                ):
+                    raise ValueError("shared or unidentified server log; acceptance window unresolved")
             deployment, evidence, issues = inspect_deployment(
                 SiliconRow(**point["source_row"]),
                 source,
+                parsed=parsed,
+                mtp_by_role=mtp,
                 allow_estimated_defaults=allow_estimated_defaults,
             )
             return {**point, "deployment": deployment, "evidence": evidence, "resolution_error": issues}
         except Exception as error:
-            return {**point, "resolution_error": [{"message": str(error)}]}
+            if "missing acceptance" in str(error) or "missing configured synthetic acceptance" in str(error):
+                stage = "mtp_acceptance_missing"
+            return {**point, "evidence": evidence, "resolution_error": [{"stage": stage, "message": str(error)}]}
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         resolved = []
@@ -703,9 +742,10 @@ def campaign(args) -> None:
     validate_manifest(manifest)
     identity = wheel_identity(args.wheel)
     tables = json.loads(args.tables.read_text())
-    resolved = manifest["selection_policy"] == RESOLVED_POLICY
+    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY, HF_POLICY, HF_MTP_POLICY}
     if resolved:
-        points, selection = select_resolved_points(tables, manifest["max_age_days"])
+        options = {"include_mtp": True} if manifest["selection_policy"] in {MTP_POLICY, HF_MTP_POLICY} else {}
+        points, selection = select_resolved_points(tables, manifest["max_age_days"], **options)
         for point in points:
             point["id"] = sha([point["benchmark"]["id"], point["config"]["id"]])
     else:
@@ -809,6 +849,7 @@ def driver_digest() -> str:
             str(path.relative_to(Path(__file__).parent)): digest(path)
             for path in [
                 Path(__file__),
+                Path(__file__).with_name("hf_measurements.py"),
                 *sorted(Path(__file__).with_name("source").rglob("*.py")),
                 *sorted(Path(__file__).with_name("source").rglob("*.json")),
             ]
@@ -869,7 +910,7 @@ def merge_shards(args) -> None:
 
 def publish_campaign(metadata, results, cohort_sha, started, output, run_attempt) -> None:
     manifest, identity, selection = (metadata[key] for key in ("manifest", "identity", "selection"))
-    resolved = manifest["selection_policy"] == RESOLVED_POLICY
+    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY, HF_POLICY, HF_MTP_POLICY}
     preview = metadata["preview"]
     points = [{"id": id_} for id_ in metadata["point_ids"]]
     rows = qualify_results(points, results)
@@ -907,9 +948,7 @@ def publish_campaign(metadata, results, cohort_sha, started, output, run_attempt
             "dump_max_date": selection["measurement_date_through"],
         },
         predictions_sha256=sha(predictions),
-        source_url=REPOSITORY.replace("ai-dynamo/aisimulate", "SemiAnalysisAI/InferenceX-app")
-        + "/releases/tag/"
-        + manifest["release_tag"],
+        source_url=measurement_source_url(manifest["release_tag"]),
         branch=metadata["branch"],
         preview=preview,
         exclude_multinode=not resolved,

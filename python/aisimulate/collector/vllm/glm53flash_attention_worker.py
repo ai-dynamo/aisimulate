@@ -121,6 +121,8 @@ def install_probe(model_runner) -> None:
 
 
 def validate_attention(attention, manifest, model_runner) -> None:
+    from collector.glm53flash_attention_contract import SERVING_KV_CACHE_DTYPE
+
     expected = manifest["geometry"]
     indexer = attention.indexer
     checks = {
@@ -139,6 +141,11 @@ def validate_attention(attention, manifest, model_runner) -> None:
         # Only sequence parallelism turns the flag off (common/model.py:368-370).
         "o_proj.reduce_results": (bool(attention.o_proj.reduce_results), True),
         "cudagraph_mode": (model_runner.vllm_config.compilation_config.cudagraph_mode.name, "FULL_AND_PIECEWISE"),
+        # The engine serves the key's latent KV dtype (bf16 on SM90, fp8 on SM10x).
+        "kv_cache_dtype": (
+            model_runner.vllm_config.cache_config.cache_dtype,
+            SERVING_KV_CACHE_DTYPE[expected["kv_cache_dtype"]],
+        ),
     }
     for name, (actual, wanted) in checks.items():
         if actual != wanted:

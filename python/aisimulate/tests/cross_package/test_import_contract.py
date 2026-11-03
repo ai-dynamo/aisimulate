@@ -27,6 +27,7 @@ CORE_SDK_LEAF_MODULES = [
     "backends.sglang_backend",
     "backends.trtllm_backend",
     "backends.vllm_backend",
+    "backends.vllm_backend_xpu",
     "common",
     "deepseek_v41",
     "config",

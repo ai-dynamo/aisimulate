@@ -6,7 +6,63 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{HandoffId, HandoffTransferTiming};
+use super::{G2Scope, HandoffId, HandoffTransferTiming};
+
+/// Encoder work behind one image, as the checkpoint's processor lays it out.
+///
+/// An image becomes `sequences` independent encoder sequences (tiles, or one
+/// for a dynamic-resolution tower) that attention never crosses; the token
+/// counts are per sequence. The placeholder span an image occupies in the
+/// prompt can exceed `sequences * output_tokens` by structural tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence.
+    pub output_tokens: u32,
+}
+
+/// One image placeholder span and the encoder shape behind it.
+///
+/// `token_start..token_end` is the half-open placeholder interval inside the
+/// prompt; its length is the image's visual token count. `identity` keys the
+/// vision embedding cache and repeats only when the workload reuses an image.
+/// `embedding_bytes` is the encoder output retained by the embedding cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSpec {
+    pub identity: u64,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub encoder: EncoderShape,
+    pub embedding_bytes: u64,
+}
+
+impl ImageSpec {
+    /// Placeholder tokens occupied by this image.
+    pub fn visual_tokens(&self) -> usize {
+        self.token_end - self.token_start
+    }
+
+    /// Whether the placeholder interval intersects the half-open `start..end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.token_start < end && start < self.token_end
+    }
+}
+
+/// Rank named by a router's `kv.fetch` hint as the holder of a prompt prefix.
+///
+/// It stands in for the hint's `source_control_endpoint`, which identifies one
+/// worker and attention-DP rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KvHintSource {
+    /// Logical worker owning the source rank.
+    pub worker_id: u64,
+    /// Attention-DP rank within that worker.
+    pub dp_rank: u32,
+}
 
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +81,13 @@ pub struct Request {
     /// Optional session attribution; does not affect scheduling or cache identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
+    /// Optional router hint naming another rank that may hold a prefix of
+    /// `tokens`. Never the receiving rank itself. Engines without KVCR ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hint: Option<KvHintSource>,
 }
 
 /// Commands supported by the standalone scheduler.
@@ -91,6 +154,26 @@ pub enum LifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
+    /// A host-aware scheduler reached a scheduler-thread stage for one request.
+    TtftMilestone {
+        request_id: Uuid,
+        stage: TtftMilestone,
+        at_ms: f64,
+    },
+}
+
+/// Scheduler-thread stages reported by a host-aware scheduler for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtftMilestone {
+    /// Left the frontend worker pools; delivered to the scheduler process.
+    FrontendReady,
+    /// Drained from the scheduler inbox at an iteration start.
+    Received,
+    /// Selected into its first batch.
+    Selected,
+    /// The forward that finished its prompt completed on the device.
+    PrefillComplete,
 }
 
 /// One runtime-neutral KV block identity.
@@ -326,6 +409,66 @@ pub struct CommandEffects {
     pub suppressed_pending_output: bool,
 }
 
+/// G1 prefix-cache lookup observations at scheduler pass start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PrefixCacheLookupCounts {
+    pub query_count: u64,
+    /// Known sequence tokens submitted to G1 prefix-cache lookup, including
+    /// repeated admission attempts and recomputation after preemption.
+    pub queried_tokens: u64,
+    /// G1 lookup matches before scheduler recomputation clipping or G2
+    /// attribution. These are not first-admission request reuse counters.
+    pub matched_tokens: u64,
+}
+
+impl PrefixCacheLookupCounts {
+    pub(crate) fn checked_add_assign(&mut self, other: Self) -> anyhow::Result<()> {
+        self.query_count = self
+            .query_count
+            .checked_add(other.query_count)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup query counter overflow"))?;
+        self.queried_tokens = self
+            .queried_tokens
+            .checked_add(other.queried_tokens)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup token counter overflow"))?;
+        self.matched_tokens = self
+            .matched_tokens
+            .checked_add(other.matched_tokens)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup match counter overflow"))?;
+        Ok(())
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        queried_tokens: usize,
+        matched_tokens: usize,
+    ) -> anyhow::Result<()> {
+        self.checked_add_assign(Self {
+            query_count: 1,
+            queried_tokens: queried_tokens as u64,
+            matched_tokens: matched_tokens as u64,
+        })
+    }
+}
+
+/// Physical occupancy of one host-cache ownership domain. Shared pools omit
+/// worker/rank identity and must be sampled only once per deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostCacheMetrics {
+    pub scope: G2Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dp_rank: Option<u32>,
+    pub capacity_blocks: u64,
+    pub resident_blocks: u64,
+    /// Includes reserved transfer destinations that are not resident yet.
+    pub used_blocks: u64,
+    pub capacity_bytes: u64,
+    pub resident_bytes: u64,
+    pub used_bytes: u64,
+}
+
 /// Effects visible as soon as an engine pass starts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassStartEffects {
@@ -335,6 +478,10 @@ pub struct PassStartEffects {
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,
+    /// vLLM G1 prefix-cache lookup attempts at this pass's admission boundary.
+    /// Absent for other backends or when prefix caching is disabled. Counters
+    /// alone do not imply model work or scheduler progress.
+    pub g1_prefix_cache_lookup: Option<PrefixCacheLookupCounts>,
 }
 
 /// Decode/verification work contributing to acceptance-length telemetry.

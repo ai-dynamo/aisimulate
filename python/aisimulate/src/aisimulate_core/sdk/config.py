@@ -379,20 +379,18 @@ class AFDConfig:
     # prefill (TTFT) and decode (TPOT).
     phase: str = "decode"  # "prefill" | "decode" | "both"
     # Whether this AFD pool runs together with a separate static
-    # (non-AFD) pool covering the *other* phase. Concretely, in CLI
-    # ``estimate`` mode:
+    # (non-AFD) pool covering the *other* phase:
     #
     #   * ``phase`` ∈ {"prefill", "decode"} + ``combined_with_pd=True``
-    #     → the AFD path estimates only its own phase and the CLI
-    #     orchestration layer (``cli/api._combine_afd_static_estimate_results``)
-    #     runs a standard static estimate for the other phase, then
-    #     merges TTFT/TPOT, throughput (rate-matched on min seq/s), GPU
-    #     budget (``afd_gpus + static_gpus``) and per-phase impl labels
-    #     into a single ``EstimateResult``.
+    #     → the AFD path estimates only its own phase. Estimating the
+    #     other phase with a standard static pool and merging TTFT/TPOT,
+    #     throughput (rate-matched on min seq/s), GPU budget
+    #     (``afd_gpus + static_gpus``) and per-phase impl labels is the
+    #     caller's responsibility.
     #   * ``phase`` ∈ {"prefill", "decode"} + ``combined_with_pd=False``
-    #     → the CLI returns the AFD-only estimate for the chosen phase
-    #     (the other phase is left unmodeled; user is on their own to
-    #     size it). Use this when you only care about that single phase.
+    #     → the estimate covers the chosen AFD phase only (the other
+    #     phase is left unmodeled; user is on their own to size it).
+    #     Use this when you only care about that single phase.
     #   * ``phase == "both"`` → AFD covers both phases internally;
     #     ``combined_with_pd`` must be ``False`` (the two are
     #     mutually exclusive and ``__post_init__`` enforces this).
@@ -401,11 +399,9 @@ class AFDConfig:
     # AFD decode pool with a regular prefill pool (or vice versa); the
     # combined estimate is the number a sizing exercise actually needs.
     #
-    # TODO(afd, Phase-2): extend pareto_analysis to merge the AFD
-    # frontier with the agg / disagg frontiers so end-to-end Pareto
-    # evaluation across mixed AFD + P/D deployments is possible. Today
-    # the CLI single-point combine path is in place, but the Pareto
-    # sweep does not yet enumerate AFD-combined-with-PD points.
+    # The legacy ``sdk.pareto_analysis`` agg / disagg frontier does not
+    # include AFD. AFD and ``afd+pd`` candidates are searched by the
+    # unified sweeper (``aisimulate recommend``).
     combined_with_pd: bool = True
     # Boundary-op assignment: ``add_norm_2`` and ``logits_gemm`` sit at
     # the natural Attention/FFN boundary and can be assigned to either
