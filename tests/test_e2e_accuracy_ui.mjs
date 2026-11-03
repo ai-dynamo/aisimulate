@@ -1239,6 +1239,11 @@ test("AISim features use structured effective settings and preserve role differe
   assert.match(featureCell(html,"speculation","aisim"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
   assert.match(featureCell(html,"kv-aware-routing","aisim"),/status na/);
   assert.doesNotMatch(html,/Draft length: 99/);
+  assert.doesNotMatch(html,/Observed use: unknown/);
+  point.simulation_features.roles[1].features[0].observed={state:"exercised",count:3};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: exercised/);
+  point.simulation_features.roles[1].features[0].observed={state:"not_observed",count:0};
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: not observed/);
   point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
   html=checklist(point);
   assert.match(featureCell(html,"speculation","aisim"),/Unsupported \(actual: 7, AISim max: 5\)/);

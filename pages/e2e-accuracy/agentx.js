@@ -95,7 +95,7 @@ window.AgentX = (() => {
         if(state==="enabled" && ["cache.g2","cache.g3"].includes(id))extra.push(`Scope: ${label(p.scope)}`);
         if(state==="enabled" && id==="cache.hybrid_state")extra.push(`State-cache type: ${label(p.cache_types)}`);
         if(id==="sub-block-prefix" && p.match_granularity_tokens!=null)extra.push(`Match granularity: ${p.match_granularity_tokens} tokens`);
-        if(state==="enabled")extra.push(`Observed use: ${feature.observed.state.replaceAll("_"," ")}`);
+        if(state==="enabled" && feature.observed.state!=="unknown")extra.push(`Observed use: ${feature.observed.state.replaceAll("_"," ")}`);
         if(comparison?.status==="unsupported") {state="unsupported";extra.push(comparison.aisim_max!=null?`Unsupported (actual: ${comparison.actual_draft_length}, AISim max: ${comparison.aisim_max})`:"Unsupported for this evaluated configuration");}
         if(comparison?.status==="mismatch")extra.push(`Mismatch with silicon: ${comparison.actual_method} / ${comparison.actual_proposals} proposed tokens`);
         const badges=id==="speculation" && feature?.state==="enabled"?[["Method",methods[p.method]||p.method||"Unrecorded"],["Draft length",label(p.draft_length)],["Verify width",label(p.verify_width)]]:[];
