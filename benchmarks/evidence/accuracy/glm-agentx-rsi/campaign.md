@@ -364,6 +364,12 @@ attempt's cache is retained there with a relative symlink preserving its old pat
 Do not share these caches across framework images. Fifteen focused audit,
 readiness, counter and client-projection tests pass before this retry.
 
+Retry **1004446** freezes source `b311598589516db220b716f079b486614ea0dd2d` and
+runs on pool0-0095. Reserve its 4500-second wall limit plus 60 seconds of cleanup
+at eight GPUs: 36480 GPU-seconds. With 17448 already charged, 176472 GPU-seconds
+remain available after this reservation. Later submissions require this cleanup
+margin explicitly; the current job was admitted with ample remaining budget.
+
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
 them without prompt/error-body content. It does not modify frozen job 1002848.

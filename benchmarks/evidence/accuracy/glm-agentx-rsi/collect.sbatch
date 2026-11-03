@@ -14,7 +14,8 @@
 set -euo pipefail
 : "${CAMPAIGN_ROOT:?}"
 : "${REMAINING_GPU_SECONDS:?Set from reconciled campaign ledger}"
-test "$REMAINING_GPU_SECONDS" -ge 36000
+# Reserve the wall limit plus a minute for scheduler/GPU cleanup.
+test "$REMAINING_GPU_SECONDS" -ge 36480
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 cd "$storage_root"
 model="$storage_root/models/GLM-5.3-NVFP4-e3b8f9f2"
