@@ -1336,9 +1336,10 @@ def resolve_trtllm_mla_compute(
     so an explicit bfloat16 is resolved to the precision it runs. An unset FMHA
     is left to the checkpoint inference, which already picks FP8 for an FP8 KV
     cache. Whole-model FPM identities remain caller-owned, and so is a bfloat16
-    the Task's data-driven fallback chose because the reachable context table
-    has no fp8 slice: resolving it to fp8 again would look up rows that do not
-    exist (``_fmha_quant_mode_from_data``).
+    a data-driven fallback chose (the Task's, or ``resolve_context_fmha_by_data``
+    on the estimate path) because the reachable context table has no fp8 slice:
+    resolving it to fp8 again would look up rows that do not exist
+    (``_fmha_quant_mode_from_data``).
     """
     if model_config.forward_model == "fpm" or model_config.fmha_quant_mode != common.FMHAQuantMode.bfloat16:
         return
@@ -1444,6 +1445,10 @@ def resolve_context_fmha_by_data(
     # when that inference would pick fp8 (bf16 checkpoints need no change).
     if inferred.get("fmha_quant_mode") == common.FMHAQuantMode.fp8 and common.FMHAQuantMode.bfloat16.name in supported:
         model_config.fmha_quant_mode = common.FMHAQuantMode.bfloat16
+        # The estimate paths resolve the MLA compute precision again before
+        # get_model (run_disagg, static_ctx, engine, kv_cache); mark the
+        # bfloat16 as data-driven so resolve_trtllm_mla_compute leaves it.
+        model_config._fmha_quant_mode_from_data = True
         logger.warning(
             "fmha_quant_mode=fp8 (inferred from the model checkpoint) has no %r perf data; "
             "falling back to bfloat16 FMHA data. Predictions are conservative if the deployed "

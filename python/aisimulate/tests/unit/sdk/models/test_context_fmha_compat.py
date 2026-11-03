@@ -297,6 +297,19 @@ def test_context_role_inferred_fp8_downgrades_to_bf16(fake_model_info, caplog):
     assert any("falling back to bfloat16" in r.message for r in caplog.records)
 
 
+def test_estimate_path_data_fallback_survives_the_disagg_resolver(fake_model_info):
+    """The bfloat16 the estimate-path fallback chose is marked data-driven, so the
+    second MLA resolution the disaggregated and static estimates run before
+    get_model does not promote it back to fp8 and read rows the table lacks."""
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
+    mc = _mc(fmha=None)
+    resolve_context_fmha_by_data(mc, "deepseek-ai/DeepSeek-V3", _BF16_ONLY_DB, "trtllm", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    assert mc._fmha_quant_mode_from_data is True
+    helpers.resolve_trtllm_mla_compute(mc, "deepseek-ai/DeepSeek-V3", "trtllm", {"gpu": {"sm_version": 100}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+
 def test_context_role_inferred_fp8_kept_when_data_exists(fake_model_info):
     """With an fp8 slice in the context table, the inference survives (left to get_model)."""
     fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
