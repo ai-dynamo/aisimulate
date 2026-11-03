@@ -385,7 +385,7 @@ async def check():
                 await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(1)
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
-                await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
+                await expect(frame.locator("#agentx-features-title")).to_have_text("Feature Parity")
                 await expect(frame.locator('[data-source="silicon"] .agentx-feature-status.unknown')).to_have_count(8)
                 await expect(frame.locator(".agentx-feature-table thead th")).to_have_text(
                     ["Feature", "Silicon", "AISim"]
