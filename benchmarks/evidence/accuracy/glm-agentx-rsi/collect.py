@@ -109,6 +109,7 @@ def control(root, model, deadline, instrumented, speculation):
         "HF_HUB_CACHE": "hf/hub",
         "HUGGINGFACE_HUB_CACHE": "hf/hub",
         "HF_MODULES_CACHE": "hf-modules",
+        "SGLANG_CACHE_DIR": "sglang",
         "XDG_CACHE_HOME": "xdg",
         "TORCH_HOME": "torch",
         "TORCH_EXTENSIONS_DIR": "torch-extensions",

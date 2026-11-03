@@ -25,6 +25,7 @@ def test_launch_keeps_compilation_and_model_caches_inside_campaign(tmp_path, mon
     for variable in (
         "HF_HOME",
         "HF_MODULES_CACHE",
+        "SGLANG_CACHE_DIR",
         "XDG_CACHE_HOME",
         "TORCH_HOME",
         "TRITON_CACHE_DIR",

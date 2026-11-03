@@ -92,7 +92,7 @@ is correct and coalescing can compress the observed interval. Historical
 coalescing remains unproven without server-ready/receipt observations; no baseline
 correction is accepted. Keep the original last-content response boundary.
 
-**Experiment E005, awaiting a qualified retry.** Compare uninstrumented MTP, instrumented MTP and
+**Experiment E005, historical retry running.** Compare uninstrumented MTP, instrumented MTP and
 instrumented plain decode with fresh servers. Synthetic controls use 8192/131072
 input tokens, 16/128 output tokens, lanes 1/8/14, repeats and explicit cache-flush
 requests. Also exercise the OpenAI chat frontend with reasoning/tool parsers.
@@ -114,6 +114,16 @@ Require actual counts, clocks, rank identity,
 completion, output-length conservation and coverage before comparison. Server
 retained/processed-token counts and client-delivered counts are distinct; preserve
 any terminal over-generation rather than silently equating them.
+
+`analyze_timing.py` accounts for 221 planned identities per mode, validates
+counter/clock ordering and exact delivered lengths, and uses rank-0 readiness.
+It ends native spans at first attainment of the delivered length, excluding
+duplicate terminal frames. One-token intervals and chat token-interval scores
+remain unavailable. Numerical tests cover units, terminal over-generation,
+missing rank identity, backward counters/clocks and failed-attempt retention.
+The frozen active run uses its container-local SGLang autotune cache; a later
+collector revision explicitly scopes `SGLANG_CACHE_DIR` to campaign storage.
+Neither this path fix nor the audit modifies running job 1003379.
 
 ## H2 — Recipe, tokenization, snapshots and cache history
 
@@ -380,6 +390,7 @@ From this directory:
 python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLAY_DIR --output NEW_PRIVATE_DIR
 python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
+python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
 python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py
