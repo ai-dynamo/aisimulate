@@ -5,8 +5,9 @@
 
 Progress through a workflow is NEVER self-reported by the agent driving it;
 it is derived, every time, from artifacts (workspace files, results, targets
-declarations, findings). This checker evaluates the `done_when` predicate of
-every step in a workflow manifest (workflows/<name>.yaml) and reports:
+declarations, the collector's plan and skips.py, committed evidence). This
+checker evaluates the `done_when` predicate of every step in a workflow
+manifest (workflows/<name>.yaml) and reports:
 
   done     the artifact evidence for this step exists and is consistent
   todo     actionable now, evidence missing (with the reason)
@@ -24,7 +25,7 @@ status) — an append-only ledger of how the campaign actually progressed. The
 ledger is audit history only; state is always re-derived, never read back.
 
 Judgment steps (actor: ai/owner) complete by PRODUCING a declared artifact
-(a findings entry, a retest record, a signed exclusion); their predicates
+(a skips.py entry, an evidence README, a retest or recheck record); their predicates
 check form and completeness — content quality remains review/owner territory
 and this tool does not pretend otherwise.
 
@@ -47,6 +48,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE.parent
+COLLECTOR = HARNESS.parent
 ROOT = Path(
     os.environ.get("AIS_PROBE_WORKSPACE")
     or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
@@ -73,9 +75,16 @@ def _load_targets() -> dict:
     return yaml.safe_load((HARNESS / "targets.yaml").read_text())
 
 
-def _load_findings() -> dict:
-    p = HARNESS / "results" / "findings.yaml"
-    return (yaml.safe_load(p.read_text()) or {}).get("findings", {}) if p.exists() else {}
+def _conclusions_text() -> str:
+    """Where a conclusion lives once drawn (V4: no findings file): collector/skips.py
+    (a model the backend cannot serve, a block that cannot run), the collector source
+    (a fix, a FIXME(kernel-limit), a deviation note at the deviating code) and the
+    committed evidence READMEs under benchmarks/evidence/collector/."""
+    own = COLLECTOR / "opharness"  # the harness's own sources are not where a conclusion lives
+    parts = [path.read_text(errors="replace") for path in sorted(COLLECTOR.glob("**/*.py")) if own not in path.parents]
+    evidence = COLLECTOR.parents[2] / "benchmarks" / "evidence" / "collector"
+    parts += [path.read_text(errors="replace") for path in sorted(evidence.glob("*/README.md"))]
+    return "\n".join(parts)
 
 
 def _matrix_path(fw: str, version: str, sm: str) -> Path:
@@ -176,7 +185,8 @@ def pred_matrix_complete(p):
 
 def pred_fails_root_caused(p):
     """Every fail cell carries a cause, and every repo failing NEWLY (vs the
-    previous version's matrix, when one exists) is mentioned in findings."""
+    previous version's matrix, when one exists) is named where its conclusion
+    lives (_conclusions_text: skips.py, the collector source, an evidence README)."""
     sm = p.get("sm", "sm90")
     m = _load_matrix(p["fw"], p["version"], sm)
     if m is None:
@@ -193,14 +203,17 @@ def pred_fails_root_caused(p):
         newly = [r for r in fails if (old.get(r) or {}).get("verdict") not in (None, "fail")]
     else:
         # first campaign on this SM (no baseline matrix): every fail that is not a
-        # generator reject is new here and must be explained in findings (RTX 6000
-        # handoff 2026-09-30: the check used to go green on 24 unexplained fails)
+        # generator reject is new here and must be explained (RTX 6000 handoff
+        # 2026-09-30: the check used to go green on 24 unexplained fails)
         newly = [r for r, c in fails.items() if "generator" not in str(c.get("cause") or "")]
-    blob = json.dumps(_load_findings(), ensure_ascii=False)
+    blob = _conclusions_text()
     missing = [r for r in newly if r not in blob]
     if missing:
-        return False, f"{len(missing)} newly-failing repos absent from findings (e.g. {missing[0]})"
-    return True, f"{len(fails)} fails, all caused; {len(newly)} new fails covered in findings"
+        return False, (
+            f"{len(missing)} newly-failing repos named in no skips.py entry, collector note or evidence README "
+            f"(e.g. {missing[0]})"
+        )
+    return True, f"{len(fails)} fails, all caused; {len(newly)} new fails explained"
 
 
 def pred_customizations_retested(p):
@@ -342,42 +355,51 @@ def pred_case_set_no_regression(p):
     )
 
 
-_IMPACT_ACTIONS = {"guard", "cases", "collector_fix", "pipeline", "none"}
-
-
-def pred_findings_propagated(p):
-    """Every finding pinned to this (fw, version, sm) states what the
-    COLLECTOR learned from it: a `collector_impact` list whose items name an
-    op (or 'none'), an action (guard | cases | collector_fix | pipeline |
-    none) and a ref (commit, file:symbol, or the reason nothing changes).
-    The Kimi-K3 96-head gap sat in a finding for two days while the collector
-    swept num_heads=96 on B200 and failed 362 cases 'unexpected'."""
+def pred_skips_rechecked(p):
+    """Rule 7 of the collector overview: at a pin bump every collector/skips.py
+    entry in scope for this backend is re-checked, by a source check or a run,
+    and kept or deleted. results/<sm>/rechecks/<fw>-<version>.yaml records one
+    item per entry (components/case_inventory.py --skips lists them; --param
+    ops=a,b narrows a family pin to the entries naming its ops): its key,
+    outcome kept|deleted, how source|run, and a ref (framework file:symbol or a
+    run id). A kept entry needs its evidence; a deleted one must be gone.
+    Deviation notes are comments at the code and are re-checked in review.
+    The Kimi-K3 96-head gap sat in a conclusion for two days while the collector
+    swept num_heads=96 on B200 and failed 362 cases 'unexpected': a conclusion
+    about what a backend cannot run belongs in skips.py, where the plan reads it."""
     sm = p.get("sm", "sm90")
-    fw_tag, sm_tag = f"framework:{p['fw']}-{p['version']}", f"platform:{sm}"
-    pinned = {
-        k: v
-        for k, v in _load_findings().items()
-        if fw_tag in [str(x) for x in (v or {}).get("applies_to") or []]
-        and sm_tag in [str(x) for x in (v or {}).get("applies_to") or []]
-    }
-    if not pinned:
-        return True, f"no findings pinned to {fw_tag} on {sm}"
-    missing, malformed = [], []
-    for name, f in pinned.items():
-        items = f.get("collector_impact")
-        if not items:
-            missing.append(name)
-            continue
-        for it in items if isinstance(items, list) else [items]:
-            if not (isinstance(it, dict) and it.get("op") and it.get("action") in _IMPACT_ACTIONS and it.get("ref")):
-                malformed.append(name)
-                break
+    ci = _case_inventory_module()
+    ops = [op for op in str(p.get("ops") or "").split(",") if op]
+    in_scope = {ci.skip_key(entry) for entry in ci.skips_in_scope(p["fw"], ops or None)}
+    rec_path = HARNESS / "results" / sm / "rechecks" / f"{p['fw']}-{p['version']}.yaml"
+    if not rec_path.exists():
+        return False, f"{len(in_scope)} skips.py entries in scope, no recheck record ({rec_path.relative_to(HARNESS)})"
+    items = {it.get("entry"): it for it in (yaml.safe_load(rec_path.read_text()) or {}).get("skips") or []}
+    missing = sorted(in_scope - set(items))
     if missing:
-        return False, f"{len(missing)}/{len(pinned)} pinned findings without collector_impact (e.g. {missing[0]})"
-    if malformed:
-        actions = "|".join(sorted(_IMPACT_ACTIONS))
-        return False, f"collector_impact items need op/action({actions})/ref: {malformed[:2]}"
-    return True, f"all {len(pinned)} findings pinned to {fw_tag} on {sm} state their collector impact"
+        return False, f"{len(missing)}/{len(in_scope)} skips.py entries not rechecked (e.g. {missing[0][:90]})"
+    bad = [
+        key
+        for key in in_scope
+        if items[key].get("outcome") != "kept"
+        or items[key].get("how") not in ("source", "run")
+        or not items[key].get("ref")
+    ]
+    if bad:
+        return (
+            False,
+            f"{len(bad)} in-scope entries without kept + how(source|run) + ref, or recorded deleted: {bad[0][:90]}",
+        )
+    return True, f"all {len(in_scope)} skips.py entries in scope for {p['fw']} rechecked on {p['version']}"
+
+
+def _case_inventory_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("case_inventory_wc", HERE / "case_inventory.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 _GATE_LINE = re.compile(r'^(?:(?:SERVING_RAW|FLOOR_SM|FLOOR_NOTE)=(?:"[^"]*"|\S+)\s+)*run\s+(\S+)\s+(\S+)')
@@ -568,10 +590,10 @@ def pred_model_probed(p):
 
 
 def pred_model_fails_dispositioned(p):
-    """Each fail cell for the repo is either root-caused in findings or
-    rescued into a cli_extra_args customization (pass+custom)."""
+    """Each fail cell for the repo is either explained where conclusions live
+    (_conclusions_text) or rescued into a cli_extra_args customization (pass+custom)."""
     sm = p.get("sm", "sm90")
-    blob = json.dumps(_load_findings(), ensure_ascii=False)
+    blob = _conclusions_text()
     open_fails, seen = [], 0
     for fw, be in _load_targets()["backends"].items():
         ver = (be.get("versions") or ["?"])[0]
@@ -584,8 +606,8 @@ def pred_model_fails_dispositioned(p):
     if seen == 0:
         return False, "not evaluable: no matrix cells yet (probe first)"
     if open_fails:
-        return False, f"fail cells without findings coverage: {open_fails}"
-    return True, "every fail cell is findings-covered (or rescued)"
+        return False, f"fail cells explained nowhere (skips.py, collector, evidence README): {open_fails}"
+    return True, "every fail cell is explained (or rescued)"
 
 
 def _decompositions(repo: str, sm: str) -> dict[str, dict]:
@@ -617,19 +639,20 @@ def pred_model_decomposed(p):
 
 
 def pred_residue_dispositioned(p):
-    """Owner granularity call: every residue kernel of the repo is named in
-    findings (new family / new table / absorb), or there is no residue."""
+    """Owner granularity call: every residue kernel of the repo is named where the
+    decision lives (a collector that times it, a deviation note that absorbs it, or
+    the evidence README), or there is no residue."""
     d = _decompositions(p["repo"], p.get("sm", "sm90"))
     if not d or any(v is None for v in d.values()):
         return False, "not evaluable: decompose first"
     residue = sorted({k for v in d.values() for k in (v.get("residue") or [])})
     if not residue:
         return True, "no residue — nothing to decide"
-    blob = json.dumps(_load_findings(), ensure_ascii=False)
+    blob = _conclusions_text()
     undecided = [k for k in residue if k not in blob]
     if undecided:
-        return False, f"{len(undecided)} residue kernels without a findings decision (e.g. {undecided[0]})"
-    return True, f"{len(residue)} residue kernels dispositioned in findings"
+        return False, f"{len(undecided)} residue kernels without a decision (e.g. {undecided[0]})"
+    return True, f"{len(residue)} residue kernels dispositioned"
 
 
 def pred_e2e_admitted(p):
@@ -780,7 +803,7 @@ PREDICATES = {
         pred_model_gates_aligned,
         pred_lane_guards_match_evidence,
         pred_executor_smoked,
-        pred_findings_propagated,
+        pred_skips_rechecked,
         pred_case_set_no_regression,
     ]
 }

@@ -12,7 +12,9 @@ The evidence existed; nothing read it when the guard was edited (on an SM90
 box). This component makes that reading mechanical: lane_evidence.yaml says
 which checkpoints' serving identity confirms a lane on an SM, the guard is
 evaluated for (version, SM) the way the executor would call it (AST-extracted,
-no framework import), and every cell is graded consistent / inconsistent.
+no framework import), the declared runner comes from the op plan's dispatch
+for that SM (no hand-copied table), and every cell is graded consistent /
+inconsistent.
 workflow_check's `lane_guards_match_evidence` predicate consumes the grading.
 
 Usage:
@@ -80,6 +82,33 @@ def load_guard(source: Path, function: str, *, installed_version: str, sm_versio
     return namespace[function]
 
 
+def plan_dispatch(fw: str, op: str, sm_version: int, lane: str, models: list[str]) -> set[str]:
+    """The runners the op plan dispatches the lane's planned cases of these models to on this SM
+    (collector/op_plans.py: the shared plan minus collector/skips.py). Planning imports no framework."""
+    import sys
+
+    sys.path.insert(0, str(COLLECTOR.parent))
+    try:
+        from collector.op_plans import plan
+    finally:
+        sys.path.pop(0)
+    op_plan = plan(op, fw, sm_version)
+    return {
+        runner
+        for case, runners in zip(op_plan.cases, op_plan.dispatches, strict=True)
+        if case.moe_type == lane and case.model_name in models
+        for runner in runners
+    }
+
+
+def serving_pattern(runners: dict, declared: set[str]) -> str | None:
+    """The identity pattern that confirms any of the declared runners."""
+    unknown = sorted(declared - set(runners))
+    if unknown:
+        raise ValueError(f"lane_evidence.yaml names no serving pattern for runner(s) {unknown}")
+    return "|".join(runners[r] for r in sorted(declared)) or None
+
+
 def guard_state(guard, lane: str) -> str:
     try:
         guard(lane)
@@ -145,16 +174,17 @@ def evaluate(fw: str, version: str, sm: str, *, harness: Path = HARNESS, rules: 
         source = Path(g["source"]) if Path(g["source"]).is_absolute() else COLLECTOR.parent / g["source"]
         guard = load_guard(source, g["function"], installed_version=version, sm_version=sm_version)
         for lane, spec in (g.get("lanes") or {}).items():
-            rule = ((spec.get("by_sm") or {}).get(sm)) or {}
+            models = spec.get("models") or []
+            declared = plan_dispatch(fw, g["op"], sm_version, lane, models)
             strings: list[str] = []
             models_seen = []
-            for repo in spec.get("models") or []:
+            for repo in models:
                 s = _evidence_strings(harness, fw, version, sm, repo)
                 if s:
                     models_seen.append(repo)
                 strings += s
             gs = guard_state(guard, lane)
-            es = evidence_state(strings, rule.get("serving"))
+            es = evidence_state(strings, serving_pattern(rules.get("runners") or {}, declared))
             ok, why = grade(gs, es)
             cells.append(
                 {
@@ -163,7 +193,7 @@ def evaluate(fw: str, version: str, sm: str, *, harness: Path = HARNESS, rules: 
                     "sm": sm,
                     "guard_state": gs,
                     "evidence": es,
-                    "declared": rule.get("declared"),
+                    "declared": sorted(declared),
                     "models_with_evidence": models_seen,
                     "evidence_strings": sorted(set(strings)),
                     "consistent": ok,

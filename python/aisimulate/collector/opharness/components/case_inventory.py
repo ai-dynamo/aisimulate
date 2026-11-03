@@ -29,6 +29,7 @@ Output (local results/, not committed): results/<sm>/cases/<fw>-<version>.yaml
 Usage (CPU, no framework image):
   python3 case_inventory.py --fw vllm --version 0.33.0 --sm sm90 --base <rev>|none [--ops a,b]
   python3 case_inventory.py --diff PREV.yaml NEW.yaml
+  python3 case_inventory.py --fw vllm --skips [--ops a,b]   # rule-7 recheck skeleton for a pin bump
 """
 
 from __future__ import annotations
@@ -194,6 +195,34 @@ def extract_collector(rev: str, dest: Path) -> Path:
     return dest / prefix
 
 
+def skips_in_scope(fw: str, ops: list[str] | None = None) -> list[dict]:
+    """The collector/skips.py entries a pin bump of this backend re-checks (rule 7 of the
+    collector overview): those that name it or no backend, and, for a family pin, name one
+    of its ops or no op."""
+    sys.path.insert(0, str(PKG_ROOT))
+    try:
+        from collector.skips import SKIPS
+    finally:
+        sys.path.pop(0)
+    return [
+        entry
+        for entry in SKIPS
+        if fw in _as_list(entry.get("backend", fw))
+        and (not ops or "op" not in entry or set(ops) & set(_as_list(entry["op"])))
+    ]
+
+
+def _as_list(value) -> list:
+    return list(value) if isinstance(value, (list, tuple, set, frozenset)) else [value]
+
+
+def skip_key(entry: dict) -> str:
+    """A stable key for a skips.py entry (callables by name), as recheck records name it."""
+    return json.dumps(
+        {k: getattr(v, "__name__", v) if callable(v) else v for k, v in entry.items()}, sort_keys=True, default=str
+    )
+
+
 def inventory_path(sm: str, fw: str, version: str) -> Path:
     return HARNESS / "results" / sm / "cases" / f"{fw}-{version}.yaml"
 
@@ -213,6 +242,11 @@ def main() -> int:
     ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--out", default=None)
     ap.add_argument("--diff", nargs=2, metavar=("PREV", "NEW"), help="diff two inventory files and exit")
+    ap.add_argument(
+        "--skips",
+        action="store_true",
+        help="print the recheck-record skeleton of the collector/skips.py entries in scope for --fw and exit",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -222,6 +256,13 @@ def main() -> int:
         print(json.dumps(d, indent=1) if args.json else _format_diff(d))
         return 0 if not d["regressions"] else 1
 
+    if args.skips:
+        if not args.fw:
+            ap.error("--skips needs --fw")
+        scope = skips_in_scope(args.fw, args.ops.split(",") if args.ops else None)
+        items = [{"entry": skip_key(e), "outcome": None, "how": None, "ref": None} for e in scope]
+        print(yaml.safe_dump({"skips": items}, sort_keys=False, allow_unicode=True, width=200))
+        return 0
     if not (args.fw and args.version and args.sm and args.base):
         ap.error("--fw --version --sm --base are required (or --diff PREV NEW)")
     ops = args.ops.split(",") if args.ops else None

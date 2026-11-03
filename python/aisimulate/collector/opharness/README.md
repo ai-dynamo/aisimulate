@@ -25,15 +25,20 @@ opharness/
   results/            OUTPUT, local and git-ignored: results/<sm>/<framework>-
                       <version>.yaml (verdict + deployed identity per
                       checkpoint; versions coexist), verdict summaries,
-                      retests, ledgers, and findings.yaml (root-caused
-                      conclusions, deduplicated, with evidence and version pins)
+                      case plans and their diffs, retest and recheck records,
+                      ledgers
 ```
 
-Only curated findings are committed, as a dated folder under
-`benchmarks/evidence/collector/` (the 2026-10 campaign:
-`op-probe-2026-10/`). Seed a new workspace's `results/findings.yaml` from the
-latest one. Everything else in `results/` travels in the campaign's evidence
-bundle (owner decision 2026-10-30: intermediate results stay out of git).
+A campaign's conclusions go where the collector reads them, as the collector
+overview (`.claude/rules/collector/overview.md`) defines: a model a backend
+cannot serve or a block that cannot run is a `collector/skips.py` entry with
+its reason, a dispatch is the op plan's `dispatch`, a path a table measures
+differently from serving is a deviation note at that code, and a bug is a fix.
+There is no findings file. The evidence behind them is committed as a dated
+folder under `benchmarks/evidence/collector/` (README + the records it cites;
+the 2026-10 campaign's archive is `op-probe-2026-10/`). Everything else in
+`results/` travels in the campaign's evidence bundle (owner decision
+2026-10-30: intermediate results stay out of git).
 
 ## Components
 
@@ -50,8 +55,8 @@ bundle (owner decision 2026-10-30: intermediate results stay out of git).
 | `build_images.sh` | rebuild probe images + the generator venv (this checkout) from targets.yaml pins |
 | `op_smoke.py` | one case of one registered op through the executor's (get_func, run_func) contract — "can this collector build and time a case on the new pin" |
 | `executor_smoke.py` | the same op through collect.py's REAL path (`--model-cases-full` plan, checkpoint, `--resume`, finalize) -> results/<sm>/executor_smoke/; `--shards` checks a pipeline shard plan against the case plan on a CPU |
-| `case_inventory.py` | the collector's test-case inventory for (fw, version, sm), derived from the getters on a CPU inside the image (`AIS_SM` stands in for the GPU) -> results/<sm>/cases/; `--diff` between versions is the test-case regression check |
-| `lane_evidence.py` + `lane_evidence.yaml` | collector version/SM lane guards graded against the identity records: which checkpoints are the evidence for a lane, does the guard agree (open+confirmed / closed+contradicted) |
+| `case_inventory.py` | the collector's case plan for (fw, sm) — `collect.py --plan-only --plan-table` on any CPU — diffed against a base revision -> results/<sm>/cases/; a loss no `collector/skips.py` entry accounts for is the test-case regression; `--skips` lists the entries a pin bump re-checks |
+| `lane_evidence.py` + `lane_evidence.yaml` | collector version/SM lane guards graded against the identity records: the runner a lane declares is the op plan's dispatch on that SM, the yaml names which checkpoints are the evidence and which serving identity confirms a runner |
 
 Evidence layering (owner decisions 2026-09-26 and 2026-10-30): CONCLUSIONS are matrices, verdict summaries (identities, sha/fingerprint of both inputs, per-role counts, the deciding names when red), decompose summaries (role -> backend -> kernel count, residue) and findings; only the curated findings are committed (see Layout). EVIDENCE — raw probes and their `.fp` sidecars, records.jsonl, collector captures, full path_diff reports and kernel-level decompositions (`archive/evidence/` in the workspace) — stays out of git and is packed per campaign, together with the local `results/` tree, by `components/evidence_bundle.py`; `results/evidence_index.yaml` names each bundle by campaign id, sha256 and location, and every committed conclusion carries the ids/fingerprints that resolve into it.
 
@@ -78,8 +83,9 @@ while not workflow_check(<workflow>, params).all_done:
 ```
 
 Each `workflows/<name>.md` has a sibling `<name>.yaml` manifest whose per-step
-`done_when` predicates consult artifacts only (results matrices, findings,
-targets declarations, workspace evidence). Steps depending on a
+`done_when` predicates consult artifacts only (results matrices, the
+collector's plan and skips.py, committed evidence READMEs, targets
+declarations, workspace evidence). Steps depending on a
 not-yet-implemented component report `blocked` — an honest roadmap, distinct
 from actionable `todo`. Every check appends an observation to
 `results/campaigns/<slug>.jsonl`, so how a campaign actually progressed is a
@@ -90,18 +96,19 @@ state, which makes runs resumable across interrupted sessions and agents.
 
 1. **Instruments measure, AI judges, owners choose.** Deterministic +
    repeatable -> component. Interpreting evidence (root cause, gap vs bug) ->
-   AI, output lands as findings or declarations, never as pipeline branches.
+   AI, output lands where the collector reads it (skips.py, the op plan, a
+   deviation note, a fix) with its evidence, never as pipeline branches.
    Trade-offs (exclusions, equivalences, granularity) -> signed owner entries.
 2. **No claim from reading code.** "The framework does X" requires a
    component-produced record; minimal repros that don't reproduce the full
    execution path don't count either (both failure modes are documented in
-   findings history).
+   the op-probe-2026-10 evidence).
 3. **Self-contained on purpose.** This directory duplicates rather than
    references other collector machinery (vocabularies, catalogs) so new
    workflow design is not constrained by existing implementations; dedupe is a
    later, deliberate step.
 4. **Facts carry provenance.** Every result file pins its framework version;
-   every finding states evidence paths and dates; golden commands stamp the
+   every conclusion cites its evidence path; golden commands stamp the
    generator commit — reproduce by checking out that commit.
 
 ## Execution home
@@ -171,7 +178,7 @@ back to the SDK's bundled config with a PROVENANCE note (tokenizer via
 1. **Mechanism freeze.** Components are capped at the current set. New
    capability lands as a field or predicate on an existing component
    (config_delta is the precedent), never as a new file, unless something is
-   deleted in the same change. The data plane (taxonomy rules, findings,
+   deleted in the same change. The data plane (taxonomy rules, evidence,
    verdicts) grows freely — it is output, not mechanism.
 2. **Versions are not forked — SM is.** Framework-version history lives in
    git: collectors upgrade IN PLACE when the manifest pin moves (old code is

@@ -267,30 +267,28 @@ def test_executor_smoked_needs_a_record_with_every_planned_op_ok(wc, tmp_path):
     assert ok is True
 
 
-def test_findings_propagated_requires_collector_impact_on_pinned_findings(wc):
-    p = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
-    fp = wc.HARNESS / "results" / "findings.yaml"
-    fp.write_text(
-        yaml.safe_dump(
-            {
-                "findings": {
-                    "other": {"statement": "x", "applies_to": ["framework:vllm-0.28.0", "platform:sm90"]},
-                    "gap": {"statement": "96 heads", "applies_to": ["framework:vllm-0.29.0", "platform:sm90"]},
-                }
-            }
-        )
-    )
-    ok, reason = wc.pred_findings_propagated(p)
-    assert ok is False and "gap" in reason
-    d = yaml.safe_load(fp.read_text())
-    d["findings"]["gap"]["collector_impact"] = [{"op": "mla_generation", "action": "typo", "ref": "c0ffee"}]
-    fp.write_text(yaml.safe_dump(d))
-    ok, reason = wc.pred_findings_propagated(p)
-    assert ok is False and "collector_impact items need" in reason
-    d["findings"]["gap"]["collector_impact"] = [{"op": "mla_generation", "action": "guard", "ref": "c0ffee run_mla"}]
-    fp.write_text(yaml.safe_dump(d))
-    ok, reason = wc.pred_findings_propagated(p)
-    assert ok is True
+def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):
+    """Rule 7: a pin bump re-checks every collector/skips.py entry in scope, by source or run."""
+    p = {"fw": "vllm", "version": "0.33.0", "sm": "sm90", "ops": "dsv4_hca_context_module"}
+    ok, reason = wc.pred_skips_rechecked(p)
+    assert ok is False and "no recheck record" in reason
+    ci = wc._case_inventory_module()
+    keys = [ci.skip_key(e) for e in ci.skips_in_scope("vllm", ["dsv4_hca_context_module"])]
+    assert keys and len(keys) < len(ci.skips_in_scope("vllm"))
+    f = wc.HARNESS / "results" / "sm90" / "rechecks" / "vllm-0.33.0.yaml"
+    f.parent.mkdir(parents=True)
+    items = [{"entry": k, "outcome": "kept", "how": "source", "ref": "vllm/x.py:f"} for k in keys]
+    f.write_text(yaml.safe_dump({"skips": items[1:]}))
+    ok, reason = wc.pred_skips_rechecked(p)
+    assert ok is False and "not rechecked" in reason
+    items[0]["ref"] = None
+    f.write_text(yaml.safe_dump({"skips": items}))
+    ok, reason = wc.pred_skips_rechecked(p)
+    assert ok is False and "without kept" in reason
+    items[0]["ref"] = "run 78103835"
+    f.write_text(yaml.safe_dump({"skips": items}))
+    ok, reason = wc.pred_skips_rechecked(p)
+    assert ok is True and f"all {len(keys)}" in reason
 
 
 def test_lane_guards_predicate_uses_the_committed_rules_against_scratch_results(wc):
@@ -324,3 +322,16 @@ def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):
     doc["_meta"]["dirty"] = True
     (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     assert wc.pred_case_set_no_regression(p)[0] is False
+
+
+def test_new_fails_are_explained_where_the_collector_reads_conclusions(wc):
+    """No findings file: a newly failing repo is explained by a skips.py entry (the
+    backend cannot serve it), the collector source or a committed evidence README."""
+    p = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
+    cause = {"verdict": "fail", "cause": "boot: unsupported architecture"}
+    _matrix(wc, {"RadixArk/Qwen3.8-2.4T-A95B-NVFP4": cause})
+    ok, reason = wc.pred_fails_root_caused(p)
+    assert ok is True and "1 new fails explained" in reason
+    _matrix(wc, {"RadixArk/Qwen3.8-2.4T-A95B-NVFP4": cause, "example-org/never-explained-model": cause})
+    ok, reason = wc.pred_fails_root_caused(p)
+    assert ok is False and "never-explained-model" in reason

@@ -40,7 +40,16 @@ python3 components/workflow_check.py <workflow> --param fw=vllm --param version=
 python3 components/probe_driver.py --plan | --emit-queues | --records | --matrix        # never --plan with --emit-queues
 AIS_SM=<sm> bash components/captures/verdicts_vllm_0300.sh                              # grade every declared gate
 python3 components/evidence_bundle.py --campaign <date>_<sm>                            # pack evidence, index in results/
+python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)
+python3 components/case_inventory.py --fw <fw> --skips [--ops a,b]                      # rule-7 recheck skeleton
+python3 components/op_smoke.py --backend <fw> --op <op> --select field=value,...        # one planned case, in the image
 ```
+
+The collector's vocabulary (Pin, Plan, Record, Note, Rule) is in
+`.claude/rules/collector/overview.md`; a campaign's conclusions go where it
+says (skips.py entries, the op plan's dispatch, deviation notes, fixes, and
+evidence under `benchmarks/evidence/collector/<campaign>/`), never into a
+findings file.
 
 Full perf-data collection after a campaign is NOT an opharness component: use
 `tools/perf_database/collect_campaign.py` (build-image / run / status / finalize) as

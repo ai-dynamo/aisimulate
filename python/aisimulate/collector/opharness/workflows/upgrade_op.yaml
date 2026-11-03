@@ -1,5 +1,6 @@
 # Machine-readable step manifest for workflows/upgrade_op.md.
-# Params: fw (backend), version (new pin), sm (default sm90).
+# Params: fw (backend), version (new pin), sm (default sm90), ops (optional: a family
+# pin's ops, comma-separated; narrows the rule-7 recheck to their skips.py entries).
 # State is derived by components/workflow_check.py from artifacts only.
 workflow: upgrade_op
 steps:
@@ -33,6 +34,6 @@ steps:
 - id: failures_root_caused
   actor: ai
   done_when: {check: fails_root_caused}
-- id: findings_propagated
+- id: skips_rechecked
   actor: ai
-  done_when: {check: findings_propagated}
+  done_when: {check: skips_rechecked}

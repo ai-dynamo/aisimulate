@@ -10,10 +10,12 @@
 # (results/sm100/sglang-0.5.21.yaml: Kimi-K2.5 -> trtllm_gen_moe;
 # results/retests/sm100/sglang-0.5.21.moe_auto.yaml: FLASHINFER_TRTLLM).
 #
-# This file names, per lane and SM, the representative checkpoints whose
-# serving identity IS the evidence and the identity pattern that confirms the
-# backend the cases declare for that SM. lane_evidence.py then grades every
-# (lane, SM) cell:
+# This file names, per lane, the representative checkpoints whose serving
+# identity IS the evidence, and per runner the identity pattern that confirms
+# it. The runner a lane DECLARES on an SM is not written here: it is the op
+# plan's dispatch (collector/op_plans.py OP_PLANS[op].dispatch[backend]) for
+# the lane's models on that SM, the same value collection runs with.
+# lane_evidence.py then grades every (lane, SM) cell:
 #   guard open   + evidence match       -> consistent
 #   guard closed + evidence contradict  -> consistent (the guard protects data)
 #   guard closed + evidence absent      -> consistent (nothing measured; stays closed)
@@ -21,35 +23,27 @@
 #                                          although serving confirms the lane
 #   guard open   + evidence contradict  -> INCONSISTENT: wrong-kernel data risk
 #   guard open   + evidence absent      -> INCONSISTENT: open without hardware evidence
+# A lane the plan leaves out on an SM (collector/skips.py) declares nothing
+# there and reads absent.
 # Evidence is read from results/<sm>/<fw>-<ver>.yaml (results.<repo>.moe) and
 # results/retests/<sm>/<fw>-<ver>.moe_auto.yaml (moe_runner, moe_kernel_families).
 # Instruments measure, this file states what counts, workflow_check judges.
-schema: lane-evidence/v1
+schema: lane-evidence/v2
+runners:
+  marlin: "marlin"
+  triton: "triton_fused_moe|TRITON"
+  flashinfer_trtllm: "trtllm_gen_moe|FLASHINFER_TRTLLM"
+  flashinfer_mxfp4: "trtllm_gen_moe|FLASHINFER_MXFP4"
+  flashinfer_cutlass: "cutlass|FLASHINFER_CUTLASS"
 guards:
   sglang.moe:
     source: collector/sglang/collect_moe.py
     function: _raise_if_unverified_moe_lane
+    op: moe
     lanes:
       int4_wo:
         models: [moonshotai/Kimi-K2.5]
-        # cases/base_ops/moe.yaml sglang_moe_backends int4_wo: {89/90: marlin, 100/103: flashinfer_trtllm}
-        by_sm:
-          sm89:  {declared: marlin, serving: "marlin"}
-          sm90:  {declared: marlin, serving: "marlin"}
-          sm100: {declared: flashinfer_trtllm, serving: "trtllm_gen_moe|FLASHINFER_TRTLLM"}
-          sm103: {declared: flashinfer_trtllm, serving: "trtllm_gen_moe|FLASHINFER_TRTLLM"}
       w4a16_mxfp4:
         models: [openai/gpt-oss-120b, openai/gpt-oss-20b]
-        by_sm:
-          sm89:  {declared: triton, serving: "triton_fused_moe|TRITON"}
-          sm90:  {declared: triton, serving: "triton_fused_moe|TRITON"}
-          sm100: {declared: flashinfer_mxfp4, serving: "trtllm_gen_moe|FLASHINFER_MXFP4"}
-          sm103: {declared: flashinfer_mxfp4, serving: "trtllm_gen_moe|FLASHINFER_MXFP4"}
       w4a8_mxfp4_mxfp8:
         models: [deepseek-ai/DeepSeek-V4-Flash, deepseek-ai/DeepSeek-V4-Pro]
-        by_sm:
-          # SM90: the fp4-experts lane is a marlin workaround in targets.yaml, not a serving
-          # identity; no declared/serving pair -> evidence is never "match" there, the guard
-          # stays closed and the cell reads consistent.
-          sm100: {declared: flashinfer_mxfp4, serving: "trtllm_gen_moe|FLASHINFER_MXFP4"}
-          sm103: {declared: flashinfer_mxfp4, serving: "trtllm_gen_moe|FLASHINFER_MXFP4"}

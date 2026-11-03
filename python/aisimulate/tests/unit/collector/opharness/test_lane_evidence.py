@@ -74,21 +74,15 @@ def _harness(tmp_path, moe_identity, sm="sm100"):
     src = tmp_path / "collect_moe_fake.py"
     src.write_text(GUARD_SRC)
     rules = {
+        "runners": {"flashinfer_trtllm": "trtllm_gen_moe|FLASHINFER_TRTLLM", "marlin": "marlin"},
         "guards": {
             "sglang.moe": {
                 "source": str(src),
                 "function": "_raise_if_unverified_moe_lane",
-                "lanes": {
-                    "int4_wo": {
-                        "models": ["moonshotai/Kimi-K2.5"],
-                        "by_sm": {
-                            "sm100": {"declared": "flashinfer_trtllm", "serving": "trtllm_gen_moe|FLASHINFER_TRTLLM"},
-                            "sm90": {"declared": "marlin", "serving": "marlin"},
-                        },
-                    }
-                },
+                "op": "moe",
+                "lanes": {"int4_wo": {"models": ["moonshotai/Kimi-K2.5"]}},
             }
-        }
+        },
     }
     return h, rules
 
@@ -106,6 +100,22 @@ def test_open_guard_with_confirming_evidence_is_consistent(le, tmp_path):
     state = le.evaluate("sglang", "0.5.21", "sm90", harness=h, rules=rules)
     (cell,) = state["cells"]
     assert cell["guard_state"] == "open" and cell["evidence"] == "match" and state["consistent"] is True
+
+
+def test_the_declared_runner_is_the_op_plans_dispatch(le):
+    """No hand-copied table: the lane's runner on an SM is what collection dispatches to."""
+    lane, models = "int4_wo", ["moonshotai/Kimi-K2.5"]
+    assert le.plan_dispatch("sglang", "moe", 90, lane, models) == {"marlin"}
+    assert le.plan_dispatch("sglang", "moe", 100, lane, models) == {"flashinfer_trtllm"}
+    assert le.plan_dispatch("sglang", "moe", 120, lane, models) == {"marlin"}
+    # a lane collector/skips.py leaves out on an SM declares nothing there
+    assert le.plan_dispatch("sglang", "moe", 90, "w4a8_mxfp4_mxfp8", ["deepseek-ai/DeepSeek-V4-Flash"]) == set()
+
+
+def test_a_runner_without_a_serving_pattern_fails_loudly(le):
+    with pytest.raises(ValueError, match="no serving pattern"):
+        le.serving_pattern({"marlin": "marlin"}, {"marlin", "flashinfer_trtllm"})
+    assert le.serving_pattern({"marlin": "marlin"}, set()) is None
 
 
 def test_bare_module_name_is_no_evidence(le, tmp_path):
