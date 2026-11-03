@@ -87,7 +87,33 @@ window.AgentX = (() => {
     const more=[...features.keys()].filter(id=>!core.includes(id));
     return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
   }
-  const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TPOT MAPE</th><th scope="col">Request TTFT MAPE</th><th scope="col">Matched / measured</th></tr>`;
+  const pointDefinition = `<p><strong>Point = one run.</strong> TTFT is the mean time to first token (ms). TPOT is the mean per-request time per output token after the first token (ms/token).</p><p><strong>Error:</strong> 100 × |AISim mean − silicon mean| / silicon mean. Model and concurrency rows average these errors equally across runs.</p><p>Each side uses successful profile requests with valid measurements. Request MAPE instead averages individual matched-request errors. Preparation and warmup are excluded.</p>`;
+  const pointHelp = `<button type="button" id="agentx-point-info" class="agentx-info" aria-label="About point TTFT and TPOT error" aria-describedby="agentx-point-tooltip"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4"/><circle cx="8" cy="4.5" r="0.6" fill="currentColor" stroke="none"/></svg></button>`;
+  const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">${pointHelp} Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TPOT MAPE</th><th scope="col">Request TTFT MAPE</th><th scope="col">Matched / measured</th></tr>`;
+  function bindPointHelp(target) {
+    const button=target.querySelector("#agentx-point-info"), tooltip=target.querySelector("#agentx-point-tooltip");
+    let timer;
+    const hide=()=>{clearTimeout(timer);if(tooltip.matches(":popover-open"))tooltip.hidePopover();};
+    const show=()=>{
+      clearTimeout(timer);
+      if(!tooltip.matches(":popover-open"))tooltip.showPopover();
+      const rect=button.getBoundingClientRect();
+      tooltip.style.left=`clamp(8px, ${rect.left}px, calc(100vw - ${tooltip.offsetWidth + 8}px))`;
+      tooltip.style.top=`clamp(8px, ${rect.bottom + 8}px, calc(100vh - ${tooltip.offsetHeight + 8}px))`;
+    };
+    const leave=()=>{
+      clearTimeout(timer);
+      timer=setTimeout(()=>{if(document.activeElement!==button && !button.matches(":hover") && !tooltip.matches(":hover"))hide();},140);
+    };
+    button.addEventListener("pointerenter",event=>{if(event.pointerType!=="touch")show();});
+    button.addEventListener("focus",show);
+    button.addEventListener("click",show);
+    button.addEventListener("pointerleave",leave);
+    button.addEventListener("blur",leave);
+    tooltip.addEventListener("pointerenter",()=>clearTimeout(timer));
+    tooltip.addEventListener("pointerleave",leave);
+    target.querySelector(".table-scroll").addEventListener("scroll",hide);
+  }
   function source(run) {
     return run.category === "agentx" ? `<a href="${esc(run.benchmark_url)}" target="_blank" rel="noopener">AgentX benchmark ↗</a> · <a href="${esc(run.source_run_url)}" target="_blank" rel="noopener">Source run ↗</a>` :
       "AISim self-collected dataset: coming soon"; // TODO: link the public self-collected E2E HF dataset after migration.
@@ -159,7 +185,8 @@ window.AgentX = (() => {
               const matches=points.filter(r=>r.lanes===lanes), point=matches[0], failed=matches.filter(r=>r.outcome!=="completed").length;
               return `<tr data-agentx-parent="${id}" data-agentx-href="${esc(pointUrl(point,branch))}" tabindex="0" aria-label="${lanes} lanes: open details"><th><a href="${esc(pointUrl(point,branch))}">${lanes} lane${lanes===1?"":"s"} ↗</a><small>${matches.length} run${matches.length===1?"":"s"}${failed?` · ${failed} unavailable`:""}</small></th><td>${source(point)}</td>${cells(aggregate(matches))}</tr>`;
             }).join("");
-        }).join("")}</tbody></table></div><details class="agentx-method"><summary>Metrics and provenance</summary>${methodology()}${provenance(data.snapshot,data.runs)}</details>`;
+        }).join("")}</tbody></table></div><div id="agentx-point-tooltip" role="tooltip" popover>${pointDefinition}</div><details class="agentx-method"><summary>Metrics and provenance</summary>${methodology()}${provenance(data.snapshot,data.runs)}</details>`;
+      bindPointHelp(target);
       target.querySelectorAll("[data-agentx-href]").forEach(row => {
         row.addEventListener("click", event => { if (!event.target.closest("a,button")) location.href=row.dataset.agentxHref; });
         row.addEventListener("keydown", event => { if (event.key === "Enter" && event.target === row) location.href=row.dataset.agentxHref; });
@@ -177,7 +204,7 @@ window.AgentX = (() => {
 
   const githubIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.49c-2.23.48-2.69-.95-2.69-.95-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.74.54 1.49v2.21c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
   function methodology() {
-    return `<ul class="agentx-notes"><li>Point errors average each run’s absolute percentage error equally across repeats and variants.</li><li>Request MAPE gives each valid, uniquely matched request equal weight. All measured requests remain in accounting.</li><li>Throughput is output tokens/s within the benchmark’s measured boundary, including between-turn delays.</li><li>Preparation and warmup are unscored. Missing measurements and zero denominators remain unavailable. No shape metrics or timing calibration.</li></ul>`;
+    return `<ul class="agentx-notes"><li>Point TTFT is a run’s mean time to first token; point TPOT is its mean per-request time per output token after the first token. Each side uses successful profile requests with valid measurements.</li><li>Point error is 100 × |AISim mean − silicon mean| / silicon mean. Run errors are averaged equally across repeats and variants.</li><li>Request MAPE gives each valid, uniquely matched request equal weight. All measured requests remain in accounting.</li><li>Throughput is output tokens/s within the benchmark’s measured boundary, including between-turn delays.</li><li>Preparation and warmup are unscored. Missing measurements and zero denominators remain unavailable. No shape metrics or timing calibration.</li></ul>`;
   }
   function provenance(snapshot,runs) {
     return `<ul class="agentx-notes provenance"><li>${githubIcon} <strong>AISim repository commit:</strong> <a href="https://github.com/ai-dynamo/aisimulate/commit/${esc(snapshot.commit_sha)}" target="_blank" rel="noopener"><code>${esc(snapshot.commit_sha)}</code></a></li><li><span role="img" aria-label="Hugging Face">🤗</span> <strong>Silicon dataset revision:</strong> <code>${esc(snapshot.dataset_revision)}</code></li><li><strong>Measured framework:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.measured_backend_version}`))].map(esc).join("; ")}</li><li><strong>Prediction database:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.prediction_backend_version||"unavailable"}`))].map(esc).join("; ")}</li><li><strong>Evaluated:</strong> ${esc(snapshot.completed_at)}${snapshot.preview?" · Preview":""}</li><li><strong>Wheel SHA256:</strong> <code>${esc(snapshot.wheel_sha256)}</code></li>${[...new Map(runs.flatMap(r=>(r.op_data||[]).map(d=>[d.file,d]))).values()].map(d=>`<li>${githubIcon} <strong>Op data:</strong> <a href="https://github.com/ai-dynamo/aisimulate/blob/${esc(snapshot.commit_sha)}/python/aisimulate/src/aisimulate_core/systems/data/${esc(d.file)}">${esc(d.file)}</a><br><code>${esc(d.sha256)}</code></li>`).join("")}</ul>`;
