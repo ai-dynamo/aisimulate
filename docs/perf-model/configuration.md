@@ -213,6 +213,13 @@ API uses each scheme's parameter validation rather than a shared 1–5 draft-tok
 limit. The existing n-gram contract retains vLLM and 1–5 draft tokens. Replay's
 backend, scheme, and scheduling limits remain separate.
 
+For ordinary SGLang tensor-parallel DSA models, enabling MTP preserves the
+checkpoint's target dense-prefix layers and their projection precision. The
+legacy draft approximation adds separate MoE layers; it does not replace target
+dense layers or add fractional dense layers. This remains an approximate draft
+cost, including its inherited quantization. It does not represent GLM's measured
+BF16 draft module or its separate draft/extension forwards exactly.
+
 Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 

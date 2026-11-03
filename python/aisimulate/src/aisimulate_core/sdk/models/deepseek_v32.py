@@ -303,14 +303,13 @@ class DeepSeekV32Model(BaseModel):
             else 1.0,
         )
         # Dense TP sharding is established for ordinary SGLang inference.
-        # Other regimes retain their existing all-MoE approximation: dense
-        # distribution under CP/ADP/large EP and draft-layer quantization need
-        # separate modeling, as does stage ownership for pipeline parallelism.
+        # MTP does not change the target's dense prefix. Its legacy draft tail
+        # remains separately approximated as additional MoE layers below.
+        # CP/ADP/large EP and pipeline stage ownership remain separate regimes.
         if (
             backend_name == "sglang"
             and model_config.pp_size == model_config.cp_size == model_config.attention_dp_size == 1
             and not model_config.moe_comm_backend
-            and not model_config.nextn
         ):
             extra_params["dsa_dense_mlp_groups"] = _dense_mlp_groups(
                 model_info.get("raw_config", {}), model_info["layers"], model_config.gemm_quant_mode
@@ -421,6 +420,9 @@ class DeepSeekV32Model(BaseModel):
         self._power_law_alpha = 1.01
         num_dense_layers = sum(count for count, _, _ in self.extra_params.get("dsa_dense_mlp_groups", []))
         self._num_moe_layers = self._num_layers - num_dense_layers
+        self._generation_moe_layers = (
+            self._num_moe_layers + self._nextn if num_dense_layers else self._num_layers * self._mtp_scale_factor
+        )
         if num_dense_layers and (self._inter_size <= 0 or self._inter_size % self.config.tp_size):
             raise ValueError("Dense intermediate_size must be positive and divisible by tp_size")
 
@@ -756,25 +758,25 @@ class DeepSeekV32Model(BaseModel):
             self.generation_ops.extend(
                 self._large_ep_moe_ops("generation", moe_shape, self._num_layers * self._mtp_scale_factor)
             )
-        elif self._num_moe_layers:
+        elif self._generation_moe_layers:
             gen_shared_ops = [
                 ops.GEMM(
                     "generation_shared_gate_up_gemm",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     2 * self._moe_inter_size // moe_tp_size,
                     h,
                     _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
                 ),
                 ops.ElementWise(
                     "generation_shared_act_gate",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     2 * self._moe_inter_size // moe_tp_size,
                     self._moe_inter_size // moe_tp_size,
                     0.8,
                 ),
                 ops.GEMM(
                     "generation_shared_ffn2_gemm",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     h,
                     self._moe_inter_size // moe_tp_size,
                     _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
@@ -784,14 +786,14 @@ class DeepSeekV32Model(BaseModel):
             gen_routed_ops = [
                 ops.GEMM(
                     "generation_router_gemm",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     self._num_experts,
                     h,
                     common.GEMMQuantMode.bfloat16,
                 ),
                 ops.MoEDispatch(
                     "generation_moe_pre_dispatch",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     h,
                     self._topk,
                     self._num_experts,
@@ -806,7 +808,7 @@ class DeepSeekV32Model(BaseModel):
                 ),
                 ops.MoE(
                     "generation_moe",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     h,
                     self._moe_inter_size,
                     self._topk,
@@ -820,7 +822,7 @@ class DeepSeekV32Model(BaseModel):
                 ),
                 ops.MoEDispatch(
                     "generation_moe_post_dispatch",
-                    self._num_moe_layers * self._mtp_scale_factor,
+                    self._generation_moe_layers,
                     h,
                     self._topk,
                     self._num_experts,

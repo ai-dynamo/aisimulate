@@ -98,6 +98,25 @@ class EngineStepParityCase:
 # mechanic (prefix, CP, MTP, the energy surface). Running the same op
 # graph on another system is NOT coverage — data-grid diversity is the
 # support matrix's job. When adding a case, name the unique thing it pins.
+MTP_TARGET_CASES = [
+    # The mixed-step helper passes nextn through ModelConfig. CLI smoke helpers
+    # do not forward it, so they cannot anchor this MTP-specific composition.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="nvidia/GLM-5.3-NVFP4",
+            system_name="b300_sxm",
+            backend_name="sglang",
+            backend_version="0.5.21",
+            moe_tp_size=8,
+            moe_ep_size=1,
+            isl=8192,
+            nextn=3,
+        ),
+        id="glm53-b300-sglang-0521-mtp3-dense-prefix",
+    ),
+]
+
+
 SMOKE_CASES = [
     # Original 3 smoke cases (Phase 3).
     pytest.param(
@@ -1234,7 +1253,7 @@ class TestRustEngineStepStaticParity:
 
 
 class TestRustEngineStepMixedStepParity:
-    @pytest.mark.parametrize("case", [*SMOKE_CASES, *POWER_CASES])
+    @pytest.mark.parametrize("case", [*SMOKE_CASES, *POWER_CASES, *MTP_TARGET_CASES])
     def test_smoke_parity(
         self,
         case: EngineStepParityCase,
@@ -1863,6 +1882,7 @@ class TestRustEngineStepSolMixedStepParity:
 # parametrizations.
 ENGINE_STEP_GOLDEN_MATRIX: tuple[tuple[list, tuple[str, ...]], ...] = (
     (SMOKE_CASES, ENGINE_STEP_SURFACES),
+    (MTP_TARGET_CASES, ("mixed",)),
     (POWER_CASES, ENGINE_STEP_SURFACES),
     (CP_CASES, ("mixed",)),
     (DSV4_CP_CASES, ("cp_static_ctx", "mixed")),
