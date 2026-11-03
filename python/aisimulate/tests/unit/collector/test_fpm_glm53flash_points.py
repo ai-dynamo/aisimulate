@@ -139,6 +139,62 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
     assert str(error.value) == "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
 
 
+@pytest.mark.parametrize(
+    "limits",
+    [{"decode_batch_limit": 1}, {"prefill_batch_limit": 1, "decode_batch_limit": 1}],
+    ids=["decode-limit", "one-sequence-request"],
+)
+def test_smoke_subset_of_a_list_without_two_request_decode_points_takes_two_contexts(tmp_path, limits):
+    payload, _, _ = glm_point_manifest(**{**_TP4, **limits})
+    assert {point["batch_size"] for point in payload["decode"]} == {1}
+    subset, canonical, digest = glm_smoke_subset(payload, 2176)
+
+    # The prefill points are those of the TP4 smoke. The decode points are one request at each of the two smallest
+    # contexts of the list above one hash block.
+    assert subset == {
+        "schema_version": 3,
+        "prefill": [
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+        ],
+        "decode": [
+            {"batch_size": 1, "total_kv_read_tokens": 4096},
+            {"batch_size": 1, "total_kv_read_tokens": 8192},
+        ],
+    }
+    for phase in ("prefill", "decode"):
+        assert all(point in payload[phase] for point in subset[phase])
+    path = tmp_path / "smoke-points.json"
+    path.write_text(json.dumps(subset))
+    assert _freeze_benchmark_points(str(path)) == (canonical, digest)
+
+
+def test_smoke_subset_follows_a_cache_capacity_that_excludes_two_requests():
+    # 13 usable blocks: two requests fit only below one hash block, because one request of 4,096 tokens needs 2
+    # attention blocks and 5 state blocks and two such requests need 14.
+    payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 14 * 13_045_120})
+    two_request_contexts = {
+        point["total_kv_read_tokens"] // 2 for point in payload["decode"] if point["batch_size"] == 2
+    }
+    assert two_request_contexts and max(two_request_contexts) < 2176
+
+    subset, _, _ = glm_smoke_subset(payload, 2176)
+    assert subset["decode"] == [
+        {"batch_size": 1, "total_kv_read_tokens": 4096},
+        {"batch_size": 1, "total_kv_read_tokens": 8192},
+    ]
+
+
+def test_smoke_subset_of_a_one_request_list_with_one_context_above_the_hash_block_is_refused():
+    # The measured context of 4,096 tokens leaves one decode context above one hash block, so there is no second one.
+    payload, _, _ = glm_point_manifest(**{**_TP4, "decode_batch_limit": 1, "measured_context": 4096})
+    above = {point["total_kv_read_tokens"] for point in payload["decode"] if point["total_kv_read_tokens"] > 2176}
+    assert above == {4096}
+    with pytest.raises(ValueError) as error:
+        glm_smoke_subset(payload, 2176)
+    assert str(error.value) == "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
 def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
     # 99 usable blocks: one request of 131,072 tokens needs 61 attention blocks and one block in each state group.

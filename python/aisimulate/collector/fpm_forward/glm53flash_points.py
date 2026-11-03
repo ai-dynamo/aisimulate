@@ -160,7 +160,10 @@ def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dic
     """Return the four smoke points of a generated list, with their canonical JSON and its SHA-256.
 
     They are the 64-token prefill of one request without a prefix and after one hash block of prefix, and the decode
-    of one and of two requests at the smallest context of the list above one hash block.
+    of one and of two requests at the smallest context of the list above one hash block. A list with no decode point
+    of two or more requests above one hash block, such as the list of a request limited to one sequence, has no
+    two-request point to take. Its decode points are one request at each of its two smallest contexts above one hash
+    block. A list that cannot give the four points is refused.
     """
     prefill = [
         point
@@ -169,14 +172,23 @@ def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dic
         and point["total_prefill_tokens"] == 64
         and point["total_kv_read_tokens"] in (0, hash_block_size)
     ]
-    contexts = [point["total_kv_read_tokens"] // point["batch_size"] for point in payload["decode"]]
-    context = min((value for value in contexts if value > hash_block_size), default=None)
+
+    def context(point: dict[str, Any]) -> int:
+        return point["total_kv_read_tokens"] // point["batch_size"]
+
+    above = sorted({context(point) for point in payload["decode"] if context(point) > hash_block_size})
+    # A list with two-request points above one hash block must also hold the pair at its smallest context there, or it
+    # is incomplete and refused below. Only a list without such points, where the batch limit or the cache capacity
+    # leaves one request, takes one request at each of its two smallest contexts instead.
+    if any(point["batch_size"] > 1 and context(point) > hash_block_size for point in payload["decode"]):
+        batch_sizes, contexts = (1, 2), above[:1]
+    else:
+        batch_sizes, contexts = (1,), above[:2]
     decode = [
         point
         for point in payload["decode"]
-        if context is not None
-        and point["batch_size"] in (1, 2)
-        and point["total_kv_read_tokens"] == point["batch_size"] * context
+        if point["batch_size"] in batch_sizes
+        and any(point["total_kv_read_tokens"] == point["batch_size"] * value for value in contexts)
     ]
     if len(prefill) != 2 or len(decode) != 2:
         raise ValueError("GLM-5.3-Flash smoke subset requires the generated list to hold its four points")

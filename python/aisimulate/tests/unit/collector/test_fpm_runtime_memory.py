@@ -1497,12 +1497,13 @@ def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
         assert ("--language-model-only" in args) == (architecture is not None)
 
 
-def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, **changes):
+def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, **changes):
     """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
 
     The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
-    8,192 tokens, 256 sequences and a 1,048,576-token context. The producer runs no global warm-up iterations.
-    ``changes`` replace option fields before planning.
+    8,192 tokens, ``max_batch_size`` sequences and a 1,048,576-token context. The profile records the same sequence
+    limit, because accepted runtime memory is exact for its scheduler settings. The producer runs no global warm-up
+    iterations. ``changes`` replace option fields before planning.
     """
     from .test_runtime_observations import glm_tp4_cache_groups
 
@@ -1545,7 +1546,7 @@ def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, **changes):
                     "cache_layout": "grouped",
                     "cache_groups": glm_tp4_cache_groups(),
                     "max_num_tokens": 8192,
-                    "max_batch_size": 256,
+                    "max_batch_size": max_batch_size,
                     "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
                 },
             }
@@ -1567,11 +1568,11 @@ def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, **changes):
         "--fpm-max-num-batched-tokens",
         "8192",
         "--fpm-max-num-seqs",
-        "256",
+        str(max_batch_size),
         "--fpm-max-prefill-isl",
         "8192",
         "--fpm-max-prefill-batch-size",
-        "256",
+        str(max_batch_size),
         "--fpm-prefill-cudagraph-policy",
         "runtime",
         "--fpm-warmup-iterations",
@@ -1995,6 +1996,47 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
             "benchmark_points_origin": "glm53flash_grid_v1",
             **policy,
         }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_one_sequence_request_stages_two_points_per_phase(tmp_path):
+    # A request with max_batch_size 1 reaches the collector as --fpm-max-num-seqs 1 and --fpm-max-prefill-batch-size 1.
+    plan = _glm_plan(tmp_path, max_batch_size=1)
+    assert (plan.options.max_num_seqs, plan.options.max_prefill_batch_size) == (1, 1)
+    frozen = json.loads(plan.options.benchmark_points_json)
+    assert {point["batch_size"] for phase in ("prefill", "decode") for point in frozen[phase]} == {1}
+
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        subset = path.read_bytes()
+        # No decode point of two requests exists, so the decode points are one request at two contexts.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 1, "total_kv_read_tokens": 8192},
+            ],
+        }
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": 2,
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
+        }
+        # Formal collection still stages the whole list under the same plan hash.
+        formal_directory = tmp_path / f"formal-{cell.workload_kind}"
+        formal_directory.mkdir()
+        [formal] = runner._stage_points_file(plan, formal_directory, cell=cell, smoke=False)
+        assert formal.read_bytes().decode() == plan.options.benchmark_points_json
 
 
 def test_glm_collection_without_a_model_revision_is_refused(tmp_path):
