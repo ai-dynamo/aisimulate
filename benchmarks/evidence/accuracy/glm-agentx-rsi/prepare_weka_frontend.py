@@ -107,6 +107,8 @@ def main():
         "profile_sha256": digest(profile_bytes), "first_trace_row_sha256": digest(raw_trace),
         "source_sha256": digest(Path(__file__).read_bytes()), "pool_tokens": len(generator._tool_pool),
         "context_mode": conversation.context_mode.value, "rows": rows,
+        "worker_markers_applied": False,
+        "historical_equivalence": "unqualified: AgentX scenario adds first_turn_prefix markers in the worker",
     }
     (args.output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"prepared": len(rows), "actual_input_tokens": [r["actual_chat_input_tokens"] for r in rows]}))

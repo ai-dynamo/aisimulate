@@ -557,6 +557,78 @@ and repeat measurements remain separate; inspect the before/after 192 arms for
 drift before attributing a difference to affinity. No historical MAPE claim or
 HTTP cost follows from component qualification alone.
 
+**E032 conclusion — affinity alone does not justify a cost multiplier.**
+Job 1010000 completes all 63 observations in 100 allocated seconds at eight GPUs;
+charge 800 GPU-seconds. Every token identity and requested affinity qualifies.
+Repeat medians for 134720/393290 tokens are 164.9121/518.7693 ms in the first 192
+arm, 164.1694/497.9141 ms at 64 CPUs, and 159.6700/500.1401 ms in the final 192 arm.
+The 64-CPU result overlaps the drift between the 192-CPU arms; no blanket CPU-count
+factor is established. Retain first-use samples and all arm/mask identities.
+Evidence: `E032-independent-audit.json`. Host/source/input qualification is scoped
+to this component, not original full HTTP service timing.
+
+**E031 expanded provenance.** All six original job logs confirm Xeon 8559C,
+192 logical CPUs and launcher affinity 192 [0–191], retained in
+`E031-historical-host-audit-v2.json`. All six also explicitly declare, but fail to
+verify at runtime, model revision `e3b8f9f2fad2` at `/model`. Our downloaded full
+revision and 52 checksum-pinned weight/config files are verified independently;
+they do not establish bit identity with the original serving files. Preserve
+this qualification limit in `E031-historical-model-provenance.json`; the original
+silicon scores remain unchanged.
+
+**E033 — scenario mutation and measured input counts.** A checksum-identical
+original C1 artifact (SHA256 `d58deb00ebc1e6305f8e4390064dcbb9bb13a4f6bb73f4829bfe3fb9f03cdd2b`)
+contains the client log confirming scenario `agentx` auto-enables
+`first_turn_prefix` cache busting. Directly loading the saved BenchmarkConfig
+returns default `none` because it does not execute the scenario validator. The
+pinned harness scenario requires the marker, minted per trajectory tree and
+shared across its warmup/profile phases and descendants. Do not infer the
+measured state from the authored/default-only configuration.
+
+The unmarked E029 long primitive contains 393290 tokens. Using the original
+benchmark IDs, saved initial lane 0/recycle 0 identity and the harness marker
+builder/injector restores **393303 at C1 and 393302 at C8**, exactly matching their
+recorded server usage at source outer 133. This confirms the selected count
+reconciliation; byte identity and full cache history remain separate checks.
+The E029/030/032 primitives deliberately omit worker markers and remain component
+diagnostics. Their receipts now make that omission explicit for future runs;
+old payloads and measurements stay immutable. Extend the audit over every
+available first-play root request, retaining missing server-usage records
+explicitly. The initial audit helper fails on such a record rather than
+producing a result; retain its script/log and failure receipt. No MAPE correction
+or modeling win is claimed from token-count agreement.
+
+**E033 expanded count audit.** For the first frozen play's root profiling
+requests at development lanes 1/8, retain 72 records: all 71 with server input usage
+reconcile exactly after applying the actual scenario marker; one C1 record has
+no server usage and stays unavailable. No valid count mismatches are discarded.
+The audit uses the original worker's idempotent injection across context resets,
+not a fixed token addition. Keep the failed first helper and its missing-field
+receipt. Evidence: `E033-marker-all-first-play-audit-v2.json` and its script/log.
+This does not establish byte-identical historical payloads or a cache-trajectory
+repair, and leaves all headline metrics unchanged.
+
+**E034 — measured CPU admission only (predeclared diagnostic).** Enable the
+existing canonical tokenization stage on the frozen research wheel, changing no
+scheduler/cache/op data or replay inputs. Freeze rate **1.3222043548296005 microseconds
+per input token** before replay: 1000 times total measured component milliseconds
+divided by total actual input tokens across all 42 full 192 before/after samples,
+including first use. One CPU server, zero fixed cost. The latter is a conservative
+diagnostic assumption, not measured zero HTTP/render overhead. This linear
+amortization does not describe every message shape or cold cost. No MAPE values
+enter its derivation. Profile SHA256:
+`741c9b07352c57c267d0890403a0950435a048e32926c77456018d61025c8158`.
+
+Predeclare all 4169 TTFT and 4166 TPOT frozen development observations, lanes 1/8/14;
+report any lost/recovered observations and reject a win on a smaller cohort.
+Verify native tokenized timestamps actually include at least each request's
+component service and native completion qualifies. Keep closed-loop replay and
+observed output lengths. API response buffering, JSON/HTTP and literal-marker
+input/cache repairs remain outside this admission-only change. This is a scoped
+causal diagnostic, not an accepted full serving model or historical measurement
+correction. Run untuned lanes 4/10/13 only if the development result warrants
+validation, preserving the same frozen rate and profile provenance.
+
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
 claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
@@ -948,6 +1020,12 @@ charge 222 GPU-seconds. Total charge is **82606 GPU-seconds / 22.9461 GPU-hours*
 leaving **147794 GPU-seconds / 41.0539 GPU-hours**. Release its reservation. The
 controlled-workload pool now uses 3366.75 TP8-equivalent node-seconds, accounting
 for the partial three-GPU allocation. No GPU job remains active at this checkpoint.
+
+E032 job 1010000 completes with exit 0 after 100 allocated seconds at eight GPUs:
+charge 800 GPU-seconds. Total charge is **83406 GPU-seconds / 23.1683 GPU-hours**,
+leaving **146994 GPU-seconds / 40.8317 GPU-hours**. Release the reservation. The
+controlled pool uses 3466.75 TP8-equivalent node-seconds. No GPU job is active;
+CPU-only source/reconstruction audits add no GPU allocation cost.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
