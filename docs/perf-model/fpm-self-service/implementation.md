@@ -15,6 +15,7 @@ and a new MiniMax collection campaign.
 
 | Task | Reference |
 | --- | --- |
+| Collect serving observations and train a GBDT | [End-to-end offline profiling walkthrough](e2e-gbdt.md), [native collection examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers) |
 | Prepare a compatible source environment | [Environment](#prepare-the-environment) |
 | Guide an onboarding session and retain decisions | [Agent stages](#onboard-with-an-agent), [checkpoint and resume](#checkpoint-and-resume-an-onboarding-session) |
 | Declare model, topology, precision and resource inputs | [Request](#create-the-request), [local config](#start-from-a-local-model-config), [resource metadata](#provide-identity-and-resource-metadata) |

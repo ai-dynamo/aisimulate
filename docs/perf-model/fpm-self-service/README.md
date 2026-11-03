@@ -23,7 +23,16 @@ Use this workflow when:
 - You want to calibrate a supported deployment while retaining AISimulate's
   existing scheduler, routing and KV-cache simulation.
 
-**Self-collection** runs Dynamo self-benchmark on the target engine. **Onboarding**
+For **end-to-end offline profiling**, follow the
+[E2E-to-GBDT walkthrough](e2e-gbdt.md): collect native FPM data with your own
+workload and deployment, inspect it, train a GBDT, use Replay, and optionally
+apply online updates and save. It covers aggregated and separate prefill/decode
+capture for vLLM and SGLang, with backend-specific qualification boundaries.
+Native FPM capture supplies the measurements; per-request data hooks are a future
+extension. The standalone trainer accepts native JSONL; `onboard finalize`
+expects self-benchmark timing tables and does not perform that handoff.
+
+**Self-benchmarking** runs Dynamo self-benchmark on the target engine. **Onboarding**
 validates the measured timing profile and its deployment/resource metadata, then
 loads them through the canonical performance-model API. Direct FPM interpolation
 does not require a new analytical model class, per-operation GPU profiling, a
@@ -32,8 +41,8 @@ registry service or regression training.
 If matching measurements already exist, reuse their verified data and provenance
 instead of collecting again. A timing table and a resource profile are separate
 artifacts: the table alone does not establish serving memory capacity. The
-[examples](examples.md) cover both importing an existing Kimi profile and
-collecting a new MiniMax profile.
+[examples](examples.md) cover importing an existing Kimi profile, collecting a
+new MiniMax profile, and native serving measurements for GBDT training.
 
 ### Performance within an iteration
 
@@ -68,11 +77,12 @@ For online learning from per-iteration telemetry, use the separate
 
 | Area | Current support and boundary |
 | --- | --- |
+| End-to-end offline profiling | [Manual collection and training](e2e-gbdt.md) using your deployment tools or completed native captures; see the [native collection examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers). Capture integrity, required-store coverage and measured accuracy are separate checks. |
 | Self-benchmark backend | vLLM configurations that pass model/runtime qualification. SGLang and TensorRT-LLM are not supported by this guided collection workflow yet; this does not describe their broader AISimulate modeling support. |
 | Model metadata | A local pinned `config.json` or an existing FPM profile. Direct interpolation can use a verified architecture without a registered analytical class. New architectures may need benchmark state preparation, measurement hooks or an audited resource-observation adapter. |
 | Parallelism | Whole-forward timing can capture intra-iteration computation and communication. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
-| Serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
-| GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
+| Self-benchmark serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
+| Self-benchmark GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
 | KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Some configs leave the cache geometry to the [runtime probe](implementation.md#cache-geometry-pending-the-runtime-probe): linear-attention and recurrent-state configs, and architectures that intake does not recognize. For them, `onboard init --model-config` stops with guidance to run the probe, which measures the geometry. A cache geometry override for these configs is a claim that `onboard import-observations` checks against that measurement. Importing cache groups other than full or sliding attention (for example recurrent state) is planned. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. |
 | Multimodality | For multimodal models, this workflow covers text generation only; image/audio processing time is excluded. |
 
@@ -207,6 +217,10 @@ For example, the current model-name construction path rejects Inkling's
 materialized; a compatible consumer is still required.
 
 ## Workflow
+
+The [E2E-to-GBDT walkthrough](e2e-gbdt.md#how-this-fits-onboarding) maps its manual
+collection, training and Replay steps to these same six stages. The guided
+commands below follow the self-benchmark/interpolation route.
 
 The six stages below match the [agent onboarding procedure](implementation.md#onboard-with-an-agent).
 Keep one session checkpoint and track every selected configuration independently.
