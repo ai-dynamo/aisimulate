@@ -755,6 +755,11 @@ vLLM or SGLang deployment with **real KV transfer**, then enable native capture
 on every relevant serving worker. A frontend or HTTP trace alone does not
 contain the engine measurements needed for training.
 
+For deployment details, use the optional [P/D setup reference](native-pd-setup.md)
+and [troubleshooting and completion checks](native-pd-troubleshooting.md). The
+[completed capture summary](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md)
+records the tested configuration, request completion and export checks.
+
 Set these values in each worker's environment, substituting its role and a
 persistent path:
 

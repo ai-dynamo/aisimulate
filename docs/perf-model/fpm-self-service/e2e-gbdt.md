@@ -111,6 +111,10 @@ export DYN_FPM_MAX_SEGMENTS=64  # size retention for your full run
 | vLLM | Verify its native instrumented scheduler is active. Keep the role `aggregated` for prefill, decode and mixed batches. | Enable capture on both roles, with separate output prefixes and worker identities. Use real KV transfer. |
 | SGLang | Verify forward-pass metrics are enabled and scheduled-prefill counters are correct. The qualified recipe uses serial scheduling with overlap disabled. | Apply those producer checks to both roles, with separate GPUs and reachable KV-transfer addresses. |
 
+For separate roles, the optional [P/D setup reference](native-pd-setup.md) gives
+tested runtime pins and launch settings; use [P/D troubleshooting](native-pd-troubleshooting.md)
+during the pilot and completion checks.
+
 For SGLang, affected producers need the [native counter correction](examples.md#d1-pin-the-aggregated-sglang-runtime)
 or an equivalent verified fix. The qualified capture configuration also disables
 mixed chunks, speculation, attention DP and prefill CP. Changing these settings

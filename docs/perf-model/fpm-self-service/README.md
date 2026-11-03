@@ -265,7 +265,8 @@ training data retains its deployment identity.
 Details: [runtime investigation](implementation.md#investigate-runtime-constraints-and-precision-options),
 [collection limits](implementation.md#runtime-and-collection-limits),
 [serving roles](implementation.md#serving-roles-and-cuda-graph-settings), and
-[native capture setup](e2e-gbdt.md#1-collect).
+[native capture setup](e2e-gbdt.md#1-collect). For separate roles, use the optional
+[P/D setup and runtime pins](native-pd-setup.md).
 
 ### 3. Derive, review and save the profile
 
@@ -308,7 +309,8 @@ drain, capture locations and training/evaluation selection. Use your deployment
 tools; `onboard plan` does not generate this capture plan. For completed captures,
 plan verification and selection instead of launching another run. Follow
 [native capture setup](e2e-gbdt.md#1-collect) and
-[data selection](e2e-gbdt.md#2-check-and-prepare-the-data).
+[data selection](e2e-gbdt.md#2-check-and-prepare-the-data). For P/D, include the
+[role launch and smoke checks](native-pd-setup.md#check-role-and-transfer-behavior-before-the-workload).
 
 For either route, compare existing data's identity, provenance and coverage with
 the intended deployment before reusing it. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
@@ -343,7 +345,10 @@ Preserve capture and selection receipts, excluded rows and required batch-class
 coverage. Review resource evidence separately. This route does not invoke
 `onboard validate-collection`, `onboard import-observations` or `onboard finalize`
 on native JSONL. Follow [collection](e2e-gbdt.md#smoke-then-run-your-workload) and
-[data preparation](e2e-gbdt.md#2-check-and-prepare-the-data).
+[data preparation](e2e-gbdt.md#2-check-and-prepare-the-data). For P/D, consult the
+[troubleshooting and completion checks](native-pd-troubleshooting.md), with
+[completed-run evidence](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md)
+as an example of what to retain.
 
 Self-benchmark details: [smoke/readiness](implementation.md#check-timing-readiness-before-full-collection),
 [pair installation](implementation.md#validate-and-install-the-fpm-profile),

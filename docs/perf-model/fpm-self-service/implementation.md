@@ -128,7 +128,8 @@ self-benchmark defaults below do not select them. Review the
 [backend and role checks](e2e-gbdt.md#enable-native-capture), including the
 SGLang counter correction and serial-scheduling boundary. P/D collection needs
 real transfer and separate worker identities; keep each role's resources and
-training inputs separate.
+training inputs separate. The optional [P/D setup reference](native-pd-setup.md)
+provides tested runtime pins and role-specific launch settings.
 
 #### Self-benchmarking collection choices
 
@@ -215,7 +216,8 @@ measurement and drain boundaries, and client completion criteria. Follow
 Use the user's deployment tools or an existing instrumented deployment; for
 completed captures, inspect the recorded plan and provenance. Plan bounded
 smoke and pilot runs before full traffic. Save the agreed scope and existing
-execution authorization; no `onboard plan` is required for this route.
+execution authorization; no `onboard plan` is required for this route. For P/D,
+include the [launch and smoke checks](native-pd-setup.md#check-role-and-transfer-behavior-before-the-workload) in the plan.
 
 **Self-benchmarking.** Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. For directory output, read `onboarding.json` and use each emitted `aisimulate onboard plan` command to create that configuration's `collection/` directory. Inspect each `support-plan.json`, embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
@@ -235,6 +237,8 @@ warmup and drain exclusions and keep separate training/test populations.
 Preserve raw files, receipts and logs. These checks do not prove lossless
 publication or accurate prediction. Resolve resource evidence separately; do
 not send native JSONL to `onboard finalize` or the timing-table quality assay.
+For P/D, use the [troubleshooting and completion reference](native-pd-troubleshooting.md)
+and compare the required evidence with the [completed capture summary](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md).
 Continue to GBDT training in stage 6.
 
 **Self-benchmarking.** First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage or because historical native campaign artifacts are unavailable. For new or continuing collection, [check timing readiness](#check-timing-readiness-before-full-collection) against saved native artifacts for each configuration. Where evidence is missing, prepare a bounded smoke for each phase required by the selected role before a full grid; explicit aggregated and role-less historical requests require both prefill and decode. A completed runtime memory probe does not replace this timing check.
