@@ -240,6 +240,12 @@ split: 2 node-hours baseline/timing, 2 controlled experiments, 1 op/forward,
   `amd64`; corrected to its documented `x86_64` option in retry 1003117. Neither
   reserves GPUs. Runtime identity and hook compatibility must pass before use.
 
+The historical retry also restores the recorded multithread/prefetch loading and
+keep-alive settings. This is a qualification repair, not an isolated experiment
+attributing a change to the framework version. The GPU runner accepts only the
+two named runtime choices and requires the historical image's CPU receipt and
+checksum before allocation. The failed 0.5.21 run remains separate evidence.
+
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
 them without prompt/error-body content. It does not modify frozen job 1002848.

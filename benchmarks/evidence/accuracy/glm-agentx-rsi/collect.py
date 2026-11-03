@@ -72,6 +72,11 @@ def control(root, model, deadline, instrumented, speculation):
         "--enable-torch-symm-mem",
         "--enable-metrics",
         "--enable-cache-report",
+        "--model-loader-extra-config",
+        '{"enable_multithread_load":true}',
+        "--weight-loader-prefetch-checkpoints",
+        "--watchdog-timeout",
+        "1800",
         "--tool-call-parser",
         "glm47",
         "--reasoning-parser",
@@ -92,7 +97,13 @@ def control(root, model, deadline, instrumented, speculation):
             "--speculative-num-draft-tokens",
             "4",
         ]
-    environment = dict(os.environ, PYTHONPATH=str(code), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
+    environment = dict(
+        os.environ,
+        PYTHONPATH=str(code),
+        PYTHONNOUSERSITE="1",
+        SGLANG_TIMEOUT_KEEP_ALIVE="900",
+        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
+    )
     for variable, directory in {
         "HF_HOME": "hf",
         "HF_HUB_CACHE": "hf/hub",

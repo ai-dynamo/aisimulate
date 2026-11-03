@@ -21,8 +21,20 @@ model="$storage_root/models/GLM-5.3-NVFP4-e3b8f9f2"
 test -s "$CAMPAIGN_ROOT/preparation/weights.sha256"
 test -s "$CAMPAIGN_ROOT/preparation/model-revision.txt"
 test -s "$CAMPAIGN_ROOT/preparation/model-verification.json"
-test -s "$CAMPAIGN_ROOT/preparation/runtime-preflight.json"
-test -s "$CAMPAIGN_ROOT/preparation/instrumentation-preflight.json"
+case "${RSI_RUNTIME:-prediction}" in
+    prediction)
+        image="$storage_root/images/sglang-0521-2dbe4c7f.sqsh"
+        test -s "$CAMPAIGN_ROOT/preparation/runtime-preflight.json"
+        test -s "$CAMPAIGN_ROOT/preparation/instrumentation-preflight.json"
+        ;;
+    historical)
+        image="$storage_root/images/sglang-0520-b27fce60.sqsh"
+        test -s "$CAMPAIGN_ROOT/historical-preparation/runtime.json"
+        test -s "$CAMPAIGN_ROOT/historical-preparation/instrumentation.json"
+        sha256sum --check "$CAMPAIGN_ROOT/historical-preparation/image.sha256"
+        ;;
+    *) echo 'Unknown RSI runtime' >&2; exit 1 ;;
+esac
 test -s "$model/config.json"
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
 export ENROOT_CONFIG_PATH="$storage_root/.config/enroot"
@@ -31,7 +43,7 @@ mkdir -p "$ENROOT_DATA_PATH" "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID"
 cp -R "$CAMPAIGN_ROOT/code" "$CAMPAIGN_ROOT/code-$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv > "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
-srun --ntasks=1 --container-image="$storage_root/images/sglang-0521-2dbe4c7f.sqsh" \
+srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
     --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 6900
