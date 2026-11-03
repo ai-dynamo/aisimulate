@@ -2861,3 +2861,16 @@ The concrete proposed scope is:
 The measured primitive benefit makes this proposal evidence-backed, not an
 accepted modeling fix. Implementation waits for explicit contract approval;
 independent diagnostics that do not alter the contract can continue.
+
+## H5 — E050 prediction-runtime source inventory (predeclared CPU gate)
+
+- **Hypothesis:** the pinned0.5.21 prediction image may provide the same native
+  verification interfaces needed for a matching-runtime measurement. Previous
+  primitive evidence is0.5.20 and cannot be relabeled0.5.21.
+- **Experiment:** CPU-only inspection of existing `sglang-0521-2dbe4c7f.sqsh`,
+  eight CPUs/64GiB/20minutes, no GPU or timings. Record image checksum, installed
+  version, Git identity/dirty state, source hashes and AST interface signatures.
+  Keep absent files explicit and assert the requested package version. No
+  producer/consumer schema, lookup, source runtime or public artifact changes.
+- **Conclusion:** pending inventory. This independent read can continue while
+  the explicit coordinated query-width approval question remains pending.
