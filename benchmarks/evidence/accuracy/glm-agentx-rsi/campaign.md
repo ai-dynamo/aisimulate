@@ -2270,3 +2270,41 @@ geometry rather than another combination of timing flags.
   will narrow the next experiment; it does not authorize fitting cache counts
   to scores or replacing historical measurements.
 - **Conclusion:** pending independent geometry audit.
+
+**E043 conclusion — input mismatch supported; cache attribution unavailable.**
+All development silicon observations have `cached_tokens=null`; the original
+AgentX exported metric names also omit per-request cache-hit receipts. Native
+prediction has reuse counters, but these cannot establish silicon cache agreement.
+Do not convert absence into zero or infer byte-level cache history from source
+hashes or token lengths. The first audit therefore reports all geometry unavailable;
+preserve it, then extend the audit to report input-length deltas independently
+of missing cache receipts. Regression tests preserve this distinction.
+
+| Lanes | Research matched n | Mean absolute input difference | Maximum difference | Equal input counts |
+|---:|---:|---:|---:|---:|
+| 1 | 324 | 130.1698 tokens | 427 | 4 |
+| 8 | 1417 | 84.6916 tokens | 397 | 12 |
+| 14 | 2430 | 59.7091 tokens | 398 | 14 |
+
+These geometry counts include two C8 matches outside the frozen scoring cohort;
+the accuracy strata retain only original eligible metric observations. All E003
+frozen TTFT/TPOT identities remain; E042 still loses seven. Research TTFT MAPE
+for requests differing by over 64 input tokens is 77.1821/72.2175/123.6101% at
+1/8/14, versus 69.3002/58.6074/97.8498% for nonzero differences within 64 tokens.
+E042 does not preserve this ordering (19.1171/28.7331/82.7049% versus
+29.9439/30.7378/84.3381%). This does not support a count-offset-only explanation
+of the residual gap or a constant token correction. Actual payload/cache identity
+and API arrival histories remain unqualified. No new latency or baseline is accepted.
+
+Checksums: E042 frozen audit
+`8f04e6b21a65a7508edc6babc5908afc6f4f77ec2d52ec222e7196e6c6b3b4d7`,
+independent native/reference audit
+`637840ac99fbfce0742e1a9c71c0c66110118d2ebdbee2e7e397864b56430d70`;
+E043 initial audit
+`6519f8ea91e6ad48eb3b84eff922d69710404e6f8a1598b03758f59f46472509`,
+expanded input audit
+`05d925b94729357ee32c4a000eba8f341f711957bc8f1fd80b874cc63c58888a`.
+E042 normalized configurations and all three derived-trace receipts exactly
+match E041: only compiled cache-contract source differs. Both E043 audit
+variants leave raw artifacts private; source and execution identities are in
+the checkpoint. GPU budget remains **34.2839/64 hours**, no active allocation.

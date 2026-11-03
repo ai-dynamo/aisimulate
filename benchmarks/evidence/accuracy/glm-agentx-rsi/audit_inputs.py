@@ -66,13 +66,26 @@ def audit(observations, predicted, frozen):
             continue
         accounting["matched"] += 1
         predicted_row = matches[0]
+        accounting["readmitted"] += predicted_row.get("readmission_count", 0) > 0
+        input_group = "input_unavailable"
+        a, b = actual.get("input_length"), predicted_row.get("input_length")
+        if a is not None and b is not None:
+            if type(a) is not int or type(b) is not int or min(a, b) < 0:
+                raise ValueError("Invalid input token counters")
+            geometry["known_input"] += 1
+            geometry["input_equal"] += a == b
+            deltas["input"].append(b - a)
+            input_group = ("input_equal" if a == b else "input_within_64_tokens" if abs(b - a) <= 64
+                           else "input_differs_over_64_tokens")
         measured = counts(actual, "cached_tokens")
         simulated = counts(predicted_row, "first_admission_reused_input_tokens")
+        geometry["known_measured_cache"] += measured is not None
+        geometry["known_predicted_cache"] += simulated is not None
         group = "unavailable_geometry"
         if measured is None or simulated is None:
             geometry[group] += 1
         else:
-            for name, a, b in zip(("input", "reuse", "fresh"), measured, simulated, strict=True):
+            for name, a, b in zip(("reuse", "fresh"), measured[1:], simulated[1:], strict=True):
                 deltas[name].append(b - a)
                 geometry[name + "_equal"] += a == b
             fresh_delta = simulated[2] - measured[2]
@@ -81,7 +94,6 @@ def audit(observations, predicted, frozen):
             geometry[group] += 1
             geometry["known_geometry"] += 1
             geometry["input_and_reuse_equal"] += measured[:2] == simulated[:2]
-            accounting["readmitted"] += predicted_row.get("readmission_count", 0) > 0
         for metric, field in (("ttft", "ttft_ms"), ("tpot", "itl_ms")):
             if original is None or original[metric + "_ms_ape"] is None:
                 continue
@@ -96,6 +108,7 @@ def audit(observations, predicted, frozen):
             ape = 100 * abs(value - reference) / reference
             errors[metric]["all_retained"].append(ape)
             errors[metric][group].append(ape)
+            errors[metric][input_group].append(ape)
     result = {"accounting": dict(accounting), "geometry": dict(geometry), "deltas_tokens": {}, "metrics": {}}
     for name, values in deltas.items():
         result["deltas_tokens"][name] = {"n": len(values), "mean_signed": mean(values),

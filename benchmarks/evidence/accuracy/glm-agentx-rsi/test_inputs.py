@@ -22,10 +22,15 @@ def test_geometry_strata_preserve_missing_zero_and_frozen_accounting():
     assert result["geometry"]["predicted_more_fresh"] == 1
     assert result["geometry"]["unavailable_geometry"] == 1
     assert result["geometry"]["input_equal"] == 0
+    assert result["geometry"]["known_input"] == 3
+    assert result["geometry"]["known_measured_cache"] == 3
+    assert result["geometry"]["known_predicted_cache"] == 2
+    assert result["deltas_tokens"]["input"]["n"] == 3
     assert result["deltas_tokens"]["fresh"]["sum_signed"] == 120
     assert result["metrics"]["ttft"]["lost"] == 1
     assert result["metrics"]["ttft"]["groups"]["all_retained"] == {"n": 3, "mape": 50}
     assert result["metrics"]["tpot"]["groups"]["all_retained"] == {"n": 3, "mape": 100}
+    assert result["metrics"]["ttft"]["groups"]["input_within_64_tokens"] == {"n": 3, "mape": 50}
     assert counts({"input_length": 1, "cached_tokens": 0}, "cached_tokens") == (1, 0, 1)
     with pytest.raises(ValueError, match="Invalid input/cache"):
         counts({"input_length": 1, "cached_tokens": 2}, "cached_tokens")
