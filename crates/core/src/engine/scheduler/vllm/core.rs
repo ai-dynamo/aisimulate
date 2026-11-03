@@ -3234,6 +3234,10 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
+                // One allocation per pass rather than a doubling series.
+                if decode.lengths.capacity() == 0 {
+                    decode.lengths.reserve_exact(self.state.running.len());
+                }
                 decode.lengths.push(request.sequence.len());
             }
         }

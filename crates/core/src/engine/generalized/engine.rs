@@ -250,7 +250,7 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         // Every ready rank commits its scheduling before any pricing: a
         // rank's batch never depends on its duration, while an attention-DP
         // group's duration depends on every rank's batch.
-        let mut scheduled = Vec::new();
+        let mut scheduled = Vec::with_capacity(self.ranks.len());
         for dp_rank in 0..self.ranks.len() {
             if !self.ranks[dp_rank].is_ready() || self.ranks[dp_rank].waiting_for_external_command()
             {
