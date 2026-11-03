@@ -2451,3 +2451,14 @@ newer explicit GPU-second entries; do not mix their units or double-count steps.
 The first checkpoint reservation update uses the newer field on a legacy entry
 and fails; the reconciled total is unchanged, and the submitted allocation's
 reservation is then recorded. Collection/result audit remains pending.
+
+E046 independent auditor `audit_geometry.py` is declared before opening the
+new metadata. It requires all eight loaded rank/process/device identities,
+exact pinned graph instrumentation, both profiler contexts, numerical device
+sequence lengths, bounded consecutive positions and phase widths4/1/4 for
+verification/draft/draft-extension. All ranks must agree on numerical geometry;
+keep every recorded execution and distinguish it from request counters. Native
+request/cache/output accounting must qualify first. Regression fixtures reject
+wrong widths, malformed positions, wrong devices and missing contexts, while
+retaining eleven synthetic executions rather than trimming to a reported count.
+These are qualification rules, not a score-dependent selection of rounds.
