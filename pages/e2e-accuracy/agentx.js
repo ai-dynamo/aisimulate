@@ -227,7 +227,7 @@ window.AgentX = (() => {
       }
       document.getElementById("selected-run").textContent="Loading concurrency measurements…";
       const [fragment,points,featureData]=await Promise.all([
-        fetch("./dashboard-body.html").then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();}),
+        fetch("./dashboard-body.html", {cache:"no-cache"}).then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();}),
         Promise.all(runs.map(async run=>{
           if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path))throw new Error("Invalid detail path.");
           const point=await json(loaded.base+run.detail_path);

@@ -1178,7 +1178,8 @@ window.AISimReplay = { mount(root, report, options = {}) {
           : null;
       }
       function renderTimeline() {
-        root.querySelector("#view-timeline .timeline-panel > .hint").textContent = `${comparedPhase() ? "Full phase shown" : "Scroll horizontally through time"} · click an interval or row label for details`;
+        $("timeline-pager").hidden = !comparedPhase();
+        root.querySelector("#view-timeline .timeline-panel > .hint").textContent = `${comparedPhase() ? "10 minutes per screen · scroll horizontally or use < >" : "Scroll horizontally through time"} · click an interval or row label for details`;
         if (comparedPhase()) return renderComparedTimeline();
         const end = timelineWindow(),
           all = rows(),
@@ -1269,6 +1270,46 @@ window.AISimReplay = { mount(root, report, options = {}) {
         node.innerHTML = `<div class="timeline-content" style="width:${width + 230}px"><div class="timeline-axis"><div class="timeline-label">Seconds since phase start</div><div class="timeline-track" style="${grid}">${axis}</div></div>${content || '<p class="hint">No requests match this filter.</p>'}</div>`;
         node.scrollLeft = 0;
       }
+      const timelineOffsets = {};
+      let timelineLayout = null;
+      function comparisonTimelineGeometry() {
+        const data = comparedPhase();
+        const end = Math.max(data.native_duration_s, data.silicon_duration_s, 1);
+        let pages = Math.ceil(end / 600);
+        // Keep up to a minute of terminal drain in the final ten-minute window.
+        if (pages > 1 && end % 600 > 0 && end % 600 <= 60) pages -= 1;
+        const lastStart = (pages - 1) * 600, lastDuration = Math.max(600, end - lastStart);
+        return {end, pages, lastStart, lastDuration};
+      }
+      function updateTimelinePager() {
+        if (!timelineLayout || !comparedPhase() || state.view !== "timeline" || $("timeline-plot").clientWidth !== timelineLayout.viewport) return;
+        const {pageWidth, pages} = timelineLayout, {lastDuration} = comparisonTimelineGeometry();
+        const position = $("timeline-plot").scrollLeft / pageWidth;
+        timelineOffsets[state.stage] = position;
+        const page = Math.min(pages - 1, Math.floor(position + 0.001));
+        const stop = position + 1 <= pages - 1 ? (position + 1) * 10 : (pages - 1) * 10 + (position + 2 - pages) * lastDuration / 60;
+        $("timeline-page-label").textContent = `${fmt(position * 10, 1)}–${fmt(stop, 1)} min · ${page + 1} / ${pages}`;
+        $("timeline-previous").disabled = position < 0.001;
+        $("timeline-next").disabled = position >= pages - 1 - 0.001;
+      }
+      function sizeComparedTimeline() {
+        const node = $("timeline-plot"), content = node.querySelector(".comparison-timeline");
+        if (!content || !node.clientWidth || state.view !== "timeline" || !comparedPhase()) return;
+        const labelWidth = parseFloat(getComputedStyle(content).getPropertyValue("--timeline-label-width"));
+        const pageWidth = Math.max(1, node.clientWidth - labelWidth);
+        const {pages, lastDuration} = comparisonTimelineGeometry();
+        const offset = Math.min(timelineOffsets[state.stage] || 0, pages - 1);
+        timelineLayout = {pageWidth, pages, viewport:node.clientWidth};
+        content.style.width = `${labelWidth + pages * pageWidth}px`;
+        content.style.setProperty("--timeline-minute-width", `${pageWidth / 10}px`);
+        content.style.setProperty("--timeline-page-width", `${pageWidth}px`);
+        content.style.setProperty("--timeline-final-minute-width", `${pageWidth * 60 / lastDuration}px`);
+        node.scrollLeft = offset * pageWidth;
+        updateTimelinePager();
+      }
+      $("timeline-plot").addEventListener("scroll", updateTimelinePager);
+      const timelineResize = new ResizeObserver(sizeComparedTimeline);
+      timelineResize.observe($("timeline-plot"));
       function renderComparedTimeline() {
         const data = comparedPhase(), all = data.requests;
         const workerControl = root.querySelector('[data-group="worker"]');
@@ -1282,10 +1323,13 @@ window.AISimReplay = { mount(root, report, options = {}) {
           pair.forEach(r=>used.add(r.uuid));
           if (!state.search || pair.some(r=>[r.request_id,r.uuid,r.group_id,r.origin,r.terminal_status].join(" ").toLowerCase().includes(state.search))) pairs.push(pair);
         }
-        const end = Math.max(data.native_duration_s,data.silicon_duration_s,1);
+        const {end, pages, lastStart, lastDuration} = comparisonTimelineGeometry();
+        const span = lastStart + lastDuration;
+        const percentAt = time => (time <= lastStart ? time / 600 : pages - 1 + (time - lastStart) / lastDuration) / pages * 100;
         $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Blue: silicon; yellow: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
         $("timeline-plot").dataset.requestCount = String(all.length);
-        const axis = Array.from({length:7},(_,i)=>`<span class="timeline-tick" style="left:${i/6*100}%;transform:translateX(${i===0?0:i===6?-100:-50}%)">${fmt(end*i/6,end<60?1:0)}s</span>`).join("");
+        $("timeline-plot").dataset.windowEnd = String(end);
+        const axis = Array.from({length:Math.floor(span/60)+1},(_,i)=>`<span class="timeline-tick" style="left:${percentAt(i*60)}%;transform:translateX(${i===Math.floor(span/60)?-100:0}%)">${i}m</span>`).join("");
         const content = pairs.map(pair=>{
           const row = pair[0], requestId = row.request_id || row.uuid;
           const label = `Conversation ${row.group_id || "unknown"} · Request ${requestId} · ${pair.length===2?"paired":"unmatched"}`;
@@ -1293,11 +1337,12 @@ window.AISimReplay = { mount(root, report, options = {}) {
             if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";
             const start=Math.max(0,r.arrival_time_ms/1000-origin()),stop=Math.min(end,r.terminal_time_ms/1000-origin());
             if(stop<start)return "";
-            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${start/end*100}%;width:max(2px,${(stop-start)/end*100}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
+            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${percentAt(start)}%;width:max(2px,${percentAt(stop)-percentAt(start)}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
           }).join("");
           return `<div class="timeline-row comparison-row"><div class="timeline-label"><button data-request="${row.uuid}" title="${esc(label)}" aria-label="${esc(label)}"><span class="conversation-id">${row.group_id?"…"+esc(row.group_id.slice(-8)):"Unknown"}</span> · ${esc(requestId)}</button></div><div class="timeline-track">${intervals}</div></div>`;
         }).join("");
-        $("timeline-plot").innerHTML = `<div class="timeline-content comparison-timeline"><div class="timeline-axis" title="Seconds since each ${state.stage} started"><div class="timeline-label">Conversation · Request</div><div class="timeline-track">${axis}</div></div>${content}</div>`;
+        $("timeline-plot").innerHTML = `<div class="timeline-content comparison-timeline"><div class="timeline-axis" title="Minutes since each ${state.stage} started"><div class="timeline-label">Conversation · Request</div><div class="timeline-track">${axis}</div></div>${content}</div>`;
+        sizeComparedTimeline();
       }
       const metric = (label, value) =>
         `<div class="stat"><small>${esc(label)}</small><strong>${esc(value ?? "N/A")}</strong></div>`;
@@ -1464,6 +1509,12 @@ window.AISimReplay = { mount(root, report, options = {}) {
         } else if (button.dataset.stage) {
           state.stage = button.dataset.stage;
           await render();
+        } else if (button.dataset.timelinePage && timelineLayout) {
+          const direction = Number(button.dataset.timelinePage);
+          const position = $("timeline-plot").scrollLeft / timelineLayout.pageWidth;
+          const next = direction > 0 ? Math.floor(position + 0.001) + 1 : Math.ceil(position - 0.001) - 1;
+          $("timeline-plot").scrollLeft = Math.max(0, Math.min(timelineLayout.pages - 1, next)) * timelineLayout.pageWidth;
+          updateTimelinePager();
         } else if (button.dataset.group) {
           state.group = button.dataset.group;
           await render();
@@ -1521,6 +1572,6 @@ window.AISimReplay = { mount(root, report, options = {}) {
       $("run-meta").textContent =
         report.telemetry.completion_status || "Completion N/A";
       render();
-      return {render, state, destroy() { root.querySelectorAll(".plot").forEach(el => Plotly.purge(el)); }};
+      return {render, state, destroy() { timelineResize.disconnect(); root.querySelectorAll(".plot").forEach(el => Plotly.purge(el)); }};
 
 }};

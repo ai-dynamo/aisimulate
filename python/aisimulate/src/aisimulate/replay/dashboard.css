@@ -466,7 +466,25 @@
 .replay-dashboard.embedded .topbar, .replay-dashboard.embedded .heading, .replay-dashboard.embedded .selection, .replay-dashboard.embedded .subnav, .replay-dashboard.embedded footer { display:none; }
 .replay-dashboard.embedded main { max-width:none; padding:0; }
 .replay-dashboard .score-badge { display:inline-block; padding:3px 7px; margin:3px 5px 3px 0; border:1px solid var(--border); border-radius:5px; font-size:11px; color:var(--muted); }
-.replay-dashboard .comparison-timeline { width:100%; min-width:600px; }
+.replay-dashboard .timeline-pager { display:flex; align-items:center; gap:12px; margin-top:12px; }
+.replay-dashboard .timeline-pager[hidden] { display:none; }
+.replay-dashboard .timeline-pager button { min-width:36px; min-height:32px; font-size:18px; }
+.replay-dashboard .timeline-pager button:disabled { opacity:0.4; cursor:default; }
+.replay-dashboard #timeline-page-label { font-size:12px; font-variant-numeric:tabular-nums; }
+.replay-dashboard .comparison-timeline { --timeline-label-width:230px; }
+.replay-dashboard .comparison-timeline .timeline-row,
+.replay-dashboard .comparison-timeline .timeline-axis { grid-template-columns:var(--timeline-label-width) minmax(0, 1fr); }
+.replay-dashboard .comparison-timeline .timeline-label { background:var(--panel); }
+.replay-dashboard .comparison-timeline .timeline-track {
+  background-image:repeating-linear-gradient(to right, var(--grid) 0 1px, transparent 1px var(--timeline-minute-width)),
+    repeating-linear-gradient(to right, var(--grid) 0 1px, transparent 1px var(--timeline-final-minute-width));
+  background-size:calc(100% - var(--timeline-page-width)) 100%, var(--timeline-page-width) 100%;
+  background-position:left top, right top;
+  background-repeat:no-repeat;
+}
+@media (max-width:600px) {
+  .replay-dashboard .comparison-timeline { --timeline-label-width:140px; }
+}
 .replay-dashboard .comparison-row, .replay-dashboard .comparison-row .timeline-track { height:22px; }
 .replay-dashboard .comparison-row .timeline-track { overflow:hidden; }
 .replay-dashboard .comparison-row .timeline-label { padding:0 10px 0 0; }

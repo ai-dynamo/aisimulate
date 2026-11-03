@@ -765,8 +765,12 @@ Plots and expanded charts show compact MAPE badges without the comparison covera
 and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
 AgentX omits the Speculative acceptance length and Prefix cache hit rate per interval
 subplots. Both remain available in ordinary standalone replay exports.
-The comparison timeline fits the full phase into the panel, with a compact
-600-pixel minimum width on small screens. Each 22-pixel row shows the conversation
+The comparison timeline shows ten minutes per screen: a one-hour phase spans six
+windows. Use the previous/next buttons or scroll horizontally; the current time
+range and window number stay visible. Up to one minute of terminal drain stays in
+the final window, with its actual end time shown. Longer phases add windows without
+clipping requests; shorter phases keep the same ten-minute scale. Conversation labels stay
+pinned, and resizing preserves the selected time range. Each 22-pixel row shows the conversation
 hash and request ID on one line, with silicon and AISim intervals on separate
 lines. Full identifiers and pairing status remain in the row tooltip and request
 inspection; untimed and unmatched requests retain their rows.

@@ -345,14 +345,60 @@ async def check():
                 await frame.locator('[aria-label="Close expanded chart"]').click()
                 await frame.locator('[data-view="timeline"]').click()
                 await expect(page).to_have_url(re.compile("view=timeline"))
-                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("Full phase shown")
+                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("10 minutes per screen")
                 await expect(frame.locator("#view-timeline .legend")).to_have_text("SiliconAISimFailed · red outline")
                 await expect(frame.locator("#plot-reference_ttft .legend")).not_to_contain_text("Failed")
                 await expect(frame.locator('[data-origin="silicon"]')).to_have_count(1)
                 await expect(frame.locator('[data-origin="simulated"]')).to_have_count(1)
-                assert await frame.locator("#timeline-plot").evaluate(
-                    "node => node.scrollWidth <= node.clientWidth + 2"
+                pager = frame.locator("#timeline-page-label")
+                previous = frame.locator("#timeline-previous")
+                following = frame.locator("#timeline-next")
+                timeline = frame.locator("#timeline-plot")
+                await expect(pager).to_have_text("0\u201310 min · 1 / 6")
+                await expect(previous).to_be_disabled()
+                page_width = await timeline.evaluate(
+                    "node => node.clientWidth - node.querySelector('.timeline-label').getBoundingClientRect().width"
                 )
+                assert await timeline.evaluate(
+                    "(node, width) => Math.abs(node.scrollWidth - node.clientWidth - 5 * width) <= 2", page_width
+                )
+                label_x = (await frame.locator(".comparison-row .timeline-label").first.bounding_box())["x"]
+                score_badges = await frame.locator("#timeline-summary .score-badges").text_content()
+                await following.focus()
+                await page.keyboard.press("Enter")
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                assert abs((await timeline.evaluate("node => node.scrollLeft")) - page_width) <= 1
+                assert (
+                    abs((await frame.locator(".comparison-row .timeline-label").first.bounding_box())["x"] - label_x)
+                    <= 1
+                )
+                for _ in range(4):
+                    await following.click()
+                await expect(pager).to_have_text("50\u201360 min · 6 / 6")
+                await expect(following).to_be_disabled()
+                await expect(frame.locator('[data-origin="silicon"]')).to_have_count(1)
+                await expect(frame.locator("#timeline-summary .score-badges")).to_have_text(score_badges)
+                await timeline.evaluate("(node, width) => node.scrollLeft = width * 1.5", page_width)
+                await expect(pager).to_have_text("15\u201325 min · 2 / 6")
+                await following.click()
+                await expect(pager).to_have_text("20\u201330 min · 3 / 6")
+                await previous.click()
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                viewport = page.viewport_size
+                await page.set_viewport_size({"width": 390, "height": 844})
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                await page.wait_for_function("document.documentElement.scrollWidth <= innerWidth + 1")
+                await page.wait_for_function("""() => {
+                    const node = document.querySelector('#timeline-plot');
+                    return Math.abs(node.scrollLeft - (node.clientWidth - 140)) <= 1;
+                }""")
+                await page.set_viewport_size(viewport)
+                await page.wait_for_function("""() => {
+                    const node = document.querySelector('#timeline-plot');
+                    return Math.abs(node.scrollLeft - (node.clientWidth - 230)) <= 1;
+                }""")
+                await previous.click()
+                await expect(pager).to_have_text("0\u201310 min · 1 / 6")
                 row = frame.locator(".comparison-row").first
                 assert (await row.bounding_box())["height"] == 22
                 await expect(row.locator(".timeline-label button")).to_have_text(
@@ -368,6 +414,9 @@ async def check():
                 await frame.locator('[aria-label="Close request details"]').click()
                 await frame.locator('[data-stage="preparation"]').click()
                 await expect(page).to_have_url(re.compile("stage=preparation"))
+                await expect(pager).to_have_text("0\u201310 min · 1 / 1")
+                await expect(previous).to_be_disabled()
+                await expect(following).to_be_disabled()
                 await frame.locator('[data-origin="silicon"]').click()
                 assert "%" not in await frame.locator("#request-details").inner_text()
                 await frame.locator('[aria-label="Close request details"]').click()

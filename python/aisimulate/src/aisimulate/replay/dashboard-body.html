@@ -95,6 +95,11 @@ SPDX-License-Identifier: Apache-2.0 -->
             Scroll horizontally through time · click an interval or row label
             for details
           </div>
+          <div id="timeline-pager" class="timeline-pager" role="group" aria-label="Timeline time window" hidden>
+            <button id="timeline-previous" data-timeline-page="-1" aria-label="Previous 10 minutes">&lt;</button>
+            <span id="timeline-page-label" role="status" aria-live="polite"></span>
+            <button id="timeline-next" data-timeline-page="1" aria-label="Next 10 minutes">&gt;</button>
+          </div>
           <div class="legend">
             <span
               ><i class="dot" style="background: var(--blue)"></i
