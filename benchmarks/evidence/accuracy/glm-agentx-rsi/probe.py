@@ -20,7 +20,7 @@ def call(url, value=None):
     return urllib.request.urlopen(request, timeout=600)
 
 
-def request(url, identity, prompt, output_length, barrier):
+def request(url, identity, prompt, output_length, barrier, first_output=None):
     body = {"rid": identity, "input_ids": prompt, "stream": True,
             "sampling_params": {"temperature": 0, "max_new_tokens": output_length, "ignore_eos": True}}
     barrier.wait()
@@ -35,6 +35,8 @@ def request(url, identity, prompt, output_length, barrier):
                 payload = json.loads(line.removeprefix(b"data:"))
                 meta = payload.get("meta_info", {})
                 if meta.get("completion_tokens"):
+                    if first_output is not None:
+                        first_output.set()
                     events.append({"at_ns": str(now), "output_tokens": meta["completion_tokens"],
                                    "meta": {key: meta[key] for key in ("id", "prompt_tokens", "cached_tokens", "e2e_latency",
                                             "spec_accept_length", "spec_accept_rate", "spec_verify_ct") if key in meta}})
@@ -44,6 +46,79 @@ def request(url, identity, prompt, output_length, barrier):
         status, error = "failed", type(exc).__name__
     return {"rid": identity, "input_tokens": len(prompt), "requested_output_tokens": output_length,
             "start_ns": str(start), "end_ns": str(time.monotonic_ns()), "events": events, "status": status, "error": error}
+
+
+def overlap_control(url, seed, records):
+    """Use client first-output as the trigger; scheduler evidence establishes actual overlap."""
+    prefix = (seed * (361344 // len(seed) + 1))[:361344]
+    victim = ([seed[-1]] + seed * (640 // len(seed) + 1))[:640]
+    for overlap in (False, True):
+        with call(url + "/flush_cache", {}) as response:
+            response.read()
+        warm = request(url, f"rsi-overlap-{overlap}-warm", prefix[:287424], 1, threading.Barrier(1))
+        warm["role"] = "preparation"
+        records.write(json.dumps(warm) + "\n")
+        if warm["status"] != "completed":
+            raise RuntimeError("Incomplete overlap preparation")
+        first = threading.Event()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            task = pool.submit(request, url, f"rsi-overlap-{overlap}-victim", victim, 23, threading.Barrier(1), first)
+            other = None
+            if overlap:
+                if not first.wait(timeout=600):
+                    raise RuntimeError("Victim produced no observed output")
+                time.sleep(0.001)
+                other = pool.submit(request, url, "rsi-overlap-interferer", prefix, 8, threading.Barrier(1))
+            rows = [task.result()] + ([other.result()] if other else [])
+            for row in rows:
+                row.update(role="diagnostic_overlap", overlap_requested=overlap)
+                records.write(json.dumps(row) + "\n")
+                if row["status"] != "completed":
+                    raise RuntimeError("Incomplete overlap control")
+            records.flush()
+
+
+def chat_controls(url, seed, tokenizer, records):
+    """Check the original OpenAI frontend and reasoning parser without saving text."""
+    for repeat in range(2):
+        for context, length, lanes in ((8192, 16, 1), (8192, 16, 14), (131072, 128, 1)):
+            with call(url + "/flush_cache", {}) as response:
+                response.read()
+            prompt = (seed * (context // len(seed) + 1))[:context]
+            text = tokenizer.decode(prompt)
+            barrier = threading.Barrier(lanes)
+
+            def one(lane):
+                rid = f"rsi-chat-r{repeat}-c{context}-o{length}-l{lanes}-i{lane}"
+                body = {"rid": rid, "model": "nvidia/GLM-5.3-NVFP4", "messages": [{"role": "user", "content": text}],
+                        "stream": True, "stream_options": {"include_usage": True}, "temperature": 0,
+                        "max_tokens": length, "ignore_eos": True}
+                barrier.wait()
+                start = time.monotonic_ns()
+                events, usage = [], {}
+                with call(url + "/v1/chat/completions", body) as stream:
+                    for line in stream:
+                        now = time.monotonic_ns()
+                        if not line.startswith(b"data:") or line.strip() == b"data: [DONE]":
+                            continue
+                        payload = json.loads(line.removeprefix(b"data:"))
+                        chars = {key: sum(len(c.get("delta", {}).get(key) or "") for c in payload.get("choices", []))
+                                 for key in ("content", "reasoning_content")}
+                        if any(chars.values()):
+                            events.append({"at_ns": str(now), **{key + "_chars": value for key, value in chars.items()}})
+                        usage = payload.get("usage") or usage
+                return {"rid": rid, "role": "diagnostic_chat_frontend", "start_ns": str(start),
+                        "end_ns": str(time.monotonic_ns()), "events": events, "lanes": lanes, "repeat": repeat,
+                        "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
+                        "requested_output_tokens": length,
+                        "status": "completed" if usage.get("completion_tokens") == length else "incomplete"}
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=lanes) as pool:
+                for row in pool.map(one, range(lanes)):
+                    records.write(json.dumps(row) + "\n")
+                    records.flush()
+                    if row["status"] != "completed":
+                        raise RuntimeError("Incomplete OpenAI frontend control")
 
 
 def main():
@@ -78,6 +153,8 @@ def main():
                                 if row["status"] != "completed":
                                     raise RuntimeError("Incomplete diagnostic request; stop rather than dropping it")
                         print(f"repeat={repeat} context={context} output={length} lanes={lanes} completed", flush=True)
+        overlap_control(args.url, seed, records)
+        chat_controls(args.url, seed, tokenizer, records)
 
 
 if __name__ == "__main__":

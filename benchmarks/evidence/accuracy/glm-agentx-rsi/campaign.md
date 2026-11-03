@@ -186,3 +186,57 @@ host scheduler output readiness before detokenization/HTTP, not GPU kernel time.
 runtime source/log evidence remains private. Missing/incomplete requests stop the
 control rather than being dropped. Compare against the original unmodified server
 before interpreting instrumented timing.
+
+## E006 — Minimal overlap reduction
+
+**Hypothesis.** A new current-main C14 high-error request is stalled by overlapping
+prefill work, rather than an intrinsically 276 ms decode step.
+
+**Experiment.** Use three numerical Mooncake controls with the same wheel, op data,
+cache geometry and speculation. Warm a 287424-token prefix; the victim has 640
+input tokens and 23 output tokens. Add a 361344-token prefill sharing the warm
+prefix either 1 ms after the standalone first token or 1 ms after its last token.
+Only interferer presence/arrival changes. `reduce_stall.py` retains each config,
+trace, native report and result; this diagnostic is not a replacement benchmark.
+The first attempt failed on assuming Mooncake preserves a request_id in native
+telemetry; its evidence remains private. The corrected run selects the uniquely
+specified victim shape and completes all three controls.
+
+**Conclusion — confirmed simulated overlap mechanism; silicon fidelity open.**
+Victim TPOT is 2.4626 ms standalone, 273.4086 ms with overlap, and 2.4626 ms when
+separated; TTFT stays 58.6586 ms. The prior historical 25.7-second stall no longer
+appears at that source request on current main (now 4.1313 ms TPOT). A different
+current request produces 276.0665 ms TPOT versus silicon 3.7934 ms. This proves
+sensitivity to overlap in replay, not that its scheduler is wrong: the measured
+profile may have different arrivals and cache state. Next: verify the same
+controlled interference on the GPU; do not tune scheduling to suppress the score.
+
+## Full research baseline accounting
+
+All 8624 frozen TTFT requests and 8614 frozen TPOT requests are retained across
+all six points. Current-main pooled MAPE is 79.9935% TTFT and 70.0050% TPOT
+(the exact sums and independent comparison are in private evidence). Both improve
+against the historical dashboard; this is an upstream-baseline improvement, not
+attribution to a campaign fix. C10 TPOT worsens 69.4362% to 73.8154%; C8 TTFT also
+worsens slightly. Keep these regressions visible. The 10% targets remain unmet.
+
+The next CPU ablation reverts only upstream #406's DSA reuse correction while
+holding the new main baseline, #665 op table and frozen requests constant. Do not
+attribute the upstream-baseline improvement from commit titles alone.
+
+## Collection qualification update
+
+All 50 weight shards and both configuration files match the immutable HF revision's
+published checksums. Weight-manifest SHA256:
+`a9a20139694f8d94eb4fc1fd1da8083da5de0fec3226555123ab4896c41cae50`.
+The CPU preparation finished successfully. An overlapping CPU preflight step was
+terminated when its enclosing preparation allocation ended; independent preflight
+job 1002543 now checks the container interface. These attempts used no GPU time.
+
+The timing probe also exercises the OpenAI chat frontend with the original
+reasoning/tool parsers. It records content/reasoning character counts and usage,
+never text, so first scheduler output, first visible reasoning/content, and final
+client receipt can be distinguished. Native streaming, chat projection, frozen
+scoring and resource accounting have seven passing focused tests. For stream
+projection tests, run `uv run --no-project --with 'transformers>=4.57,<5' --with pytest
+python -m pytest -c /dev/null -p no:cacheprovider test_probe.py`.
