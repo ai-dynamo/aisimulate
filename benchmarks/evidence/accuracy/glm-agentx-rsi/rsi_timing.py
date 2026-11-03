@@ -28,8 +28,11 @@ def record(requests):
         if _last.get(rid) == count:
             continue
         _last[rid] = count
-        events.append({"rid": rid, "at_ns": str(now), "output_tokens": count, "batch_requests": len(requests), "rank": rank})
+        events.append(
+            {"rid": rid, "at_ns": str(now), "output_tokens": count, "batch_requests": len(requests), "rank": rank}
+        )
     if events:
         if _stream is None:
-            _stream = open(f"{root}/scheduler-{os.getpid()}.jsonl", "a", buffering=1)
+            # Keep one stream per process to avoid open/close overhead on every decode step.
+            _stream = open(f"{root}/scheduler-{os.getpid()}.jsonl", "a", buffering=1)  # noqa: SIM115
         _stream.write("".join(json.dumps(event) + "\n" for event in events))

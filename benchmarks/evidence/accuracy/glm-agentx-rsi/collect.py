@@ -40,34 +40,81 @@ def control(root, model, deadline, instrumented, speculation):
     output = root / name
     output.mkdir()
     url = "http://127.0.0.1:8011"
-    command = [sys.executable, "-m", "sglang.launch_server", "--model-path", str(model),
-               "--served-model-name", "nvidia/GLM-5.3-NVFP4", "--trust-remote-code",
-               "--tensor-parallel-size", "8", "--expert-parallel-size", "1",
-               "--quantization", "modelopt_fp4", "--kv-cache-dtype", "fp8_e4m3",
-               "--context-length", "1048576", "--chunked-prefill-size", "8192",
-               "--max-prefill-tokens", "8192", "--max-running-requests", "256",
-               "--mem-fraction-static", "0.86", "--cuda-graph-max-bs-decode", "64",
-               "--enable-torch-symm-mem", "--enable-metrics", "--enable-cache-report",
-               "--tool-call-parser", "glm47", "--reasoning-parser", "glm45",
-               "--host", "127.0.0.1", "--port", "8011"]
+    command = [
+        sys.executable,
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        str(model),
+        "--served-model-name",
+        "nvidia/GLM-5.3-NVFP4",
+        "--trust-remote-code",
+        "--tensor-parallel-size",
+        "8",
+        "--expert-parallel-size",
+        "1",
+        "--quantization",
+        "modelopt_fp4",
+        "--kv-cache-dtype",
+        "fp8_e4m3",
+        "--context-length",
+        "1048576",
+        "--chunked-prefill-size",
+        "8192",
+        "--max-prefill-tokens",
+        "8192",
+        "--max-running-requests",
+        "256",
+        "--mem-fraction-static",
+        "0.86",
+        "--cuda-graph-max-bs-decode",
+        "64",
+        "--enable-torch-symm-mem",
+        "--enable-metrics",
+        "--enable-cache-report",
+        "--tool-call-parser",
+        "glm47",
+        "--reasoning-parser",
+        "glm45",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8011",
+    ]
     if speculation:
-        command += ["--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
-                    "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4"]
+        command += [
+            "--speculative-algorithm",
+            "NEXTN",
+            "--speculative-num-steps",
+            "3",
+            "--speculative-eagle-topk",
+            "1",
+            "--speculative-num-draft-tokens",
+            "4",
+        ]
     environment = dict(os.environ, PYTHONPATH=str(code), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
     if instrumented:
         environment["RSI_TIMING_ROOT"] = str(output)
     else:
         environment.pop("RSI_TIMING_ROOT", None)
-    save(output / "command.json", {"command": command, "instrumented": instrumented, "speculation": speculation,
-                                   "purpose": "synthetic timing diagnostics; not AgentX accuracy scoring"})
+    save(
+        output / "command.json",
+        {
+            "command": command,
+            "instrumented": instrumented,
+            "speculation": speculation,
+            "purpose": "synthetic timing diagnostics; not AgentX accuracy scoring",
+        },
+    )
     stop = threading.Event()
     sampler = None
     process = None
     started = time.monotonic()
     with (output / "server.log").open("w") as log:
         try:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                       env=environment, start_new_session=True)
+            process = subprocess.Popen(
+                command, stdout=log, stderr=subprocess.STDOUT, env=environment, start_new_session=True
+            )
             ready_deadline = min(deadline - 120, time.monotonic() + 1200)
             while True:
                 if process.poll() is not None or time.monotonic() >= ready_deadline:
@@ -81,9 +128,21 @@ def control(root, model, deadline, instrumented, speculation):
                     time.sleep(2)
             sampler = threading.Thread(target=sample, args=(url, output / "server-metrics.jsonl", stop), daemon=True)
             sampler.start()
-            subprocess.run([sys.executable, str(code / "probe.py"), "--url", url, "--model", str(model),
-                            "--output", str(output / "client")], check=True, timeout=max(1, deadline - time.monotonic() - 90),
-                           env=environment)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(code / "probe.py"),
+                    "--url",
+                    url,
+                    "--model",
+                    str(model),
+                    "--output",
+                    str(output / "client"),
+                ],
+                check=True,
+                timeout=max(1, deadline - time.monotonic() - 90),
+                env=environment,
+            )
             save(output / "completion.json", {"status": "completed", "elapsed_seconds": time.monotonic() - started})
         finally:
             stop.set()
@@ -108,13 +167,23 @@ def main():
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
     deadline = time.monotonic() + args.seconds
     args.output.mkdir(parents=True, exist_ok=False)
-    save(args.output / "runtime.json", {"sglang": importlib.metadata.version("sglang"),
-         "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
-         "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
-         "source_files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob("*.py")}})
+    save(
+        args.output / "runtime.json",
+        {
+            "sglang": importlib.metadata.version("sglang"),
+            "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
+            "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
+            "source_files": {
+                p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob("*.py")
+            },
+        },
+    )
     control(args.output, args.model, deadline, False, True)
-    subprocess.run([sys.executable, str(Path(__file__).with_name("instrument.py"))], check=True,
-                   stdout=(args.output / "instrumentation.json").open("x"))
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("instrument.py"))],
+        check=True,
+        stdout=(args.output / "instrumentation.json").open("x"),
+    )
     control(args.output, args.model, deadline, True, True)
     control(args.output, args.model, deadline, True, False)
     save(args.output / "completion.json", {"status": "completed"})

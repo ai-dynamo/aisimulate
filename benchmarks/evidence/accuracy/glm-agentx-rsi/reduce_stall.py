@@ -15,19 +15,38 @@ def run(template, root, predictor, name, arrival=None):
     output = root / name
     output.mkdir(parents=True, exist_ok=False)
     rows = [
-        {"request_id": "warm-prefix", "timestamp": 0, "input_length": 287424,
-         "output_length": 1, "hash_ids": list(range(4491))},
-        {"request_id": "victim", "timestamp": 100000, "input_length": 640,
-         "output_length": 23, "hash_ids": list(range(10000, 10010))},
+        {
+            "request_id": "warm-prefix",
+            "timestamp": 0,
+            "input_length": 287424,
+            "output_length": 1,
+            "hash_ids": list(range(4491)),
+        },
+        {
+            "request_id": "victim",
+            "timestamp": 100000,
+            "input_length": 640,
+            "output_length": 23,
+            "hash_ids": list(range(10000, 10010)),
+        },
     ]
     if arrival is not None:
-        rows.append({"request_id": "long-prefill", "timestamp": arrival, "input_length": 361344,
-                     "output_length": 8, "hash_ids": list(range(5646))})
+        rows.append(
+            {
+                "request_id": "long-prefill",
+                "timestamp": arrival,
+                "input_length": 361344,
+                "output_length": 8,
+                "hash_ids": list(range(5646)),
+            }
+        )
     trace = output / "trace.jsonl"
     trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
     config = copy.deepcopy(template)
-    config["traffic"] = {"source": {"type": "trace", "format": "mooncake", "block_size": 64,
-                                    "paths": [str(trace.resolve())]}, "load": {"type": "trace_timestamps"}}
+    config["traffic"] = {
+        "source": {"type": "trace", "format": "mooncake", "block_size": 64, "paths": [str(trace.resolve())]},
+        "load": {"type": "trace_timestamps"},
+    }
     path = output / "input.json"
     path.write_text(json.dumps(config, indent=2) + "\n")
     subprocess.run([sys.executable, str(predictor), str(path), str(output)], check=True, timeout=600)
@@ -37,8 +56,19 @@ def run(template, root, predictor, name, arrival=None):
     native = json.loads((output / "native.json").read_text())
     requests = native["telemetry"]["requests"]
     victim = next(row for row in requests if row["input_length"] == 640 and row["output_length"] == 23)
-    return {key: victim.get(key) for key in ("arrival_time_ms", "first_token_ms", "last_token_ms", "itl_ms",
-                                           "ttft_ms", "input_length", "output_length", "terminal_status")}
+    return {
+        key: victim.get(key)
+        for key in (
+            "arrival_time_ms",
+            "first_token_ms",
+            "last_token_ms",
+            "itl_ms",
+            "ttft_ms",
+            "input_length",
+            "output_length",
+            "terminal_status",
+        )
+    }
 
 
 def main():
@@ -51,8 +81,13 @@ def main():
     standalone = run(config, args.output, args.predictor, "standalone")
     overlapping = run(config, args.output, args.predictor, "overlap", standalone["first_token_ms"] + 1)
     separated = run(config, args.output, args.predictor, "separated", standalone["last_token_ms"] + 1)
-    result = {"schema": "aisimulate.glm-rsi.overlap-control.v1", "purpose": "diagnostic, not benchmark accuracy",
-              "standalone": standalone, "overlap": overlapping, "separated": separated}
+    result = {
+        "schema": "aisimulate.glm-rsi.overlap-control.v1",
+        "purpose": "diagnostic, not benchmark accuracy",
+        "standalone": standalone,
+        "overlap": overlapping,
+        "separated": separated,
+    }
     (args.output / "comparison.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

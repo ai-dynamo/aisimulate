@@ -73,11 +73,16 @@ def fixed_rows(root, variant, point):
             raise ValueError("Lost frozen request identity")
         if not actual["reference_output_tokens"] == row["simulated_output_tokens"] == row["reference_output_tokens"]:
             raise ValueError("Frozen output length mismatch")
-        rows.append({
-            "key": list(source_key(actual)),
-            **{f"{side}_{metric}_ms": row[f"{field}_{metric}_ms"]
-               for metric in METRICS for side, field in (("silicon", "reference"), ("predicted", "simulated"))},
-        })
+        rows.append(
+            {
+                "key": list(source_key(actual)),
+                **{
+                    f"{side}_{metric}_ms": row[f"{field}_{metric}_ms"]
+                    for metric in METRICS
+                    for side, field in (("silicon", "reference"), ("predicted", "simulated"))
+                },
+            }
+        )
     return rows, {"baseline_sha256": sha(baseline), "prediction_sha256": sha(path)}
 
 
@@ -104,15 +109,29 @@ def freeze(public, fixed, output):
             rows, hashes = fixed_rows(fixed, variant, point)
             cohorts[identity][variant] = rows
             variants[variant] = {"metrics": metrics(rows), **hashes}
-        groups.append({"id": identity, "lanes": lanes, "detail_sha256": sha(detail_path),
-                       "coverage": detail["coverage"], "dashboard": actual, "pr665": variants})
+        groups.append(
+            {
+                "id": identity,
+                "lanes": lanes,
+                "detail_sha256": sha(detail_path),
+                "coverage": detail["coverage"],
+                "dashboard": actual,
+                "pr665": variants,
+            }
+        )
     pooled = {}
     for variant in ("dashboard", "fresh-main", "fresh-plus-glm"):
         pooled[variant] = metrics([row for group in cohorts.values() for row in group[variant]])
     private = {"schema": "aisimulate.glm-rsi.cohorts.v1", "snapshot": summary["snapshot"], "cohorts": cohorts}
     write(output / "frozen-cohorts.json", private)
-    audit = {"schema": "aisimulate.glm-rsi.audit.v1", "status": "verified", "snapshot": summary["snapshot"],
-             "cohorts_sha256": sha(output / "frozen-cohorts.json"), "points": groups, "pooled": pooled}
+    audit = {
+        "schema": "aisimulate.glm-rsi.audit.v1",
+        "status": "verified",
+        "snapshot": summary["snapshot"],
+        "cohorts_sha256": sha(output / "frozen-cohorts.json"),
+        "points": groups,
+        "pooled": pooled,
+    }
     write(output / "baseline-audit.json", audit)
     return audit
 
@@ -151,12 +170,18 @@ def compare_dashboard(frozen, candidate):
                 continue
             if other[f"silicon_{metric}_ms"] != row[f"silicon_{metric}_ms"]:
                 raise ValueError("Silicon changed inside a frozen comparison")
-            expected = 100 * abs(other[f"predicted_{metric}_ms"] - other[f"silicon_{metric}_ms"]) / other[f"silicon_{metric}_ms"]
+            expected = (
+                100
+                * abs(other[f"predicted_{metric}_ms"] - other[f"silicon_{metric}_ms"])
+                / other[f"silicon_{metric}_ms"]
+            )
             if not math.isclose(expected, other[field], rel_tol=1e-10, abs_tol=1e-10):
                 raise ValueError("Candidate APE does not reconcile")
             selected.append(other)
         result[metric] = {
-            "frozen_count": len(baseline), "retained_count": len(selected), "lost_count": len(missing),
+            "frozen_count": len(baseline),
+            "retained_count": len(selected),
+            "lost_count": len(missing),
             "baseline_sum_ape": sum(row[field] for row in baseline),
             "candidate_sum_ape": sum(row[field] for row in selected),
             "baseline_mape_percent": statistics.mean(row[field] for row in baseline) if baseline else None,

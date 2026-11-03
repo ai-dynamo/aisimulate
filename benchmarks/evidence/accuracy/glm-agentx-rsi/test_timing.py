@@ -5,7 +5,20 @@
 import json
 from types import SimpleNamespace
 
+import pytest
 import rsi_timing
+from instrument import inject
+
+
+def test_both_output_layouts_require_one_known_interface():
+    for owner in ("SchedulerOutputStreamer", "SchedulerOutputProcessorMixin"):
+        source = f"class {owner}:\n    def stream_output(self, reqs, return_logprob):\n        pass\n"
+        modified = inject(source)
+        assert modified.count('__import__("rsi_timing").record(reqs)') == 1
+        with pytest.raises(ValueError, match="already instrumented"):
+            inject(modified)
+    with pytest.raises(ValueError, match="Unexpected"):
+        inject("class Unknown: pass\n")
 
 
 def test_probe_records_numerical_transitions_and_ignores_other_requests(tmp_path, monkeypatch):

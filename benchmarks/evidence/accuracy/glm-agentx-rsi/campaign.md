@@ -267,3 +267,40 @@ The runtime probe records distributed rank when available, keeping unknown ranks
 explicit. Completed derived corpus copies are removed only after their checksums
 are recorded; frozen source corpora, observed-output substitutions and numerical
 results remain retained and reproduce them exactly.
+
+## E007 — One-factor attribution of the upstream baseline improvement
+
+**Hypothesis.** Upstream #406, rather than the other intervening main changes,
+accounts for the observed development-point difference from the dashboard.
+
+**Experiment.** Revert only commit `2be6a124f8310d35f0fa46c585b8c79ef56b01eb`
+from the research baseline, rebuild its own wheel, and rerun lanes 1/8/14 with
+identical #665 data and frozen inputs. Retain every baseline metric observation.
+
+**Conclusion — confirmed commit-level effect on development cohorts.** The reverted
+wheel exactly reproduces the historical dashboard TTFT/TPOT scores on all three
+development points, retaining 4169 TTFT and 4166 TPOT observations. #406 therefore
+explains the observed development-point change. Its lookup-slice and extrapolation
+subchanges were not separately ablated, and this does not establish same-version
+silicon accuracy or universal regression freedom.
+
+## E009 — Deterministic replay repeat
+
+**Hypothesis.** The C14 improvement is larger than native replay variability.
+
+**Experiment.** Rerun the same current-main wheel, data, configuration and seed in
+a fresh process. Compare all scored request pairs, not just aggregate averages.
+
+**Conclusion — verified for this repeat.** Every scored C14 pair and both MAPEs
+are exactly identical. This establishes zero observed replay variation for this
+control; it does not measure GPU repeat variability.
+
+## Preflight failures retained
+
+CPU job 1002543 failed before any GPU allocation because this pinned image uses
+`SchedulerOutputProcessorMixin`, not the newer output-streamer file layout. GPU
+reservation 1002644 was canceled by its failed dependency with zero elapsed time.
+The hook now checks both known module layouts and requires exactly one matching
+`stream_output(reqs, ...)` interface; duplicate/instrumented/unknown interfaces
+fail explicitly. Independent preflight retry: 1002662. Six audit/hook tests and
+two native/chat projection tests pass. The CPU failures consume no GPU budget.

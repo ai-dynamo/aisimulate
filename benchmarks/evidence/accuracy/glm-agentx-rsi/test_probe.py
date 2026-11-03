@@ -13,7 +13,7 @@ import probe
 def test_native_stream_preserves_counts_and_drops_text(monkeypatch):
     wire = b'data: {"text":"private text","meta_info":{"completion_tokens":1}}\n\n'
     wire += b'data: {"text":"private text","meta_info":{"completion_tokens":4}}\n\n'
-    wire += b'data: [DONE]\n\n'
+    wire += b"data: [DONE]\n\n"
     monkeypatch.setattr(probe, "call", lambda *_: io.BytesIO(wire))
     first = threading.Event()
     result = probe.request("http://test", "rsi-test", [3], 4, threading.Barrier(1), first)
@@ -29,7 +29,9 @@ def test_chat_projection_retains_usage_and_reasoning_boundary_without_content(mo
             return io.BytesIO(b"true")
         payload = {"choices": [{"delta": {"reasoning_content": "private reasoning"}}]}
         usage = {"choices": [], "usage": {"prompt_tokens": 8192, "completion_tokens": body["max_tokens"]}}
-        return io.BytesIO(("data: " + json.dumps(payload) + "\n\ndata: " + json.dumps(usage) + "\n\ndata: [DONE]\n\n").encode())
+        return io.BytesIO(
+            ("data: " + json.dumps(payload) + "\n\ndata: " + json.dumps(usage) + "\n\ndata: [DONE]\n\n").encode()
+        )
 
     monkeypatch.setattr(probe, "call", response)
     output = io.StringIO()

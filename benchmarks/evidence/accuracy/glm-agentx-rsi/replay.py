@@ -29,8 +29,8 @@ def main():
     parser.add_argument("--max-sequences", type=int)
     args = parser.parse_args()
     sys.path.insert(0, str(args.tooling))
-    from scripts.e2e_accuracy.run_agentx_accuracy import artifact, normalize_native, prepare_trace
     from scripts.e2e_accuracy.agentx_contract import native_completion_qualified, score
+    from scripts.e2e_accuracy.run_agentx_accuracy import artifact, normalize_native, prepare_trace
 
     catalog = read(args.inputs / "catalog/e2e/agentx.json")
     for lanes in args.lanes:
@@ -46,11 +46,23 @@ def main():
         trace = directory / "traces.jsonl"
         with trace.open("rb") as stream:
             trace_sha = hashlib.file_digest(stream, "sha256").hexdigest()
-        command = [sys.executable, str(args.tooling / "scripts/e2e_accuracy/agentx_predict.py"), str(path), str(directory)]
+        command = [
+            sys.executable,
+            str(args.tooling / "scripts/e2e_accuracy/agentx_predict.py"),
+            str(path),
+            str(directory),
+        ]
         start = time.monotonic()
-        execution = {"status": "running", "command": command, "config_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                     "derived_trace": {"sha256": trace_sha, "bytes": trace.stat().st_size,
-                                       "retention": "Regenerate from retained frozen HF trace and observed-output overrides"}}
+        execution = {
+            "status": "running",
+            "command": command,
+            "config_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "derived_trace": {
+                "sha256": trace_sha,
+                "bytes": trace.stat().st_size,
+                "retention": "Regenerate from retained frozen HF trace and observed-output overrides",
+            },
+        }
         write(directory / "execution.json", execution)
         with (directory / "replay.log").open("w") as stream:
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=1800, check=False)
@@ -64,10 +76,15 @@ def main():
         if not native_completion_qualified(native, run["boundary"]):
             raise RuntimeError("Native completion did not qualify")
         observations = read(artifact(args.inputs, run, "observations"))
-        scores = score(observations, normalize_native(native, observations, run["category"], run["boundary"]), run["boundary"])
+        scores = score(
+            observations, normalize_native(native, observations, run["category"], run["boundary"]), run["boundary"]
+        )
         write(directory / "score.json", scores)
         trace.unlink()
-        print(json.dumps({"id": run["id"], "metrics": scores["request_errors"], "coverage": scores["coverage"]}), flush=True)
+        print(
+            json.dumps({"id": run["id"], "metrics": scores["request_errors"], "coverage": scores["coverage"]}),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
