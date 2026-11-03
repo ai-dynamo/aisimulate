@@ -207,6 +207,8 @@ then encodes the full text without a thread offload. Its source SHA256 is
 `047e4391dc87816a62da34392eea9379fcb1f93025e70c3b327de8b596f59b09`.
 An optional timer retains stage duration, input count and a little-endian u32
 token digest; it records projection cost separately and retains no text/arrays.
+The local template explicitly requests `return_dict=False`, matching the server's
+list-of-token-IDs contract across Transformers releases.
 Join exactly one stage inside each chat request and require its digest to match
 the native input. Missing/ambiguous stage, token or cache evidence disqualifies
 the comparison. Use `analyze_timing.py --suite frontend` for independent checks.

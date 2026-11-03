@@ -114,7 +114,7 @@ def main():
             text = tokenizer.decode((seed * (size // len(seed) + 1))[:size])
             messages = [{"role": "user", "content": text}]
             began = time.monotonic_ns()
-            ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+            ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=False)
             tokenize_ms = (time.monotonic_ns() - began) / 1e6
             prefix = (len(ids) // 64 - 1) * 64
             digest = token_digest(ids)
