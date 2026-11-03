@@ -2,11 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """Synthetic producer records cover omissions that aggregate metrics hide."""
 
+import hashlib
 import json
 
 import pytest
 
 from normalize import add_stream_observations, metric, reference_row, retain_cancelled_accounting
+from collect import qualified_pilot
+
+
+def test_resume_requires_checksum_pinned_successful_pilot(tmp_path):
+    path = tmp_path / "pilot.json"
+    path.write_text(json.dumps({"schema": "aisimulate.qwen-weka.pilot-qualification.v1", "status": "qualified"}))
+    checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert qualified_pilot(path, checksum)["status"] == "qualified"
+    path.write_text(json.dumps({"schema": "aisimulate.qwen-weka.pilot-qualification.v1", "status": "failed"}))
+    with pytest.raises(ValueError, match="checksum"):
+        qualified_pilot(path, checksum)
+    with pytest.raises(ValueError, match="did not qualify"):
+        qualified_pilot(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def metadata(identity="a", phase="profiling", **changes):

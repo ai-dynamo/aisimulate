@@ -24,6 +24,16 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
+def qualified_pilot(path, checksum):
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != checksum:
+        raise ValueError("Qualified pilot checksum differs")
+    receipt = json.loads(content)
+    if receipt.get("schema") != "aisimulate.qwen-weka.pilot-qualification.v1" or receipt.get("status") != "qualified":
+        raise ValueError("Pilot did not qualify")
+    return receipt
+
+
 def poll_metrics(output, stop):
     with output.open("x") as stream:
         while not stop.is_set():
@@ -208,8 +218,13 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--model", type=Path, default=Path("/model"))
     parser.add_argument("--pilot-only", action="store_true")
+    parser.add_argument("--qualified-pilot", type=Path)
+    parser.add_argument("--qualified-pilot-sha256")
     parser.add_argument("--budget-seconds", type=int, default=8 * 3600)
     args = parser.parse_args()
+    if bool(args.qualified_pilot) != bool(args.qualified_pilot_sha256) or (args.pilot_only and args.qualified_pilot):
+        parser.error("Resume requires both pilot receipt and checksum, without --pilot-only")
+    prior = qualified_pilot(args.qualified_pilot, args.qualified_pilot_sha256) if args.qualified_pilot else None
     args.root.mkdir(exist_ok=False)
     gpus = subprocess.check_output(
         ["nvidia-smi", "--query-gpu=name,uuid,memory.total,driver_version", "--format=csv,noheader"], text=True
@@ -244,6 +259,7 @@ def main():
         {
             "gpu_budget_seconds": args.budget_seconds,
             "job_id": os.getenv("SLURM_JOB_ID"),
+            "qualified_pilot_sha256": args.qualified_pilot_sha256,
             "code": {
                 p.relative_to(code).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in code.rglob("*")
@@ -251,11 +267,15 @@ def main():
             },
         },
     )
-    run(args.root, code, client, args.model, 14, 600, deadline, pilot=True)
-    print("PILOT_COLLECTION_COMPLETE", flush=True)
-    if args.pilot_only:
-        return
     gate = args.root / "PILOT_QUALIFIED.json"
+    if prior is not None:
+        write(gate, prior)
+        print("RESUMING_QUALIFIED_PILOT", flush=True)
+    else:
+        run(args.root, code, client, args.model, 14, 600, deadline, pilot=True)
+        print("PILOT_COLLECTION_COMPLETE", flush=True)
+        if args.pilot_only:
+            return
     while not gate.exists():
         if time.monotonic() > deadline - 6 * 3600 - 300:
             raise TimeoutError("Pilot qualification did not leave room for six full profiles")

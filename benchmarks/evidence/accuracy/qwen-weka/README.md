@@ -110,6 +110,14 @@ commit. Retain that comparison as `collector-source.json` beside `execution.json
 normalization carries this receipt into HF when present. Prediction provenance
 records its separately evaluated wheel and commit.
 
+To resume the six full profiles in a new allocation, set `QUALIFIED_PILOT` to
+the retained successful qualification receipt and `QUALIFIED_PILOT_SHA256` to its
+reviewed checksum. The batch wrapper passes these as `--qualified-pilot` and
+`--qualified-pilot-sha256`; the collector rejects changed or failed receipts,
+records the checksum, and skips repeating the pilot. Subtract every prior GPU
+allocation from the original eight-node-hour budget before submission. Keep
+the earlier failed qualification and corrected receipt as separate evidence.
+
 ## Normalization and HF
 
 `normalize.py --prepare-corpus` verifies the original checksum and emits the
