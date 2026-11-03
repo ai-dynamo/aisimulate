@@ -260,6 +260,8 @@ def make_scheduler(module, tmp_path, points):
     s._glm_request_set = "test"
     s._glm_tokens = list(range(100, 197))
     s._glm_serving = {"hash_block_size": 4}
+    # vLLM's scheduler configuration with the token budget of the onboarding request, not an unlimited one.
+    s.scheduler_config = types.SimpleNamespace(max_num_batched_tokens=8192)
     s._glm_stage_deadline = 0.0
     s.wall = lambda output: 0.001 * (1 + output.metrics.num_prefill_requests) + 1e-6 * s.clock
     return s
@@ -489,6 +491,46 @@ def test_explicit_decode_points_stay_within_the_producer_batch_limit(monkeypatch
     with pytest.raises(ValueError) as refused:
         build(33)
     assert str(refused.value) == "GLM-5.3-Flash decode batch 33 exceeds the producer limit 32"
+
+
+def test_explicit_decode_points_prefill_their_suffixes_in_one_step(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(batch_size, budget=None):
+        points = [Point("decode", 1, batch_size, 0, batch_size * 4096)]
+        s = make_scheduler(module, tmp_path, points)
+        # The native hash block of GLM-5.3-Flash at TP4. Each 4,095-token prompt has a seed of 2,176 tokens, so each
+        # request prefills 1,919 tokens before its first decode step.
+        s._glm_serving = {"hash_block_size": 2176}
+        if budget is not None:
+            s.scheduler_config.max_num_batched_tokens = budget
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    accepted = build(4)
+    assert accepted.scheduler_config.max_num_batched_tokens == 8192
+    assert [point.batch_size for point in accepted._bench_grid] == [4]
+    # vLLM would prefill the suffixes of eight requests over two steps, so no repetition would start with the decode
+    # step of all eight requests, and the producer refuses the point before it seeds anything.
+    with pytest.raises(ValueError) as refused:
+        build(8)
+    assert str(refused.value) == (
+        "GLM-5.3-Flash decode point of 8 requests at context 4096 needs 15352 suffix tokens in one step, "
+        "above the token budget 8192"
+    )
+    # The budget is the one that vLLM's scheduler configuration holds.
+    assert [point.batch_size for point in build(8, budget=16384)._bench_grid] == [8]
+    with pytest.raises(ValueError) as refused:
+        build(2, budget=3836)
+    assert str(refused.value) == (
+        "GLM-5.3-Flash decode point of 2 requests at context 4096 needs 3838 suffix tokens in one step, "
+        "above the token budget 3836"
+    )
+    # One request may prefill its suffix over several steps, because no other request can decode before it.
+    assert [point.batch_size for point in build(1, budget=1024)._bench_grid] == [1]
 
 
 def hub_stand_in(monkeypatch, cached):

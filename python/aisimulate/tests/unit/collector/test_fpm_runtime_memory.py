@@ -1609,7 +1609,7 @@ def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
     assert plan.options.benchmark_points_origin == "glm53flash_grid_v1"
     assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
     assert saved["point_generation"]["source"] == "generated_glm53flash_grid"
-    assert saved["point_generation"]["planned_point_count"] == 592
+    assert saved["point_generation"]["planned_point_count"] == 577
     assert saved["point_generation"]["manifest_sha256"] == digest
     assert saved["options"]["benchmark_points"]["origin"] == "glm53flash_grid_v1"
     # The plan hash covers the list and its origin, so a saved plan validates and a second build reproduces it.
@@ -1994,7 +1994,7 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
         assert len(json.loads(full)["prefill"]) == 496
         assert runner._configured_sampling_metadata(plan, cell, smoke=False) == {
             "benchmark_points_sha256": plan.options.benchmark_points_sha256,
-            "requested_point_count": {"prefill": 496, "decode": 96}[cell.workload_kind],
+            "requested_point_count": {"prefill": 496, "decode": 81}[cell.workload_kind],
             "benchmark_points_origin": "glm53flash_grid_v1",
             **policy,
         }
@@ -2114,12 +2114,14 @@ def test_glm_smoke_of_a_decode_role_stages_its_two_decode_points(tmp_path):
     directory.mkdir()
     [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
     subset = path.read_bytes()
+    # The budget of 32 tokens cannot prefill the suffixes of two requests above one hash block in one step, so the list
+    # has one request there, and the smoke takes one request at each of the two smallest contexts above the block.
     assert json.loads(subset) == {
         "schema_version": 3,
         "prefill": [],
         "decode": [
             {"batch_size": 1, "total_kv_read_tokens": 4096},
-            {"batch_size": 2, "total_kv_read_tokens": 8192},
+            {"batch_size": 1, "total_kv_read_tokens": 8192},
         ],
     }
     assert all(point in frozen["decode"] for point in json.loads(subset)["decode"])

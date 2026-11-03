@@ -520,11 +520,31 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                     raise ValueError(
                         f"GLM-5.3-Flash decode batch {point.batch_size} exceeds the producer limit {MAX_BATCH}"
                     )
+                # A repetition prefills each prompt beyond its cached seed, and it is accepted only if its first decode
+                # step holds every request. vLLM v0.31.0 schedules at most max_num_batched_tokens tokens in one step
+                # (scheduler.py:585, :1073, :1313-1314). The suffixes of two or more requests above that budget spread
+                # over several steps, so every repetition is rejected: the cached prefix cannot grow beyond the seed.
+                # One request may prefill its suffix over several steps (scheduler.py:468-480), because no other request
+                # can decode before it.
+                budget = self.scheduler_config.max_num_batched_tokens
+                prompts = [self._glm_decode_prompt(context) for context in contexts]
+                total = sum(prompt - self._glm_decode_seed(prompt, unit) for prompt in prompts)
+                if point.batch_size > 1 and total > budget:
+                    context = contexts[0] if len(set(contexts)) == 1 else contexts
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode point of {point.batch_size} requests at context {context} needs "
+                        f"{total} suffix tokens in one step, above the token budget {budget}"
+                    )
 
     @staticmethod
     def _glm_decode_prompt(context):
         """The prompt precedes one sampled token and the measured second decode step."""
         return context - 1
+
+    @staticmethod
+    def _glm_decode_seed(prompt, unit):
+        """Largest hit-aligned prefix strictly shorter than the prompt."""
+        return (prompt - 1) // unit * unit
 
     def _glm_decode_step(self, context):
         """1-based pure decode step whose per-request KV read equals ``context``."""
@@ -694,8 +714,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 "prompt": prompt_lengths,
                 "measured_decode_step": self._glm_decode_step(contexts[0]),
             }
-            # Largest hit-aligned prefix strictly shorter than the prompt.
-            seed_lengths = [(length - 1) // unit * unit for length in prompt_lengths]
+            seed_lengths = [self._glm_decode_seed(length, unit) for length in prompt_lengths]
             reason = DECODE_REAL_KV_REASON
         if reason is not None and reason not in point.sample_reasons:
             point.sample_reasons.append(reason)

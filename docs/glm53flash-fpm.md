@@ -85,6 +85,13 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   whose per-request length exceeds the measured context.
 - The producer refuses a point of more than 32 requests, the batch limit that
   its artifact states.
+- Before a decode point decodes, each request prefills its prompt beyond its
+  cached seed. The producer refuses a decode point of two or more requests whose
+  suffixes together exceed `--max-num-batched-tokens`. If they exceed it, vLLM
+  prefills them over several steps. The first decode step then does not hold
+  every request, and the producer rejects every repetition. One request can
+  prefill its suffix over several steps, because no other request decodes
+  before it.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
@@ -179,14 +186,20 @@ prefix and decode context. These are the axes:
   context.
 - Decode context per request: the powers of two from 4 to the measured context,
   and the measured context itself.
-- Decode requests per batch: the powers of two up to the smaller of 32 and
-  `max_batch_size`, and that value itself.
+- Decode requests per batch: the powers of two up to the smallest of 32,
+  `max_batch_size` and the number of requests whose suffixes fit the budget,
+  and that smallest value itself. The suffix of a request is the part of its
+  prompt beyond its seed, `(c - 1) - (c - 2) // hash_block * hash_block`
+  tokens. If the suffixes of a batch fit the budget together, vLLM prefills
+  them in one step, and the first decode step holds every request. The axis
+  always holds a batch of one request. If its suffix exceeds the budget, vLLM
+  prefills it over several steps, and no other request decodes before it.
 
 The planner drops a point that does not fit the accepted cache capacity, and
 it logs the number of dropped points of each phase. It refuses a plan with no
 prefill point or no decode point. At TP4 with 2,176-token
 hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
-list has 496 prefill points and 96 decode points. That needs an accepted cache
+list has 496 prefill points and 81 decode points. That needs an accepted cache
 of at least 2,113 pool blocks (the profile's `kv_cache_bytes` divided by its
 largest `page_size_bytes`).
 

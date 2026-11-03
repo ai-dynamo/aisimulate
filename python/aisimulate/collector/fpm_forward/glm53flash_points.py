@@ -67,8 +67,10 @@ def glm_point_manifest(
 
     Every point meets the producer's rules. Prefixes are whole hash blocks. New-token and prefix lengths are multiples
     of 4. Prefix plus new tokens stay within the measured context. The new tokens of a batch fit the token budget, so
-    each request's suffix runs in one step. The producer divides a total evenly, so every request of a point gets the
-    same prefix, the same new tokens and the same decode context.
+    each request's suffix runs in one step. Before a decode batch decodes, each request prefills its prompt beyond its
+    cached seed. These suffixes of a batch of two or more requests fit the token budget too, so every request decodes
+    in the same step. The producer divides a total evenly, so every request of a point gets the same prefix, the same
+    new tokens and the same decode context.
     """
     if token_budget % CHUNK_ALIGN or hash_block_size % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
@@ -85,6 +87,12 @@ def glm_point_manifest(
     def batch_sizes(limit: int) -> list[int]:
         return sorted({*_powers_of_two_up_to(limit), limit})
 
+    def decode_suffix(context: int) -> int:
+        # The producer's decode prompt (_glm_decode_prompt) has context - 1 tokens. Its seed (_glm_decode_seed) is the
+        # largest whole hash block prefix strictly shorter than the prompt, so a repetition prefills the rest.
+        prompt = context - 1
+        return prompt - (prompt - 1) // unit * unit
+
     new_tokens = {budget, *range(unit, budget + 1, unit)}
     new_tokens.update(value for value in _powers_of_two_up_to(budget) if value >= CHUNK_ALIGN)
     prefill = []
@@ -100,16 +108,23 @@ def glm_point_manifest(
                 if fits(batch, rung * unit + new)
             )
     contexts = {measured, *(value for value in _powers_of_two_up_to(measured) if value >= MIN_CONTEXT)}
-    decode_batches = batch_sizes(min(MAX_BATCH, decode_batch_limit))
+    # The producer accepts a decode repetition only if its first decode step holds every request. vLLM prefills the
+    # suffixes of two or more requests in one step only if they fit the token budget together, so the budget bounds the
+    # batch at each context. One request may prefill its suffix over several steps, because no other request can decode
+    # before it.
+    decode_batches = {
+        context: batch_sizes(min(MAX_BATCH, decode_batch_limit, max(1, budget // decode_suffix(context))))
+        for context in sorted(contexts)
+    }
     decode = [
         {"batch_size": batch, "total_kv_read_tokens": batch * context}
-        for context in sorted(contexts)
-        for batch in decode_batches
+        for context, batches in decode_batches.items()
+        for batch in batches
         if fits(batch, context)
     ]
     # The capacity rule removes points before any is queued, so a removal is never silent: one line counts the dropped
     # points of each phase, also when there are none.
-    decode_candidates = len(contexts) * len(decode_batches)
+    decode_candidates = sum(len(batches) for batches in decode_batches.values())
     logger.info(
         "GLM-5.3-Flash points: dropped %d/%d prefill and %d/%d decode cases (cache capacity, usable_blocks=%d)",
         prefill_candidates - len(prefill),

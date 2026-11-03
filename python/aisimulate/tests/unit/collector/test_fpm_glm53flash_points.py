@@ -50,12 +50,12 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
     prefill, decode = payload["prefill"], payload["decode"]
 
     assert payload["schema_version"] == 3
-    assert (len(prefill), len(decode)) == (496, 96)
+    assert (len(prefill), len(decode)) == (496, 81)
     # The count is logged when the cache holds every candidate, too.
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 0/496 prefill and 0/96 decode cases (cache capacity, usable_blocks=13814)",
+            "GLM-5.3-Flash points: dropped 0/496 prefill and 0/81 decode cases (cache capacity, usable_blocks=13814)",
         )
     ]
     assert sorted({point["total_prefill_tokens"] // point["batch_size"] for point in prefill}) == [
@@ -81,7 +81,7 @@ def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
     assert prefill[0] == {"batch_size": 1, "total_prefill_tokens": 4, "total_kv_read_tokens": 0}
     assert prefill[-1] == {"batch_size": 1, "total_prefill_tokens": 8192, "total_kv_read_tokens": 121856}
     assert decode[0] == {"batch_size": 1, "total_kv_read_tokens": 4}
-    assert decode[-1] == {"batch_size": 32, "total_kv_read_tokens": 4194304}
+    assert decode[-1] == {"batch_size": 16, "total_kv_read_tokens": 2097152}
     # Prefill points ascend by per-request new tokens, batch size and prefix; decode points by context and batch size.
     prefill_keys = [
         (point["total_prefill_tokens"] // point["batch_size"], point["batch_size"], point["total_kv_read_tokens"])
@@ -111,6 +111,95 @@ def test_point_list_is_deterministic():
 
     assert first == second
     assert digest == hashlib.sha256(first.encode("utf-8")).hexdigest()
+
+
+# The decode batches of the TP4 list at each context. Before a batch decodes, each request prefills its prompt beyond
+# its cached seed, and the 8,192-token budget must hold these suffixes of the whole batch in one step.
+_TP4_DECODE_BATCHES = {
+    **{2**exponent: [1, 2, 4, 8, 16, 32] for exponent in range(2, 9)},
+    512: [1, 2, 4, 8, 16],
+    1024: [1, 2, 4, 8],
+    2048: [1, 2, 4],
+    4096: [1, 2, 4],
+    8192: [1, 2, 4],
+    16384: [1, 2, 4, 7],
+    32768: [1, 2, 4, 8, 16, 32],
+    65536: [1, 2, 4, 8, 16, 32],
+    131072: [1, 2, 4, 8, 16],
+}
+
+
+def _producer_suffix(producer, context: int, hash_block_size: int) -> int:
+    """The tokens that one request of a decode point prefills after its seed, from the producer's own functions."""
+    prompt = producer._glm_decode_prompt(context)
+    return prompt - producer._glm_decode_seed(prompt, hash_block_size)
+
+
+def _decode_batches(payload: dict) -> dict[int, list[int]]:
+    """The batch sizes of the decode points at each per-request context."""
+    batches: dict[int, list[int]] = {}
+    for point in payload["decode"]:
+        batches.setdefault(point["total_kv_read_tokens"] // point["batch_size"], []).append(point["batch_size"])
+    return batches
+
+
+def test_tp4_decode_batches_fit_the_one_step_suffix_prefill(monkeypatch):
+    producer = load_producer(monkeypatch).Glm53FlashPrefixSeedScheduler
+    payload, _, _ = glm_point_manifest(**_TP4)
+    batches = _decode_batches(payload)
+
+    assert batches == _TP4_DECODE_BATCHES
+    assert sum(len(sizes) for sizes in batches.values()) == 81
+    # vLLM prefills the suffixes of two or more requests in one step only if they fit the token budget together.
+    # Otherwise the first decode step never holds every request, and the producer rejects every repetition of the point.
+    for point in payload["decode"]:
+        context = point["total_kv_read_tokens"] // point["batch_size"]
+        assert point["batch_size"] * _producer_suffix(producer, context, 2176) <= 8192
+    # Each context takes the largest batch that the budget holds, up to the producer's limit of 32.
+    assert {context: max(sizes) for context, sizes in batches.items()} == {
+        context: min(32, 8192 // _producer_suffix(producer, context, 2176)) for context in batches
+    }
+
+
+@pytest.mark.parametrize(
+    ("hash_block_size", "token_budget", "measured_context"),
+    [
+        # The prompt at the measured context fills one hash block, so the seed is empty and the suffix is the block.
+        (2176, 8192, 2177),
+        # One position more: the seed is the whole block and the suffix is one token.
+        (2176, 8192, 2178),
+        # A hash block that does not divide the powers of two.
+        (96, 1024, 1000),
+        # One request's suffix at the measured context exceeds the budget. It prefills over several steps, and no other
+        # request can decode before it, so that context keeps the point of one request.
+        (2176, 2048, 2100),
+    ],
+)
+def test_decode_batches_follow_the_producer_suffix_rule(monkeypatch, hash_block_size, token_budget, measured_context):
+    module = load_producer(monkeypatch)
+    producer = module.Glm53FlashPrefixSeedScheduler
+    # The cache holds every candidate, so only the token budget bounds the batches.
+    limits = {
+        "hash_block_size": hash_block_size,
+        "token_budget": token_budget,
+        "measured_context": measured_context,
+        "kv_cache_bytes": 10**8 * 13_045_120,
+    }
+    payload, _, _ = glm_point_manifest(**{**_TP4, **limits})
+    budget = min(token_budget, module.MAX_NEW)
+
+    contexts = {measured_context, *(2**exponent for exponent in range(2, 18) if 2**exponent <= measured_context)}
+    expected = {}
+    for context in sorted(contexts):
+        suffix = _producer_suffix(producer, context, hash_block_size)
+        limit = min(module.MAX_BATCH, _TP4["decode_batch_limit"], max(1, budget // suffix))
+        expected[context] = sorted({*(2**exponent for exponent in range(6) if 2**exponent <= limit), limit})
+    assert _decode_batches(payload) == expected
+    # A point of two or more requests prefills all its suffixes in one step.
+    for point in payload["decode"]:
+        context = point["total_kv_read_tokens"] // point["batch_size"]
+        suffix = _producer_suffix(producer, context, hash_block_size)
+        assert point["batch_size"] == 1 or point["batch_size"] * suffix <= budget
 
 
 def test_smoke_subset_is_four_points_of_the_list(tmp_path):
@@ -277,15 +366,15 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
     payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 100 * 13_045_120})
     decode = payload["decode"]
 
-    assert len(decode) == 67
+    assert len(decode) == 63
     assert {"batch_size": 1, "total_kv_read_tokens": 131072} in decode
     assert {"batch_size": 2, "total_kv_read_tokens": 262144} not in decode
-    # The candidates are the 496 prefill and 96 decode points of the TP4 list. The rule keeps 314 and 67 of them.
+    # The candidates are the 496 prefill and 81 decode points of the TP4 list. The rule keeps 314 and 63 of them.
     assert len(payload["prefill"]) == 314
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 182/496 prefill and 29/96 decode cases (cache capacity, usable_blocks=99)",
+            "GLM-5.3-Flash points: dropped 182/496 prefill and 18/81 decode cases (cache capacity, usable_blocks=99)",
         )
     ]
 
@@ -300,7 +389,7 @@ def test_capacity_without_a_feasible_point_is_refused(caplog):
     assert _logged_lines(caplog) == [
         (
             logging.INFO,
-            "GLM-5.3-Flash points: dropped 496/496 prefill and 96/96 decode cases (cache capacity, usable_blocks=5)",
+            "GLM-5.3-Flash points: dropped 496/496 prefill and 81/81 decode cases (cache capacity, usable_blocks=5)",
         )
     ]
 
