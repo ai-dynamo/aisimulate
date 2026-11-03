@@ -340,3 +340,13 @@ the tested hook SHA256 is `9d2ec980b62603532fa29443f86eb0183a2951037405f4187afc3
 Launch help and client imports complete on CPU. The next GPU allocation remains
 bounded at two node-hours and must retain its own actual source hashes and runtime
 receipts; successful CPU preflight is not a claim of successful GPU serving.
+
+## First GPU allocation correction
+
+Job 1002810 was stopped during container startup before serving or measurements.
+The launch did not explicitly scope compile/tokenizer caches to campaign storage;
+that launch configuration is corrected and covered by a cache-location test.
+Charge 96 seconds through cleanup at eight reserved GPUs (768 GPU-seconds),
+conservatively including the longest Slurm cleanup record; parent elapsed was
+87 seconds. Remaining budget before the next reservation: 229632 GPU-seconds.
+No measured accuracy result is attributed to this canceled allocation.

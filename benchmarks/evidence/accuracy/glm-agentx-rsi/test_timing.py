@@ -5,10 +5,32 @@
 import json
 from types import SimpleNamespace
 
+import collect
 import instrument
 import pytest
 import rsi_timing
 from instrument import inject
+
+
+def test_launch_keeps_compilation_and_model_caches_inside_campaign(tmp_path, monkeypatch):
+    captured = {}
+
+    def failed_process(*args, **kwargs):
+        captured.update(kwargs["env"])
+        return SimpleNamespace(poll=lambda: 1)
+
+    monkeypatch.setattr(collect.subprocess, "Popen", failed_process)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        collect.control(tmp_path, tmp_path / "model", float("inf"), False, True)
+    for variable in (
+        "HF_HOME",
+        "HF_MODULES_CACHE",
+        "XDG_CACHE_HOME",
+        "TORCH_HOME",
+        "TRITON_CACHE_DIR",
+        "CUDA_CACHE_PATH",
+    ):
+        assert captured[variable].startswith(str(tmp_path / "cache") + "/")
 
 
 def test_editable_install_uses_package_origin_not_distribution_location(tmp_path, monkeypatch, capsys):

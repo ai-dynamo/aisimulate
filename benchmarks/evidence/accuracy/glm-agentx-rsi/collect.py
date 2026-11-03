@@ -93,6 +93,22 @@ def control(root, model, deadline, instrumented, speculation):
             "4",
         ]
     environment = dict(os.environ, PYTHONPATH=str(code), PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
+    for variable, directory in {
+        "HF_HOME": "hf",
+        "HF_HUB_CACHE": "hf/hub",
+        "HUGGINGFACE_HUB_CACHE": "hf/hub",
+        "HF_MODULES_CACHE": "hf-modules",
+        "XDG_CACHE_HOME": "xdg",
+        "TORCH_HOME": "torch",
+        "TORCH_EXTENSIONS_DIR": "torch-extensions",
+        "TORCHINDUCTOR_CACHE_DIR": "inductor",
+        "TRITON_CACHE_DIR": "triton",
+        "CUDA_CACHE_PATH": "cuda",
+        "FLASHINFER_WORKSPACE_BASE": "flashinfer",
+    }.items():
+        path = root / "cache" / directory
+        path.mkdir(parents=True, exist_ok=True)
+        environment[variable] = str(path)
     if instrumented:
         environment["RSI_TIMING_ROOT"] = str(output)
     else:
