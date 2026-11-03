@@ -1538,7 +1538,7 @@ explicit remaining GPU-seconds and campaign-root paths. Their synthetic controls
 never change the frozen benchmark headline scores. Update this record and the
 checkpoint after each meaningful experiment; preserve disproven conclusions.
 
-## E039 — causal shared frontend queue (predeclared)
+## H1/H6 follow-up — E039 causal shared frontend queue
 
 - **Hypothesis:** input tokenization on a single API process also blocks client
   output delivery. E037 supports this mechanism; E038 cannot test closed-loop
@@ -1612,3 +1612,38 @@ Rust integration suites pass 17+11 tests. The candidate remains frozen at
 `aa4c2aeab0050ad453295b9dff7c70cc80c29dab` in draft
 [PR #703](https://github.com/ai-dynamo/aisimulate/pull/703), verified by GitHub.
 Full CI was requested for that exact head. Flag-on development runs are pending.
+
+**E039 development conclusion: mechanism implemented; accuracy unqualified.**
+Independent arithmetic/native audit SHA256
+`be0ac561ae6c721e1f2bccefd7098f35add64975b26593862f940281f8860d0b`
+reconciles the frozen-cohort audit
+`14cdd10ccfe2fec979425827cd254caff4a4248091cf4b157d24c91dd066b52c`.
+
+| Lanes | Request TTFT MAPE | TTFT denominator / frozen | Request TPOT MAPE | TPOT denominator / frozen |
+|---|---:|---:|---:|---:|
+| 1 | 24.966650% | 324 / 324 | 18.892208% | 324 / 324 |
+| 8 | 32.580845% | 1410 / 1415 | 58.567341% | 1408 / 1413 |
+| 14 | 100.923799% | 2428 / 2430 | 77.238898% | 2427 / 2429 |
+| Pooled | 71.857561% | 4162 / 4169 | 66.372372% | 4159 / 4166 |
+
+The seven lost frozen observations per metric include E034's five and one
+additional loss each at C8/C14. No original frozen observation is recovered;
+two C8 scored observations outside the frozen set remain reported separately.
+Four C8 and ten C14 zero TPOT predictions remain valid 100% APEs. Every measured
+request, preparation exclusion and failed/missing outcome remains in accounting.
+All profiles complete natively with no canceled or unsettled client/server work.
+
+On the same retained identities, admission-only E034 versus causal shared
+delivery changes TTFT **56.603504→71.857561% /4162** and TPOT
+**71.755951→66.372372% /4159**. Thus response feedback matters and the delivery-only
+E038 result cannot stand in for causal replay. Relative to the frozen research
+baseline, both retained-subset pooled errors fall, but missing observations
+prohibit a win. C8's regression remains explicit. Neither <10% target is met.
+Common-cohort diagnostic SHA256:
+`71e8430f8ab23d33034037ca6999239699953c5e74fffc439ad9f4bf5bee94ed`.
+
+Keep source `aa4c2aeab0050ad453295b9dff7c70cc80c29dab`, wheel and measured
+component profile unchanged for the reserved C4/C10/C13 validation. The all-six
+view references the immutable development outputs and writes only new held-out
+point directories. No tuning, dataset promotion or dashboard replacement follows
+from these results. GPU charge remains unchanged; validation is CPU-only.

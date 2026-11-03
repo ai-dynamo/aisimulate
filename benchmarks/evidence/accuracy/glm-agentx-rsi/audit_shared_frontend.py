@@ -10,7 +10,8 @@ import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
-POINTS = {1: "agentx-446063", 8: "agentx-446069", 14: "agentx-446062"}
+POINTS = {1: "agentx-446063", 4: "agentx-446068", 8: "agentx-446069",
+          10: "agentx-446060", 13: "agentx-446061", 14: "agentx-446062"}
 
 
 def read(path):
@@ -62,7 +63,10 @@ def main():
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--frozen", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--lanes", type=int, nargs="+", choices=POINTS, default=[1, 8, 14])
     args = parser.parse_args()
+    if len(args.lanes) != len(set(args.lanes)):
+        raise ValueError("Duplicate lane selection")
     if args.output.exists():
         raise ValueError("Audit output already exists")
     frozen = read(args.frozen)["cohorts"]
@@ -71,6 +75,8 @@ def main():
     pooled = defaultdict(list)
     results = []
     for lane, identity in POINTS.items():
+        if lane not in args.lanes:
+            continue
         directory = args.candidate / identity
         native_path, score_path = directory / "native.json", directory / "score.json"
         native, score = read(native_path), read(score_path)
