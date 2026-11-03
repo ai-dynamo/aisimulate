@@ -190,6 +190,16 @@ client-first-output trigger requires scheduler receipts to establish actual over
 The initial reduction attempt assumed Mooncake preserves request IDs; its failed
 evidence is retained. The corrected control selects the uniquely specified victim.
 
+**E014 follow-up — false overlap confirmed for this pair.** The silicon dispatch
+records place that interferer 113.284 seconds after the victim starts and 113.129
+seconds after it finishes. Closed-loop replay instead admits it about 1 ms after
+the victim's first token. With recorded arrivals the victim predicts 3.9997 ms
+TPOT versus silicon 3.7934 ms, compared with 276.0665 ms in closed-loop replay.
+Its TTFT is 62.9373 ms versus silicon 71.6783 ms. This identifies wrong overlap
+for this outlier; it does not establish a scheduler defect or a general fix.
+HTTP input length is 663 versus source/replay 640; retain that qualification.
+Next trace the upstream timing divergence and compare controlled silicon overlap.
+
 ## H5 — Op timing, graph mode, variant lookup and interpolation
 
 **Hypothesis.** Data selection or execution timing differs despite including #665.
