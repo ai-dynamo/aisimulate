@@ -1,0 +1,582 @@
+{
+  "scope": "Accepted spline-only ordering policy; linear uses only the shared fake-target correction. Experimental linear shuffles and readiness expansion excluded.",
+  "source_manifest_sha256": "43abd5902fff30695a421ddcb2742fb9189c73b45c4a43ffa4d06782a14680b9",
+  "cases": {
+    "minimax-tep4-warmup": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4@aisim-commit-unknown-4baad028",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 1.6784400419564918,
+      "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+      "before": {
+        "coverage_pct": 0.0,
+        "error_count": 286,
+        "mape_pct": null,
+        "measured_count": 286,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "after": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 2.3649068542084315,
+        "coverage_pct": 100.0
+      },
+      "cost": {
+        "fit_ms": 1658.3125,
+        "predict_us": 39.02724475524476,
+        "update_us": null,
+        "predict_count": 286,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-tep4-warmup.json",
+      "result_sha256": "c7231262c1ee44c3dc21a99b440c7f9b824c04b8ad7dea526e8a3b6a353cc3d3",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tep4-gbdt": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4@aisim-commit-unknown-4baad028",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 5.05469312495552,
+      "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+      "before": {
+        "coverage_pct": 0.0,
+        "error_count": 286,
+        "mape_pct": null,
+        "measured_count": 286,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "after": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 2.851254861539031,
+        "coverage_pct": 100.0
+      },
+      "cost": {
+        "fit_ms": 5024.872458,
+        "predict_us": 11.180048951048951,
+        "update_us": null,
+        "predict_count": 286,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-tep4-gbdt.json",
+      "result_sha256": "07e3b07c61d096301c70bf8d6e7eaceef96bead5fc564fe99f12d915dabc4335",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tep4-spline": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4@aisim-commit-unknown-4baad028",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 2.0156520410091616,
+      "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 52.93174625356837,
+        "measured_count": 286,
+        "predicted_count": 286,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "after": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 12.368269895688812,
+        "coverage_pct": 100.0
+      },
+      "cost": {
+        "fit_ms": 2004.502167,
+        "predict_us": 6.448125874125874,
+        "update_us": null,
+        "predict_count": 286,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-tep4-spline.json",
+      "result_sha256": "275196261b67d4f8e117310f0d6a790b4ff2c57f244ef4efe24c56c2589770f6",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tp4-gbdt": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4@aisim-commit-f2a2b61b",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 5.9693135840352625,
+      "scoring_population_sha256": "f911b25614d13b421314659d92dad32eb35c4f8029a13d51e87ae06a3b771590",
+      "before": {
+        "coverage_pct": 99.9993630857223,
+        "error_count": 0,
+        "mape_pct": 7.5305482719387395,
+        "measured_count": 157007,
+        "predicted_count": 157006,
+        "tuning_error_count": 0,
+        "unavailable_count": 1
+      },
+      "after": {
+        "measured_count": 157007,
+        "predicted_count": 157006,
+        "unavailable_count": 1,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 5.6429604163287514,
+        "coverage_pct": 99.9993630857223
+      },
+      "cost": {
+        "fit_ms": 3881.978083,
+        "predict_us": 10.81149619443719,
+        "update_us": null,
+        "predict_count": 157007,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-tp4-gbdt.json",
+      "result_sha256": "ba33d4dd84d4632c68e5727279297b768528e602116169b04eaa5d494098526f",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tp4-spline": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4@aisim-commit-f2a2b61b",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 3.5180640420294367,
+      "scoring_population_sha256": "f911b25614d13b421314659d92dad32eb35c4f8029a13d51e87ae06a3b771590",
+      "before": {
+        "coverage_pct": 97.61985134420759,
+        "error_count": 0,
+        "mape_pct": 29.935397384453378,
+        "measured_count": 157007,
+        "predicted_count": 153270,
+        "tuning_error_count": 0,
+        "unavailable_count": 3737
+      },
+      "after": {
+        "measured_count": 157007,
+        "predicted_count": 153270,
+        "unavailable_count": 3737,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 9.09572541447617,
+        "coverage_pct": 97.61985134420759
+      },
+      "cost": {
+        "fit_ms": 2064.70175,
+        "predict_us": 6.832651149311814,
+        "update_us": null,
+        "predict_count": 157007,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-tp4-spline.json",
+      "result_sha256": "0a6c2de3f38d44bf9c4981d0e09fb9f0642c0e254112fbe51371ad9b3be4891a",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "glm-b50-spline": {
+      "configuration_id": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16@aisim-commit-82ffa025",
+      "scenario": "b",
+      "train_percent": 50,
+      "elapsed_s": 6.214413625013549,
+      "scoring_population_sha256": "f427f624712e94c420478d68e127623487a530f02802efcedb76c6d4c369f961",
+      "before": {
+        "coverage_pct": 5.5448493342676946,
+        "error_count": 0,
+        "mape_pct": 8.55368977936013,
+        "measured_count": 45664,
+        "predicted_count": 2532,
+        "tuning_error_count": 0,
+        "unavailable_count": 43132
+      },
+      "after": {
+        "measured_count": 45664,
+        "predicted_count": 2532,
+        "unavailable_count": 43132,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 8.55368977936013,
+        "coverage_pct": 5.5448493342676946
+      },
+      "cost": {
+        "fit_ms": 2281.944666,
+        "predict_us": 58.762402089173094,
+        "update_us": null,
+        "predict_count": 45664,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/glm-b50-spline.json",
+      "result_sha256": "47f1b018b437325dc9d71ec30a8bcbcf9407c1b2c82b64b59b7c02a7c4f820c1",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-b60-spline": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4@aisim-commit-unknown-118ccc21",
+      "scenario": "b",
+      "train_percent": 60,
+      "elapsed_s": 2.4779461250291206,
+      "scoring_population_sha256": "90ad114cfa254a59dc47fc15f5ad463f2c7442be7d18e6723bded45b181f790c",
+      "before": {
+        "coverage_pct": 32.33380232149138,
+        "error_count": 0,
+        "mape_pct": 16.526334336388498,
+        "measured_count": 79604,
+        "predicted_count": 25739,
+        "tuning_error_count": 0,
+        "unavailable_count": 53865
+      },
+      "after": {
+        "measured_count": 79604,
+        "predicted_count": 25739,
+        "unavailable_count": 53865,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 16.526334336388498,
+        "coverage_pct": 32.33380232149138
+      },
+      "cost": {
+        "fit_ms": 1558.371333,
+        "predict_us": 6.2573171951158235,
+        "update_us": null,
+        "predict_count": 79604,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/minimax-b60-spline.json",
+      "result_sha256": "3ae7e4a687416f3fe1cab593da05a51079c540378687de89521e198cf20d9b98",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "kimi-a-gbdt": {
+      "configuration_id": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8@aisim-commit-unknown-25aaa262",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 4.647480082989205,
+      "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 2054,
+        "mape_pct": 4.462160526630016,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 127
+      },
+      "after": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 127,
+        "error_count": 2054,
+        "tuning_error_count": 0,
+        "mape_pct": 4.462160526630016,
+        "coverage_pct": 99.23311696988024
+      },
+      "cost": {
+        "fit_ms": 1063.954291,
+        "predict_us": 10.131073692501353,
+        "update_us": null,
+        "predict_count": 284398,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/kimi-a-gbdt.json",
+      "result_sha256": "5d879792792457975c239c2910dd88ab960445f455ef8f31346d321d164d18de",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "kimi-ac-gbdt": {
+      "configuration_id": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8@aisim-commit-unknown-25aaa262",
+      "scenario": "ac",
+      "train_percent": 50,
+      "elapsed_s": 60.15554979199078,
+      "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 2054,
+        "mape_pct": 1.8357069542401068,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 17,
+        "unavailable_count": 127
+      },
+      "after": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 127,
+        "error_count": 2054,
+        "tuning_error_count": 17,
+        "mape_pct": 1.8357069542401068,
+        "coverage_pct": 99.23311696988024
+      },
+      "cost": {
+        "fit_ms": 1267.276875,
+        "predict_us": 10.605563295100529,
+        "update_us": 45295.30425143796,
+        "predict_count": 284398,
+        "update_count": 1217
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/kimi-ac-gbdt.json",
+      "result_sha256": "8089a839aa33f01742db194c9970c8dde38dfed4c6c5f08913cfb10dfb8d3e20",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "kimi-ac-selector": {
+      "configuration_id": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8@aisim-commit-unknown-25aaa262",
+      "scenario": "ac",
+      "train_percent": 50,
+      "elapsed_s": 19.44151358300587,
+      "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 2054,
+        "mape_pct": 1.8570384807822948,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 17,
+        "unavailable_count": 127
+      },
+      "after": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 127,
+        "error_count": 2054,
+        "tuning_error_count": 17,
+        "mape_pct": 1.8570384807822944,
+        "coverage_pct": 99.23311696988024
+      },
+      "cost": {
+        "fit_ms": 1246.00725,
+        "predict_us": 10.069963378786067,
+        "update_us": 11986.744158586689,
+        "predict_count": 284398,
+        "update_count": 1217
+      },
+      "status": "evaluated",
+      "result_path": "final-replay/kimi-ac-selector.json",
+      "result_sha256": "844bfa207ab55528b6da1c2e143362e820d44b4ac2671546c7180431740946dd",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "kimi-regression-a-spline": {
+      "configuration_id": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8@aisim-commit-unknown-25aaa262",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 2.7365096249850467,
+      "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 19.250601687259152,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "after": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 2181,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 16.672593404115688,
+        "coverage_pct": 99.23311696988024
+      },
+      "cost": {
+        "fit_ms": 230.155833,
+        "predict_us": 6.4905997651178975,
+        "update_us": null,
+        "predict_count": 284398,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-regression-controls/kimi-regression-a-spline.json",
+      "result_sha256": "119a1f6db1e7d76c4006f3161adca0667940481427e7806c47930bdc2d80ee7d",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "glm-regression-a-spline": {
+      "configuration_id": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16@aisim-commit-82ffa025",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 9.90963741595624,
+      "scoring_population_sha256": "8988bd26391aa5c34bdab8c12bae7c160640a48d71d8ace3803a5c7a64ad0a91",
+      "before": {
+        "coverage_pct": 94.63484068761633,
+        "error_count": 0,
+        "mape_pct": 7.766797773665781,
+        "measured_count": 91330,
+        "predicted_count": 86430,
+        "tuning_error_count": 0,
+        "unavailable_count": 4900
+      },
+      "after": {
+        "measured_count": 91330,
+        "predicted_count": 86430,
+        "unavailable_count": 4900,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 4.899698997863512,
+        "coverage_pct": 94.63484068761633
+      },
+      "cost": {
+        "fit_ms": 3512.234042,
+        "predict_us": 57.79190583597941,
+        "update_us": null,
+        "predict_count": 91330,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-regression-controls/glm-regression-a-spline.json",
+      "result_sha256": "e1f5c375e06abc7a68e2bf34872bb7e14724c297e21086895ba1214fece7f780",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tep4-linear": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4@aisim-commit-unknown-4baad028",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 2.5662025419878773,
+      "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 27.785983885690165,
+        "measured_count": 286,
+        "predicted_count": 286,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "after": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 25.914232419058575,
+        "coverage_pct": 100.0
+      },
+      "cost": {
+        "fit_ms": 2560.590916,
+        "predict_us": 7.65355944055944,
+        "update_us": null,
+        "predict_count": 286,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-linear-controls/minimax-tep4-linear.json",
+      "result_sha256": "818e0724f6c1547c5a3e3ce250dca1e62fffd820eac3938ee7c67c9937849bb4",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "minimax-tp4-linear": {
+      "configuration_id": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4@aisim-commit-f2a2b61b",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 2.974936417012941,
+      "scoring_population_sha256": "f911b25614d13b421314659d92dad32eb35c4f8029a13d51e87ae06a3b771590",
+      "before": {
+        "coverage_pct": 97.61985134420759,
+        "error_count": 0,
+        "mape_pct": 30.881670724441275,
+        "measured_count": 157007,
+        "predicted_count": 153270,
+        "tuning_error_count": 0,
+        "unavailable_count": 3737
+      },
+      "after": {
+        "measured_count": 157007,
+        "predicted_count": 153270,
+        "unavailable_count": 3737,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 24.61618263298921,
+        "coverage_pct": 97.61985134420759
+      },
+      "cost": {
+        "fit_ms": 1652.846542,
+        "predict_us": 6.2219262325883555,
+        "update_us": null,
+        "predict_count": 157007,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-linear-controls/minimax-tp4-linear.json",
+      "result_sha256": "84a98f6a6884547b3759f20724900b5dc52dd61d02a746c87a8ab11dce162ac0",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "kimi-regression-a-linear": {
+      "configuration_id": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8@aisim-commit-unknown-25aaa262",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 2.4575151249882765,
+      "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 11.4449878842908,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "after": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 2181,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 11.4449878842908,
+        "coverage_pct": 99.23311696988024
+      },
+      "cost": {
+        "fit_ms": 102.117917,
+        "predict_us": 6.07349414552845,
+        "update_us": null,
+        "predict_count": 284398,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-linear-controls/kimi-regression-a-linear.json",
+      "result_sha256": "b70923d35ec00f8becf1ebecf798e97132b5f1a1480d8de2c1f171f87a2342d7",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    },
+    "glm-regression-a-linear": {
+      "configuration_id": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16@aisim-commit-82ffa025",
+      "scenario": "a",
+      "train_percent": 50,
+      "elapsed_s": 8.626217249955516,
+      "scoring_population_sha256": "8988bd26391aa5c34bdab8c12bae7c160640a48d71d8ace3803a5c7a64ad0a91",
+      "before": {
+        "coverage_pct": 94.63484068761633,
+        "error_count": 0,
+        "mape_pct": 26.684445027918837,
+        "measured_count": 91330,
+        "predicted_count": 86430,
+        "tuning_error_count": 0,
+        "unavailable_count": 4900
+      },
+      "after": {
+        "measured_count": 91330,
+        "predicted_count": 86430,
+        "unavailable_count": 4900,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 16.745135807812666,
+        "coverage_pct": 94.63484068761633
+      },
+      "cost": {
+        "fit_ms": 2265.534834,
+        "predict_us": 57.6715095149458,
+        "update_us": null,
+        "predict_count": 91330,
+        "update_count": 0
+      },
+      "status": "evaluated",
+      "result_path": "final-linear-controls/glm-regression-a-linear.json",
+      "result_sha256": "11b9bf568c2666df78e3aaa10b71b99229bfeef5414c330f269967c6a17ee737",
+      "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb"
+    }
+  }
+}

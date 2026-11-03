@@ -1,0 +1,11 @@
+{
+  "source_base": "9f4819e2b77afb4798bc8133c42ccc1d1b045e5c",
+  "branch": "codex/fpm-gym-corrections",
+  "native_source_diff_sha256": "29b9c71d44870a6b36d28d5182a98681bfe9a61c48c409742faf79666925aa55",
+  "wheel": "aisimulate-0.13.0-cp311-abi3-macosx_11_0_arm64.whl",
+  "wheel_sha256": "abc7c71190b83ee0259ed4b74c30f475a3134fe103b369f68f3e2109c7c29c6c",
+  "native": "python/aisimulate/src/aisimulate/_runtime.abi3.so",
+  "native_sha256": "2d8c1fc5bc0437282f29273d7e41f0b323993696d2ad2fed48c6f8b3fa7c13eb",
+  "guard": "original spline coverage guard restored",
+  "artifact_availability": "Binary artifacts are not committed; hashes identify the local qualification build."
+}

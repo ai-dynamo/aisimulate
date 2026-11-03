@@ -1,0 +1,543 @@
+{
+  "result": {
+    "status": "evaluated",
+    "offline_model": {
+      "recipe": {
+        "id": "gbdt_pr460_frozen_api_v13",
+        "label": "frozen GBDT",
+        "feature_preset": "fpm5",
+        "features": [
+          "num_active_ranks",
+          "num_prefill_requests",
+          "sum_prefill_tokens",
+          "sum_prefill_kv_tokens",
+          "num_decode_requests",
+          "sum_decode_kv_tokens",
+          "max_rank_prefill_tokens",
+          "max_rank_decode_kv_tokens",
+          "max_rank_num_decode_requests",
+          "mean_prefill_chunk",
+          "mean_prefill_kv",
+          "prefill_attention_pairs",
+          "mean_decode_kv",
+          "log1p_sum_prefill_tokens",
+          "log1p_sum_prefill_kv_tokens",
+          "log1p_sum_decode_kv_tokens",
+          "log1p_prefill_attention_pairs"
+        ],
+        "training": {
+          "max_iter": 150,
+          "max_leaf_nodes": 15,
+          "learning_rate": 0.2,
+          "min_samples_leaf": 5,
+          "max_bins": 255,
+          "max_depth": null,
+          "l2_regularization": 0.0,
+          "loss": "squared_error",
+          "early_stopping": false,
+          "random_state": 0,
+          "min_store_rows": 20,
+          "target": "log_ms"
+        },
+        "model_scope": "worker_id_within_case",
+        "implementation": "AISim canonical performance model API"
+      },
+      "diagnostics": {
+        "method": "gbdt",
+        "model_scope": "case_worker_and_native_workload_store",
+        "adaptation": "frozen",
+        "recipe": {
+          "id": "gbdt_pr460_frozen_api_v13",
+          "label": "frozen GBDT",
+          "feature_preset": "fpm5",
+          "features": [
+            "num_active_ranks",
+            "num_prefill_requests",
+            "sum_prefill_tokens",
+            "sum_prefill_kv_tokens",
+            "num_decode_requests",
+            "sum_decode_kv_tokens",
+            "max_rank_prefill_tokens",
+            "max_rank_decode_kv_tokens",
+            "max_rank_num_decode_requests",
+            "mean_prefill_chunk",
+            "mean_prefill_kv",
+            "prefill_attention_pairs",
+            "mean_decode_kv",
+            "log1p_sum_prefill_tokens",
+            "log1p_sum_prefill_kv_tokens",
+            "log1p_sum_decode_kv_tokens",
+            "log1p_prefill_attention_pairs"
+          ],
+          "training": {
+            "max_iter": 150,
+            "max_leaf_nodes": 15,
+            "learning_rate": 0.2,
+            "min_samples_leaf": 5,
+            "max_bins": 255,
+            "max_depth": null,
+            "l2_regularization": 0.0,
+            "loss": "squared_error",
+            "early_stopping": false,
+            "random_state": 0,
+            "min_store_rows": 20,
+            "target": "log_ms"
+          },
+          "model_scope": "worker_id_within_case",
+          "implementation": "AISim canonical performance model API"
+        },
+        "original_a": {
+          "source_sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+          "metadata_sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7",
+          "artifact_id": "fpm-bb246f22d9881787",
+          "sources": [
+            {
+              "path": "[local path omitted]",
+              "sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b"
+            },
+            {
+              "path": "[local path omitted]",
+              "sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+            }
+          ],
+          "grouping": {
+            "coordinate_system": null,
+            "partition_policy": "balanced_v1",
+            "rank_workload_reconstruction": "replicated_table_coordinates",
+            "target_scope": "native_normalized_aggregate_latency"
+          },
+          "staging": {
+            "fpm_artifact_id": "fpm-bb246f22d9881787",
+            "fpm_parquet_sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+            "fpm_row_count": 11062,
+            "fpm_metadata_recovery": {
+              "policy": "schema6_reconstructed_row_contract_v1",
+              "source_metadata_sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7",
+              "staged_metadata_sha256": "621c4cba75760bf55495b04737582e63d3b9a2715ad221d52965cf9f0c693541",
+              "recovered_fields": {
+                "coordinate_system": "iteration_totals_balanced_v1",
+                "measurement_policy": "dynamo_native_single_sample_v1",
+                "measurement_repeats": 1,
+                "warmup_repeats": 0,
+                "system": "h200_sxm",
+                "backend_version": "0.25.1"
+              }
+            }
+          },
+          "seed_target_normalization": {
+            "policies": [
+              "same_cell_batch_real_kv_extrapolation_v1"
+            ],
+            "source_parquet_sha256": [
+              "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b"
+            ],
+            "source_metadata_sha256": [
+              "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+            ],
+            "marked_source_rows": 102,
+            "replaced_source_rows": 102,
+            "kept_source_rows": 0,
+            "replicated_seed_rows": 204,
+            "replacement_enabled": true,
+            "effective_targets_sha256": "b3194fed160d027d97283fd0cdc3936c47338d3900b31f2587ad16be6da656cd",
+            "target_scope": "native_profile_seed_targets_not_additional_measurements"
+          }
+        },
+        "scopes": [
+          {
+            "worker_id": "7587897173952154371",
+            "workload_kind": "original_a",
+            "ready": true,
+            "stores": [
+              "pure_decode",
+              "pure_prefill"
+            ],
+            "offline_observations": 11062,
+            "submitted_observations": 0,
+            "bootstrap_observations": 0,
+            "feedback_observations": 0,
+            "ignored_observations": 0,
+            "store_additions": 0,
+            "pending_bootstrap": {},
+            "initial_store_sha256": {
+              "pure_decode": "251a0d7a4c14e40a7da4e573a00be0911a902d885b0f99c7e141acc0143c841d",
+              "pure_prefill": "4537103703cac0c4f4e0bd7c619a68cfd1a61f51e775f63025420a1a916837e3"
+            },
+            "final_store_sha256": {
+              "pure_decode": "251a0d7a4c14e40a7da4e573a00be0911a902d885b0f99c7e141acc0143c841d",
+              "pure_prefill": "4537103703cac0c4f4e0bd7c619a68cfd1a61f51e775f63025420a1a916837e3"
+            },
+            "native": {
+              "source": "learned",
+              "readiness": "ready",
+              "retained_observations": 0,
+              "correction_ready_buckets": 0,
+              "last_warning": null,
+              "provenance": {
+                "config_sha256": "1fdfb45921367896a6d66aee623e0010538e80b012dede0c03b56544031c74e2",
+                "deployment_identity": {
+                  "model": "MiniMaxAI/MiniMax-M2.7",
+                  "system": "h200_sxm",
+                  "backend": "vllm",
+                  "backend_version": "0.25.1",
+                  "worker_type": "aggregated",
+                  "tp": 4,
+                  "pp": 1,
+                  "attention_dp": 1,
+                  "dcp": null,
+                  "moe_tp_size": 1,
+                  "moe_ep_size": 4,
+                  "cp_size": 1,
+                  "gemm_quant_mode": "fp8_block",
+                  "moe_quant_mode": "fp8_block",
+                  "fmha_quant_mode": "bfloat16",
+                  "fpm_fmha_quant_mode": null,
+                  "kvcache_quant_mode": "fp8",
+                  "comm_quant_mode": "half",
+                  "attention_backend": null,
+                  "moe_backend": null,
+                  "nextn": 0,
+                  "speculation": null,
+                  "kv_block_size": null,
+                  "decoder_replay": false
+                },
+                "estimator_config_sha256": "71cfb4d09c67eb11e6dc1e952b80f4147d7a25d166999c999777e12f1450a921",
+                "selected_systems_root": null,
+                "requested_estimation_mode": "fpm_learned",
+                "selected_estimation_mode": "fpm_learned",
+                "selection_failures": []
+              }
+            },
+            "online": null,
+            "selector": null,
+            "mixed_composition": {
+              "admissions": {},
+              "feature_weights": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "interpolation": {
+                "metadata_sha256": "621c4cba75760bf55495b04737582e63d3b9a2715ad221d52965cf9f0c693541",
+                "parquet_sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+                "provenance": {
+                  "config_sha256": "e5212513ce2004d72a0153c28ca966a3e8c3690846a0a8ad618efad1400f4867",
+                  "deployment_identity": {
+                    "model": "MiniMaxAI/MiniMax-M2.7",
+                    "system": "h200_sxm",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "worker_type": "aggregated",
+                    "tp": 4,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "dcp": null,
+                    "moe_tp_size": 1,
+                    "moe_ep_size": 4,
+                    "cp_size": 1,
+                    "gemm_quant_mode": "fp8_block",
+                    "moe_quant_mode": "fp8_block",
+                    "fmha_quant_mode": "bfloat16",
+                    "fpm_fmha_quant_mode": null,
+                    "kvcache_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "attention_backend": null,
+                    "moe_backend": null,
+                    "nextn": 0,
+                    "speculation": null,
+                    "kv_block_size": null,
+                    "decoder_replay": false
+                  },
+                  "estimator_config_sha256": "b8322c250da43793ecb0fe11e89698992b05a092ae0f4961651c0b11eb18c475",
+                  "requested_estimation_mode": "fpm_interpolation",
+                  "selected_estimation_mode": "fpm_interpolation",
+                  "selected_systems_root": "[local path omitted]",
+                  "selection_failures": []
+                }
+              },
+              "policy": {
+                "calibration": {
+                  "factor_bounds": {
+                    "max": 2.0,
+                    "min": 0.5
+                  },
+                  "min_observations": 5,
+                  "sampling": {
+                    "bins_per_axis": [
+                      4,
+                      4
+                    ],
+                    "max_observations": 64
+                  }
+                },
+                "mode": "compose",
+                "original_a": {
+                  "manifest_path": "[local path omitted]",
+                  "source_sha256": "bd09cf2e21c65f1d28ddebc044b0c868aa6fecc6bae60fbdfc5c88502ba1c0d0"
+                },
+                "scenario": "a"
+              },
+              "routes": [
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "cross_rank_aggregated"
+                },
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "contains_locally_mixed"
+                }
+              ],
+              "score_bounds": [
+                1670016960.0,
+                8192.0
+              ],
+              "selection_policy": "original_a_owned",
+              "stores": {},
+              "version": "original_a_mixed_experts_attention_moe_v3"
+            }
+          },
+          {
+            "worker_id": "7587897173952154381",
+            "workload_kind": "original_a",
+            "ready": true,
+            "stores": [
+              "pure_decode",
+              "pure_prefill"
+            ],
+            "offline_observations": 11062,
+            "submitted_observations": 0,
+            "bootstrap_observations": 0,
+            "feedback_observations": 0,
+            "ignored_observations": 0,
+            "store_additions": 0,
+            "pending_bootstrap": {},
+            "initial_store_sha256": {
+              "pure_decode": "251a0d7a4c14e40a7da4e573a00be0911a902d885b0f99c7e141acc0143c841d",
+              "pure_prefill": "4537103703cac0c4f4e0bd7c619a68cfd1a61f51e775f63025420a1a916837e3"
+            },
+            "final_store_sha256": {
+              "pure_decode": "251a0d7a4c14e40a7da4e573a00be0911a902d885b0f99c7e141acc0143c841d",
+              "pure_prefill": "4537103703cac0c4f4e0bd7c619a68cfd1a61f51e775f63025420a1a916837e3"
+            },
+            "native": {
+              "source": "learned",
+              "readiness": "ready",
+              "retained_observations": 0,
+              "correction_ready_buckets": 0,
+              "last_warning": null,
+              "provenance": {
+                "config_sha256": "7256964999689c62350dcc1978feaeb8dcbcafa8263727123eb574935d2ddf74",
+                "deployment_identity": {
+                  "model": "MiniMaxAI/MiniMax-M2.7",
+                  "system": "h200_sxm",
+                  "backend": "vllm",
+                  "backend_version": "0.25.1",
+                  "worker_type": "aggregated",
+                  "tp": 4,
+                  "pp": 1,
+                  "attention_dp": 1,
+                  "dcp": null,
+                  "moe_tp_size": 1,
+                  "moe_ep_size": 4,
+                  "cp_size": 1,
+                  "gemm_quant_mode": "fp8_block",
+                  "moe_quant_mode": "fp8_block",
+                  "fmha_quant_mode": "bfloat16",
+                  "fpm_fmha_quant_mode": null,
+                  "kvcache_quant_mode": "fp8",
+                  "comm_quant_mode": "half",
+                  "attention_backend": null,
+                  "moe_backend": null,
+                  "nextn": 0,
+                  "speculation": null,
+                  "kv_block_size": null,
+                  "decoder_replay": false
+                },
+                "estimator_config_sha256": "ccc4bad8a671177bc7903142d741c514eb6f53dd68b4585a5cd44b4a6420d2d3",
+                "selected_systems_root": null,
+                "requested_estimation_mode": "fpm_learned",
+                "selected_estimation_mode": "fpm_learned",
+                "selection_failures": []
+              }
+            },
+            "online": null,
+            "selector": null,
+            "mixed_composition": {
+              "admissions": {},
+              "feature_weights": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "interpolation": {
+                "metadata_sha256": "621c4cba75760bf55495b04737582e63d3b9a2715ad221d52965cf9f0c693541",
+                "parquet_sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+                "provenance": {
+                  "config_sha256": "e5212513ce2004d72a0153c28ca966a3e8c3690846a0a8ad618efad1400f4867",
+                  "deployment_identity": {
+                    "model": "MiniMaxAI/MiniMax-M2.7",
+                    "system": "h200_sxm",
+                    "backend": "vllm",
+                    "backend_version": "0.25.1",
+                    "worker_type": "aggregated",
+                    "tp": 4,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "dcp": null,
+                    "moe_tp_size": 1,
+                    "moe_ep_size": 4,
+                    "cp_size": 1,
+                    "gemm_quant_mode": "fp8_block",
+                    "moe_quant_mode": "fp8_block",
+                    "fmha_quant_mode": "bfloat16",
+                    "fpm_fmha_quant_mode": null,
+                    "kvcache_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "attention_backend": null,
+                    "moe_backend": null,
+                    "nextn": 0,
+                    "speculation": null,
+                    "kv_block_size": null,
+                    "decoder_replay": false
+                  },
+                  "estimator_config_sha256": "b8322c250da43793ecb0fe11e89698992b05a092ae0f4961651c0b11eb18c475",
+                  "requested_estimation_mode": "fpm_interpolation",
+                  "selected_estimation_mode": "fpm_interpolation",
+                  "selected_systems_root": "[local path omitted]",
+                  "selection_failures": []
+                }
+              },
+              "policy": {
+                "calibration": {
+                  "factor_bounds": {
+                    "max": 2.0,
+                    "min": 0.5
+                  },
+                  "min_observations": 5,
+                  "sampling": {
+                    "bins_per_axis": [
+                      4,
+                      4
+                    ],
+                    "max_observations": 64
+                  }
+                },
+                "mode": "compose",
+                "original_a": {
+                  "manifest_path": "[local path omitted]",
+                  "source_sha256": "6d3b82bfd07c03d3dfd1d298bb15ef0508fe6fb8ba973a620723486795766461"
+                },
+                "scenario": "a"
+              },
+              "routes": [
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "cross_rank_aggregated"
+                },
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "contains_locally_mixed"
+                }
+              ],
+              "score_bounds": [
+                1670016960.0,
+                8192.0
+              ],
+              "selection_policy": "original_a_owned",
+              "stores": {},
+              "version": "original_a_mixed_experts_attention_moe_v3"
+            }
+          }
+        ]
+      }
+    },
+    "seed_target_normalization": {
+      "policies": [
+        "same_cell_batch_real_kv_extrapolation_v1"
+      ],
+      "source_parquet_sha256": [
+        "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b"
+      ],
+      "source_metadata_sha256": [
+        "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+      ],
+      "marked_source_rows": 102,
+      "replaced_source_rows": 102,
+      "kept_source_rows": 0,
+      "replicated_seed_rows": 204,
+      "replacement_enabled": true,
+      "effective_targets_sha256": "b3194fed160d027d97283fd0cdc3936c47338d3900b31f2587ad16be6da656cd",
+      "target_scope": "native_profile_seed_targets_not_additional_measurements"
+    },
+    "artifact": {
+      "id": "fpm-bb246f22d9881787",
+      "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.parquet",
+      "sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+      "metadata_path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.metadata.json",
+      "metadata_sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+    },
+    "training_count": 22124,
+    "test_count": 286,
+    "online_update_count": 0,
+    "training_population_sha256": null,
+    "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+    "metrics": {
+      "all": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 2.851254861539031,
+        "coverage_pct": 100.0
+      },
+      "prefill": {
+        "measured_count": 32,
+        "predicted_count": 32,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 8.000755638353816,
+        "coverage_pct": 100.0
+      },
+      "decode": {
+        "measured_count": 254,
+        "predicted_count": 254,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 2.20249885816079,
+        "coverage_pct": 100.0
+      },
+      "mixed": {
+        "measured_count": 0,
+        "predicted_count": 0,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": null,
+        "coverage_pct": null
+      }
+    },
+    "cost": {
+      "fit_ms": 5024.872458,
+      "predict_us": 11.180048951048951,
+      "update_us": null,
+      "predict_count": 286,
+      "update_count": 0
+    },
+    "cold_start": {
+      "unavailable_before_first_prediction": 0,
+      "first_prediction_index": 0
+    }
+  },
+  "store_diagnostics": {}
+}

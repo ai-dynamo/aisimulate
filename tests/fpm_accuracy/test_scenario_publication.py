@@ -224,7 +224,7 @@ def test_native_diagnostic_extensions_remain_publishable(public_scenarios):
 def test_recomputed_checksum_cannot_hide_invalid_split_grid(public_scenarios, change):
     original, summary = public_scenarios
     document = deepcopy(original)
-    assert document["schema_version"] == 13
+    assert document["schema_version"] == 14
     row = document["rows"][0]
     splits = row["split_results"]
     if change == "missing_ratio":
@@ -284,7 +284,7 @@ def test_pages_builder_copies_scenarios_without_changing_evidence(tmp_path, publ
     emitted = output / "fpm-accuracy" / "branches" / key / "scenarios.json"
     assert json.loads(emitted.read_text()) == public_scenarios[0]
     published = json.loads(emitted.read_text())
-    assert published["schema_version"] == 13
+    assert published["schema_version"] == 14
     assert set(published["rows"][0]["split_results"]) == {str(value) for value in range(10, 100, 10)}
     catalog = json.loads((output / "fpm-accuracy" / "branches.json").read_text())
     assert catalog["branches"][0]["status"] == "available"

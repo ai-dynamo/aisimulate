@@ -186,7 +186,14 @@ and small workloads can differ from the requested ratio. Model, GPU, framework,
 workload, metric, scenario, ratio, and configuration selections persist in the URL.
 Costs cover all workloads even when the metric filter selects one workload.
 
-Public assets use `fpm-scenarios-v13`. Strict C has zero offline inputs and admits
+New public assets use `fpm-scenarios-v14`; the page also displays historical v13
+assets with their recorded protocol label. Version 14 normalizes self-benchmark
+`fake_fallback` training targets through the native loader and permits missing
+mixed forests to bootstrap despite a missing-data error from their prior.
+Compare accuracy together with prediction coverage and the recorded evaluator
+revision; v13's raw seed targets are a different training policy.
+
+Strict C has zero offline inputs and admits
 only the first scored observation at or after each five-second event-time tick,
 including during cold-start warmup. The first tick is five seconds after the first
 scored timestamp. Prediction and scoring always precede the update. Intervening

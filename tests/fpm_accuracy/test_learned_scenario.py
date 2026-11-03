@@ -164,6 +164,7 @@ def backend():
 
 class Mixed:
     manifests: ClassVar[dict] = {}
+    provenance: ClassVar[dict] = {}
 
     def configure_request(self, request):
         return request
@@ -306,6 +307,41 @@ def test_failed_native_admission_does_not_seed_a_missing_mixed_store(backend):
             model.tune([observation(100, "mixed")])
         assert model.diagnostics()["scopes"][0]["pending_bootstrap"] == {}
         assert len(backend[1]) == 1
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("method", ["gbdt", "selector", "hybrid"])
+def test_missing_prior_data_does_not_block_causal_mixed_bootstrap(backend, method):
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+    original = [observation(i, kind) for kind in ("prefill", "decode") for i in range(20)]
+    model = make(backend, method, rows=original, mixed=Mixed())
+    try:
+        native = Native.models[0]
+        feedback = native.tune_with_fpms
+
+        def unavailable(_):
+            raise PerfDataNotAvailableError("SOL roofline unavailable for the mixed prior")
+
+        native.tune_with_fpms = unavailable
+        admitted = [observation(100 + index, "mixed") for index in range(20)]
+        for index, row in enumerate(admitted):
+            assert native.appends == []  # No current/future label enters the seed early.
+            with pytest.raises(PerfDataNotAvailableError, match="mixed prior"):
+                model.tune([row])
+            if method != "hybrid" and index < 19:
+                assert model.diagnostics()["scopes"][0]["pending_bootstrap"] == {"contains_locally_mixed": index + 1}
+        if method == "hybrid":
+            assert len(backend[1]) == 1 and native.appends == []
+        else:
+            assert len(backend[1]) == 2 and len(native.appends) == 1
+            assert backend[1][1]["rows"] == [row.tuning_payload() for row in admitted]
+            assert native.appends[0]["rows_before_append"] == 0
+            native.tune_with_fpms = feedback
+            model.tune([observation(120, "mixed")])
+            assert len(native.observations) == 1  # Bootstrap labels are never replayed.
+            assert len(native.appends) == 1
     finally:
         model.close()
 

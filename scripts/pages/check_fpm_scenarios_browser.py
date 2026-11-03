@@ -154,8 +154,8 @@ def fixture(branch="main"):
         }
         rows.append(row)
     return {
-        "schema_version": 13,
-        "protocol_id": "fpm-scenarios-v13",
+        "schema_version": 14,
+        "protocol_id": "fpm-scenarios-v14",
         "snapshot": snapshot,
         "methods": list(METHODS),
         "scenarios": list(SCENARIOS),
@@ -225,6 +225,7 @@ async def main():
                 await expect(element.locator("dd")).to_have_text(value)
 
             await ready()
+            await expect(page.locator("#sc-protocol-version-note")).to_contain_text("fpm-scenarios-v14")
             await expect(page.locator('.fpm-tabs a[aria-current="page"]')).to_have_text("Scenario Comparison")
             await expect(page.locator(".fpm-tabs a")).to_have_count(6)
             await expect(page.locator("#sc-table th[data-method]")).to_have_count(7)
@@ -313,6 +314,12 @@ async def main():
                     await page.screenshot(path=str(target), full_page=True)
                     await page.screenshot(path=str(target.with_stem(target.stem + "-viewport")))
             await page.set_viewport_size({"width": 1440, "height": 1000})
+
+            # Historical strict-C results retain their original seed-policy label.
+            current = fixture()
+            current.update(schema_version=13, protocol_id="fpm-scenarios-v13")
+            await ready()
+            await expect(page.locator("#sc-protocol-version-note")).to_contain_text("fpm-scenarios-v13")
 
             # Malformed split data is unavailable rather than replaced by the 50% score.
             current = fixture()

@@ -193,7 +193,10 @@ pub enum ForwardPassStoreNotReadyReason {
     /// A regression store retains fewer than `min_observations` samples.
     InsufficientData,
     /// A regression store has enough samples but no usable linear fit, for
-    /// example because its features do not vary.
+    /// example because its features do not vary or its constrained optimum
+    /// has zero slopes. The latter is a valid fit boundary, not necessarily a
+    /// numerical failure. Spline stores also require a usable companion linear
+    /// fit, even when their spline component is ready.
     NoUsableFit,
     /// The required learned forest store is missing and no mixed-composition
     /// route is eligible for this workload kind.
@@ -2302,6 +2305,17 @@ impl ForwardPassPerfModel {
     /// this bound is not a timing lookup and does not add coverage evidence.
     pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
         self.require_native_engine()?.fpm_decode_kv_ceiling()
+    }
+
+    /// Effective targets for marked fake-KV rows in the native model's complete
+    /// validated FPM profile. Source indices and raw labels remain available;
+    /// genuine rows are unchanged. This is preparation evidence, not a latency
+    /// query or measured telemetry. Non-native/non-FPM estimators reject it.
+    pub fn fpm_seed_target_normalization(
+        &self,
+    ) -> Result<crate::perf_database::fpm_forward::FpmSeedTargetNormalization, AicError> {
+        self.require_native_engine()?
+            .fpm_seed_target_normalization()
     }
 
     /// Snapshot of actual native direct-FPM lookup resolutions, including

@@ -1,0 +1,73 @@
+{
+  "result": {
+    "status": "evaluated",
+    "interpolation": {
+      "method": "sol",
+      "timing_only": false,
+      "text_only": true,
+      "metadata_recovered": true
+    },
+    "artifact": {
+      "id": "fpm-bb246f22d9881787",
+      "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.parquet",
+      "sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b",
+      "metadata_path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.metadata.json",
+      "metadata_sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+    },
+    "training_count": 11062,
+    "test_count": 286,
+    "online_update_count": 0,
+    "training_population_sha256": null,
+    "scoring_population_sha256": "b971e76592720a72d7fd330504259d07c8328f83658a1ffc8648089acdaa618d",
+    "metrics": {
+      "all": {
+        "measured_count": 286,
+        "predicted_count": 286,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 2.3649068542084315,
+        "coverage_pct": 100.0
+      },
+      "prefill": {
+        "measured_count": 32,
+        "predicted_count": 32,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 7.311587130971183,
+        "coverage_pct": 100.0
+      },
+      "decode": {
+        "measured_count": 254,
+        "predicted_count": 254,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 1.7417030398131248,
+        "coverage_pct": 100.0
+      },
+      "mixed": {
+        "measured_count": 0,
+        "predicted_count": 0,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": null,
+        "coverage_pct": null
+      }
+    },
+    "cost": {
+      "fit_ms": 1658.3125,
+      "predict_us": 39.02724475524476,
+      "update_us": null,
+      "predict_count": 286,
+      "update_count": 0
+    },
+    "cold_start": {
+      "unavailable_before_first_prediction": 0,
+      "first_prediction_index": 0
+    }
+  },
+  "store_diagnostics": {}
+}

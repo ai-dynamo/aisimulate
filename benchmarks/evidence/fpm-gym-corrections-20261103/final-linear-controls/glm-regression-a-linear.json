@@ -1,0 +1,132 @@
+{
+  "result": {
+    "status": "evaluated",
+    "seed_target_normalization": {
+      "policies": [
+        "same_cell_batch_real_kv_extrapolation_v1"
+      ],
+      "source_parquet_sha256": [
+        "9f6bd22eee8c435ef360b772c75c7b8cb89d9d814bd62a95475cead76320575d"
+      ],
+      "source_metadata_sha256": [
+        "c0a8553836b3348d36453cdd9ce86f1509ba51a89bc6703e088bec468d4ec881"
+      ],
+      "marked_source_rows": 38,
+      "replaced_source_rows": 38,
+      "kept_source_rows": 0,
+      "replicated_seed_rows": 76,
+      "replacement_enabled": true,
+      "effective_targets_sha256": "0b608e32501b8374e4e0b505931b8733d1d811e3f548997c2d53aca90d247699",
+      "target_scope": "native_profile_seed_targets_not_additional_measurements"
+    },
+    "artifact": {
+      "id": "fpm-986dbc16de1ac899",
+      "path": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16/fpm/fpm_forward_perf.parquet",
+      "sha256": "9f6bd22eee8c435ef360b772c75c7b8cb89d9d814bd62a95475cead76320575d",
+      "metadata_path": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16/fpm/fpm_forward_perf.metadata.json",
+      "metadata_sha256": "c0a8553836b3348d36453cdd9ce86f1509ba51a89bc6703e088bec468d4ec881"
+    },
+    "training_count": 16458,
+    "test_count": 91330,
+    "online_update_count": 0,
+    "training_population_sha256": null,
+    "scoring_population_sha256": "8988bd26391aa5c34bdab8c12bae7c160640a48d71d8ace3803a5c7a64ad0a91",
+    "metrics": {
+      "all": {
+        "measured_count": 91330,
+        "predicted_count": 86430,
+        "unavailable_count": 4900,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 16.745135807812666,
+        "coverage_pct": 94.63484068761633
+      },
+      "prefill": {
+        "measured_count": 167,
+        "predicted_count": 167,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 52.72150676991135,
+        "coverage_pct": 100.0
+      },
+      "decode": {
+        "measured_count": 90983,
+        "predicted_count": 86263,
+        "unavailable_count": 4720,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 16.675487708967598,
+        "coverage_pct": 94.8122176670367
+      },
+      "mixed": {
+        "measured_count": 180,
+        "predicted_count": 0,
+        "unavailable_count": 180,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": null,
+        "coverage_pct": 0.0
+      }
+    },
+    "cost": {
+      "fit_ms": 2265.534834,
+      "predict_us": 57.6715095149458,
+      "update_us": null,
+      "predict_count": 91330,
+      "update_count": 0
+    },
+    "cold_start": {
+      "unavailable_before_first_prediction": 0,
+      "first_prediction_index": 0
+    }
+  },
+  "store_diagnostics": {
+    "stores": {
+      "7587897349734540570": [
+        {
+          "workload_kind": "pure_decode",
+          "ready": true,
+          "retained_observations": 64
+        },
+        {
+          "workload_kind": "contains_locally_mixed",
+          "ready": false,
+          "retained_observations": 0
+        },
+        {
+          "workload_kind": "cross_rank_aggregated",
+          "ready": false,
+          "retained_observations": 0
+        },
+        {
+          "workload_kind": "pure_prefill",
+          "ready": true,
+          "retained_observations": 64
+        }
+      ],
+      "7587897349734540572": [
+        {
+          "workload_kind": "pure_decode",
+          "ready": true,
+          "retained_observations": 64
+        },
+        {
+          "workload_kind": "contains_locally_mixed",
+          "ready": false,
+          "retained_observations": 0
+        },
+        {
+          "workload_kind": "cross_rank_aggregated",
+          "ready": false,
+          "retained_observations": 0
+        },
+        {
+          "workload_kind": "pure_prefill",
+          "ready": true,
+          "retained_observations": 64
+        }
+      ]
+    }
+  }
+}

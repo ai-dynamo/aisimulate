@@ -123,7 +123,7 @@
       : "Precomputed results at 10% steps. B distributes training within each workload; B+C uses a chronological prefix. A, C, and A+C stay unchanged."
     get("scenario-code").textContent = scenarios[scenario].code
     get("scenario-description").textContent = partition(scenario)
-    const protocolLabel = "fpm-scenarios-v13 · Strict C · One observation per five-second tick, including warmup"
+    const protocolLabel = (data?.protocol_id || "fpm-scenarios-v14") + " · Strict C · One observation per five-second tick, including warmup"
     get("protocol-label").textContent = data ? protocolLabel : "No scenario artifact loaded"
     get("protocol-version-note").textContent = data ? protocolLabel : "Strict C protocol · Waiting for a qualified evaluation artifact."
     get("gbdt-note").textContent = "GBDT uses the AISim public performance-model API. A and B freeze the offline fit. C, A+C, and B+C enable structural tree adaptation from admitted feedback; C starts with no offline data. The evidence panel records the fitted recipe and native diagnostics."
@@ -350,8 +350,8 @@
 
   function validate(result, branch, summary) {
     const ids = entries => Array.isArray(entries) ? entries.map(entry => typeof entry === "string" ? entry : entry?.id) : null
-    if (!object(result) || result.schema_version !== 13 || result.protocol_id !== "fpm-scenarios-v13") {
-      throw new Error("This page requires the strict five-second protocol (v13); earlier warmup results are not comparable")
+    if (!object(result) || ![13, 14].includes(result.schema_version) || result.protocol_id !== "fpm-scenarios-v" + result.schema_version) {
+      throw new Error("This page requires the strict five-second protocol (v13 or v14); earlier warmup results are not comparable")
     }
     if (JSON.stringify(ids(result.methods)) !== JSON.stringify(METHODS) || JSON.stringify(ids(result.scenarios)) !== JSON.stringify(SCENARIOS)
       || !Array.isArray(result.rows)) throw new Error("Invalid scenario artifact")

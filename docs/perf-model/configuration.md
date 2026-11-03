@@ -191,6 +191,17 @@ every query. Consult `readiness` and the store diagnostics for those details.
 Use `learned_selector_diagnostics()` to inspect per-key expert selection;
 switching experts does not change the combined model's `source`.
 
+For preparing learned or regression seeds from a native FPM profile,
+`model.fpm_seed_target_normalization()` exposes the loader's effective targets
+for rows marked `fake_fallback`. It returns original source row indices, raw
+and effective milliseconds, replacement flags, and policy/count diagnostics.
+Genuine rows remain unchanged and are omitted. The canonical loader performs
+the existing same-cell, same-batch real-KV extrapolation once; callers must not
+implement a second correction formula or treat corrected targets as new
+measurements. The source Parquet remains unchanged. This preparation API
+honors `AIC_FPM_FAKE_FALLBACK_RAW` and rejects non-native or non-FPM models;
+it does not perform a timing lookup or add query-coverage evidence.
+
 ### Speculative decoding configuration
 
 Use the same `best_available(config)` constructor and returned model for

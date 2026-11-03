@@ -1,0 +1,718 @@
+{
+  "result": {
+    "status": "evaluated",
+    "online_model": {
+      "recipe": {
+        "id": "gbdt_pr460_grouped_history_fifo_api_v13",
+        "label": "GBDT + grouped history + recent FIFO",
+        "feature_preset": "fpm5",
+        "features": [
+          "num_active_ranks",
+          "num_prefill_requests",
+          "sum_prefill_tokens",
+          "sum_prefill_kv_tokens",
+          "num_decode_requests",
+          "sum_decode_kv_tokens",
+          "max_rank_prefill_tokens",
+          "max_rank_decode_kv_tokens",
+          "max_rank_num_decode_requests",
+          "mean_prefill_chunk",
+          "mean_prefill_kv",
+          "prefill_attention_pairs",
+          "mean_decode_kv",
+          "log1p_sum_prefill_tokens",
+          "log1p_sum_prefill_kv_tokens",
+          "log1p_sum_decode_kv_tokens",
+          "log1p_prefill_attention_pairs"
+        ],
+        "training": {
+          "max_iter": 150,
+          "max_leaf_nodes": 15,
+          "learning_rate": 0.2,
+          "min_samples_leaf": 5,
+          "max_bins": 255,
+          "max_depth": null,
+          "l2_regularization": 0.0,
+          "loss": "squared_error",
+          "early_stopping": false,
+          "random_state": 0,
+          "min_store_rows": 20,
+          "target": "log_ms"
+        },
+        "model_scope": "worker_id_and_native_workload_store",
+        "implementation": "AISim canonical performance model API",
+        "correction_enabled": false,
+        "history_weight_population": "original_history_rows_and_current_recent_rows",
+        "online": {
+          "update_mode": "structural",
+          "history_bin_grouping": true,
+          "recent_sampling": "fifo",
+          "recent_window": 64,
+          "update_every": 1,
+          "history_weight": 0.1,
+          "history_weight_ramp_observations": 32,
+          "derivative_refresh": "lazy",
+          "split_sampling_rate": 0.5,
+          "split_rank_tolerance": 0.01,
+          "eager_refresh_interval": 32,
+          "seed": 0,
+          "mutable_tree_tail": null,
+          "update_step": 1.0,
+          "recent_max_age_observations": null
+        }
+      },
+      "diagnostics": {
+        "method": "gbdt",
+        "model_scope": "case_worker_and_native_workload_store",
+        "adaptation": "online",
+        "recipe": {
+          "id": "gbdt_pr460_grouped_history_fifo_api_v13",
+          "label": "GBDT + grouped history + recent FIFO",
+          "feature_preset": "fpm5",
+          "features": [
+            "num_active_ranks",
+            "num_prefill_requests",
+            "sum_prefill_tokens",
+            "sum_prefill_kv_tokens",
+            "num_decode_requests",
+            "sum_decode_kv_tokens",
+            "max_rank_prefill_tokens",
+            "max_rank_decode_kv_tokens",
+            "max_rank_num_decode_requests",
+            "mean_prefill_chunk",
+            "mean_prefill_kv",
+            "prefill_attention_pairs",
+            "mean_decode_kv",
+            "log1p_sum_prefill_tokens",
+            "log1p_sum_prefill_kv_tokens",
+            "log1p_sum_decode_kv_tokens",
+            "log1p_prefill_attention_pairs"
+          ],
+          "training": {
+            "max_iter": 150,
+            "max_leaf_nodes": 15,
+            "learning_rate": 0.2,
+            "min_samples_leaf": 5,
+            "max_bins": 255,
+            "max_depth": null,
+            "l2_regularization": 0.0,
+            "loss": "squared_error",
+            "early_stopping": false,
+            "random_state": 0,
+            "min_store_rows": 20,
+            "target": "log_ms"
+          },
+          "model_scope": "worker_id_and_native_workload_store",
+          "implementation": "AISim canonical performance model API",
+          "correction_enabled": false,
+          "history_weight_population": "original_history_rows_and_current_recent_rows",
+          "online": {
+            "update_mode": "structural",
+            "history_bin_grouping": true,
+            "recent_sampling": "fifo",
+            "recent_window": 64,
+            "update_every": 1,
+            "history_weight": 0.1,
+            "history_weight_ramp_observations": 32,
+            "derivative_refresh": "lazy",
+            "split_sampling_rate": 0.5,
+            "split_rank_tolerance": 0.01,
+            "eager_refresh_interval": 32,
+            "seed": 0,
+            "mutable_tree_tail": null,
+            "update_step": 1.0,
+            "recent_max_age_observations": null
+          }
+        },
+        "original_a": {
+          "source_sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8",
+          "metadata_sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6",
+          "artifact_id": "fpm-404c6f556bc0fbfa",
+          "sources": [
+            {
+              "path": "[local path omitted]",
+              "sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8"
+            },
+            {
+              "path": "[local path omitted]",
+              "sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6"
+            }
+          ],
+          "grouping": {
+            "coordinate_system": "iteration_totals_balanced_v1",
+            "partition_policy": "balanced_v1",
+            "rank_workload_reconstruction": "replicated_table_coordinates",
+            "target_scope": "recorded_aggregate_latency"
+          },
+          "staging": {
+            "fpm_artifact_id": "fpm-404c6f556bc0fbfa",
+            "fpm_parquet_sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8",
+            "fpm_row_count": 4874
+          }
+        },
+        "scopes": [
+          {
+            "worker_id": "7587897262541266439",
+            "workload_kind": "original_a",
+            "ready": true,
+            "stores": [
+              "pure_decode",
+              "pure_prefill"
+            ],
+            "offline_observations": 4874,
+            "submitted_observations": 968,
+            "bootstrap_observations": 19,
+            "feedback_observations": 951,
+            "ignored_observations": 0,
+            "store_additions": 0,
+            "pending_bootstrap": {
+              "contains_locally_mixed": 19
+            },
+            "initial_store_sha256": {
+              "pure_decode": "cc1212522957dfef62c283aec1e49f2d16173eec0f48e05f8c809b04e0cbe06f",
+              "pure_prefill": "b64cdbd6d8020a9bf4929a3fae0bff4d8bd58fe761fdf8eb674b271b10fba94f"
+            },
+            "final_store_sha256": {
+              "pure_decode": "0bf29b9fd55d05a6d10ff66111b49d650772707046f48e60dc9d12ca46b1fedd",
+              "pure_prefill": "ee03ac28fcd5558b964c04a893c5984ca748831e9f29c3f8a6aea78b46025231"
+            },
+            "native": {
+              "source": "learned_online",
+              "readiness": "ready",
+              "retained_observations": 67,
+              "correction_ready_buckets": 0,
+              "last_warning": null,
+              "provenance": {
+                "config_sha256": "2bfa457291ce8bbc2890b8bdf98a268e38fec90d2d2ed444276b66f8d616a7f3",
+                "deployment_identity": {
+                  "model": "moonshotai/Kimi-K3",
+                  "system": "gb300",
+                  "backend": "vllm",
+                  "backend_version": "0.1.dev19262",
+                  "worker_type": "aggregated",
+                  "tp": 8,
+                  "pp": 1,
+                  "attention_dp": 1,
+                  "dcp": null,
+                  "moe_tp_size": 1,
+                  "moe_ep_size": 8,
+                  "cp_size": 1,
+                  "gemm_quant_mode": "fp8_block",
+                  "moe_quant_mode": "w4a16_mxfp4",
+                  "fmha_quant_mode": "bfloat16",
+                  "fpm_fmha_quant_mode": null,
+                  "kvcache_quant_mode": "fp8",
+                  "comm_quant_mode": "half",
+                  "attention_backend": null,
+                  "moe_backend": null,
+                  "nextn": 0,
+                  "speculation": null,
+                  "kv_block_size": null,
+                  "decoder_replay": false
+                },
+                "estimator_config_sha256": "0fdcd147eb80603df4a95d99baef0248e80f49303a82c25370cc206a69c728b7",
+                "selected_systems_root": null,
+                "requested_estimation_mode": "fpm_learned",
+                "selected_estimation_mode": "fpm_learned",
+                "selection_failures": []
+              }
+            },
+            "online": {
+              "adaptation": "online",
+              "derivative_refresh": "lazy",
+              "identity_verified": true,
+              "model_version": 949,
+              "rejected_observations": 0,
+              "stores": {
+                "pure_decode": {
+                  "accepted_observations": 946,
+                  "anchor_rows": 192,
+                  "batches_since_eager": 0,
+                  "eager_updates": 946,
+                  "evicted_observations": 882,
+                  "historical_original_ids_sha256": "5539c662fd151ae39de8d4e747aa7abb49aa2b5567bf5326332fd3754e9807ae",
+                  "historical_storage_rows": 192,
+                  "history_bin_grouping": true,
+                  "history_compression_ratio": 1.0,
+                  "history_grouping_ms": 0.039625,
+                  "history_row_weight": 0.1333333333333333,
+                  "history_weight": 0.1,
+                  "history_weight_ramp_observations": 32,
+                  "lazy_fallbacks": 946,
+                  "lazy_updates": 0,
+                  "mutable_tree_tail": null,
+                  "pending_rows": 0,
+                  "publications": 946,
+                  "rebuilt_nodes": 2869555,
+                  "recent_max_age_observations": null,
+                  "recent_row_weight": 3.6,
+                  "recent_rows": 64,
+                  "recent_sampling": "fifo",
+                  "retained_row_count": 64,
+                  "retained_row_ids_sha256": "c96f2c29b26a9c11a73a22ec79c6ff5f2549a4d4d266324671b714a2f94be546",
+                  "training_state_bytes": 18853680,
+                  "update_failures": 0,
+                  "update_step": 1.0
+                },
+                "pure_prefill": {
+                  "accepted_observations": 3,
+                  "anchor_rows": 4682,
+                  "batches_since_eager": 0,
+                  "eager_updates": 3,
+                  "evicted_observations": 0,
+                  "historical_original_ids_sha256": "1b7ad08b0ba55d28104e78388a90adb577a5026bb94d7eaeb3708b1488114ff3",
+                  "historical_storage_rows": 4682,
+                  "history_bin_grouping": true,
+                  "history_compression_ratio": 1.0,
+                  "history_grouping_ms": 0.634166,
+                  "history_row_weight": 0.9156310070482699,
+                  "history_weight": 0.1,
+                  "history_weight_ramp_observations": 32,
+                  "lazy_fallbacks": 3,
+                  "lazy_updates": 0,
+                  "mutable_tree_tail": null,
+                  "pending_rows": 0,
+                  "publications": 3,
+                  "rebuilt_nodes": 12506,
+                  "recent_max_age_observations": null,
+                  "recent_row_weight": 132.671875,
+                  "recent_rows": 3,
+                  "recent_sampling": "fifo",
+                  "retained_row_count": 3,
+                  "retained_row_ids_sha256": "1c97b30fec4f2680403cf46d359fc3e92bf69a62909d8d88f51ba11be9af8767",
+                  "training_state_bytes": 112435692,
+                  "update_failures": 0,
+                  "update_step": 1.0
+                }
+              },
+              "training_state_bytes": 131289372,
+              "update_mode": "structural"
+            },
+            "selector": null,
+            "mixed_composition": {
+              "admissions": {
+                "contains_locally_mixed": 0,
+                "cross_rank_aggregated": 0
+              },
+              "feature_weights": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "interpolation": {
+                "metadata_sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6",
+                "parquet_sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8",
+                "provenance": {
+                  "config_sha256": "8df35d9fc57a3ddb8e2e578a1176f1e2279603caee47a8502a45877bba1b2797",
+                  "deployment_identity": {
+                    "model": "moonshotai/Kimi-K3",
+                    "system": "gb300",
+                    "backend": "vllm",
+                    "backend_version": "0.1.dev19262",
+                    "worker_type": "aggregated",
+                    "tp": 8,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "dcp": null,
+                    "moe_tp_size": 1,
+                    "moe_ep_size": 8,
+                    "cp_size": 1,
+                    "gemm_quant_mode": "fp8_block",
+                    "moe_quant_mode": "w4a16_mxfp4",
+                    "fmha_quant_mode": "bfloat16",
+                    "fpm_fmha_quant_mode": null,
+                    "kvcache_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "attention_backend": null,
+                    "moe_backend": null,
+                    "nextn": 0,
+                    "speculation": null,
+                    "kv_block_size": null,
+                    "decoder_replay": false
+                  },
+                  "estimator_config_sha256": "90b781c11a8841cf88a835cc9bb1631f550523da8ea5bbc295621a708f548393",
+                  "requested_estimation_mode": "fpm_interpolation",
+                  "selected_estimation_mode": "fpm_interpolation",
+                  "selected_systems_root": "[local path omitted]",
+                  "selection_failures": []
+                }
+              },
+              "policy": {
+                "calibration": {
+                  "factor_bounds": {
+                    "max": 2.0,
+                    "min": 0.5
+                  },
+                  "min_observations": 5,
+                  "sampling": {
+                    "bins_per_axis": [
+                      4,
+                      4
+                    ],
+                    "max_observations": 64
+                  }
+                },
+                "mode": "compose_calibrated",
+                "original_a": {
+                  "manifest_path": "[local path omitted]",
+                  "source_sha256": "9cbc4522cd8f38028a0d56d23a08a6f5a0eef014201183c280c3f4b9557d8e62"
+                },
+                "quality_gate": {
+                  "alpha": 0.05,
+                  "min_comparisons": 5
+                },
+                "scenario": "a_c"
+              },
+              "routes": [
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "cross_rank_aggregated"
+                },
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "contains_locally_mixed"
+                }
+              ],
+              "score_bounds": [
+                3191833600.0,
+                4096.0
+              ],
+              "selection_policy": "paired_ape_quality_gate",
+              "stores": {
+                "contains_locally_mixed": {
+                  "ready_buckets": 0,
+                  "retained_observations": 0
+                },
+                "cross_rank_aggregated": {
+                  "ready_buckets": 0,
+                  "retained_observations": 0
+                }
+              },
+              "version": "original_a_mixed_experts_attention_moe_v3"
+            }
+          },
+          {
+            "worker_id": "7587897262541266441",
+            "workload_kind": "original_a",
+            "ready": true,
+            "stores": [
+              "pure_decode",
+              "pure_prefill"
+            ],
+            "offline_observations": 4874,
+            "submitted_observations": 249,
+            "bootstrap_observations": 0,
+            "feedback_observations": 249,
+            "ignored_observations": 0,
+            "store_additions": 0,
+            "pending_bootstrap": {},
+            "initial_store_sha256": {
+              "pure_decode": "cc1212522957dfef62c283aec1e49f2d16173eec0f48e05f8c809b04e0cbe06f",
+              "pure_prefill": "b64cdbd6d8020a9bf4929a3fae0bff4d8bd58fe761fdf8eb674b271b10fba94f"
+            },
+            "final_store_sha256": {
+              "pure_decode": "cc1212522957dfef62c283aec1e49f2d16173eec0f48e05f8c809b04e0cbe06f",
+              "pure_prefill": "7d2af91aba82cc5130be0d8034f1a11713a9b03c7b07a642c9bb0238592da97a"
+            },
+            "native": {
+              "source": "learned_online",
+              "readiness": "ready",
+              "retained_observations": 64,
+              "correction_ready_buckets": 0,
+              "last_warning": null,
+              "provenance": {
+                "config_sha256": "43db9e2e513eaf51bb4942cd65e0877a248f82c0fb98c5388876497bc38e1706",
+                "deployment_identity": {
+                  "model": "moonshotai/Kimi-K3",
+                  "system": "gb300",
+                  "backend": "vllm",
+                  "backend_version": "0.1.dev19262",
+                  "worker_type": "aggregated",
+                  "tp": 8,
+                  "pp": 1,
+                  "attention_dp": 1,
+                  "dcp": null,
+                  "moe_tp_size": 1,
+                  "moe_ep_size": 8,
+                  "cp_size": 1,
+                  "gemm_quant_mode": "fp8_block",
+                  "moe_quant_mode": "w4a16_mxfp4",
+                  "fmha_quant_mode": "bfloat16",
+                  "fpm_fmha_quant_mode": null,
+                  "kvcache_quant_mode": "fp8",
+                  "comm_quant_mode": "half",
+                  "attention_backend": null,
+                  "moe_backend": null,
+                  "nextn": 0,
+                  "speculation": null,
+                  "kv_block_size": null,
+                  "decoder_replay": false
+                },
+                "estimator_config_sha256": "7decc80a1587ef5de0a815b6a4d1f14c6985846ecbe2f9f1de08bf7836aa34dd",
+                "selected_systems_root": null,
+                "requested_estimation_mode": "fpm_learned",
+                "selected_estimation_mode": "fpm_learned",
+                "selection_failures": []
+              }
+            },
+            "online": {
+              "adaptation": "online",
+              "derivative_refresh": "lazy",
+              "identity_verified": true,
+              "model_version": 249,
+              "rejected_observations": 0,
+              "stores": {
+                "pure_decode": {
+                  "accepted_observations": 0,
+                  "anchor_rows": 192,
+                  "batches_since_eager": 0,
+                  "eager_updates": 0,
+                  "evicted_observations": 0,
+                  "historical_original_ids_sha256": "5539c662fd151ae39de8d4e747aa7abb49aa2b5567bf5326332fd3754e9807ae",
+                  "historical_storage_rows": 192,
+                  "history_bin_grouping": true,
+                  "history_compression_ratio": 1.0,
+                  "history_grouping_ms": 0.032,
+                  "history_row_weight": 1.0,
+                  "history_weight": 0.1,
+                  "history_weight_ramp_observations": 32,
+                  "lazy_fallbacks": 0,
+                  "lazy_updates": 0,
+                  "mutable_tree_tail": null,
+                  "pending_rows": 0,
+                  "publications": 0,
+                  "rebuilt_nodes": 0,
+                  "recent_max_age_observations": null,
+                  "recent_row_weight": 1.0,
+                  "recent_rows": 0,
+                  "recent_sampling": "fifo",
+                  "retained_row_count": 0,
+                  "retained_row_ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "training_state_bytes": 18996672,
+                  "update_failures": 0,
+                  "update_step": 1.0
+                },
+                "pure_prefill": {
+                  "accepted_observations": 249,
+                  "anchor_rows": 4682,
+                  "batches_since_eager": 0,
+                  "eager_updates": 249,
+                  "evicted_observations": 185,
+                  "historical_original_ids_sha256": "1b7ad08b0ba55d28104e78388a90adb577a5026bb94d7eaeb3708b1488114ff3",
+                  "historical_storage_rows": 4682,
+                  "history_bin_grouping": true,
+                  "history_compression_ratio": 1.0,
+                  "history_grouping_ms": 0.561459,
+                  "history_row_weight": 0.10136693720632206,
+                  "history_weight": 0.1,
+                  "history_weight_ramp_observations": 32,
+                  "lazy_fallbacks": 249,
+                  "lazy_updates": 0,
+                  "mutable_tree_tail": null,
+                  "pending_rows": 0,
+                  "publications": 249,
+                  "rebuilt_nodes": 932558,
+                  "recent_max_age_observations": null,
+                  "recent_row_weight": 66.74062500000001,
+                  "recent_rows": 64,
+                  "recent_sampling": "fifo",
+                  "retained_row_count": 64,
+                  "retained_row_ids_sha256": "ad786a38bf0fa2951d6855ac94edeced22b4ca5c20b64a671fc9614f5f7e9f5f",
+                  "training_state_bytes": 110965344,
+                  "update_failures": 0,
+                  "update_step": 1.0
+                }
+              },
+              "training_state_bytes": 129962016,
+              "update_mode": "structural"
+            },
+            "selector": null,
+            "mixed_composition": {
+              "admissions": {
+                "contains_locally_mixed": 0,
+                "cross_rank_aggregated": 0
+              },
+              "feature_weights": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "interpolation": {
+                "metadata_sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6",
+                "parquet_sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8",
+                "provenance": {
+                  "config_sha256": "8df35d9fc57a3ddb8e2e578a1176f1e2279603caee47a8502a45877bba1b2797",
+                  "deployment_identity": {
+                    "model": "moonshotai/Kimi-K3",
+                    "system": "gb300",
+                    "backend": "vllm",
+                    "backend_version": "0.1.dev19262",
+                    "worker_type": "aggregated",
+                    "tp": 8,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "dcp": null,
+                    "moe_tp_size": 1,
+                    "moe_ep_size": 8,
+                    "cp_size": 1,
+                    "gemm_quant_mode": "fp8_block",
+                    "moe_quant_mode": "w4a16_mxfp4",
+                    "fmha_quant_mode": "bfloat16",
+                    "fpm_fmha_quant_mode": null,
+                    "kvcache_quant_mode": "fp8",
+                    "comm_quant_mode": "half",
+                    "attention_backend": null,
+                    "moe_backend": null,
+                    "nextn": 0,
+                    "speculation": null,
+                    "kv_block_size": null,
+                    "decoder_replay": false
+                  },
+                  "estimator_config_sha256": "90b781c11a8841cf88a835cc9bb1631f550523da8ea5bbc295621a708f548393",
+                  "requested_estimation_mode": "fpm_interpolation",
+                  "selected_estimation_mode": "fpm_interpolation",
+                  "selected_systems_root": "[local path omitted]",
+                  "selection_failures": []
+                }
+              },
+              "policy": {
+                "calibration": {
+                  "factor_bounds": {
+                    "max": 2.0,
+                    "min": 0.5
+                  },
+                  "min_observations": 5,
+                  "sampling": {
+                    "bins_per_axis": [
+                      4,
+                      4
+                    ],
+                    "max_observations": 64
+                  }
+                },
+                "mode": "compose_calibrated",
+                "original_a": {
+                  "manifest_path": "[local path omitted]",
+                  "source_sha256": "fdf6a08b61c341f7b7a32f9d868cf783f9bca114265d8a5ff77ce48dc7a6d57d"
+                },
+                "quality_gate": {
+                  "alpha": 0.05,
+                  "min_comparisons": 5
+                },
+                "scenario": "a_c"
+              },
+              "routes": [
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "cross_rank_aggregated"
+                },
+                {
+                  "accepted_a_groups": 0,
+                  "fallback_eligible": true,
+                  "reason": "missing_original_a_data",
+                  "workload_kind": "contains_locally_mixed"
+                }
+              ],
+              "score_bounds": [
+                3191833600.0,
+                4096.0
+              ],
+              "selection_policy": "paired_ape_quality_gate",
+              "stores": {
+                "contains_locally_mixed": {
+                  "ready_buckets": 0,
+                  "retained_observations": 0
+                },
+                "cross_rank_aggregated": {
+                  "ready_buckets": 0,
+                  "retained_observations": 0
+                }
+              },
+              "version": "original_a_mixed_experts_attention_moe_v3"
+            }
+          }
+        ]
+      }
+    },
+    "artifact": {
+      "id": "fpm-404c6f556bc0fbfa",
+      "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-on.parquet",
+      "sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8",
+      "metadata_path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-on.metadata.json",
+      "metadata_sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6"
+    },
+    "training_count": 9748,
+    "test_count": 284398,
+    "online_update_count": 1200,
+    "training_population_sha256": null,
+    "scoring_population_sha256": "c346c89a26ecb0c2f0191bd29a29679fb3466bd2e06e8c799154224c52b6bc45",
+    "metrics": {
+      "all": {
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "unavailable_count": 127,
+        "error_count": 2054,
+        "tuning_error_count": 17,
+        "mape_pct": 1.8357069542401068,
+        "coverage_pct": 99.23311696988024
+      },
+      "prefill": {
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 5.744958952863025,
+        "coverage_pct": 100.0
+      },
+      "decode": {
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 1.6406704649000943,
+        "coverage_pct": 100.0
+      },
+      "mixed": {
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "unavailable_count": 127,
+        "error_count": 2054,
+        "tuning_error_count": 17,
+        "mape_pct": null,
+        "coverage_pct": 0.0
+      }
+    },
+    "cost": {
+      "fit_ms": 1267.276875,
+      "predict_us": 10.605563295100529,
+      "update_us": 45295.30425143796,
+      "predict_count": 284398,
+      "update_count": 1217
+    },
+    "cold_start": {
+      "unavailable_before_first_prediction": 0,
+      "first_prediction_index": 0
+    },
+    "online_schedule": {
+      "interval_ms": 5000,
+      "time_basis": "event_time_ms",
+      "warmup_policy": "none",
+      "selection_policy": "first_observation_at_or_after_tick",
+      "elapsed_ms": 6397596.0,
+      "scheduled_update_count": 1217,
+      "warmup_update_count": 0,
+      "update_error_count": 17,
+      "submitted_observation_count": 1217,
+      "skipped_observation_count": 283181
+    }
+  },
+  "store_diagnostics": {}
+}

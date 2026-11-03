@@ -10,8 +10,8 @@ from copy import deepcopy
 
 from scripts.fpm_accuracy.contract import COUNTS, WORKLOADS, keys, path, require, sha, text, validate_summary
 
-SCHEMA_VERSION = 13
-PROTOCOL_ID = "fpm-scenarios-v13"
+SCHEMA_VERSION = 14
+PROTOCOL_ID = "fpm-scenarios-v14"
 TRAIN_PERCENTAGES = tuple(range(10, 100, 10))
 DEFAULT_TRAIN_PERCENT = 50
 ONLINE_UPDATE_INTERVAL_MS = 5000
@@ -19,6 +19,17 @@ METHODS = ("warmup", "nowarmup", "linear", "spline", "gbdt", "hybrid", "selector
 SCENARIOS = ("a", "b", "c", "ac", "bc")
 ONLINE_SCENARIOS = frozenset(("c", "ac", "bc"))
 OFFLINE_ARTIFACT_SCENARIOS = frozenset(("a", "ac"))
+OFFLINE_REGRESSION_SEED_ORDER = {
+    "policy": "canonical_feature_sort_then_fixed_shuffle_v1",
+    "seed": 0,
+    "shuffle": "python_random_shuffle",
+    "methods": ["spline"],
+    "scenarios": ["a", "ac"],
+    "scope": "independent_worker_groups",
+    "sort_key": "configuration_id; ranks by dp_rank: version, dp_rank, workload_kind, scheduled and queued features",
+    "excluded": ["latency", "worker_id", "source_row_index", "counter_id", "capture_id", "artifact_hash"],
+    "duplicate_feature_keys": "reject",
+}
 
 GBDT_FROZEN_RECIPE = {
     "id": "gbdt_pr460_frozen_api_v13",
@@ -201,6 +212,7 @@ PROTOCOL_METADATA = {
     },
     "artifact_selection": "Select the first artifact by (artifact_id, path, sha256), independently of target "
     "error. Regression prefers KV warmup on.",
+    "offline_regression_seed_order": OFFLINE_REGRESSION_SEED_ORDER,
     "coverage": "MAPE averages absolute percentage errors over successful predictions. Coverage retains all "
     "eligible targets, including cold-start misses.",
     "split": {
@@ -385,6 +397,7 @@ def _result(result, row, scenario, method, version, *, train_percent=DEFAULT_TRA
             "cold_start",
             *(("reason",) if "reason" in result else ()),
             *(("interpolation",) if "interpolation" in result else ()),
+            *(("seed_target_normalization",) if version >= 14 and "seed_target_normalization" in result else ()),
             *(("online_schedule",) if version >= 2 and scenario in ONLINE_SCENARIOS else ()),
             *(("offline_model",) if version >= 12 and method == "gbdt" and scenario in ("a", "b") else ()),
             *(
@@ -416,6 +429,55 @@ def _result(result, row, scenario, method, version, *, train_percent=DEFAULT_TRA
     require(row["status"] == "ready" or status == row["status"], "scenario source status mismatch")
     for name in ("training_count", "test_count", "online_update_count"):
         _count(result[name])
+    if "seed_target_normalization" in result:
+        require(scenario in ("a", "ac") and method not in ("warmup", "nowarmup"), "unexpected seed normalization")
+        details = result["seed_target_normalization"]
+        keys(
+            details,
+            (
+                "policies",
+                "source_parquet_sha256",
+                "source_metadata_sha256",
+                "marked_source_rows",
+                "replaced_source_rows",
+                "kept_source_rows",
+                "replicated_seed_rows",
+                "replacement_enabled",
+                "effective_targets_sha256",
+                "target_scope",
+            ),
+        )
+        require(
+            details["policies"] == ["same_cell_batch_real_kv_extrapolation_v1"], "invalid seed normalization policy"
+        )
+        artifact = result["artifact"]
+        require(isinstance(artifact, dict), "seed normalization requires an original artifact")
+        for field, artifact_field in (
+            ("source_parquet_sha256", "sha256"),
+            ("source_metadata_sha256", "metadata_sha256"),
+        ):
+            require(details[field] == [artifact[artifact_field]], "seed normalization source mismatch")
+        for field in ("marked_source_rows", "replaced_source_rows", "kept_source_rows", "replicated_seed_rows"):
+            _count(details[field])
+        require(details["marked_source_rows"] > 0, "seed normalization has no marked source rows")
+        require(
+            details["marked_source_rows"] == details["replaced_source_rows"] + details["kept_source_rows"],
+            "seed normalization row count mismatch",
+        )
+        require(
+            details["marked_source_rows"] <= details["replicated_seed_rows"] <= result["training_count"],
+            "seed normalization replication count mismatch",
+        )
+        require(type(details["replacement_enabled"]) is bool, "invalid seed normalization flag")
+        require(
+            details["replacement_enabled"] or details["replaced_source_rows"] == 0,
+            "disabled seed replacement changed targets",
+        )
+        sha(details["effective_targets_sha256"], 64)
+        require(
+            details["target_scope"] == "native_profile_seed_targets_not_additional_measurements",
+            "invalid seed target scope",
+        )
     sha(result["scoring_population_sha256"], 64)
     if result["training_population_sha256"] is not None:
         sha(result["training_population_sha256"], 64)

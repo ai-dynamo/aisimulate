@@ -1,0 +1,204 @@
+{
+  "result": {
+    "status": "evaluated",
+    "seed_target_normalization": {
+      "policies": [
+        "same_cell_batch_real_kv_extrapolation_v1"
+      ],
+      "source_parquet_sha256": [
+        "c5415e92b228026d4f62b916243999aa76dbf108205804fdd95a6dbc34e26892"
+      ],
+      "source_metadata_sha256": [
+        "aab7bb66f7005db897ec4086ea468da74f89a38935883ed9e5189b6a635096dc"
+      ],
+      "marked_source_rows": 102,
+      "replaced_source_rows": 102,
+      "kept_source_rows": 0,
+      "replicated_seed_rows": 204,
+      "replacement_enabled": true,
+      "effective_targets_sha256": "e2408fc66a726386236c32ae301c06504146123ed2aaa11ed9f437552c225bef",
+      "target_scope": "native_profile_seed_targets_not_additional_measurements"
+    },
+    "artifact": {
+      "id": "fpm-1f38f50de4ffd0d5",
+      "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/fpm/fpm_forward_perf.parquet",
+      "sha256": "c5415e92b228026d4f62b916243999aa76dbf108205804fdd95a6dbc34e26892",
+      "metadata_path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+      "metadata_sha256": "aab7bb66f7005db897ec4086ea468da74f89a38935883ed9e5189b6a635096dc"
+    },
+    "training_count": 22124,
+    "test_count": 157007,
+    "online_update_count": 0,
+    "training_population_sha256": null,
+    "scoring_population_sha256": "f911b25614d13b421314659d92dad32eb35c4f8029a13d51e87ae06a3b771590",
+    "metrics": {
+      "all": {
+        "measured_count": 157007,
+        "predicted_count": 153270,
+        "unavailable_count": 3737,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 9.09572541447617,
+        "coverage_pct": 97.61985134420759
+      },
+      "prefill": {
+        "measured_count": 4306,
+        "predicted_count": 4306,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 27.310095574178835,
+        "coverage_pct": 100.0
+      },
+      "decode": {
+        "measured_count": 148964,
+        "predicted_count": 148964,
+        "unavailable_count": 0,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": 8.569215130731884,
+        "coverage_pct": 100.0
+      },
+      "mixed": {
+        "measured_count": 3737,
+        "predicted_count": 0,
+        "unavailable_count": 3737,
+        "error_count": 0,
+        "tuning_error_count": 0,
+        "mape_pct": null,
+        "coverage_pct": 0.0
+      }
+    },
+    "cost": {
+      "fit_ms": 2064.70175,
+      "predict_us": 6.832651149311814,
+      "update_us": null,
+      "predict_count": 157007,
+      "update_count": 0
+    },
+    "cold_start": {
+      "unavailable_before_first_prediction": 0,
+      "first_prediction_index": 0
+    }
+  },
+  "store_diagnostics": {
+    "stores": {
+      "7587896964370011937": [
+        {
+          "workload_kind": "pure_decode",
+          "ready": true,
+          "retained_observations": 64,
+          "spline": {
+            "initialized": true,
+            "ready": true,
+            "accepted_observations": 1557,
+            "knot_searches": 9,
+            "last_search_observation": 1517,
+            "numerical_rebuilds": 109,
+            "batch_fallbacks": 79
+          }
+        },
+        {
+          "workload_kind": "contains_locally_mixed",
+          "ready": false,
+          "retained_observations": 0,
+          "spline": {
+            "initialized": false,
+            "ready": false,
+            "accepted_observations": 0,
+            "knot_searches": 0,
+            "last_search_observation": null,
+            "numerical_rebuilds": 0,
+            "batch_fallbacks": 0
+          }
+        },
+        {
+          "workload_kind": "cross_rank_aggregated",
+          "ready": false,
+          "retained_observations": 0,
+          "spline": {
+            "initialized": false,
+            "ready": false,
+            "accepted_observations": 0,
+            "knot_searches": 0,
+            "last_search_observation": null,
+            "numerical_rebuilds": 0,
+            "batch_fallbacks": 0
+          }
+        },
+        {
+          "workload_kind": "pure_prefill",
+          "ready": true,
+          "retained_observations": 64,
+          "spline": {
+            "initialized": true,
+            "ready": true,
+            "accepted_observations": 9505,
+            "knot_searches": 148,
+            "last_search_observation": 9450,
+            "numerical_rebuilds": 31,
+            "batch_fallbacks": 5
+          }
+        }
+      ],
+      "7587896970839926314": [
+        {
+          "workload_kind": "pure_decode",
+          "ready": true,
+          "retained_observations": 64,
+          "spline": {
+            "initialized": true,
+            "ready": true,
+            "accepted_observations": 1557,
+            "knot_searches": 9,
+            "last_search_observation": 1517,
+            "numerical_rebuilds": 109,
+            "batch_fallbacks": 79
+          }
+        },
+        {
+          "workload_kind": "contains_locally_mixed",
+          "ready": false,
+          "retained_observations": 0,
+          "spline": {
+            "initialized": false,
+            "ready": false,
+            "accepted_observations": 0,
+            "knot_searches": 0,
+            "last_search_observation": null,
+            "numerical_rebuilds": 0,
+            "batch_fallbacks": 0
+          }
+        },
+        {
+          "workload_kind": "cross_rank_aggregated",
+          "ready": false,
+          "retained_observations": 0,
+          "spline": {
+            "initialized": false,
+            "ready": false,
+            "accepted_observations": 0,
+            "knot_searches": 0,
+            "last_search_observation": null,
+            "numerical_rebuilds": 0,
+            "batch_fallbacks": 0
+          }
+        },
+        {
+          "workload_kind": "pure_prefill",
+          "ready": true,
+          "retained_observations": 64,
+          "spline": {
+            "initialized": true,
+            "ready": true,
+            "accepted_observations": 9505,
+            "knot_searches": 148,
+            "last_search_observation": 9450,
+            "numerical_rebuilds": 31,
+            "batch_fallbacks": 5
+          }
+        }
+      ]
+    }
+  }
+}
