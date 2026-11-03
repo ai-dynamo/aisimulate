@@ -14,6 +14,7 @@ from test_agentx_accuracy import bundle, result
 from scripts.e2e_accuracy.benchmark_features import (
     FEATURES,
     add_agentx_receipt,
+    add_branch_receipt,
     add_preemption_receipt,
     from_vllm_receipt,
     validate,
@@ -250,3 +251,14 @@ def test_preemption_counts_retain_observed_interval_scope_without_claiming_disab
     receipt["intervals"][0]["preemptions"] = 2
     rows = {row["id"]: row for row in add_preemption_receipt(metadata(), receipt, "a" * 64)["features"]}
     assert rows["events.preemption"]["observed"] == {"state": "exercised", "count": 2}
+
+
+def test_branch_counters_preserve_dispatch_and_join_definitions_and_unknowns():
+    value = add_branch_receipt(metadata(), {"branch_stats": {"children_spawned": 5, "parents_resumed": 2}}, "a" * 64)
+    rows = {row["id"]: row for row in value["features"]}
+    assert rows["events.subagent_spawn"]["observed"]["count"] == 5
+    assert rows["events.join"]["observed"]["count"] == 2
+    assert rows["events.tool_wait"]["observed"]["count"] is None
+    assert rows["events.join"]["evidence"][0]["pointer"] == "/branch_stats/parents_resumed"
+    with pytest.raises(ValueError, match="branch counter"):
+        add_branch_receipt(metadata(), {"branch_stats": {"children_spawned": -1}}, "a" * 64)

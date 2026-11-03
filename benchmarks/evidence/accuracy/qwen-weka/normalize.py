@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 from scripts.e2e_accuracy.benchmark_features import (
     add_agentx_receipt,
+    add_branch_receipt,
     add_preemption_receipt,
     from_vllm_receipt,
     validate as validate_features,
@@ -92,80 +93,87 @@ def metric(record, name, unit=None):
     if not isinstance(item, dict) or (unit is not None and item.get("unit") != unit):
         raise ValueError(f"Unexpected metric encoding or unit: {name}")
     value = item.get("value")
-    return value if type(value) in (int, float) and math.isfinite(value) else None
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        return None
+    if unit == "tokens":
+        return int(value) if float(value).is_integer() else None
+    return value
+
+
+def reference_row(row, namespaces):
+    meta = row["metadata"]
+    source, outer, inner = (
+        meta.get("source_trace_id"),
+        meta.get("source_outer_idx"),
+        meta.get("source_inner_idx"),
+    )
+    lineage = source in namespaces and type(outer) is int
+    key = (
+        f"{namespaces[source]}:request:outer:{outer}" + (f":inner:{inner}" if inner is not None else "")
+        if lineage
+        else f"unresolved:{meta['x_request_id']}"
+    )
+    output = metric(row, "output_sequence_length", "tokens")
+    input_length = metric(row, "input_sequence_length", "tokens")
+    if input_length is None:
+        input_length = metric(row, "error_isl", "tokens")
+    failed = bool(row.get("error") or meta.get("was_cancelled") or meta.get("context_overflow_skip") or output is None)
+    decode = metric(row, "full_decode_duration", "ms")
+    phase = (
+        "profile" if meta.get("phase_kind", meta.get("benchmark_phase")) in {"profile", "profiling"} else "preparation"
+    )
+    return {
+        "key": key,
+        "identity_valid": lineage,
+        "request_id": meta.get("x_request_id"),
+        "phase": phase,
+        "source_trace_id": source,
+        "source_outer_idx": outer,
+        "source_inner_idx": inner,
+        "conversation_id": meta.get("conversation_id"),
+        "session_id": meta.get("x_correlation_id"),
+        "start_ns": str(meta["request_start_ns"]),
+        "agent_depth": meta.get("agent_depth"),
+        "end_ns": str(meta["request_end_ns"]) if meta.get("request_end_ns") is not None else None,
+        "input_tokens": input_length,
+        "output_tokens": output,
+        "ttft_ms": metric(row, "time_to_first_token", "ms"),
+        "tpot_ms": decode / (output - 1) if decode is not None and output is not None and output > 1 else None,
+        "e2e_ms": metric(row, "request_latency", "ms"),
+        "cached_tokens": metric(row, "usage_prompt_cache_read_tokens", "tokens"),
+        "error": (
+            "context_overflow"
+            if meta.get("context_overflow_skip")
+            else "measurement_metrics_unavailable"
+            if output is None and not row.get("error")
+            else "measurement_failed"
+        )
+        if failed
+        else None,
+    }
 
 
 def references(profile, namespaces):
-    result = []
     with profile.open() as stream:
-        for line in stream:
-            row = json.loads(line)
-            meta = row["metadata"]
-            source, outer, inner = (
-                meta.get("source_trace_id"),
-                meta.get("source_outer_idx"),
-                meta.get("source_inner_idx"),
-            )
-            lineage = source in namespaces and type(outer) is int
-            key = (
-                f"{namespaces[source]}:request:outer:{outer}" + (f":inner:{inner}" if inner is not None else "")
-                if lineage
-                else f"unresolved:{meta['x_request_id']}"
-            )
-            output = metric(row, "output_sequence_length", "tokens")
-            input_length = metric(row, "input_sequence_length", "tokens")
-            if input_length is None:
-                input_length = metric(row, "error_isl", "tokens")
-            failed = bool(
-                row.get("error") or meta.get("was_cancelled") or meta.get("context_overflow_skip") or output is None
-            )
-            decode = metric(row, "full_decode_duration", "ms")
-            phase = (
-                "profile"
-                if meta.get("phase_kind", meta.get("benchmark_phase")) in {"profile", "profiling"}
-                else "preparation"
-            )
-            result.append(
-                {
-                    "key": key,
-                    "identity_valid": lineage,
-                    "request_id": meta.get("x_request_id"),
-                    "phase": phase,
-                    "source_trace_id": source,
-                    "source_outer_idx": outer,
-                    "source_inner_idx": inner,
-                    "conversation_id": meta.get("conversation_id"),
-                    "session_id": meta.get("x_correlation_id"),
-                    "start_ns": str(meta["request_start_ns"]),
-                    "agent_depth": meta.get("agent_depth"),
-                    "end_ns": str(meta["request_end_ns"]) if meta.get("request_end_ns") is not None else None,
-                    "input_tokens": input_length,
-                    "output_tokens": output,
-                    "ttft_ms": metric(row, "time_to_first_token", "ms"),
-                    "tpot_ms": decode / (output - 1)
-                    if decode is not None and output is not None and output > 1
-                    else None,
-                    "e2e_ms": metric(row, "request_latency", "ms"),
-                    "cached_tokens": metric(row, "usage_prompt_cache_read_tokens", "tokens"),
-                    "error": "measured_request_failed" if failed else None,
-                }
-            )
-    profile_keys = [r["key"] for r in result if r["phase"] == "profile"]
-    if not profile_keys:
-        raise ValueError("Measured profile is empty")
-    return result
+        return [reference_row(json.loads(line), namespaces) for line in stream]
 
 
-def add_stream_observations(references, raw):
+def add_stream_observations(references, raw, namespaces):
     """Retain observed token counts/times only when every output token reconciles."""
     by_id = {row["request_id"]: row for row in references}
+    if len(by_id) != len(references):
+        raise ValueError("Duplicate measured request UUID")
     seen = set()
     with raw.open() as stream:
         for line in stream:
             row = json.loads(line)
             identity = row["metadata"]["x_request_id"]
-            if identity not in by_id or identity in seen:
-                raise ValueError("Raw stream record has missing or duplicate request identity")
+            if identity in seen:
+                raise ValueError("Raw stream record has duplicate request identity")
+            if identity not in by_id:
+                retained = reference_row(row, namespaces)
+                references.append(retained)
+                by_id[identity] = retained
             seen.add(identity)
             reference = by_id[identity]
             chunks = []
@@ -180,7 +188,7 @@ def add_stream_observations(references, raw):
                         reference["cached_tokens"] = cached
                     count = 0
                     for choice in event.get("choices", []):
-                        tokens = choice.get("token_ids", choice.get("delta", {}).get("token_ids"))
+                        tokens = choice.get("token_ids", (choice.get("delta") or {}).get("token_ids"))
                         if tokens is not None:
                             if not isinstance(tokens, list) or any(type(token) is not int for token in tokens):
                                 raise ValueError("Invalid recorded output token IDs")
@@ -230,7 +238,9 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     raw = run / "benchmark/profile_export.jsonl"
     refs = references(raw, namespaces)
     streams = run / "benchmark/profile_export_raw.jsonl"
-    add_stream_observations(refs, streams)
+    add_stream_observations(refs, streams, namespaces)
+    if not any(row["phase"] == "profile" for row in refs):
+        raise ValueError("Measured profile is empty")
     export = read(run / "benchmark/server_metrics_export.json")
     ranges = export["summary"]["phase_time_ranges"]
     start = int(ranges["profiling"]["start_ns"])
@@ -247,6 +257,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
                 "identity_valid": row["identity_valid"],
                 "phase": row["phase"],
                 "status": "failed" if row["error"] else "completed",
+                "failure_reason": row["error"],
                 "start_ms": (int(row["start_ns"]) - origin) / 1e6,
                 "end_ms": (int(row["end_ns"]) - origin) / 1e6 if row["end_ns"] else None,
                 "input_length": row["input_tokens"],
@@ -266,12 +277,14 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
                     "output": int(row["output_tokens"]),
                 }
             )
-    selections = {}
+    selections, selected_indices = {}, {}
+    corpus_order = list(namespaces)
     cuts = [json.loads(line) for line in (run / "client-record/trajectory-cuts.jsonl").read_text().splitlines()]
     for cut in cuts:
         lane = cut["lane_index"]
         if lane is not None and lane not in selections:
             root = cut["root_id"]
+            selected_indices[lane] = corpus_order.index(root)
             selections[lane] = {
                 "source_play_id": f"{namespaces[root]}:play:{root}",
                 "t_star_ms": cut["snapshot"]["t_star_ms"],
@@ -279,6 +292,9 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     lanes = read(run / "outcome.json")["lanes"]
     if set(selections) != set(range(lanes)):
         raise ValueError("Missing recorded initial lane selections")
+    indices = [selected_indices[i] for i in range(lanes)]
+    if indices != sorted(set(indices)):
+        raise ValueError("Recorded initial selections do not follow the sequential corpus order")
     config = read(template)
     config["engine"].update(estimation_mode="op_level", fallback_policy="deny", database_mode="SILICON")
     config["engine"]["workers"]["aggregated"]["timing"] = {"type": "default"}
@@ -300,7 +316,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
             "agentic_warmup_policy": "live_trajectory_v1",
             "agentic_snapshot": {
                 "seed": 42,
-                "corpus_cursor": lanes,
+                "corpus_cursor": indices[-1] + 1,
                 "initial_selections": [selections[i] for i in range(lanes)],
             },
             "agentic_profile": {
@@ -329,6 +345,8 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     events = counter_receipt(run / "metrics.jsonl", start, end)
     write(output / "metric-event-receipt.json", events)
     features = add_preemption_receipt(features, events, digest(output / "metric-event-receipt.json"))
+    summary = run / "benchmark/profile_export_aiperf.json"
+    features = add_branch_receipt(features, read(summary), digest(summary))
     write(output / "feature_metadata.json", features)
     write(output / "references.json", refs)
     write(output / "observations.json", observations)
@@ -350,6 +368,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
         (raw, "raw.jsonl"),
         (streams, "stream-records.jsonl"),
         (run / "metrics.jsonl", "server-scrapes.jsonl"),
+        (summary, "harness-results.json"),
         (run / "cache-receipt.json", "runtime-receipt.json"),
         (run / "client-record/resolved-dataset.json", "harness-receipt.json"),
         (run / "benchmark/server_metrics_export.json", "server-metrics.json"),
@@ -361,6 +380,8 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
         (run.parent / "provenance.json", "provenance.json"),
     ):
         shutil.copyfile(source, output / name)
+    if (run.parent / "collector-source.json").exists():
+        shutil.copyfile(run.parent / "collector-source.json", output / "collector-source.json")
     if silicon:
         selected = read(silicon)
         if selected["point_id"] != identity:
@@ -425,6 +446,7 @@ def manifest(root, corpus):
             "raw_streams": path / "stream-records.jsonl",
             "server_scrapes": path / "server-scrapes.jsonl",
             "metric_event_receipt": path / "metric-event-receipt.json",
+            "harness_results": path / "harness-results.json",
         }
         for name in (
             "server-metrics",
@@ -437,6 +459,8 @@ def manifest(root, corpus):
             "provenance",
         ):
             files[name.replace("-", "_")] = path / f"{name}.json"
+        if (path / "collector-source.json").exists():
+            files["collector_source"] = path / "collector-source.json"
         runs.append(
             {
                 "id": identity,
