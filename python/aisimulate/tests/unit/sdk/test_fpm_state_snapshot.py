@@ -565,7 +565,7 @@ def test_restore_never_adopts_tables_parsed_from_a_later_data_generation(tmp_pat
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("change", ["rewrite", "retarget"])
+@pytest.mark.parametrize("change", ["rewrite", "retarget", "retarget-behind"])
 def test_restore_never_shares_tables_that_parsed_after_the_data_changed_back(tmp_path, change):
     from aisimulate_core.sdk.operations import clear_all_op_caches
 
@@ -582,16 +582,20 @@ def test_restore_never_shares_tables_that_parsed_after_the_data_changed_back(tmp
                 path.write_bytes(data)
 
     else:
-        # `systems/data` is a link, retargeted as `ln -sfn` does; no tree is written.
+        # A link is retargeted as `ln -sfn` does; no tree is written. It is
+        # `systems/data` itself, or `current` behind an unchanged `systems/data`.
         for tree in ("a", "b"):
             shutil.copytree(root / "data", tmp_path / tree / "data")
         shutil.rmtree(root / "data")
         _scale_gemm_latency(tmp_path / "b", 2.0)
+        moving = root / "data" if change == "retarget" else tmp_path / "current"
+        if change == "retarget-behind":
+            (root / "data").symlink_to(moving, target_is_directory=True)
 
         def point(tree: str) -> None:
-            staged = root / "data.next"
+            staged = moving.with_name(f"{moving.name}.next")
             staged.symlink_to(tmp_path / tree / "data", target_is_directory=True)
-            staged.replace(root / "data")
+            staged.replace(moving)
 
         point("a")
 

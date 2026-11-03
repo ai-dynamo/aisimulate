@@ -623,8 +623,9 @@ with the model, so it reads the fingerprinted data; restoration does the same
 after its check. Only tables an earlier restoration in the process loaded from
 the same data stay shared, and only while no fingerprinted file or directory
 has been written since, even back to its original bytes, and no symbolic link
-on the path to the data has been retargeted: tables parse on first query, so
-they could otherwise hold rows from data changed in between.
+followed on the way to the data, including links inside link targets, has been
+retargeted: tables parse on first query, so they could otherwise hold rows from
+data changed in between.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)

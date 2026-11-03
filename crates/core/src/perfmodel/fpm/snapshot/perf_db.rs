@@ -33,10 +33,10 @@
 //! shared then, because the shared table memo is keyed by paths, not content.
 //! For the same reason a restore shares only tables an earlier restore loaded
 //! right after verifying the same data, and only while no fingerprinted entry
-//! has been written and no link on the path to the data retargeted since
-//! ([`current`], [`verified`]): table families parse on first query, so equal
-//! content alone would admit files that changed and changed back after that
-//! restore.
+//! has been written and no link followed on the way to the data retargeted
+//! since ([`current`], [`verified`]): table families parse on first query, so
+//! equal content alone would admit files that changed and changed back after
+//! that restore.
 //! Packing copies exactly the fingerprinted entries, preserving relative
 //! paths, so a packed root resolves tables exactly like the original.
 
@@ -135,21 +135,63 @@ fn stamp(metadata: &std::fs::Metadata) -> String {
     format!("{} {:?}", metadata.len(), metadata.modified().ok())
 }
 
-/// [`stamp`]s of the symbolic links along `path` as written, outermost
-/// first, then of what `path` resolves to. Loaders read through that path,
-/// so retargeting one of these links changes what they read although no
-/// target is written; a retarget always creates a new link.
-fn path_stamp(path: &Path) -> Result<String, AicError> {
-    let mut prefix = PathBuf::new();
+/// Symbolic links one resolution may follow, as Linux allows before `ELOOP`.
+const MAX_LINK_HOPS: usize = 40;
+
+/// [`stamp`]s of every symbolic link that resolving `path` follows, in order:
+/// the links among its components and, in turn, those in each link's target.
+/// Loaders read through `path`, so retargeting any of these links changes
+/// what they read although no target is written; a retarget always creates
+/// a new link.
+fn link_stamps(path: &Path) -> Result<String, AicError> {
+    let absolute = std::path::absolute(path).map_err(|error| io_error(path, error))?;
+    let parts = |path: &Path| -> Vec<PathBuf> {
+        path.components()
+            .rev()
+            .map(|component| PathBuf::from(component.as_os_str()))
+            .collect()
+    };
+    let mut pending = parts(&absolute);
+    let mut resolved = PathBuf::new();
+    let mut hops = 0;
     let mut stamped = String::new();
-    for component in path.components() {
-        prefix.push(component);
-        if let Ok(link) = std::fs::symlink_metadata(&prefix)
-            && link.file_type().is_symlink()
-        {
-            stamped.push_str(&format!("{} -> ", stamp(&link)));
+    while let Some(part) = pending.pop() {
+        match part.components().next() {
+            Some(Component::ParentDir) => {
+                resolved.pop();
+            }
+            Some(Component::Normal(_)) => {
+                let candidate = resolved.join(&part);
+                match std::fs::symlink_metadata(&candidate) {
+                    Ok(link) if link.file_type().is_symlink() => {
+                        hops += 1;
+                        if hops > MAX_LINK_HOPS {
+                            return Err(invalid(format!(
+                                "too many symbolic links resolving {}",
+                                path.display()
+                            )));
+                        }
+                        stamped.push_str(&format!("{} -> ", stamp(&link)));
+                        let target = std::fs::read_link(&candidate)
+                            .map_err(|error| io_error(&candidate, error))?;
+                        // An absolute target restarts at the root; a relative
+                        // one continues from the link's directory.
+                        pending.extend(parts(&target));
+                    }
+                    _ => resolved = candidate,
+                }
+            }
+            // The root (or a prefix) replaces what was resolved so far.
+            Some(Component::RootDir | Component::Prefix(_)) => resolved.push(&part),
+            Some(Component::CurDir) | None => {}
         }
     }
+    Ok(stamped)
+}
+
+/// [`link_stamps`] of `path`, then the [`stamp`] of what it resolves to.
+fn path_stamp(path: &Path) -> Result<String, AicError> {
+    let mut stamped = link_stamps(path)?;
     match std::fs::metadata(path) {
         Ok(metadata) => stamped.push_str(&stamp(&metadata)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => stamped.push_str("absent"),
@@ -158,8 +200,8 @@ fn path_stamp(path: &Path) -> Result<String, AicError> {
     Ok(stamped)
 }
 
-/// The stamps of every input a fingerprint covers and of the links on the
-/// paths to them, taken before their contents were hashed. Matching stamps
+/// The stamps of every input a fingerprint covers and of the links followed
+/// on the way to them, taken before their contents were hashed. Matching stamps
 /// mean no entry was written, replaced, added or removed, and no such link
 /// retargeted, in between.
 #[derive(Clone, Debug, PartialEq)]
@@ -210,7 +252,7 @@ fn classify(path: &Path) -> Result<Option<(EntryKind, String)>, AicError> {
     let (metadata, stamped) = if link.file_type().is_symlink() {
         match std::fs::metadata(path) {
             Ok(metadata) => {
-                let stamped = format!("{} -> {}", stamp(&link), stamp(&metadata));
+                let stamped = format!("{}{}", link_stamps(path)?, stamp(&metadata));
                 (metadata, stamped)
             }
             Err(_) => {
@@ -748,6 +790,47 @@ mod tests {
         let (again, pointed_back) = observe(&root, "h200_sxm", None).unwrap();
         assert_eq!(again, base);
         assert!(!pointed_back.matches(&stamp));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stamps_change_when_a_link_behind_another_link_points_back() {
+        let retarget = |link: &Path, target: &Path| {
+            let staged = link.with_extension("next");
+            std::os::unix::fs::symlink(target, &staged).unwrap();
+            std::fs::rename(&staged, link).unwrap();
+        };
+        // `systems/data`, or a version inside the data tree, links to
+        // `profiles/current`; only that intermediate link moves.
+        for outer in ["data", "data/h200_sxm/vllm/1.0"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("systems");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/h200_sxm/\n").unwrap();
+            for tree in ["a", "b"] {
+                let version = match outer {
+                    "data" => dir.path().join(tree).join("h200_sxm/vllm/1.0"),
+                    _ => dir.path().join(tree),
+                };
+                std::fs::create_dir_all(&version).unwrap();
+                std::fs::write(version.join("gemm_perf.parquet"), tree).unwrap();
+            }
+            let current = dir.path().join("profiles/current");
+            std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+            retarget(&current, &dir.path().join("a"));
+            let link = root.join(outer);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&current, &link).unwrap();
+            let (base, stamp) = observe(&root, "h200_sxm", None).unwrap();
+            // Coarse file clocks tick every few milliseconds.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            retarget(&current, &dir.path().join("b"));
+            assert_ne!(observe(&root, "h200_sxm", None).unwrap().0, base, "{outer}");
+            retarget(&current, &dir.path().join("a"));
+            let (again, pointed_back) = observe(&root, "h200_sxm", None).unwrap();
+            assert_eq!(again, base, "{outer}");
+            assert!(!pointed_back.matches(&stamp), "{outer}");
+        }
     }
 
     #[test]
