@@ -30,7 +30,10 @@ def main():
     parser.add_argument("--max-sequences", type=int)
     parser.add_argument("--host-loop", action="store_true")
     parser.add_argument("--tokenization-profile", type=Path)
+    parser.add_argument("--shared-response-gate", action="store_true")
     args = parser.parse_args()
+    if args.shared_response_gate and not args.tokenization_profile:
+        raise ValueError("Shared delivery requires the fixed measured CPU profile")
     tokenization = None
     profile_sha = None
     if args.tokenization_profile:
@@ -55,6 +58,8 @@ def main():
         ):
             raise ValueError("Requires the predeclared positive component rate and one CPU server")
         profile_sha = hashlib.sha256(profile_bytes).hexdigest()
+        if args.shared_response_gate:
+            tokenization = {**tokenization, "share_with_response": True}
     sys.path.insert(0, str(args.tooling))
     from scripts.e2e_accuracy.agentx_contract import native_completion_qualified, score
     from scripts.e2e_accuracy.run_agentx_accuracy import artifact, normalize_native, prepare_trace
@@ -96,7 +101,10 @@ def main():
         }
         if profile_sha:
             execution["tokenization_profile_sha256"] = profile_sha
-            execution["scope"] = "Measured CPU admission only; shared API response blocking remains unmodeled"
+            execution["scope"] = (
+                "Measured CPU admission and causal zero-service output gate" if args.shared_response_gate
+                else "Measured CPU admission only; shared API response blocking remains unmodeled"
+            )
         write(directory / "execution.json", execution)
         with (directory / "replay.log").open("w") as stream:
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=1800, check=False)

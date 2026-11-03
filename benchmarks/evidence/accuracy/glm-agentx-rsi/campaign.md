@@ -1537,3 +1537,37 @@ The GPU scripts require an immutable model receipt, successful CPU preflight,
 explicit remaining GPU-seconds and campaign-root paths. Their synthetic controls
 never change the frozen benchmark headline scores. Update this record and the
 checkpoint after each meaningful experiment; preserve disproven conclusions.
+
+## E039 — causal shared frontend queue (predeclared)
+
+- **Hypothesis:** input tokenization on a single API process also blocks client
+  output delivery. E037 supports this mechanism; E038 cannot test closed-loop
+  feedback because its delayed outputs never reschedule subsequent requests.
+  Competing causes include cache/history divergence and GPU scheduling.
+- **Experiment:** on isolated EDDB baseline branch
+  `simonec/glm-agentx-shared-frontend`, add an opt-in shared single-worker
+  tokenizer/response queue. Output service cost is zero; existing input service
+  uses the unchanged E034 component profile SHA256
+  `741c9b07352c57c267d0890403a0950435a048e32926c77456018d61025c8158`
+  (1.3222043548296005 microseconds/input token, zero base, one worker).
+  Actual client delivery releases controller successors. Preparation must finish
+  delivery before profile starts. Unsupported outstanding delivery at profile
+  cancellation must fail explicitly. Preserve flag-off behavior.
+- Pin source, wheel/native/data hashes before replay. Verify finite causal
+  controls, units, configuration round trips and ordinary response-path tests.
+  Run development lanes 1/8/14 only, comparing E034 and original frozen
+  identities. Pool individual eligible requests, retaining all missing outcomes.
+  No op-data changes, timing calibration, alternate pairing or outlier removal.
+  CPU-only execution costs zero GPU-hours; budget remains 29.2861111111 of 64.
+- **Conclusion:** pending implementation and independent result audit. An
+  improvement on a reduced cohort cannot establish a win. No held-out tuning,
+  HF promotion, dashboard replacement or merge is authorized by this experiment.
+
+E039 implementation checkpoint: isolated signed/DCO source `aa4c2aeab` passes
+17 tokenization and 11 ordinary detokenization integration tests, including
+buffered zero-TPOT delivery, causal successor release and explicit cancellation
+rejection. Preparation outputs use the existing profile-relative report clock;
+the test initially compared it with the absolute preparation clock, then was
+corrected without changing runtime behavior. A Python source-only test attempt
+could not import the native extension; rerun against the exact isolated wheel.
+Release build and Python/configuration qualification are pending.
