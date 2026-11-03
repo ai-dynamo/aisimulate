@@ -149,6 +149,13 @@ def analyze_frontend(root):
     }
     for mode in MODES[:2]:
         directory = root / mode
+        runtime_path = directory / "resolved-server.json"
+        settings = json.loads(runtime_path.read_bytes()) if runtime_path.exists() else {}
+        cache_boundary_verified = (
+            settings.get("speculative_algorithm") == "EAGLE"
+            and settings.get("page_size") == 64
+            and settings.get("disable_radix_cache") is False
+        )
         source = directory / "client/requests.jsonl"
         rows = [json.loads(line) for line in source.open()] if source.exists() else []
         counts = Counter(row["rid"] for row in rows)
@@ -175,8 +182,15 @@ def analyze_frontend(root):
                             pair["reasons"].append("preparation input receipt differs")
                         if row.get("input_tokens") != row.get("expected_input_tokens"):
                             pair["reasons"].append("template input length differs")
-                        if row.get("cached_tokens") != row.get("prefix_tokens"):
-                            pair["reasons"].append("cache receipt missing or differs from seeded prefix")
+                        # EAGLE counts bigrams (N-1), then page-aligns. A one-
+                        # output-token seed commits its raw input, so an aligned
+                        # seed loses one page in this verified runtime.
+                        expected_reuse = ((row["prefix_tokens"] - 1) // 64) * 64
+                        pair["expected_reused_tokens"] = expected_reuse
+                        if not cache_boundary_verified:
+                            pair["reasons"].append("missing or unsupported cache-boundary runtime receipt")
+                        elif row.get("cached_tokens") != expected_reuse:
+                            pair["reasons"].append("cache receipt missing or differs from EAGLE bigram/page boundary")
                         if row["endpoint"] == "native" and "unavailable" in span(
                             row["events"], row["requested_output_tokens"]
                         ):
@@ -232,7 +246,8 @@ def analyze_frontend(root):
             "collector_completed": (directory / "completion.json").exists(),
         }
     return {
-        "schema": "aisimulate.glm-rsi.frontend-audit.v1",
+        "schema": "aisimulate.glm-rsi.frontend-audit.v2",
+        "qualification_revision": "EAGLE bigram N-1 then page alignment; initial full-seed assumption superseded",
         "scope": "paired synthetic diagnostics; no headline MAPE",
         "modes": result,
     }

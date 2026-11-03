@@ -65,19 +65,21 @@ def test_failed_request_is_retained_and_full_manifest_has_221_identities():
 def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_path):
     directory = tmp_path / "instrumented-mtp"
     (directory / "client").mkdir(parents=True)
+    runtime = directory / "resolved-server.json"
+    runtime.write_text(json.dumps({"speculative_algorithm": "EAGLE", "page_size": 64, "disable_radix_cache": False}))
     rows = []
     for endpoint in ("native", "chat"):
         rid = "rsi-frontend-c8192-r0-" + endpoint
         rows += [
-            {"rid": rid + "-warm", "status": "completed", "events": [{"meta": {"prompt_tokens": 64}}]},
+            {"rid": rid + "-warm", "status": "completed", "events": [{"meta": {"prompt_tokens": 128}}]},
             {
                 "rid": rid,
                 "status": "completed",
                 "endpoint": endpoint,
-                "prefix_tokens": 64,
+                "prefix_tokens": 128,
                 "cached_tokens": 64,
-                "input_tokens": 96,
-                "expected_input_tokens": 96,
+                "input_tokens": 160,
+                "expected_input_tokens": 160,
                 "input_sha256": "same",
                 "start_ns": "0",
                 "end_ns": "10000000",
@@ -93,7 +95,7 @@ def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_pa
         "start_ns": "1000000",
         "end_ns": "3000000",
         "service_ms": 2,
-        "input_tokens": 96,
+        "input_tokens": 160,
         "input_sha256": "same",
         "template_cache_requested": False,
     }
@@ -103,8 +105,15 @@ def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_pa
     rows[-1]["cached_tokens"] = None
     source.write_text("".join(json.dumps(r) + "\n" for r in rows))
     assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
+    rows[-1]["cached_tokens"] = 128
+    source.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
     rows[-1]["cached_tokens"] = 64
     source.write_text("".join(json.dumps(r) + "\n" for r in rows))
     stage["input_sha256"] = "different"
     stages.write_text(json.dumps(stage) + "\n")
+    assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
+    stage["input_sha256"] = "same"
+    stages.write_text(json.dumps(stage) + "\n")
+    runtime.unlink()
     assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0

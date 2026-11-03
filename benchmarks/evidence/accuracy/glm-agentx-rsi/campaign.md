@@ -269,6 +269,47 @@ GPU job **1006430** runs this experiment from immutable source
 against a clean Git archive. Charge it to controlled-workload experiments;
 independently audit both modes before selecting a cost model or next experiment.
 
+**E018 conclusion — frontend service confirmed on controlled inputs.** Both
+modes complete all 36 requests each (18 measured and 18 preparation). All 18
+pairs match input/output lengths, input identity and observed prefix reuse.
+The original validator expected every seeded raw token to be reusable and
+rejected every pair. Preserve that initial audit. The exact image's `RadixKey`
+counts EAGLE bigrams (N-1), then page-aligns; executing the archived class yields
+8064/130944/393088 reusable tokens from raw seeds 8128/131008/393152, exactly
+matching both endpoints. E017 independently confirms 287360 reused tokens with
+MTP versus 287424 in plain decode from the same 287424-token seed. Qualification
+v2 requires the resolved EAGLE/page64/cache-enabled receipt and this boundary;
+missing receipts or other offsets still fail. This corrects a validation
+assumption, not measurements or headline scoring.
+
+On the measured Intel Xeon Platinum 8559C, synchronous render/encode takes
+19.3–21.6 ms at 8204 input tokens, 268.3–316.5 ms at 131084, and 878.0–981.4 ms
+at 393228. Process CPU time closely tracks wall time; numerical projection costs
+0.16–4.33 ms and is separate. This accounts for most of the paired chat/native
+TTFT gap at long contexts. First-use 8K chat TTFT remains separately visible at
+1.50/1.61 seconds despite only 21.6 ms in this stage; do not attribute that entire
+delay to tokenization or discard it. Every repeat remains in the evidence.
+
+These synthetic prompts carry about 7.1 serialized bytes per input token, whereas
+the original development workloads report about 4.0 transport bytes per token.
+The harness labels KB using 1024 bytes; transport counts include headers, while
+the control records JSON-body bytes. This descriptive comparison is not a cost
+conversion formula. Measure representative Weka inputs before transferring a
+per-token cost; do not choose a coefficient from headline MAPE. Both headline
+MAPEs remain unchanged. Private evidence includes `E018-complete-audit-v2.json`
+and `E018-bigram-cache-source-audit.json`.
+
+**E025 — cache-key contract discrepancy, next discriminating check.** Existing
+CPU E006 and silicon E017 use the same prefix-length relationship and one-output
+seed, with no pressure. AISim reuses 287424 tokens; SGLang EAGLE reuses 287360,
+while plain SGLang reuses 287424. The archived cache source SHA256 is
+`150818b0a4eaa05171ca2e485698fa455608c13ee6b07f3945ac2095fa294de3`.
+Inspect the native key representation and reproduce the lookahead/page-boundary
+case before implementing a scoped fix. Test differing lookahead tokens, partial
+pages, token conservation and unchanged ordinary-cache behavior. No blanket
+one-page penalty or timing multiplier is an acceptable substitute for key
+semantics. MAPE impact is not yet measured.
+
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
 claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
@@ -408,6 +449,21 @@ times. Competing explanations include upstream frontend delays and op timing.
 Require native completion, unchanged silicon identities, both MAPEs and lost/
 recovered counts before judging the result. A flag difference alone does not
 establish an accuracy fix; do not tune on lanes 4/10/13.
+
+**E023 conclusion — no qualified win.** All frozen development observations
+remain (4169 TTFT / 4166 TPOT, zero lost). Pooled TTFT MAPE falls 88.4103% to
+83.6124%, but TPOT rises 68.2526% to 79.7859%. Keep the frozen baseline.
+
+| Lanes | Baseline TTFT | Host-loop TTFT | Baseline TPOT | Host-loop TPOT |
+|---:|---:|---:|---:|---:|
+| 1 | 73.6567% | 73.8348% | 18.8688% | 18.8804% |
+| 8 | 63.7743% | 64.0876% | 51.0948% | 56.9255% |
+| 14 | 104.7231% | 96.2855% | 84.8208% | 101.2084% |
+
+The loop flag alone is insufficient to resolve the request gaps; do not generalize
+from its closer runtime configuration to better accuracy. Native completion and
+frozen-cohort arithmetic independently pass. Held-out lanes remain untested for
+this candidate because development evidence rejects it as a standalone win.
 
 **Hypothesis.** Wrong overlap or scheduling creates decode stalls absent in silicon.
 Confidence: high in simulated interference, unknown in silicon scheduler error.
@@ -603,6 +659,14 @@ workloads (7200), targeted op/forward (3600) and validation (10800), before any
 documented transfer of unused time. E018 job 1006430 reserves 36480 GPU-seconds,
 leaving 138248 unreserved. Its reservation must become actual charged time when
 terminal; the eight-node-hour campaign limit remains the hard admission bound.
+
+Job 1006430 completes with exit 0 after 1298 allocated seconds including cleanup;
+charge 10384 GPU-seconds to controlled-workload experiments. Completed allocation
+totals **66056 GPU-seconds / 18.3489 GPU-hours / 2.2936 TP8 node-hours**; remaining
+**164344 GPU-seconds / 45.6511 GPU-hours / 5.7064 TP8 node-hours**. Release its
+reservation. Controlled workloads have used 1298 of their 7200 node-seconds;
+op/forward and validation reserves remain unused. No GPU job is active at this
+checkpoint. All startup and diagnostic-step time is included.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
