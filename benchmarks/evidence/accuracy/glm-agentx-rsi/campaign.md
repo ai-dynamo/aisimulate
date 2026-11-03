@@ -429,7 +429,13 @@ source files; changed hooks or clients require a fresh CPU preflight. Forty-one
 focused tests pass, including exposure clocks, missing/ambiguous observations,
 identity failures and startup-failure accounting. Numerical audits predeclare
 all 64 attempted-request identities across both arms and never score preparation.
-Results, exact source identity and actual allocation cost are pending.
+CPU job 1008523 completes successfully in 240 seconds with zero GPUs allocated;
+the external cleanup step lasts 241 seconds, also CPU-only. It verifies the
+historical source SHA256 `952fdfcf…`, patched SHA256 `7f065b67…`, runtime 0.5.20,
+and separate actor lifecycle. Collector-side source checks must match that
+receipt. The GPU batch also rejects anything other than eight B300 devices
+before loading weights. Collection source, results and actual allocation cost
+are pending; independent audit additionally requires a shared API process.
 
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly

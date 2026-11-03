@@ -51,6 +51,8 @@ export ENROOT_DATA_PATH="$CAMPAIGN_ROOT/enroot-$SLURM_JOB_ID"
 mkdir -p "$ENROOT_DATA_PATH" "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID"
 cp -R "$CAMPAIGN_ROOT/code" "$CAMPAIGN_ROOT/code-$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv > "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
+# Refuse a different GPU or partial allocation before loading model weights.
+awk -F, 'NR > 1 {if ($1 !~ /B300/) bad=1; count++} END {exit (bad || count != 8)}' "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
