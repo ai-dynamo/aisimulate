@@ -1165,7 +1165,7 @@ test("AgentX checklist separates silicon evidence from AISim settings", () => {
   const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
   const missing = checklist(point);
   assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
-  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/class="agentx-feature-status on"/);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/Legacy missing evidence/);
   assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
   assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
   assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
@@ -1209,8 +1209,8 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
   assert.match(html,/State-cache type: Unrecorded/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
-  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Method: Unrecorded.*Draft length: 3/);
-  for(const source of ["silicon","aisim"]) {
+  assert.match(featureCell(html,"speculation","aisim"),/Legacy missing evidence/);
+  for(const source of ["silicon"]) {
     assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
     assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
   }
@@ -1220,67 +1220,33 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal(checklist(point),html);
   features.find(f=>f.id==="speculation").state="disabled";
   assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Draft length: 3/);
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Legacy missing evidence/);
 });
 
-test("AgentX AISim column requires explicit per-feature settings and preserves draft values", () => {
-  const context = vm.createContext({window: {}});
-  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
-  const checklist = context.window.AgentX.featureChecklist;
-  const point={id:"example",outcome:"unsupported",reason:"replay_capability_unavailable",config_summary:[]};
-  const check=(id,status)=>assert.ok(featureCell(checklist(point),id,"aisim").includes(`class="agentx-feature-status ${status}"`));
-  check("cache.g1_prefix","unknown"); // An unsupported run doesn't identify unsupported features.
-  point.config_summary=[{name:"Prefix caching",value:false},{name:"Host offload (G2)",value:"unsupported"},
-    {name:"Dynamo - KV-aware routing",value:true},{name:"Speculative tokens",value:7}];
-  check("cache.g1_prefix","off");
-  check("cache.g2","unsupported");
-  check("kv-aware-routing","on");
-  check("speculation","on");
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Draft length: 7/);
-  assert.match(featureCell(checklist(point),"kv-aware-routing","silicon"),/class="agentx-feature-status unknown"/);
-  for(const invalid of [null,"true",1,"<unsafe>"]) {
-    point.config_summary=[{name:"Prefix caching",value:invalid}];
-    check("cache.g1_prefix","unknown");
-    assert.doesNotMatch(checklist(point),/<unsafe>/);
-  }
-  point.config_summary=[{name:"Prefix caching",value:true},{name:"Prefix caching",value:false}];
-  check("cache.g1_prefix","unknown");
-  for(const invalid of [-1,1.5,"3",null]) {
-    point.config_summary=[{name:"Speculative tokens",value:invalid}];
-    check("speculation","unknown");
-  }
-  point.config_summary=[{name:"Speculative tokens",value:0}];
-  check("speculation","off");
-  point.config_summary.push({name:"Speculative decoding",value:true});
-  check("speculation","unknown");
-  point.config_summary=[{name:"Speculative tokens",value:7},{name:"Speculative decoding",value:false}];
-  check("speculation","unknown");
-  point.config_summary[1].value="unsupported";
-  check("speculation","unsupported");
-  assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/Draft length/);
-});
-
-test("AgentX speculation badges use only a recorded AISim method", () => {
-  const context = vm.createContext({window: {}});
-  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
-  const checklist = context.window.AgentX.featureChecklist;
-  const point={id:"example",model:"GLM",config_summary:[{name:"Speculative tokens",value:3},{name:"Speculative method",value:"mtp"}]};
-  for(const method of ["MTP","DSPARK","EAGLE3","DFlash","DFlash2","n-gram","Other draft model"]) {
-    point.config_summary[1].value=method.toLowerCase();
-    assert.ok(featureCell(checklist(point),"speculation","aisim").includes(`aria-label="Method: ${method}"`));
-  }
-  for(const value of [null,3,"<unsafe>","eagle"]) {
-    point.config_summary[1].value=value;
-    assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unrecorded"/);
-    assert.doesNotMatch(checklist(point),/<unsafe>/);
-  }
-  point.config_summary[1].value="mtp";
-  point.config_summary.push({name:"Speculative method",value:"eagle3"});
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unrecorded"/);
-  point.config_summary=[{name:"Speculative decoding",value:true},{name:"Speculative method",value:"MTP"}];
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Method: MTP.*Draft length: Unrecorded/);
-  point.config_summary=[{name:"Speculative tokens",value:0},{name:"Speculative method",value:"MTP"}];
-  assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/agentx-feature-badge/);
+test("AISim features use structured effective settings and preserve role differences", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const checklist=context.window.AgentX.featureChecklist;
+  const feature=(id,state,parameters={})=>({id,state,parameters,observed:{state:"unknown",count:null}});
+  const point={id:"example",config_summary:[{name:"Prefix caching",value:false},{name:"Speculative tokens",value:99}],simulation_features:{
+    schema:"aisimulate.agentx.simulation-features.v1",benchmark_id:"example",evaluated_revision:"a".repeat(40),dataset_revision:"b".repeat(40),roles:[{role:"prefill",features:[feature("cache.g1_prefix","disabled")]},{role:"decode",features:[
+      feature("cache.g1_prefix","enabled"),feature("cache.g2","enabled",{scope:"cluster_shared"}),
+      feature("routing.kv_aware","not_applicable"),feature("speculation","enabled",{method:"dspark",draft_length:7,verify_width:8}),
+    ]}],speculation_comparison:[]}};
+  let html=checklist(point);
+  assert.match(featureCell(html,"cache.g1_prefix","aisim"),/prefill.*status off.*decode.*status on/);
+  assert.match(featureCell(html,"cache.g2","aisim"),/Scope: cluster_shared/);
+  assert.match(featureCell(html,"speculation","aisim"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
+  assert.match(featureCell(html,"kv-aware-routing","aisim"),/status na/);
+  assert.doesNotMatch(html,/Draft length: 99/);
+  point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
+  html=checklist(point);
+  assert.match(featureCell(html,"speculation","aisim"),/Unsupported \(actual: 7, AISim max: 5\)/);
+  point.simulation_features.roles[1].features[3].state="failed_to_record";
+  point.simulation_features.speculation_comparison=[];
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Recording failed/);
+  point.snapshot={commit_sha:"c".repeat(40),dataset_revision:"b".repeat(40)};
+  assert.throws(()=>checklist(point),/identity mismatch/);
 });
 
 test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {

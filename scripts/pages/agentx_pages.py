@@ -111,6 +111,12 @@ def validate_bundle(files, *, preview=False):
         }:
             raise ValueError("AgentX overview and detail disagree")
         validate_result({k: v for k, v in detail.items() if k not in {"schema", "snapshot"}})
+        features = detail.get("simulation_features")
+        if features is not None and (
+            features["evaluated_revision"] != summary["snapshot"]["commit_sha"]
+            or features["dataset_revision"] != summary["snapshot"]["dataset_revision"]
+        ):
+            raise ValueError("Simulation features differ from the evaluated snapshot")
         if (
             len(detail["pairs"]) != run["coverage"]["measured"]
             or run["coverage"]["measured"] != run["measured_requests"]

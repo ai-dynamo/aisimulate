@@ -658,7 +658,7 @@ async def check():
                 cache_feature = page.locator('[data-feature="cache.g1_prefix"]')
                 await expect(cache_feature.locator('[data-source="silicon"] .agentx-feature-status')).to_have_text("On")
                 await expect(cache_feature.locator('[data-source="aisim"] .agentx-feature-status')).to_have_text(
-                    "?Unrecorded"
+                    "?Legacy missing evidence"
                 )
                 assert (
                     await cache_feature.locator(".on .agentx-status-symbol").evaluate(

@@ -62,40 +62,46 @@ window.AgentX = (() => {
     const siliconId=id=>({"sub-block-prefix":"cache.sub_block_prefix_reuse","kv-aware-routing":"routing.kv_aware"}[id]||id);
     const siliconState=id=>features.get(siliconId(id))?.state;
     const parameters=id=>Object.fromEntries((features.get(siliconId(id))?.parameters||[]).map(p=>[p.name,p.value]));
-    const settings=Array.isArray(point.config_summary)?point.config_summary:[];
-    const setting=name=>{const matches=settings.filter(item=>item.name===name);return matches.length===1?matches[0].value:undefined;};
-    const draft=setting("Speculative tokens"), hasDraft=Number.isSafeInteger(draft) && draft>=0;
-    const methods={mtp:"MTP",dspark:"DSPARK",eagle3:"EAGLE3",dflash:"DFlash",dflash2:"DFlash2",ngram:"n-gram","n-gram":"n-gram",draft_model:"Other draft model","other draft model":"Other draft model"};
-    const method=setting("Speculative method");
-    const methodLabel=typeof method==="string" && Object.hasOwn(methods,method.toLowerCase())?methods[method.toLowerCase()]:"Unrecorded";
-    const aisimState=id=>{
-      const name=benchmarkFeatureLabels[id], value=setting(name);
-      // An explicit feature result takes precedence over the legacy token count.
-      if(settings.some(item=>item.name===name)) {
-        if(value===true) return id==="speculation" && hasDraft && draft===0?"unknown":"enabled";
-        if(value===false) return id==="speculation" && hasDraft && draft>0?"unknown":"disabled";
-        return value==="unsupported"?"unsupported":"unknown";
-      }
-      return id==="speculation" && hasDraft?(draft>0?"enabled":"disabled"):"unknown";
-    };
-    const statuses={enabled:["on","On"],disabled:["off","Off"],not_applicable:["na","N/A"],unsupported:["unsupported","Unsupported"]};
-    const cell=(source,current,details,badges=[])=>{
+    const simulation=point.simulation_features;
+    const simulationValid=simulation?.schema==="aisimulate.agentx.simulation-features.v1" && simulation.benchmark_id===point.id;
+    if(simulation && (!simulationValid || (point.snapshot && (simulation.evaluated_revision!==point.snapshot.commit_sha || simulation.dataset_revision!==point.snapshot.dataset_revision)))) throw new Error("Simulation feature evidence identity mismatch.");
+    const roles=simulationValid?simulation.roles:[];
+    const comparisons=simulation?.speculation_comparison||[];
+    const methods={off:"Off",mtp:"MTP",dspark:"DSPARK",eagle3:"EAGLE3",dflash:"DFlash",dflash2:"DFlash2",ngram:"n-gram",draft_model:"Other draft model"};
+    const statuses={enabled:["on","On"],disabled:["off","Off"],not_applicable:["na","N/A"],unsupported:["unsupported","Unsupported"],failed_to_record:["unknown","Recording failed"],legacy_missing:["unknown","Legacy missing evidence"]};
+    const cellContent=(source,current,details,badges=[])=>{
       const [status,label]=Object.hasOwn(statuses,current) && (source==="aisim" || current!=="unsupported")?statuses[current]:["unknown","Unrecorded"];
       const title=status==="unknown"?`${source==="silicon"?"Silicon":"AISim"} setting unavailable in this run's saved evidence.`:
         status==="unsupported"?"Explicitly recorded as unsupported for this AISim run.":`${source==="silicon"?"Silicon":"AISim"} setting: ${label}.`;
       const icon=["on","off","unknown"].includes(status)?`<span class="agentx-status-symbol" aria-hidden="true">${status==="unknown"?"?":""}</span>`:"";
       const labels=badges.length?`<div class="agentx-feature-badges">${badges.map(([key,value])=>`<span class="agentx-feature-badge" aria-label="${esc(key)}: ${esc(value)}"><span class="agentx-feature-badge-key">${esc(key==="Draft length"?"Draft":key)}</span> <span class="agentx-feature-badge-value">${esc(value)}</span></span>`).join("")}</div>`:"";
-      return `<td data-source="${source}"><span class="agentx-feature-status ${status}" title="${esc(title)}">${icon}${label}</span>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}${labels}</td>`;
+      return `<span class="agentx-feature-status ${status}" title="${esc(title)}">${icon}${label}</span>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}${labels}`;
     };
     const rows=Object.entries(benchmarkFeatureLabels).map(([id,name])=>{
-      const silicon=siliconState(id), aisim=aisimState(id), details=[];
+      const silicon=siliconState(id), details=[];
       const values=parameters(id), label=value=>value===undefined||value===null||value==="unknown"?"Unrecorded":Array.isArray(value)?value.join(", "):value;
       if(silicon==="enabled" && ["cache.g2","cache.g3"].includes(id)) details.push(`Scope: ${label(values.scope)}`);
       if(silicon==="enabled" && id==="cache.hybrid_state") details.push(`State-cache type: ${label(values.cache_types)}`);
       if(id==="sub-block-prefix" && values.match_granularity_tokens!=null) details.push(`Match granularity: ${values.match_granularity_tokens} tokens`);
       const measured=id==="speculation" && silicon==="enabled"?[["Method",methods[values.method]||"Unrecorded"],["Draft length",label(values.draft_length)]]:[];
-      const predicted=id==="speculation" && aisim==="enabled"?[["Method",methodLabel],["Draft length",hasDraft?draft:"Unrecorded"]]:[];
-      return `<tr class="agentx-feature" data-feature="${id}"><th scope="row" class="agentx-feature-name">${name}</th>${cell("silicon",silicon,details,measured)}${cell("aisim",aisim,[],predicted)}</tr>`;
+      if(id==="speculation" && comparisons.some(c=>c.actual_convention==="verification_width_including_seed")) {
+        const c=comparisons.find(c=>c.actual_convention==="verification_width_including_seed");
+        details.push(`Raw SGLang value ${c.actual_draft_length} counts ${c.actual_proposals} proposals + 1 seed; verification width ${c.actual_verify_width}.`);
+      }
+      const simulated=roles.length?roles.map(role=>{
+        const feature=role.features.find(f=>f.id===siliconId(id)), p=feature?.parameters||{}, extra=[];
+        const comparison=id==="speculation"?comparisons.find(c=>c.role===role.role):null;
+        let state=feature?.state||"failed_to_record";
+        if(state==="enabled" && ["cache.g2","cache.g3"].includes(id))extra.push(`Scope: ${label(p.scope)}`);
+        if(state==="enabled" && id==="cache.hybrid_state")extra.push(`State-cache type: ${label(p.cache_types)}`);
+        if(id==="sub-block-prefix" && p.match_granularity_tokens!=null)extra.push(`Match granularity: ${p.match_granularity_tokens} tokens`);
+        if(state==="enabled")extra.push(`Observed use: ${feature.observed.state.replaceAll("_"," ")}`);
+        if(comparison?.status==="unsupported") {state="unsupported";extra.push(comparison.aisim_max!=null?`Unsupported (actual: ${comparison.actual_draft_length}, AISim max: ${comparison.aisim_max})`:"Unsupported for this evaluated configuration");}
+        if(comparison?.status==="mismatch")extra.push(`Mismatch with silicon: ${comparison.actual_method} / ${comparison.actual_proposals} proposed tokens`);
+        const badges=id==="speculation" && feature?.state==="enabled"?[["Method",methods[p.method]||p.method||"Unrecorded"],["Draft length",label(p.draft_length)],["Verify width",label(p.verify_width)]]:[];
+        return `${roles.length>1?`<small class="agentx-feature-detail">${esc(role.role)}</small>`:""}${cellContent("aisim",state,extra,badges)}`;
+      }).join(""):cellContent("aisim","legacy_missing",[]);
+      return `<tr class="agentx-feature" data-feature="${id}"><th scope="row" class="agentx-feature-name">${name}</th><td data-source="silicon">${cellContent("silicon",silicon,details,measured)}</td><td data-source="aisim">${simulated}</td></tr>`;
     }).join("");
     return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run</p><table class="agentx-feature-table" aria-label="Selected run feature settings"><thead><tr><th scope="col">Feature</th><th scope="col">Silicon</th><th scope="col">AISim</th></tr></thead><tbody>${rows}</tbody></table>${point.feature_dataset_revision?`<p class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></p>`:""}</aside>`;
   }
@@ -228,6 +234,11 @@ window.AgentX = (() => {
     const detail=Object.entries(exclusions).map(([status,count])=>`${esc(labels[status]||status.replaceAll("_"," "))}: ${count.toLocaleString()}`).join("; ")||"None";
     return `<ul class="agentx-notes"><li><strong>Request coverage:</strong> ${point.coverage.matched.toLocaleString()} / ${point.coverage.measured.toLocaleString()} matched. TTFT denominator: ${point.request_errors.ttft_ms.count.toLocaleString()}; TPOT denominator: ${point.request_errors.tpot_ms.count.toLocaleString()}.</li><li><strong>Excluded requests:</strong> ${detail}. Missing intervals remain unavailable.</li></ul>`;
   }
+  function simulationEvidence(point) {
+    const record=point.simulation_features;
+    if(!record)return '<h2>AISim effective feature settings</h2><p>Legacy missing evidence. Re-execute with the evaluated wheel to record resolved settings; current defaults are not applied to historical runs.</p>';
+    return `<h2>AISim effective feature settings</h2><p>Recorded in GitHub CI after defaults and compilation. Configured enabled does not establish observed use.</p><p>Evaluated AISim revision: <code>${esc(record.evaluated_revision)}</code><br>Silicon dataset revision: <code>${esc(record.dataset_revision)}</code><br>Resolved configuration SHA256: <code>${esc(record.configuration_sha256||"Unavailable")}</code></p>${record.roles.map(role=>`<h3>${esc(role.role)} · ${esc(role.model)} · ${esc(role.backend)} ${esc(role.backend_version||"Unavailable")}</h3><div class="table-scroll"><table><thead><tr><th>Feature</th><th>Configured state</th><th>Effective parameters</th><th>Observed use</th></tr></thead><tbody>${role.features.map(row=>`<tr><th>${esc(row.id)}</th><td>${esc(row.state.replaceAll("_"," "))}</td><td>${esc(JSON.stringify(row.parameters))}</td><td>${esc(row.observed.state.replaceAll("_"," "))}</td></tr>`).join("")}</tbody></table></div>`).join("")}`;
+  }
   function featureEvidence(point) {
     const record=point.feature_metadata;
     if(!record) return '<h2>Silicon features</h2><p>Feature record unavailable for this historical measurement.</p>';
@@ -287,7 +298,7 @@ window.AgentX = (() => {
         document.getElementById("selected-run-label").textContent=`Selected run · ${!finite?"Observed outputs · Weka profile":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}${point.snapshot.measurement_campaign_status==="partial"?" · Partial silicon campaign · unscored dataset; not eligible for promotion":""}`;
         const lanes=`${first.lanes} lane${first.lanes===1?"":"s"}`;
         const accuracy=`<div class="agentx-summary-layout">${featureChecklist(point)}<section class="agentx-summary-main"><h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p></section></div>`;
-        const evidence=`<h2>Metrics and provenance</h2>${methodology()}${coverageEvidence(point)}${provenance(point.snapshot,[point])}${featureEvidence(point)}<h2>AISim replay configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
+        const evidence=`<h2>Metrics and provenance</h2>${methodology()}${coverageEvidence(point)}${provenance(point.snapshot,[point])}${featureEvidence(point)}${simulationEvidence(point)}<h2>AISim replay configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
         target.innerHTML=`<div class="replay-dashboard embedded ${document.documentElement.dataset.theme==="light"?"light":""}">${fragment}</div>`;
         const state=new URLSearchParams(location.hash.slice(1)),view=state.get("view"),stage=state.get("stage")==="preparation"?"preparation":"profile";
         const report=point.report||{metadata:{},prediction:{},telemetry:{completion_status:point.outcome},phases:{profile:{}},requests:[],samples:[],lifecycle:[]};

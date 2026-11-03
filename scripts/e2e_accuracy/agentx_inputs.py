@@ -101,7 +101,7 @@ def load_runs(root, catalog):
         ):
             raise ValueError("Duplicate or invalid AgentX workload identity")
         identities.add(identity)
-        if {"trace", "config", "predictions"} & run["artifacts"].keys():
+        if {"trace", "config", "predictions", "simulation_features"} & run["artifacts"].keys():
             raise ValueError("Simulation inputs do not belong in silicon bundles")
         observations = document(root, run, "observations")
         if (

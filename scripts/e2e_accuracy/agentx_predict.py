@@ -7,8 +7,13 @@ import hashlib
 import importlib
 import importlib.resources
 import json
+import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.simulation_features import build as build_features
 
 
 def predict(config_path, output):
@@ -53,12 +58,31 @@ def predict(config_path, output):
             "reason": "replay_capability_unavailable",
             "prediction_backend_version": version,
         }
+    (output / "resolved-config.json").write_text(json.dumps(parsed.model_dump(mode="json"), allow_nan=False))
+    (output / "compiled-replay.json").write_text(json.dumps(asdict(spec), allow_nan=False))
+    context_path = output / "feature-context.json"
+    context = json.loads(context_path.read_text()) if context_path.exists() else None
+    architecture, dspark_architectures = None, None
+    if context is not None:
+        utils = importlib.import_module("aisimulate_core.sdk.utils")
+        common = importlib.import_module("aisimulate_core.sdk.common")
+        architecture = utils.get_model_config_from_model_path(parsed.engine.model).get("architecture")
+        dspark_architectures = getattr(common, "DSPARK_ARCHITECTURES", None)
+        features = build_features(
+            parsed, spec, {}, context, architecture=architecture, dspark_architectures=dspark_architectures
+        )
+        (output / "simulation-features.json").write_text(json.dumps(features, allow_nan=False))
     runner = factory.create(worker_id=0)
     try:
         result = runner.run(spec, output_requirements=requirements)
     finally:
         runner.close()
     native = result.metadata["native_report"]
+    if context is not None:
+        features = build_features(
+            parsed, spec, native, context, architecture=architecture, dspark_architectures=dspark_architectures
+        )
+        (output / "simulation-features.json").write_text(json.dumps(features, allow_nan=False))
     (output / "native.json").write_text(json.dumps(native, allow_nan=False))
     (output / "config.json").write_text(json.dumps(config, allow_nan=False))
     payload = dashboard.build_replay_dashboard_data(native, native["telemetry"], config=config)

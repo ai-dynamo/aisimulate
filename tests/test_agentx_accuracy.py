@@ -77,6 +77,17 @@ def result(**changes):
     return value
 
 
+def simulation_record(identity="agentx-446063", revision="a" * 40, dataset="b" * 40):
+    from scripts.e2e_accuracy.simulation_features import unavailable
+
+    record = unavailable(
+        {"benchmark_id": identity, "evaluated_revision": revision, "dataset_revision": dataset}, result(), "disabled"
+    )
+    record.update(execution_mode="offline", configuration_sha256="c" * 64)
+    record["roles"][0].update(backend_version="0.5.21", compiled_sha256="d" * 64)
+    return record
+
+
 def bundle(run=None):
     run = result() if run is None else run
     snapshot = {
@@ -578,6 +589,7 @@ def test_qualification_requires_exact_catalog_identities(tmp_path):
     from scripts.e2e_accuracy.run_agentx_accuracy import qualify
 
     run = result()
+    run["simulation_features"] = simulation_record()
     catalog = silicon_inputs(tmp_path, run)
     snapshot = json.loads(bundle()["summary.json"])["snapshot"]
     del snapshot["completed_at"]

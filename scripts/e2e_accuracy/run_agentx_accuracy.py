@@ -40,6 +40,9 @@ from scripts.e2e_accuracy.agentx_inputs import (
     replay_config,
     safe_path,
 )
+from scripts.e2e_accuracy.simulation_features import compare_speculation
+from scripts.e2e_accuracy.simulation_features import unavailable as unavailable_features
+from scripts.e2e_accuracy.simulation_features import validate as validate_simulation
 
 REPO = "ai-dynamo/aisim-infx-cache"
 
@@ -364,8 +367,9 @@ def public_report(payload, observations, category, boundary="complete_finite_coh
     )
 
 
-def run_one(root, run, directory, timeout):
+def run_one(root, run, directory, timeout, context):
     directory.mkdir(parents=True, exist_ok=False)
+    (directory / "feature-context.json").write_bytes(canonical(context))
     observations = read(artifact(root, run, "observations"))
     if sum(r["phase"] == "profile" for r in observations) != run["measured_requests"]:
         raise ValueError("Measured cohort count mismatch")
@@ -451,6 +455,26 @@ def run_one(root, run, directory, timeout):
     }
     if "feature_metadata" in run["artifacts"]:
         result["feature_metadata"] = read(artifact(root, run, "feature_metadata"))
+    features_path = directory / "simulation-features.json"
+    features = (
+        validate_simulation(read(features_path), run["id"])
+        if features_path.exists()
+        else unavailable_features(
+            context, run, "unsupported" if outcome["outcome"] == "unsupported" else "failed_to_record"
+        )
+    )
+    if outcome["outcome"] == "completed" and any(
+        row["state"] == "failed_to_record" for role in features["roles"] for row in role["features"]
+    ):
+        raise ValueError("Newly completed runs require determinate simulation feature settings")
+    if "feature_metadata" in result:
+        features = compare_speculation(
+            features,
+            result["feature_metadata"],
+            run,
+            document(root, run, "recipe") if "recipe" in run["artifacts"] else None,
+        )
+    result["simulation_features"] = features
     validate_result(result)
     (directory / "result.json").write_bytes(canonical(result))
     trace.unlink()  # Large derived corpora are reproducible from frozen inputs.
@@ -471,7 +495,20 @@ def campaign(args):
         run for index, run in enumerate(load_runs(args.inputs, catalog)) if index % args.shard_count == args.shard_index
     ]
     evaluated_driver = driver_digest()
-    results = [run_one(args.inputs, run, args.output / run["id"], args.point_timeout) for run in selected]
+    results = [
+        run_one(
+            args.inputs,
+            run,
+            args.output / run["id"],
+            args.point_timeout,
+            {
+                "benchmark_id": run["id"],
+                "evaluated_revision": args.commit,
+                "dataset_revision": args.revision,
+            },
+        )
+        for run in selected
+    ]
     snapshot = {
         "branch": args.branch,
         "commit_sha": args.commit,
@@ -522,6 +559,22 @@ def qualify(args):
     sources = {r["id"]: r for r in load_runs(args.inputs, catalog)}
     for run in runs:
         validate_result(run)
+        features = run.get("simulation_features")
+        if (
+            features is None
+            or features["evaluated_revision"] != snapshot["commit_sha"]
+            or features["dataset_revision"] != snapshot["dataset_revision"]
+        ):
+            raise ValueError("Simulation feature evidence differs from the evaluated snapshot")
+        if run["outcome"] == "completed" and (
+            features["execution_mode"] == "unavailable"
+            or features["configuration_sha256"] is None
+            or any(
+                role["compiled_sha256"] is None or any(row["state"] == "failed_to_record" for row in role["features"])
+                for role in features["roles"]
+            )
+        ):
+            raise ValueError("Completed runs require effective simulation feature evidence")
         source = sources[run["id"]]
         if any(run[key] != source[key] for key in IDENTITY):
             raise ValueError("Result identity differs from the reviewed catalog")

@@ -13,6 +13,7 @@ from pathlib import Path
 from scripts.e2e_accuracy.agentx_comparison import validate as validate_comparison
 from scripts.e2e_accuracy.agentx_inputs import safe_path
 from scripts.e2e_accuracy.benchmark_features import validate as validate_features
+from scripts.e2e_accuracy.simulation_features import validate as validate_simulation
 
 INPUT_SCHEMA = "aisimulate.agentx.inputs.v1"
 SUMMARY_SCHEMA = "aisimulate.agentx.accuracy.v1"
@@ -56,6 +57,8 @@ def driver_digest(read_file=None):
             "agentx_inputs.py",
             "../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",
         )
+    if b'"simulation_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
+        names += ("simulation_features.py",)
     return hashlib.sha256(
         canonical(
             {
@@ -454,9 +457,13 @@ def validate_public(value):
         "file",
         "sha256",
         "feature_metadata",
+        "simulation_features",
     }
 
     def walk(item, key=None):
+        if key == "simulation_features":
+            validate_simulation(item)
+            return
         if key == "feature_metadata":
             validate_features(item)
             return
@@ -659,7 +666,7 @@ def validate_result(run):
         "pairs",
         "report",
     }
-    if set(run) - {"op_data", "feature_metadata"} != expected or run["outcome"] not in {
+    if set(run) - {"op_data", "feature_metadata", "simulation_features"} != expected or run["outcome"] not in {
         "completed",
         "failed",
         "unsupported",
@@ -669,6 +676,8 @@ def validate_result(run):
         validate_features(run["feature_metadata"], run["id"])
     elif run["id"].startswith("qwen-weka-l"):
         raise ValueError("New Qwen Weka publications require silicon feature metadata")
+    if "simulation_features" in run:
+        validate_simulation(run["simulation_features"], run["id"])
     for item in run.get("op_data", []):
         if (
             set(item) != {"file", "sha256"}

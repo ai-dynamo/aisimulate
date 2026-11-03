@@ -985,3 +985,48 @@ warning on overview and detail pages, and cannot pass the public snapshot gate. 
 complete accounting of the explicitly selected profiles; it does not qualify the
 incomplete silicon campaign or authorize dataset promotion. No new GPU collection
 is part of this workflow.
+
+### Effective AISim feature evidence
+
+New AgentX executions export `aisimulate.agentx.simulation-features.v1` in GitHub
+CI artifacts. The recorder runs inside the exact evaluated wheel process, after
+that wheel resolves its typed defaults and compiles the replay. It retains the
+full resolved config and compiled replay privately, and publishes a strict
+projection of all eight feature settings with benchmark ID, evaluated revision,
+pinned silicon dataset revision, role, backend, model, and configuration hashes.
+HF remains silicon-only; the HF reader rejects simulation-feature artifacts.
+
+The AISim column reads this structured record, never human-readable
+`config_summary` labels or the silicon column. Each role retains its own states
+and parameters. Enabled, disabled, N/A, unsupported and recording failure remain
+distinct. Configured enablement does not establish observed use: for example,
+KVCR may be enabled but unused without router hints. The current AgentX producer
+uses native offline replay without a Dynamo router adapter, so Dynamo KV-aware
+routing is N/A. Planner metadata cannot establish that routing setting.
+
+Prefix matching uses the compiled backend and cache geometry, including a
+resolved match unit. Missing `prefix_match_unit` alone is not treated as a
+universal off switch. Offload scopes and recurrent-state geometry retain their
+resolved role-specific values. Speculation uses the evaluated scheme's method
+and resolved depth; legacy `nextn` consults that evaluated SDK's architecture
+classification, including Kimi DSPARK. Acceptance remains a separate value.
+Bounds come from the evaluated method's typed API when available, never a
+universal hardcoded maximum; a known exceeded bound is displayed with actual
+and AISim maximum values. A parser bound is an upper bound, not a guarantee
+that every smaller model/backend/data combination is supported.
+
+For the recorded GLM NEXTN chain, SGLang's raw `speculative-num-draft-tokens=4`
+counts the seed plus three proposals. AISim `nextn=3` counts proposals, and its
+verification width is also four. Preserve the raw silicon value and normalize
+only when the retained recipe proves top-k one, three steps and width four.
+The matching convention is source-checked in
+[SGLang 0.5.20 tree construction](https://github.com/sgl-project/sglang/blob/d158602ff1d2cb953196c95158c488d503d2470c/python/sglang/srt/speculative/eagle_utils.py):
+selection takes width minus one proposals, then prepends the seed. Other
+methods, trees, or missing evidence do not inherit this normalization. Genuine
+normalized depth/method differences remain visible as mismatches.
+
+Legacy publications without a structured record show “Legacy missing evidence.”
+They are never filled using current defaults. Re-execute with the exact original
+wheel to obtain fresh effective evidence. New completed runs with missing or
+indeterminate knowable settings fail qualification; published records must bind
+to the same benchmark, evaluated revision and dataset revision as their result.
