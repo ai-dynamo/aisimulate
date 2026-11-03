@@ -54,7 +54,7 @@ if test "${RSI_SUITE:-timing}" = blocking; then
     test -s "$CAMPAIGN_ROOT/blocking-dispatch-preflight.json"
 fi
 if test "${RSI_SUITE:-timing}" = matrix; then
-    test -s "$CAMPAIGN_ROOT/matrix-dispatch-preflight.json"
+    test -s "${RSI_DISPATCH_PREFLIGHT:?Versioned CPU qualification receipt}"
 fi
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
 export ENROOT_CONFIG_PATH="$storage_root/.config/enroot"
@@ -65,9 +65,14 @@ nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv > "$CA
 # Refuse a different GPU or partial allocation before loading model weights.
 awk -F, 'NR > 1 {if ($1 !~ /B300/) bad=1; count++} END {exit (bad || count != 8)}' "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
+dispatch_arguments=()
+if test "${RSI_SUITE:-timing}" = matrix; then
+    dispatch_receipt="${RSI_DISPATCH_PREFLIGHT/#$storage_root/\/workspace}"
+    dispatch_arguments=(--dispatch-preflight "$dispatch_receipt")
+fi
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     env "RSI_CACHE_ROOT=$root/runtime-cache/$cache_key" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
     --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds "$control_seconds" --acceptance-policy agentx-golden \
-    --suite "${RSI_SUITE:-timing}"
+    --suite "${RSI_SUITE:-timing}" "${dispatch_arguments[@]}"

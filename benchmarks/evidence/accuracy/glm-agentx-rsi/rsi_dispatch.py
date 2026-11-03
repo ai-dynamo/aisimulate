@@ -21,7 +21,7 @@ def receipt_path(root, rid):
 def record(request):
     root = os.environ.get("RSI_DISPATCH_ROOT")
     rid = request.rid
-    if not root or not isinstance(rid, str) or not rid.startswith("rsi-block-"):
+    if not root or not isinstance(rid, str) or not rid.startswith(("rsi-block-", "rsi-submit-")):
         return
     row = {
         "rid": rid,

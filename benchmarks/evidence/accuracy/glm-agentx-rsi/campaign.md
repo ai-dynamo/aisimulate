@@ -999,6 +999,24 @@ readable in the original control mode. Generated count means retained accepted
 `output_ids`, not all physically processed draft/verification tokens. No kernel
 counter or output-throughput boundary is redefined.
 
+**E036 attempt 1 conclusion — operational failure, no accuracy result.** Job
+1011234 terminated after 410 seconds with eight allocated B300 GPUs: 3280
+GPU-seconds charged, including startup and cleanup. All eight attempted requests
+completed with 128 outputs, 131072 inputs and zero cached tokens; all eight lack
+mandatory submission receipts, and the remaining 40 were not attempted. Preserve
+the observations and failed qualification. The dispatch hook accepted only old
+`rsi-block-` names and silently skipped new `rsi-submit-` names. Do not reconstruct
+missing submission timestamps from client latency.
+
+The retry changes only that name filter and qualification: exercise both real
+receipt paths during CPU preflight and require a new versioned receipt matching
+all ten collector sources. Tests cover both prefixes and source drift. The
+reconciled total is 86686 GPU-seconds (24.079444 GPU-hours), leaving 143714
+GPU-seconds (39.920556 GPU-hours), with no active reservation. A fresh 22080
+GPU-second reservation fits the controlled-workload pool: 3876.75 used + 2760
+reserved < 7200 TP8-equivalent node-seconds. Failed attempt evidence remains
+separate from the new immutable source and receipt.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process

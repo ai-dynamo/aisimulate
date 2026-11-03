@@ -8,6 +8,7 @@ import threading
 import urllib.error
 from types import SimpleNamespace
 
+import dispatch_preflight
 import probe
 import pytest
 
@@ -78,3 +79,9 @@ def test_failed_chat_case_retains_every_concurrent_attempt(monkeypatch):
     assert len(rows) == 15
     assert sum(row["status"] == "failed" for row in rows) == 14
     assert "private" not in output.getvalue()
+
+
+def test_preflight_exercises_actual_dispatch_name_filters(tmp_path):
+    receipt = dispatch_preflight.dispatch_name_check(tmp_path)
+    assert receipt == {"status": "passed", "tested_prefixes": ["rsi-block-", "rsi-submit-"]}
+    assert list(tmp_path.iterdir()) == []

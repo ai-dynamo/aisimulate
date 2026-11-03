@@ -224,6 +224,7 @@ def main():
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
     parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "matrix"), default="timing")
+    parser.add_argument("--dispatch-preflight", type=Path)
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
@@ -238,11 +239,14 @@ def main():
             raise ValueError("Incomplete frontend template preflight")
     if args.suite in ("blocking", "matrix"):
         name = "matrix-dispatch-preflight.json" if args.suite == "matrix" else "blocking-dispatch-preflight.json"
-        preflight = json.loads((args.output.parents[1] / name).read_bytes())
+        preflight_path = args.dispatch_preflight or args.output.parents[1] / name
+        preflight = json.loads(preflight_path.read_bytes())
         if preflight["status"] != "passed" or preflight["sglang"] != importlib.metadata.version("sglang"):
             raise ValueError("Dispatch preflight does not match runtime")
         if args.suite == "matrix" and preflight.get("prepared_request", {}).get("status") != "passed":
             raise ValueError("Prepared request preflight is unavailable")
+        if args.suite == "matrix" and preflight.get("dispatch_names", {}).get("status") != "passed":
+            raise ValueError("Dispatch request-name preflight is unavailable")
         for name in PREFLIGHT_SOURCE_FILES:
             actual = hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             if preflight["source_sha256"].get(name) != actual:

@@ -12,12 +12,14 @@ import multiprocessing
 import os
 import threading
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import probe
 from blocking import actor_worker
 from instrument import install_dispatch
-from rsi_dispatch import PREFLIGHT_SOURCE_FILES
+from rsi_dispatch import PREFLIGHT_SOURCE_FILES, receipt_path, record
 
 EXPECTED_MANAGER = "952fdfcf54b13af6851993d4b7599d4b1efeb6aa630a7554584a1a047eda94f2"
 
@@ -42,6 +44,19 @@ def prepared_request_check():
     return {"status": "passed", "mock_transport": True, "body_sha256": hashlib.sha256(body).hexdigest()}
 
 
+def dispatch_name_check(root):
+    with (
+        TemporaryDirectory(prefix="dispatch-preflight-", dir=root) as temporary,
+        patch.dict(os.environ, {"RSI_DISPATCH_ROOT": temporary}),
+    ):
+        for rid in ("rsi-block-preflight", "rsi-submit-preflight"):
+            record(SimpleNamespace(rid=rid, input_ids=[1, 2, 3, 4]))
+            result = json.loads(receipt_path(temporary, rid).read_bytes())
+            if result["rid"] != rid or result["input_tokens"] != 4 or result["pid"] != os.getpid():
+                raise ValueError("Dispatch names or scalar input identity changed")
+    return {"status": "passed", "tested_prefixes": ["rsi-block-", "rsi-submit-"]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -52,6 +67,7 @@ def main():
     if receipt["original_sha256"] != EXPECTED_MANAGER:
         raise ValueError("Historical tokenizer-manager source differs from archived evidence")
     receipt["prepared_request"] = prepared_request_check()
+    receipt["dispatch_names"] = dispatch_name_check(args.output.parent)
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
     child = context.Process(target=actor_worker, args=("http://127.0.0.1:1", {}, jobs, results))

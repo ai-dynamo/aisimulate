@@ -64,7 +64,7 @@ def test_matrix_source_change_is_rejected_before_server_start(tmp_path, monkeypa
     sources["matrix_dispatch.py"] = "changed-after-preflight"
     (tmp_path / "matrix-dispatch-preflight.json").write_text(json.dumps({
         "status": "passed", "sglang": "0.5.20", "prepared_request": {"status": "passed"},
-        "source_sha256": sources,
+        "source_sha256": sources, "dispatch_names": {"status": "passed"},
     }))
     output = tmp_path / "gpu-123/controls"
     monkeypatch.setattr(sys, "argv", ["collect.py", "--model", str(model), "--output", str(output),
@@ -261,9 +261,10 @@ def test_dispatch_receipt_follows_submission_and_rejects_unknown_source(monkeypa
         instrument.inject_dispatch(source.replace("_dispatch_to_scheduler(tokenized_obj)", "_dispatch_to_scheduler()"))
 
 
-def test_dispatch_projection_cannot_publish_prompt_or_escape_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["rsi-block-", "rsi-submit-"])
+def test_dispatch_projection_cannot_publish_prompt_or_escape_root(tmp_path, monkeypatch, prefix):
     monkeypatch.setenv("RSI_DISPATCH_ROOT", str(tmp_path))
-    rid = "rsi-block-../../outside"
+    rid = prefix + "../../outside"
     rsi_dispatch.record(SimpleNamespace(rid=rid, input_ids=[123456, 654321], text="private prompt"))
     path = rsi_dispatch.receipt_path(tmp_path, rid)
     assert path.parent == tmp_path
