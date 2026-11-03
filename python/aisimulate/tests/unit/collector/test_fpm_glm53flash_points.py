@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -35,14 +36,28 @@ _TP4 = {
     "page_size_bytes": 13_045_120,
     "state_groups": 5,
 }
+_GENERATOR_LOGGER = "collector.fpm_forward.glm53flash_points"
 
 
-def test_tp4_point_list_follows_the_producer_rules(tmp_path):
+def _logged_lines(caplog) -> list[tuple[int, str]]:
+    """The level and the text of each line that the point generator logged."""
+    return [(record.levelno, record.getMessage()) for record in caplog.records if record.name == _GENERATOR_LOGGER]
+
+
+def test_tp4_point_list_follows_the_producer_rules(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
     payload, canonical, digest = glm_point_manifest(**_TP4)
     prefill, decode = payload["prefill"], payload["decode"]
 
     assert payload["schema_version"] == 3
     assert (len(prefill), len(decode)) == (496, 96)
+    # The count is logged when the cache holds every candidate, too.
+    assert _logged_lines(caplog) == [
+        (
+            logging.INFO,
+            "GLM-5.3-Flash points: dropped 0/496 prefill and 0/96 decode cases (cache capacity, usable_blocks=13814)",
+        )
+    ]
     assert sorted({point["total_prefill_tokens"] // point["batch_size"] for point in prefill}) == [
         4,
         8,
@@ -124,7 +139,8 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
     assert str(error.value) == "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
 
 
-def test_capacity_rule_drops_points_beyond_the_accepted_capacity():
+def test_capacity_rule_drops_points_beyond_the_accepted_capacity(caplog):
+    caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
     # 99 usable blocks: one request of 131,072 tokens needs 61 attention blocks and one block in each state group.
     payload, _, _ = glm_point_manifest(**{**_TP4, "kv_cache_bytes": 100 * 13_045_120})
     decode = payload["decode"]
@@ -132,13 +148,29 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity():
     assert len(decode) == 67
     assert {"batch_size": 1, "total_kv_read_tokens": 131072} in decode
     assert {"batch_size": 2, "total_kv_read_tokens": 262144} not in decode
+    # The candidates are the 496 prefill and 96 decode points of the TP4 list. The rule keeps 314 and 67 of them.
+    assert len(payload["prefill"]) == 314
+    assert _logged_lines(caplog) == [
+        (
+            logging.INFO,
+            "GLM-5.3-Flash points: dropped 182/496 prefill and 29/96 decode cases (cache capacity, usable_blocks=99)",
+        )
+    ]
 
 
-def test_capacity_without_a_feasible_point_is_refused():
+def test_capacity_without_a_feasible_point_is_refused(caplog):
+    caplog.set_level(logging.INFO, logger=_GENERATOR_LOGGER)
     # Five usable blocks: every request needs one attention block and one block in each of the five state groups.
     with pytest.raises(ValueError) as error:
         glm_point_manifest(**{**_TP4, "kv_cache_bytes": 6 * 13_045_120})
     assert str(error.value) == "GLM-5.3-Flash collection has no feasible point for the accepted cache capacity"
+    # The logged count explains the refusal.
+    assert _logged_lines(caplog) == [
+        (
+            logging.INFO,
+            "GLM-5.3-Flash points: dropped 496/496 prefill and 96/96 decode cases (cache capacity, usable_blocks=5)",
+        )
+    ]
 
 
 def test_copied_limits_match_the_producer(monkeypatch):

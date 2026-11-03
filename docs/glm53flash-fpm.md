@@ -180,8 +180,9 @@ prefix and decode context. These are the axes:
 - Decode requests per batch: the powers of two up to the smaller of 32 and
   `max_batch_size`, and that value itself.
 
-The planner drops a point that does not fit the accepted cache capacity. It
-refuses a plan with no prefill point or no decode point. At TP4 with 2,176-token
+The planner drops a point that does not fit the accepted cache capacity, and
+it logs the number of dropped points of each phase. It refuses a plan with no
+prefill point or no decode point. At TP4 with 2,176-token
 hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
 list has 496 prefill points and 96 decode points. That needs an accepted cache
 of at least 2,113 pool blocks (the profile's `kv_cache_bytes` divided by its

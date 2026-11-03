@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile
 
     from .config import FPMCollectionOptions
+
+logger = logging.getLogger(__name__)
 
 GLM_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 GLM_POINTS_ORIGIN = "glm53flash_grid_v1"
@@ -85,22 +88,36 @@ def glm_point_manifest(
     new_tokens = {budget, *range(unit, budget + 1, unit)}
     new_tokens.update(value for value in _powers_of_two_up_to(budget) if value >= CHUNK_ALIGN)
     prefill = []
+    prefill_candidates = 0
     for new in sorted(new_tokens):
         blocks = (measured - new) // unit
         rungs = sorted(rung for rung in {0, 1, blocks, *_powers_of_two_up_to(blocks)} if 0 <= rung <= blocks)
         for batch in batch_sizes(min(MAX_BATCH, prefill_batch_limit, budget // new)):
+            prefill_candidates += len(rungs)
             prefill.extend(
                 {"batch_size": batch, "total_prefill_tokens": batch * new, "total_kv_read_tokens": batch * rung * unit}
                 for rung in rungs
                 if fits(batch, rung * unit + new)
             )
     contexts = {measured, *(value for value in _powers_of_two_up_to(measured) if value >= MIN_CONTEXT)}
+    decode_batches = batch_sizes(min(MAX_BATCH, decode_batch_limit))
     decode = [
         {"batch_size": batch, "total_kv_read_tokens": batch * context}
         for context in sorted(contexts)
-        for batch in batch_sizes(min(MAX_BATCH, decode_batch_limit))
+        for batch in decode_batches
         if fits(batch, context)
     ]
+    # The capacity rule removes points before any is queued, so a removal is never silent: one line counts the dropped
+    # points of each phase, also when there are none.
+    decode_candidates = len(contexts) * len(decode_batches)
+    logger.info(
+        "GLM-5.3-Flash points: dropped %d/%d prefill and %d/%d decode cases (cache capacity, usable_blocks=%d)",
+        prefill_candidates - len(prefill),
+        prefill_candidates,
+        decode_candidates - len(decode),
+        decode_candidates,
+        usable,
+    )
     # A phase without a point leaves its cells nothing to measure, so the plan is refused before any GPU work.
     if not prefill or not decode:
         raise ValueError("GLM-5.3-Flash collection has no feasible point for the accepted cache capacity")
