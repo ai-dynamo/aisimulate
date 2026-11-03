@@ -29,16 +29,14 @@ MAPEs with every frozen metric observation retained. One-factor attribution to
 upstream #406 is confirmed on development points; no new campaign modeling fix
 has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
-Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
-with **13 lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is complete. GPU spend is **34.2839/64 hours**
-charged through completed native collection 1015620, with no active allocation.
-E039 used CPUs only. E040 has ten qualified native controls, sixteen model
-traces and sixteen loaded-model receipts, plus the earlier seven unwrapped
-controls. Its independent forward audit is pending. The measured draft is
-BF16 with an unquantized MoE method; target MoE is NVFP4. No new six-point
-accuracy result has been accepted. The three-node-hour validation reserve is
-untouched.
+Latest all-six candidate E039 has retained TTFT/TPOT **59.3595/67.7741%**
+with **13 lost frozen observations per metric**, so it is **not a win**. E041
+and E042 development compositions also fail qualification: both lose original
+observations and worsen TPOT. GPU spend is **34.2839/64 hours** through completed
+collection 1015620, with no active allocation. The three-node-hour validation
+reserve is untouched. E040 independently verifies GPU projections and loaded
+precision on all eight ranks, but exact decode geometry/request-round alignment
+remains unavailable. No newly developed six-point accuracy fix is accepted.
 
 ## Frozen baselines — E000/E003
 
@@ -2223,3 +2221,52 @@ second checker failure. Apply the existing canonical three-field exclusion and
 independently verify the two wall-rate formulas; every physical aggregate,
 request timestamp, token count, phase, identity and cache field stays compared.
 A regression test still rejects a changed predicted serving throughput.
+
+E042 Qwen smoke attempt v3 passes **8/32/128 requests** with the exact pinned
+0.31.0 SDK path and approved #666 overlay. All request timing, cache fields,
+physical telemetry and serving throughput match; only the three canonical
+execution-wall fields are excluded after their formulas are independently checked.
+Both failed setup/checker attempts remain retained. Development GLM replays all
+complete natively. Independent frozen and native/reference audits agree:
+
+| Lanes | TTFT MAPE / n | TPOT MAPE / n | Lost original observations per metric |
+|---:|---:|---:|---:|
+| 1 | 24.5190% /324 | 18.8751% /324 | 0 |
+| 8 | 30.2592% /1409 | 58.4196% /1407 | 6 |
+| 14 | 85.5945% /2429 | 89.7443% /2428 | 1 |
+| Pooled development | 62.1068% /4162 | 73.6262% /4159 | 7 |
+
+**E042 conclusion — negative for campaign accuracy.** Relative to the full frozen
+research development cohort (88.4103/68.2526%), retained TTFT is lower but TPOT
+worsens and seven original observations per metric are lost. This is not a win;
+do not substitute survivor scores for the original headline. No held-out run is
+warranted by this result. No CPU rate, cache factor or flag is retuned. Exact
+source/wheel identities and Qwen controls remain separately reproducible; GPU
+cost is zero. The next discriminating check addresses measured input/cache
+geometry rather than another combination of timing flags.
+
+## H2 — E043 measured input/cache geometry audit (predeclared)
+
+- **Hypothesis:** replayed prompt construction and cache histories differ enough
+  from recorded server input/reuse receipts to change prefill work. Predicted
+  TTFT gaps should co-occur with mismatched fresh-input counts. Confidence is
+  moderate; different admission times, unrecorded payload bytes and frontend
+  delays are competing explanations. Association alone cannot establish cause.
+- **Experiment:** use only development lanes 1/8/14, the checksum-pinned HF
+  observations, original frozen request identities, E003 native baseline and
+  E042 native composition. Compare input lengths, first-admission reused tokens
+  and their difference. Keep input mismatch separate from reuse mismatch: their
+  counters do not establish byte-identical prefixes. Preserve unavailable
+  receipts, zero cache hits, failed/missing/ambiguous requests and metric-specific
+  lost identities. Preparation remains outside the scored cohort.
+- Add `audit_inputs.py`: report geometry strata (fresh-count difference within
+  one 64-token page, predicted greater or less), original-eligible MAPEs and
+  accounting without changing either eligibility or the headline. No per-request
+  raw identities or payloads are exported. Check artifact hashes, token bounds,
+  complete frozen accounting and group denominators; regression-test unknown
+  geometry, true zero cache/latency, absent predictions and invalid counters.
+- Run the independent CPU audit after its checks pass, record command, source
+  and result checksums. GPU cost zero. A negative association or mixed geometry
+  will narrow the next experiment; it does not authorize fitting cache counts
+  to scores or replacing historical measurements.
+- **Conclusion:** pending independent geometry audit.
