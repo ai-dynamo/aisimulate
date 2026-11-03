@@ -150,6 +150,62 @@ def test_modified_upstream_config_requires_description(fixture):
         checker.validate(root, inventory)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"http://example.com/{REVISION}/config.json",
+        f"https://user@example.com/{REVISION}/config.json",
+        f"https://:secret@example.com/{REVISION}/config.json",
+        f"https:///{REVISION}/config.json",
+        f"https://example.com/{REVISION}/config.json?download=1",
+        f"https://example.com/{REVISION}/config.json#readme",
+        f"https://example.com/{'2' * 40}/config.json",
+        f"https://example.com/{REVISION}/other.json",
+    ],
+)
+def test_upstream_url_rejects_unsafe_or_mismatched_references(fixture, url):
+    root, _, entry, inventory, save = fixture
+    entry["source"]["url"] = url
+    save()
+    with pytest.raises(checker.InventoryError, match="upstream URL"):
+        checker.validate(root, inventory)
+
+
+@pytest.mark.parametrize("origin", ["project", "generated"])
+def test_project_and_generated_origins_require_described_provenance(fixture, origin):
+    root, _, entry, inventory, save = fixture
+    entry.update(origin=origin, description="Original synthetic configuration", inputs=["Synthetic geometry"])
+    del entry["source"]
+    save()
+    checker.validate(root, inventory)
+    for description in (None, "", " "):
+        entry["description"] = description
+        save()
+        with pytest.raises(checker.InventoryError, match="origin description"):
+            checker.validate(root, inventory)
+
+
+@pytest.mark.parametrize("inputs", [None, [], "unstructured input", [""], [None]])
+def test_generated_origin_requires_nonempty_input_records(fixture, inputs):
+    root, _, entry, inventory, save = fixture
+    entry.update(origin="generated", description="Generated synthetic configuration", inputs=inputs)
+    del entry["source"]
+    save()
+    with pytest.raises(checker.InventoryError, match="recorded inputs|generation input provenance"):
+        checker.validate(root, inventory)
+
+
+@pytest.mark.parametrize("outside_root", [False, True])
+def test_config_symlinks_are_rejected_even_when_the_bytes_match(fixture, outside_root):
+    root, path, _, inventory, _ = fixture
+    target = (root.parent if outside_root else root) / "target.json"
+    target.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(target)
+    with pytest.raises(checker.InventoryError, match="regular in-tree file"):
+        checker.validate(root, inventory)
+
+
 @pytest.mark.parametrize("section", [None, "", " "])
 def test_notice_section_is_required_even_with_a_separate_license_file(fixture, section):
     root, _, entry, inventory, save = fixture
@@ -286,6 +342,21 @@ def test_wheel_cannot_drop_required_license_text(fixture):
     with zipfile.ZipFile(wheel, "w") as z:
         z.writestr(CONFIG, path.read_bytes())
     with pytest.raises(checker.InventoryError, match="packaged THIRD_PARTY_NOTICES.md"):
+        checker.validate(root, inventory, wheel_path=wheel)
+
+
+@pytest.mark.parametrize("legal_name", ["LICENSE", "THIRD_PARTY_NOTICES.md"])
+def test_wheel_rejects_legal_payloads_that_differ_from_source(fixture, legal_name):
+    root, path, _, inventory, _ = fixture
+    wheel = root.parent / "changed-legal.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(CONFIG, path.read_bytes())
+        for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
+            data = (root / name).read_bytes()
+            if name == legal_name:
+                data += b"Changed during packaging.\n"
+            archive.writestr(f"aisimulate-1.dist-info/licenses/{name}", data)
+    with pytest.raises(checker.InventoryError, match=rf"packaged {legal_name}.*differs from its source"):
         checker.validate(root, inventory, wheel_path=wheel)
 
 
