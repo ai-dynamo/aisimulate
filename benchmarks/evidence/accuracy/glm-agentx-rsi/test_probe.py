@@ -162,7 +162,7 @@ def test_profile_probe_retains_first_failure_and_unattempted_cases(tmp_path, mon
     monkeypatch.setattr(profile_probe, "flush_cache", lambda *a: None)
     monkeypatch.setattr(profile_probe, "request", lambda *a, **k: {"status": "failed", "events": []})
     monkeypatch.setattr(profile_probe.argparse.ArgumentParser, "parse_args", lambda *a: SimpleNamespace(
-        output=output, model=tmp_path, url="http://test", trace=False))
+        output=output, model=tmp_path, url="http://test", trace=False, profiler="nsys"))
     with pytest.raises(ValueError, match="did not complete"):
         profile_probe.main()
     manifest = json.loads((output / "manifest.json").read_text())

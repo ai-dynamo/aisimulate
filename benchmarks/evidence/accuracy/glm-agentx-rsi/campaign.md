@@ -31,12 +31,12 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
 Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
 with **13 lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is complete. GPU spend is **29.4617/64 hours**
-charged through failed smoke 1014958, plus the active E040 allocation 1015148
-(reserved maximum 6.1333 GPU-hours; actual charge pending terminal accounting).
-E039 used CPUs only. E040 has seven independently qualified unprofiled controls;
-its traced server is still starting. The three-node-hour validation reserve is
-untouched. No new six-point accuracy result has been accepted.
+unchanged C4/C10/C13 validation is complete. GPU spend is **33.0928/64 hours**
+charged through failed Nsight startup 1015148. E039 used CPUs only. E040 has
+seven independently qualified unprofiled controls and no model-forward capture;
+a native Torch correlation fallback is being qualified. There is no active
+GPU allocation. The three-node-hour validation reserve is untouched. No new
+six-point accuracy result has been accepted.
 
 ## Frozen baselines — E000/E003
 
@@ -1931,3 +1931,51 @@ and GPU-projected NVTX CSVs with the same pinned image/tool, and checksum all
 four tables. Keep raw reports, SQLite intermediates and numerical tables in
 private campaign storage. A completion marker requires all exports and source
 checksums to pass; no GPU allocation is retained for offline trace parsing.
+
+
+Nsight model collection **1015148 fails** after **1,634 allocated seconds on
+eight GPUs: 13,072 GPU-seconds**. The unwrapped controls complete and pass an
+independent audit: seven requests, including four measured rows. Cold
+before/after TTFT is 556.197/642.814ms and TPOT 2.609563/2.704670ms; seeded
+long-context TTFT is 164.313/108.794ms and TPOT 3.056228/2.978151ms. All four
+128-token measured requests report 43 verification rounds and first visible
+count one. Retain native speculative statistics separately: delivered counts
+do not directly establish generated/discarded token counts.
+
+The wrapped fresh server reads checkpoint shards but never becomes ready within
+its predeclared 1,200-second startup limit. No model report or loaded-forward
+receipt is produced. One live rank has 184 threads, active CPU work and
+`folio_wait_bit_common`/`cl_sync_io_wait` filesystem waits. Across eight ranks,
+a later three-second sample reads 377,278,464 additional bytes. These are
+observations, not proof of a profiler deadlock or storage-only cause. Stop at
+the unchanged deadline, preserve logs, and mark **ten requests unattempted**.
+Independent accounting SHA256:
+`b321166eed64eba86f5d1de7250cb50f2537740a87c02e3ae9a360bad10250d8`.
+Charge the complete allocation, release the reservation: **119,134 GPU-seconds
+charged; 111,266 remaining**. The op/forward pool has **1,887 node-seconds**
+remaining; validation remains at 10,800 node-seconds.
+
+**Next collection-method check, predeclared:** reuse the pinned runtime's native
+Torch profiler, enabled after model load, instead of wrapping startup in
+Nsight. Its qualified API uses **CPU / GPU**, not the spelling CUDA; explicitly
+select profiling implementation v1 with `SGLANG_PROFILE_V2=0`, keeping serving
+settings, model bytes, TP8, golden acceptance, cap 2 and workload unchanged.
+Before model startup, construct the same eight-device graphs, then enable Torch
+profiling and require positive GPU kernels with explicit CUDA API correlation
+inside each matching CPU range on the same PID/TID and the correct device.
+CPU range duration alone cannot qualify GPU timing. If correlation fails, stop
+before loading GLM and retain the failed toy trace.
+
+This retry runs only the **ten-request** before/profiled/after matrix on one
+fresh server; the completed seven-request unwrapped reference remains in
+1015148. Qualify each retry independently and keep cross-allocation comparisons
+explicit. The two native captures must export all eight TP ranks (16 compressed
+Chrome traces), plus eight target and eight draft loaded-model receipts. Actual
+forward shape, kernel and critical-path qualification remains an independent
+post-capture requirement; filenames alone cannot qualify accuracy.
+
+`torch_profile_collect.sbatch` reserves eight B300 GPUs, 64 CPUs and 1TiB for
+**25 minutes**, with a 24-minute collector deadline. Reserve at most **12,480
+GPU-seconds** including 60 seconds beyond the wall limit for cleanup. This fits
+the remaining op/forward pool and retains all 86,400 validation GPU-seconds.
+No prediction timing, op data, historical scores or scoring cohort changes.

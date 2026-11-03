@@ -14,6 +14,7 @@ import torch
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tool", choices=("nsys", "torch"), default="nsys")
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("CUDA probe receipt already exists")
@@ -38,22 +39,35 @@ def main():
             streams.append(capture_stream)
             graphs.append(graph)
             buffers.append((a, out))
-    with torch.cuda.device(0):
-        torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStart())
-    for device, graph in enumerate(graphs):
-        with torch.cuda.device(device):
-            torch.cuda.nvtx.range_push(f"rsi-smoke-replay-gpu-{device}")
-            graph.replay()
-            torch.cuda.synchronize()
-            torch.cuda.nvtx.range_pop()
-    with torch.cuda.device(0):
-        torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStop())
+    def replay():
+        for device, graph in enumerate(graphs):
+            with torch.cuda.device(device):
+                name = f"rsi-smoke-replay-gpu-{device}"
+                with torch.profiler.record_function(name):
+                    torch.cuda.nvtx.range_push(name)
+                    graph.replay()
+                    torch.cuda.synchronize()
+                    torch.cuda.nvtx.range_pop()
+
+    if args.tool == "torch":
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                                torch.profiler.ProfilerActivity.CUDA],
+                                    record_shapes=False, with_stack=False) as profiler:
+            replay()
+        profiler.export_chrome_trace(str(args.output.with_name("torch-trace.json")))
+    else:
+        with torch.cuda.device(0):
+            torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStart())
+        replay()
+        with torch.cuda.device(0):
+            torch.cuda.check_error(torch.cuda.cudart().cudaProfilerStop())
     # Export is outside the measured capture. Keep tensors alive through it.
     assert all(torch.all(out == 32).item() for _, out in buffers)
     args.output.write_text(json.dumps({
         "schema": "aisimulate.glm-rsi.cuda-trace-probe.v1", "devices": names,
         "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "graphs_constructed_before_capture": True, "results_verified": True,
+        "tool": args.tool,
         "qualification": "Application receipt only; actual GPU/NVTX report coverage must also pass.",
     }, indent=2) + "\n")
 

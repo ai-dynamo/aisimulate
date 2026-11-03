@@ -14,7 +14,7 @@ from audit_coding import validate_counts
 from audit_matrix import errors, interval
 from audit_shared_frontend import error as frontend_error
 from audit_shared_frontend import latencies as frontend_latencies
-from collect import qualify_cuda_trace_tables
+from collect import qualify_cuda_trace_tables, qualify_torch_graph_probe
 from instrument import inject_forward_nvtx
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 from profile_preflight import fields as profile_fields
@@ -169,3 +169,27 @@ def test_forward_nvtx_receipt_never_reads_weights_and_balances_failed_span(tmp_p
     receipt = json.loads(next(tmp_path.glob("*.json")).read_text())
     assert receipt["parameter_dtype_counts"] == {"torch.bfloat16": 1}
     assert receipt["draft_parameters"] == [{"name": "decoder.weight", "dtype": "torch.bfloat16", "shape": [4, 4]}]
+
+
+def test_torch_graph_probe_requires_explicit_gpu_correlations_on_all_devices(tmp_path):
+    events = []
+    for device in range(8):
+        begin = 1000 * device
+        events.extend([
+            {"name": f"rsi-smoke-replay-gpu-{device}", "pid": 1, "tid": 2, "ts": begin, "dur": 100},
+            {"name": "cudaGraphLaunch", "cat": "cuda_runtime", "pid": 1, "tid": 2,
+             "ts": begin + 10, "dur": 5, "args": {"correlation": device + 1}},
+            {"name": "real_kernel", "cat": "kernel", "ts": begin + 30, "dur": 4,
+             "args": {"device": device, "correlation": device + 1}},
+        ])
+    path = tmp_path / "trace.json"
+    path.write_text(json.dumps({"traceEvents": events}))
+    assert len(qualify_torch_graph_probe(path)["projections"]) == 8
+    events[-1]["args"]["correlation"] = 999
+    path.write_text(json.dumps({"traceEvents": events}))
+    with pytest.raises(ValueError, match="correlation"):
+        qualify_torch_graph_probe(path)
+    events[-1]["args"].update(correlation=8, device=0)
+    path.write_text(json.dumps({"traceEvents": events}))
+    with pytest.raises(ValueError, match="correlation"):
+        qualify_torch_graph_probe(path)

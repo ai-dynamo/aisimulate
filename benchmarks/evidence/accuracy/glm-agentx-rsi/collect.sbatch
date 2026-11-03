@@ -31,9 +31,19 @@ if test "${RSI_SUITE:-timing}" = coding-blocking; then
 fi
 if test "${RSI_SUITE:-timing}" = forward-profile; then
     profile_wall_limit=$(scontrol show job "$SLURM_JOB_ID" -o | awk '{for(i=1;i<=NF;i++) if($i ~ /^TimeLimit=/) print substr($i,11)}')
-    test "$profile_wall_limit" = 00:45:00
-    control_seconds=2640
-    reservation_seconds=22080
+    case "${RSI_PROFILE_TOOL:-nsys}" in
+        nsys)
+            test "$profile_wall_limit" = 00:45:00
+            control_seconds=2640
+            reservation_seconds=22080
+            ;;
+        torch)
+            test "$profile_wall_limit" = 00:25:00
+            control_seconds=1440
+            reservation_seconds=12480
+            ;;
+        *) exit 1 ;;
+    esac
 fi
 test "$REMAINING_GPU_SECONDS" -ge "$reservation_seconds"
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
@@ -92,7 +102,7 @@ profile_arguments=()
 if test "${RSI_SUITE:-timing}" = forward-profile; then
     profile_receipt="${RSI_PROFILE_PREFLIGHT:?Versioned profiler qualification receipt}"
     profile_receipt="${profile_receipt/#$storage_root/\/workspace}"
-    profile_arguments=(--profile-preflight "$profile_receipt")
+    profile_arguments=(--profile-preflight "$profile_receipt" --profile-tool "${RSI_PROFILE_TOOL:-nsys}")
 fi
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \

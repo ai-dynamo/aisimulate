@@ -413,10 +413,11 @@ def forward_request(row):
     return result
 
 
-def analyze_forward(root):
+def analyze_forward(root, profiler_only=False):
     modes = {}
-    for mode, arms in (("unprofiled-mtp", ("before", "after")),
-                       ("instrumented-mtp", ("before", "profiled", "after"))):
+    matrix = (("unprofiled-mtp", ("before", "after")),
+              ("instrumented-mtp", ("before", "profiled", "after")))
+    for mode, arms in matrix[1:] if profiler_only else matrix:
         directory = root / mode
         rows_path = directory / "client/requests.jsonl"
         rows = [json.loads(line) for line in rows_path.read_text().splitlines()] if rows_path.exists() else []
@@ -468,6 +469,7 @@ def analyze_forward(root):
                        "missing": sorted(set(expected) - set(counts)), "cases": cases, "reasons": reasons,
                        "qualified": not reasons and all(case["qualified"] for case in cases)}
     return {"schema": "aisimulate.glm-rsi.forward-controls-audit.v1", "modes": modes,
+            "profiler_only": profiler_only,
             "scope": "Finite synthetic controls only; no historical AgentX accuracy score.",
             "gpu_trace_qualification": "Separate GPU-projected rank/kernel/shape audit required.",
             "collector_completed": (root / "completion.json").exists()}
@@ -477,7 +479,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "coding-blocking", "forward-profile"),
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "coding-blocking", "forward-profile",
+                                           "forward-torch"),
                         default="timing")
     args = parser.parse_args()
     result = {
@@ -486,6 +489,7 @@ def main():
         "coding-blocking": lambda root: analyze_blocking(root, coding=True),
         "timing": analyze,
         "forward-profile": analyze_forward,
+        "forward-torch": lambda root: analyze_forward(root, profiler_only=True),
     }[args.suite](args.root)
     with args.output.open("x") as stream:
         stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")

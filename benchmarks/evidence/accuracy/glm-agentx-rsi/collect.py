@@ -85,6 +85,46 @@ def cuda_trace_probe(root, nsys, code, deadline):
     save(root / "qualification.json", result)
 
 
+def qualify_torch_graph_probe(path):
+    events = json.loads(path.read_bytes())["traceEvents"]
+    kernels = [event for event in events if event.get("cat") == "kernel" and event.get("dur", 0) > 0]
+    markers = [event for event in events if re.fullmatch(r"rsi-smoke-replay-gpu-\d+", event.get("name", ""))]
+    if len(markers) != 8:
+        raise ValueError("Torch graph probe needs eight recorded CPU ranges")
+    projections = []
+    for marker in markers:
+        device = int(marker["name"].rsplit("-", 1)[1])
+        calls = [event for event in events if event.get("cat") in ("cuda_runtime", "cuda_driver")
+                 and event.get("pid") == marker["pid"] and event.get("tid") == marker["tid"]
+                 and marker["ts"] <= event["ts"]
+                 and event["ts"] + event.get("dur", 0) <= marker["ts"] + marker["dur"] + 0.001]
+        correlations = {event.get("args", {}).get("correlation") for event in calls}
+        correlations.discard(None)
+        projected = [event for event in kernels if event.get("args", {}).get("correlation") in correlations]
+        if not projected or {event["args"].get("device") for event in projected} != {device}:
+            raise ValueError("Torch graph probe lacks exact CUDA API-to-kernel device correlation")
+        begin = min(event["ts"] for event in projected)
+        end = max(event["ts"] + event["dur"] for event in projected)
+        projections.append({"device": device, "gpu_begin_us": begin, "gpu_end_us": end,
+                            "kernel_rows": len(projected)})
+    if {row["device"] for row in projections} != set(range(8)):
+        raise ValueError("Torch graph probe does not cover all eight devices")
+    return {"schema": "aisimulate.glm-rsi.torch-graph-correlation.v1", "projections": projections,
+            "trace_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "rule": "CPU range encloses CUDA API on same pid/tid; explicit correlation joins actual GPU kernels"}
+
+
+def torch_trace_probe(root, code, deadline):
+    root.mkdir()
+    command = [sys.executable, str(code / "profile_cuda_probe.py"), "--tool", "torch",
+               "--output", str(root / "application.json")]
+    save(root / "command.json", {"command": command})
+    with (root / "probe.log").open("x") as log:
+        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True,
+                       timeout=max(1, min(180, deadline - time.monotonic() - 120)))
+    save(root / "qualification.json", qualify_torch_graph_probe(root / "torch-trace.json"))
+
+
 def sample_gpu(path, stop):
     with path.open("x") as stream:
         while not stop.is_set():
@@ -124,6 +164,7 @@ def control(
     suite="timing",
     coding_inputs=None,
     profile_nsys=None,
+    profile_tool="nsys",
 ):
     code = Path(__file__).parent
     name = ("instrumented" if instrumented else "unprofiled") + ("-mtp" if speculation else "-plain")
@@ -230,11 +271,14 @@ def control(
         environment.pop("RSI_DISPATCH_ROOT", None)
     if suite == "forward-profile":
         environment.pop("RSI_TIMING_ROOT", None)
+        if profile_tool == "torch":
+            environment["SGLANG_PROFILE_V2"] = "0"
         if instrumented:
             environment["RSI_FORWARD_NVTX_ROOT"] = str(output / "model-receipts")
-            trace_root = output / "nsys"
-            trace_root.mkdir()
-            command = nsys_command(profile_nsys, trace_root / "glm", 2) + command
+            if profile_tool == "nsys":
+                trace_root = output / "nsys"
+                trace_root.mkdir()
+                command = nsys_command(profile_nsys, trace_root / "glm", 2) + command
     save(
         output / "command.json",
         {
@@ -244,6 +288,8 @@ def control(
             "acceptance_policy": acceptance_policy if speculation else "disabled",
             "acceptance_environment": {key: environment.get(key) for key in GOLDEN_ACCEPTANCE},
             "suite": suite,
+            "profile_tool": profile_tool if suite == "forward-profile" else None,
+            "profile_v2_environment": environment.get("SGLANG_PROFILE_V2"),
             "precision_environment": {
                 "SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE": environment.get("SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE")
             },
@@ -307,15 +353,24 @@ def control(
                     else []
                 )
                 + (["--coding-inputs", str(coding_inputs)] if suite == "coding-blocking" else [])
-                + (["--trace"] if suite == "forward-profile" and instrumented else []),
+                + (["--trace", "--profiler", profile_tool] if suite == "forward-profile" and instrumented else []),
                 check=True,
                 timeout=max(1, deadline - time.monotonic() - 90),
                 env=environment,
             )
             if suite == "forward-profile" and instrumented:
-                reports = list((output / "nsys").glob("*.nsys-rep"))
-                if len(reports) != 2 or any(p.stat().st_size == 0 for p in reports):
-                    raise ValueError("Both GLM capture ranges must export before qualification")
+                if profile_tool == "nsys":
+                    reports = list((output / "nsys").glob("*.nsys-rep"))
+                    if len(reports) != 2 or any(p.stat().st_size == 0 for p in reports):
+                        raise ValueError("Both GLM capture ranges must export before qualification")
+                else:
+                    reports = list((output / "client").glob("*.trace.json.gz"))
+                    if len(reports) != 16 or any(p.stat().st_size == 0 for p in reports):
+                        raise ValueError("Both native Torch captures must export all eight TP ranks")
+                    for context in (8192, 393216):
+                        expected = {f"rsi-profile-c{context}-profiled-TP-{rank}.trace.json.gz" for rank in range(8)}
+                        if not expected.issubset({p.name for p in reports}):
+                            raise ValueError("Native Torch report identities differ from pinned runtime source")
                 receipts = [json.loads(p.read_bytes()) for p in (output / "model-receipts").glob("*.json")]
                 for draft in (False, True):
                     role = [r for r in receipts if r["draft"] is draft]
@@ -351,6 +406,7 @@ def main():
     parser.add_argument("--dispatch-preflight", type=Path)
     parser.add_argument("--coding-inputs", type=Path)
     parser.add_argument("--profile-preflight", type=Path)
+    parser.add_argument("--profile-tool", choices=("nsys", "torch"), default="nsys")
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
@@ -444,6 +500,7 @@ def main():
             },
             "acceptance_policy": args.acceptance_policy,
             "suite": args.suite,
+            "profile_tool": args.profile_tool if args.suite == "forward-profile" else None,
             "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),
             "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
             "config_sha256": config_sha,
@@ -453,13 +510,16 @@ def main():
         },
     )
     if args.suite == "forward-profile":
-        cuda_trace_probe(args.output / "cuda-probe", profile_nsys, Path(__file__).parent, deadline)
-        control(args.output, args.model, deadline, False, True, args.acceptance_policy,
-                args.suite, profile_nsys=profile_nsys)
+        if args.profile_tool == "nsys":
+            cuda_trace_probe(args.output / "cuda-probe", profile_nsys, Path(__file__).parent, deadline)
+            control(args.output, args.model, deadline, False, True, args.acceptance_policy,
+                    args.suite, profile_nsys=profile_nsys)
+        else:
+            torch_trace_probe(args.output / "torch-probe", Path(__file__).parent, deadline)
         subprocess.run([sys.executable, str(Path(__file__).with_name("instrument.py")), "--forward-nvtx"],
                        check=True, stdout=(args.output / "forward-nvtx-instrumentation.json").open("x"))
         control(args.output, args.model, deadline, True, True, args.acceptance_policy,
-                args.suite, profile_nsys=profile_nsys)
+                args.suite, profile_nsys=profile_nsys, profile_tool=args.profile_tool)
         save(args.output / "completion.json", {"status": "completed"})
         return
     if args.suite in ("blocking", "matrix", "coding-blocking"):

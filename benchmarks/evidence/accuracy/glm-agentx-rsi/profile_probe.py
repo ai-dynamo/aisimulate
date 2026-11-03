@@ -39,8 +39,8 @@ def qualify(row, prompt_tokens, output_tokens, cached_tokens):
     return actual_cache
 
 
-def profiler(url, start, output, identity):
-    data = ({"output_dir": str(output), "activities": ["CUDA_PROFILER"],
+def profiler(url, start, output, identity, tool="nsys"):
+    data = ({"output_dir": str(output), "activities": ["CPU", "GPU"] if tool == "torch" else ["CUDA_PROFILER"],
              "profile_id": identity, "detailed_annotations": True,
              "record_shapes": False, "with_stack": False, "merge_profiles": False}
             if start else {})
@@ -62,13 +62,15 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--profiler", choices=("nsys", "torch"), default="nsys")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     arms = ("before", "profiled", "after") if args.trace else ("before", "after")
     planned = 1 + len(arms) * 3
     manifest = {"schema": "aisimulate.glm-rsi.forward-profile.v1", "planned_requests": planned,
                 "attempted_requests": 0, "qualified_requests": 0, "unattempted_requests": planned,
-                "status": "running", "capture_ranges": [], "traced_server": args.trace}
+                "status": "running", "capture_ranges": [], "traced_server": args.trace,
+                "profiler_tool": args.profiler}
     manifest_path = args.output / "manifest.json"
 
     def save():
@@ -117,13 +119,15 @@ def main():
                     cache = manifest.get("long_cached_tokens") if context == 393216 else 0
                     identity = f"rsi-profile-c{context}-{arm}"
                     if arm == "profiled":
-                        manifest["capture_ranges"].append(profiler(args.url, True, args.output, identity))
+                        manifest["capture_ranges"].append(
+                            profiler(args.url, True, args.output, identity, args.profiler))
                         save()
                     try:
                         one(identity, prompt, 128, cache, "profile", context, arm)
                     finally:
                         if arm == "profiled":
-                            manifest["capture_ranges"].append(profiler(args.url, False, args.output, identity))
+                            manifest["capture_ranges"].append(
+                                profiler(args.url, False, args.output, identity, args.profiler))
                             save()
             manifest["status"] = "completed"
         except Exception as exc:

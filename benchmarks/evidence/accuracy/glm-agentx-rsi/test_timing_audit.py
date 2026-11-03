@@ -240,3 +240,10 @@ def test_forward_capture_boundary_and_sequential_accounting(tmp_path):
     bad = analyze_forward(tmp_path)["modes"]["instrumented-mtp"]
     assert not bad["qualified"]
     assert "capture API boundary does not enclose measured request" in bad["reasons"]
+
+
+def test_native_profiler_only_audit_has_ten_requests_not_repeated_unwrapped_controls(tmp_path):
+    result = analyze_forward(tmp_path, profiler_only=True)
+    assert set(result["modes"]) == {"instrumented-mtp"}
+    assert result["modes"]["instrumented-mtp"]["planned"] == 10
+    assert not result["modes"]["instrumented-mtp"]["qualified"]
