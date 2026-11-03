@@ -31,12 +31,14 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
 Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
 with **13 lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is complete. GPU spend is **33.2528/64 hours**
-charged through failed Nsight startup 1015148. E039 used CPUs only. E040 has
-seven independently qualified unprofiled controls and no model-forward capture;
-a native Torch correlation fallback is being qualified. There is no active
-GPU allocation. The three-node-hour validation reserve is untouched. No new
-six-point accuracy result has been accepted.
+unchanged C4/C10/C13 validation is complete. GPU spend is **34.2839/64 hours**
+charged through completed native collection 1015620, with no active allocation.
+E039 used CPUs only. E040 has ten qualified native controls, sixteen model
+traces and sixteen loaded-model receipts, plus the earlier seven unwrapped
+controls. Its independent forward audit is pending. The measured draft is
+BF16 with an unquantized MoE method; target MoE is NVFP4. No new six-point
+accuracy result has been accepted. The three-node-hour validation reserve is
+untouched.
 
 ## Frozen baselines — E000/E003
 
@@ -2002,3 +2004,36 @@ Charge and release the failed reservation: **119,710 GPU-seconds charged,
 110,690 remaining**; op/forward has **1,815 node-seconds** left, enough for the
 same 25-minute retry plus 60-second cleanup reserve. No new model request was
 attempted, and validation remains untouched.
+
+
+Native retry **1015620 completes** in **464 allocated seconds on eight B300
+GPUs: 3,712 GPU-seconds**. Source
+`14fbec59c2620a24425eb677e7b58cbc27341594`, archive SHA256
+`e9d307d7a9bb5dfb665d738a20e2087c12053e1ed7341d828d868c2d978b5db7`.
+The fresh-allocation graph gate again proves all eight kernel correlations;
+trace SHA256
+`92cae1407881c0020f8422b8070e84fefadff22f8a9139c8e5b2a5c8e78ca127`.
+All ten requests complete and qualify, with sixteen compressed trace files
+(89,030,622 bytes) and sixteen loaded model receipts. Rank 0's draft has BF16
+weights, `UnquantizedFusedMoEMethod` and FP8 KV-cache methods. The target has
+75 NVFP4 MoE methods and six FP8 dense linear methods. This confirms the
+loaded precision distinction, not its timing impact or an accuracy win.
+
+Charge the full successful allocation and release the reservation:
+**123,422 GPU-seconds charged; 106,978 remaining**. The op/forward pool has
+**1,351 node-seconds** left. The original 10,800 validation node-seconds remain
+untouched. No GPU job remains active.
+
+Use `audit_forward.py` for independent offline qualification. It reads one
+compressed rank trace at a time on a single CPU worker; native profiling already
+exports Chrome files, so no Nsight/CPU export job is needed for these files.
+Check native GPU annotations against explicit same-PID/TID CUDA API correlations,
+retain multiple streams and their gaps, and reject GPU evidence outside the
+qualified annotation. CPU scope time, GPU execution span and summed kernel busy
+time remain separate. Validate all rank/model receipts, source checksums,
+request accounting and verification counts before reporting matched TP maxima;
+do not average ranks or merge unqualified absolute clock origins. Keep missing
+forward comparisons and exact-lookup shape availability visible. Synthetic tests
+include kernels that execute after the CPU scope and separate streams whose
+combined wall span differs from their kernel sum. Raw traces and all numerical
+intermediates remain private; this produces no historical request-MAPE update.
