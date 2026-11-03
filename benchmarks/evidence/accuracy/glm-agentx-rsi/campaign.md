@@ -2700,3 +2700,33 @@ pricing, API submission/receipt timing and historical cache/replay differences.
   existing one-query collector uses NONE/decode; ordinary EXTEND instead uses
   the prefill path. It cannot be relabeled as a verification measurement.
 - **Conclusion:** pending independent cadence extraction and canonical pricing.
+
+**E048 conclusion — full-batch serving cadence is overpredicted, but the
+verification-width cause remains unproven.** All eight cases qualify all88
+planned requests. Independent extraction reconciles41 adjacent full-batch
+intervals per case (328 total); all remaining adjacency intervals remain
+counted as common-coverage or membership exclusions. This diagnostic does not
+remove any request from the headline or reinterpret generated excess as
+delivered tokens. The source gate rejects ordinary prefill as a verification
+benchmark.
+
+| Input | Lanes | Cadence mean, repeat0/1 (ms) | Canonical round bounds (ms) |
+|---:|---:|---:|---:|
+| 8192 | 8 | 11.319232/11.308891 | 13.786574–13.789350 |
+| 8192 | 14 | 13.311509/13.321623 | 16.965698–16.970651 |
+| 131072 | 8 | 12.286542/12.274154 | 15.560805–15.562778 |
+| 131072 | 14 | 14.718274/14.699434 | 20.371646–20.375096 |
+
+The22–39% overprediction exceeds the observed repeat drift, grows with batch
+and context, and cannot be explained by missing positive host overhead alone.
+It is not exact GPU-step attribution: ready probes include host/instrumentation
+work, op-data runtime differs and KV bounds are diagnostic rather than per-step
+receipts. Existing E036 submission-aligned request MAPEs below10% on a different
+finite cohort do not negate this steady-cadence discrepancy. Next measure native
+paged-indexer width reuse in isolation before considering a pricing change;
+retain other draft/target operations at their real token counts. No global
+multiplier or sequence-basis substitution is justified yet. GPU cost0.
+- E048-cadence-inputs.json: SHA256 `29e3ab926afa908c2a4de2b8cf0cc71074a9a629fc3694b1905df28edf25f598`.
+- E048-cadence-audit.json: SHA256 `e44af046a0c895533e6751f86e59a276e898a3c3887fcdfdc9d2d8b3d3f82b56`.
+- E048-independent-cadence-audit.json: SHA256 `188a81d61070a0b080fcce908c0ea4107c166c5f634b0c991b27a52843b880a1`.
+- E048-dsa-backend-0520.py: SHA256 `312f8477a9ddb9fcb358595b6c986ee825e0a773d9e5d185224f37972bee5d8c`.
