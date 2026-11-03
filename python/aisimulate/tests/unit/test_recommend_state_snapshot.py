@@ -912,6 +912,15 @@ def test_a_vllm_planner_snapshot_fitted_with_mtp_is_recommended_and_replayed_at_
     [candidate] = result.selected_candidates
     assert candidate.prediction_config["engine"]["nextn"] == 1
     assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+    # An MTP scheme of the same depth is the same nextn.
+    prediction = deepcopy(candidate.prediction_config)
+    engine = prediction["engine"]
+    engine["speculation"] = {
+        "kind": "mtp",
+        "params": {"depth": engine.pop("nextn")},
+        "expected_accepted_tokens": engine.pop("nextn_accepted"),
+    }
+    assert _replay(prediction).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
 
 
 def test_an_aggregated_planner_snapshot_with_attention_dp_needs_its_cross_rank_store(planner_snapshots):

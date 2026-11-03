@@ -103,7 +103,10 @@ timing so the canonical constructor retains draft costs; fixed and polynomial
 timing are rejected for generic schemes. OP/SOL support and estimator fallback
 follow the [cost-model contract](../../perf-model/configuration.md#speculative-decoding-configuration):
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
-fallback can select OP without discarding the scheme.
+fallback can select OP without discarding the scheme. The exception is a vLLM
+`fpm_regression` snapshot fitted at `nextn` N: it times `kind: mtp` with
+`depth: N` as that `nextn`; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
 
 Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
