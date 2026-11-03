@@ -29,14 +29,13 @@ MAPEs with every frozen metric observation retained. One-factor attribution to
 upstream #406 is confirmed on development points; no new campaign modeling fix
 has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
-Latest all-six candidate E039 has retained TTFT/TPOT **59.3595/67.7741%**
-with **13 lost frozen observations per metric**, so it is **not a win**. E041
-and E042 development compositions also fail qualification: both lose original
-observations and worsen TPOT. GPU spend is **36.0639/64 hours** through completed
-collection 1016710, with no active allocation. The three-node-hour validation
-reserve is untouched. E040 independently verifies GPU projections and loaded
-precision on all eight ranks, but exact decode geometry/request-round alignment
-remains unavailable. No newly developed six-point accuracy fix is accepted.
+Latest all-six E047 retains all8624 TTFT/8614 TPOT observations but worsens
+MAPE to84.6707/70.1656%; it is not a win. Earlier E039–E042 frontend/cache/
+overlap candidates also fail qualification. GPU spend is36.0639/64 hours with
+no active allocation; the three-node-hour validation reserve is untouched.
+E046 qualifies all-rank numerical verify/draft/extension geometry4/1/4; its
+synchronized captures substantially perturb timing and cannot calibrate costs.
+No newly developed six-point accuracy fix is accepted.
 
 ## Frozen baselines — E000/E003
 
@@ -2635,3 +2634,38 @@ The unchanged4/10/13 regression replays are running; no tuning follows their
 scores. This source-confirmed composition correction is not an accuracy win.
 - E047-frozen-dev-audit.json: SHA256 `5fb94d01bbc2fadae322be05cdef54699e8d31d887a4f48b8e1faab945378a4b`.
 - E047-independent-dev-audit.json: SHA256 `e3164f8fdfd0895f19287538fc4af0be8d96bceeed47aab8caebdfb799e09985`.
+
+**E047 conclusion — target-composition discrepancy supported; request-accuracy
+improvement disproven for this isolated correction.** All six native replays
+complete with identical input configurations except their trace paths. Exact
+derived trace hashes and byte counts match E003; descriptive retention text
+differs only. Capacity stays59124 blocks. Independent timestamp/token/phase and
+metric arithmetic checks pass. No original frozen metric observation is lost.
+
+| Lanes | Research TTFT | E047 TTFT | Research TPOT | E047 TPOT | Frozen TTFT/TPOT n |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 73.6567% | 76.4538% | 18.8688% | 19.4375% | 324/324 |
+| 4 | 60.8380% | 62.3796% | 42.4000% | 43.3647% | 675/673 |
+| 8 | 63.7743% | 65.4071% | 51.0948% | 56.7262% | 1415/1413 |
+| 10 | 64.9230% | 65.8378% | 73.8154% | 73.7193% | 1598/1595 |
+| 13 | 80.8748% | 93.1730% | 79.0883% | 76.0961% | 2182/2180 |
+| 14 | 104.7231% | 107.9259% | 84.8208% | 84.5197% | 2430/2429 |
+
+Pooled TTFT79.993503→84.670743%/8624; TPOT70.005046→70.165598%/8614.
+Lanes10/13/14 TPOT improve slightly but other regressions prevent a win.
+Recovered matches stay separate: two per metric at8 lanes already occur in
+E003; E047 newly recovers one per metric at14 lanes. They do not enter the
+frozen headline. TPOT MAE1.667929ms, median18.511121%, P99 404.376072%,
+signed49.401426%; TTFT MAE586.716793ms, median64.028748%, P99 657.454593%,
+signed−31.456171%. All37 positive sub0.1ms TPOT references remain and contribute
+33.279589 percentage points. No measured baseline is rewritten.
+
+Focused draft [PR710](https://github.com/ai-dynamo/aisimulate/pull/710) contains
+three GitHub-verified GPG/DCO commits and no performance-data changes. Full CI
+is queued for exact head2794ee90cb6182282d485e0590392251a707ff46; it is not
+reported as passed. No merge or public replacement follows. GPU cost0;
+remaining100570 GPU-seconds. Residual causes include incomplete draft geometry
+pricing, API submission/receipt timing and historical cache/replay differences.
+- E047-frozen-all-six-audit.json: SHA256 `05e687a74d6d2b58c580bc0e5e209666f57761eb5941877b78a50b9df1bc7d10`.
+- E047-independent-all-six-audit.json: SHA256 `7a0d26cd7a549400ce1aa9ec3affbedf5cddfae24e9d586121cec0e686e5100f`.
+- E047-config-qualification.json: SHA256 `46e227b77e84fa2ce1718142524ec9460c6153d34b17995874d974d754400d75`.
