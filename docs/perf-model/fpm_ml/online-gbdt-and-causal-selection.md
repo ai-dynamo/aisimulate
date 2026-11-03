@@ -16,8 +16,9 @@ with explicit `estimation_mode: fpm_learned`. Frozen adaptation preserves the
 forest and can apply hybrid calibration; online adaptation updates the binned
 trees from feedback. The combined selector keeps both experts independent
 and selects using their earlier errors. All three use complete iteration
-telemetry. The current engine replay, engine CLI and Sweeper phase interfaces
-cannot supply those metrics and reject learned execution.
+telemetry. Engine replay, engine CLI and Sweeper build those metrics per pass
+from the scheduled requests and price the pass with the restored model without
+tuning it.
 
 For setup and usage, see the [learned-model workflow](learned-forward-pass-model.md).
 The [configuration reference](configuration.md#learned-forest-and-online-fitting-controls)

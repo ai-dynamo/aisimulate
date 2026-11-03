@@ -4783,3 +4783,74 @@ mod frontend_pools {
         )));
     }
 }
+
+mod uncharged_decode {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::decode::{DecodeShape, price_decode_shape};
+    use super::*;
+    use crate::engine::common::perf_model::PerfModel;
+
+    /// Counts decode queries; `phases` decides whether it prices phases.
+    struct CountingTiming {
+        phases: bool,
+        decode_calls: AtomicUsize,
+    }
+
+    impl crate::engine::TimingModel for CountingTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            anyhow::bail!("no prefill is priced here")
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            self.decode_calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::ensure!(
+                self.phases,
+                "an iteration-only provider has no decode phase"
+            );
+            Ok(5.0)
+        }
+        fn prices_phases(&self) -> bool {
+            self.phases
+        }
+    }
+
+    #[test]
+    fn an_uncharged_decode_asks_only_a_phase_provider_and_takes_no_time() {
+        let shape = |charged| DecodeShape {
+            batch_size: 2,
+            active_kv_tokens: 20,
+            mean_context_length: 10,
+            lengths: vec![8, 12],
+            charged,
+        };
+        for phases in [true, false] {
+            let timing = Arc::new(CountingTiming {
+                phases,
+                decode_calls: AtomicUsize::new(0),
+            });
+            let mut config = SglangConfig::from_args(&test_args(64, 1, 16));
+            config.perf_model = Arc::new(PerfModel::External {
+                timing: Arc::clone(&timing) as Arc<dyn crate::engine::TimingModel>,
+            });
+            // A failed page reservation charges nothing; a phase provider is
+            // still asked, as native timing always was.
+            assert_eq!(
+                price_decode_shape(&shape(false), &config, true).unwrap(),
+                Duration::ZERO
+            );
+            assert_eq!(
+                timing.decode_calls.load(Ordering::Relaxed),
+                usize::from(phases)
+            );
+            // A charged decode always reaches the provider.
+            let charged = price_decode_shape(&shape(true), &config, true);
+            assert_eq!(charged.is_ok(), phases);
+            assert_eq!(
+                timing.decode_calls.load(Ordering::Relaxed),
+                1 + usize::from(phases)
+            );
+        }
+    }
+}

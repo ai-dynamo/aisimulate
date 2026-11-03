@@ -56,6 +56,7 @@ pub use perfmodel::{
     RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
     SplineSearchConfig, UnrecordedFpmQuantMode,
 };
+pub use perfmodel::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
 pub use perfmodel::{
     FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
     FpmSpeculativeMethod, FpmTimingScope,
