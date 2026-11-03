@@ -29,10 +29,10 @@ MAPEs with every frozen metric observation retained. One-factor attribution to
 upstream #406 is confirmed on development points; no new campaign modeling fix
 has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
-Latest candidate E039 has retained development TTFT/TPOT **71.8576/66.3724%**
-with **seven lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is running. GPU spend remains **29.2861/64 hours**,
-with no active GPU allocation; current validation uses CPUs only.
+Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
+with **13 lost frozen observations per metric**, so it is **not a win**. Its
+unchanged C4/C10/C13 validation is complete. GPU spend remains **29.2861/64 hours**,
+with no active GPU allocation. E039 used CPUs only.
 
 ## Frozen baselines — E000/E003
 
@@ -1652,3 +1652,47 @@ component profile unchanged for the reserved C4/C10/C13 validation. The all-six
 view references the immutable development outputs and writes only new held-out
 point directories. No tuning, dataset promotion or dashboard replacement follows
 from these results. GPU charge remains unchanged; validation is CPU-only.
+
+**E039 final conclusion — supported finite mechanism; campaign accuracy
+unqualified.** The unchanged wheel/profile completes all six points. Both
+independent audits reconcile every measured row, native client arithmetic,
+profile boundaries, output-token totals and throughput. No profile is canceled
+or server/client-unsettled. The retained errors and counts are:
+
+| Lanes | TTFT MAPE | TTFT n / frozen | TPOT MAPE | TPOT n / frozen |
+|---|---:|---:|---:|---:|
+| 1 | 24.966650% | 324 / 324 | 18.892208% | 324 / 324 |
+| 4 | 24.143770% | 672 / 675 | 47.910562% | 670 / 673 |
+| 8 | 32.580845% | 1410 / 1415 | 58.567341% | 1408 / 1413 |
+| 10 | 35.974874% | 1596 / 1598 | 69.032715% | 1593 / 1595 |
+| 13 | 63.472404% | 2181 / 2182 | 75.636866% | 2179 / 2180 |
+| 14 | 100.923799% | 2428 / 2430 | 77.238898% | 2427 / 2429 |
+| Pooled | 59.359540% | 8611 / 8624 | 67.774052% | 8601 / 8614 |
+
+C4/C8 TPOT regresses against the frozen research baseline; pooled improvements
+do not hide them. All **13 lost observations per metric** remain required; two
+C8 recoveries outside the frozen cohort are separate. These retained-subset
+values cannot establish a win or replace either baseline. Median APE is
+17.0609% TTFT /18.3216% TPOT; mean signed error is +19.7244% /+48.0493%; mean
+absolute error is 422.2853ms /1.6464ms. Full tails remain in the audit.
+
+All **37** tiny positive TPOT references remain retained and contribute
+**31.7207 percentage points** of pooled TPOT MAPE. None coincides with the
+model's **23** zero-TPOT predictions, which remain valid 100% APE observations.
+Thus the queue mechanism demonstrated on finite controls does not yet reproduce
+which historical requests were buffered. Cache/history/arrival alignment remains
+open; do not fit a multiplier or remove tiny references.
+
+Frozen all-six audit SHA256:
+`b93be57eb71b9bba337cd1c9474721cfc20f79bd6e2f8077d00eb4acc05fd0da`;
+independent native/HF audit SHA256:
+`92969f6cd3897be9e637a54983994855255f7ea083cfb92b597f968aee5f7147`.
+Preserve E038 and E039, including their different causal scopes and negative
+qualification. No accepted campaign fix, HF promotion or dashboard change.
+
+Next choose a discriminating H5 matched forward/kernel check within the untouched
+one-node-hour op/forward allocation, before changing data or GPU timing. The
+three-node-hour GPU validation reserve stays intact. CPU history audits can
+continue without spending it. E039 provides new discriminating feedback/coverage
+evidence, so the no-evidence streak is zero; neither target nor other campaign
+stop condition is reached.
