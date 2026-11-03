@@ -308,7 +308,43 @@ Inspect the native key representation and reproduce the lookahead/page-boundary
 case before implementing a scoped fix. Test differing lookahead tokens, partial
 pages, token conservation and unchanged ordinary-cache behavior. No blanket
 one-page penalty or timing multiplier is an acceptable substitute for key
-semantics. MAPE impact is not yet measured.
+semantics.
+
+Candidate `9d76c7de1387b3e28767b3ffc67ba1d6449dbc9c` on
+`simonec/glm-agentx-eagle-cache` implements page-plus-lookahead lookup hashes,
+logical cacheable extents, rollback invalidation and aligned Belady demand.
+Ordinary cache keys, raw router hashes and physical page ownership remain
+unchanged. Six EAGLE cases pass, including 287424→287360 reuse, changed lookahead,
+materialized versus sampled output, admission, rollback and event identity;
+all 40 KV-manager cases pass. The earlier full core run passes 2539 cases with
+one ignored, before the last three added cases. Pinned adaptation source and
+license are recorded with the fix. Focused draft: [#692](https://github.com/ai-dynamo/aisimulate/pull/692).
+
+The candidate wheel SHA256 is
+`bce6e6ba7c832751277a4853e4528ee1f266a9f98fe6b1ef58a5d58642534a71`;
+native SHA256 `7851f1931a85d8f759ce52b73f7dcf8b4c16622231f88dfcf444e21f5c8d8de8`.
+The #665 data SHA256 remains the frozen `287367dc…` value listed below.
+Development replay uses the same HF revision, measurement settings and frozen
+request identities at lanes 1/8/14. Only cache behavior changes. No extra GPU
+time is allocated. Controlled replay confirms 287360 reused tokens, three successful requests and
+unchanged input/output counts. The independent development audit retains all
+4169 TTFT and 4166 TPOT identities. Pooled TTFT improves 88.4103→85.0238%, but
+TPOT worsens 68.2526→73.5559%: **not a win**. Per-lane TTFT/TPOT are
+73.2059/18.8691% (1), 62.9161/49.9483% (8), and 99.4730/94.5835% (14).
+The C14 TPOT regression is material; C1 TPOT rises 0.00033 percentage points.
+No losses or exclusions establish this result. Recovered observations outside
+the original cohort remain separate; they do not enter the headline.
+
+Conclusion: the cache-key discrepancy is supported and corrected, but this
+causal repair alone does not reduce both request errors. Changed cache work
+changes closed-loop overlap; do not relabel a physical correction as an accuracy
+win. Preserve the research baseline and the focused draft. Validate this frozen
+candidate on 4/10/13 and the Qwen CPU smoke cases before closing its regression
+record. Evidence: `E025-reduction-audit.json`, `E025-independent-dev-audit.json`,
+`E025-provenance.json`; all 2351 wheel op-data files are byte-identical to the
+baseline. No GPU time is charged. The next discriminating ablation is the
+source-confirmed batch-shared forced-acceptance rule (E022), independently of
+this cache change.
 
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
@@ -710,6 +746,7 @@ From this directory:
 
 ```bash
 python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLAY_DIR --output NEW_PRIVATE_DIR
+python audit.py --frozen FROZEN_COHORTS --baseline RESEARCH_BASELINE --candidate NEW_REPLAY_DIR --lanes 1 8 14 --output NEW_AUDIT_JSON
 python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
@@ -721,6 +758,10 @@ PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS 
 python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py test_timing_audit.py
 uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py test_frontend.py
 ```
+
+The comparison mode retains original metric-specific eligibility, reports recovered
+observations separately, and pools individual error sums and denominators. Its
+diagnostics use the same frozen eligibility as the headline.
 
 The GPU scripts require an immutable model receipt, successful CPU preflight,
 explicit remaining GPU-seconds and campaign-root paths. Their synthetic controls

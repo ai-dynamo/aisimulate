@@ -195,13 +195,107 @@ def compare_dashboard(frozen, candidate):
     return result
 
 
+def compare_campaign(frozen_path, baseline_root, candidate_root, lanes):
+    """Audit the original metric-specific identities, including recovered matches separately."""
+    frozen = read(frozen_path)["cohorts"]
+    points, baseline_rows, candidate_rows = [], [], []
+    for point, lane in POINTS:
+        if lane not in lanes:
+            continue
+        identity = f"agentx-{point}"
+        original = frozen[identity]["dashboard"]
+        baseline_path = baseline_root / identity / "score.json"
+        candidate_path = candidate_root / identity / "score.json"
+        baseline = read(baseline_path)["pairs"]
+        candidate = read(candidate_path)["pairs"]
+        qualified = compare_dashboard(original, baseline)
+        if any(not row["coverage_qualified"] for row in qualified.values()):
+            raise ValueError("Research baseline lost frozen observations")
+        index = {row["request_id"]: row for row in baseline}
+        candidate_index = {row["request_id"]: row for row in candidate}
+        selected, diagnostics = [], []
+        for source in original:
+            row = dict(index.get(source["request_id"], source))
+            predicted = dict(candidate_index.get(source["request_id"], {}))
+            for metric in METRICS:
+                if source[metric + "_ms_ape"] is None:
+                    row[metric + "_ms_ape"] = None
+                    row["predicted_" + metric + "_ms"] = None
+                    predicted["predicted_" + metric + "_ms"] = None
+                if predicted.get("status") != "matched":
+                    predicted["predicted_" + metric + "_ms"] = None
+                if "silicon_" + metric + "_ms" not in predicted:
+                    predicted["silicon_" + metric + "_ms"] = source["silicon_" + metric + "_ms"]
+                    predicted["predicted_" + metric + "_ms"] = None
+            selected.append(row)
+            diagnostics.append(predicted)
+        comparison = compare_dashboard(selected, candidate)
+        recovered = {}
+        for metric in METRICS:
+            field = metric + "_ms_ape"
+            original_ids = {row["request_id"] for row in original if row[field] is not None}
+            recovered[metric] = {
+                label: sum(
+                    row["status"] == "matched" and row[field] is not None and row["request_id"] not in original_ids
+                    for row in rows
+                )
+                for label, rows in (("baseline", baseline), ("candidate", candidate))
+            }
+        points.append(
+            {
+                "point": identity,
+                "lanes": lane,
+                "comparison": comparison,
+                "recovered_outside_frozen": recovered,
+                "score_checksums": {"baseline": sha(baseline_path), "candidate": sha(candidate_path)},
+            }
+        )
+        baseline_rows.extend(selected)
+        candidate_rows.extend(diagnostics)
+    if len(points) != len(set(lanes)) or len(lanes) != len(set(lanes)):
+        raise ValueError("Unknown or duplicate campaign lanes")
+    pooled = {}
+    for metric in METRICS:
+        rows = [point["comparison"][metric] for point in points]
+        counts = sum(row["frozen_count"] for row in rows)
+        retained = sum(row["retained_count"] for row in rows)
+        pooled[metric] = {
+            "frozen_count": counts,
+            "retained_count": retained,
+            "lost_count": counts - retained,
+            "baseline_mape_percent": sum(row["baseline_sum_ape"] for row in rows) / counts if counts else None,
+            "candidate_mape_percent": sum(row["candidate_sum_ape"] for row in rows) / retained if retained else None,
+            "coverage_qualified": counts == retained,
+        }
+    return {
+        "schema": "aisimulate.glm-rsi.frozen-comparison.v1",
+        "points": points,
+        "pooled": pooled,
+        "frozen_sha256": sha(frozen_path),
+        "diagnostics": {"baseline": metrics(baseline_rows), "candidate": metrics(candidate_rows)},
+        "qualification": "A smaller scored cohort cannot establish a win; recovered matches are separate.",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--public-bundle", type=Path, required=True)
-    parser.add_argument("--pr665-evidence", type=Path, required=True)
+    parser.add_argument("--public-bundle", type=Path)
+    parser.add_argument("--pr665-evidence", type=Path)
+    parser.add_argument("--frozen", type=Path)
+    parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--lanes", type=int, nargs="+")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = freeze(args.public_bundle, args.pr665_evidence, args.output)
+    if args.candidate:
+        if not (args.frozen and args.baseline and args.lanes):
+            parser.error("--candidate requires --frozen, --baseline and --lanes")
+        result = compare_campaign(args.frozen, args.baseline, args.candidate, args.lanes)
+        write(args.output, result)
+    else:
+        if not (args.public_bundle and args.pr665_evidence):
+            parser.error("freezing requires --public-bundle and --pr665-evidence")
+        result = freeze(args.public_bundle, args.pr665_evidence, args.output)
     print(json.dumps(result["pooled"], indent=2))
 
 
