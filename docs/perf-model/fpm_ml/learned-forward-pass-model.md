@@ -6,8 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Learned forward-pass model from real-traffic FPM telemetry
 
 The learned forward-pass model predicts one engine iteration's wall time from
-the scheduled batch composition, starting from a tree ensemble trained on
-`ForwardPassMetrics` (FPM) records emitted by a real deployment. Construct it
+the scheduled batch composition using a tree ensemble fitted to
+`ForwardPassMetrics` (FPM) records emitted by a real deployment. Start from an
+accepted seed fitted from offline observations. Construct it
 through `RustForwardPassPerfModel.best_available(config)` with explicit
 `estimation_mode="fpm_learned"`. It is outside the automatic estimator search.
 Learned adaptation defaults to `online`; frozen evaluation and hybrid-only
@@ -18,11 +19,11 @@ calibration explicitly select `adaptation: frozen`.
 | `op_level` | Compiled AIC engine | Optional correction | Supported model and performance database |
 | `fpm_regression` | Linear or spline fit | Online fitting per workload store | Admitted observations; can start untrained |
 | `fpm_learned`, `adaptation: frozen` | Fixed tree ensemble | Optional hybrid calibration | Inference artifact or checkpoint |
-| `fpm_learned`, `adaptation: online` (default) | Adaptive binned tree ensemble | Tree updates; correction defaults to disabled | Training or saved online checkpoint |
-| `fpm_learned`, `adaptation: causal_selector` | Selected frozen calibrated or adaptive expert | Both experts learn; prior error evidence selects the next prediction | Training checkpoint |
+| `fpm_learned`, `adaptation: online` (default) | Adaptive binned tree ensemble | Tree updates; correction defaults to disabled | Training/runtime bundle or checkpoint |
+| `fpm_learned`, `adaptation: causal_selector` | Selected frozen calibrated or adaptive expert | Both experts learn; prior error evidence selects the next prediction | Training bundle/checkpoint or complete state snapshot |
 
-The learned mode does not use the anchor-library collector or a kvwarm
-self-benchmark. Its only input is the telemetry the engine already produces.
+Selecting learned timing does not launch a collector or self-benchmark. Callers
+supply accepted source measurements or observed feedback.
 
 Frozen calibration, online tree adaptation and their causal selector are
 standalone telemetry APIs:
@@ -33,12 +34,145 @@ worker's attention-DP ranks; when the artifact reads `req_*`, `slot*` or
 length-variance features, replay supplies each rank's per-request
 `extend_lengths` / `past_kv_lengths` and variances from its scheduled requests
 (see [engine replay timing](../configuration.md#engine-replay-timing)). Replay
-rejects a learned role without a forest store for the work it schedules, a rank
-hosting the vision encoder, and speculative decoding.
+requires an available estimator route for each workload store it schedules,
+including any qualified learned fallback. A rank hosting the vision encoder and
+speculative decoding remain unsupported.
 
 The original PR 280 design rationale, model details, evaluation method and result
 tables are in [`design.md`](design.md). Online update equations, causal selection
 and hyperparameter semantics are in [the mathematical explanation](online-gbdt-and-causal-selection.md).
+
+## Choose an adoption path
+
+Select `estimation_mode: fpm_learned` explicitly in each learned timing role.
+Omitted and explicit `auto` retain the OP → interpolation → regression order,
+and `fallback_policy` still defaults to `deny`. Installing a learned bundle does
+not change an Auto request. For learned online adaptation, keep correction
+disabled; use the complete resolved configuration returned by the producer or
+snapshot restore rather than copying a source path into unrelated defaults.
+
+For a real deployment, prefer an accepted A/B seed bundle that matches its exact
+model, backend/version, hardware, role, precision and topology. Verify its
+provenance, separate training and evaluation inputs, and required workload-store
+coverage. An A label describes self-benchmark evidence and B describes an offline
+transfer seed; neither label establishes accuracy for the intended traffic.
+[Packaging and installation](#package-and-install-an-ab-source-bundle) validate
+source bytes and return pinned configurations through the public producer.
+
+| Starting point | Before prediction or replay | Continuing learning |
+| --- | --- | --- |
+| Accepted A/B bundle | Construct through `best_available` and inspect native `readiness_report()["execution"]`; include any required qualified prior. | Admit subsequent measured C observations to the same worker's model. |
+| Complete state snapshot | Restore the pinned snapshot, preserving `on_tune: reject` for repeatable evaluation. Snapshot-owned timing dependencies move with it. | Select `on_tune: continue` explicitly, then save a new snapshot after feedback. |
+| No accepted seed | The application collects observations and performs an initial fit outside the runtime model, then exports a compatible checkpoint or bundle. | Construct the seeded model and follow the same measured-feedback path. AISimulate does not manage a live collection or initial-fit service. |
+
+Readiness is specific to the worker's scheduler and actual attention-DP width.
+A qualified fallback can cover an absent forest store; an unrelated successful
+store cannot. Missing learned sources are construction errors, and an offline
+replay requires every applicable route to be ready. The
+[self-service learned validation path](../fpm-self-service/implementation.md#optional-seeded-learned-validation)
+uses the existing six stages, keeps generated interpolation configurations and the
+collection-quality assay, and separately checks the selected learned model's
+replay coverage and matched serving accuracy.
+
+A complete snapshot owns learned state, accepted source evidence and its required
+native interpolation prior. Independent model and resource inputs still apply:
+retain the pinned checkpoint `config.json` for `fpm_profile` architecture
+verification and preserve hardware, weight-memory and KV-capacity evidence.
+Neither a timing fit nor a successful snapshot restore proves that a deployment
+fits memory. See [state snapshot ownership](../configuration.md#state-snapshots).
+
+### B+C feedback ownership
+
+B is an accepted offline training population; C is later measured feedback. The
+application owns telemetry collection, complete synchronized rank groups, sampling,
+deduplication, ordering, admission cadence, and stream offsets. It also owns any
+initial fit when no accepted seed exists. The public offline trainer can produce
+that seed, but the runtime model does not collect data or initialize absent forests.
+Do not use rank-local `counter_id` values as a cross-rank synchronization key.
+
+For each fixed worker/deployment identity, keep one seeded model. Predict or score
+an observation before admitting its measured target through `tune_with_fpms`.
+Targets must come from observations, never simulated latency. The method consumes
+complete iterations; `worker_id` does not create independent learner state. A
+multi-iteration call can admit earlier rows before a later error. Keep application
+admission records and reconcile a failure before retrying; replaying an entire
+partially accepted batch can duplicate feedback. AISimulate's model snapshot does
+not store your stream position or provide exactly-once delivery.
+
+Inspect native execution readiness and required-store coverage before promotion.
+Missing stores require an externally trained compatible source or an explicitly
+qualified fallback; online updates alone do not create them. Choose whether to
+flush a final pending update batch, then save a new complete snapshot. Fixed
+validation uses `on_tune: reject`; continued learning explicitly uses `continue`.
+Save the application's input cursor with the snapshot digest under an application
+commit/reconciliation protocol. Validate replay coverage, resources and measured
+serving accuracy separately before using the resulting B+C model operationally.
+
+### Run the packaged functional example
+
+The distribution includes a small decode-only synthetic B bundle at
+`aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1/`.
+Its targets come from self-authored arithmetic formulas. The adjacent README and
+input manifest record the formula, provenance and exact input hashes. The bundle
+has an example identity and no operational catalogue entry; it does not qualify a
+real model, GPU or serving configuration.
+
+Verify installed bytes without the offline trainer:
+
+```bash
+python -m aisimulate_core.sdk.gbdt_example verify-bundle \
+  --output-dir /tmp/gbdt-bundle-check
+```
+
+The command verifies inputs, lineage and generator bytes, privately installs the
+bundle, and compares explicit, installed and discovered native predictions. All
+three selections must have complete decode execution readiness. It writes
+`verification.json` and `resolved-config.json` without training. Each output
+directory must be new.
+
+The full example needs the optional `learned` extra, which pins the supported
+scikit-learn 1.9.1 trainer. From a source checkout use
+`uv sync --project python/aisimulate --extra learned`; for an installed package,
+install the same AISimulate version with its `learned` extra. Generate input files
+outside the model run to make the application-owned feedback boundary explicit:
+
+```bash
+python -m aisimulate_core.sdk.gbdt_example generate \
+  --output-dir /tmp/gbdt-example-inputs
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -m aisimulate_core.sdk.gbdt_example run \
+  --input-dir /tmp/gbdt-example-inputs \
+  --output-dir /tmp/gbdt-seeded-example
+```
+
+`run` trains B, exports and installs the seed through public APIs, and verifies
+catalogue selection. It predicts before each externally supplied C target and
+updates that same seeded instance. After twenty admissions it explicitly flushes,
+saves and relocates a ready B+C snapshot, and writes a separate application cursor
+bound to the feedback file and snapshot digest. Fixed restoration rejects tuning.
+Continued restoration resumes at the recorded offset; final predictions must match
+an uninterrupted twin bit for bit. The number twenty is an example checkpoint
+boundary, not an initial-fit threshold. `receipt.json` records versions, hashes,
+readiness and checks; `seeded-config.json` and `continued-config.json` preserve the
+resolved sources. Omitting `--input-dir` generates the same synthetic files in the
+output directory for convenience.
+
+This example covers complete single-rank decode execution. It excludes prefill,
+mixed/cross-rank workloads, original-A fallback, selector experts and deployment
+resource checks. Separate evaluation records can repeat feature coordinates on
+the periodic surface; they establish functional behavior, not generalization or
+measured serving accuracy. The cursor file illustrates ownership and binding,
+not a production transaction or delivery guarantee.
+
+### Downstream integration
+
+The estimator default remains `auto`. Existing regression and explicit learned
+callers retain their selection and APIs. No new Dynamo adapter or Gym protocol is
+required merely to adopt the seeded bundle and snapshot APIs. Applications that
+choose to manage live learned feedback still own their telemetry, initialization,
+error handling and promotion policy. AISimulate's offline onboarding commands do
+not become live-learning services. Qualify any downstream lifecycle against its
+actual version, rank contract and workload coverage before deployment.
 
 ## 1. Collect the FPM stream
 
@@ -306,9 +440,9 @@ are not independent online overrides:
 | Ordered `features` | `fpm5` for every worker type | Defines the feature ABI, fitted bins and grouping key. The per-request presets, such as `atomic5` and `atomic10`, are explicit options that need request lists. |
 | `max_iter` | `600` | Maximum offline tree count; the actual fitted tree count is preserved online. |
 | `learning_rate` | `0.05` | Shrinkage applied once to each fitted leaf contribution. Distinct from online `update_step`. |
-| `max_leaf_nodes` | `31` | Offline tree budget. Online structural updates reuse each fitted tree's reserved capacity. |
+| `max_leaf_nodes` | `31` | Offline tree budget. Online structural updates reuse each imported tree's existing capacity. |
 | `min_samples_leaf` | `5` | Minimum original observation count per child; grouped history preserves multiplicities. |
-| `min_store_rows` | `20` | Minimum rows for exporting a store. Online feedback does not synthesize missing seed stores. |
+| `min_store_rows` | `20` | Minimum rows for exporting a store during explicit offline training. Online feedback does not initialize missing stores; obtain a compatible trained source for additional coverage. |
 | `random_state` | `0` | Offline fitting RNG; separate from the online split-sampling `seed`. |
 | `early_stopping` | `false` | Required for online checkpoint export so all declared fit rows belong to the fitted population. |
 | L2 penalty and maximum depth | Trainer's `0.0` and no depth limit | Recorded and validated; the online leaf objective and rebuilding respect them. |
@@ -374,7 +508,7 @@ python -m aisimulate_core.sdk.fpm_learned install-bundle \
 ```
 
 The producer validates the staged bundle through the canonical Rust constructor
-before publishing its new directory. The installer copies only authenticated
+before publishing its new directory. The installer copies only verified
 dependency files, preserves their bytes, and writes an immutable manifest-addressed
 bundle under `fpm_learned/bundles/`. Its atomic catalogue update designates the
 first bundle for an exact identity as default. A later installation preserves the
@@ -394,12 +528,10 @@ dictionary. Pass the returned configuration directly to `best_available`.
 Catalogue discovery requires explicit `estimation_mode: fpm_learned` and the
 installed systems root; installing a bundle leaves Auto's selection order unchanged.
 
-Each bundle records `training_recipe` from the seed: the model name,
-scikit-learn version, feature order, target and actual offline hyperparameters.
-The producer requires the supported scikit-learn 1.9.1 trainer, installed by the
-`learned` extra. Prediction and bundle inspection do not import the trainer.
-Callers own collection and initial fitting for missing stores; bundle loading
-does not collect observations or start training.
+A bundle's `training_recipe` records the actual offline estimator name, trainer
+version, ordered feature ABI, target transform and hyperparameters. It describes
+the supplied seed; it does not promise a runtime initial fit or new store creation.
+The producer's `recipe_version` names the offline recipe revision independently.
 
 For an optional qualified original-A prior, pass `bundle --prior prior.json`
 and `--prediction-config learned_request.json`. The prior JSON contains the
@@ -565,9 +697,10 @@ supplies them from each pass's scheduled requests.
 ### Online tree adaptation
 
 Use the seed checkpoint and the same deployment identity to construct a
-standalone online forest. Exactly one of `artifact_path` and `checkpoint_path`
-may be supplied for explicit learned mode. Online adaptation requires the latter
-and disabled correction. Adaptation defaults to `online` and correction to
+standalone online forest. Supply at most one source path; online adaptation accepts
+an online-capable bundle or checkpoint and requires disabled correction. With no
+source or catalogue match, construction fails. The application must obtain an
+accepted seed before constructing the online model. Adaptation defaults to `online` and correction to
 disabled; the example makes these choices explicit:
 
 ```python
@@ -609,9 +742,21 @@ structural updates and lazy derivatives.
 Own one model instance per worker and fixed deployment identity. A `worker_id`
 inside telemetry does not select independent mutable state. Within an instance,
 the full rank list selects the learned workload store: pure prefill, pure
-decode, locally mixed, or cross-rank aggregated. Missing seed stores return
-`None`; they are not bootstrapped by passing more labels to this estimator.
-Idle iterations retain the existing zero-latency behavior.
+decode, locally mixed, or cross-rank aggregated. Online adaptation updates stores
+present in the supplied seed; it does not initialize absent stores. Missing stores
+use an eligible qualified fallback or return `None`. If additional coverage is
+needed, fit and validate a compatible checkpoint outside this runtime instance
+and use the existing supported mixed-checkpoint append or construct a new model.
+Idle iterations retain the existing zero-latency behavior. Gym's existing
+initialization, feedback scope and evaluation protocol remain application-owned.
+
+Use `readiness_report()["execution"]` before offline execution. Its required
+stores follow the same native role/scheduler/topology calculation as replay.
+The legacy top-level readiness flag retains its coarse meaning; one available
+store does not qualify every required route. Source corruption and invalid
+configuration remain errors rather than unavailable deployment candidates.
+Inspect update failures and reconcile admitted input before retrying. Native
+state covers admitted model feedback, not the application's deduplication log.
 
 Always predict before admitting the same observation's target. Ordinary queries
 change neither the fitting population nor pending batches. Every valid feedback
@@ -623,6 +768,25 @@ prediction formula participates in these updates.
 
 #### Save, export and resume
 
+Use a complete [state snapshot](../configuration.md#state-snapshots) to retain the
+whole model: pending rows, forests, calibration, selector
+evidence and required source/prior dependencies. Saving does not flush or fit.
+The same API works for standalone online, frozen calibrated and causal-selector
+models, including mixed-workload fallback state:
+
+```python
+saved = online.save_state_snapshot("models/decode_state")
+frozen = RustForwardPassPerfModel.best_available(state_snapshot="models/decode_state")
+saved["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
+resumed = RustForwardPassPerfModel.best_available(saved)
+```
+
+The default `on_tune: reject` preserves fixed evaluation; `continue` resumes the
+saved lifecycle. Snapshot-owned timing inputs relocate with the directory, while
+independent architecture and resource inputs remain required. Save to a new path
+after further feedback so earlier evaluation remains reproducible.
+
+The lower-level checkpoint workflow below applies to standalone online state.
 Use a new destination for each online checkpoint:
 
 ```python
@@ -642,6 +806,9 @@ learned = resume_config["estimator_config"]["fpm_learned"]
 learned["checkpoint_path"] = "models/decode_online_after_capture"
 # The previous digest pinned the old source; the constructor pins this new one.
 learned.pop("source_sha256", None)
+learned.pop("resolved_source", None)
+learned.pop("resolved_fallback", None)
+learned.pop("bundle_path", None)
 resumed = RustForwardPassPerfModel.best_available(resume_config)
 ```
 
@@ -655,8 +822,8 @@ resuming. Canonical construction pins the source digest in the resolved
 configuration, and checkpoint loading verifies its manifest and referenced
 files. A digest mismatch, incompatible identity, changed continuation controls
 or unsupported checkpoint schema fails explicitly. Seed checkpoints use schema
-version 1; runtime checkpoints use version 5. Earlier research runtime versions
-1 through 4 are rejected rather than interpreted as the new state format.
+version 1; runtime checkpoints preserve the supported version-5 layout and
+continuation semantics. Earlier research runtime versions 1 through 4 are rejected explicitly.
 Saving to an existing path, including an empty directory, is rejected; a saved
 runtime state cannot be reconstructed from an inference artifact alone.
 
@@ -765,15 +932,21 @@ independent correction histories for those three query kinds, and the selector
 keeps independent error evidence for all 12 possible pairs. The online forest
 still learns from all query kinds assigned to that forest store.
 
-The selector requires enabled hybrid correction and a training checkpoint.
-An inference artifact lacks the online training state; a standalone online
-runtime checkpoint lacks the stable calibration and selector histories.
-Neither is accepted as a combined source. A new construction starts with the
-seed forest, empty calibration and selector evidence, and stable selection.
-`save_online_checkpoint()` and `export_learned_artifact()` explicitly reject
-the combined model. Complete combined-state persistence is not yet supported;
-the standalone online save/resume example above applies only to `adaptation:
-online`.
+A new selector requires enabled hybrid correction and an online-capable
+training bundle or checkpoint. An inference artifact lacks the online training
+state; a standalone online runtime checkpoint lacks the stable calibration and
+selector histories. Neither is accepted as a combined source. A new construction
+starts with the seed forest, empty calibration and selector evidence, and stable
+selection. `save_online_checkpoint()` and `export_learned_artifact()` explicitly
+reject the combined model.
+
+Use `selected.save_state_snapshot(PATH)` to preserve both experts, every
+calibration store, selector evidence and any appended mixed stores. Restore the
+complete state through `best_available(state_snapshot=PATH)` for fixed evaluation,
+or pass the saved configuration with `state_snapshot.on_tune: continue` to resume.
+The [complete snapshot contract](../configuration.md#state-snapshots) also preserves
+required fallback and source dependencies; a partial online checkpoint cannot
+substitute for that state.
 
 If an online fitting attempt fails after admitting a valid label, that label
 still advances selector evidence once and is offered to calibration once,

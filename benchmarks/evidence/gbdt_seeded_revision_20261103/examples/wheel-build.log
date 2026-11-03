@@ -1,0 +1,55 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.11, CPython 3.12, CPython 3.13
+🔗 Found pyo3 bindings with abi3-py3.11 support
+📡 Using build options features from pyproject.toml
+💻 Using `MACOSX_DEPLOYMENT_TARGET=11.0` for aarch64-apple-darwin by default
+   Compiling pyo3-build-config v0.23.5
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling pyo3-macros-backend v0.23.5
+   Compiling pyo3-ffi v0.23.5
+   Compiling pyo3 v0.23.5
+   Compiling pyo3-macros v0.23.5
+   Compiling zstd-safe v7.2.4
+   Compiling zstd v0.13.3
+   Compiling parquet v59.3.0
+   Compiling aisimulate-core v0.13.0 (/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/crates/core)
+    Finished `release` profile [optimized] target(s) in 3m 11s
+📦 Including files matching "src/aisimulate/replay/dashboard.html"
+📦 Including files matching "src/aisimulate/replay/plotly-js-LICENSE.txt"
+📦 Including files matching "src/aisimulate/legacy_cli/*.yaml"
+📦 Including files matching "src/aisimulate/legacy_cli/exps/*.yaml"
+📦 Including files matching "src/aisimulate/generator/config/**/*.yaml"
+📦 Including files matching "src/aisimulate/generator/config/backend_templates/**/*.j2"
+📦 Including files matching "src/aisimulate/generator/rule_plugin/**/*.rule"
+📦 Including files matching "src/aisimulate/generator/facts/**/*.yaml"
+📦 Including files matching "src/aisimulate/generator/environment/*.yaml"
+📦 Including files matching "src/aisimulate/sdk/config_adapter/schemas/*.json"
+📦 Including files matching "collector/__init__.py"
+📦 Including files matching "collector/model_cases.py"
+📦 Including files matching "collector/glm53flash_attention_tokens.py"
+📦 Including files matching "collector/glm53flash_runtime_identity.py"
+📦 Including files matching "collector/cases/**/*.yaml"
+📦 Including files matching "collector/fpm_forward/**/*.py"
+📦 Including files matching "collector/fpm_forward/runtime/fpm_exec.sh"
+📦 Including files matching "collector/fpm_forward/runtime/fpm_text.txt"
+📦 Including files matching "collector/fpm_forward/runtime/vllm-*.json"
+📦 Including files matching "collector/fpm_forward/runtime/instrumentation/*.md"
+📦 Including files matching "collector/fpm_forward/runtime/dsv41/*.json"
+📦 Including files matching "collector/fpm_forward/runtime/dsv41/README.md"
+📦 Including files matching "collector/fpm_forward/runtime/dsv41/LICENSE"
+📦 Including files matching "collector/fpm_forward/runtime/glm53flash/*.json"
+📦 Including files matching "collector/fpm_forward/runtime/glm53flash/LICENSE"
+📦 Including files matching "src/aisimulate_core/sdk/**/*.md"
+📦 Including files matching "src/aisimulate_core/systems/*.yaml"
+📦 Including files matching "src/aisimulate_core/systems/*.csv"
+📦 Including files matching "src/aisimulate_core/systems/**/*.csv"
+📦 Including files matching "src/aisimulate_core/systems/**/*.json"
+📦 Including files matching "src/aisimulate_core/systems/**/*.txt"
+📦 Including files matching "src/aisimulate_core/systems/**/*.parquet"
+📦 Including files matching "src/aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1/**"
+📦 Including files matching "src/aisimulate_core/systems/data/**/*.yaml"
+📦 Including files matching "src/aisimulate_core/systems/profiles/**/*.yaml"
+📦 Including files matching "src/aisimulate_core/systems/profiles/**/*.md"
+📦 Including files matching "src/aisimulate_core/systems/data/**/README.md"
+📦 Including files matching "src/aisimulate_core/model_configs/*.json"
+📦 Built wheel for abi3 Python ≥ 3.11 to /private/tmp/gbdt-final-wheel-u43nzqfg/aisimulate-0.13.0-cp311-abi3-macosx_11_0_arm64.whl

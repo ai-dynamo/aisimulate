@@ -1,0 +1,47 @@
+{
+  "scope": "Every changed production/test Python file in PR4",
+  "files": [
+    "python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py",
+    "python/aisimulate/tests/e2e/tools/test_installed_fpm_workflow.py"
+  ],
+  "commands": [
+    {
+      "command": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+        "-m",
+        "pre_commit",
+        "run",
+        "ruff",
+        "--config",
+        "python/aisimulate/.pre-commit-config.yaml",
+        "--files",
+        "python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py",
+        "python/aisimulate/tests/e2e/tools/test_installed_fpm_workflow.py"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+        "-m",
+        "pre_commit",
+        "run",
+        "ruff-format",
+        "--config",
+        "python/aisimulate/.pre-commit-config.yaml",
+        "--files",
+        "python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py",
+        "python/aisimulate/tests/e2e/tools/test_installed_fpm_workflow.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "source_sha256": {
+    "python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py": "3ee9d2ef99daeae58b0695a76ae02dd7e0f1ca00dfad2f0381c45cca39733a85",
+    "python/aisimulate/tests/e2e/tools/test_installed_fpm_workflow.py": "405f464a2f3aa542814939a50f221196d14054d557947bbac955639df4e5d64b"
+  },
+  "commit_environment": {
+    "SKIP": "pytest-marker-report,ruff,ruff-format"
+  },
+  "reason": "The exact configured Ruff hooks passed separately. Executed evidence harnesses keep their hashed bytes during commit. No persistent hook configuration changed."
+}

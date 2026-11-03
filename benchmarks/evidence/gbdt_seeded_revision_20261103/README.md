@@ -14,12 +14,12 @@ this revision. Historical evidence is preserved separately as described below.
 
 ## Revised four-PR delivery
 
-| Branch | Proposed title | Scope |
-| --- | --- | --- |
-| `codex/gbdt-source-bundles` | `feat: add pinned learned bundles and seeded workflows` | Explicit bundle production/export/inspection/install, exact source identity and provenance, optional catalogue discovery and qualified prior, legacy raw-source compatibility and seeded onboarding integration. |
-| `codex/gbdt-native-bootstrap` | `feat: expose learned execution readiness to consumers` | Additive readiness/dependency information and explicit learned caller coverage checks, preserving seeded numerical behavior and existing diagnostics. The branch name is historical; native initial training is removed. |
-| `codex/gbdt-complete-snapshots` | `feat: preserve complete learned snapshots and continuation` | Complete seeded state/source/prior closure, fixed/continued restore and relocation, old snapshot compatibility, and caller consumption. |
-| `codex/gbdt-adoption-examples` | `feat: add reproducible opt-in learned examples` | Decode-only B→externally supplied C→B+C example, trainer-free packaged verification, supported optional trainer, installed-package checks and application ownership guidance. |
+| Branch | Proposed title | Commit | Scope |
+| --- | --- | --- | --- |
+| `codex/gbdt-source-bundles` | `feat: add pinned learned bundles and seeded workflows` | `98a2998fc38263fed96bd71dd779717c95c3da40` | Explicit bundle production/export/inspection/install, exact source identity and provenance, optional catalogue discovery and qualified prior, legacy raw-source compatibility and seeded onboarding integration. |
+| `codex/gbdt-native-bootstrap` | `feat: expose learned execution readiness to consumers` | `bc35afdfb4159000dd616132cac085972c527916` | Additive readiness/dependency information and explicit learned caller coverage checks, preserving seeded numerical behavior and existing diagnostics. The branch name is historical; native initial training is removed. |
+| `codex/gbdt-complete-snapshots` | `feat: preserve complete learned snapshots and continuation` | `3630fed8e30ec24edee78f569b9d7276e60ddb4a` | Complete seeded state/source/prior closure, fixed/continued restore and relocation, old snapshot compatibility, and caller consumption. |
+| `codex/gbdt-adoption-examples` | `feat: add reproducible opt-in learned examples` | Identified by branch/scope; no self-referential commit hash. | Decode-only B→externally supplied C→B+C example, trainer-free packaged verification, supported optional trainer, installed-package checks and application ownership guidance. |
 
 The default remains `auto`. Applications own telemetry, rank synchronization,
 sampling, deduplication, chronology, initial fitting, stream offsets and deployment
@@ -34,6 +34,12 @@ Core runtime, legacy, consumer, real-data and host-cost evidence accompanies PR3
 PR4 adds example/installed-wheel evidence, consolidated adoption guidance and
 the final reference ledger; it is not a prerequisite for the earlier feature
 PRs' runtime qualification.
+
+Pre-review PR1–3 runtime qualification was completed on native 6a12ba8d, with the exact build
+and earlier campaign identities distinguished below. Final PR4 source generation
+pins the producing PR3 revision and passes its public lifecycle/verification
+checks. The recorded pre-review application wheel also passes the installed end-to-end workflow,
+with a native extension byte-identical to qualified build 6a12ba8d.
 
 The assembled candidate native
 `7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0`
@@ -56,6 +62,7 @@ disjoint test total. They do not qualify each PR independently.
 | Unchanged Dynamo | 31 unit tests pass on both; 11 shared native cases match, three candidate bundle/snapshot cases pass; three pre-existing failures reproduce on both | [Consumers](consumers/README.md) |
 | Full36 C/BC and HF smoke accuracy | All 74 cells complete; 6,407,633 records have identical prediction bits/availability and admission payloads; no prediction/tuning errors | [Accuracy](accuracy/README.md) |
 | Dashboard browser fixtures | Both accuracy and scenario checks pass | [Accuracy browser](browser-accuracy.log), [scenario browser](browser-scenarios.log) |
+| PR4 source preparation on 7fe75475 | Ten B→C→B+C lifecycle checks, complete decode readiness, trainer-free verification and optimized-Python tamper rejection pass; retained as preparation evidence | [Examples](examples/README.md) |
 
 The exact accuracy result preserves the baseline's caller-managed initial fit,
 coverage limitations and numerical results. It is not a new accuracy claim. All
@@ -116,8 +123,19 @@ for the tested closures. Warm SDK paired medians range 0.985–1.040; retained
 training-state and bare checkpoint bytes match baseline. These synthetic costs
 do not establish serving accuracy or a universal size/performance guarantee.
 
-PR3 runtime qualification is complete. PR3-pinned example regeneration and the
-final installed wheel remain pending for PR4.
+Final PR4 source regeneration uses producing PR3
+`3e6e82c1b67e4448da01d60ae9d06893d1f8489f` and native 6a12ba8d. All ten lifecycle
+checks and seven packaged verification checks pass, including complete decode
+readiness, trainer-free verification and optimized-Python tamper rejection.
+The [byte comparison](examples/final-artifact-determinism.json) confirms unchanged
+bundle/seed/input bytes; final provenance is recorded separately. The final
+[installed-wheel workflow](examples/installed-wheel.json) passes outside the
+checkout, including source/snapshot APIs, the B+C example, trainer-free
+verification and tamper rejection. Wheel SHA-256:
+`f8cc4bd57e8d8a9c08af28d345dd129bdf2eea548308e3cc6dc6c9146c62495e`.
+Its native extension exactly matches the qualified 6a12ba8d binary. The
+[example report](examples/README.md) retains build/command receipts and the
+non-product collection setup correction.
 
 Only fresh evidence is included in this revised delivery. The earlier stack is
 preserved in local `codex/archive-gbdt-*` refs, including

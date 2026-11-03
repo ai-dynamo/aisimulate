@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 import sysconfig
@@ -142,11 +144,14 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
                 import aisimulate
                 import aisimulate_core
                 from aisimulate import _runtime
-                from aisimulate_core.sdk import fpm_bundle, fpm_learned, rust_engine_step
+                from aisimulate_core.sdk import fpm_bundle, fpm_learned, gbdt_example, rust_engine_step
                 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
                 installed = Path(sys.argv[1]).resolve()
-                for module in (aisimulate, aisimulate_core, _runtime, fpm_bundle, fpm_learned, rust_engine_step):
+                modules = (
+                    aisimulate, aisimulate_core, _runtime, fpm_bundle, fpm_learned, gbdt_example, rust_engine_step
+                )
+                for module in modules:
                     assert Path(module.__file__).resolve().is_relative_to(installed), module.__file__
 
                 identity = {
@@ -224,3 +229,126 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         env=env,
     )
     assert "Verified installed learned train, bundle, install and discovery" in learned.stdout
+    metadata = _run(
+        [
+            str(installed_python),
+            "-c",
+            textwrap.dedent(
+                """
+                import importlib.metadata
+                from packaging.requirements import Requirement
+
+                entries = [Requirement(value) for value in importlib.metadata.requires("aisimulate")]
+                learned = [entry for entry in entries if entry.name.lower().replace("_", "-") == "scikit-learn"]
+                assert len(learned) == 1
+                assert str(learned[0].specifier) == "==1.9.1"
+                assert learned[0].marker.evaluate({"extra": "learned"})
+                assert not learned[0].marker.evaluate({"extra": ""})
+                print("Verified supported optional trainer requirement")
+                """
+            ),
+        ],
+        cwd=unrelated_repository,
+        env=env,
+    )
+    assert "Verified supported optional trainer requirement" in metadata.stdout
+    example_env = {**env, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+    external_inputs = unrelated_repository / "external-example-inputs"
+    _run(
+        [
+            str(installed_python),
+            "-m",
+            "aisimulate_core.sdk.gbdt_example",
+            "generate",
+            "--output-dir",
+            str(external_inputs),
+        ],
+        cwd=unrelated_repository,
+        env=example_env,
+    )
+    for action in ("verify-bundle", "run"):
+        example = _run(
+            [
+                str(installed_python),
+                "-m",
+                "aisimulate_core.sdk.gbdt_example",
+                action,
+                "--output-dir",
+                str(unrelated_repository / f"example-{action}"),
+                *(["--input-dir", str(external_inputs)] if action == "run" else []),
+            ],
+            cwd=unrelated_repository,
+            env=example_env,
+        )
+        result = json.loads(example.stdout)
+        assert result["hardware_measured"] is False
+        assert result["qualification"] == "functional_only_synthetic"
+        assert Path(result["sdk_origin"]).resolve().is_relative_to(installed_purelib)
+        assert Path(result["native"]["path"]).resolve().is_relative_to(installed_purelib)
+        expected_check = (
+            "explicit_learned_catalogue_discovery"
+            if action == "verify-bundle"
+            else "continued_feedback_matches_uninterrupted_bits"
+        )
+        assert expected_check in result["checks"]
+        if action == "run":
+            assert result["readiness"]["execution"]["ready"]
+            assert result["feedback_observations"] == 40
+            assert result["feedback_cursor"]["next_iteration"] == 20
+            assert "seeded_b_receives_external_c_feedback" in result["checks"]
+            assert "application_cursor_bound_to_feedback_and_snapshot" in result["checks"]
+        else:
+            assert all(report["execution"]["ready"] for report in result["readiness"])
+
+    # The shipped seed is usable with the base runtime; only run/train needs
+    # the optional offline trainer. Reject imports rather than reuse its presence.
+    _run(
+        [
+            str(installed_python),
+            "-c",
+            textwrap.dedent(
+                """
+                import importlib.abc
+                import runpy
+                import sys
+
+                class RejectTrainer(importlib.abc.MetaPathFinder):
+                    def find_spec(self, fullname, path, target=None):
+                        if fullname == "sklearn" or fullname.startswith("sklearn."):
+                            raise AssertionError("Packaged verification imported the offline trainer")
+
+                sys.meta_path.insert(0, RejectTrainer())
+                sys.argv = ["gbdt_example", "verify-bundle", "--output-dir", "example-without-trainer"]
+                runpy.run_module("aisimulate_core.sdk.gbdt_example", run_name="__main__")
+                """
+            ),
+        ],
+        cwd=unrelated_repository,
+        env=example_env,
+    )
+
+    # A positive optimized-Python run could hide removed assertions. Deliberately
+    # break only evaluation lineage and require the shipped verifier to reject it.
+    damaged = unrelated_repository / "damaged-example"
+    shutil.copytree(installed_purelib / "aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1", damaged)
+    manifest = damaged / "bundle.json"
+    declaration = json.loads(manifest.read_text())
+    declaration["provenance"]["evaluation_sources"][0]["sha256"] = "0" * 64
+    manifest.write_text(json.dumps(declaration))
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _run(
+            [
+                str(installed_python),
+                "-O",
+                "-m",
+                "aisimulate_core.sdk.gbdt_example",
+                "verify-bundle",
+                "--bundle-path",
+                str(manifest),
+                "--output-dir",
+                str(unrelated_repository / "rejected-example"),
+            ],
+            cwd=unrelated_repository,
+            env=example_env,
+        )
+    assert "evaluation lineage differs" in caught.value.stderr

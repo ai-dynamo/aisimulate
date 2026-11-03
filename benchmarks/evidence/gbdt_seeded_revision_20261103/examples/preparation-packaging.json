@@ -1,0 +1,62 @@
+{
+  "bundle_manifest_sha256": "800ad6f0d1c1f850fe5fc907db9216b62f2fe8425723f69e3c665e1497a1d71c",
+  "completed_lifecycle_checks": [
+    "train_and_export_existing_checkpoint",
+    "portable_install_and_catalogue_discovery",
+    "seeded_decode_execution_ready",
+    "prediction_does_not_fit",
+    "seeded_b_receives_external_c_feedback",
+    "application_cursor_bound_to_feedback_and_snapshot",
+    "relocated_bc_snapshot_preserves_predictions",
+    "fixed_snapshot_rejects_tuning",
+    "ready_snapshot_matches_prediction_bits",
+    "continued_feedback_matches_uninterrupted_bits"
+  ],
+  "coverage_exclusions": [
+    "measured_hardware_accuracy",
+    "serving_or_replay_resource_preflight",
+    "mixed_and_cross_rank_stores",
+    "original_a_prior",
+    "causal_selector",
+    "caller_managed_initial_training",
+    "production_feedback_delivery_and_exactly_once_recovery",
+    "performance_qualification"
+  ],
+  "dependencies": {
+    "aisimulate": "0.13.0",
+    "numpy": "2.5.4",
+    "pyarrow": "25.0.1",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1"
+  },
+  "generation_stage": "preparation_dirty_worktree",
+  "generator_source_sha256": "3ee9d2ef99daeae58b0695a76ae02dd7e0f1ca00dfad2f0381c45cca39733a85",
+  "hardware_measured": false,
+  "input_manifest_sha256": "7b8dd847ceac255c8513adedb9c9f31493f528a8034e5153bfdeb32e37c5abb2",
+  "kind": "aisimulate_synthetic_bundle_reproduction",
+  "native_binary_sha256": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+  "observed_git_head": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957",
+  "offline_recipe": {
+    "early_stopping": false,
+    "learning_rate": 0.1,
+    "max_iter": 12,
+    "max_leaf_nodes": 7,
+    "min_samples_leaf": 4,
+    "min_store_rows": 20,
+    "random_state": 0,
+    "target": "log_ms"
+  },
+  "producer_revision": null,
+  "producer_source_sha256": {
+    "python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py": "df6020278b774dd57ada556f26b66d4daa3bfbbcc4ef39a538c3721fe1892e32",
+    "python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py": "04220c8e5dbbccd210c8fc1fcec5a8822de50b6a0fa892b5d8871b2c9e4562b9",
+    "python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py": "f5025bed055ca0a9891b7fd789d10dbacd3f554b332ddcd0511c5e7edaf174ac"
+  },
+  "python": "3.12.13 (main, Aug  7 2026, 02:15:23) [Clang 22.1.3 ]",
+  "qualification": "functional_only_synthetic",
+  "reproduction": "python -m aisimulate_core.sdk.gbdt_example run --input-dir INPUTS --output-dir NEW",
+  "revision_scope": "producer_revision pins the producer SDK source, independently of the PR4 generator digest. Native binary bytes are pinned separately. No generated artifact contains its own Git commit hash.",
+  "schema_version": 1,
+  "tracked_worktree_dirty": true,
+  "verification": "python -m aisimulate_core.sdk.gbdt_example verify-bundle --output-dir NEW"
+}

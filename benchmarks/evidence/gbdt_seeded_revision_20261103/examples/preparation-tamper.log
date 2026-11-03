@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py", line 477, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py", line 469, in main
+    result = verify_bundle(args.output_dir, args.bundle_path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py", line 397, in verify_bundle
+    _require(
+  File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/gbdt_example.py", line 56, in _require
+    raise ValueError(message)
+ValueError: Packaged bundle evaluation lineage differs from packaged input bytes
+
+PASS: optimized Python rejects altered packaged evaluation lineage

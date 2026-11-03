@@ -1,0 +1,127 @@
+{
+  "artifact_bytes_identical_except_build_info": true,
+  "commands": [
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "-m",
+        "aisimulate_core.sdk.gbdt_example",
+        "run",
+        "--input-dir",
+        "/private/tmp/gbdt-seeded-revision-inputs-20261103",
+        "--output-dir",
+        "/private/tmp/gbdt-seeded-example-final-20261103"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 0,
+      "expected_exit": 0,
+      "log_sha256": "62fe4484375d92312b0f31097ac41574ab033a8a2aeb75a4617d6c823cff700d",
+      "name": "final-run",
+      "seconds": 1.4810964580392465,
+      "started_utc": "2026-11-03T09:07:02.596264+00:00"
+    },
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/examples/package_example.py",
+        "--repo",
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+        "--run",
+        "/private/tmp/gbdt-seeded-example-final-20261103",
+        "--inputs",
+        "/private/tmp/gbdt-seeded-revision-inputs-20261103",
+        "--expected-native-sha256",
+        "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+        "--producer-revision",
+        "3e6e82c1b67e4448da01d60ae9d06893d1f8489f"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 0,
+      "expected_exit": 0,
+      "log_sha256": "6b190a6502ecaae66161bfc9ffb465d245d499048589abb531e7c0d167f38c0a",
+      "name": "final-package",
+      "seconds": 0.14681387500604615,
+      "started_utc": "2026-11-03T09:07:04.084455+00:00"
+    },
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "-m",
+        "aisimulate_core.sdk.gbdt_example",
+        "verify-bundle",
+        "--output-dir",
+        "/private/tmp/gbdt-seeded-bundle-final-verification-20261103"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 0,
+      "expected_exit": 0,
+      "log_sha256": "b86d023b227e7f7931dc510216f0c99b6d77aa32e6bedeec44cdeb99497c5e64",
+      "name": "final-verify",
+      "seconds": 0.16823554201982915,
+      "started_utc": "2026-11-03T09:07:04.246629+00:00"
+    },
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "-c",
+        "import importlib.abc,runpy,sys\nclass RejectTrainer(importlib.abc.MetaPathFinder):\n def find_spec(self,fullname,path,target=None):\n  if fullname=='sklearn' or fullname.startswith('sklearn.'):\n   raise RuntimeError('Packaged verification imported the offline trainer')\nsys.meta_path.insert(0,RejectTrainer())\nsys.argv=['gbdt_example','verify-bundle','--output-dir',sys.argv[1]]\nrunpy.run_module('aisimulate_core.sdk.gbdt_example',run_name='__main__')\n",
+        "/private/tmp/gbdt-seeded-final-trainer-free-20261103"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 0,
+      "expected_exit": 0,
+      "log_sha256": "b86d023b227e7f7931dc510216f0c99b6d77aa32e6bedeec44cdeb99497c5e64",
+      "name": "final-trainer-free",
+      "seconds": 0.1188824589480646,
+      "started_utc": "2026-11-03T09:07:04.430432+00:00"
+    },
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "-O",
+        "-m",
+        "aisimulate_core.sdk.gbdt_example",
+        "verify-bundle",
+        "--bundle-path",
+        "/private/tmp/gbdt-seeded-final-tampered-20261103",
+        "--output-dir",
+        "/private/tmp/gbdt-seeded-final-tampered-output-20261103"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 1,
+      "expected_exit": 1,
+      "log": "final-tamper-invalid-cli.log",
+      "log_sha256": "47ab2b959581b03ac012420389a716291cc0bd61a58fc6e36f5a10fc19d5541e",
+      "name": "final-tamper",
+      "outcome": "Harness invocation used a directory instead of required bundle.json; not a product validation result.",
+      "seconds": 0.8666246249922551,
+      "started_utc": "2026-11-03T09:07:04.583071+00:00"
+    },
+    {
+      "argv": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "-O",
+        "-m",
+        "aisimulate_core.sdk.gbdt_example",
+        "verify-bundle",
+        "--bundle-path",
+        "/private/tmp/gbdt-seeded-final-tampered-20261103/bundle.json",
+        "--output-dir",
+        "/private/tmp/gbdt-seeded-final-tampered-rejection-20261103"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "exit_code": 1,
+      "expected_exit": 1,
+      "log": "final-tamper.log",
+      "log_sha256": "33c1be5c0cd64fa7f0070363d96c4bfcdd7264ac5349a0993e79aa9d293683b8",
+      "name": "final-tamper-correct-manifest-path",
+      "outcome": "Expected rejection of altered evaluation lineage under optimized Python",
+      "seconds": 0.2142795409890823
+    }
+  ],
+  "complete": true,
+  "finished_utc": "2026-11-03T09:07:51.983196+00:00",
+  "native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+  "producer_revision": "3e6e82c1b67e4448da01d60ae9d06893d1f8489f",
+  "started_utc": "2026-11-03T09:07:02.596003+00:00"
+}

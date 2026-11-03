@@ -1,0 +1,21 @@
+usage: gbdt_example.py [-h] --output-dir OUTPUT_DIR
+                       [--bundle-path BUNDLE_PATH] [--input-dir INPUT_DIR]
+                       {generate,run,verify-bundle}
+
+Generate synthetic inputs and exercise a seeded B-to-B+C GBDT workflow.
+Installed entry point: ``python -m aisimulate_core.sdk.gbdt_example``. These
+formula targets are functional examples, never hardware measurements. No
+downloaded data, model weights, external service, or GPU is used.
+
+positional arguments:
+  {generate,run,verify-bundle}
+
+options:
+  -h, --help            show this help message and exit
+  --output-dir OUTPUT_DIR
+                        A new directory; existing data is never replaced
+  --bundle-path BUNDLE_PATH
+                        verify-bundle only: override the packaged synthetic
+                        manifest
+  --input-dir INPUT_DIR
+                        run only: externally managed directory from generate
