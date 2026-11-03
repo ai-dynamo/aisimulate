@@ -107,6 +107,7 @@ Field tables on these pages use the following columns:
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
 | `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and SGLang frontend stages (which already price the tokenizer) are rejected. |
+| `engine.tokenization.share_with_response` | `false` | predict only | Share the single input tokenizer with zero-service response delivery. Requires active tokenization, `workers: 1`, aggregated serving and no separate detokenization. Delayed delivery also delays dependent client requests; see [Request tokenization](#tokenization). |
 | `engine.detokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_output_us` (finite and non-negative, default `0`). Detokenizes each pass's outputs on the worker that emits tokens before the client receives them; see [Response detokenization](#detokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and `traffic.load.agentic_profile` are rejected. |
 
 <a id="tokenization"></a>
@@ -169,6 +170,23 @@ are only an illustration.
   the request never reaches the engine. Its tokenizer time stays reserved,
   so requests behind it on that worker are not released earlier.
 - Setting both costs to `0` is the same as omitting the block.
+
+### Shared input and response frontend
+
+Set `engine.tokenization.share_with_response: true` only when input processing
+blocks response delivery on the same single CPU process. Outputs ready while
+previously queued input jobs run arrive when that queue becomes free. Later
+input jobs do not delay an already queued output. Output delivery has zero
+additional service cost; several GPU outputs may reach the client together,
+including a valid zero TPOT. Client completion releases subsequent requests.
+Preparation waits for its client deliveries before opening the profile phase.
+
+This opt-in mode requires nonzero input processing cost, `workers: 1`, fixed
+aggregated serving, no encoder pool and no separate `engine.detokenization`.
+At an agentic profile's grace deadline, pending client output delivery is
+explicitly unsupported and fails the replay rather than publishing partial
+accuracy. The default `false` leaves response delivery independent of input
+processing. This models CPU sharing, not transport buffering or GPU slowdown.
 
 <a id="detokenization"></a>
 

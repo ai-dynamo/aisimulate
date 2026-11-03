@@ -206,7 +206,7 @@ class BackendDeploymentSpec:
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
     forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
-    # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
+    # Per-worker tokenization costs, concurrency and optional ``share_with_response``.
     # Omitted from canonical JSON when unset, so existing spec identities hold.
     tokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
     # Per-worker detokenization: ``{"workers", "base_ms", "per_output_ms"}``.

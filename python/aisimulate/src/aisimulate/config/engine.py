@@ -733,6 +733,13 @@ class TokenizationConfig(StrictModel):
     workers: PositiveInt = 1
     base_ms: NonNegativeFloat = 0.0
     per_input_token_us: NonNegativeFloat = 0.0
+    share_with_response: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def _shared_frontend(self):
+        if self.share_with_response and (self.workers != 1 or not (self.base_ms or self.per_input_token_us)):
+            raise ValueError("share_with_response requires active single-worker tokenization")
+        return self
 
 
 class DetokenizationConfig(StrictModel):
@@ -920,6 +927,12 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             for worker in (self.workers.aggregated, self.workers.prefill)
         ):
             raise ValueError("engine.tokenization and SGLang frontend stages both price request tokenization; use one")
+        if (
+            self.tokenization is not None
+            and self.tokenization.share_with_response
+            and (self.mode != "aggregated" or (self.detokenization is not None and self.detokenization.active))
+        ):
+            raise ValueError("share_with_response requires aggregated serving without separate detokenization")
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:

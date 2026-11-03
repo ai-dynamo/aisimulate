@@ -424,3 +424,152 @@ fn agentic_warmup_waits_for_requests_being_tokenized() {
         assert!(phases.finished_at_ms.unwrap() > 5.0, "{phases:?}");
     }
 }
+
+#[test]
+fn shared_frontend_buffers_outputs_until_input_cpu_releases() {
+    for backend in BACKENDS {
+        // Victim admitted at 1 ms, CPU actor arrives at 1.5 ms and occupies
+        // the frontend through 41.5 ms, while both victim GPU passes finish.
+        let requests = VecDeque::from([request(1, 4, Some(0.0)), request(2, 160, Some(1.5))]);
+        let report = Replayer::new(spec(backend, false, 1, None), ReplayEngineFactory::new())
+            .unwrap()
+            .with_runtime_input(ReplayRuntimeInput::Requests(requests))
+            .with_tokenization(1, 0.0, 0.25)
+            .unwrap()
+            .with_shared_frontend()
+            .run()
+            .unwrap();
+        let victim = record(&report, 1);
+        assert_eq!(victim.first_token_ms, Some(41.5), "{backend:?}: {victim:?}");
+        assert_eq!(victim.itl_ms, Some(0.0));
+        assert_eq!(victim.terminal_time_ms, 41.5);
+    }
+}
+
+#[test]
+fn shared_frontend_rejects_unsupported_configurations() {
+    for (disagg, workers, cost, detok) in [
+        (true, 1, 1.0, false),
+        (false, 2, 1.0, false),
+        (false, 1, 0.0, false),
+        (false, 1, 1.0, true),
+    ] {
+        let mut replay = Replayer::new(
+            spec(Backend::Vllm, disagg, 1, None),
+            ReplayEngineFactory::new(),
+        )
+        .unwrap()
+        .with_tokenization(workers, cost, 0.0)
+        .unwrap()
+        .with_shared_frontend();
+        if detok {
+            replay = replay.with_detokenization(1, 1.0, 0.0).unwrap();
+        }
+        assert!(
+            replay
+                .run()
+                .unwrap_err()
+                .to_string()
+                .contains("shared frontend requires")
+        );
+    }
+}
+
+#[test]
+fn shared_frontend_fails_explicitly_if_profile_cancels_pending_delivery() {
+    let driver = agentic_driver(
+        vec![agentic_row("victim", 2, 0.0), agentic_row("actor", 50, 2.5)],
+        Some(AgenticProfileOptions {
+            duration_seconds: 0.02,
+            response_grace_seconds: 0.0,
+            ..Default::default()
+        }),
+        false,
+    );
+    let result = Replayer::new(
+        spec(Backend::Vllm, false, 1, None),
+        ReplayEngineFactory::new(),
+    )
+    .unwrap()
+    .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+    .with_tokenization(1, 0.0, 0.25)
+    .unwrap()
+    .with_shared_frontend()
+    .run();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("pending client delivery at profile cancellation")
+    );
+}
+
+#[test]
+fn shared_frontend_releases_successors_after_client_delivery() {
+    let mut child = agentic_row("child", 1, 0.0);
+    child.dependencies =
+        vec![serde_json::from_value(serde_json::json!({
+        "request_id": "victim", "trigger": "completion", "delay_ms": 0.0, "relation": "sequence"
+    })).unwrap()];
+    let driver = agentic_driver(
+        vec![
+            agentic_row("victim", 1, 0.0),
+            agentic_row("actor", 40, 1.5),
+            child,
+        ],
+        None,
+        false,
+    );
+    let report = Replayer::new(
+        spec(Backend::Vllm, false, 1, None),
+        ReplayEngineFactory::new(),
+    )
+    .unwrap()
+    .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+    .with_tokenization(1, 0.0, 0.25)
+    .unwrap()
+    .with_shared_frontend()
+    .run()
+    .unwrap();
+    let find = |id: &str| {
+        report
+            .per_request
+            .iter()
+            .find(|r| r.request_id.as_deref() == Some(id))
+            .unwrap()
+    };
+    let victim = find("victim");
+    let child = find("child");
+    assert_eq!(victim.terminal_time_ms, 41.5);
+    assert_eq!(child.arrival_time_ms, victim.terminal_time_ms);
+    assert_eq!(child.tokenized_ms, Some(victim.terminal_time_ms + 1.0));
+}
+
+#[test]
+fn shared_frontend_preparation_completes_before_profile_epoch() {
+    let driver = agentic_driver(
+        vec![agentic_row("root", 2, 0.0)],
+        Some(AgenticProfileOptions {
+            duration_seconds: 0.1,
+            ..Default::default()
+        }),
+        true,
+    );
+    let report = Replayer::new(
+        spec(Backend::Vllm, false, 1, None),
+        ReplayEngineFactory::new(),
+    )
+    .unwrap()
+    .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+    .with_tokenization(1, 5.0, 0.0)
+    .unwrap()
+    .with_shared_frontend()
+    .run()
+    .unwrap();
+    let phases = report.agentic_phases.as_ref().unwrap();
+    assert!(phases.failure_reason.is_none());
+    assert!(phases.finished_at_ms.unwrap() > 5.0);
+    // Public per-request times use the new profile epoch, not preparation time.
+    assert_eq!(report.per_request[0].arrival_time_ms, 0.0);
+    assert_eq!(report.per_request[0].tokenized_ms, Some(5.0));
+}

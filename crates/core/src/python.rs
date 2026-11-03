@@ -77,6 +77,8 @@ struct TokenizationPayload {
     base_ms: f64,
     #[serde(default)]
     per_input_token_ms: f64,
+    #[serde(default)]
+    share_with_response: bool,
 }
 
 fn default_tokenization_workers() -> usize {
@@ -3735,6 +3737,9 @@ fn run_with_input(
             tokenization.base_ms,
             tokenization.per_input_token_ms,
         )?;
+        if tokenization.share_with_response {
+            replayer = replayer.with_shared_frontend();
+        }
     }
     if let Some(detokenization) = serving_path.detokenization {
         replayer = replayer.with_detokenization(

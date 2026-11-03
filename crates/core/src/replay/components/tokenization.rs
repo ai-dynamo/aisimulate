@@ -34,6 +34,10 @@ impl TokenizationLatency {
         })
     }
 
+    pub(crate) fn workers(self) -> usize {
+        self.workers
+    }
+
     fn service_ms(self, input_tokens: usize) -> f64 {
         self.base_ms + self.per_input_token_ms * input_tokens as f64
     }
@@ -65,6 +69,16 @@ impl<T> TokenizationStage<T> {
             canceled: HashSet::new(),
             next_entry: 0,
         }
+    }
+
+    /// Earliest delivery time on a single shared frontend. Already queued input
+    /// jobs finish first; later arrivals cannot postpone this zero-cost output.
+    pub(crate) fn frontend_available_ms(&self, worker: usize, now_ms: f64) -> f64 {
+        debug_assert_eq!(self.latency.workers, 1);
+        self.servers
+            .get(&worker)
+            .and_then(|servers| servers.peek())
+            .map_or(now_ms, |Reverse(FreeAt(end))| now_ms.max(*end))
     }
 
     /// Requests still being tokenized, excluding canceled ones.
@@ -198,6 +212,15 @@ mod tests {
 
     fn stage(workers: usize) -> TokenizationStage<&'static str> {
         TokenizationStage::new(TokenizationLatency::new(workers, 1.0, 0.5).unwrap())
+    }
+
+    #[test]
+    fn shared_frontend_availability_is_per_logical_worker() {
+        let mut stage = stage(1);
+        stage.enter(0.0, 0, 64, Uuid::from_u128(1), "long").unwrap();
+        assert_eq!(stage.frontend_available_ms(0, 2.0), 33.0);
+        assert_eq!(stage.frontend_available_ms(1, 2.0), 2.0);
+        assert_eq!(stage.frontend_available_ms(0, 34.0), 34.0);
     }
 
     #[test]

@@ -786,7 +786,15 @@ where
             .chunk_by(|left, right| left.uuid == right.uuid)
             .filter(|output| !output.iter().any(|signal| signal.rejected))
             .map(|output| output[0].uuid);
-        detokenization.receive_pass(worker_id, self.now_ms, outputs)
+        let receive_at_ms = if detokenization.shares_frontend() {
+            self.tokenization
+                .as_ref()
+                .expect("validated shared frontend tokenizer")
+                .frontend_available_ms(worker_id, self.now_ms)
+        } else {
+            self.now_ms
+        };
+        detokenization.receive_pass(worker_id, receive_at_ms, outputs)
     }
 
     /// Record every response the client has received by now and hand its
@@ -1348,6 +1356,13 @@ where
         if self.profile_cancel_started || self.now_ms < grace {
             return Ok(false);
         }
+        if self.detokenization.as_ref().is_some_and(|stage| {
+            stage.shares_frontend() && stage.delivery_pending_after(self.now_ms)
+        }) {
+            bail!(
+                "shared frontend does not support pending client delivery at profile cancellation"
+            );
+        }
         self.profile_cancel_started = true;
         let requests = self.admission.agentic_profile_pending_request_ids();
         for uuid in requests {
@@ -1407,7 +1422,13 @@ where
     }
 
     fn finish_agentic_preparation(&mut self) -> anyhow::Result<bool> {
-        if !self.admission.is_agentic_preparing() || !self.engine.is_drained() {
+        if !self.admission.is_agentic_preparing()
+            || !self.engine.is_drained()
+            || self
+                .detokenization
+                .as_ref()
+                .is_some_and(|stage| stage.len() > 0)
+        {
             return Ok(false);
         }
         let Some(transition) = self.admission.finish_agentic_preparation(
@@ -1833,7 +1854,12 @@ where
             bail!("agentic_profile cannot be combined with an encoder pool");
         }
         // Profile cancellation does not know about responses still on their way to the client.
-        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
+        if self
+            .detokenization
+            .as_ref()
+            .is_some_and(|stage| !stage.shares_frontend())
+            && self.admission.agentic_profile_report().is_some()
+        {
             bail!("agentic_profile cannot be combined with detokenization");
         }
         if let Some(cap_ms) = self.max_sim_time_ms

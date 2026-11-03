@@ -3397,3 +3397,30 @@ def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeyp
         engine["mode"] = "disaggregated"
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
+
+
+def test_shared_frontend_round_trip_and_compilation() -> None:
+    config = _tokenization_prediction({"per_input_token_us": 1.3, "share_with_response": True})
+    restored = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    payload = prediction_to_replay_spec(restored).backend_deployment.tokenization
+    assert payload == {"workers": 1, "base_ms": 0.0, "per_input_token_ms": 0.0013, "share_with_response": True}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"share_with_response": True},
+        {"workers": 2, "base_ms": 1, "share_with_response": True},
+        {"base_ms": 1, "share_with_response": "true"},
+    ],
+)
+def test_shared_frontend_requires_active_single_worker(value) -> None:
+    with pytest.raises(ValidationError):
+        _tokenization_prediction(value)
+
+
+def test_shared_frontend_rejects_separate_response_cost() -> None:
+    config = _tokenization_prediction({"base_ms": 1, "share_with_response": True}).model_dump()
+    config["engine"]["detokenization"] = {"base_ms": 1}
+    with pytest.raises(ValidationError, match="without separate detokenization"):
+        CorePredictionConfig.model_validate(config)
