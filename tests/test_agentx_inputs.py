@@ -27,9 +27,7 @@ def test_thin_catalog_and_relative_bundle_round_trip(tmp_path):
     assert runs[0]["id"] == result()["id"]
     assert {
         r["id"]
-        for r in json.loads(
-            checked(tmp_path, runs[0]["artifacts"]["feature_metadata"]).read_bytes()
-        )["features"]
+        for r in json.loads(checked(tmp_path, runs[0]["artifacts"]["feature_metadata"]).read_bytes())["features"]
     } == SILICON_FEATURES
     manifest = checked(tmp_path, catalog["runs"][0]["manifest"])
     manifest.write_bytes(manifest.read_bytes() + b" ")
@@ -37,9 +35,7 @@ def test_thin_catalog_and_relative_bundle_round_trip(tmp_path):
         load_runs(tmp_path, catalog)
 
 
-@pytest.mark.parametrize(
-    "path", ["../escape.json", "/absolute", "a//b", "a/./b", "a/../b", "a\\b"]
-)
+@pytest.mark.parametrize("path", ["../escape.json", "/absolute", "a//b", "a/./b", "a/../b", "a\\b"])
 def test_unsafe_bundle_paths_rejected(tmp_path, path):
     with pytest.raises(ValueError, match="Unsafe"):
         safe_path(tmp_path, path)
@@ -135,9 +131,7 @@ def test_finite_trace_preserves_token_equality_and_warmup_barrier(tmp_path):
 def test_curated_features_keep_actual_draft_length_and_unknown_scope(tmp_path):
     catalog = silicon_inputs(tmp_path, result())
     run = load_runs(tmp_path, catalog)[0]
-    value = json.loads(
-        checked(tmp_path, run["artifacts"]["feature_metadata"]).read_bytes()
-    )
+    value = json.loads(checked(tmp_path, run["artifacts"]["feature_metadata"]).read_bytes())
     row = next(r for r in value["features"] if r["id"] == "speculation")
     row.update(
         state="enabled",
@@ -148,9 +142,9 @@ def test_curated_features_keep_actual_draft_length_and_unknown_scope(tmp_path):
         evidence=[{"sha256": "a" * 64, "pointer": "/runtime"}],
     )
     assert validate(copy.deepcopy(value)) == value
-    assert next(r for r in value["features"] if r["id"] == "cache.g2")[
-        "parameters"
-    ] == [{"name": "scope", "value": "unknown"}]
+    assert next(r for r in value["features"] if r["id"] == "cache.g2")["parameters"] == [
+        {"name": "scope", "value": "unknown"}
+    ]
     row["parameters"][0]["value"] = "off"
     with pytest.raises(ValueError, match="not applicable"):
         validate(value)
