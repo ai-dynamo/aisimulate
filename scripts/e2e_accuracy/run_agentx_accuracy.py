@@ -23,6 +23,7 @@ from scripts.e2e_accuracy.agentx_contract import (
     canonical,
     digest,
     driver_digest,
+    native_completion_qualified,
     score,
     validate_catalog,
     validate_public,
@@ -305,9 +306,10 @@ def run_one(root, run, directory, timeout):
             outcome = {"outcome": "failed", "reason": "replay_timeout"}
     normalized, report = [], None
     if outcome["outcome"] == "completed":
-        normalized = normalize_native(read(directory / "native.json"), observations, run["category"], run["boundary"])
+        native = read(directory / "native.json")
+        normalized = normalize_native(native, observations, run["category"], run["boundary"])
         report = public_report(read(directory / "dashboard.json"), observations, run["category"], run["boundary"])
-        if report["telemetry"]["completion_status"] != "completed":
+        if not native_completion_qualified(native, run["boundary"]):
             outcome = {**outcome, "outcome": "failed", "reason": "replay_incomplete"}
     scores = score(observations, normalized, run["boundary"])
     cache_alignment = None

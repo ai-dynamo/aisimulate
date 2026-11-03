@@ -276,7 +276,7 @@ def conversation(row, silicon=False):
     if row.get("_conversation_proxy"):
         return row["_conversation_proxy"]
     return (
-        row.get("conversation_id", row.get("source_trace_id", "Unassigned"))
+        row.get("conversation_id") or row.get("source_trace_id") or "Unassigned"
         if silicon
         else (row.get("agentic") or {}).get("conversation_id") or row.get("session_id") or "Unassigned"
     )

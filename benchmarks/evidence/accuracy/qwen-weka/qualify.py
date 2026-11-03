@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 from scripts.e2e_accuracy.benchmark_features import validate_qwen_baseline
-from scripts.e2e_accuracy.agentx_contract import score
+from scripts.e2e_accuracy.agentx_contract import native_completion_qualified, score
 from scripts.e2e_accuracy.run_agentx_accuracy import normalize_native
 
 
@@ -53,7 +53,7 @@ def qualify(normalized, replay, wheel_provenance):
         raise ValueError("Pilot op-data checksums differ from the evaluated wheel")
     native = read(replay / "native.json")
     telemetry = native.get("telemetry", {})
-    if telemetry.get("completion_status") != "completed":
+    if not native_completion_qualified(native, "successful_profile_span"):
         raise ValueError("Pilot native replay did not qualify: " + str(telemetry.get("completion_status")))
     if not telemetry.get("requests") or not telemetry.get("samples") or not telemetry.get("lifecycle"):
         raise ValueError("Pilot native request/sample/lifecycle telemetry is missing")
@@ -73,6 +73,8 @@ def qualify(normalized, replay, wheel_provenance):
         "feature_metadata_sha256": hashlib.sha256((normalized / "feature_metadata.json").read_bytes()).hexdigest(),
         "native_sha256": hashlib.sha256((replay / "native.json").read_bytes()).hexdigest(),
         "feature_count": len(features["features"]),
+        "native_completion_status": telemetry["completion_status"],
+        "native_profile": native.get("agentic_profile"),
         "evaluated_commit": wheel["evaluated_commit"],
         "wheel_sha256": wheel["wheel_sha256"],
         "matched_requests": scored["coverage"]["matched"],

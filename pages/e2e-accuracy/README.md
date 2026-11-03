@@ -672,8 +672,12 @@ projection rejects unrecognized feature fields and private values.
 `?campaign=finite-v1` selects the retained finite archive. After Weka activation,
 legacy Qwen URLs containing length/cache/repeat selectors route there, including
 the old 16-lane point. Weka profiles have no finite-workload selectors.
-The 2026-11-02 pilot stopped at native `server_unsettled` qualification; active
-coverage remains the existing finite campaign. Unrecorded cancellations retain
+The 2026-11-02 pilot stopped because qualification treated native
+`server_unsettled` as a failure. CPU investigation confirmed a normal grace-boundary
+cancellation; pilot and daily checks now accept it only with reconciled client
+terminals, deadlines and lifecycle cleanup. Native status and unsettled counts
+remain visible; active coverage remains the existing finite campaign until the
+full replacement campaign qualifies. Unrecorded cancellations retain
 explicit counts and unavailable timings. Evidence lists exclusions and metric
 denominators without a separate accounting section; incomplete failed/cancelled
 stream observations do not become zero-valued throughput comparisons.

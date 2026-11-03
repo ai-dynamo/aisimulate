@@ -26,7 +26,34 @@ failed qualification record in the private HF review candidate at silicon
 dataset revision `35829eb29e4a3949a60602b9a156adb6b76a9681`. The active catalog
 is unchanged. GPU allocations consumed 2810 of 28800 seconds (0.78 node-hours),
 including the two client-setup failures; 25990 seconds remain in this campaign's
-budget. Collection requires a new successful qualification before resuming.
+budget. Collection remains stopped during the CPU investigation below.
+
+### Qualification investigation
+
+The original gate incorrectly treated all `server_unsettled` reports as failed
+replays. Native continuous profiles end when client requests are terminal;
+canceling a request in an already committed batch deliberately retains unsettled
+server work. This is distinct from a cancellation timeout or an incomplete client.
+
+A CPU rerun with the same wheel, database and inputs reproduced identical native
+telemetry. It issued 493 profiling requests: 492 completed and one was canceled
+exactly 630 seconds after the profile started (600-second admission plus 30-second
+grace). That request had delivered 7006 of 10590 requested tokens. Client in-flight
+count was zero, cancellation drain did not time out, and one committed batch
+remained unsettled. The native status and cleanup counts are retained unchanged.
+
+The pilot qualifier and daily producer now share an accounting check. They accept
+this bounded client cancellation only when deadlines, request totals, terminal
+states and lifecycle cleanup agree. Time-limited runs, unsettled successful
+requests, cancellation timeouts and finite cohorts remain rejected. The corrected
+pilot check retains 422 measured credits and scores 420 uniquely matched requests;
+the silicon cancellation and missing prediction remain explicit exclusions.
+An unrecorded cancellation with unknown lineage also exposed a timeline fallback
+bug; it now retains an unassigned group and unavailable timestamps.
+
+This corrects qualification without changing prediction timing or the measured
+window. The original failed HF archive remains historical evidence. No additional
+GPU collection or replacement publication was performed during the investigation.
 
 This campaign replaces active finite Qwen coverage only after six measured
 profiles and the complete twelve-run GLM/Qwen replay campaign qualify. Until
