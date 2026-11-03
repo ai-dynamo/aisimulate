@@ -1603,3 +1603,12 @@ is CPU compatibility evidence, not a new measured accuracy claim.
 
 The same audit reconciles client output-token totals and output tokens/s over
 the native observation duration; server processed-token counters remain separate.
+
+E039 flag-off qualification completes: C1/C8/C14 **entire score, per-request
+records and telemetry payloads exactly equal E034**, preserving its five lost
+observations per metric. Evidence: `E039-flag-off-parity.json`. Full core unit
+validation passes **2537 tests**, with one existing ignored test; the focused
+Rust integration suites pass 17+11 tests. The candidate remains frozen at
+`aa4c2aeab0050ad453295b9dff7c70cc80c29dab` in draft
+[PR #703](https://github.com/ai-dynamo/aisimulate/pull/703), verified by GitHub.
+Full CI was requested for that exact head. Flag-on development runs are pending.
