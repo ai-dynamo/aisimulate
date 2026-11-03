@@ -133,9 +133,35 @@ def test_recovery_stages_only_verified_declarations_and_preserves_originals(sour
 
 
 @pytest.mark.parametrize("provenance", ["reconstructed_from_parquet", "collector"])
-def test_complete_metadata_is_linked_without_rewriting_or_recovery_claim(source, provenance):
+@pytest.mark.parametrize("legacy_rows", [False, True])
+@pytest.mark.parametrize("sidecar_repeats", [False, True])
+def test_complete_metadata_is_linked_without_rewriting_or_recovery_claim(
+    source, provenance, legacy_rows, sidecar_repeats
+):
+    from scripts.fpm_accuracy.models.scenario_interpolation import measured_fpm_identity
+
     write, _ = source
-    artifact = write(changes={**FACTS, "metadata_provenance": provenance})
+    identity = {
+        **IDENTITY,
+        "gemm_quant_mode": "fp8_block",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+        "attention_backend": "auto",
+        "moe_backend": "auto",
+        "enable_wideep": False,
+        "enable_eplb": False,
+    }
+    row = {**ROW, **identity}
+    if legacy_rows:
+        for field in ("measurement_policy", "measurement_repeats", "warmup_repeats"):
+            row.pop(field)
+    artifact = write(
+        rows=[row],
+        changes={**FACTS, "configuration_selector": identity, "metadata_provenance": provenance},
+        omit=() if sidecar_repeats else ("measurement_repeats", "warmup_repeats"),
+    )
+    assert measured_fpm_identity(artifact)["model_path"] == IDENTITY["model_path"]
     before = artifact.local_metadata_path.read_bytes()
     prepared = aic_fpm_database.prepare_aic_fpm_database({}, artifact)
     try:
@@ -145,6 +171,20 @@ def test_complete_metadata_is_linked_without_rewriting_or_recovery_claim(source,
         assert "fpm_metadata_recovery" not in prepared.diagnostics
     finally:
         prepared.close()
+
+
+def test_missing_required_legacy_declaration_still_needs_explicit_row_proof(source):
+    write, overlays = source
+    artifact = write(
+        rows=[{name: value for name, value in ROW.items() if name != "measurement_policy"}],
+        changes=FACTS,
+        omit=("coordinate_system",),
+    )
+    original = artifact.local_metadata_path.read_bytes()
+    with pytest.raises(ConfigurationError, match="contract columns"):
+        aic_fpm_database.prepare_aic_fpm_database({}, artifact)
+    assert not overlays
+    assert artifact.local_metadata_path.read_bytes() == original
 
 
 @pytest.mark.parametrize("target", ["parquet", "sidecar", "manifest_parquet", "manifest_sidecar"])

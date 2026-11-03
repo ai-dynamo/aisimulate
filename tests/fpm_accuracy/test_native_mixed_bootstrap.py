@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
@@ -15,12 +16,16 @@ import pyarrow.parquet as pq
 import pytest
 import test_scenarios as scenario_fixtures
 
+from scripts.fpm_accuracy.models.aic_fpm_database import prepare_aic_fpm_database
 from scripts.fpm_accuracy.models.learned_scenario import LearnedScenarioPredictor
 from scripts.fpm_accuracy.models.mixed_scenario import MixedOriginalA
 from scripts.fpm_accuracy.scenarios import score_scenario
 
-# Pages installs only the Gym dependencies. Native-wheel jobs exercise this test.
-pytest.importorskip("aisimulate_core.sdk")
+# Pages installs only Gym dependencies; the contracts shard must exercise native tests.
+if "AISIMULATE_TEST_WHEEL" in os.environ:
+    import_module("aisimulate_core.sdk")
+else:
+    pytest.importorskip("aisimulate_core.sdk")
 phase_fixtures = import_module("python.aisimulate.tests.unit.sdk.test_fpm_phase_readiness")
 training_support = import_module("python.aisimulate.tests.unit.sdk.fpm_training_support")
 training_support.import_sklearn()
@@ -29,6 +34,52 @@ scenario_case = scenario_fixtures.scenario_case
 isolate_training_dependencies = training_support.isolate_training_dependencies
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("sidecar_repeats", [False, True])
+def test_complete_reconstructed_legacy_pair_reaches_native_validation(phase_roots, scenario_case, sidecar_repeats):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config, make_root = phase_roots
+    parquet = Path(make_root("legacy-pair")) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    assert not {"measurement_policy", "measurement_repeats", "warmup_repeats"} & set(pq.read_schema(parquet).names)
+    sidecar = parquet.with_suffix(".metadata.json")
+    metadata = json.loads(sidecar.read_text())
+    metadata["metadata_provenance"] = "reconstructed_from_parquet"
+    if sidecar_repeats:
+        metadata.update(measurement_repeats=1, warmup_repeats=0)
+    sidecar.write_text(json.dumps(metadata))
+    artifact = replace(
+        scenario_case.fpm_artifacts[0],
+        local_path=parquet,
+        local_metadata_path=sidecar,
+        sha256=metadata["parquet_sha256"],
+        metadata_sha256=hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+        row_count=metadata["row_count"],
+    )
+    prepared = prepare_aic_fpm_database(
+        {"system_name": "h200_sxm", "backend": "vllm", "backend_version": "0.25.1"}, artifact
+    )
+    try:
+        assert "fpm_metadata_recovery" not in prepared.diagnostics
+        native = RustForwardPassPerfModel.best_available({**config, "systems_paths": [str(prepared.systems_root)]})
+        try:
+            assert (
+                native.estimate_forward_pass_time_ms(
+                    {"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}
+                )
+                == 2.0
+            )
+            assert (
+                native.estimate_forward_pass_time_ms(
+                    {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}
+                )
+                == 3.0
+            )
+        finally:
+            native.close()
+    finally:
+        prepared.close()
 
 
 @pytest.mark.parametrize("method", ["gbdt", "selector"])

@@ -149,7 +149,7 @@ SELECTOR_ONLINE_RECIPE = {
     },
 }
 
-PROTOCOL_METADATA = {
+_PROTOCOL_METADATA_V13 = {
     "methods": {
         "warmup": {"label": "Interpolation · KV warmup on"},
         "nowarmup": {"label": "Interpolation · KV warmup off"},
@@ -212,7 +212,6 @@ PROTOCOL_METADATA = {
     },
     "artifact_selection": "Select the first artifact by (artifact_id, path, sha256), independently of target "
     "error. Regression prefers KV warmup on.",
-    "offline_regression_seed_order": OFFLINE_REGRESSION_SEED_ORDER,
     "coverage": "MAPE averages absolute percentage errors over successful predictions. Coverage retains all "
     "eligible targets, including cold-start misses.",
     "split": {
@@ -244,6 +243,14 @@ PROTOCOL_METADATA = {
     "sleeping.",
 }
 
+# Retained campaign archives must validate against the protocol they actually
+# ran. New exports use v14; v13 never claimed normalized or reordered seeds.
+PROTOCOL_METADATA = {
+    **deepcopy(_PROTOCOL_METADATA_V13),
+    "offline_regression_seed_order": OFFLINE_REGRESSION_SEED_ORDER,
+}
+_PROTOCOL_METADATA_BY_VERSION = {13: _PROTOCOL_METADATA_V13, 14: PROTOCOL_METADATA}
+
 ROW_FIELDS = (
     "configuration_id",
     "configuration_path",
@@ -274,7 +281,7 @@ RESULT_STATUSES = [
 
 
 def methods_for_version(version):
-    require(type(version) is int and version == SCHEMA_VERSION, "unsupported scenario schema")
+    require(type(version) is int and version in _PROTOCOL_METADATA_BY_VERSION, "unsupported scenario schema")
     return METHODS
 
 
@@ -699,7 +706,7 @@ def _validate_method_results(methods, row, source, scenario, version, train_perc
 
 def validate_scenario_row(row, source, version):
     """Validate one row against an already validated complete source-summary row."""
-    require(type(version) is int and version == SCHEMA_VERSION, "unsupported scenario schema")
+    require(type(version) is int and version in _PROTOCOL_METADATA_BY_VERSION, "unsupported scenario schema")
     keys(row, (*ROW_FIELDS, "results", *(("split_results",) if version >= 4 else ())))
     require(all(row[field] == source[field] for field in ROW_FIELDS), "scenario source membership mismatch")
     keys(row["results"], SCENARIOS)
@@ -746,7 +753,7 @@ def validate_scenarios(document, summary):
     validate_summary(summary)
     keys(document, ("schema_version", "protocol_id", "snapshot", "methods", "scenarios", "protocol_metadata", "rows"))
     require(
-        type(document["schema_version"]) is int and document["schema_version"] == SCHEMA_VERSION,
+        type(document["schema_version"]) is int and document["schema_version"] in _PROTOCOL_METADATA_BY_VERSION,
         "unsupported scenario schema",
     )
     version = document["schema_version"]
@@ -757,7 +764,7 @@ def validate_scenarios(document, summary):
         "wrong scenario matrix",
     )
     require(
-        document["protocol_metadata"] == PROTOCOL_METADATA,
+        document["protocol_metadata"] == _PROTOCOL_METADATA_BY_VERSION[version],
         "scenario protocol description mismatch",
     )
     require(

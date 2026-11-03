@@ -109,6 +109,18 @@ def _recover_reconstructed_metadata(
     """
     if metadata.get("schema_version") != 6 or metadata.get("metadata_provenance") != "reconstructed_from_parquet":
         return metadata, {}
+    declarations = (
+        "coordinate_system",
+        "measurement_policy",
+        "system",
+        "backend",
+        "backend_version",
+    )
+    if all(name in metadata for name in declarations):
+        # Complete sidecars need no reconstruction proof. The native loader
+        # validates their declared contract. Legacy single-sample tables may
+        # omit per-row policy/repeat columns and sidecar repeat counts.
+        return metadata, {}
     if type(metadata["schema_version"]) is not int or metadata.get("schema_name") != "aic_fpm_forward_perf":
         raise ConfigurationError("Reconstructed FPM sidecar requires the explicit schema-6 contract")
     parquet_path = Path(artifact.local_path)
