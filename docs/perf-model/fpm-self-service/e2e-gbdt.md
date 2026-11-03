@@ -3,10 +3,12 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Train a performance model from your own workload
+# End-to-end offline profiling and GBDT
 
-Collect native forward-pass measurements on your cluster, train a GBDT, and use
-it in AISimulate Replay. You can then update the model with later measurements.
+This chapter implements the end-to-end offline profiling route in
+[FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
+forward-pass measurements on your cluster, train a GBDT, and use it in AISimulate
+Replay. You can then update the model with later measurements.
 
 Start with **end-to-end offline profiling**: run a workload, collect its native
 forward-pass measurements, and train a GBDT for frozen prediction. You can then
@@ -22,7 +24,8 @@ Follow [Collect](#1-collect) → [Check](#2-check-and-prepare-the-data) →
 
 You need a serving deployment with native FPM instrumentation, access to its
 worker traces, and a client that can run your workload. Use your own cluster and
-deployment tools. An existing completed capture can start at step 2.
+deployment tools. An existing completed capture can start at step 2 after reviewing its identity
+and provenance through onboarding stages 1–3.
 
 In an AISimulate source checkout, prepare Python 3.11–3.13 and the training extra:
 
@@ -44,6 +47,17 @@ Use a fresh run directory. Training runs on CPU; serving data collection needs
 your GPUs. The online-seed exporter requires scikit-learn 1.9.1. Source-build
 prerequisites are in the [installation guide](../../getting-started/installation.md#use-current-source).
 
+Copy the [identity template](assets/identity.json) to `ROLE.identity.json` in the
+run directory. Replace the model, packaged system, backend/version, role and
+parallelism. Add the actual precision, KV block size and kernel settings from
+the [configuration reference](../configuration.md#choosing-a-forward-pass-api).
+The template's TP4/EP4 values are examples, not inferred deployment settings.
+Review and save this identity, the runtime/model/tokenizer pins, launch settings
+and expected worker IDs before capture. Keep unresolved resource facts explicit;
+measured KV geometry and usable capacity are required before Replay. In an
+agent-guided session, retain these decisions and artifacts in the
+[onboarding checkpoint](implementation.md#checkpoint-and-resume-an-onboarding-session).
+
 ### What the model predicts
 
 A forward pass is one engine iteration over a scheduled batch. Its duration
@@ -59,8 +73,9 @@ hardware, topology or backend needs its own model and qualification.
 
 ### How this fits onboarding
 
-This walkthrough follows the [existing six onboarding stages](README.md#workflow)
-using standalone capture, training and model APIs:
+Follow the [six onboarding stages](README.md#workflow) to review the target and
+choose this route. The detailed commands below implement its collection,
+training and model operations:
 
 | Onboarding stages | Work in this guide |
 | --- | --- |
@@ -69,12 +84,13 @@ using standalone capture, training and model APIs:
 | 5. Collect and verify | Steps 1–2: collect native traces, inspect them and prepare training inputs. |
 | 6. Validate and use | Steps 3–5: train, qualify accuracy, use Replay, and optionally apply online updates and save. |
 
-The five steps below are a practical walkthrough of that structure. Native
-JSONL is input to the standalone trainer; `onboard finalize` expects
-self-benchmark timing tables and does not perform this handoff. Keep measured
-resource capacity, prediction coverage and matched serving accuracy as separate
-checks. The guided CLI reference remains in the
-[onboarding procedure](implementation.md#onboard-with-an-agent).
+The five steps below expand the corresponding onboarding stages; they are not
+another onboarding procedure. Native JSONL is input to the standalone trainer;
+`onboard finalize` expects self-benchmark timing tables and does not perform
+this handoff. Keep measured resource capacity, prediction coverage and matched
+serving accuracy as separate checks. The
+[canonical agent procedure](implementation.md#onboard-with-an-agent) describes
+both routes and their session checkpoint requirements.
 
 ## 1. Collect
 
@@ -228,11 +244,8 @@ account for any trainer exclusions.
 
 ## 3. Train and qualify accuracy
 
-Copy the [identity template](assets/identity.json) to `ROLE.identity.json` in the
-run directory. Replace the model, packaged system, backend/version, role and
-parallelism. Add the actual precision, KV block size and kernel settings from
-the [configuration reference](../configuration.md#choosing-a-forward-pass-api).
-The template's TP4/EP4 values are examples, not inferred deployment settings.
+Use the deployment identity reviewed before collection. Confirm it still
+matches the selected native files and role; resolve mismatches before fitting.
 
 Train one AISimulate-compatible GBDT per role:
 

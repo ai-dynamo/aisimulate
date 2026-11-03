@@ -23,26 +23,28 @@ Use this workflow when:
 - You want to calibrate a supported deployment while retaining AISimulate's
   existing scheduler, routing and KV-cache simulation.
 
-For **end-to-end offline profiling**, follow the
-[E2E-to-GBDT walkthrough](e2e-gbdt.md): collect native FPM data with your own
-workload and deployment, inspect it, train a GBDT, use Replay, and optionally
-apply online updates and save. It covers aggregated and separate prefill/decode
-capture for vLLM and SGLang, with backend-specific qualification boundaries.
-Native FPM capture supplies the measurements; per-request data hooks are a future
-extension. The standalone trainer accepts native JSONL; `onboard finalize`
-expects self-benchmark timing tables and does not perform that handoff.
+## Choose a profiling route
 
-**Self-benchmarking** runs Dynamo self-benchmark on the target engine. **Onboarding**
-validates the measured timing profile and its deployment/resource metadata, then
-loads them through the canonical performance-model API. Direct FPM interpolation
-does not require a new analytical model class, per-operation GPU profiling, a
-registry service or regression training.
+Both routes use the six [onboarding stages](#workflow) below. Choose according to
+how you want to measure the target deployment and model its forward-pass time.
+
+| Route | Measurements and model | Execution path |
+| --- | --- | --- |
+| **Self-benchmarking → direct interpolation** | Controlled engine measurements form a timing table queried by interpolation. No regression training is needed. | The guided `onboard` commands plan, collect and validate supported Dynamo self-benchmarks. |
+| **End-to-end offline profiling → GBDT** | Native FPM capture records engine iterations while your own workload runs on your deployment. Train a GBDT from those observations. | Use the [collection and GBDT chapter](e2e-gbdt.md) with standalone validation/preparation helpers, the trainer and the performance-model SDK. |
+
+The GBDT route covers aggregated and separate prefill/decode capture for vLLM and
+SGLang, with backend-specific qualification boundaries. Use your own cluster tools
+or start from completed captures; no particular cluster service is required. Native
+FPM capture supplies these measurements; per-request data hooks are a future
+extension. The `onboard` collection, import and finalization commands operate on
+self-benchmark artifacts: they do not accept native JSONL or train a GBDT.
 
 If matching measurements already exist, reuse their verified data and provenance
-instead of collecting again. A timing table and a resource profile are separate
-artifacts: the table alone does not establish serving memory capacity. The
-[examples](examples.md) cover importing an existing Kimi profile, collecting a
-new MiniMax profile, and native serving measurements for GBDT training.
+instead of collecting again. Both routes require the measured deployment's
+identity and resource metadata: timing data alone does not establish serving
+memory capacity. The [examples](examples.md) cover importing an existing Kimi
+profile, collecting a new MiniMax profile, and native FPM capture for GBDT training.
 
 ### Performance within an iteration
 
@@ -70,8 +72,9 @@ cannot represent those changes.
 It also does not qualify end-to-end latency or throughput by itself. TTFT,
 ITL/TPOT and throughput depend on scheduling, traffic, cache behavior and transfers
 as well as forward time. Validate them separately against matched serving runs.
-For online learning from per-iteration telemetry, use the separate
-[regression workflow](../methods/online-regression.md).
+For online learning from per-iteration telemetry, continue with
+[optional online updates](e2e-gbdt.md#5-optional-adapt-and-save) and the
+[regression reference](../methods/online-regression.md).
 
 ## Support
 
@@ -87,9 +90,10 @@ For online learning from per-iteration telemetry, use the separate
 | Multimodality | For multimodal models, this workflow covers text generation only; image/audio processing time is excluded. |
 
 Use a source revision containing the required CLI and consumer features; a
-published wheel may predate this guide. See [environment setup](implementation.md#prepare-the-environment),
-[executor prerequisites](implementation.md#choose-the-collection-executor) and
-[execution-route constraints](implementation.md#choose-the-model-execution-route).
+published wheel may predate this guide. See [environment setup](implementation.md#prepare-the-environment)
+and the [GBDT prerequisites](e2e-gbdt.md#before-you-start). For self-benchmarking,
+review [executor prerequisites](implementation.md#choose-the-collection-executor)
+and [execution-route constraints](implementation.md#choose-the-model-execution-route).
 
 ## Reuse a published profile
 
@@ -218,21 +222,21 @@ materialized; a compatible consumer is still required.
 
 ## Workflow
 
-The [E2E-to-GBDT walkthrough](e2e-gbdt.md#how-this-fits-onboarding) maps its manual
-collection, training and Replay steps to these same six stages. The guided
-commands below follow the self-benchmark/interpolation route.
-
-The six stages below match the [agent onboarding procedure](implementation.md#onboard-with-an-agent).
+These six stages apply to both [profiling routes](#choose-a-profiling-route) and
+match the [agent onboarding procedure](implementation.md#onboard-with-an-agent).
 Keep one session checkpoint and track every selected configuration independently.
-An existing profile still needs identity, resource and coverage review; it can
-skip new GPU collection when matching evidence is available.
+An existing profile or capture still needs identity, resource and coverage review;
+it can skip new GPU collection when matching evidence is available. The
+[collection and GBDT chapter](e2e-gbdt.md) supplies that route's runnable commands,
+API explanations and formulas.
 
 ### 1. Inspect the model and target
 
 Identify the pinned checkpoint, accessible local model config, GPU system and
 runtime. Inspect metadata before asking for facts that can be derived from it.
-Record unsupported or unresolved architecture/cache details. Create the session
-checkpoint early so partial investigation survives a restart.
+Record unsupported or unresolved architecture/cache details and the chosen
+profiling route. Create the session checkpoint early so partial investigation
+survives a restart.
 
 Details: [model inspection](implementation.md#1-inspect-the-model-and-target),
 [environment setup](implementation.md#prepare-the-environment), and
@@ -241,40 +245,56 @@ Details: [model inspection](implementation.md#1-inspect-the-model-and-target),
 ### 2. Choose the worker and collection limits
 
 Choose aggregated or independent prefill/decode roles, exact parallelism,
-supported precision, runtime build and image. An explicit backend version string
-is a dataset identity label and may differ from the observed package version;
-retain the actual runtime evidence separately. Omit `--framework-version` to
-resolve it from the collection image when execution starts. The optional Dynamo
-version is provenance only. Review context, scheduled-token
-and sequence limits, memory fraction and CUDA Graph policy. Treat these as
-collection inputs; fixed request lengths, latency targets and validation traces
-do not determine the sampling grid. Selected topology establishes minimum GPU
-needs, while actual allocation and placement are checked before execution.
+supported precision, runtime build and image. Review context, scheduled-token
+and sequence limits, memory fraction and CUDA Graph policy. Record the actual
+runtime evidence and resource requirements for each configuration; verify
+allocation and placement before execution.
+
+For **self-benchmarking**, an explicit backend version string is a dataset identity
+label and may differ from the observed package version. Omit `--framework-version`
+to resolve it from the collection image when execution starts. The optional Dynamo
+version is provenance only. Fixed request lengths, latency targets and validation
+traces do not determine the self-benchmark sampling grid.
+
+For **end-to-end offline profiling**, also choose the workload, traffic levels,
+native capture mechanism and separate worker identities. Preserve session/cache
+semantics; for P/D, keep the two roles' observations separate. Aggregated rows
+retain their aggregated identity. Record changes to load or runtime settings so
+training data retains its deployment identity.
 
 Details: [runtime investigation](implementation.md#investigate-runtime-constraints-and-precision-options),
-[collection limits](implementation.md#runtime-and-collection-limits), and
-[serving roles](implementation.md#serving-roles-and-cuda-graph-settings).
+[collection limits](implementation.md#runtime-and-collection-limits),
+[serving roles](implementation.md#serving-roles-and-cuda-graph-settings), and
+[native capture setup](e2e-gbdt.md#1-collect).
 
 ### 3. Derive, review and save the profile
 
-Use `onboard init --model-config` or a supplied `--fpm-profile` to prepare a
-request for each configuration. Review identity, precision, topology, cache
-geometry, assumptions and their sources before accepting it. Config-derived
-memory can remain pending until runtime observation; do not replace unknown
-memory with guessed byte bounds. Save each draft, decision and accepted request.
+For both routes, review identity, precision, topology, cache geometry, assumptions
+and their sources. Config-derived memory can remain pending until runtime
+observation; do not replace unknown memory with guessed byte bounds. Save each
+draft, decision and accepted configuration.
+
+For **self-benchmarking**, use `onboard init --model-config` or a supplied
+`--fpm-profile` to prepare a request for each supported configuration. For
+**end-to-end offline profiling**, save a training identity per role and the
+resource metadata needed by Replay. Use the chapter's file templates; native
+capture does not require an `onboard init` request or expand that CLI's backend
+support.
 
 Details: [profile review](implementation.md#3-derive-review-and-save-the-profile),
 [local config intake](implementation.md#start-from-a-local-model-config),
 [multiple configurations](implementation.md#onboard-multiple-parallel-configurations),
-and [runtime probing](implementation.md#resolve-cache-geometry-with-a-runtime-probe).
+[runtime probing](implementation.md#resolve-cache-geometry-with-a-runtime-probe),
+and [GBDT identity and resource requirements](e2e-gbdt.md#before-you-start).
 
 ### 4. Plan collection
 
-`onboard plan` saves the request, profile, collector commands and simulation
-inputs. Preview `onboard collect-fpm` and inspect the generated collector plan,
-executor requirements and node placement. AISimulate supplies the reviewed
-limits; Dynamo self-benchmark derives the exact feasible grid from the initialized
-engine. A plan does not establish target readiness or measured coverage.
+**Self-benchmarking.** `onboard plan` saves the request, profile, collector commands
+and simulation inputs. Preview `onboard collect-fpm` and inspect the generated
+collector plan, executor requirements and node placement. AISimulate supplies the
+reviewed limits; Dynamo self-benchmark derives the exact feasible grid from the
+initialized engine. A plan does not establish target readiness or measured
+coverage.
 
 With no backend version supplied, init/plan/preview leave the label pending.
 For both explicit and omitted labels, first execution requires an explicit image
@@ -283,22 +303,28 @@ and observes its package version without GPUs before creating a
 takes the observed version. Continue with the resolved paths printed by the
 command; the original registration stays intact.
 
-For existing data, compare its identity, provenance and coverage with the intended
-deployment before following the import path. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
-demonstrates the supported SDK and engine Replay path for a measured DCP profile.
+**End-to-end offline profiling.** Plan a smoke run, workload execution, warmup and
+drain, capture locations and training/evaluation selection. Use your deployment
+tools; `onboard plan` does not generate this capture plan. For completed captures,
+plan verification and selection instead of launching another run. Follow
+[native capture setup](e2e-gbdt.md#1-collect) and
+[data selection](e2e-gbdt.md#2-check-and-prepare-the-data).
 
-Details: [how self-benchmarking works](implementation.md#how-self-benchmarking-works),
+For either route, compare existing data's identity, provenance and coverage with
+the intended deployment before reusing it. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)
+demonstrates reuse of a measured timing profile.
+
+Self-benchmark details: [how self-benchmarking works](implementation.md#how-self-benchmarking-works),
 [plan and preview](implementation.md#plan-preview-and-explicitly-execute),
 [executors](implementation.md#choose-the-collection-executor), and
 [sampling-grid ownership](implementation.md#how-the-collection-grid-is-determined).
 
 ### 5. Collect, verify and finalize
 
-For new measurements, run `onboard collect-fpm --execute --smoke`, inspect
+**Self-benchmarking.** Run `onboard collect-fpm --execute --smoke`, inspect
 readiness for every required phase, then run formal collection with `--execute`.
 Smoke retains diagnostics but publishes no formal timing pair. The collector
 launches benchmark workers; it does not need a prestarted HTTP serving endpoint.
-
 Benchmarking typically takes about one hour, depending on the model, hardware
 and sampling range.
 
@@ -309,7 +335,17 @@ separately. Imported historical profiles retain their original provenance and
 consumer limitations; successful loading does not manufacture missing quality
 or memory evidence.
 
-Details: [smoke/readiness](implementation.md#check-timing-readiness-before-full-collection),
+**End-to-end offline profiling.** Verify a smoke capture before running your
+workload, drain and close the capture, then check native envelopes, worker
+identity, timing labels, counts and file integrity. Select observations and
+prepare separate training and evaluation files with the standalone helpers.
+Preserve capture and selection receipts, excluded rows and required batch-class
+coverage. Review resource evidence separately. This route does not invoke
+`onboard validate-collection`, `onboard import-observations` or `onboard finalize`
+on native JSONL. Follow [collection](e2e-gbdt.md#smoke-then-run-your-workload) and
+[data preparation](e2e-gbdt.md#2-check-and-prepare-the-data).
+
+Self-benchmark details: [smoke/readiness](implementation.md#check-timing-readiness-before-full-collection),
 [pair installation](implementation.md#validate-and-install-the-fpm-profile),
 [collection quality](implementation.md#stage-5-collection-quality),
 [memory finalization](implementation.md#finalize-runtime-memory), and
@@ -317,19 +353,28 @@ Details: [smoke/readiness](implementation.md#check-timing-readiness-before-full-
 
 ### 6. Validate and use the model
 
-Load the exact profile through `RustForwardPassPerfModel.best_available`, select
-`fpm_interpolation` with denied fallback and `method: direct` for the guided
-profile route, and check measured-point queries. `onboard validate-fpm` then
-checks aggregated trace coverage. Use the accepted plan's generated `predict`
-and `recommend` configurations for ordinary simulation.
+**Self-benchmarking.** Load the exact profile through
+`RustForwardPassPerfModel.best_available`, select `fpm_interpolation` with denied
+fallback and `method: direct`, and check measured-point queries.
+`onboard validate-fpm` checks aggregated trace coverage. Use the accepted plan's
+generated configurations for ordinary simulation.
 
-Keep collection quality, resolved memory, query coverage and measured serving
-accuracy as separate results. Missing query coverage is not fixed by changing
-identity labels or silently choosing another estimator. Use `onboard validate-serving`
-for matched end-to-end assessment; exploratory simulation with resolved resources
-does not itself qualify accuracy.
+**End-to-end offline profiling.** [Train a GBDT and assess held-out accuracy](e2e-gbdt.md#3-train-and-qualify-accuracy),
+then [configure Replay](e2e-gbdt.md#4-use-the-model-in-replay) with the learned
+artifact, matching identity, measured resources and required store coverage.
+The standalone trainer and SDK perform this handoff; `onboard validate-fpm` does
+not validate learned models. If needed, continue with
+[online updates and checkpoint saving](e2e-gbdt.md#5-optional-adapt-and-save).
 
-Details: [SDK construction](implementation.md#construct-and-check-the-performance-model),
+For both routes, keep collection quality, resolved memory, query coverage and
+measured serving accuracy as separate results. Missing coverage is not fixed by
+changing identity labels or silently choosing another estimator. Match serving
+runs to simulation before claiming end-to-end accuracy; the GBDT chapter points
+to the FPM Gym qualification workflow. `onboard validate-serving` provides the
+self-benchmark route's matched assessment. Exploratory simulation with resolved
+resources does not itself qualify accuracy.
+
+Self-benchmark details: [SDK construction](implementation.md#construct-and-check-the-performance-model),
 [Replay validation](implementation.md#validate-fpm-query-coverage-with-agentx-replay),
 [ordinary configurations](implementation.md#run-the-generated-ordinary-configurations),
 and [serving validation](implementation.md#stage-6-matched-serving).
