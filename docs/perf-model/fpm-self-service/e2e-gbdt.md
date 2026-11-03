@@ -7,14 +7,16 @@ SPDX-License-Identifier: Apache-2.0
 
 This chapter implements the end-to-end offline profiling route in
 [FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
-forward-pass measurements on your cluster, train a GBDT, and use it in AISimulate
-Replay. You can then update the model with later measurements.
+forward-pass metrics (FPM) on your cluster, train a gradient-boosted decision tree
+(GBDT) model, and use it in AISimulate Replay. FPM describe the scheduled batch
+work and its measured duration.
 
 Start with **end-to-end offline profiling**: run a workload, collect its native
 forward-pass measurements, and train a GBDT for frozen prediction. You can then
 apply **online updates** using later measured feedback.
 **Native FPM capture** is the collection mechanism used for both the initial
-profiling run and later feedback; per-request data hooks are a future extension.
+profiling run and later **online observations**, which supply measured feedback
+for online adaptation. Per-request data hooks are a future extension.
 
 Follow [Collect](#1-collect) → [Check](#2-check-and-prepare-the-data) →
 [Train](#3-train-and-qualify-accuracy) → [Replay](#4-use-the-model-in-replay) →
@@ -67,7 +69,8 @@ The performance model predicts each pass; Replay supplies the scheduling,
 queueing and cache behavior that turns those costs into request TTFT and TPOT.
 
 End-to-end offline profiling supplies the initial training population. Online
-updates use later measured feedback in the same telemetry format.
+observations supply later measured feedback in the same telemetry format;
+online updates use those observations to adapt the predictor.
 Keep the deployment identity fixed for each model instance; a change of
 hardware, topology or backend needs its own model and qualification.
 
@@ -125,15 +128,16 @@ vLLM and SGLang have different timer and decode-context conventions. Keep all
 five `scheduled_requests` counters and the complete raw envelope. Request
 latency, TTFT and KV-transfer time are separate measurements.
 
-The five counters describe the scheduled work on one attention-DP rank:
+The five counters describe the scheduled work on one attention-DP rank.
+The symbols below refer to counts and sums, not mean request lengths:
 
-| Native field under `scheduled_requests` | Meaning |
-| --- | --- |
-| `num_prefill_requests` | Number of requests doing prefill work in this pass. |
-| `sum_prefill_tokens` | Total new prefill tokens computed in this pass, including chunks. |
-| `sum_prefill_kv_tokens` | Summed existing KV context for those prefill requests. |
-| `num_decode_requests` | Number of requests doing decode work. |
-| `sum_decode_kv_tokens` | Summed decode context, using the producer's convention. |
+| Symbol | Native field under `scheduled_requests` | Meaning |
+| --- | --- | --- |
+| $B_p$ | `num_prefill_requests` | Number of requests doing prefill work in this pass. |
+| $B_d$ | `num_decode_requests` | Number of requests doing decode work. |
+| $Q_p$ | `sum_prefill_tokens` | Total new prefill tokens computed in this pass, including chunks. |
+| $K_p$ | `sum_prefill_kv_tokens` | Summed existing KV context for those prefill requests. |
+| $K_d$ | `sum_decode_kv_tokens` | Summed decode context, using the producer's convention. |
 
 `--features fpm5` derives its feature vector from these counts and sums; the
 name does not mean the fitted vector has exactly five entries. It requires no
@@ -274,30 +278,32 @@ for seed export. Repeat with separate identities/data for P/D.
 
 ### What training produces
 
-The trainer fits separate forests for the workload classes supported by the
-worker role. A *store* is the forest and fitting state for one such class;
+The trainer fits separate GBDT ensembles for the workload classes supported by
+the worker role. A *store* is the ensemble and fitting state for one such class;
 having decode data does not create a mixed-batch store. `--join-ranks none`
 treats each native row independently. It does not reconstruct synchronized
 attention-DP iterations from unrelated rank counters.
 
-For the default `log_ms` target, a forest predicts
+For the default `log_ms` target, an ensemble predicts
 
 $$
 \begin{array}{rl}
 g(x)&=b+\sum_{m=1}^{M}v_m(x),\\
-\widehat y(x)&=\max(10^{-6},\exp(g(x))).
+\widehat\tau(x)&=\max(10^{-6},\exp(g(x))).
 \end{array}
 $$
 
-Here $x$ is the derived feature vector, $b$ is the baseline, and each tree
-contributes $v_m(x)$, including its fitted learning rate. The output
-$\widehat y$ is milliseconds. Fitting squared error in log time emphasizes
-multiplicative timing differences, but it does not directly minimize MAPE.
+Here $x$ is the derived feature vector, $b$ is the baseline, $M$ is the number
+of fitted trees, and $v_m(x)$ includes each tree's fitted learning rate. We write
+$\widehat\tau$ for predicted duration and $y$ for measured duration, both in
+milliseconds; native `wall_time` remains in seconds. Fitting squared error in
+log time emphasizes multiplicative timing differences, but it does not directly
+minimize MAPE.
 
 | Output | Use it for |
 | --- | --- |
 | `ROLE.learned.json` | Frozen prediction: feature ordering, target transform and fitted trees. |
-| `ROLE.online-seed/` | Continuing training: the forest plus fitted bins, original observations and fitting state. |
+| `ROLE.online-seed/` | Continuing training: the ensemble plus fitted bins, original observations and fitting state. |
 
 The inference JSON cannot reconstruct the training checkpoint. Preserve both
 when you want the option of online updates later. Evaluation reads separate
@@ -323,7 +329,7 @@ PP=1 and no context parallelism. Set the captured topology, precision and
 scheduler limits, plus **measured** KV block geometry and usable capacity.
 Point `traffic.source` at your request trace, not the FPM training data.
 
-The worker's timing block selects the trained forest explicitly:
+The worker's timing block selects the trained GBDT explicitly:
 
 ```yaml
 timing:
@@ -364,7 +370,7 @@ before making end-to-end accuracy claims.
 `RustForwardPassPerfModel.best_available(config)` is the common constructor.
 The configuration binds a model to its deployment identity and selects its
 estimator. In this guide, explicit `fpm_learned` plus `fallback_policy: deny`
-selects the supplied forest. The name `best_available` does not mean it measures
+selects the supplied GBDT. The name `best_available` does not mean it measures
 accuracy and chooses the best model for every query.
 
 The core calls used by the examples are:
@@ -378,7 +384,7 @@ The core calls used by the examples are:
 | `readiness_report()` / `diagnostics()` | Inspect fitted stores, model state and resolved provenance. Readiness alone does not prove accuracy or complete workload coverage. |
 | `flush_updates()` | Explicitly fit pending measured feedback, including a partial update batch. |
 | `save_online_checkpoint(path)` | Save standalone online fitting state, including pending observations, without implicitly fitting them. |
-| `export_learned_artifact()` | Return the current inference forest as a JSON-compatible dictionary. |
+| `export_learned_artifact()` | Return the current inference ensemble as a JSON-compatible dictionary. |
 
 For attention DP=1, a query is `[row]` and one feedback iteration is `[[row]]`.
 With attention DP>1, use one complete, synchronized list of rank records per
@@ -401,8 +407,8 @@ python "$AIS_REPO/docs/perf-model/fpm-self-service/assets/adapt_gbdt.py" \
 
 The example loads the initial online seed through `best_available`, predicts
 before admitting each label with `tune_with_fpms`, and saves an updated checkpoint
-and inference forest. It also restores the checkpoint to check prediction
-consistency. Use the exported forest with frozen adaptation in Replay.
+and inference ensemble. It also restores the checkpoint to check prediction
+consistency. Use the exported ensemble with frozen adaptation in Replay.
 The output directory contains `model.json`, `checkpoint/`, a restore
 configuration and an adaptation receipt.
 
@@ -427,12 +433,13 @@ for row in iter_fpm_records([feedback_path]):
 ```
 
 This excerpt shows ordering; the linked runnable example also checks role,
-coverage, input integrity and persistence. For observation $t$, predict using
-only the state available before its label is admitted:
+coverage, input integrity and persistence. Let $s$ identify the workload class
+and $F_{s,t}$ its GBDT prediction in milliseconds, using the fitted state
+available before pass $t$'s label is admitted:
 
 $$
 \begin{array}{rl}
-\widehat y_t&=F_{t-1}(x_t),\\
+\widehat\tau_t&=F_{s,t}(x_t),\\
 y_t&=1000\,\mathrm{wall\_time}_t.
 \end{array}
 $$
@@ -451,41 +458,57 @@ representative initial coverage important even when you plan to adapt.
 ### Choose how online updates change the model
 
 The example above uses the first option. The other two are alternatives when
-you want to retain a stable forest or compare it with an adaptive one:
+you want to retain a fixed GBDT or compare its calibrated prediction with an
+adaptive one:
 
 | Mode | Configuration under `estimator_config` | Effect of measured feedback |
 | --- | --- | --- |
-| Online GBDT | `fpm_learned.adaptation: online`, `correction.enabled: false` | Updates the existing trees; predicts from the latest fitted forest. |
+| Online GBDT | `fpm_learned.adaptation: online`, `correction.enabled: false` | Updates the existing trees; predicts from the latest fitted ensemble. |
 | Hybrid calibration | `fpm_learned.adaptation: frozen`, `correction.enabled: true`, `correction.mode: hybrid` | Keeps the trees fixed and learns multiplicative timing factors. |
-| Causal selector | `fpm_learned.adaptation: causal_selector`, correction enabled in `hybrid` mode | Maintains calibrated and adaptive experts; chooses using earlier errors. Requires a training checkpoint. |
+| Causal Selector | `fpm_learned.adaptation: causal_selector`, correction enabled in `hybrid` mode | Maintains calibrated and adaptive experts; chooses using earlier errors. Requires a training checkpoint. |
 
-Standalone online GBDT has **no automatic fallback to the initial forest**.
+Standalone online GBDT has **no automatic fallback to the initial GBDT**.
 Its checkpoint/export example also does not persist the other two modes'
-calibration or selector histories. Treat those modes as separate integrations;
+calibration or Selector histories. Treat those modes as separate integrations;
 do not reuse the standalone save loop as a complete state export for them.
 
 ### Calibration and fallback with sparse feedback
 
-Let $F_0(x)$ be the initial frozen forest's prediction in milliseconds, and $z$
-the workload coordinates used to group correction observations. For example, decode
-correction groups by decode request count and summed decode KV context, rather
-than the full GBDT feature vector. For a measured duration
-$y_i$, hybrid calibration records a bounded ratio and applies a factor:
+Let $F_{0,s}(x)$ be the frozen GBDT prediction for workload class $s$.
+Calibration uses coordinates $z$: $(Q_p)$ for prefill, $(B_d,K_d)$ for decode,
+and $(Q_p,K_d)$ for mixed batches. For multiple attention-DP ranks, it selects
+the rank-local vector with the largest coordinate sum. These coordinates need
+not match the GBDT feature vector $x$.
+
+For an earlier measurement $y_i>0$ and uncorrected prediction
+$p_i=F_{0,s}(x_i)>0$, hybrid calibration records a bounded ratio. The factor
+$c_t$ used for pass $t$ depends only on previously admitted feedback:
 
 $$
 \begin{array}{rl}
-r_i&=\operatorname{clip}\left(\frac{y_i}{F_0(x_i)},0.5,2\right),\\
-\widehat y_t&=c_{t-1}(z_t)F_0(x_t).
+r_i&=\operatorname{clip}\left(\frac{y_i}{p_i},c_{\min},c_{\max}\right),\\
+\widehat\tau_t&=c_t(z_t)F_{0,s}(x_t).
 \end{array}
 $$
 
-The ratio always uses the **uncorrected** forest prediction, so repeated updates
+The default limits are $c_{\min}=0.5$ and $c_{\max}=2$. The ratio always
+uses the **uncorrected** GBDT prediction, so repeated updates
 do not compound earlier corrections. A 10 ms prediction and a 12 ms observation
 provide a ratio of 1.2. This example does not imply that one observation makes
 the correction history ready; the default requires five retained observations.
 
-Hybrid calibration uses a fixed grid within a configured workload domain and a
-dynamic grid outside it. The fallback depends on which grid applies:
+Hybrid calibration combines a fixed-domain factor $c_t^{\mathrm{fix}}$ and an
+observation-driven factor $c_t^{\mathrm{dyn}}$. Let $\mathcal R$ be the configured
+fixed domain and $I_{\mathcal R}(z)$ its membership indicator, including endpoints:
+
+$$
+c_t(z)=I_{\mathcal R}(z)c_t^{\mathrm{fix}}(z)
+      +[1-I_{\mathcal R}(z)]c_t^{\mathrm{dyn}}(z).
+$$
+
+The fixed component retains only in-domain observations; the dynamic component
+receives observations from both inside and outside that domain. A query chooses
+its factor as follows:
 
 | Query location | Factor used |
 | --- | --- |
@@ -493,83 +516,103 @@ dynamic grid outside it. The fallback depends on which grid applies:
 | Outside the fixed domain, with a usable dynamic cell | Blend that cell's median with the median of recent feedback. |
 | Outside the fixed domain, with no usable dynamic cell | Recent-feedback median, or **1** while that history is unready. |
 
-For a usable dynamic cell with $n$ samples, local median $a$ and recent-global
-median $g$, the blend is
+Once the dynamic primary history is ready, let $b$ identify a populated cell,
+$n_{t,b}$ its sample count and $a_{t,b}$ its median ratio. Let $g_t$ be the
+recent-feedback median, or 1 while that recent history is unready. The blend is
 
 $$
 \begin{array}{rl}
-w&=\frac{n}{n+20},\\
-c&=\exp\left(w\log a+(1-w)\log g\right).
+w_{t,b}&=\frac{n_{t,b}}{n_{t,b}+20},\\
+c_{t,b}^{\mathrm{local}}&=\exp\left(w_{t,b}\log a_{t,b}+(1-w_{t,b})\log g_t\right).
 \end{array}
 $$
 
 Small local samples therefore rely mostly on recent feedback across workload
 regions. An empty cell can still receive a global correction, while factor 1
 preserves the base prediction when evidence is insufficient. These are
-fallbacks for the **correction factor**; they cannot supply a missing forest.
+fallbacks for the **correction factor**; they cannot supply a missing GBDT.
 The bounds also limit what calibration can repair: a 10 ms base prediction
 cannot exceed 20 ms under the default factor limits.
 
 ### Choosing between calibrated and adaptive predictions
 
-The causal selector starts with the calibrated expert. For each admitted
-observation, both experts predict before either learns its label. It tracks
-their fractional absolute errors with an exponentially weighted average:
+The causal Selector starts with the calibrated expert. It keeps a comparison
+history $k=(s,q)$ for each workload class $s$ and calibration kind $q$ (prefill,
+decode or mixed). The complete rank group determines $s$; the rank selected for
+calibration determines $q$. These histories are separate from calibration cells.
+
+For each admitted observation, both experts predict before either uses its
+label. Let $n$ count valid paired comparisons in history $k$, and let $e$
+identify the calibrated or adaptive expert. Its fractional absolute error and
+exponentially weighted mean are
 
 $$
 \begin{array}{rl}
-L_t^{e}&=\left|\frac{\widehat y_t^{e}}{y_t}-1\right|,\\
-E_t^{e}&=(1-\alpha)E_{t-1}^{e}+\alpha L_t^{e}.
+L_{k,n}^{e}&=\left|\frac{\widehat\tau_{k,n}^{e}}{y_{k,n}}-1\right|,\\
+E_{k,1}^{e}&=L_{k,1}^{e},\\
+E_{k,n}^{e}&=(1-\alpha)E_{k,n-1}^{e}+\alpha L_{k,n}^{e}\quad(n>1).
 \end{array}
 $$
 
-The first loss initializes the average. Error histories and warmup are separate
-for each forest-store/query-kind pair; five decode comparisons do not warm up
-prefill or mixed selection. Elapsed time alone does not change these averages.
-After warmup, the challenger replaces
-the active expert for subsequent predictions when
+Five decode comparisons do not warm up prefill or mixed selection. Elapsed time
+alone does not change these averages. The inactive expert $e'$ qualifies to
+replace the active expert $e$ for subsequent predictions when
 
 $$
-E_t^{\mathrm{challenger}}<(1-\delta)E_t^{\mathrm{active}}.
+n\ge N_0
+\quad\text{and}\quad
+E_{k,n}^{e'}<(1-\delta)E_{k,n}^{e}.
 $$
 
-Defaults are $\alpha=0.4$, five paired observations for warmup, a relative margin
-$\delta=0.05$, and one qualifying comparison to switch. For example, an active
-error score of 0.10 requires a challenger score below 0.095. Both experts keep
-receiving feedback, so selection can switch back. The margin reduces switching
-on small differences; it is not a confidence bound or a guarantee of lower
-error on the next pass.
-These settings are `alpha`, `warmup`, `margin` and `persistence` under
-`estimator_config.selector`.
+The condition must hold for $P$ consecutive comparisons in that history. A failed
+condition or a switch resets the streak; ties keep the active expert. Defaults
+are $\alpha=0.4$, $N_0=5$, $\delta=0.05$ and $P=1$. They map to `alpha`,
+`warmup`, `margin` and `persistence` under `estimator_config.selector`.
+For example, an active error score of 0.10 requires a challenger score below
+0.095. Both experts keep receiving feedback, so selection can switch back.
+The margin reduces switching on small differences; it is not a confidence bound
+or a guarantee of lower error on the next pass.
 
 ### What if a workload has no fitted store?
 
 For a model trained through end-to-end offline profiling, collect the missing
 workload class and train a compatible seed. Without an offline seed, first collect
 measured feedback and perform an application-managed initial fit.
-`tune_with_fpms` does not turn an empty source into a forest.
+`tune_with_fpms` does not turn an empty source into a GBDT.
 
-**Self-benchmarking** measures controlled batch shapes directly.
-That separate route can optionally use compatible profiling tables for
-mixed-workload fallback, with optional online updates.
-For one rank running both prefill and decode, its basic composition is
+**Self-benchmarking** implements **engine-level offline profiling** with
+controlled batch shapes. That separate route can optionally use compatible
+profiling tables for mixed-workload fallback, with optional online observations.
+For an ordinary autoregressive pass on one rank doing both prefill and decode,
+let $T_p$ and $T_d$ be the corresponding interpolation estimates:
 
 $$
-I(x)=I_P(x)+\max\left(0,I_D(x)-I_{D,0}\right).
+\begin{array}{rl}
+\widehat\tau_{\mathrm{mix}}
+  &=T_p(B_p,Q_p,K_p)+\Delta T_d,\\
+\Delta T_d&=\left[T_d(B_d,K_d)-T_0(B_d;K_d)\right]_+,
+\qquad [z]_+=\max(z,0).
+\end{array}
 $$
 
-Here $I_P$ and $I_D$ are prefill and decode interpolation estimates. The decode
-baseline $I_{D,0}$ is the floor cost of the decode curve for that batch size;
-subtracting it avoids charging that base cost twice. With multiple attention-DP
-ranks, the iteration takes the maximum rank latency, not the sum of separate
-prefill and decode ranks. Measured feedback can calibrate the resulting
-estimate.
+For direct interpolation, the decode baseline $T_0(B_d;K_d)$ uses each selected
+decode curve's timing at its smallest collected KV count, combined with the
+same batch-axis interpolation weights as $T_d$. It can therefore depend on
+$K_d$; it is neither an empty-pass measurement nor an extrapolation to zero KV.
+Subtraction treats that baseline
+cost as already represented in prefill and adds only the nonnegative increment.
+This is an empirical composition assumption, not an exact separation of costs.
+
+With multiple attention-DP ranks, the interpolation estimate $I_t$ is the maximum
+rank estimate for pass $t$. Prefill and decode on separate ranks are not summed.
+Online observations can calibrate $I_t$ using the ratio $y_i/I_i$; this fallback
+has its own histories, separate from calibration of a fitted GBDT.
 
 This route requires its own profiles and eligibility checks and is not part of
 this guide's end-to-end offline profiling route. The top-level `fallback_policy`
 governs estimator selection at construction and must remain `deny` for
 `fpm_learned`. It does not disable
-the explicitly configured correction or selector. Missing training coverage
+the explicitly configured correction or Selector. Missing training coverage
 remains a collection/training task.
 
 ## If a step fails

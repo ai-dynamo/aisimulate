@@ -9,8 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 
 AISimulate needs engine forward-pass timings to predict serving performance.
 Existing performance data may not represent your checkpoint, hardware or engine
-configuration. FPM self-service lets you collect whole-forward measurements on
-the target configuration and use them in AISimulate prediction and recommendation.
+configuration. Forward-pass metrics (FPM) describe scheduled batch work and its
+measured duration. FPM self-service lets you collect these whole-pass measurements
+and use them in AISimulate prediction and recommendation.
 
 Use this workflow when:
 
@@ -27,6 +28,11 @@ Use this workflow when:
 
 Both routes use the six [onboarding stages](#workflow) below. Choose according to
 how you want to measure the target deployment and model its forward-pass time.
+Self-benchmarking implements **engine-level offline profiling** with controlled
+batch shapes. **End-to-end offline profiling** measures batches formed by the
+serving scheduler under your workload. The table shows the two walkthroughs;
+either measurement source can train a **gradient-boosted decision tree
+(GBDT)** when its observations satisfy the training contract.
 
 | Route | Measurements and model | Execution path |
 | --- | --- | --- |
@@ -51,7 +57,7 @@ profile, collecting a new MiniMax profile, and native FPM capture for GBDT train
 Self-service captures performance changes within a forward iteration, including
 changes to kernels, quantization, CUDA Graph execution and parallel computation
 or communication, while preserving Replay's iteration-level execution contract.
-Whole-forward measurements include their combined cost without needing an
+Whole-pass measurements include their combined cost without needing an
 analytical model for every internal operation.
 
 Timing is only part of that contract. Keep the actual per-rank work, topology,
@@ -83,7 +89,7 @@ For online learning from per-iteration telemetry, continue with
 | End-to-end offline profiling | [Manual collection and training](e2e-gbdt.md) using your deployment tools or completed native captures; see the [native collection examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers). Capture integrity, required-store coverage and measured accuracy are separate checks. |
 | Self-benchmark backend | vLLM configurations that pass model/runtime qualification. SGLang and TensorRT-LLM are not supported by this guided collection workflow yet; this does not describe their broader AISimulate modeling support. |
 | Model metadata | A local pinned `config.json` or an existing FPM profile. Direct interpolation can use a verified architecture without a registered analytical class. New architectures may need benchmark state preparation, measurement hooks or an audited resource-observation adapter. |
-| Parallelism | Whole-forward timing can capture intra-iteration computation and communication. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
+| Parallelism | Whole-pass timing can capture intra-iteration computation and communication. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
 | Self-benchmark serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
 | Self-benchmark GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
 | KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Some configs leave the cache geometry to the [runtime probe](implementation.md#cache-geometry-pending-the-runtime-probe): linear-attention and recurrent-state configs, and architectures that intake does not recognize. For them, `onboard init --model-config` stops with guidance to run the probe, which measures the geometry. A cache geometry override for these configs is a claim that `onboard import-observations` checks against that measurement. Importing cache groups other than full or sliding attention (for example recurrent state) is planned. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. |
