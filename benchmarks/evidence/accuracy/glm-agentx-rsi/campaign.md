@@ -233,6 +233,12 @@ It completes successfully in 362 seconds. Existing `engine.tokenization` can
 represent independently measured queued service costs; it is unset in the frozen
 replay. Do not choose costs using MAPE or assume repeated synthetic text prices
 the Weka corpus without further qualification.
+CPU job 1006134 verifies all three template paths in the exact image in 217
+seconds, producing 8204/131084/393228 input tokens. Direct template token IDs
+match the server's separate render/encode path exactly. The GPU suite requires
+this receipt and refuses mismatched model-config or tokenizer-runtime identities.
+CPU-data-mover timings are retained as diagnostics and will not supply a serving
+host cost model.
 
 **Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
 cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.

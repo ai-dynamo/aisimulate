@@ -39,6 +39,9 @@ case "${RSI_RUNTIME:-prediction}" in
     *) echo 'Unknown RSI runtime' >&2; exit 1 ;;
 esac
 test -s "$model/config.json"
+if test "${RSI_SUITE:-timing}" = frontend; then
+    test -s "$CAMPAIGN_ROOT/frontend-template-preflight.json"
+fi
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
 export ENROOT_CONFIG_PATH="$storage_root/.config/enroot"
 export ENROOT_DATA_PATH="$CAMPAIGN_ROOT/enroot-$SLURM_JOB_ID"

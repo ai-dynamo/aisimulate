@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The runtime probe preserves token-count transitions without retaining content."""
 
+import hashlib
 import io
 import json
+import sys
 import urllib.error
 from types import SimpleNamespace
 
@@ -13,6 +15,36 @@ import pytest
 import rsi_frontend
 import rsi_timing
 from instrument import inject
+
+
+@pytest.mark.parametrize("invalid", ["model", "runtime", "cases"])
+def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeypatch, invalid):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    receipt = {
+        "model_config_sha256": hashlib.sha256(b"{}").hexdigest(),
+        "transformers": "5.12.1",
+        "cases": [{"context_label": n} for n in (8192, 131072, 393216)],
+    }
+    if invalid == "model":
+        receipt["model_config_sha256"] = "wrong"
+    elif invalid == "runtime":
+        receipt["transformers"] = "wrong"
+    else:
+        receipt["cases"] = receipt["cases"][:1]
+    (tmp_path / "frontend-template-preflight.json").write_text(json.dumps(receipt))
+    output = tmp_path / "gpu-123/controls"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["collect.py", "--model", str(model), "--output", str(output), "--seconds", "30", "--suite", "frontend"],
+    )
+    monkeypatch.setattr(collect.importlib.metadata, "version", lambda _: "5.12.1")
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *_a, **_k: pytest.fail("server must remain unstarted"))
+    with pytest.raises(ValueError, match="preflight"):
+        collect.main()
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("speculation,policy", [(True, "agentx-golden"), (True, "natural"), (False, "agentx-golden")])

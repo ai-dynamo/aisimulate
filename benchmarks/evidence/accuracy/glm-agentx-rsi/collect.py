@@ -216,6 +216,15 @@ def main():
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
+    config_sha = hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest()
+    if args.suite == "frontend":
+        preflight = json.loads((args.output.parents[1] / "frontend-template-preflight.json").read_bytes())
+        if preflight["model_config_sha256"] != config_sha or preflight["transformers"] != importlib.metadata.version(
+            "transformers"
+        ):
+            raise ValueError("Frontend template preflight does not match model or tokenizer runtime")
+        if [case["context_label"] for case in preflight["cases"]] != [8192, 131072, 393216]:
+            raise ValueError("Incomplete frontend template preflight")
     deadline = time.monotonic() + args.seconds
     args.output.mkdir(parents=True, exist_ok=False)
     save(
@@ -244,7 +253,7 @@ def main():
             "suite": args.suite,
             "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),
             "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
-            "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
+            "config_sha256": config_sha,
             "source_files": {
                 p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob("*.py")
             },
