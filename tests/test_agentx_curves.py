@@ -465,3 +465,17 @@ def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays(cloc
     charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]
     score = charts["throughput_delivered"]["scores"][0]
     assert score["reason"] is None and score["count"] > 0
+
+
+def test_missing_cancelled_stream_does_not_become_zero_delivered_tokens():
+    dataset, silicon = fixture()
+    dataset["reference"][0]["chunks"] = [{"at_ns": str(EPOCH + 500_000_000), "count": 3}]
+    dataset["reference"].append(
+        reference(2, error="measurement_cancelled", start_ns=None, end_ns=None, output_tokens=None)
+    )
+    chart = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"][
+        "throughput_delivered"
+    ]
+    assert chart["scores"][0]["mape_percent"] is None
+    assert "cancelled" in chart["scores"][0]["reason"]
+    assert not any(row["origin"] == "silicon" for row in chart["series"])

@@ -157,7 +157,7 @@ def score(observations, native, boundary):
         predicted = candidates[0] if len(candidates) == 1 else None
         if actual["status"] != "completed":
             failure = actual.get("failure_reason")
-            reason = failure if failure in {"context_overflow", "measurement_metrics_unavailable"} else "measurement_failed"
+            reason = failure if failure in {"context_overflow", "measurement_metrics_unavailable", "measurement_cancelled"} else "measurement_failed"
         elif actual.get("identity_valid") is False:
             reason = "missing_measurement_identity"
         elif measured_keys[actual["key"]] > 1:
@@ -267,6 +267,7 @@ def validate_public(value):
         "missing_measurement_identity",
         "context_overflow",
         "measurement_metrics_unavailable",
+        "measurement_cancelled",
         "missing_prediction",
         "prediction_failed",
         "output_length_mismatch",
@@ -432,6 +433,7 @@ PAIR_STATUSES = {
     "missing_measurement_identity",
     "context_overflow",
     "measurement_metrics_unavailable",
+    "measurement_cancelled",
     "missing_prediction",
     "prediction_failed",
     "output_length_mismatch",

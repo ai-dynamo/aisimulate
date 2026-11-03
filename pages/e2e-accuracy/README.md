@@ -672,6 +672,11 @@ projection rejects unrecognized feature fields and private values.
 `?campaign=finite-v1` selects the retained finite archive. After Weka activation,
 legacy Qwen URLs containing length/cache/repeat selectors route there, including
 the old 16-lane point. Weka profiles have no finite-workload selectors.
+The 2026-11-02 pilot stopped at native `server_unsettled` qualification; active
+coverage remains the existing finite campaign. Unrecorded cancellations retain
+explicit counts and unavailable timings. Evidence lists exclusions and metric
+denominators without a separate accounting section; incomplete failed/cancelled
+stream observations do not become zero-valued throughput comparisons.
 
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
