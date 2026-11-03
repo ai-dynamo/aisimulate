@@ -1880,3 +1880,18 @@ from the targeted op/forward pool only. Global remaining budget is currently
 124,970 GPU-seconds; the 86,400-GPU-second validation reserve remains intact.
 No reservation or GPU charge has yet been made for this experiment. All raw
 traces, stream events and server logs stay in private campaign storage.
+
+E040 GPU smoke job **1014958 fails before GLM startup** after **79 allocated
+seconds on eight B300 GPUs: 632 GPU-seconds**. Source
+`401d7daadc128c5b56661791413856dd1e029bb0`, archive SHA256
+`c8cd7663f97189aab083c46c24f4092bbb31f4b7cb27c10ae2219d4ba561abf1`.
+All application tensor results pass, but Nsight contains only GPU 0's kernel
+and projected marker. Torch warns about empty graphs: its reused default
+capture stream belongs to the first device. Retain this failed report and
+reject it as eight-rank trace qualification. The narrow repair creates and
+retains one explicit capture stream per GPU; model source/settings are
+unchanged. Charge actual allocation, release the reservation and require the
+same trace gate again before model startup. Remaining global budget is
+**124,338 GPU-seconds**, with **3,521 node-seconds** left in the op/forward
+pool; validation's 10,800 node-seconds remain untouched. This collection setup
+failure is not a model-accuracy experiment or a MAPE improvement.

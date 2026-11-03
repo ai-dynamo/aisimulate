@@ -22,17 +22,20 @@ def main():
     names = [torch.cuda.get_device_name(i) for i in range(8)]
     if any("B300" not in name for name in names):
         raise ValueError("Unexpected GPU model")
-    graphs, buffers = [], []
+    graphs, buffers, streams = [], [], []
     for device in range(8):
         with torch.cuda.device(device):
             a = torch.ones((32, 32), device=f"cuda:{device}")
             out = a @ a
             torch.cuda.synchronize()
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(torch.cuda.current_stream(device))
             graph = torch.cuda.CUDAGraph()
             torch.cuda.nvtx.range_push(f"rsi-smoke-capture-gpu-{device}")
-            with torch.cuda.graph(graph):
+            with torch.cuda.graph(graph, stream=capture_stream):
                 torch.mm(a, a, out=out)
             torch.cuda.nvtx.range_pop()
+            streams.append(capture_stream)
             graphs.append(graph)
             buffers.append((a, out))
     with torch.cuda.device(0):
