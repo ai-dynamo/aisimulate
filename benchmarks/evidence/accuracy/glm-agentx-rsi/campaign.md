@@ -2773,3 +2773,11 @@ columns. The top-k causal mask is outside this kernel timing. Pin both fused
 metadata and indexer/wrapper sources; do not claim the test generator alone
 establishes serving parity. Source fetch at the guessed flat dsa.py path fails
 404; retain it and use the actual package's paged_mqa_logits.py source.
+
+E049 source4e268a812 passes lint, Python compilation, shell syntax and matching
+legal-notice checks. All94 focused campaign tests pass in the required SDK
+and Transformers environments (77+17). An initial all-tests invocation in the
+SDK-only environment fails collection because Transformers is intentionally
+absent; retain its log and rerun the two dependency groups without changing
+the frozen runtime. CPU-only source/import preflight1018600 has verified
+transferred hashes and the historical image; no GPU is allocated yet.
