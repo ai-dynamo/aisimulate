@@ -140,11 +140,56 @@ The frozen active run uses its container-local SGLang autotune cache; a later
 collector revision explicitly scopes `SGLANG_CACHE_DIR` to campaign storage.
 Neither this path fix nor the audit modifies running job 1003379.
 
+**E005 natural-control result — qualified only as natural acceptance.** Job
+1004446 completes both MTP modes, 221/221 requests each. The instrumented mode
+has rank-0 observations for every request, no backward clocks/counters or
+uncovered delivered lengths, and 201 requests with explicitly retained terminal
+over-generation. Median first/final native receipt delays after readiness are
+2.127/4.666 ms; maximum delays are 12.157/10.459 ms (first includes chat).
+This does not establish the cause of historical AIPerf bursts. All 221 plain-mode
+identities remain unrecorded-or-unattempted after intentional cancellation.
+Original-policy qualification fails: this source omitted the forced acceptance
+environment discovered in E016. Preserve all 442 completed diagnostics rather
+than use them as matched AgentX evidence. Both headline MAPEs and coverage remain
+unchanged. Audit artifact: private `E005-natural-audit-v1.json`.
+
+**E017 — matching-policy controls and independent CPU predictions.** Job 1005806
+freezes `8a9efa81612175eab4d4baa4490f7c2688225fa7`, uses the exact historical image,
+and explicitly applies all three original acceptance overrides. The same 221
+identities per mode, repetition policy and qualification rules are predeclared.
+Generate eight cold C1 predictions afresh: 8192/131072 input × 16/128 output ×
+MTP/plain. Keep the first failed plain configuration attempt; the corrected
+eight-case run completes with exact lengths and zero prefix reuse. MTP TTFT is
+243.863/5064.213 ms and TPOT spans 2.413–2.580 ms; plain TTFT is 242.361/5040.178
+ms and TPOT spans 5.978–6.134 ms. Silicon 0.5.20 versus database 0.5.21 remains
+cross-version. No synthetic result replaces either headline objective.
+
 ## H2 — Recipe, tokenization, snapshots and cache history
 
 **Hypothesis.** Effective serving settings or replay history differ from silicon.
 Confidence: high in the recorded cap mismatch, low in a broad cache-history cause.
 Competing explanations: correct inputs with incorrect execution or client timing.
+
+**E018 — predeclared paired frontend experiment (pending).** Test whether large
+mostly cached prompts incur frontend work missing from native token replay.
+Use a fresh, instrumented historical server with the original forced-acceptance
+policy, synchronous scheduling and all other E017 settings. For each of three
+synthetic context labels (8192/131072/393216), construct one chat-template token
+sequence. Compare native input IDs against chat messages, alternating endpoint
+order over three repeats. Independently flush and seed exactly the same aligned
+prefix before each request; retain all 18 preparation and 18 measured requests.
+Preparation primes the allocator and remains unscored. Require exact server input
+and output lengths, identical input hashes and equal reported cache reuse before
+attribution; missing cache receipts leave the comparison unavailable. Serialize
+requests before starting the measured timer, recording serialization separately.
+Keep content, reasoning and tool-call boundary counts without text or token arrays.
+Predicted observable: extra chat time before first scheduler readiness at equal
+GPU input/cache state. Competing explanations include template mismatch, parser
+buffering and drift; this synthetic repeated text cannot establish the entire
+Weka workload's frontend cost. No fitted latency constant will be introduced.
+The existing collector selects this suite explicitly; the default timing suite
+and frozen running job remain unchanged. CPU runtime-source extraction (1005817)
+uses no GPUs and pins the exact image before interpreting framework internals.
 
 **Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
 cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
@@ -422,6 +467,15 @@ at eight GPUs: 36480 GPU-seconds. With 17448 already charged, 176472 GPU-seconds
 remain available after this reservation. Later submissions require this cleanup
 margin explicitly; the current job was admitted with ample remaining budget.
 
+Job 1004446 is cancelled after its two completed natural-acceptance controls;
+the parent lasts 2094 seconds and cleanup ends at 2101 seconds. Conservatively
+charge 2101 × eight = 16808 GPU-seconds. Total completed allocation cost is now
+**34256 GPU-seconds / 9.5156 GPU-hours / 1.1894 TP8 node-hours**; remaining
+**196144 GPU-seconds / 54.4844 GPU-hours / 6.8106 TP8 node-hours**. Job 1005806
+reserves 36480 GPU-seconds including cleanup, leaving 159664 unreserved. Replace
+this reservation with its actual terminal allocation through cleanup before the
+next GPU submission. Preserve scheduler receipts and all failed attempts.
+
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
 them without prompt/error-body content. It does not modify frozen job 1002848.
@@ -468,6 +522,7 @@ python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
+# Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
 python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py

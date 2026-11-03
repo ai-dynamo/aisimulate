@@ -40,7 +40,7 @@ def sample(url, path, stop):
             stop.wait(1)
 
 
-def control(root, model, deadline, instrumented, speculation, acceptance_policy="agentx-golden"):
+def control(root, model, deadline, instrumented, speculation, acceptance_policy="agentx-golden", suite="timing"):
     code = Path(__file__).parent
     name = ("instrumented" if instrumented else "unprofiled") + ("-mtp" if speculation else "-plain")
     output = root / name
@@ -146,6 +146,7 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
             "speculation": speculation,
             "acceptance_policy": acceptance_policy if speculation else "disabled",
             "acceptance_environment": {key: environment.get(key) for key in GOLDEN_ACCEPTANCE},
+            "suite": suite,
             "purpose": "synthetic timing diagnostics; not AgentX accuracy scoring",
         },
     )
@@ -178,7 +179,7 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
             subprocess.run(
                 [
                     sys.executable,
-                    str(code / "probe.py"),
+                    str(code / ("frontend.py" if suite == "frontend" else "probe.py")),
                     "--url",
                     url,
                     "--model",
@@ -210,6 +211,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
+    parser.add_argument("--suite", choices=("timing", "frontend"), default="timing")
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
@@ -220,6 +222,7 @@ def main():
         {
             "sglang": importlib.metadata.version("sglang"),
             "acceptance_policy": args.acceptance_policy,
+            "suite": args.suite,
             "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),
             "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
             "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
@@ -228,14 +231,16 @@ def main():
             },
         },
     )
-    control(args.output, args.model, deadline, False, True, args.acceptance_policy)
+    if args.suite == "timing":
+        control(args.output, args.model, deadline, False, True, args.acceptance_policy)
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("instrument.py"))],
         check=True,
         stdout=(args.output / "instrumentation.json").open("x"),
     )
-    control(args.output, args.model, deadline, True, True, args.acceptance_policy)
-    control(args.output, args.model, deadline, True, False, args.acceptance_policy)
+    control(args.output, args.model, deadline, True, True, args.acceptance_policy, args.suite)
+    if args.suite == "timing":
+        control(args.output, args.model, deadline, True, False, args.acceptance_policy)
     save(args.output / "completion.json", {"status": "completed"})
 
 
