@@ -2,6 +2,15 @@
 
 This file adds explicit repository-wide development guards.
 
+## Wheel artifact handoffs
+
+GitHub Actions artifacts must not contain Python wheels or wheel-containing
+bundles. Use `.github/actions/wheel-storage` for intermediate wheel transfers;
+Actions retains only the completion manifest. Consumers must bind the exact
+source SHA, producer run and architecture, and verify object sizes/checksums.
+Reruns read the producer attempt from that manifest, never from the consumer's
+`github.run_attempt`. Keep qualification reports as normal Actions artifacts.
+
 ## FPM model onboarding
 
 When asked to onboard a model for FPM simulation on designated hardware, follow

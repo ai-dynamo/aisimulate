@@ -95,10 +95,10 @@ mandatory, and checksum, build, and test failures are not automatically retried.
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
 Artifactory through the protected `automated-release` environment. Each wheel
-is downloaded again and checked against the build. Immutable copies and their
-checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
-before runtime dependencies execute, preserving the accuracy and installation
-consumer contract.
+is downloaded again and checked against the build. Verified wheel/crate bundles and their checksums/provenance are stored in
+Artifactory. Actions retains `nightly-dist-<arch>-manifest` completion manifests
+before runtime dependencies execute; FPE and accuracy jobs download and verify
+the same bundle through the shared wheel-storage action.
 
 Python license evidence covers the installed audit environment, including
 the runtime dependency closure and audit tools such as `pip` and `pip-licenses`.
@@ -243,3 +243,72 @@ Release staging has a separate control: `automated-release` must exist with
 required reviewers before use, and Artifactory credentials belong in that
 environment. A reference to a missing environment can create it without the
 intended protection. Successful validation does not authorize publication.
+
+
+## Intermediate wheel storage
+
+Use `.github/actions/wheel-storage` for CI, nightly, accuracy, FPE, and simulation
+wheel transfers. The action accepts `aisim`, historical `aisimulate`, and Dynamo
+wheel bundles without choosing a package by filename prefix. It preserves the
+original relative directory layout and companion provenance/requirements files.
+Reports and dashboard artifacts continue using normal Actions storage.
+
+Each logical handoff name (for example `application-test-wheel-arm64`) produces
+an Actions artifact named `<name>-manifest`, containing only `wheel-manifest.json`.
+The manifest is published after every payload has passed an Artifactory read-back
+check. It binds source SHA, workflow SHA, repository ID, producer run/attempt,
+architecture, storage repository, relative filenames, sizes, and SHA-256 digests. Objects live under:
+
+```text
+<repository>/ci-wheels/<github-repository-id>/<producer-run-id>/<producer-attempt>/<handoff-name>/<sha256>/<relative-path>
+```
+
+The numeric repository ID survives a GitHub repository rename. Downloads bind
+the caller's expected source SHA, architecture and producer run, then use the
+**producer attempt recorded in the manifest**. A consumer-only rerun therefore
+reuses the successful original build; it never guesses a path from its own
+`github.run_attempt`. Cross-run accuracy consumers also verify the existing
+nightly provenance. Old wheel-containing Actions archives are not selected as
+new handoffs; when no manifest exists, accuracy builds the exact selected source.
+Missing objects, checksum/size mismatches, wrong producers, and path escapes fail
+before a dependent install can proceed. Upload retries reuse verified objects;
+publication remains incomplete until the manifest upload succeeds.
+
+### Environment prerequisites
+
+Set repository variable `WHEEL_STORAGE_URL` to
+`https://artifactory.nvidia.com/artifactory`. Define `WHEEL_STORAGE_REPO` at the
+**environment level**, with no repository-wide fallback:
+
+| GitHub environment | `WHEEL_STORAGE_REPO` | Used by |
+| --- | --- | --- |
+| `pr-wheel-staging` | `sw-dynamo-aisimulate-pr-pypi-local` | Copied-PR CI, PR accuracy previews, and simulation comparisons (including manual comparisons launched from main) |
+| `automated-release` | `sw-dynamo-aisimulate-pypi-local` | Main/release CI, nightly builds, release FPE, and official accuracy/FPE consumers |
+
+Full CI and standalone FPE select the environment from the workflow ref;
+`main` and `release/*` use `automated-release`, while PR/source refs use
+`pr-wheel-staging`. E2E accuracy previews use PR storage; published accuracy
+campaigns and their cross-run nightly downloads use official storage. The
+manifest records the producer's storage repository, and downloads reject a
+repository mismatch before making an authenticated request.
+
+Before enabling transfer jobs:
+
+- In **each** environment, configure `WHEEL_STORAGE_WRITE_TOKEN` with read plus
+  deploy/write permission and `WHEEL_STORAGE_READ_TOKEN` with read-only permission
+  for that environment's repository and `ci-wheels/1330347449/**` prefix. The two
+  environments may use different token values. No delete/admin permission is
+  needed. Existing `ARTIFACTORY_*` final-publication settings remain unchanged.
+- Preserve branch admission: `automated-release` admits `main` and `release/*`;
+  `pr-wheel-staging` admits trusted `pull-request/*` refs and the main/release
+  refs used to launch manual PR comparisons. A manual PR comparison remains in
+  PR storage even when its workflow is dispatched from main.
+- Retain objects in **both** repositories for at least as long as their Actions
+  manifests (30 days by default; FPE/accuracy handoffs use seven days). Expired
+  objects require a producer rebuild, not a fallback to a different wheel.
+
+The action never forwards credentials to redirects. Consumers receive the read
+credential only in the transfer step. No credential or environment configuration
+is changed by the workflow code. Rollout should exercise one copied-PR build,
+a consumer-only rerun, and a main-branch nightly/accuracy reuse before closing
+infrastructure validation.

@@ -112,8 +112,12 @@ alone does not establish that validation completed. The nightly path is
 `nightly/<run_id>/`, not a public PyPI release channel.
 
 Obtain the wheel for your platform from Artifactory using your organization's
-authenticated artifact access. Obtain `provenance.json` and `SHA256SUMS.txt`
-from the same run's `nightly-dist-amd64` or `nightly-dist-arm64` GitHub artifact.
+authenticated artifact access. For new runs, download the same run's `nightly-dist-amd64-manifest` or
+`nightly-dist-arm64-manifest` Actions artifact. Its `wheel-manifest.json` identifies
+the verified wheel, `provenance.json`, and `SHA256SUMS.txt` objects in Artifactory.
+Fetch them with authenticated artifact access and verify the recorded sizes and
+SHA-256 digests. Older runs retain these files in `nightly-dist-<arch>` archives;
+see the [handoff contract](../ci/release.md#intermediate-wheel-storage).
 Verify the recorded source revision and wheel SHA-256, then install that exact
 downloaded file:
 

@@ -121,7 +121,7 @@ const run = {
   head_repository: { full_name: "ai-dynamo/aisimulate" },
 };
 
-async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs = [run], built = true, expired = false, inputs = {}, branches = [] } = {}) {
+async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs = [run], built = true, expired = false, artifactName = "nightly-dist-amd64-manifest", inputs = {}, branches = [] } = {}) {
   const outputs = {};
   const actions = {
     listWorkflowRuns: async (args) => {
@@ -149,7 +149,7 @@ async function resolve({ event = "schedule", ref = "refs/heads/main", pr, runs =
         { name: "Stage artifacts", conclusion: null, status: "waiting" },
       ];
       assert.equal(method, "artifacts");
-      return [{ name: "nightly-dist-amd64", expired }];
+      return [{ name: artifactName, expired }];
     } },
   });
   await vm.runInContext(`(async () => { ${source} })()`, context);
@@ -161,7 +161,7 @@ test("scheduled accuracy reuses the exact main wheel while release staging waits
 });
 
 test("missing, failed, and expired nightly builds fall back to building the scheduled SHA", async () => {
-  for (const scenario of [{ runs: [] }, { built: false }, { expired: true }]) {
+  for (const scenario of [{ runs: [] }, { built: false }, { expired: true }, { artifactName: "nightly-dist-amd64" }]) {
     assert.deepEqual(await resolve(scenario), [entry("main", sha)]);
   }
 });

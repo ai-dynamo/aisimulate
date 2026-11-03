@@ -409,6 +409,7 @@ jobs:
           sparse-checkout: |
             /scripts/release/apply_dev_version.py
             /scripts/release/build_release_artifacts.py
+            /.github/actions/wheel-storage/
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -730,16 +731,17 @@ jobs:
       # wheel has been downloaded and verified against the build. Upload
       # before dependency code runs so the artifact remains immutable.
       - name: Upload verified nightly artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: ./release-tooling/.github/actions/wheel-storage
         with:
+          mode: upload
           name: nightly-dist-${{ matrix.arch }}
           path: ${{ runner.temp }}/nightly-dist/*
-          if-no-files-found: error
-          # Wheels and crates are already compressed; skip recompression.
-          compression-level: 0
-          # Matches the Dynamo nightly compliance policy's 30-day window.
+          source-sha: ${{ needs.changes-guard.outputs.target-sha }}
+          architecture: ${{ matrix.arch }}
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
           retention-days: 30
-          overwrite: true
 
 
       # Installs the wheel fetched back from Artifactory, not the local

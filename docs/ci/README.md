@@ -52,7 +52,7 @@ flowchart TD
         MainGuard["Check for a new main commit"] -->|Changed| Licenses["Check Python dependency licenses"]
         Licenses --> Build["Build nightly wheels and crate"]
         Build --> NightlyStage["Protected Artifactory staging"]
-        NightlyStage --> Verify["Download and verify staged wheel<br/>Preserve artifacts and provenance"]
+        NightlyStage --> Verify["Download and verify staged wheel<br/>Preserve verified Artifactory bundle<br/>Retain Actions manifest"]
         Verify --> Smoke["Installed-wheel smoke tests"]
         Smoke --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
         Smoke --> Evidence["Generate license evidence"]

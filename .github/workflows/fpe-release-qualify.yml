@@ -24,6 +24,7 @@ env:
 
 jobs:
   prepare:
+    environment: automated-release
     name: Build and identify release FPE wheel
     if: github.ref == 'refs/heads/main'
     runs-on: prod-aisimulate-default-amd64-v1
@@ -62,17 +63,23 @@ jobs:
       - id: discover
         name: Discover the release inventory through its verified wheel
         run: release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py discover
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: ./.github/actions/wheel-storage
         with:
+          mode: upload
           name: fpe-release-wheel-${{ inputs.release }}
           path: |
             fpe-release-wheel
             fpe-release-shards.json
             fpe-release-probes.json
-          if-no-files-found: error
+          source-sha: ${{ inputs.source_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
           retention-days: 7
 
   generate:
+    environment: automated-release
     name: Release FPE (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: prepare
     runs-on: prod-aisimulate-default-amd64-v1
@@ -97,10 +104,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          mode: download
           name: fpe-release-wheel-${{ inputs.release }}
           path: .
+          source-sha: ${{ inputs.source_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
@@ -125,6 +138,7 @@ jobs:
           retention-days: 7
 
   qualify:
+    environment: automated-release
     name: Qualify release FPE artifact
     needs: [prepare, generate]
     runs-on: ubuntu-24.04
@@ -142,10 +156,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          mode: download
           name: fpe-release-wheel-${{ inputs.release }}
           path: .
+          source-sha: ${{ inputs.source_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.WHEEL_STORAGE_READ_TOKEN }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: fpe-release-results-${{ inputs.release }}@*
