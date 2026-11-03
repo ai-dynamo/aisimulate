@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from normalize import add_stream_observations, metric, reference_row, retain_cancelled_accounting
-from collect import qualified_pilot
+from normalize import add_stream_observations, metric, reference_row, retain_cancelled_accounting, retain_harness_receipt
+from collect import main, qualified_pilot
 
 
 def test_resume_requires_checksum_pinned_successful_pilot(tmp_path):
@@ -21,6 +21,36 @@ def test_resume_requires_checksum_pinned_successful_pilot(tmp_path):
         qualified_pilot(path, checksum)
     with pytest.raises(ValueError, match="did not qualify"):
         qualified_pilot(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+@pytest.mark.parametrize("lanes", [["4", "4"], ["4", "1"], ["4", "8", "10", "13", "14"]])
+def test_partial_campaign_requires_qualified_evidence_and_ordered_unique_lanes(tmp_path, monkeypatch, lanes):
+    monkeypatch.setattr("sys.argv", ["collect", "--root", str(tmp_path / "run"), "--lanes", *lanes])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert not (tmp_path / "run").exists()
+
+
+def test_cached_harness_receipt_uses_actual_export_and_dataset_metadata(tmp_path):
+    run, output = tmp_path / "run", tmp_path / "normalized"
+    (run / "benchmark").mkdir(parents=True)
+    (run / "client-record").mkdir()
+    output.mkdir()
+    summary = run / "benchmark/profile_export_aiperf.json"
+    summary.write_text(json.dumps({"input_config": {"datasets": [{"name": "main"}], "phases": [{"duration": 3600}]}}))
+    metadata = run / "client-record/dataset-metadata.json"
+    metadata.write_text(json.dumps({"sampling_strategy": "sequential", "conversations": [{"conversation_id": "play", "is_root": True}]}))
+    result = retain_harness_receipt(run, output, {"play": "namespace"})
+    assert result["datasets"][0]["sampling"] == "sequential"
+    origin = json.loads((output / "harness-receipt-origin.json").read_bytes())
+    assert origin["configuration"]["sha256"] == hashlib.sha256(summary.read_bytes()).hexdigest()
+    assert origin["sampling"]["sha256"] == hashlib.sha256(metadata.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="eligible corpus"):
+        retain_harness_receipt(run, output, {"different": "namespace"})
+    summary.write_text(json.dumps({"input_config": {"datasets": [{"sampling": "random"}]}}))
+    with pytest.raises(ValueError, match="sampling disagree"):
+        retain_harness_receipt(run, output, {"play": "namespace"})
 
 
 def metadata(identity="a", phase="profiling", **changes):

@@ -32,6 +32,10 @@ if [[ -n "${QUALIFIED_PILOT:-}" ]]; then
     : "${QUALIFIED_PILOT_SHA256:?Pin the reviewed pilot qualification receipt}"
     resume_args=(--qualified-pilot "${QUALIFIED_PILOT/#$storage_root/\/workspace}" --qualified-pilot-sha256 "$QUALIFIED_PILOT_SHA256")
 fi
+if [[ -n "${COLLECTION_LANES:-}" ]]; then
+    read -r -a collection_lanes <<< "$COLLECTION_LANES"
+    resume_args+=(--lanes "${collection_lanes[@]}")
+fi
 srun --ntasks=1 --container-image="$image" \
     --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     python3 "$code_in_container/collect.py" --root "$root_in_container" --model /model --budget-seconds "$REMAINING_GPU_SECONDS" "${resume_args[@]}"

@@ -323,6 +323,36 @@ def retain_cancelled_accounting(references, log, ranges):
     return phases
 
 
+def retain_harness_receipt(run, output, namespaces):
+    """Cache hits bypass the loader hook; retain the benchmark's actual exported settings."""
+    target = output / "harness-receipt.json"
+    recorded = run / "client-record/resolved-dataset.json"
+    if recorded.exists():
+        shutil.copyfile(recorded, target)
+        return read(target)
+    summary = run / "benchmark/profile_export_aiperf.json"
+    metadata_path = run / "client-record/dataset-metadata.json"
+    metadata = read(metadata_path)
+    roots = [row["conversation_id"] for row in metadata["conversations"] if row["is_root"]]
+    if roots != list(namespaces):
+        raise ValueError("Cached dataset roots differ from the reviewed eligible corpus")
+    configuration = read(summary)["input_config"]
+    dataset = configuration["datasets"][0]
+    sampling = metadata["sampling_strategy"]
+    if sampling not in {"sequential", "random", "shuffle"} or dataset.get("sampling", sampling) != sampling:
+        raise ValueError("Exported and observed dataset sampling disagree")
+    dataset["sampling"] = sampling
+    write(target, configuration)
+    shutil.copyfile(metadata_path, output / "dataset-metadata.json")
+    write(output / "harness-receipt-origin.json", {
+        "schema": "aisimulate.agentx.harness-receipt-origin.v1",
+        "configuration": {"artifact": "harness-results.json", "sha256": digest(summary), "pointer": "/input_config"},
+        "sampling": {"artifact": "dataset-metadata.json", "sha256": digest(metadata_path), "pointer": "/sampling_strategy"},
+        "eligible_roots_verified": len(roots),
+    })
+    return configuration
+
+
 def normalize(run, corpus, template, output, taxonomy_revision, duration, silicon=None):
     output.mkdir(parents=True, exist_ok=False)
     namespaces = read(corpus / "namespace-map.json")
@@ -340,7 +370,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     write(output / "phase-accounting.json", {"source_sha256": digest(output / "client-log.json"), "phases": accounting})
     start = int(ranges["profiling"]["start_ns"])
     end = int(ranges["profiling"]["end_ns"])
-    harness = read(run / "client-record/resolved-dataset.json")
+    harness = retain_harness_receipt(run, output, namespaces)
     elapsed = (end - start) / 1e9
     if harness["phases"][0]["duration"] != duration or not duration - 1 <= elapsed <= duration + 30 + 10 + 1:
         raise ValueError("AgentX profile window or original grace/drain bounds differ")
@@ -433,8 +463,8 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     write(output / "snapshot-receipt.json", cuts)
     features = add_agentx_receipt(
         features,
-        read(run / "client-record/resolved-dataset.json"),
-        digest(run / "client-record/resolved-dataset.json"),
+        harness,
+        digest(output / "harness-receipt.json"),
         cuts,
         digest(output / "snapshot-receipt.json"),
         refs,
@@ -468,7 +498,6 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
         (run / "metrics.jsonl", "server-scrapes.jsonl"),
         (summary, "harness-results.json"),
         (run / "cache-receipt.json", "runtime-receipt.json"),
-        (run / "client-record/resolved-dataset.json", "harness-receipt.json"),
         (run / "benchmark/server_metrics_export.json", "server-metrics.json"),
         (run / "outcome.json", "collection-outcome.json"),
         (run / "client-command.json", "client-command.json"),
@@ -564,6 +593,9 @@ def manifest(root, corpus):
             files[name.replace("-", "_")] = path / f"{name}.json"
         if (path / "collector-source.json").exists():
             files["collector_source"] = path / "collector-source.json"
+        for name in ("dataset-metadata", "harness-receipt-origin"):
+            if (path / f"{name}.json").exists():
+                files[name.replace("-", "_")] = path / f"{name}.json"
         runs.append(
             {
                 "id": identity,
