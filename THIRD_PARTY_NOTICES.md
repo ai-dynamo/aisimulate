@@ -247,11 +247,22 @@ The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/
 
 The vLLM copyright in `src/aisimulate_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISimulate.
 
-Upstream source:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+Public reference source: [SGLang v0.5.18 at `71de97b264b04dcd514cf904003028aefe9775c8`](https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt).
+The corresponding public files are:
 
-Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team. These source files are licensed under the Apache License, Version 2.0. The upstream license is at:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fbc6632270e26edc84b/LICENSE
+- [`models/deepseek_v2.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/models/deepseek_v2.py)
+- [`layers/communicator.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/communicator.py)
+- [`layers/quantization/modelopt_quant.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/modelopt_quant.py)
+- [`layers/quantization/utils.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/utils.py)
+
+These public files contain the corresponding dense MLP, communication, and
+quantization-exclusion behavior. The original audit revision above identifies
+the fork used for the adaptation; the public reference is not a verified
+byte-for-byte mirror of that fork.
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team.
+These source files are licensed under the Apache License, Version 2.0; see the
+[public SGLang license at the reference revision](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/LICENSE).
 
 ## vLLM
 
@@ -1259,7 +1270,8 @@ and does not relicense model weights, producer code or their upstream projects.
 
 ## AISim FPM Gym
 
-- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Public migrated source: [FPM evaluator and overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+  This is the modified public copy; the predecessor revision and paths follow.
 - Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
 - Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
   `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
@@ -1271,6 +1283,7 @@ and does not relicense model weights, producer code or their upstream projects.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility.
+- Public dashboard migration: [dashboard source](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
 - Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
   Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
   `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,

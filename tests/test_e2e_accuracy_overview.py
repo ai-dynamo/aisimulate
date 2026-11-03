@@ -304,8 +304,29 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
 
     assert "silicon_ttft_ms" not in serialized
     assert "silicon_workflow_run_id" not in serialized
-    assert "gitlab-master.nvidia.com" not in serialized
+    assert "gitlab" not in serialized.lower()
     assert "linear.app/nvidia" not in serialized
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_public_summary_rejects_gitlab_provenance(hostname):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["hf_model_path"] = f"{hostname}/private-model"
+    with pytest.raises(OVERVIEW.SnapshotError, match="forbidden fragment"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+        )
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_prediction_error_redacts_complete_gitlab_hostname(hostname):
+    row = _inputs()[0]["rows"][0]
+    row.update(aisimulate_status="failed", aisimulate_error=f"source unavailable at {hostname}")
+    assert OVERVIEW._prediction_error(row) == "source unavailable at [redacted]"
 
 
 def test_prediction_errors_retain_details_without_local_provenance():

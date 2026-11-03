@@ -163,8 +163,15 @@ def test_reject_raw_fields_bad_coverage_and_internal_links(summary):
     with pytest.raises(ValueError):
         validate_summary(summary)
     metric["predicted_count"] = 80
-    summary["rows"][0]["configuration_manifest"] = "https://gitlab-master.nvidia.com/private"
-    with pytest.raises(ValueError):
+    summary["rows"][0]["configuration_manifest"] = "https://gitlab.internal.example.com/private"
+    with pytest.raises(ValueError, match="internal provenance"):
+        validate_summary(summary)
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_reject_gitlab_provenance_in_public_text(summary, hostname):
+    summary["rows"][0]["model"] = hostname
+    with pytest.raises(ValueError, match="internal provenance"):
         validate_summary(summary)
 
 

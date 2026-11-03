@@ -48,7 +48,7 @@ def text(value):
     require(isinstance(value, str) and 0 < len(value) <= 1024, "invalid public text")
     require(not any(ord(ch) < 32 for ch in value), "control characters in public text")
     require(
-        not any(fragment in value.lower() for fragment in ("gitlab-master", "slack.com", "linear.app", "file://")),
+        not any(fragment in value.lower() for fragment in ("gitlab", "slack.com", "linear.app", "file://")),
         "internal provenance",
     )
 

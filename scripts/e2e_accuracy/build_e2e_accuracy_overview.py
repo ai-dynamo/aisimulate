@@ -35,7 +35,7 @@ def measurement_source_url(release_tag: str) -> str:
 
 
 FORBIDDEN_PUBLIC_FRAGMENTS = (
-    "gitlab-master.nvidia.com",
+    "gitlab",
     "linear.app/nvidia",
     "slack.com/archives",
     "silicon_workflow_run_id",
@@ -298,6 +298,7 @@ def _prediction_error(row: dict[str, Any]) -> str | None:
     message = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", message)
     message = re.sub(r"https?://[^\s<>\"']+", "[URL]", message)
     message = re.sub(r"(?<![\w/])(?:/[\w.~-]+)+", "[path]", message)
+    message = re.sub(r"\b[a-z0-9.-]*gitlab[a-z0-9.-]*\b", "[redacted]", message, flags=re.IGNORECASE)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
         message = message.replace(fragment, "[redacted]")
     message = " ".join(message.split())
@@ -743,7 +744,7 @@ def build_summary(
         }
     serialized = json.dumps(result, sort_keys=True)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
-        if fragment in serialized:
+        if fragment in serialized.lower():
             raise SnapshotError(f"public output contains forbidden fragment: {fragment}")
     return result
 

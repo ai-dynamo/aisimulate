@@ -283,14 +283,15 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 ## Source attribution
 
 The overview structure and behavior were adapted from NVIDIA
-[AISim FPM Gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/dashboard),
+AISim FPM Gym; the [public migrated overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/pages/fpm-accuracy) derives from
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a best-MAPE
 overview, a three-column Predictors page (derived from the same overview),
 qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
-Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,
+Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`
+([public migration](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/pages/fpm-accuracy)); the 3D HTML,
 JS and CSS derive from `dashboard/3d-visualization.html` and
 `dashboard/assets/visualization.{js,css}` at that revision. They are modified
 for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0
