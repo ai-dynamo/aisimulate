@@ -89,6 +89,54 @@ def _parse_select(text: str) -> dict:
     return {field.strip(): value.strip() for field, value in pairs}
 
 
+def _bound_kwargs(entry, run_func, out_dir: str) -> dict:
+    """The keyword arguments collect.py binds besides perf_filename and device."""
+    from inspect import signature
+
+    extra = {}
+    if getattr(entry, "extra_perf_filenames", None) and "extra_perf_filenames" in signature(run_func).parameters:
+        # multi-table producers (compute_scale -> computescale + scale_matrix): same kwarg collect.py binds
+        extra["extra_perf_filenames"] = tuple(str(Path(out_dir) / str(p)) for p in entry.extra_perf_filenames)
+    if getattr(entry, "run_kwargs", None):
+        # fixed mode arguments the executor binds (collect.py run_kwargs partial), e.g. skip_indexer=True
+        extra.update(dict(entry.run_kwargs))
+    return extra
+
+
+def _run_case(run_func, case, perf_path: str, device: str, extra: dict) -> None:
+    if isinstance(case, dict) and "params" in case:  # collect.py task shape {"id", "params"} (collect.py:1696-1702)
+        params = case["params"]
+        if isinstance(params, dict):
+            run_func(**params, perf_filename=perf_path, device=device, **extra)
+        else:
+            run_func(*params, perf_filename=perf_path, device=device, **extra)
+    elif isinstance(case, dict):  # keyword-shaped cases bind by name
+        run_func(**{k: v for k, v in case.items() if k != "id"}, perf_filename=perf_path, device=device, **extra)
+    else:
+        run_func(*case, perf_filename=perf_path, device=device, **extra)
+
+
+def run_planned(backend: str, op: str, *, out_dir: str = "/tmp/smk", device: str = "cuda:0", **select) -> None:
+    """Run ONE planned case in this process, as the collector runs it: the row planned_row()
+    builds for this SM, through the backend registry's run function and perf file. A capture
+    that calls this names its cell as a planned case and nothing else."""
+    from collector.helper import get_sm_version
+
+    registry = importlib.import_module(f"collector.{backend}.registry")
+    entries = [e for e in registry.REGISTRY if e.op == op]
+    if len(entries) != 1:
+        raise SystemExit(f"op {op!r}: {len(entries)} registry entries in collector.{backend}.registry, want 1")
+    entry = entries[0]
+    module = importlib.import_module(entry.module)
+    run_func = getattr(module, entry.run_func)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    row = planned_row(backend, op, get_sm_version(), **select)
+    print(f"[op_smoke] {backend} {op}: {entry.run_func}{row}")
+    _run_case(
+        run_func, row, str(Path(out_dir) / str(entry.perf_filename)), device, _bound_kwargs(entry, run_func, out_dir)
+    )
+
+
 def _get_cases(get_func, model_path: str | None):
     # Mirrors collect.py:_get_test_cases_for_model (:1103-1111): pass
     # model_path only to getters that accept it.
@@ -187,32 +235,10 @@ def main() -> int:
         f"[op_smoke] {args.op}: module={module_name} run={entry.run_func} "
         f"perf={perf_path} — {len(picked)}/{len(cases)} case(s)"
     )
-    import inspect
-
-    extra = {}
-    if (
-        getattr(entry, "extra_perf_filenames", None)
-        and "extra_perf_filenames" in inspect.signature(run_func).parameters
-    ):
-        # multi-table producers (compute_scale -> computescale + scale_matrix): same kwarg collect.py binds
-        extra["extra_perf_filenames"] = tuple(str(Path(args.out_dir) / str(p)) for p in entry.extra_perf_filenames)
-    if getattr(entry, "run_kwargs", None):
-        # fixed mode arguments the executor binds (collect.py run_kwargs partial), e.g. skip_indexer=True
-        extra.update(dict(entry.run_kwargs))
+    extra = _bound_kwargs(entry, run_func, args.out_dir)
     for i, case in enumerate(picked):
         print(f"[op_smoke] case {i}: {case}")
-        if isinstance(case, dict) and "params" in case:  # collect.py task shape {"id", "params"} (collect.py:1696-1702)
-            params = case["params"]
-            if isinstance(params, dict):
-                run_func(**params, perf_filename=perf_path, device=args.device, **extra)
-            else:
-                run_func(*params, perf_filename=perf_path, device=args.device, **extra)
-        elif isinstance(case, dict):  # keyword-shaped cases bind by name
-            run_func(
-                **{k: v for k, v in case.items() if k != "id"}, perf_filename=perf_path, device=args.device, **extra
-            )
-        else:
-            run_func(*case, perf_filename=perf_path, device=args.device, **extra)
+        _run_case(run_func, case, perf_path, args.device, extra)
     print(f"[op_smoke] OK: {len(picked)} case(s) ran; rows appended to {perf_path}")
     return 0
 

@@ -1,14 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 import sys
+from pathlib import Path
 
 sys.argv = ["x"]
-from collector.vllm.collect_computescale import run_computescale
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # components/: op_smoke.run_planned
+from op_smoke import run_planned
 
-run_computescale(
-    4096,
-    7168,
-    perf_filename="/tmp/computescale_perf.txt",
-    extra_perf_filenames=("/tmp/scale_matrix_perf.txt",),
-    device="cuda:0",
-)  # registry extra_perf_filenames (signature changed with the two-table producer)
+run_planned("vllm", "compute_scale", m=4096, k=7168)

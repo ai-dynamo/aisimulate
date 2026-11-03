@@ -20,9 +20,12 @@ Rules learned the hard way (the evidence is in `benchmarks/evidence/collector/op
 - Capture ONE cell at the serving record's isl / kv dtype / prefix. A whole
   sweep unions length-conditional paths (sglang DSA: dense FA3 below the
   dense threshold, indexer + sparse above) and never matches one record.
-  Name the cell as a planned case: `op_smoke.py --select field=value,...`, or
-  `planned_row()` for an in-process entry. The row is the one the collector
-  queues on this SM (per-SM dispatch included), and
+  Name the cell as a planned case: `run_planned(backend, op, **fields)` (the
+  registry's run function on the planned row, in this process),
+  `op_smoke.py --select field=value,...`, or `planned_row()` when the
+  registered worker spawns a subprocess and the capture calls its in-process
+  entry. The row is the one the collector queues on this SM (per-SM dispatch
+  included), and
   `tests/unit/collector/opharness/test_capture_cells_are_planned.py` checks
   every such cell is planned.
 - Capture precision must match serving (fp8_block vs bfloat16 GEMM changes

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A capture that names its cell through the op plan (op_smoke.planned_row or
-op_smoke --select) must name exactly one planned case on the SMs it is graded
+"""A capture that names its cell through the op plan (op_smoke.planned_row,
+run_planned or --select) must name exactly one planned case on the SMs it is graded
 on: a capture of a cell the collector never collects grades nothing (the GLM-5
 DSA module capture used to time 128 heads on GLM-5, a cell no plan holds)."""
 
@@ -20,10 +20,10 @@ GRADED_SMS = (90, 100)
 
 
 def _selections(path: Path) -> list[tuple[str, str, dict]]:
-    """(backend, op, select) of every planned_row call and op_smoke --select argv in a capture."""
+    """(backend, op, select) of every planned_row / run_planned call and op_smoke --select argv in a capture."""
     found = []
     for node in ast.walk(ast.parse(path.read_text())):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planned_row":
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) in ("planned_row", "run_planned"):
             backend, op = (ast.literal_eval(arg) for arg in node.args[:2])
             found.append((backend, op, {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords}))
         if (
@@ -42,7 +42,7 @@ PLANNED_CAPTURES = sorted((path.name, selection) for path in CAPTURES.glob("*.py
 
 
 def test_the_plan_derived_captures_are_found():
-    assert len(PLANNED_CAPTURES) >= 19
+    assert len(PLANNED_CAPTURES) >= 44
 
 
 @pytest.mark.parametrize("sm", GRADED_SMS)

@@ -1,17 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 import sys
+from pathlib import Path
 
 sys.argv = ["x"]
-from collector.vllm.collect_dsv4_attn import run_dsv4_sparse_kernel_worker
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # components/: op_smoke.run_planned
+from op_smoke import run_planned
 
-run_dsv4_sparse_kernel_worker(
-    1,
-    4096,
-    0,
-    1,
-    "paged_mqa_logits",
-    "sgl-project/DeepSeek-V4-Flash-FP8",
-    perf_filename="/tmp/dsv4_paged_mqa_logits_perf.txt",
-    device="cuda:0",
+run_planned(
+    "vllm",
+    "dsv4_paged_mqa_logits_module",
+    batch_size=1,
+    seq_len=4096,
+    prefix_len=0,
+    tp_size=1,
+    kernel="paged_mqa_logits",
+    model_path="sgl-project/DeepSeek-V4-Flash-FP8",
 )

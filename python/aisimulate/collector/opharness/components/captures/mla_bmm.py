@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 import sys
+from pathlib import Path
 
 sys.argv = ["x"]
-from collector.vllm.collect_mla_bmm import run_mla_gen_post, run_mla_gen_pre
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # components/: op_smoke.run_planned
+from op_smoke import run_planned
 
-run_mla_gen_pre(1, 128, "bfloat16", 2, 10, perf_filename="/tmp/mla_bmm_perf.txt", device="cuda:0")
-run_mla_gen_post(1, 128, "bfloat16", 2, 10, perf_filename="/tmp/mla_bmm_perf.txt", device="cuda:0")
+run_planned("vllm", "mla_bmm_gen_pre", num_tokens=1, num_heads=128, dtype="bfloat16", num_warmups=2, num_runs=10)
+run_planned("vllm", "mla_bmm_gen_post", num_tokens=1, num_heads=128, dtype="bfloat16", num_warmups=2, num_runs=10)
