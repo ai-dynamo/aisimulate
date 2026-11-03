@@ -2130,3 +2130,34 @@ multiplier. A warm-allocator controlled experiment remains a separate option.
 - **Conclusion:** pending execution. Extend to unchanged 4/10/13 only if
   development evidence warrants validation. No GPU reservation, calibration,
   HF promotion or dashboard replacement follows from this CPU experiment.
+
+**E041 conclusion — no qualified win.** All three native replays finish, CPU
+service/output accounting passes and derived trace hashes exactly equal E039.
+After normalizing trace location, `host_loop=true` is the sole model/config
+change. The admission-only/host-loop negative guard still rejects before creating
+outputs. The initial comparison command incorrectly supplies lossful E039 as a
+fully retained baseline; the auditor correctly rejects it. Retain that setup
+failure and use the full E003 baseline for frozen-cohort qualification, with a
+separate common-eligible E039 comparison.
+
+| Lanes | TTFT MAPE / retained | TPOT MAPE / retained | Lost per metric |
+|---:|---:|---:|---:|
+| 1 | 24.9810% /324 | 18.8804% /324 | 0 |
+| 8 | 31.3850% /1410 | 51.2310% /1408 | 5 |
+| 14 | 89.1632% /2427 | 87.3021% /2426 | 3 |
+
+Pooled retained TTFT is **64.5868% /4161** and TPOT **69.7560% /4158**,
+losing **eight** frozen observations per metric. On identical common eligible
+requests, E039→E041 TTFT improves **71.8711→64.5868%**, while TPOT worsens
+**66.3800→69.7560%**. Relative to frozen research baseline, TPOT also worsens
+68.2526→69.7560%. One additional C14 frozen observation is lost, none is recovered;
+two C8 matches outside the frozen cohort remain separate. Do not extend this
+candidate to 4/10/13 or report it as an accuracy win. The interaction matters,
+but correct overlap semantics plus the fixed CPU stage do not resolve historical
+request gaps. GPU cost is zero; both targets remain unmet.
+
+Independent native/identity/unit audit SHA256
+`3f590ad324cd9c28e92f9f58c7afcd06fd6dd0460b37e7d9f62286e771f61f8a`;
+frozen-cohort audit `68d81663fa00875679f5ee024b9e448e556ac653e26fc279643738fac61dba1d`;
+common-eligible E039 comparison
+`7eebafaaedf99e340486014364cabf9affb05b9a767d189cf73db732c0d028ae`.
