@@ -92,7 +92,7 @@ is correct and coalescing can compress the observed interval. Historical
 coalescing remains unproven without server-ready/receipt observations; no baseline
 correction is accepted. Keep the original last-content response boundary.
 
-**Experiment E005, historical retry running.** Compare uninstrumented MTP, instrumented MTP and
+**Experiment E005, readiness repair qualified for retry.** Compare uninstrumented MTP, instrumented MTP and
 instrumented plain decode with fresh servers. Synthetic controls use 8192/131072
 input tokens, 16/128 output tokens, lanes 1/8/14, repeats and explicit cache-flush
 requests. Also exercise the OpenAI chat frontend with reasoning/tool parsers.
@@ -109,6 +109,16 @@ copies (`expert_data.copy_`); the shard reader had finished. This establishes th
 startup location, not a deadlock cause. No request was attempted. A native stack
 sample failed to unwind and is retained as unavailable. Prepare the original
 SGLang 0.5.20 image by immutable digest on CPU before another GPU attempt.
+
+The historical attempt 1003379 passes weight loading and graph capture, then
+fails its initial zero-timeout cache reset before any diagnostic request. Server
+logs show pending warmup/pipeline work even though queue/running gauges are zero.
+Its information endpoint was an insufficient readiness gate. Both pinned images
+implement `/ready`, `/health_generate` and `/flush_cache?timeout=60`; the repaired
+collector waits for readiness and a completed health generation, then permits a
+bounded drain at each reset. A regression test keeps server-info available while
+readiness fails and confirms no probe starts early. No scientific timing result
+or measurement correction is claimed from either failed attempt.
 
 Require actual counts, clocks, rank identity,
 completion, output-length conservation and coverage before comparison. Server
@@ -329,23 +339,30 @@ split: 2 node-hours baseline/timing, 2 controlled experiments, 1 op/forward,
   reserves GPUs. Runtime identity and hook compatibility must pass before use.
 - CPU 1003117 qualifies the exact historical SGLang 0.5.20 image in 748 seconds.
   Squashfs SHA256: `7365b3e0ef2a45e2924540add0720f415b3e7c5c18b3fe02e779ea47105da079`.
-- GPU **1003379**, source `389b183f7981d1be2cf50d864a22370a62ebb697`, runs the
+- GPU **1003379**, source `389b183f7981d1be2cf50d864a22370a62ebb697`, attempts the
   historical timing controls with a 90-minute cap. The short queue was full;
   changing this pending job to the authorized normal queue keeps its resource
   limits. An initial launch on pool0-0203 fails before the batch script with
   `user_env_retrieval_failed_requeued_held`; charge six seconds through batch
   cleanup (48 GPU-seconds), retain that scheduler receipt, and release this held
-  job once. Its next attempt runs on pool0-0095. Total completed charge is now
-  **10704 GPU-seconds**; remaining **219696**, or **176496** after reserving this
-  active attempt's full 43200 GPU-seconds. Reconcile terminal time before reuse.
+  job once. Its next attempt on pool0-0095 fails the initial cache reset after
+  843 allocated seconds, with zero diagnostic requests. Charge 849 seconds across
+  both attempts × eight GPUs = 6792 GPU-seconds. Total campaign charge is now
+  **17448 GPU-seconds / 4.8467 GPU-hours / 0.6058 TP8 node-hours**; remaining
+  **212952 GPU-seconds / 59.1533 GPU-hours / 7.3942 TP8 node-hours**.
 
 The historical retry also restores the recorded multithread/prefetch loading and
 keep-alive settings. This is a qualification repair, not an isolated experiment
 attributing a change to the framework version. The GPU runner accepts only the
 two named runtime choices and requires the historical image's CPU receipt and
 checksum before allocation. The failed 0.5.21 run remains separate evidence.
-Future timing allocations are capped at 90 minutes, with an 85-minute collector
+The historical first attempt is capped at 90 minutes, with an 85-minute collector
 deadline and five minutes reserved for container startup/cleanup.
+The readiness-repaired retry reduces these limits to 75/70 minutes. Persist
+compiler caches per pinned image under campaign storage; the failed historical
+attempt's cache is retained there with a relative symlink preserving its old path.
+Do not share these caches across framework images. Fifteen focused audit,
+readiness, counter and client-projection tests pass before this retry.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of

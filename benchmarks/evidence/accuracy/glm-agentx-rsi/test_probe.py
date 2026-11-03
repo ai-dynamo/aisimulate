@@ -27,7 +27,7 @@ def test_native_stream_preserves_counts_and_drops_text(monkeypatch):
 
 def test_chat_projection_retains_usage_and_reasoning_boundary_without_content(monkeypatch):
     def response(url, body):
-        if url.endswith("flush_cache"):
+        if "/flush_cache?timeout=60" in url:
             return io.BytesIO(b"true")
         payload = {"choices": [{"delta": {"reasoning_content": "private reasoning"}}]}
         usage = {"choices": [], "usage": {"prompt_tokens": 8192, "completion_tokens": body["max_tokens"]}}
@@ -46,7 +46,7 @@ def test_chat_projection_retains_usage_and_reasoning_boundary_without_content(mo
 
 def test_failed_chat_case_retains_every_concurrent_attempt(monkeypatch):
     def response(url, body):
-        if url.endswith("flush_cache"):
+        if "/flush_cache?timeout=60" in url:
             return io.BytesIO(b"true")
         if "-l14-" in body["rid"]:
             raise urllib.error.URLError("private failure body")

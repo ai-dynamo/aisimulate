@@ -104,6 +104,7 @@ def control(root, model, deadline, instrumented, speculation):
         SGLANG_TIMEOUT_KEEP_ALIVE="900",
         PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
     )
+    cache_root = Path(os.environ.get("RSI_CACHE_ROOT", root / "cache"))
     for variable, directory in {
         "HF_HOME": "hf",
         "HF_HUB_CACHE": "hf/hub",
@@ -118,7 +119,7 @@ def control(root, model, deadline, instrumented, speculation):
         "CUDA_CACHE_PATH": "cuda",
         "FLASHINFER_WORKSPACE_BASE": "flashinfer",
     }.items():
-        path = root / "cache" / directory
+        path = cache_root / directory
         path.mkdir(parents=True, exist_ok=True)
         environment[variable] = str(path)
     if instrumented:
@@ -148,6 +149,10 @@ def control(root, model, deadline, instrumented, speculation):
                 if process.poll() is not None or time.monotonic() >= ready_deadline:
                     raise RuntimeError("Server startup failed or exceeded reserved time")
                 try:
+                    with urllib.request.urlopen(url + "/ready", timeout=3) as response:
+                        response.read()
+                    with urllib.request.urlopen(url + "/health_generate", timeout=60) as response:
+                        response.read()
                     with urllib.request.urlopen(url + "/get_server_info", timeout=3) as response:
                         info = json.loads(response.read())
                     save(output / "resolved-server.json", info)
@@ -199,6 +204,7 @@ def main():
         args.output / "runtime.json",
         {
             "sglang": importlib.metadata.version("sglang"),
+            "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),
             "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
             "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
             "source_files": {

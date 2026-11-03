@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The runtime probe preserves token-count transitions without retaining content."""
 
+import io
 import json
+import urllib.error
 from types import SimpleNamespace
 
 import collect
@@ -12,7 +14,28 @@ import rsi_timing
 from instrument import inject
 
 
+def test_client_waits_for_ready_and_generation_before_reading_server_info(tmp_path, monkeypatch):
+    events = []
+
+    def response(url, **kwargs):
+        events.append(url.rsplit("/", 1)[-1])
+        if events == ["ready"]:
+            raise urllib.error.URLError("server starting despite available server info")
+        return io.BytesIO(b"{}")
+
+    process = SimpleNamespace(pid=123456789, poll=lambda: None, wait=lambda **_: 0)
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *_, **__: process)
+    monkeypatch.setattr(collect.urllib.request, "urlopen", response)
+    monkeypatch.setattr(collect.time, "sleep", lambda _: None)
+    monkeypatch.setattr(collect.os, "killpg", lambda *_: None)
+    monkeypatch.setattr(collect, "sample", lambda *_: None)
+    monkeypatch.setattr(collect.subprocess, "run", lambda *_, **__: events.append("probe"))
+    collect.control(tmp_path, tmp_path / "model", float("inf"), False, True)
+    assert events == ["ready", "ready", "health_generate", "get_server_info", "probe"]
+
+
 def test_launch_keeps_compilation_and_model_caches_inside_campaign(tmp_path, monkeypatch):
+    monkeypatch.delenv("RSI_CACHE_ROOT", raising=False)
     captured = {}
 
     def failed_process(*args, **kwargs):

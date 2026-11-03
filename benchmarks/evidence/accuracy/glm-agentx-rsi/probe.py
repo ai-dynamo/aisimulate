@@ -23,6 +23,12 @@ def call(url, value=None):
     return urllib.request.urlopen(request, timeout=600)
 
 
+def flush_cache(url):
+    # The default zero timeout can reject a just-finished overlap batch or warmup.
+    with call(url + "/flush_cache?timeout=60", {}) as response:
+        response.read()
+
+
 def retain_case(rows, records):
     failed = False
     for row in rows:
@@ -94,8 +100,7 @@ def overlap_control(url, seed, records):
     prefix = (seed * (361344 // len(seed) + 1))[:361344]
     victim = ([seed[-1]] + seed * (640 // len(seed) + 1))[:640]
     for overlap in (False, True):
-        with call(url + "/flush_cache", {}) as response:
-            response.read()
+        flush_cache(url)
         warm = request(url, f"rsi-overlap-{overlap}-warm", prefix[:287424], 1, threading.Barrier(1))
         warm["role"] = "preparation"
         records.write(json.dumps(warm) + "\n")
@@ -120,8 +125,7 @@ def chat_controls(url, seed, tokenizer, records):
     """Check the original OpenAI frontend and reasoning parser without saving text."""
     for repeat in range(2):
         for context, length, lanes in ((8192, 16, 1), (8192, 16, 14), (131072, 128, 1)):
-            with call(url + "/flush_cache", {}) as response:
-                response.read()
+            flush_cache(url)
             prompt = (seed * (context // len(seed) + 1))[:context]
             text = tokenizer.decode(prompt)
             barrier = threading.Barrier(lanes)
@@ -199,8 +203,7 @@ def main():
             for context in (8192, 131072):
                 for length in (16, 128):
                     for lanes in (1, 8, 14):
-                        with call(args.url + "/flush_cache", {}) as response:
-                            response.read()
+                        flush_cache(args.url)
                         barrier = threading.Barrier(lanes)
                         with concurrent.futures.ThreadPoolExecutor(max_workers=lanes) as pool:
                             futures = []
