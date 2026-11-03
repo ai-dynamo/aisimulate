@@ -714,12 +714,12 @@ unsupported outcomes; a release never borrows main's AgentX results.
 The five columns are point TPOT error, point TTFT error, point output-throughput
 error, request TTFT MAPE, and request TPOT MAPE. Throughput is **output tokens/s**.
 
-The information icon before **Point TPOT error** explains both point latency
-metrics on hover, keyboard focus, or tap. TTFT is the run's mean time to first
-token in milliseconds. TPOT is the mean per-request time per output token after
-the first token, in milliseconds per token. Each side averages its successful
-profile requests with valid metrics independently; matching is required for
-request MAPE. The same definitions appear in Metrics and provenance.
+The information icon before **Point TPOT error** contrasts per-point and request
+averaging on hover, keyboard focus, or tap. Per-point compares the aggregate result
+across the benchmark's conversation requests; request MAPE averages individual
+matched-request errors. Tool-call waits contribute to workload duration and
+throughput. Current point TTFT/TPOT average successful request timings rather
+than conversation elapsed time. Metrics and provenance retain the calculation details.
 
 - Point error is `100 * abs(prediction - silicon) / silicon`, computed separately
   for every run's mean metric. Model/concurrency rows average those errors equally,

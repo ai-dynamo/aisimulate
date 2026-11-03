@@ -322,10 +322,12 @@ async def check():
                 await expect(table.locator("thead th").nth(2)).to_have_text("Point TPOT error")
                 await info.hover()
                 await expect(tooltip).to_be_visible()
-                await expect(tooltip).to_contain_text("Point = one run")
-                await expect(tooltip).to_contain_text("mean time to first token")
-                await expect(tooltip).to_contain_text("mean per-request time per output token after the first")
-                await expect(tooltip).to_contain_text("equally across runs")
+                await expect(tooltip).to_contain_text(
+                    "aggregate result across the benchmark\u2019s conversation requests"
+                )
+                await expect(tooltip).to_contain_text("compare requests individually, then average their errors")
+                await expect(tooltip).to_contain_text("Tool-call waits contribute to workload duration and throughput")
+                await expect(tooltip).to_contain_text("current TTFT/TPOT averages use request timings")
                 await tooltip.hover()
                 await expect(tooltip).to_be_visible()
                 await page.mouse.move(5, 5)
