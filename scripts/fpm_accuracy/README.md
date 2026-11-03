@@ -166,7 +166,7 @@ The nine B/B+C training shares use deterministic, target-blind splits. Every
 cell owns fresh predictor state and retains all test observations in its
 coverage denominator; MAPE averages successful predictions only.
 
-Protocol v14 retains v13's first observation at or after each five-second event-time
+Protocol v13 admits the first observation at or after each five-second event-time
 tick, after prediction and scoring. The first tick is five seconds after the
 first test timestamp. Cold start uses the same admission schedule. Missing
 chronology is reported explicitly; file order is never converted to a clock.
@@ -178,35 +178,6 @@ Original-A source hashes bind fallback eligibility; B and C cannot acquire an
 A prior. Standalone A+C enables the native quality checker with its defaults.
 Frozen hybrid A+C never bootstraps a missing mixed forest. GBDT and selector
 append a native mixed checkpoint only after 20 causally admitted observations.
-If the fallback prior reports missing performance data, a validated observation
-still contributes to that missing forest's bootstrap; the prior error remains
-reported. Invalid measurements never enter bootstrap, and seed observations are
-not replayed as feedback after the forest is appended.
-
-Version 14 aligns self-benchmark seed targets with the native interpolation
-loader's `fake_fallback` correction. Raw Parquet files remain immutable; seed
-provenance records which targets were normalized from real-KV anchors. GBDT,
-hybrid, selector, linear, and spline share this effective-target policy. Its
-extrapolated targets are not new GPU measurements. Historical v13 results keep
-their raw training targets and should not be mixed into a fresh v14 campaign.
-
-Version 14 also removes profile serialization-order bias from spline A/A+C
-initialization. Qualified seed groups are sorted by configuration identity
-and per-rank workload features, then shuffled with Python `Random(0)` separately
-for each worker. Replicated workers receive the same source-coordinate order.
-Latency labels, source row/counter IDs, and artifact hashes are excluded from the
-key; duplicate feature keys within a worker are rejected as ambiguous profile
-inputs. The policy and seed are recorded in `protocol_metadata`.
-This changes only spline offline self-benchmark initialization: native sampler
-settings, linear and GBDT seed order, B/B+C trace order, and C feedback arrival
-order remain unchanged.
-
-Reconstructed schema-6 sidecars may be completed in a temporary staging copy
-only when their pinned hashes, row counts, explicit balanced-coordinate and
-single-sample contracts, and uniform deployment identity verify the missing
-declarations. Conflicting or ambiguous metadata still fails. Diagnostics retain
-the original and staged sidecar hashes and recovered fields; completion does not
-claim to recover unknown producer revisions or qualify a new serving capture.
 
 Pure C has no original-A model: initial forests are prepared separately per
 worker and native workload store from admitted feedback. Existing store state

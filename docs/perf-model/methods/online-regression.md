@@ -99,13 +99,6 @@ count, knot searches, last search count, numerical rebuilds, and batch fallbacks
 the linear-only diagnostic shape is unchanged. Configuration serialization
 records controls, not trained state.
 
-When enough samples are retained but the companion linear fit is unavailable,
-the per-store `readiness_report` reason is `no_usable_fit`. This includes a finite
-nonnegative least-squares optimum whose slopes are all zero, even if a spline
-segment has a positive slope. Such a constrained boundary optimum does not imply
-a numerical solver failure. The component's `spline.ready` flag alone does not
-establish serving readiness or prediction accuracy.
-
 ## What one store learns
 
 By default, an observation contains two finite, nonnegative raw features and
@@ -509,13 +502,6 @@ order, so identical inputs retain and fit identical samples in every process.
 Each retained observation has weight one; an evicted observation has weight
 zero. This is spatially balanced retention, not a FIFO window or exponential
 forgetting.
-
-Retention depends on observation order within each cell. An ordered offline
-profile sweep can lose intermediate feature values as later rows displace
-earlier rows in the same cell. The grid balances cell populations but does not
-guarantee coverage within a cell, or across a spline's retained bounding box.
-Increasing capacity changes that tradeoff without removing the additive
-spline's inability to represent arbitrary interactions between its two axes.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
 eviction. With two fixed features:
