@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+from audit_coding import bounds as coding_bounds
+from audit_coding import validate_counts
 from audit_matrix import errors, interval
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 
@@ -57,3 +59,15 @@ def test_submission_zero_based_origin_restores_client_transport_delay():
     assert submission_origin == client_origin + 10_000_000
     assert client_ttft_ms({"first_token_ms": 90.0}, reference, submission_origin) == 97.0
     assert client_ttft_ms({"first_token_ms": 100.0}, reference, client_origin) == 97.0
+
+
+def test_independent_coding_audit_preserves_tail_counts_and_units():
+    value = {"schema": "aisimulate.glm-rsi.output-ready.v2", "generated_output_tokens": 18,
+             "output_tokens": 16, "discarded_tail_tokens": 2, "finished_len": 16}
+    validate_counts(value)
+    with pytest.raises(ValueError, match="conservation"):
+        validate_counts({**value, "discarded_tail_tokens": 0})
+    assert coding_bounds([
+        {"at_ns": "1000000000", "output_tokens": 3},
+        {"at_ns": "1030000000", "output_tokens": 16},
+    ]) == (1000000000, 1030000000, 2.0)

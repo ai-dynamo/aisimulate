@@ -1184,7 +1184,23 @@ Reserve 16320 GPU-seconds including cleanup, leaving 117514 unreserved. The
 client must additionally check the live resolved reporting flag before the first
 warmup; otherwise it rejects collection rather than inferring cache state.
 
-**Conclusion:** pending bounded GPU collection and independent audit.
+GPU retry 1013407 completes all 34 planned requests in 1108 allocated seconds,
+exit 0, charging 8864 GPU-seconds. Total E037 GPU cost is 11696 GPU-seconds including
+its first failed attempt. Campaign charge is 105430 GPU-seconds / 29.286111
+GPU-hours; remaining 124970 GPU-seconds / 34.713889 GPU-hours. Release the GPU
+reservation. Controlled workloads use 6219.75/7200 TP8-equivalent node-seconds.
+Startup stack probes run inside the same allocation and are not charged again;
+their retained timestamps precede the first profile request by approximately 38
+seconds. No startup deadlock is established: later stacks show request reception.
+
+The main audit retains 34/34 observations and qualifies 18/18 native victims.
+An independent auditor checks original IDs, preparation separation, source and
+runtime identity, actual coding hashes, both API submission clocks, v2
+accepted-generated/emitted/discarded counts, CPU enclosure and the actor's
+submission after victim generation. It does not import the timing analyzer.
+Generated counts are accepted output IDs, not physically processed draft tokens.
+
+**Conclusion:** pending independent audit.
  No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
@@ -1381,6 +1397,7 @@ python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_J
 python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --output NEW_FRONTEND_AUDIT_JSON
 python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
 python analyze_timing.py --suite coding-blocking --root PRIVATE_CODING_CONTROLS --output NEW_CODING_AUDIT_JSON
+python audit_coding.py --root PRIVATE_CODING_CONTROLS --preflight CODING_CPU_RECEIPT --output NEW_INDEPENDENT_CODING_AUDIT_JSON
 python prepare_weka_frontend.py --trace FROZEN_WEKA_TRACE --profile ORIGINAL_PROFILE_JSON --model-revision FULL_MODEL_SHA --output NEW_PRIVATE_PAYLOAD_DIR
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 python predict_matrix.py --controls PRIVATE_GPU_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_NATIVE_MATRIX
