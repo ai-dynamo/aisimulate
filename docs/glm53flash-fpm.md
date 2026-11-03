@@ -193,7 +193,7 @@ largest `page_size_bytes`).
 The smoke measures two points of this list for each phase that the plan
 collects. An aggregated request collects both phases, so its smoke measures
 four points. A prefill or decode role collects one phase, so its smoke measures
-the two points of that phase. The list needs no point of the other phase. The
+the two points of that phase. The smoke takes no point of the other phase. The
 smoke runs under the plan hash of formal collection and keeps its own campaign
 directory. The prefill points are one request with 64 new tokens, once without
 a prefix and once after one hash block of prefix. The decode points are one
