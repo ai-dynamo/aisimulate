@@ -662,6 +662,17 @@ as well as the selected filter.
 
 ## AgentX beta
 
+The [Qwen Weka collection protocol](../../benchmarks/evidence/accuracy/qwen-weka/README.md)
+defines the replacement six-profile campaign. It remains unpublished until all
+six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
+Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
+silicon records in HF. Evidence displays that saved record separately from
+AISim replay settings; historical missing evidence remains unknown. Public
+projection rejects unrecognized feature fields and private values.
+`?campaign=finite-v1` selects the retained finite archive. After Weka activation,
+legacy Qwen URLs containing length/cache/repeat selectors route there, including
+the old 16-lane point. Weka profiles have no finite-workload selectors.
+
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
 to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
@@ -675,6 +686,12 @@ Initial coverage is explicitly selected in the reviewed private HF catalog
   prompts × cold/warm cache × 1/4/16 lanes × three repeats (36 runs).
   The public dataset link is intentionally **coming soon**. TODO: add its public
   HF URL after migration; never expose the private cache URL in the dashboard.
+
+GLM uses the recorded AgentX corpus, its live-trajectory warmup/snapshot, and a
+one-hour profiling run per point. It has no 4K/32K, cold/warm, or repeat sweep.
+Each Qwen run is a finite cohort of eight measured requests per lane: 8, 32, or
+128 requests at 1, 4, or 16 lanes. Its detail selectors choose one of 12 runs per
+concurrency; the concurrency summary still covers all 12.
 
 One table contains both sources, tagged beneath each model name. Model rows are
 expanded by default and remain collapsible. Concurrency rows open details; Qwen has exactly three such
@@ -723,9 +740,51 @@ The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
 agreement. Detail JSON loads on demand. The shared native renderer mounts directly
 inside the site header and theme, without an iframe. Dashboard, Request timeline,
-Accuracy, and Evidence tabs preserve their state in the URL. Accuracy separates
-all-variant concurrency summaries from the selected run; Qwen selectors stay
-visible. System/Light/Dark preferences are shared with the overview.
+and Evidence tabs preserve their state in the URL. One Concurrency summary table
+appears above the Dashboard charts, covering all variants and repeats. The charts
+follow the selected run. Preparation remains unscored. The Request accounting section
+is omitted; request records remain available through timeline inspection. Older
+Accuracy-tab links open the Dashboard. Qwen selectors stay visible.
+A left-arrow link returns to the AgentX overview on the selected branch.
+System/Light/Dark preferences are shared with the overview.
+Manual theme choices on FPM and feature-support pages also set this shared override.
+AgentX availability is independent of InfX; InfX snapshot labels do not appear on
+the AgentX branch selector.
+Model summary rows use the overview's full-width tinted background and brighter
+text. Concurrency subrows use the page surface, with the same hover/focus accent.
+Source labels use compact, padded blue pills sized to their text, like the NEW badge.
+Comparison plots and request timelines use solid blue for silicon and solid yellow
+for AISim. Only Cumulative prompt token sources uses dotted lines, for cache misses;
+cache hits use solid lines. Failed timeline requests keep a red outline.
+Plots and expanded charts show compact MAPE badges without the comparison coverage
+and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
+AgentX omits the Speculative acceptance length and Prefix cache hit rate per interval
+subplots. Both remain available in ordinary standalone replay exports.
+The comparison timeline fits the full phase into the panel, with a compact
+600-pixel minimum width on small screens. Each 22-pixel row shows the conversation
+hash and request ID on one line, with silicon and AISim intervals on separate
+lines. Full identifiers and pairing status remain in the row tooltip and request
+inspection; untimed and unmatched requests retain their rows.
+The compact concurrency summary has one row per metric and columns for Silicon,
+AISim, error, and samples. All five metrics include both source values. Point rows
+average the metric's scored runs equally; request rows pool the individual pairs
+with a valid APE for that metric, using the same denominator as request MAPE.
+Errors still average individual errors, not the error between displayed means.
+The detail page loads and checks the qualified payloads for its concurrency once,
+then reuses them for workload selection. No other concurrency's details are fetched.
+On mobile, sample counts move below the error to keep the table within the screen.
+The separate selected-run accuracy table is omitted; changing the selected
+workload does not change the concurrency summary.
+A benchmark feature checklist sits beside the concurrency summary on desktop and
+below it on smaller screens. It follows the selected run, using its saved
+`aisimulate.benchmark.features.v1` silicon record. Enabled, Off, N/A, and Not recorded
+remain distinct. Enabled does not imply exercised; observed counts appear only
+when recorded. Missing historical records stay Not recorded, with
+no inference from model names, replay settings, or the support matrix. Core AgentX
+features appear first; additional recorded features expand under More features.
+The checklist links to the AgentX support matrix and exposes no raw evidence.
+The beta support-matrix notice appears only on the AgentX overview. Self-collected
+evidence is labeled “AISim self-collected dataset: coming soon.”
 
 Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
 qualified numerical series, scores, phase-aligned requests and opaque joins.
@@ -747,6 +806,21 @@ remain inspectable by their row labels without inventing an interval.
 GLM server counters distinguish processed tokens from client output. Qwen's
 recorded stream timestamps and counts enable client-delivered output comparisons;
 cache snapshots do not establish continuous scheduler or cache observations.
+Charts without usable silicon observations explicitly label the prediction-only
+view. Input/output histograms describe AISim requests; their In-flight mode
+compares recorded silicon and AISim observations. The conversation footprint
+proxy also uses the retained silicon reference.
+The footprint comparison uses two stacked panels: Silicon/AISim above and their
+signed difference (AISim minus Silicon) below, in thousands of tokens. Long
+profiles default to 60-second averages of aligned one-second observations over
+the common recorded window. Zeros are included, bins missing any paired
+observation remain gaps, and a final shorter bin uses its available whole-second
+ticks. Raw mode retains the original observations, including each source's tail;
+differences require a paired timestamp within common coverage. Profiles shorter
+than a minute use Raw mode automatically. The toggle is available on the card
+and expanded chart; both panels share zoom. Curve MAPE continues using the
+original qualified one-second observations regardless of display mode or zoom.
+Ordinary replay exports without silicon comparisons retain their existing chart.
 
 The reviewed input configuration's `prediction_database_version` selects SGLang
 0.5.21 and vLLM 0.31.0 for this cohort, independently of measured framework
@@ -759,7 +833,7 @@ HF revisions are never public links.
 Validation:
 
 ```bash
-python -m pytest -c /dev/null tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
+python -m pytest -c /dev/null -p no:cacheprovider -W error tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
 python scripts/pages/check_agentx_browser.py
 ```
 
@@ -768,11 +842,15 @@ private dataset candidate, plus op-data dependencies #664, #665, and #666 landin
 Failed/unsupported outcomes remain in complete campaign
 accounting; accuracy is advisory. Source intake lives in `aisim-hf-dataset-ci`.
 
-The initial CPU preview completed all 42 replays using wheel source commit
-`49584d9e38032e68e16f6c110464f6f0d7046d3f` and private candidate revision
-`2cf1dacf9187462f6921d70ccf3d23dcad03f22c`. All 2,016 Qwen measured requests
-matched. GLM retained 8,747 measured requests: 8,545 matched, 37 measured failures,
-and 165 missing predictions. The two complete imports produced the same catalog
-checksum `4a0191e32522856e0580e4e3a624bcf7689fa604cce3f264a3cd08bbe6fc5121`.
-This validates pipeline accounting, not numerical accuracy. Daily CI must generate
-new predictions; the preview is not a production snapshot.
+The refreshed CPU preview completed all 42 replays using integration commit
+`1c753e4668310705b6451ba1ebf3061b3d5b30de` (dashboard plus pinned #664/#665/#666)
+and private candidate revision `da115d648f0be20a1c4e0408d552a4a1e8bebf9d`.
+Wheel SHA256: `dff8896a4c374c4e21597076cbf356e8611a0f021ba57ba85313e4ec6fa0530c`.
+All 2,016 Qwen measured requests matched. GLM retained 8,747 measured requests:
+8,624 matched, 37 measured failures, and 86 missing predictions; 295 extra
+predictions remain counted separately. An independent raw-record audit reproduced
+the five metrics, 828 curve scores, 21,907 native timestamp checks, and 2,142 Qwen
+cache checks. Two complete imports produced identical catalog checksum
+`02b2b26ff3dbaa1d83ee868903cce64c81dad655f6276d831b9337b8d14c96ec`.
+This validates provenance and arithmetic; accuracy remains advisory. Daily CI must
+generate new predictions. This preview is not a production snapshot.

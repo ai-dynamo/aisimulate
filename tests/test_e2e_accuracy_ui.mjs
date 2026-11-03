@@ -1106,15 +1106,89 @@ test(`HF campaigns show pinned provenance and source-resolved settings (${policy
 test("AgentX pools requests directly and averages run errors equally", () => {
   const context = vm.createContext({window: {addEventListener() {}}});
   vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
-  const run = (point, sum, count) => ({
+  const run = (point, sum, count, silicon, prediction) => ({
     point_errors: {ttft_ms:point,tpot_ms:point,output_tokens_s:point},
+    silicon: {ttft_ms:silicon,tpot_ms:silicon,output_tokens_s:silicon},
+    prediction: {ttft_ms:prediction,tpot_ms:prediction,output_tokens_s:prediction},
     request_errors: {ttft_ms:{sum_ape:sum,count},tpot_ms:{sum_ape:sum,count}},
     coverage:{measured:count,matched:count},
   });
-  context.input = [run(100,100,1),run(0,0,3),run(null,0,0)];
+  context.input = [run(100,100,1,100,200),run(0,0,3,900,900),run(null,0,0,5000,null)];
   const result = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
   assert.equal(result.point_errors.ttft_ms,50);
   assert.equal(result.point_counts.ttft_ms,2);
+  for (const metric of ["ttft_ms", "tpot_ms", "output_tokens_s"]) {
+    assert.equal(result.silicon[metric],500);
+    assert.equal(result.prediction[metric],550);
+  }
   assert.equal(result.request_errors.ttft_ms.mape,25);
   assert.equal(result.request_errors.ttft_ms.count,4);
+  assert.equal(result.request_errors.ttft_ms.silicon,null);
+  const pair = (silicon, prediction, error) => ({
+    silicon_ttft_ms:silicon, predicted_ttft_ms:prediction, ttft_ms_ape:error,
+    silicon_tpot_ms:silicon, predicted_tpot_ms:prediction, tpot_ms_ape:error,
+  });
+  context.input[0].pairs=[pair(100,200,100)];
+  context.input[1].pairs=[pair(900,900,0),pair(900,900,0),pair(900,900,0)];
+  context.input[2].pairs=[pair(0,42,null)];
+  const pooled = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(pooled.request_errors.ttft_ms.silicon,700);
+  assert.equal(pooled.request_errors.ttft_ms.prediction,725);
+  assert.equal(pooled.request_errors.ttft_ms.mape,25);
+  context.input[1].pairs[0].tpot_ms_ape=null;
+  context.input[1].request_errors.tpot_ms.count=2;
+  const perMetric = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(perMetric.request_errors.tpot_ms.count,3);
+  assert.equal(perMetric.request_errors.tpot_ms.silicon,1900/3);
+  assert.equal(perMetric.request_errors.tpot_ms.prediction,2000/3);
+  assert.equal(perMetric.request_errors.ttft_ms.silicon,700);
+  context.input[1].request_errors.tpot_ms.count=3;
+  assert.throws(()=>vm.runInContext("window.AgentX.aggregate(input)",context),/do not reconcile/);
+  context.input = [run(null,0,0,0,null)];
+  context.input[0].pairs=[pair(0,42,null)];
+  const unavailable = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(unavailable.silicon.ttft_ms,null);
+  assert.equal(unavailable.prediction.ttft_ms,null);
+  assert.equal(unavailable.point_errors.ttft_ms,null);
+  assert.equal(unavailable.request_errors.ttft_ms.silicon,null);
+  assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
+});
+
+test("AgentX checklist uses the selected silicon record without inferring feature use", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
+  const missing = checklist(point);
+  assert.equal((missing.match(/class="agentx-feature unknown"/g)||[]).length,11);
+  assert.match(missing,/Feature settings were not recorded/);
+  const feature = (id,state,observed={state:"unknown",count:null}) => ({id,state,observed,parameters:[]});
+  point.feature_metadata = {
+    schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
+    features:[
+      feature("cache.g1_prefix","enabled"),
+      feature("speculation","disabled"),
+      feature("cache.g2","not_applicable"),
+      feature("agentx.weka","enabled",{state:"not_observed",count:0}),
+      feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
+      {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
+      feature("unrecognized","enabled"),
+    ],
+  };
+  const saved = checklist(point);
+  assert.match(saved,/class="agentx-feature on" data-feature="cache.g1_prefix"/);
+  assert.match(saved,/class="agentx-feature off" data-feature="speculation"/);
+  assert.match(saved,/class="agentx-feature na" data-feature="cache.g2"/);
+  assert.match(saved,/Not observed · 0/);
+  assert.match(saved,/Observed · 7/);
+  assert.match(saved,/More features \(2\)/);
+  assert.match(saved,/size: &lt;unsafe&gt;/);
+  assert.doesNotMatch(saved,/<unsafe>|unrecognized/);
+  assert.match(saved,/Enabled does not imply exercised/);
+  assert.equal((saved.match(/class="agentx-feature unknown"/g)||[]).length,8);
+  point.feature_metadata.benchmark_id="another-run";
+  assert.equal(checklist(point),missing);
+  point.feature_metadata.benchmark_id="example";
+  point.feature_metadata.schema="future-schema";
+  assert.equal(checklist(point),missing);
 });

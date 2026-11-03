@@ -44,7 +44,11 @@ def fetch(revision, output):
     for name, entry in paths.items():
         # Only replay inputs are needed in daily CI; full raw evidence stays in HF.
         if not any(
-            entry in [run["artifacts"].get(k) for k in ("trace", "config", "observations", "overrides", "comparison")]
+            entry
+            in [
+                run["artifacts"].get(k)
+                for k in ("trace", "config", "observations", "overrides", "comparison", "feature_metadata")
+            ]
             for run in catalog["runs"]
         ):
             continue
@@ -98,14 +102,14 @@ def prepare_trace(root, run, output):
     return target
 
 
-def normalize_native(native, observations, category):
+def normalize_native(native, observations, category, boundary="complete_finite_cohort"):
     phases = {row["key"]: row["phase"] for row in observations}
     rows = native.get("telemetry", {}).get("requests", native.get("per_request", []))
     result = []
     for row in rows:
         key = row.get("request_id") or row.get("agentic", {}).get("request_id")
         phase = row.get("phase", row.get("agentic_phase", "profile"))
-        if category == "self_collected":
+        if category == "self_collected" and boundary == "complete_finite_cohort":
             phase = phases.get(key, "profile")
         result.append(
             {
@@ -124,7 +128,7 @@ def normalize_native(native, observations, category):
     return result
 
 
-def public_report(payload, observations, category):
+def public_report(payload, observations, category, boundary="complete_finite_cohort"):
     """Explicit projections, including nested telemetry; never publish raw JSON."""
 
     def opaque(value):
@@ -152,7 +156,11 @@ def public_report(payload, observations, category):
     for raw in payload["requests"]:
         row = {key: raw[key] for key in request_fields if key in raw}
         row.update(uuid=opaque(raw.get("uuid")), request_id=opaque(raw.get("request_id")))
-        if category == "self_collected" and phases.get(raw.get("request_id")) == "preparation":
+        if (
+            category == "self_collected"
+            and boundary == "complete_finite_cohort"
+            and phases.get(raw.get("request_id")) == "preparation"
+        ):
             row["phase"] = "warmup"
         agentic = raw.get("agentic", {})
         row["agentic"] = {
@@ -224,7 +232,7 @@ def public_report(payload, observations, category):
         }
         for key, phase in payload["phases"].items()
     }
-    if category == "self_collected":
+    if category == "self_collected" and boundary == "complete_finite_cohort":
         profile = [r for r in requests if r["phase"] == "profile"]
         preparation = [r for r in requests if r["phase"] != "profile"]
         cutoff = min(r["arrival_time_ms"] for r in profile) if profile else 0
@@ -297,13 +305,13 @@ def run_one(root, run, directory, timeout):
             outcome = {"outcome": "failed", "reason": "replay_timeout"}
     normalized, report = [], None
     if outcome["outcome"] == "completed":
-        normalized = normalize_native(read(directory / "native.json"), observations, run["category"])
-        report = public_report(read(directory / "dashboard.json"), observations, run["category"])
+        normalized = normalize_native(read(directory / "native.json"), observations, run["category"], run["boundary"])
+        report = public_report(read(directory / "dashboard.json"), observations, run["category"], run["boundary"])
         if report["telemetry"]["completion_status"] != "completed":
             outcome = {**outcome, "outcome": "failed", "reason": "replay_incomplete"}
     scores = score(observations, normalized, run["boundary"])
     cache_alignment = None
-    if run["category"] == "self_collected" and normalized:
+    if run["boundary"] == "complete_finite_cohort" and normalized:
         actual = {r["key"]: r for r in observations}
         cache_alignment = len(normalized) == len(actual) and all(
             r["key"] in actual and r["cached_tokens"] == actual[r["key"]]["cached_tokens"] for r in normalized
@@ -350,6 +358,8 @@ def run_one(root, run, directory, timeout):
         "report": report,
         "op_data": outcome.get("op_data", []),
     }
+    if "feature_metadata" in run["artifacts"]:
+        result["feature_metadata"] = read(artifact(root, run, "feature_metadata"))
     validate_result(result)
     (directory / "result.json").write_bytes(canonical(result))
     trace.unlink()  # Large derived corpora are reproducible from frozen inputs.

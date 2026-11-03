@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from scripts.e2e_accuracy.agentx_comparison import validate as validate_comparison
+from scripts.e2e_accuracy.benchmark_features import validate as validate_features
 
 INPUT_SCHEMA = "aisimulate.agentx.inputs.v1"
 SUMMARY_SCHEMA = "aisimulate.agentx.accuracy.v1"
@@ -46,6 +47,8 @@ def driver_digest(read_file=None):
     # Validate historical producers with their original four-file closure.
     if b'"agentx_comparison.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("agentx_comparison.py", "agentx_curves.py")
+    if b'"benchmark_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
+        names += ("benchmark_features.py",)
     return hashlib.sha256(
         canonical({name: hashlib.sha256(read_file("scripts/e2e_accuracy/" + name)).hexdigest() for name in names})
     ).hexdigest()
@@ -117,6 +120,12 @@ def validate_catalog(catalog):
                 raise ValueError("Artifact name differs from its checksum")
         if not {"trace", "config", "observations"} <= run["artifacts"].keys():
             raise ValueError("Incomplete AgentX replay inputs")
+        if (
+            run["category"] == "self_collected"
+            and run["boundary"] == "successful_profile_span"
+            and "feature_metadata" not in run["artifacts"]
+        ):
+            raise ValueError("New Weka collections require silicon feature metadata")
     return catalog
 
 
@@ -136,8 +145,7 @@ def cohort(rows, *, complete=False, expected=None):
 def score(observations, native, boundary):
     """Keep all measured observations; source identity never implies equal prompts."""
     references = [row for row in observations if row["phase"] == "profile"]
-    if len({r["key"] for r in references}) != len(references):
-        raise ValueError("Duplicate measured request identities")
+    measured_keys = Counter(r["key"] for r in references)
     predictions = [row for row in native if row["phase"] == "profile"]
     by_key = defaultdict(list)
     for row in predictions:
@@ -149,6 +157,10 @@ def score(observations, native, boundary):
         predicted = candidates[0] if len(candidates) == 1 else None
         if actual["status"] != "completed":
             reason = "measurement_failed"
+        elif actual.get("identity_valid") is False:
+            reason = "missing_measurement_identity"
+        elif measured_keys[actual["key"]] > 1:
+            reason = "ambiguous_measurement"
         elif len(candidates) > 1:
             reason = "ambiguous_prediction"
         elif predicted is None:
@@ -250,6 +262,8 @@ def validate_public(value):
         "matched",
         "measurement_failed",
         "ambiguous_prediction",
+        "ambiguous_measurement",
+        "missing_measurement_identity",
         "missing_prediction",
         "prediction_failed",
         "output_length_mismatch",
@@ -368,9 +382,13 @@ def validate_public(value):
         "op_data",
         "file",
         "sha256",
+        "feature_metadata",
     }
 
     def walk(item, key=None):
+        if key == "feature_metadata":
+            validate_features(item)
+            return
         if key == "comparison":
             validate_comparison(item)
             return
@@ -407,6 +425,8 @@ PAIR_STATUSES = {
     "matched",
     "measurement_failed",
     "ambiguous_prediction",
+    "ambiguous_measurement",
+    "missing_measurement_identity",
     "missing_prediction",
     "prediction_failed",
     "output_length_mismatch",
@@ -565,8 +585,16 @@ def validate_result(run):
         "pairs",
         "report",
     }
-    if set(run) - {"op_data"} != expected or run["outcome"] not in {"completed", "failed", "unsupported"}:
+    if set(run) - {"op_data", "feature_metadata"} != expected or run["outcome"] not in {
+        "completed",
+        "failed",
+        "unsupported",
+    }:
         raise ValueError("Invalid AgentX result fields")
+    if "feature_metadata" in run:
+        validate_features(run["feature_metadata"], run["id"])
+    elif run["id"].startswith("qwen-weka-l"):
+        raise ValueError("New Qwen Weka publications require silicon feature metadata")
     for item in run.get("op_data", []):
         if (
             set(item) != {"file", "sha256"}

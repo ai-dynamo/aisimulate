@@ -14,6 +14,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           cache: "aggregate",
           queue: "queue",
           throughput: "executed",
+          footprint: "average",
         },
         percentiles: { interactivity: 90, latency: 90 },
       };
@@ -22,10 +23,9 @@ window.AISimReplay = { mount(root, report, options = {}) {
       if (options.accuracy !== undefined) {
         $("stage-profile").textContent = "Profile";
         $("stage-preparation").textContent = "Preparation";
-        for (const [view, label] of [["accuracy", "Accuracy"], ["evidence", "Evidence"]]) {
-          root.querySelector(".main-tabs").insertAdjacentHTML("beforeend", `<button role="tab" id="tab-${view}" aria-controls="view-${view}" data-view="${view}" aria-selected="false">${label}</button>`);
-          root.querySelector("main").insertAdjacentHTML("beforeend", `<section id="view-${view}" role="tabpanel" aria-labelledby="tab-${view}" hidden>${options[view] || ""}</section>`);
-        }
+        $("view-dashboard").insertAdjacentHTML("afterbegin", `<section id="profile-accuracy" aria-label="Profile accuracy">${options.accuracy}</section>`);
+        root.querySelector(".main-tabs").insertAdjacentHTML("beforeend", '<button role="tab" id="tab-evidence" aria-controls="view-evidence" data-view="evidence" aria-selected="false">Evidence</button>');
+        root.querySelector("main").insertAdjacentHTML("beforeend", `<section id="view-evidence" role="tabpanel" aria-labelledby="tab-evidence" hidden>${options.evidence || ""}</section>`);
       }
       const finite = (value) =>
         typeof value === "number" && Number.isFinite(value);
@@ -50,6 +50,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         getComputedStyle(root)
           .getPropertyValue("--" + key)
           .trim();
+      const sourceColor = (origin) => color(origin === "silicon" ? "silicon" : "aisim");
       const phase = () => report.phases?.[state.stage] || {};
       const origin = () =>
         finite(phase().start_ms) ? phase().start_ms / 1000 : 0;
@@ -234,10 +235,10 @@ window.AISimReplay = { mount(root, report, options = {}) {
         { id: "hits", title: "Prefix cache hit rate per interval" },
         { id: "throughput", title: "Token throughput", control: "throughput" },
         { id: "source", title: "Cumulative prompt token sources" },
-        { id: "footprint", title: "Conversation input footprint proxy" },
+        { id: "footprint", title: "Conversation input footprint proxy", control: "footprint" },
         { id: "acceptance", title: "Speculative acceptance length" },
         { id: "completion", title: "Request completion status" },
-      ];
+      ].filter(spec => options.accuracy === undefined || !["hits", "acceptance"].includes(spec.id));
       // Optional numerical references supplied by the qualified accuracy publisher.
       // Ordinary replay exports do not add comparison cards.
       if (report.reference?.pairs) specs.unshift(
@@ -249,14 +250,20 @@ window.AISimReplay = { mount(root, report, options = {}) {
           '<div class="segments">' +
           options
             .map(
-              ([value, label]) =>
-                `<button data-${kind}="${id}" data-value="${value}" aria-pressed="${String(selected) === String(value)}">${label}</button>`,
+              ([value, label, disabled = false]) =>
+                `<button data-${kind}="${id}" data-value="${value}" aria-pressed="${String(selected) === String(value)}"${disabled ? " disabled" : ""}>${label}</button>`,
             )
             .join("") +
           "</div>"
         );
       }
       function controls(spec) {
+        if (spec.control === "footprint") {
+          const chart = comparedPhase()?.charts.find(c => c.id === "unique");
+          if (!chart) return "";
+          const enabled = canAverageFootprint(chart);
+          return segments("footprint", [["average", "60s average", !enabled], ["raw", "Raw"]], enabled ? state.modes.footprint : "raw");
+        }
         if (report.comparison && spec.control === "throughput")
           return `<select data-select-mode="throughput" aria-label="Throughput accounting">${[["executed", "Input and output"], ["completion", "Output at completion"], ["delivered", "Live output"]].map(([value,label])=>`<option value="${value}" ${state.modes.throughput===value?"selected":""}>${label}</option>`).join("")}</select>`;
         if (spec.control === "shape")
@@ -531,6 +538,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         return [...options.values()];
       }
       function comparisonKey(id) {
+        if (id === "footprint") return "unique";
         if (id === "input" || id === "output") return state.modes[id] === "inflight" ? id + "_inflight" : null;
         if (id === "interactivity") return `interactivity_p${state.percentiles.interactivity}`;
         if (id === "latency") return `latency_${state.modes.latency}_p${state.percentiles.latency}`;
@@ -543,22 +551,93 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const chart = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         return chart?.scores || [{label:"Comparison",mape_percent:null,count:0,reason:state.stage !== "profile" ? "Preparation is unscored" : "No compatible silicon comparison for this view"}];
       }
+      function canAverageFootprint(chart) {
+        return finite(chart.score_window_end_s) && chart.score_window_end_s - chart.score_window_start_s >= 60 &&
+          ["silicon", "simulated"].every(origin => chart.series.some(s => s.origin === origin));
+      }
+      function footprintChart(chart) {
+        const sources = ["silicon", "simulated"].map(origin => chart.series.find(s => s.origin === origin));
+        const maps = sources.map(s => new Map(s ? s.x.map((t, i) => [t, s.y[i]]) : []));
+        const allTimes = [...new Set(sources.flatMap(s => s?.x || []))].sort((a, b) => a - b);
+        // An absent timestamp is a gap, not a line across unrecorded time.
+        const times = allTimes.flatMap((t, i) => i && t > allTimes[i - 1] + 1 ? [allTimes[i - 1] + 1, t] : [t]);
+        const averaged = canAverageFootprint(chart) && state.modes.footprint !== "raw";
+        const minutes = (allTimes.at(-1) || 0) >= 120, scale = minutes ? 60 : 1;
+        const start = chart.score_window_start_s, end = chart.score_window_end_s;
+        const x = [], values = [[], []], difference = [];
+        if (averaged) {
+          for (let left = Math.floor(start); left < Math.floor(end); left += 60) {
+            const right = Math.min(left + 60, Math.floor(end)), sums = [0, 0];
+            let complete = true;
+            for (let t = left + 1; t <= right; t++) {
+              const pair = maps.map(m => m.get(t));
+              if (!pair.every(finite)) { complete = false; break; }
+              pair.forEach((v, i) => sums[i] += v);
+            }
+            x.push((left + right) / 2 / scale);
+            values.forEach((v, i) => v.push(complete ? sums[i] / (right - left) / 1000 : null));
+            difference.push(complete ? values[1].at(-1) - values[0].at(-1) : null);
+          }
+        } else {
+          for (const t of times) {
+            const pair = maps.map(m => m.get(t));
+            x.push(t / scale);
+            values.forEach((v, i) => v.push(finite(pair[i]) ? pair[i] / 1000 : null));
+            difference.push(finite(end) && t >= start && t <= end && pair.every(finite) ? (pair[1] - pair[0]) / 1000 : null);
+          }
+        }
+        const unit = minutes ? "min" : "s";
+        const traces = sources.flatMap((s, i) => s ? [{
+          ...line(i === 0 ? "Silicon" : "AISim", x, values[i], sourceColor(s.origin)),
+          mode: values[i].filter(finite).length === 1 ? "lines+markers" : "lines",
+          line: {color: sourceColor(s.origin), width: 2.5, dash: "solid", shape: averaged ? "linear" : "hv"},
+          hovertemplate: `%{x:.2f} ${unit}<br>%{y:,.2f}k tokens<extra>${i === 0 ? "Silicon" : "AISim"}</extra>`,
+        }] : []);
+        traces.push({
+          ...line("AISim − Silicon", x, difference, color("muted")),
+          xaxis: "x2", yaxis: "y2", showlegend: false,
+          mode: difference.filter(finite).length === 1 ? "lines+markers" : "lines",
+          line: {color: color("muted"), width: 1.7, dash: "solid", shape: averaged ? "linear" : "hv"},
+          fill: "tozeroy", fillcolor: "rgba(148,163,184,0.15)",
+          hovertemplate: `%{x:.2f} ${unit}<br>AISim − Silicon: %{y:+,.2f}k tokens<extra></extra>`,
+        });
+        const base = layout();
+        return {
+          traces,
+          axes: layout("", {
+            margin: {l: 70, r: 15, t: 34, b: 42},
+            legend: {orientation: "h", x: 1, xanchor: "right", y: 1.15, font: {size: 11}},
+            xaxis: {...base.xaxis, title: {text: ""}, showticklabels: false, matches: "x2", anchor: "y"},
+            xaxis2: {...base.xaxis, title: {text: `${minutes ? "Minutes" : "Seconds"} since phase start`}, ticksuffix: "", anchor: "y2", range: [0, Math.max(1, allTimes.at(-1) || 1) / scale]},
+            yaxis: {...base.yaxis, title: {text: "Footprint (k tokens)"}, domain: [0.42, 1]},
+            yaxis2: {...base.yaxis, title: {text: "AISim − Silicon<br>(k tokens)"}, domain: [0, 0.26], zeroline: true, zerolinecolor: color("muted"), zerolinewidth: 1},
+            annotations: difference.some(finite) ? [] : [{xref: "paper", yref: "paper", x: 0.5, y: 0.13, text: "No common recorded observations", showarrow: false}],
+          }),
+          note: averaged ? "60-second averages · common recorded coverage" : "Raw observations" + (canAverageFootprint(chart) ? "" : " · 60s averaging requires at least one minute of common coverage"),
+          foot: "Positive differences mean AISim is higher; negative differences mean it is lower. " +
+            (averaged ? "Averages include zeros; incomplete bins remain gaps, and the final bin may be shorter. " : "Missing observations remain gaps. ") +
+            "Curve MAPE uses the original 1-second observations, independent of display mode and zoom. Request-lifetime proxy; terminal-only captures may omit unfinished work.",
+          empty: values.some(v => v.some(finite)) ? null : "No footprint observations in this phase.",
+        };
+      }
       function scoreMarkup(id) {
         if (!report.comparison && !options.accuracy) return "";
         const metric = id === "latency" ? (state.modes.latency === "ttft_ms" ? "ttft_ms" : "e2e_ms") : id === "interactivity" ? "tpot_ms" : id === "reference_ttft" ? "ttft_ms" : id === "reference_tpot" ? "tpot_ms" : null;
         const request = comparedPhase()?.request_scores[metric];
-        return scoresFor(id).map(s=>`<span class="score-badge" title="${esc(s.reason || "Full selected profile; zoom does not change the score")}">${esc(s.label)} · Curve MAPE ${fmt(s.mape_percent)}${finite(s.mape_percent)?"%":""} · n=${fmt(s.count,0)}</span>`).join("") + (request ? `<span class="score-badge">${metric === "tpot_ms" ? "TPOT" : metric === "ttft_ms" ? "TTFT" : "E2E"} · Request MAPE ${fmt(request.mape)}${finite(request.mape)?"%":""} · n=${fmt(request.count,0)}</span>` : "") + `<details class="comparison-details"><summary>Comparison coverage and exclusions</summary><ul>${scoresFor(id).map(s=>`<li>${esc(s.label)}: ${esc(s.reason || "Covered positive silicon observations")}; scored ${fmt(s.count,0)} / ${fmt(s.denominator_count,0)} ticks; zero reference ${fmt(s.zero_reference_count,0)}; missing ${fmt(s.missing_count,0)}.</li>`).join("")}</ul><p>Curve MAPE uses aligned observations across the common profile. Request MAPE uses uniquely matched successful requests with equal output lengths. Zoom does not change either cohort.</p></details>`;
+        return scoresFor(id).map(s=>`<span class="score-badge" title="${esc(s.reason || "Full selected profile; zoom does not change the score")}">${id === "footprint" && comparedPhase() ? "Original 1s" : esc(s.label)} · Curve MAPE ${fmt(s.mape_percent)}${finite(s.mape_percent)?"%":""} · n=${fmt(s.count,0)}</span>`).join("") + (request ? `<span class="score-badge">${metric === "tpot_ms" ? "TPOT" : metric === "ttft_ms" ? "TTFT" : "E2E"} · Request MAPE ${fmt(request.mape)}${finite(request.mape)?"%":""} · n=${fmt(request.count,0)}</span>` : "");
       }
       function comparisonChart(id) {
         const c = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         if (!c) return null;
+        if (id === "footprint") return footprintChart(c);
+        const hasSilicon = c.series.some(s=>s.origin === "silicon" && s.y.some(finite));
         const traces = c.series.map(s=>({name:`${s.label} · ${s.origin === "silicon" ? "Silicon" : "AISim"}`, x:s.x,y:s.y,
           type:s.kind === "bar" ? "bar" : "scatter",mode:"lines",connectgaps:false,
-          line:{color:color(s.color),dash:s.origin === "silicon"?"solid":"dot",shape:s.step?"hv":"linear"},
-          marker:{color:color(s.color),opacity:s.origin === "silicon"?1:0.5},
+          line:{color:sourceColor(s.origin),dash:id === "source" && s.metric === "miss" ? "dot" : "solid",shape:s.step?"hv":"linear"},
+          marker:{color:sourceColor(s.origin)},
           hovertemplate:`%{x}<br>%{y:,.3f} ${esc(c.unit)}<extra>%{fullData.name}</extra>`}));
-        return {traces,axes:layout(c.unit,{barmode:"group"}),note:c.note,
-          foot:c.foot + " Silicon: solid. AISim: dotted. Phase origins are recorded independently; no clock fitting.",
+        return {traces,axes:layout(c.unit,{barmode:"group"}),note:(hasSilicon ? "" : "Silicon reference unavailable for this metric in the selected phase. ") + c.note,
+          foot:c.foot + (hasSilicon ? " Silicon: blue. AISim: yellow." : " AISim prediction only.") + (id === "source" ? " Cache hits: solid. Cache misses: dotted." : "") + " Phase origins are recorded independently; no clock fitting.",
           empty:traces.some(t=>t.y.some(finite))?null:"No comparable observations in this phase."};
       }
       function chart(id) {
@@ -584,7 +663,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           const maximum = values.reduce((a, b) => Math.max(a, b), 0);
           const width = (maximum || 1) / 32;
           if (state.stage !== "profile" || !pairs.length) empty = "No scored silicon comparisons in this phase.";
-          traces = [["silicon", "Silicon", orange], ["predicted", "AISim", blue]].map(([key, name, color]) => {
+          traces = [["silicon", "Silicon", sourceColor("silicon")], ["predicted", "AISim", sourceColor("simulated")]].map(([key, name, color]) => {
             const counts = Array(32).fill(0);
             pairs.forEach(p => counts[Math.min(31, Math.floor(p[key + "_" + metric] / width))]++);
             return {type: "bar", name, x: counts.map((_, i) => (i + 0.5) * width), y: counts,
@@ -592,7 +671,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           });
           axes = layout("Requests", {xaxis: {title: metric === "ttft_ms" ? "TTFT (ms)" : "TPOT (ms/token)"}, barmode: "group"});
           note = "Successful, uniquely matched requests with equal recorded output lengths";
-          foot = `${pairs.length} scored pairs; ${options.accuracy ? "full request accounting is in the Accuracy tab" : "only valid equal-output-length pairs are shown"}.`;
+          foot = `${pairs.length} scored pairs; only valid equal-output-length pairs are shown.`;
         } else if (id === "input" || id === "output") {
           const key = id === "input" ? "input_length" : "output_length",
             values = r.map((row) => row[key]).filter(finite);
@@ -649,7 +728,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
                   [0, Math.max(...bins) * 1.03],
                   shade,
                   {
-                    line: { color: shade, width: 1, dash: "dot" },
+                    line: { color: shade, width: 1, dash: "solid" },
                     hoverinfo: "skip",
                   },
                 ),
@@ -922,7 +1001,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
                 {
                   stackgroup: "source",
                   fillcolor: shade,
-                  line: { width: 0, color: shade },
+                  line: { width: 2, color: shade, dash: key === "miss" ? "dot" : "solid" },
                 },
               ),
             );
@@ -1003,6 +1082,8 @@ window.AISimReplay = { mount(root, report, options = {}) {
           foot =
             "Includes zero-output and failed terminal records. Unfinished requests without terminal records are not counted.";
         }
+        if (report.comparison && (id === "input" || id === "output") && state.modes[id] === "distribution")
+          note += " AISim-only descriptive histogram; select In-flight for silicon versus AISim.";
         if (!empty && !traces.some((trace) => trace.y?.some(finite)))
           empty =
             "N/A · no observations for this metric in the selected phase.";
@@ -1023,6 +1104,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
       async function draw(id, target) {
         const result = chart(id),
           node = $(target);
+        node.classList.toggle("footprint-comparison", id === "footprint" && !!comparedPhase()?.charts.some(c => c.id === "unique"));
         if (result.empty) {
           Plotly.purge(node);
           node.classList.add("empty");
@@ -1043,6 +1125,19 @@ window.AISimReplay = { mount(root, report, options = {}) {
         $("controls-" + id).innerHTML = controls(
           specs.find((spec) => spec.id === id),
         );
+      }
+      async function renderExpanded(id) {
+        $("expanded-title").textContent = title(id);
+        if (!$("expanded-controls")) $("expanded-scores").insertAdjacentHTML("beforebegin", '<div id="expanded-controls" class="chart-controls"></div>');
+        $("expanded-controls").innerHTML = controls(specs.find(spec => spec.id === id));
+        const result = await draw(id, "expanded-plot");
+        $("expanded-scores").innerHTML = scoreMarkup(id);
+        $("expanded-note").textContent = result.note;
+        $("expanded-foot").textContent = result.foot;
+      }
+      async function refreshChart(id) {
+        await renderCard(id);
+        if ($("chart-dialog").open && $("chart-dialog").dataset.chart === id) await renderExpanded(id);
       }
       async function renderGrid() {
         if (!$("chart-grid").children.length)
@@ -1083,6 +1178,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           : null;
       }
       function renderTimeline() {
+        root.querySelector("#view-timeline .timeline-panel > .hint").textContent = `${comparedPhase() ? "Full phase shown" : "Scroll horizontally through time"} · click an interval or row label for details`;
         if (comparedPhase()) return renderComparedTimeline();
         const end = timelineWindow(),
           all = rows(),
@@ -1178,7 +1274,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const workerControl = root.querySelector('[data-group="worker"]');
         workerControl.disabled = true;
         workerControl.title = "Silicon worker placement is unavailable";
-        root.querySelector(".legend").innerHTML = "<span>Silicon: solid</span><span>AISim: dashed</span><span>Failed: red</span>";
+        root.querySelector("#view-timeline .legend").innerHTML = '<span><i class="dot" style="background:var(--silicon)"></i>Silicon</span><span><i class="dot" style="background:var(--aisim)"></i>AISim</span><span>Failed · red outline</span>';
         const byId = new Map(all.map(r=>[r.uuid,r])), used = new Set(), pairs = [];
         for (const row of [...all.filter(r=>r.origin==="silicon"),...all.filter(r=>r.origin!=="silicon")]) {
           if (used.has(row.uuid)) continue;
@@ -1186,11 +1282,22 @@ window.AISimReplay = { mount(root, report, options = {}) {
           pair.forEach(r=>used.add(r.uuid));
           if (!state.search || pair.some(r=>[r.request_id,r.uuid,r.group_id,r.origin,r.terminal_status].join(" ").toLowerCase().includes(state.search))) pairs.push(pair);
         }
-        const end = Math.max(data.native_duration_s,data.silicon_duration_s,1), scale=end>120?8:24, width=Math.max(900,end*scale);
-        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Solid: silicon; dashed: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
-        const group = state.group === "conversation" ? "conversation" : "worker";
+        const end = Math.max(data.native_duration_s,data.silicon_duration_s,1);
+        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Blue: silicon; yellow: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
         $("timeline-plot").dataset.requestCount = String(all.length);
-        $("timeline-plot").innerHTML = `<div class="timeline-content" style="width:${width+230}px"><div class="timeline-axis"><div class="timeline-label">Seconds since each ${state.stage} started</div><div class="timeline-track">${Array.from({length:Math.floor(end/(end>120?30:5))+1},(_,i)=>{const t=i*(end>120?30:5);return `<span class="timeline-tick" style="left:${t*scale}px">${fmt(t,0)}s</span>`;}).join("")}</div></div>${pairs.map((pair,i)=>`<div class="timeline-row comparison-row"><div class="timeline-label"><small>${group === "conversation" ? "Conversation …"+esc(pair[0].group_id?.slice(-8)||"unknown") : "Worker unavailable in silicon"}</small><button data-request="${pair[0].uuid}">Request ${i+1} · ${pair.length===2?"paired":"unmatched"}</button></div><div class="timeline-track">${pair.map(r=>{if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";const start=r.arrival_time_ms/1000-origin(),stop=r.terminal_time_ms/1000-origin();if(stop<start)return "";return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${Math.max(0,start)*scale}px;width:${Math.max(2,(stop-Math.max(0,start))*scale)}px;top:${r.origin==="silicon"?4:23}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${i+1}"></button>`;}).join("")}</div></div>`).join("")}</div>`;
+        const axis = Array.from({length:7},(_,i)=>`<span class="timeline-tick" style="left:${i/6*100}%;transform:translateX(${i===0?0:i===6?-100:-50}%)">${fmt(end*i/6,end<60?1:0)}s</span>`).join("");
+        const content = pairs.map(pair=>{
+          const row = pair[0], requestId = row.request_id || row.uuid;
+          const label = `Conversation ${row.group_id || "unknown"} · Request ${requestId} · ${pair.length===2?"paired":"unmatched"}`;
+          const intervals = pair.map(r=>{
+            if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";
+            const start=Math.max(0,r.arrival_time_ms/1000-origin()),stop=Math.min(end,r.terminal_time_ms/1000-origin());
+            if(stop<start)return "";
+            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" style="left:${start/end*100}%;width:max(2px,${(stop-start)/end*100}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
+          }).join("");
+          return `<div class="timeline-row comparison-row"><div class="timeline-label"><button data-request="${row.uuid}" title="${esc(label)}" aria-label="${esc(label)}"><span class="conversation-id">${row.group_id?"…"+esc(row.group_id.slice(-8)):"Unknown"}</span> · ${esc(requestId)}</button></div><div class="timeline-track">${intervals}</div></div>`;
+        }).join("");
+        $("timeline-plot").innerHTML = `<div class="timeline-content comparison-timeline"><div class="timeline-axis" title="Seconds since each ${state.stage} started"><div class="timeline-label">Conversation · Request</div><div class="timeline-track">${axis}</div></div>${content}</div>`;
       }
       const metric = (label, value) =>
         `<div class="stat"><small>${esc(label)}</small><strong>${esc(value ?? "N/A")}</strong></div>`;
@@ -1334,11 +1441,13 @@ window.AISimReplay = { mount(root, report, options = {}) {
               String(button.dataset.group === state.group),
             ),
           );
-        ["dashboard", "timeline", "accuracy", "evidence"].forEach(view => {if ($("view-"+view)) $("view-"+view).hidden = view !== state.view;});
+        ["dashboard", "timeline", "evidence"].forEach(view => {if ($("view-"+view)) $("view-"+view).hidden = view !== state.view;});
+        if ($("profile-accuracy")) $("profile-accuracy").hidden = state.stage !== "profile";
         $("stagebar").hidden = !["dashboard","timeline"].includes(state.view);
         renderSummary();
         if (state.view === "dashboard") await renderGrid();
         if (state.view === "timeline") renderTimeline();
+        if ($("chart-dialog").open) await renderExpanded($("chart-dialog").dataset.chart);
         root.dataset.ready = "true";
         options.onState?.(state);
       }
@@ -1360,20 +1469,17 @@ window.AISimReplay = { mount(root, report, options = {}) {
           await render();
         } else if (button.dataset.mode) {
           state.modes[button.dataset.mode] = button.dataset.value;
-          await renderCard(button.dataset.mode);
+          await refreshChart(button.dataset.mode);
         } else if (button.dataset.percentile) {
           state.percentiles[button.dataset.percentile] = Number(
             button.dataset.value,
           );
-          await renderCard(button.dataset.percentile);
+          await refreshChart(button.dataset.percentile);
         } else if (button.dataset.expand) {
           const id = button.dataset.expand;
-          $("expanded-title").textContent = title(id);
+          $("chart-dialog").dataset.chart = id;
           $("chart-dialog").showModal();
-          const result = await draw(id, "expanded-plot");
-          $("expanded-scores").innerHTML = scoreMarkup(id);
-          $("expanded-note").textContent = result.note;
-          $("expanded-foot").textContent = result.foot;
+          await renderExpanded(id);
         } else if (button.dataset.request) showRequest(button.dataset.request);
         else if (button.dataset.row) showRow(button.dataset.row);
       });
@@ -1384,7 +1490,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
       root.addEventListener("change", async (event) => {
         if (event.target.dataset.selectMode) {
           state.modes[event.target.dataset.selectMode] = event.target.value;
-          await renderCard(event.target.dataset.selectMode);
+          await refreshChart(event.target.dataset.selectMode);
         }
       });
       root.addEventListener("keydown", event => {

@@ -19,11 +19,13 @@ from playwright.async_api import async_playwright, expect
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+from test_agentx_accuracy import bundle, result
+from test_benchmark_features import metadata as feature_fixture
+
 from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import canonical
 from scripts.pages.agentx_pages import write_assets
 from scripts.pages.prepare_e2e_accuracy_pages import artifact_key
-from test_agentx_accuracy import bundle, result
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -31,9 +33,9 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def fixtures(site):
+def fixtures(site, weka=False):
     destination = site / "e2e-accuracy"
-    shutil.copytree(ROOT / "pages/e2e-accuracy", destination)
+    shutil.copytree(ROOT / "pages/e2e-accuracy", destination, dirs_exist_ok=True)
     source = destination / "agentx"
     write_assets(ROOT, source)
     runs = []
@@ -56,12 +58,37 @@ def fixtures(site):
                             boundary="complete_finite_cohort",
                         )
                     )
+    if weka:
+        archive = source / "archive/finite-v1"
+        shutil.copytree(source / "branches", archive / "branches")
+        shutil.copyfile(source / "branches.json", archive / "branches.json")
+        runs = [run for run in runs if run["category"] == "agentx"]
+        for lanes in (1, 4, 8, 10, 13, 14):
+            feature = feature_fixture()
+            feature["benchmark_id"] = f"qwen-weka-l{lanes}"
+            runs.append(
+                result(
+                    id=feature["benchmark_id"],
+                    category="self_collected",
+                    model="Qwen/Qwen3.5-397B-A17B",
+                    backend="vllm",
+                    lanes=lanes,
+                    initial_input_tokens=None,
+                    cache_state="recorded",
+                    repeat=0,
+                    boundary="successful_profile_span",
+                    feature_metadata=feature,
+                )
+            )
     report = {
         "schema": "aisimulate.replay.dashboard.v1",
         "metadata": {"title": "Replay", "model": "Test model"},
         "prediction": {},
         "telemetry": {"completion_status": "completed", "profile_start_ms": 1000},
-        "phases": {"preparation": {"start_ms": 0, "end_ms": 1000}, "profile": {"start_ms": 1000, "end_ms": 3000}},
+        "phases": {
+            "preparation": {"start_ms": 0, "end_ms": 1000},
+            "profile": {"start_ms": 1000, "end_ms": 3_601_000},
+        },
         "requests": [
             {
                 "uuid": "0123456789abcdef",
@@ -124,6 +151,26 @@ def fixtures(site):
     report["comparison"] = build_comparison(
         {"reference": reference, "silicon": silicon, "namespace_map": {}}, report, report, runs[0]
     )
+    # Display fixture: zeros, one-sided and shared gaps, and a final five-second bucket.
+    footprint = next(c for c in report["comparison"]["phases"]["profile"]["charts"] if c["id"] == "unique")
+    footprint["score_window_end_s"] = 125.5
+    for series in footprint["series"]:
+        predicted = series["origin"] == "simulated"
+        series["x"] = [t for t in range(1, 126) if t != 100 and not (predicted and t == 65)]
+        levels = (1000, 5000, 9000) if predicted else (2000, 4000, 6000)
+        series["y"] = [
+            0 if t <= 30 else levels[0] if t <= 60 else levels[1] if t <= 120 else levels[2] for t in series["x"]
+        ]
+    footprint["scores"][0].update(
+        count=93,
+        denominator_count=125,
+        missing_count=2,
+        zero_reference_count=30,
+        mape_percent=3200 / 93,
+        mae=103000 / 123,
+        coverage=93 / 125,
+        window_seconds=[0, 125.5],
+    )
     summary = json.loads(bundle()["summary.json"])
     summary["runs"] = []
     for run in runs:
@@ -179,10 +226,14 @@ async def check():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 await page.goto(f"http://127.0.0.1:{server.server_port}/e2e-accuracy/?tab=agentx&branch=main")
                 await expect(page.locator("#agentx-view")).to_be_visible()
+                await expect(page.locator("#branch-select option:checked")).to_have_text("main")
                 await expect(page.locator(".agentx-table")).to_have_count(1)
                 await expect(page.locator("#tab-agentx .agentx-new")).to_have_text("NEW")
                 await expect(page.locator(".agentx-beta a")).to_have_attribute(
                     "href", "../feature-support-matrix/#agentx"
+                )
+                await expect(page.locator(".agentx-beta")).to_have_text(
+                    "Beta · check the AgentX feature support matrix ↗."
                 )
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
@@ -194,25 +245,112 @@ async def check():
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(6)
                 await page.keyboard.press("Enter")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
-                await expect(table).to_contain_text("Public dataset: coming soon")
+                await expect(table).to_contain_text("AISim self-collected dataset: coming soon")
                 assert "huggingface.co" not in await table.inner_html()
                 await table.locator("tr[data-agentx-parent]").nth(6).locator("a").first.click()
+                await expect(page.locator(".agentx-beta")).to_have_count(0)
                 await expect(page.locator("#length")).to_have_value("4096")
                 await expect(page.locator("#cache")).to_have_value("cold")
                 await expect(page.locator("#repeat")).to_have_value("0")
                 await expect(page.locator("#selected-run-label")).to_contain_text("4,096 tokens")
                 frame = page.locator(".replay-dashboard")
                 await expect(page.locator("iframe")).to_have_count(0)
+                await expect(frame.locator(".main-tabs [role=tab]")).to_have_text(
+                    ["Dashboard", "Request timeline", "Evidence"]
+                )
+                await expect(frame.locator("#profile-accuracy")).to_be_visible()
+                await expect(frame.locator(".agentx-summary-main h2")).to_have_text("Concurrency summary")
+                await expect(frame.locator("#profile-accuracy table")).to_have_count(1)
+                await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(
+                    ["Metric", "Silicon", "AISim", "Error", "Samples"]
+                )
+                await expect(frame.locator(".agentx-summary-table tbody tr")).to_have_count(5)
+                await expect(frame.locator("#profile-accuracy")).not_to_contain_text("Selected run accuracy")
+                for metric, silicon, prediction in [
+                    ("point-tpot_ms", "10", "15"),
+                    ("point-ttft_ms", "100", "120"),
+                    ("request-ttft_ms", "100", "120"),
+                    ("request-tpot_ms", "10", "15"),
+                ]:
+                    row = frame.locator(f'tr[data-metric="{metric}"]')
+                    await expect(row.locator("td").nth(0)).to_have_text(silicon)
+                    await expect(row.locator("td").nth(1)).to_have_text(prediction)
+                await expect(frame.locator('tr[data-metric="request-ttft_ms"] .agentx-samples')).to_have_text(
+                    "12 requests"
+                )
+                await expect(frame.locator(".comparison-source-dot.silicon")).to_have_count(1)
+                await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(1)
+                concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
+                await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
+                await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
+                await expect(frame.locator(".agentx-feature.unknown")).to_have_count(11)
+                await expect(frame.locator(".agentx-features a")).to_have_attribute(
+                    "href", "../../feature-support-matrix/#agentx"
+                )
+                await expect(frame).not_to_contain_text("Request accounting")
+                await expect(frame).not_to_contain_text("All measured request comparisons")
+                assert await frame.evaluate(
+                    "root => root.querySelector('#profile-accuracy').nextElementSibling.id === 'chart-grid'"
+                )
                 await expect(frame.locator("#plot-reference_ttft .plotly")).to_have_count(1)
                 await expect(frame.locator("#plot-reference_tpot .plotly")).to_have_count(1)
+                assert await frame.locator("#plot-footprint").evaluate(
+                    "plot => plot.data.some(trace => trace.name.includes('Silicon'))"
+                )
+                footprint = frame.locator("#plot-footprint")
+                assert await footprint.evaluate("plot => plot.data.map(t => t.y)") == [
+                    [1, None, 6],
+                    [0.5, None, 9],
+                    [-0.5, None, 3],
+                ]
+                footprint_score = await frame.locator("#scores-footprint").text_content()
+                await expect(frame.locator("#scores-footprint")).to_contain_text("Original 1s · Curve MAPE 34.41%")
+                await frame.locator('#controls-footprint [data-value="raw"]').click()
+                assert await footprint.evaluate("plot => plot.data[0].y[29]") == 0
+                assert await footprint.evaluate("plot => plot.data[1].y[64]") is None
+                assert await footprint.evaluate("plot => plot.data[2].y[64]") is None
+                assert await footprint.evaluate("plot => plot.data[0].y[99]") is None
+                assert await footprint.evaluate("plot => plot.data[2].y[99]") is None
+                await footprint.evaluate("plot => Plotly.relayout(plot, {'xaxis2.range': [0.5, 1]})")
+                assert await footprint.evaluate("plot => plot._fullLayout.xaxis.range") == [0.5, 1]
+                await expect(frame.locator("#scores-footprint")).to_have_text(footprint_score)
+                await frame.locator('[data-expand="footprint"]').click()
+                await expect(frame.locator('#expanded-controls [data-value="raw"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                await frame.locator('#expanded-controls [data-value="average"]').click()
+                await expect(frame.locator('#controls-footprint [data-value="average"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                assert await frame.locator("#expanded-plot").evaluate("plot => plot.data[2].y") == [-0.5, None, 3]
+                await expect(frame.locator("#expanded-scores")).to_have_text(footprint_score)
+                await frame.locator('[aria-label="Close expanded chart"]').click()
+                await expect(frame.locator("#note-cache")).to_contain_text("Silicon reference unavailable")
+                await expect(frame.locator("#note-input")).to_contain_text("select In-flight")
                 await expect(frame.locator("#scores-reference_ttft")).to_contain_text("Request MAPE 20%")
                 await frame.locator('[data-expand="reference_ttft"]').click()
                 await expect(frame.locator("#expanded-scores")).to_contain_text("Request MAPE 20%")
                 await frame.locator('[aria-label="Close expanded chart"]').click()
                 await frame.locator('[data-view="timeline"]').click()
                 await expect(page).to_have_url(re.compile("view=timeline"))
+                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("Full phase shown")
+                await expect(frame.locator("#view-timeline .legend")).to_have_text("SiliconAISimFailed · red outline")
+                await expect(frame.locator("#plot-reference_ttft .legend")).not_to_contain_text("Failed")
                 await expect(frame.locator('[data-origin="silicon"]')).to_have_count(1)
                 await expect(frame.locator('[data-origin="simulated"]')).to_have_count(1)
+                assert await frame.locator("#timeline-plot").evaluate(
+                    "node => node.scrollWidth <= node.clientWidth + 2"
+                )
+                row = frame.locator(".comparison-row").first
+                assert (await row.bounding_box())["height"] == 22
+                await expect(row.locator(".timeline-label button")).to_have_text(
+                    re.compile(r"^…[a-f0-9]{8} · [a-f0-9]{16}$")
+                )
+                await expect(row.locator(".timeline-label small")).to_have_count(0)
+                await row.locator(".timeline-label button").focus()
+                await page.keyboard.press("Enter")
+                await expect(frame.locator("#request-details")).to_be_visible()
+                await frame.locator('[aria-label="Close request details"]').click()
                 await frame.locator('[data-origin="silicon"]').click()
                 await expect(frame.locator("#request-details")).to_contain_text("20%")
                 await frame.locator('[aria-label="Close request details"]').click()
@@ -227,6 +365,7 @@ async def check():
                 await page.locator("#cache").select_option("warm")
                 await page.locator("#repeat").select_option("2")
                 await expect(page.locator("#selected-run-label")).to_contain_text("warm · repeat 2")
+                await expect(frame.locator(".agentx-summary-table")).to_have_text(concurrency_summary)
                 assert "length=32768" in page.url and "repeat=2" in page.url
                 await page.reload()
                 await expect(page.locator("#repeat")).to_have_value("2")
@@ -238,18 +377,33 @@ async def check():
                 await page.locator("#theme-mode").select_option("light")
                 await page.emulate_media(color_scheme="dark")
                 await expect(page.locator("html")).to_have_attribute("data-theme", "light")
-                await frame.locator('[data-view="accuracy"]').click()
-                await expect(frame.locator("#view-accuracy")).to_be_visible()
-                await expect(frame.locator("#view-dashboard")).to_be_hidden()
-                await expect(frame.locator("#view-accuracy")).to_contain_text("Concurrency summary")
+                await frame.locator('[data-view="dashboard"]').click()
+                await expect(frame.locator("#profile-accuracy")).to_be_hidden()
+                await expect(frame.locator('#controls-footprint [data-value="average"]')).to_be_disabled()
+                await expect(frame.locator('#controls-footprint [data-value="raw"]')).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                await frame.locator('[data-stage="profile"]').click()
+                await expect(frame.locator("#profile-accuracy")).to_be_visible()
+                await expect(frame.locator("#profile-accuracy")).to_contain_text("Concurrency summary")
                 await page.reload()
-                await expect(frame.locator("#view-accuracy")).to_be_visible()
-                await frame.locator('[data-view="accuracy"]').focus()
+                await expect(frame.locator("#profile-accuracy")).to_be_visible()
+                await page.goto(page.url.split("#")[0] + "#view=accuracy&stage=profile&variant=observed")
+                await expect(frame.locator("#profile-accuracy")).to_be_visible()
+                await expect(page).to_have_url(re.compile("view=point"))
+                await frame.locator('[data-view="dashboard"]').focus()
+                await page.keyboard.press("ArrowRight")
                 await page.keyboard.press("ArrowRight")
                 await expect(frame.locator("#view-evidence")).to_be_visible()
                 await expect(frame.locator("#view-evidence")).to_contain_text("Silicon dataset revision")
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                await frame.locator('[data-view="dashboard"]').click()
+                await expect(frame.locator(".agentx-summary-table .agentx-samples:visible")).to_have_count(0)
+                await expect(frame.locator(".agentx-inline-count:visible")).to_have_count(5)
+                assert await frame.locator("#profile-accuracy .table-scroll").evaluate(
+                    "node => node.scrollWidth <= node.clientWidth + 1"
+                )
                 await page.locator("#back").click()
                 await expect(page.locator("#agentx-view")).to_be_visible()
                 await page.locator("#branch-select").select_option("release/empty")
@@ -260,6 +414,28 @@ async def check():
                 await page.locator("#branch-select").select_option("main")
                 await expect(page.locator(".agentx-table")).to_have_count(1)
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                fixtures(site, weka=True)
+                await page.goto(f"http://127.0.0.1:{server.server_port}/e2e-accuracy/?tab=agentx&branch=main")
+                await expect(page.locator(".agentx-table tr[data-agentx-parent]")).to_have_count(12)
+                qwen = page.locator(".agentx-model").filter(has_text="Qwen/")
+                await expect(qwen.locator("button")).to_have_attribute("aria-expanded", "true")
+                await page.goto(
+                    f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=14"
+                )
+                await expect(page.locator("#selected-run-label")).to_contain_text("Weka profile")
+                await expect(page.locator("#variant-controls")).to_be_hidden()
+                await expect(page.locator("#length")).to_have_count(0)
+                await page.locator('[data-view="evidence"]').click()
+                await expect(page.locator("#view-evidence")).to_contain_text("HF dataset record")
+                await expect(page.locator("#view-evidence")).to_contain_text("Enabled does not imply exercised")
+                await page.goto(
+                    f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=16&length=32768&cache=warm&repeat=2"
+                )
+                await expect(page).to_have_url(re.compile("campaign=finite-v1"))
+                await expect(page.locator("#selected-run-label")).to_contain_text("warm · repeat 2")
+                await expect(page.locator("#repeat")).to_have_value("2")
+                await page.locator("#back").click()
+                await expect(page.locator("#agentx-content")).to_contain_text("Archived finite campaign")
                 assert not errors, errors
                 await browser.close()
         finally:

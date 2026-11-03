@@ -142,10 +142,7 @@ def fixture(native_duration=4, reference_duration=4):
                 "end_ns": str(EPOCH + reference_duration * 1_000_000_000),
                 "duration_s": reference_duration,
                 "series": {
-                    key: [
-                        {"start": t, "end": t + 1, "value": value, "coverage": 1}
-                        for t in range(reference_duration)
-                    ]
+                    key: [{"start": t, "end": t + 1, "value": value, "coverage": 1} for t in range(reference_duration)]
                     for key, value in values.items()
                 },
             }
@@ -200,23 +197,17 @@ def test_percentiles_step_on_arrival_and_inverse_tpot_is_not_tpot_mape():
         pytest.approx(1000 / 17.5),
     ]
     dataset, silicon = fixture()
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
     assert phase["matched"]["ttft_ms"]["mape_percent"] == 100
     assert phase["matched"]["interactivity"]["mape_percent"] == 50
     assert phase["charts"]["interactivity_p90"]["scores"][0]["mape_percent"] == 50
-    assert (
-        phase["matched"]["e2e_latency_ms"]["pairs"][0]["input_length_matches"] is False
-    )
+    assert phase["matched"]["e2e_latency_ms"]["pairs"][0]["input_length_matches"] is False
 
 
 def test_phase_alignment_uses_actual_epoch_not_first_request_and_preserves_ns():
     dataset, silicon = fixture()
     dataset["reference"][0]["start_ns"] = str(EPOCH + 1_234_567)
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
     row = phase["timeline"]["reference_requests"][0]
     assert row["arrival_phase_ms"] == 1.234567
     assert row["start_ns"] == str(EPOCH + 1_234_567)
@@ -238,9 +229,7 @@ def test_preparation_folds_primer_and_warmup_but_excludes_failures_and_length_mi
     ]
     dataset["telemetry"]["phase_boundaries"][1]["end_ms"] = 4000
     silicon["phases"]["preparation"] = silicon["phases"]["profile"]
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "preparation"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["preparation"]
     score = phase["matched"]["e2e_latency_ms"]
     assert score["count"] == 1 and score["mape_percent"] == 100
     assert "reference_error" in score["pairs"][1]["exclusions"]
@@ -256,21 +245,14 @@ def test_preparation_folds_primer_and_warmup_but_excludes_failures_and_length_mi
 def test_ambiguous_source_is_never_paired_by_time_or_length():
     dataset, silicon = fixture()
     dataset["requests"].append(native(1, uuid="duplicate"))
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
     assert phase["matched"]["e2e_latency_ms"]["count"] == 0
-    assert (
-        "ambiguous_simulated_source"
-        in phase["matched"]["e2e_latency_ms"]["pairs"][0]["exclusions"]
-    )
+    assert "ambiguous_simulated_source" in phase["matched"]["e2e_latency_ms"]["pairs"][0]["exclusions"]
 
 
 def test_default_output_is_completion_accounted_and_incompatible_metrics_unscored():
     dataset, silicon = fixture(native_duration=5, reference_duration=4)
-    charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]["charts"]
+    charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]
     values = charts["throughput_decode"]["series"]
     assert values[0]["y"][:4] == values[1]["y"][:4] == [0, 1.5, 1, 0.75]
     assert charts["throughput_decode"]["scores"][0]["mape_percent"] == 0
@@ -284,8 +266,7 @@ def test_default_output_is_completion_accounted_and_incompatible_metrics_unscore
 
 def test_inflight_proxy_counts_maximum_per_conversation_and_keeps_unknown():
     rows = [
-        {"_start": 0, "_end": 3, "input_tokens": n, "conversation_id": c}
-        for n, c in [(10, "a"), (20, "a"), (30, "b")]
+        {"_start": 0, "_end": 3, "input_tokens": n, "conversation_id": c} for n, c in [(10, "a"), (20, "a"), (30, "b")]
     ]
     assert inflight(rows, [1, 3], "input_tokens", True, True) == [50, 0]
     rows[0]["input_tokens"] = None
@@ -317,9 +298,7 @@ def test_prefix_counter_ratio_is_token_weighted_not_mean_of_ratios():
         {"start": 0, "end": 1, "value": 1},
         {"start": 1, "end": 2, "value": 100},
     ]
-    chart = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]["charts"]["hits"]
+    chart = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]["hits"]
     assert chart["series"][0]["y"][:2] == [100, pytest.approx(100 * 91 / 101)]
     assert chart["series"][0]["y"][2] is None
 
@@ -353,9 +332,7 @@ def test_supported_pass_counter_nulls_mean_no_queries_but_missing_intervals_do_n
     del dataset["samples"][2]
     chart = build_comparisons(dataset, silicon)["phases"]["profile"]["charts"]["hits"]
     assert chart["series"][1]["y"] == [80, None, None, None]
-    dataset["samples"][1]["scheduler_hits"] = dataset["samples"][1][
-        "scheduler_queries"
-    ] = None
+    dataset["samples"][1]["scheduler_hits"] = dataset["samples"][1]["scheduler_queries"] = None
     chart = build_comparisons(dataset, silicon)["phases"]["profile"]["charts"]["hits"]
     assert chart["series"][1]["y"] == [None] * 4
 
@@ -376,18 +353,11 @@ def test_startup_smoothing_uses_common_covered_window_without_zero_filling():
 
 def test_proxy_uses_unambiguous_source_conversation_mapping():
     dataset, silicon = fixture()
-    dataset["requests"].append(
-        native(2, agentic={"conversation_id": "separate-native-fanout"})
-    )
+    dataset["requests"].append(native(2, agentic={"conversation_id": "separate-native-fanout"}))
     dataset["reference"].append(reference(2))
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
     assert phase["charts"]["unique"]["series"][1]["y"][0] == 100
-    assert (
-        phase["timeline"]["native_groups"]["1"]
-        == phase["timeline"]["native_groups"]["2"]
-    )
+    assert phase["timeline"]["native_groups"]["1"] == phase["timeline"]["native_groups"]["2"]
 
 
 def test_native_lookup_remains_an_unscored_additional_series():
@@ -410,15 +380,10 @@ def public_comparison():
         "samples": dataset["samples"],
         "telemetry": dataset["telemetry"],
         "phases": {
-            r["phase"]: {k: v for k, v in r.items() if k != "phase"}
-            for r in dataset["telemetry"]["phase_boundaries"]
+            r["phase"]: {k: v for k, v in r.items() if k != "phase"} for r in dataset["telemetry"]["phase_boundaries"]
         },
     }
-    scores = {
-        "request_errors": {
-            m: {"count": 1, "sum_ape": 100, "mape": 100} for m in ("ttft_ms", "tpot_ms")
-        }
-    }
+    scores = {"request_errors": {m: {"count": 1, "sum_ape": 100, "mape": 100} for m in ("ttft_ms", "tpot_ms")}}
     return build(
         {
             "reference": dataset["reference"],
@@ -434,11 +399,7 @@ def public_comparison():
 def test_public_comparison_keeps_point_request_denominators_and_unscored_preparation():
     value = public_comparison()
     assert value["phases"]["profile"]["request_scores"]["ttft_ms"]["count"] == 1
-    assert all(
-        s["mape_percent"] is None
-        for c in value["phases"]["preparation"]["charts"]
-        for s in c["scores"]
-    )
+    assert all(s["mape_percent"] is None for c in value["phases"]["preparation"]["charts"] for s in c["scores"])
     rows = value["phases"]["profile"]["requests"]
     assert len(rows) == 2 and rows[0]["counterpart"] == rows[1]["uuid"]
     assert all(len(r["uuid"]) == 16 for r in rows)
@@ -450,12 +411,7 @@ def test_public_comparison_rejects_private_fields_and_wrong_scores():
     with pytest.raises(ValueError, match="fields"):
         validate(value)
     value = public_comparison()
-    score = next(
-        s
-        for c in value["phases"]["profile"]["charts"]
-        for s in c["scores"]
-        if s["mape_percent"] is not None
-    )
+    score = next(s for c in value["phases"]["profile"]["charts"] for s in c["scores"] if s["mape_percent"] is not None)
     score["mape_percent"] += 1
     with pytest.raises(ValueError, match="reconcile"):
         validate(value)
@@ -464,9 +420,7 @@ def test_public_comparison_rejects_private_fields_and_wrong_scores():
 def test_untimed_failed_requests_remain_inspectable_without_fabricated_intervals():
     dataset, silicon = fixture()
     dataset["reference"][0].update(end_ns=None, error={"type": "failed"})
-    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
     row = phase["timeline"]["reference_requests"][0]
     assert row["terminal_time_ms"] is None and row["terminal_status"] == "failed"
     assert row["matched_simulated_uuid"] == "1"
@@ -496,14 +450,18 @@ def test_public_comparison_rejects_invalid_pairing_and_preparation_scores(malfor
         validate(value)
 
 
-def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays():
+@pytest.mark.parametrize("clock", ["ms", "ns"])
+def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays(clock):
     dataset, silicon = fixture()
     dataset["reference"][0]["chunks"] = [
         {"at_ms": EPOCH / 1e6 + 500, "count": 1},
         {"at_ms": EPOCH / 1e6 + 1000, "count": 2},
     ]
-    charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"][
-        "profile"
-    ]["charts"]
+    if clock == "ns":
+        dataset["reference"][0]["chunks"] = [
+            {"at_ns": str(EPOCH + 500_000_000), "count": 1},
+            {"at_ns": str(EPOCH + 1_000_000_000), "count": 2},
+        ]
+    charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]
     score = charts["throughput_delivered"]["scores"][0]
     assert score["reason"] is None and score["count"] > 0
