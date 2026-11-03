@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--lanes", type=int, nargs="+", required=True)
     parser.add_argument("--max-sequences", type=int)
+    parser.add_argument("--host-loop", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(args.tooling))
     from scripts.e2e_accuracy.agentx_contract import native_completion_qualified, score
@@ -41,6 +42,8 @@ def main():
         config["traffic"]["source"]["paths"] = [str(prepare_trace(args.inputs, run, directory).resolve())]
         if args.max_sequences is not None:
             config["engine"]["workers"]["aggregated"]["scheduler"]["max_sequences"] = args.max_sequences
+        if args.host_loop:
+            config["engine"]["workers"]["aggregated"]["host_loop"] = True
         path = directory / "input-config.json"
         write(path, config)
         trace = directory / "traces.jsonl"

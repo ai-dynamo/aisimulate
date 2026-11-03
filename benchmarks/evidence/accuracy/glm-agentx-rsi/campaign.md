@@ -214,13 +214,14 @@ Neither headline MAPE, coverage nor accepted modeling fixes change.
 ## H2 — Recipe, tokenization, snapshots and cache history
 
 **Hypothesis.** Effective serving settings or replay history differ from silicon.
-Confidence: high in the recorded cap mismatch, low in a broad cache-history cause.
+Confidence: measured caps are verified and the replay baseline already matches;
+broad cache-history attribution remains low confidence.
 Competing explanations: correct inputs with incorrect execution or client timing.
 
 **E018 — predeclared paired frontend experiment (pending).** Test whether large
 mostly cached prompts incur frontend work missing from native token replay.
 Use fresh uninstrumented and instrumented historical servers with the original forced-acceptance
-policy, synchronous scheduling and all other E017 settings. For each of three
+policy, measured overlap-loop setting and all other E017 settings. For each of three
 synthetic context labels (8192/131072/393216), construct one chat-template token
 sequence. Compare native input IDs against chat messages, alternating endpoint
 order over three repeats. Independently flush and seed exactly the same aligned
@@ -268,12 +269,22 @@ GPU job **1006430** runs this experiment from immutable source
 against a clean Git archive. Charge it to controlled-workload experiments;
 independently audit both modes before selecting a cost model or next experiment.
 
-**Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
-cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
+**E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
+receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
+claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
+and E004 saved inputs actually use 2, and their checksums match their original
+execution receipts. The public dashboard also reports 2. E004 did not change
+the claimed variable, so its earlier causal conclusion is invalid. Preserve both
+runs and the correction artifact rather than treating them as an ablation.
 
-**Conclusion — recipe mismatch confirmed, C1 accuracy impact disproven.** All 324
-scored requests remain; TTFT/TPOT MAPE are exactly unchanged at 73.6567%/18.8688%.
-Keep the setting alignment separate from a claimed accuracy improvement.
+**E004b — actual counterfactual.** Change only C1 from its correctly aligned cap
+2 to 256, with the frozen research wheel and silicon. All 324 matched requests
+remain. TTFT MAPE changes 73.6567% to 71.0511%; TPOT changes 18.8688% to 19.2617%.
+**Conclusion:** cap sensitivity is supported; a baseline cap mismatch is
+disproven by the saved inputs. Do not adopt the mismatching cap for a lower TTFT
+score, and do not claim a win while TPOT worsens. Frozen baseline scores remain
+unchanged. Private receipts: `E004-config-identity-correction.json` and
+`E004b-cap256/`.
 
 **Experiment E008.** Join unique successful, equal-output-length development pairs
 with recorded `usage_prompt_cache_read_tokens` and native first-admission reuse.
@@ -382,6 +393,21 @@ intervals or verify counts from them. No new prediction setting or score change
 is justified by this experiment. Request-level bursts remain an E005 question.
 
 ## H4 — Prefill/decode interference and closed-loop overlap
+
+**E023 — overlap-loop configuration audit and predeclared replay (pending).**
+All original runtime receipts and E017's resolved serving configuration report
+`disable_overlap_schedule=false`. The exact image sets `enable_overlap` from
+that flag and selects `event_loop_overlap`, which overlaps host processing with
+GPU work. An earlier description of these controls as synchronous was incorrect;
+the collector already preserves the measured setting. The frozen AISim worker
+leaves its optional `host_loop` model unset. Enable only this existing model on
+development lanes 1/8/14, retaining the same wheel, data, cache settings and frozen
+request cohorts. Predicted observable: different inbox/result visibility and
+interference under concurrent arrivals; a free host loop preserves legacy token
+times. Competing explanations include upstream frontend delays and op timing.
+Require native completion, unchanged silicon identities, both MAPEs and lost/
+recovered counts before judging the result. A flag difference alone does not
+establish an accuracy fix; do not tune on lanes 4/10/13.
 
 **Hypothesis.** Wrong overlap or scheduling creates decode stalls absent in silicon.
 Confidence: high in simulated interference, unknown in silicon scheduler error.
