@@ -471,6 +471,7 @@
 .replay-dashboard .timeline-pager button { min-width:36px; min-height:32px; font-size:18px; }
 .replay-dashboard .timeline-pager button:disabled { opacity:0.4; cursor:default; }
 .replay-dashboard #timeline-page-label { font-size:12px; font-variant-numeric:tabular-nums; }
+.replay-dashboard #timeline-window-empty { position:sticky; left:0; width:fit-content; }
 .replay-dashboard .comparison-timeline { --timeline-label-width:230px; }
 .replay-dashboard .comparison-timeline .timeline-row,
 .replay-dashboard .comparison-timeline .timeline-axis { grid-template-columns:var(--timeline-label-width) minmax(0, 1fr); }

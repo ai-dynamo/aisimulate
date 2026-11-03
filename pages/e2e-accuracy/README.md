@@ -773,7 +773,11 @@ clipping requests; shorter phases keep the same ten-minute scale. Conversation l
 pinned, and resizing preserves the selected time range. Each 22-pixel row shows the conversation
 hash and request ID on one line, with silicon and AISim intervals on separate
 lines. Full identifiers and pairing status remain in the row tooltip and request
-inspection; untimed and unmatched requests retain their rows.
+inspection. Only pairs with at least one interval overlapping the visible time
+window appear; paging and scrolling trim other rows, while crossing intervals
+are clipped at the screen edges. Failed and unmatched requests follow the same
+overlap rule. Untimed requests remain in full-phase counts, without invented
+positions. Window filtering never changes the request scores or their denominators.
 The compact concurrency summary has one row per metric and columns for Silicon,
 AISim, error, and samples. All five metrics include both source values. Point rows
 average the metric's scored runs equally; request rows pool the individual pairs
