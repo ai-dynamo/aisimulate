@@ -807,7 +807,9 @@ On mobile, sample counts move below the error to keep the table within the scree
 The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
 A Feature Parity checklist sits to the left of the concurrency summary in
-one bordered row. Both panels stretch to the same height; the summary table fills
+one bordered row that fills the available width and aligns with the subplots.
+The panels share the row in a 1:1.1 ratio; the feature-name column uses 36% of
+its table, leaving 32% each for Silicon and AISim so notes wrap less. Both panels stretch to the same height; the summary table fills
 its panel. On smaller screens, they stack with the checklist first. The checklist
 follows the selected run and shows exactly eight fields: Prefix caching, Sub-block
 prefix reuse, Host offload (G2), Storage offload (G3), Hybrid KV/state cache,
