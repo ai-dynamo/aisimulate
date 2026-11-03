@@ -1656,3 +1656,21 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+### SGLang shaped forward-span diagnostic instrumentation
+
+The NVTX-only runtime patch in
+`benchmarks/evidence/accuracy/glm-agentx-rsi/instrument.py` adapts the existing
+`ModelRunner.forward` shaped span from SGLang commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original path
+`python/sglang/srt/model_executor/model_runner.py`. Source:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/model_executor/model_runner.py .
+Copyright 2023-2024 SGLang Team and contributors; Apache-2.0. The license text
+is included in `LICENSE`; upstream license:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE .
+The self-authored `rsi_forward_nvtx.py` adapter preserves the existing Torch
+span and adds an NVTX span with the same backend-generated label. The generated
+backend file remains inside an isolated writable diagnostic container, retains
+its upstream copyright/license header and is prominently marked modified. Its
+original and modified SHA256 values are retained. No upstream model-runner body
+or benchmark input is copied into this repository.

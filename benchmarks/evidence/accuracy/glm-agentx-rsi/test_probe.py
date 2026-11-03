@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import blocking
 import dispatch_preflight
 import probe
+import profile_probe
 import pytest
 
 
@@ -141,3 +142,31 @@ def test_coding_loader_distinguishes_source_json_and_runtime_binary_hashes(tmp_p
     assert value["source_tokens_json_sha256"] == source_hash
     assert value["token_sha256"] != source_hash
     assert value["token_hash_encoding"] == "uint32-le"
+
+
+def test_profile_probe_requires_recorded_cache_and_conserved_output():
+    row = {"status": "completed", "events": [{"output_tokens": 128,
+           "meta": {"prompt_tokens": 393216, "cached_tokens": 393152}}]}
+    assert profile_probe.qualify(row, 393216, 128, None) == 393152
+    with pytest.raises(ValueError, match="counters"):
+        profile_probe.qualify(row, 393216, 127, None)
+    with pytest.raises(ValueError, match="counters"):
+        profile_probe.qualify({"status": "completed", "events": [{"output_tokens": 128,
+                              "meta": {"prompt_tokens": 393216}}]}, 393216, 128, None)
+
+
+def test_profile_probe_retains_first_failure_and_unattempted_cases(tmp_path, monkeypatch):
+    output = tmp_path / "capture"
+    monkeypatch.setattr(profile_probe.AutoTokenizer, "from_pretrained",
+                        lambda *a, **k: SimpleNamespace(encode=lambda *a, **k: [1]))
+    monkeypatch.setattr(profile_probe, "flush_cache", lambda *a: None)
+    monkeypatch.setattr(profile_probe, "request", lambda *a, **k: {"status": "failed", "events": []})
+    monkeypatch.setattr(profile_probe.argparse.ArgumentParser, "parse_args", lambda *a: SimpleNamespace(
+        output=output, model=tmp_path, url="http://test", trace=False))
+    with pytest.raises(ValueError, match="did not complete"):
+        profile_probe.main()
+    manifest = json.loads((output / "manifest.json").read_text())
+    rows = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    assert manifest["status"] == "failed" and manifest["planned_requests"] == 7
+    assert manifest["attempted_requests"] == 1 and manifest["unattempted_requests"] == 6
+    assert manifest["qualified_requests"] == 0 and len(rows) == 1 and rows[0]["qualified"] is False

@@ -12,6 +12,49 @@ import json
 from pathlib import Path
 
 
+def inject_forward_nvtx(source):
+    """Route one existing shaped forward span through our NVTX context."""
+    if 'rsi_forward_nvtx' in source:
+        raise ValueError("Forward NVTX context is already installed")
+    calls = [node for node in ast.walk(ast.parse(source))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id == "profile_range" and node.args
+             and isinstance(node.args[0], ast.Call) and isinstance(node.args[0].func, ast.Name)
+             and node.args[0].func.id == "build_step_span_name"]
+    if len(calls) != 1:
+        raise ValueError("Unknown shaped ModelRunner forward context")
+    function = calls[0].func
+    lines = source.splitlines(keepends=True)
+    call = calls[0]
+    # Apply the later edit first so a one-line span keeps its AST offsets.
+    closing = call.end_lineno - 1
+    lines[closing] = (lines[closing][:call.end_col_offset - 1] + ", runner=self"
+                      + lines[closing][call.end_col_offset - 1:])
+    line = lines[function.lineno - 1]
+    lines[function.lineno - 1] = (line[:function.col_offset]
+                                + '__import__("rsi_forward_nvtx").span' + line[function.end_col_offset:])
+    result = ("# Modified for AISimulate RSI diagnostic NVTX spans; see THIRD_PARTY_NOTICES.md.\n"
+              + "".join(lines))
+    ast.parse(result)
+    return result
+
+
+def install_forward_nvtx():
+    root = Path(importlib.util.find_spec("sglang").origin).parent
+    relative = "srt/model_executor/model_runner.py"
+    path = root / relative
+    source = path.read_bytes()
+    expected = "df38e26ace5deae708f2353b56962afab7f92fac35d1bd4f274b7d6d62356372"
+    if hashlib.sha256(source).hexdigest() != expected:
+        raise ValueError("ModelRunner differs from the qualified upstream/image source")
+    modified = inject_forward_nvtx(source.decode()).encode()
+    path.write_bytes(modified)
+    print(json.dumps({"relative_path": "sglang/" + relative,
+                      "upstream_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+                      "original_sha256": expected, "instrumented_sha256": hashlib.sha256(modified).hexdigest(),
+                      "boundary": "existing forward label emitted to NVTX; GPU projection still required"}))
+
+
 def inject_dispatch(source):
     tree = ast.parse(source)
     methods = [
@@ -149,8 +192,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", action="store_true")
     parser.add_argument("--dispatch-only", action="store_true")
+    parser.add_argument("--forward-nvtx", action="store_true")
     args = parser.parse_args()
-    if args.dispatch_only:
+    if args.forward_nvtx:
+        if args.dispatch_only or args.frontend:
+            parser.error("Forward NVTX collection is separate from dispatch/frontend timing")
+        install_forward_nvtx()
+    elif args.dispatch_only:
         install_dispatch()
     else:
         main(args.frontend)

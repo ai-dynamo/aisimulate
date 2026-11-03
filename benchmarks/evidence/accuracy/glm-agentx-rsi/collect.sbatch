@@ -29,6 +29,12 @@ if test "${RSI_SUITE:-timing}" = coding-blocking; then
     control_seconds=1920
     reservation_seconds=16320
 fi
+if test "${RSI_SUITE:-timing}" = forward-profile; then
+    profile_wall_limit=$(scontrol show job "$SLURM_JOB_ID" -o | awk '{for(i=1;i<=NF;i++) if($i ~ /^TimeLimit=/) print substr($i,11)}')
+    test "$profile_wall_limit" = 00:45:00
+    control_seconds=2640
+    reservation_seconds=22080
+fi
 test "$REMAINING_GPU_SECONDS" -ge "$reservation_seconds"
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 cd "$storage_root"
@@ -82,9 +88,15 @@ if test "${RSI_SUITE:-timing}" = coding-blocking; then
     coding_inputs="${coding_inputs/#$storage_root/\/workspace}"
     coding_arguments=(--coding-inputs "$coding_inputs")
 fi
+profile_arguments=()
+if test "${RSI_SUITE:-timing}" = forward-profile; then
+    profile_receipt="${RSI_PROFILE_PREFLIGHT:?Versioned profiler qualification receipt}"
+    profile_receipt="${profile_receipt/#$storage_root/\/workspace}"
+    profile_arguments=(--profile-preflight "$profile_receipt")
+fi
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     env "RSI_CACHE_ROOT=$root/runtime-cache/$cache_key" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
     --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds "$control_seconds" --acceptance-policy agentx-golden \
-    --suite "${RSI_SUITE:-timing}" "${dispatch_arguments[@]}" "${coding_arguments[@]}"
+    --suite "${RSI_SUITE:-timing}" "${dispatch_arguments[@]}" "${coding_arguments[@]}" "${profile_arguments[@]}"

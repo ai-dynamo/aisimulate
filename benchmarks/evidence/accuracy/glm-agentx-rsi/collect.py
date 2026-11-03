@@ -4,12 +4,14 @@
 """Fresh-server diagnostic controls with a hard allocation deadline."""
 
 import argparse
+import csv
 import hashlib
 import importlib.metadata
 import importlib.util
 import json
 import os
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -29,6 +31,74 @@ GOLDEN_ACCEPTANCE = {
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def nsys_command(nsys, output, ranges):
+    return [str(nsys), "profile", "--trace=cuda,nvtx", "--sample=none", "--cpuctxsw=none",
+            "--capture-range=cudaProfilerApi", f"--capture-range-end=repeat:{ranges}:sync",
+            "--cuda-graph-trace=node:host-only:nvtx-precapture", "--force-overwrite=false",
+            "--output=" + str(output)]
+
+
+def qualify_cuda_trace_tables(kernel_path, projection_path):
+    with kernel_path.open() as stream:
+        kernels = list(csv.DictReader(stream))
+    with projection_path.open() as stream:
+        projections = list(csv.DictReader(stream))
+    if not kernels or "Device" not in kernels[0]:
+        raise ValueError("CUDA probe trace has no recognized device coverage")
+    devices = {row["Device"] for row in kernels if float(row["Duration (ns)"]) > 0}
+    if len(devices) != 8:
+        raise ValueError("CUDA probe did not trace eight devices")
+    markers = set()
+    for row in projections:
+        match = re.search(r"rsi-smoke-(?:capture|replay)-gpu-(\d+)", row.get("Name", ""))
+        if match and float(row["Projected Duration (ns)"]) > 0:
+            markers.add(int(match[1]))
+    if markers != set(range(8)):
+        raise ValueError("CUDA probe lacks eight GPU-projected graph/NVTX markers")
+    return {"devices": sorted(devices), "gpu_projected_marker_ids": sorted(markers),
+            "kernel_rows": len(kernels), "projection_rows": len(projections)}
+
+
+def cuda_trace_probe(root, nsys, code, deadline):
+    root.mkdir()
+    command = nsys_command(nsys, root / "smoke", 1) + [
+        sys.executable, str(code / "profile_cuda_probe.py"), "--output", str(root / "application.json")]
+    save(root / "command.json", {"command": command})
+    with (root / "probe.log").open("x") as log:
+        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True,
+                       timeout=max(1, min(180, deadline - time.monotonic() - 120)))
+    reports = list(root.glob("*.nsys-rep"))
+    if len(reports) != 1:
+        raise ValueError("CUDA trace probe did not export exactly one capture")
+    with (root / "stats.log").open("x") as log:
+        subprocess.run([str(nsys), "stats", "-r", "cuda_gpu_trace,nvtx_gpu_proj_trace", "--format", "csv",
+                        "-o", str(root / "coverage"), str(reports[0])],
+                       stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+    kernels = list(root.glob("coverage*cuda_gpu_trace.csv"))
+    projections = list(root.glob("coverage*nvtx_gpu_proj_trace.csv"))
+    if len(kernels) != 1 or len(projections) != 1:
+        raise ValueError("CUDA probe numerical report export is unavailable")
+    result = qualify_cuda_trace_tables(kernels[0], projections[0])
+    result["report_sha256"] = hashlib.sha256(reports[0].read_bytes()).hexdigest()
+    save(root / "qualification.json", result)
+
+
+def sample_gpu(path, stop):
+    with path.open("x") as stream:
+        while not stop.is_set():
+            try:
+                result = subprocess.run([
+                    "nvidia-smi", "--query-gpu=index,clocks.current.sm,clocks.current.memory,power.draw,power.limit",
+                    "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5, check=False)
+                value = {"at_ns": str(time.monotonic_ns()), "returncode": result.returncode,
+                         "clock_power_csv": result.stdout}
+            except subprocess.TimeoutExpired:
+                value = {"at_ns": str(time.monotonic_ns()), "error": "nvidia_smi_timeout"}
+            stream.write(json.dumps(value) + "\n")
+            stream.flush()
+            stop.wait(1)
 
 
 def sample(url, path, stop):
@@ -53,6 +123,7 @@ def control(
     acceptance_policy="agentx-golden",
     suite="timing",
     coding_inputs=None,
+    profile_nsys=None,
 ):
     code = Path(__file__).parent
     name = ("instrumented" if instrumented else "unprofiled") + ("-mtp" if speculation else "-plain")
@@ -83,7 +154,7 @@ def control(
         "--max-prefill-tokens",
         "8192",
         "--max-running-requests",
-        "256",
+        "2" if suite == "forward-profile" else "256",
         "--mem-fraction-static",
         "0.86",
         "--cuda-graph-max-bs-decode",
@@ -157,6 +228,13 @@ def control(
         environment["RSI_DISPATCH_ROOT"] = str(dispatch_root)
     else:
         environment.pop("RSI_DISPATCH_ROOT", None)
+    if suite == "forward-profile":
+        environment.pop("RSI_TIMING_ROOT", None)
+        if instrumented:
+            environment["RSI_FORWARD_NVTX_ROOT"] = str(output / "model-receipts")
+            trace_root = output / "nsys"
+            trace_root.mkdir()
+            command = nsys_command(profile_nsys, trace_root / "glm", 2) + command
     save(
         output / "command.json",
         {
@@ -166,11 +244,15 @@ def control(
             "acceptance_policy": acceptance_policy if speculation else "disabled",
             "acceptance_environment": {key: environment.get(key) for key in GOLDEN_ACCEPTANCE},
             "suite": suite,
+            "precision_environment": {
+                "SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE": environment.get("SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE")
+            },
             "purpose": "synthetic timing diagnostics; not AgentX accuracy scoring",
         },
     )
     stop = threading.Event()
     sampler = None
+    gpu_sampler = None
     process = None
     started = time.monotonic()
     with (output / "server.log").open("w") as log:
@@ -195,6 +277,9 @@ def control(
                     time.sleep(2)
             sampler = threading.Thread(target=sample, args=(url, output / "server-metrics.jsonl", stop), daemon=True)
             sampler.start()
+            if suite == "forward-profile":
+                gpu_sampler = threading.Thread(target=sample_gpu, args=(output / "gpu-clocks.jsonl", stop), daemon=True)
+                gpu_sampler.start()
             subprocess.run(
                 [
                     sys.executable,
@@ -206,6 +291,7 @@ def control(
                             "timing": "probe.py",
                             "matrix": "matrix_dispatch.py",
                             "coding-blocking": "blocking.py",
+                            "forward-profile": "profile_probe.py",
                         }[suite]
                     ),
                     "--url",
@@ -220,16 +306,29 @@ def control(
                     if suite in ("blocking", "matrix", "coding-blocking")
                     else []
                 )
-                + (["--coding-inputs", str(coding_inputs)] if suite == "coding-blocking" else []),
+                + (["--coding-inputs", str(coding_inputs)] if suite == "coding-blocking" else [])
+                + (["--trace"] if suite == "forward-profile" and instrumented else []),
                 check=True,
                 timeout=max(1, deadline - time.monotonic() - 90),
                 env=environment,
             )
+            if suite == "forward-profile" and instrumented:
+                reports = list((output / "nsys").glob("*.nsys-rep"))
+                if len(reports) != 2 or any(p.stat().st_size == 0 for p in reports):
+                    raise ValueError("Both GLM capture ranges must export before qualification")
+                receipts = [json.loads(p.read_bytes()) for p in (output / "model-receipts").glob("*.json")]
+                for draft in (False, True):
+                    role = [r for r in receipts if r["draft"] is draft]
+                    if (len(role) != 8 or {r["tp_rank"] for r in role} != set(range(8))
+                            or any(r["tp_size"] != 8 for r in role)):
+                        raise ValueError("Loaded model receipts require every target and draft TP rank")
             save(output / "completion.json", {"status": "completed", "elapsed_seconds": time.monotonic() - started})
         finally:
             stop.set()
             if sampler:
                 sampler.join(timeout=5)
+            if gpu_sampler:
+                gpu_sampler.join(timeout=5)
             if process and process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
@@ -246,10 +345,12 @@ def main():
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
     parser.add_argument(
-        "--suite", choices=("timing", "frontend", "blocking", "matrix", "coding-blocking"), default="timing"
+        "--suite", choices=("timing", "frontend", "blocking", "matrix", "coding-blocking", "forward-profile"),
+        default="timing"
     )
     parser.add_argument("--dispatch-preflight", type=Path)
     parser.add_argument("--coding-inputs", type=Path)
+    parser.add_argument("--profile-preflight", type=Path)
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
@@ -298,6 +399,25 @@ def main():
         manager = Path(origin).parent / "srt/managers/tokenizer_manager.py"
         if hashlib.sha256(manager.read_bytes()).hexdigest() != preflight["original_sha256"]:
             raise ValueError("Dispatch runtime source differs from CPU preflight")
+    profile_nsys = None
+    if args.suite == "forward-profile":
+        if args.profile_preflight is None:
+            raise ValueError("Forward profiling requires an actual-runtime CPU receipt")
+        preflight = json.loads(args.profile_preflight.read_bytes())
+        if preflight["status"] != "passed_for_gpu_probe" or preflight["sglang"] != importlib.metadata.version("sglang"):
+            raise ValueError("Profiler CPU receipt does not qualify this runtime")
+        package_root = Path(importlib.util.find_spec("sglang").origin).parent
+        for relative, digest in preflight["runtime_sources"].items():
+            if Path(relative).is_absolute() or ".." in Path(relative).parts:
+                raise ValueError("Unsafe profiler source identity")
+            if hashlib.sha256((package_root / relative).read_bytes()).hexdigest() != digest:
+                raise ValueError("Profiler source changed after CPU qualification")
+        profile_nsys = preflight["trace_tool"]["nsys"]
+        if not profile_nsys or not preflight["trace_tool"]["cuda_graph_node_option"]:
+            raise ValueError("Qualified Nsight graph-node capture is unavailable")
+        actual_version = subprocess.check_output([profile_nsys, "--version"], text=True, timeout=30).strip()
+        if actual_version != preflight["trace_tool"]["version"]:
+            raise ValueError("Nsight tool changed after CPU qualification")
     deadline = time.monotonic() + args.seconds
     args.output.mkdir(parents=True, exist_ok=False)
     save(
@@ -332,6 +452,16 @@ def main():
             },
         },
     )
+    if args.suite == "forward-profile":
+        cuda_trace_probe(args.output / "cuda-probe", profile_nsys, Path(__file__).parent, deadline)
+        control(args.output, args.model, deadline, False, True, args.acceptance_policy,
+                args.suite, profile_nsys=profile_nsys)
+        subprocess.run([sys.executable, str(Path(__file__).with_name("instrument.py")), "--forward-nvtx"],
+                       check=True, stdout=(args.output / "forward-nvtx-instrumentation.json").open("x"))
+        control(args.output, args.model, deadline, True, True, args.acceptance_policy,
+                args.suite, profile_nsys=profile_nsys)
+        save(args.output / "completion.json", {"status": "completed"})
+        return
     if args.suite in ("blocking", "matrix", "coding-blocking"):
         subprocess.run(
             [sys.executable, str(Path(__file__).with_name("instrument.py")), "--dispatch-only"],

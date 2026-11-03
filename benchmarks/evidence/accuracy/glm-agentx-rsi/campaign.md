@@ -1823,3 +1823,60 @@ default; that option explicitly documents crash/deadlock risk. Require all
 eight rank/device traces and live step identities rather than assuming them.
 No GPU reservation, model/data change or headline score follows from this
 source-layout failure.
+
+CPU export **1014651 completes** in 228 allocated CPU seconds, zero GPUs,
+from signed source `5b33d94ac1ca773d752811b742f09b69aa17bc3a` and archive
+`957ca624a6a31dbc4f5b2700d73386a44b7d6173526e69cb36ab3f0f5ec20f2a`.
+The first packaging attempt contained literal newline escapes in its checksum
+manifest and was rejected before submission; retain its SHA256
+`32ce77fa33199559f5a14d4f47970acc2a75d269784e77390a8ca93b91bfa3d4`.
+The valid v2 manifest verifies all 42 archived files. Actual package origin is
+`/sgl-workspace/sglang/python/sglang`, Python 3.12.3. The detached backend commit
+is `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`; its upstream ModelRunner source
+exactly matches the image SHA256
+`df38e26ace5deae708f2353b56962afab7f92fac35d1bd4f274b7d6d62356372`.
+Keep the unmodified Apache-2.0 license and sources in private evidence.
+
+**Next discriminating experiment, predeclared finite matrix:** cold 8192-token
+and seeded 393216-token contexts, one active request, 128 output tokens, native
+SGLang 0.5.20 / historical checkpoint / TP8 / golden acceptance 2.99. Preserve
+C1's original maximum-running-requests setting **2**, rather than the earlier
+256-cap diagnostic. One unwrapped fresh server runs before/after controls;
+a second fresh server runs before/profiled/after controls. In total, **17
+requests: ten measured and seven preparation** (including seed requests).
+Do not turn these synthetic controls into six-point AgentX scores. Serialize
+request bodies before timing, retain each attempted row on failure, require
+native input/output/cache counters, and require long-prefix cache receipts
+within one 64-token page, identical between measured arms. Unknown cache
+counters fail qualification instead of being inferred as zero.
+
+The backend's existing shaped forward labels currently reach Torch profiling
+only. In the diagnostic container, a checksum-guarded AST edit routes that
+single context through the same Torch context plus NVTX; it retains original
+labels and changes no scheduling or kernel selection. Preserve original and
+modified source checksums and immutable upstream attribution in both notices.
+Record every target/draft TP rank, loaded parameter dtypes and quantizer classes.
+The runtime can optionally cast MTP experts to FP8, so checkpoint exclusion
+alone does not establish actual BF16 execution. The original source and all
+parameter values remain outside the public PR; receipts contain shapes/dtypes
+and names, never values, prompts or token arrays.
+
+The collector first runs a tiny eight-device CUDA graph probe before loading
+weights. Use Nsight `--capture-range=cudaProfilerApi`,
+`--capture-range-end=repeat:2:sync` for the two model captures, and
+`--cuda-graph-trace=node:host-only:nvtx-precapture`, with CUDA/NVTX only and CPU
+sampling/context switches disabled. Require numerical kernel coverage and
+GPU-projected graph/NVTX markers on all eight devices; application success
+alone cannot qualify tracing. Leave tracing before fork/exec disabled. Retain
+one-second GPU clocks/power and server metrics, compare instrumented controls
+against unprofiled controls, and inspect actual GPU-projected forward spans,
+not CPU launch windows or sums of overlapping kernels. Require all eight
+ranks and at least ten usable decode rounds in post-capture qualification.
+
+Resource contract: one B300 node, eight GPUs, 64 CPUs, 1TiB, 45-minute wall
+limit, 44-minute collector deadline. Before submission reserve at most
+**22,080 GPU-seconds** including 60 seconds cleanup beyond the wall limit,
+from the targeted op/forward pool only. Global remaining budget is currently
+124,970 GPU-seconds; the 86,400-GPU-second validation reserve remains intact.
+No reservation or GPU charge has yet been made for this experiment. All raw
+traces, stream events and server logs stay in private campaign storage.

@@ -1,12 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
+import json
+import sys
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from audit_coding import bounds as coding_bounds
 from audit_coding import validate_counts
 from audit_matrix import errors, interval
 from audit_shared_frontend import error as frontend_error
 from audit_shared_frontend import latencies as frontend_latencies
+from collect import qualify_cuda_trace_tables
+from instrument import inject_forward_nvtx
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 from profile_preflight import fields as profile_fields
 from response_gate_diagnostic import gate_time, summary
@@ -107,3 +116,56 @@ def test_profiler_cpu_preflight_requires_one_named_protocol():
         profile_fields(source + source, "ProfileReq")
     with pytest.raises(ValueError, match="Unknown runtime class"):
         profile_fields(source, "Missing")
+
+
+def test_forward_nvtx_patch_preserves_backend_label_and_rejects_reinstallation():
+    source = "def forward(self, batch):\n    ctx = profile_range(build_step_span_name(batch, is_draft_worker=False))\n"
+    modified = inject_forward_nvtx(source)
+    assert 'build_step_span_name(batch, is_draft_worker=False)' in modified
+    assert '__import__("rsi_forward_nvtx").span(' in modified
+    with pytest.raises(ValueError, match="already installed"):
+        inject_forward_nvtx(modified)
+    with pytest.raises(ValueError, match="Unknown shaped"):
+        inject_forward_nvtx("x = other_span()")
+
+
+def test_cuda_trace_probe_requires_gpu_activity_and_projected_markers(tmp_path):
+    kernels = tmp_path / "kernels.csv"
+    projected = tmp_path / "projected.csv"
+    kernels.write_text("Device,Duration (ns)\n" + "".join(f"B300 ({i}),100\n" for i in range(8)))
+    header = "Name,Projected Duration (ns)\n"
+    rows = [f"rsi-smoke-replay-gpu-{i},100\n" for i in range(8)]
+    projected.write_text(header + "".join(rows))
+    assert qualify_cuda_trace_tables(kernels, projected)["gpu_projected_marker_ids"] == list(range(8))
+    projected.write_text(header + "".join(rows[:-1]))
+    with pytest.raises(ValueError, match="GPU-projected"):
+        qualify_cuda_trace_tables(kernels, projected)
+    projected.write_text(header + "".join(rows))
+    kernels.write_text("Device,Duration (ns)\n" + "".join(f"B300 ({i}),100\n" for i in range(7)))
+    with pytest.raises(ValueError, match="eight devices"):
+        qualify_cuda_trace_tables(kernels, projected)
+
+
+def test_forward_nvtx_receipt_never_reads_weights_and_balances_failed_span(tmp_path, monkeypatch):
+    calls = []
+    cuda = SimpleNamespace(current_device=lambda: 0, nvtx=SimpleNamespace(
+        range_push=lambda name: calls.append("push"), range_pop=lambda: calls.append("pop")))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+    monkeypatch.setitem(
+        sys.modules, "sglang.srt.utils.nvtx_utils", SimpleNamespace(profile_range=lambda _: nullcontext()))
+    monkeypatch.setenv("RSI_FORWARD_NVTX_ROOT", str(tmp_path))
+    path = Path(__file__).with_name("rsi_forward_nvtx.py")
+    spec = importlib.util.spec_from_file_location("isolated_nvtx_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tensor = SimpleNamespace(dtype="torch.bfloat16", shape=(4, 4))
+    model = SimpleNamespace(named_parameters=lambda: [("decoder.weight", tensor)],
+                            parameters=lambda: [tensor], named_modules=lambda: [])
+    runner = SimpleNamespace(model=model, is_draft_worker=True,
+                             ps=SimpleNamespace(tp_rank=0, tp_size=8, gpu_id=0))
+    with pytest.raises(RuntimeError, match="test failure"), module.span("test", runner=runner):
+        raise RuntimeError("test failure")
+    assert calls == ["push", "pop"]
+    receipt = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert receipt["parameter_dtype_counts"] == {"torch.bfloat16": 1}
+    assert receipt["draft_parameters"] == [{"name": "decoder.weight", "dtype": "torch.bfloat16", "shape": [4, 4]}]
