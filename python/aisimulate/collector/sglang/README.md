@@ -163,3 +163,22 @@ communication. Use `collector/wideep/sglang/collect_deepep_moe.py` for
 Large-EP local expert compute; it publishes the dedicated `moe_ep` table.
 Stock `moe_perf` is a modeled fallback only when a matching `moe_ep` row is
 not available.
+
+## GLM agentic decode campaign
+
+`agentx_dsa_shards.yaml` selects the full-indexer and skip-indexer DSA module
+groups for `nvidia/GLM-5.2-NVFP4`, TP8, BF16 projections and FP8 KV on B300.
+The auto-collector also requires `AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4`
+and `AISIM_SHARDS_PER_JOB=1`. Shared sweep defaults belong in
+`cases/base_ops/mla_module.yaml`; this campaign file only selects the groups.
+
+The SGLang 0.5.21 collection used AISimulate commit
+[`0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04`](https://github.com/ai-dynamo/aisimulate/commit/0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04),
+with 250 shapes per group, through past-KV length 720,896. Reproduction must
+pin that collector revision, the runtime image digest recorded in the data
+sidecar, and the campaign's B300 capacity. Current defaults may generate a
+different plan. See collection jobs
+[full-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211485)
+and [skip-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211486).
+The packaged 0.5.21 table preserves previous rows and appends both collection
+events with their original source revision and plan hashes.
