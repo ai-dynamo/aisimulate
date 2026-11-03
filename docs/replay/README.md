@@ -25,7 +25,8 @@ The native runtime executes in process without a network plane or asynchronous
 worker tasks. At each meaningful timestamp it settles engine completions,
 worker readiness, transfers and admission, then telemetry and scaling. A
 logical worker can contain multiple attention-DP rank schedulers; the grouped
-pass completes at the slowest rank's latency.
+pass completes at the slowest rank's latency, priced once for all ranks when
+the timing provider supports it.
 
 The built-in `engine` stack provides offline execution with round-robin
 placement and fixed worker pools. Dynamo supplies its own Router and Planner
@@ -48,6 +49,9 @@ Agentic results explicitly retain `functional_only` qualification.
   [P/D KV transfer](engine/kv-transfer.md),
   [speculative decoding](engine/speculation.md) and
   [analytical AFD/EPD](engine/analytical.md).
+- [SGLang VL host loop](engine/sglang-vl-host-loop.md): native vision-language
+  replay on SGLang: frontend stages, overlap-scheduler iterations, the vision
+  encoder and native encoder pools.
 - [Agentic quickstart](agentic/quickstart.md): run a reproducible Weka simulation.
 - [Dynamo integration](dynamo.md): install matching dependencies and enable Router/Planner.
 - [Python API](api/python.md) and [Rust API](api/rust.md): inputs, reports and execution contracts.

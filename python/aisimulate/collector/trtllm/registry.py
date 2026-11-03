@@ -24,6 +24,9 @@ REGISTRY: list[OpEntry] = [
         get_func="get_computescale_test_cases",
         run_func="run_computescale",
         perf_filename=PerfFile.COMPUTESCALE,
+        # one measurement, two tables: the static quant row goes to
+        # scale_matrix_perf; finalize binds both to this producer
+        extra_perf_filenames=(PerfFile.SCALE_MATRIX,),
     ),
     OpEntry(
         op="mla_context",

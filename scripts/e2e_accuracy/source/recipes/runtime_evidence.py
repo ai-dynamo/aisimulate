@@ -10,24 +10,18 @@ import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import replace
 from pathlib import Path
 
 import requests
 
+from scripts.e2e_accuracy.source.hf_bindings import reviewed_binding, row_digest
 from scripts.e2e_accuracy.source.recipes.runtime_recipe import inspect_cached_runtime_workload
 from scripts.e2e_accuracy.source.schema import SiliconRow
 from scripts.e2e_accuracy.source.sources import load_manifest
 
 REPOSITORY = "SemiAnalysisAI/InferenceX"
 MAX_BYTES = 512 * 1024 * 1024
-
-
-def row_digest(row):
-    # Version 1 binds the original measurement schema, before run ordering metadata.
-    values = asdict(row)
-    values.pop("run_started_at")
-    return hashlib.sha256(json.dumps(values, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
 def observation_id(row):
@@ -41,16 +35,18 @@ def archived_recipe(row, part="parsed"):
         raise ValueError("unsupported runtime observation schema")
     records = manifest["records"]
     key = row_digest(row)
+    binding = reviewed_binding(row)
+    original_key = binding["database_measurement_sha256"] if binding else key
     if version.endswith("/2"):
-        record = records.get(observation_id(row))
-        if record is not None and record["measurement_sha256"] != key:
+        original_row = replace(row, config_id=binding["database_config_id"]) if binding else row
+        record = records.get(observation_id(original_row))
+        if record is not None and record["measurement_sha256"] != original_key:
             raise ValueError("runtime observation measurement identity mismatch")
     else:
-        record = records.get(key)
-        # Old archives have only benchmark ID and the original measurement digest.
-        # A known benchmark with changed inputs must never silently fall back.
-        if record is None and any(item["benchmark_id"] == row.bench_id for item in records.values()):
-            raise ValueError("runtime observation measurement identity mismatch")
+        record = records.get(original_key)
+    # A known benchmark with changed inputs must never silently fall back.
+    if record is None and any(item["benchmark_id"] == row.bench_id for item in records.values()):
+        raise ValueError("runtime observation measurement identity mismatch")
     if record is None or part not in record:
         return None
     if record["benchmark_id"] != row.bench_id:
@@ -62,6 +58,9 @@ def archived_recipe(row, part="parsed"):
         "manifest": "runtime_observations.json",
         "historical_artifacts_revalidated": False,
     }
+    if binding:
+        parsed[-1]["archived_runtime"]["database_measurement_sha256"] = original_key
+        parsed[-1]["archived_runtime"]["binding_manifest"] = "hf_evidence_bindings.json"
     return tuple(parsed)
 
 

@@ -609,7 +609,7 @@ mod transfer_lifecycle {
     }
 
     #[test]
-    fn prediction_failure_then_cancel_leaves_no_unsubmitted_store_or_opaque_capacity() {
+    fn prediction_failure_does_not_submit_a_prepared_store() {
         for fail_decode in [false, true] {
             let timing = Arc::new(FailingTiming::default());
             let mut config = args(5);
@@ -642,42 +642,21 @@ mod transfer_lifecycle {
             } else {
                 "prefill"
             }));
+            // Current main commits scheduling/KV effects eagerly, then prices
+            // the shared forward. An error aborts this runtime: prepared stores
+            // must never be submitted without a successful completion boundary.
             assert!(
                 capture
-                    .events(failing, Transition::StorePrepared)
+                    .events(failing, Transition::StoreSubmitted)
                     .is_empty()
             );
             assert!(core.next_internal_deadline_ms().is_none());
-            assert!(core.kv_manager.num_active_blocks() > 0);
-            for request_id in [running, failing] {
-                core.apply_command_effects_at(
-                    SchedulerCommand::CancelRequest { request_id },
-                    true,
-                    Some(now_ms),
-                )
-                .unwrap();
-            }
-            assert_eq!(core.kv_manager.num_active_blocks(), 0);
-            assert!(core.is_drained());
-
-            timing.prefill.store(false, Ordering::Relaxed);
-            timing.decode.store(false, Ordering::Relaxed);
-            let replacement = Uuid::from_u128(130_022);
-            // Four prompt blocks plus one opaque future block need the entire pool.
-            submit(&mut core, replacement, 200, 16, 1, now_ms);
-            let pass = core.execute_pass(&mut collector, now_ms);
+            drop(core);
             assert!(
-                pass.output_signals
-                    .iter()
-                    .any(|signal| signal.uuid == replacement && signal.completed)
+                capture
+                    .events(failing, Transition::StoreSubmitted)
+                    .is_empty()
             );
-            core.complete_engine_boundary(pass.end_ms);
-            let submitted = capture.events(replacement, Transition::StoreSubmitted);
-            assert_eq!(submitted.len(), 1);
-            assert!(submitted[0].deadline_ms.unwrap() > now_ms);
-            finish_transfer_work(&mut core);
-            assert_eq!(core.kv_manager.num_active_blocks(), 0);
-            assert!(core.is_drained());
         }
     }
 }

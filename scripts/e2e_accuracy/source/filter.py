@@ -20,26 +20,28 @@ FRAMEWORK_TO_AIC_BACKEND: dict[str, str] = {
 }
 
 
-def _row_drop_reason(row: SiliconRow) -> str | None:
+def _row_drop_reason(row: SiliconRow, spec_method: str = "none") -> str | None:
     if row.hardware not in NVIDIA_HARDWARE:
         return f"filter:hardware (got {row.hardware!r}, not in NVIDIA set)"
     if row.framework not in FRAMEWORK_TO_AIC_BACKEND:
         return f"filter:framework (got {row.framework!r}, not in supported set)"
     if row.benchmark_type != "single_turn":
         return f"filter:benchmark_type (got {row.benchmark_type!r}, expected 'single_turn')"
-    if row.spec_method != "none":
-        return f"filter:spec_method={row.spec_method} (speculative decoding is not modeled)"
+    if row.spec_method not in ({"none", "mtp"} if spec_method == "all" else {spec_method}):
+        return f"filter:spec_method={row.spec_method} (outside selected decoding cohort)"
     if row.metrics is None:  # error rows are stripped at dedupe; this is a belt-and-braces guard
         return "filter:no-metrics"
     return None
 
 
-def apply_filter_rules(rows: Iterable[SiliconRow]) -> tuple[list[SiliconRow], list[DropRecord]]:
+def apply_filter_rules(
+    rows: Iterable[SiliconRow], *, spec_method: str = "none"
+) -> tuple[list[SiliconRow], list[DropRecord]]:
     """Drop rows that fail any pre-mapping filter rule. Pure / no I/O."""
     kept: list[SiliconRow] = []
     drops: list[DropRecord] = []
     for r in rows:
-        reason = _row_drop_reason(r)
+        reason = _row_drop_reason(r, spec_method)
         if reason is None:
             kept.append(r)
             continue

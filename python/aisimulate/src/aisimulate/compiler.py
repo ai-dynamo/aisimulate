@@ -11,11 +11,20 @@ from typing import Any
 from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
+    reject_pipeline_parallelism,
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
-from .config.engine import EnginePredictionConfig, WorkerPredictionConfig, resolve_block_size
+from .config.engine import (
+    EnginePredictionConfig,
+    FrontendMeasurementConfig,
+    FrontendPredictionConfig,
+    HostWorkerPredictionConfig,
+    VisionPredictionConfig,
+    WorkerPredictionConfig,
+    resolve_block_size,
+)
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .estimator_readiness import unready_estimator_message
 from .state_size import resolve_state_size
@@ -83,13 +92,19 @@ def prediction_to_replay_spec(
             validate_router_prefill_hardware(adapter, config.engine.workers.prefill.hardware or config.engine.hardware)
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
-            raise ValueError("analytical EPD requires the offline engine stack without adapters")
-        deployment = replace(deployment, encoder=_prediction_encoder(config, workload))
+            raise ValueError("encoder pools require the offline engine stack without adapters")
+        pool = _prediction_encoder(config, workload)
+        metadata = dict(deployment.performance_model_metadata)
+        if pool.native is not None:
+            from .config.epd import encoder_metadata
+
+            metadata["encoder"] = encoder_metadata(pool)
+        deployment = replace(deployment, encoder=pool, performance_model_metadata=metadata)
     evaluation = config.evaluation.model_dump(mode="json", exclude_none=True)
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
-    if deployment.encoder is not None and goal["sla"] is not None:
+    if deployment.encoder is not None and deployment.encoder.mode == "analytical" and goal["sla"] is not None:
         goal["strict_sla"] = True
     return ReplaySpec(
         backend_deployment=deployment,
@@ -150,8 +165,8 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
 
 
 def _prediction_encoder(config: CorePredictionConfig, workload):
-    from .sweeper.config import EncoderSearch, Workload
-    from .sweeper.epd import resolve_encoder_pools
+    from .sweeper.config import EncoderSearch
+    from .sweeper.epd import replay_workload, resolve_encoder_pools
 
     engine = config.engine
     encoder = engine.workers.encoder
@@ -164,6 +179,12 @@ def _prediction_encoder(config: CorePredictionConfig, workload):
         workers=[encoder.replicas],
         latency_correction=encoder.latency_correction,
         rate_degradation=encoder.rate_degradation,
+        mode=encoder.mode,
+        host_profile=encoder.host_profile.model_dump(mode="json") if encoder.host_profile is not None else None,
+        frontend=encoder.frontend.model_dump(mode="json") if encoder.frontend is not None else None,
+        transfer_bandwidth_gb_per_second=(
+            encoder.transfer.bandwidth_gb_per_second if encoder.transfer is not None else None
+        ),
     )
     pools = resolve_encoder_pools(
         model_name=engine.model,
@@ -174,7 +195,7 @@ def _prediction_encoder(config: CorePredictionConfig, workload):
             resolve_model_context_length(engine.model) if engine.context_length == "max" else engine.context_length
         ),
         encoder=shape,
-        workload=Workload.model_validate(workload),
+        workload=replay_workload(workload),
     )
     if len(pools) != 1:
         raise ValueError("prediction requires exactly one feasible encoder pool")
@@ -192,6 +213,17 @@ def _tokenization(engine: EnginePredictionConfig) -> dict[str, JSONValue] | None
     }
 
 
+def _detokenization(engine: EnginePredictionConfig) -> dict[str, JSONValue] | None:
+    detokenization = getattr(engine, "detokenization", None)
+    if detokenization is None or not detokenization.active:
+        return None
+    return {
+        "workers": detokenization.workers,
+        "base_ms": detokenization.base_ms,
+        "per_output_ms": detokenization.per_output_us / 1000.0,
+    }
+
+
 def _deployment(
     engine: EnginePredictionConfig,
     *,
@@ -205,6 +237,11 @@ def _deployment(
             performance_model=afd_performance_model or AICAFDPerformanceModel(),
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
+    # Check every replayed role before any role sizes its state or KV cache.
+    for role in ("aggregated",) if mode == "agg" else ("prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is not None:
+            reject_pipeline_parallelism(role, worker.parallelism.pipeline)
     if mode == "disagg":
         from aisimulate_core.sdk.perf_database import load_system_spec
 
@@ -244,23 +281,27 @@ def _deployment(
         "backend": engine.backend,
         "backend_version": engine.backend_version or "",
         "tokenization": _tokenization(engine),
+        "detokenization": _detokenization(engine),
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None
-        worker = engine.workers.aggregated
+        worker, vl_metadata, vision = _host_worker(engine, engine.workers.aggregated, workload)
         _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
         worker, state_size = _resolve_state_cache(engine, worker)
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": _state_metadata(engine, worker, state_size)},
-            agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
+            performance_model_metadata={"aggregated": {**_state_metadata(engine, worker, state_size), **vl_metadata}},
+            agg_engine_args=_worker_engine_args(
+                engine, worker, "aggregated", transfer_bytes_per_token=None, vision=vision
+            ),
             num_workers=worker.parallelism.replicas,
             **common,
         )
     assert engine.workers.prefill is not None and engine.workers.decode is not None
-    _require_disaggregated_context_parallelism(engine.backend, engine.workers.prefill, engine.workers.decode)
-    prefill, prefill_state = _resolve_state_cache(engine, engine.workers.prefill)
+    prefill, vl_metadata, vision = _host_worker(engine, engine.workers.prefill, workload)
+    _require_disaggregated_context_parallelism(engine.backend, prefill, engine.workers.decode)
+    prefill, prefill_state = _resolve_state_cache(engine, prefill)
     decode, decode_state = _resolve_state_cache(engine, engine.workers.decode)
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
@@ -281,11 +322,11 @@ def _deployment(
     return BackendDeploymentSpec(
         parallel_config=parallel,
         performance_model_metadata={
-            "prefill": _state_metadata(engine, prefill, prefill_state),
+            "prefill": {**_state_metadata(engine, prefill, prefill_state), **vl_metadata},
             "decode": _state_metadata(engine, decode, decode_state),
         },
         prefill_engine_args=_worker_engine_args(
-            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token
+            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token, vision=vision
         ),
         decode_engine_args=_worker_engine_args(
             engine, decode, "decode", transfer_bytes_per_token=transfer_bytes_per_token
@@ -520,6 +561,85 @@ def _decode_cp(parallel: Any) -> int:
     return parallel.decode_context or 1
 
 
+def _host_worker(
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[HostWorkerPredictionConfig, dict[str, JSONValue], VisionPredictionConfig | None]:
+    """Resolve the language worker that hosts the scheduler loop: the aggregated or the prefill worker.
+
+    Images without a dedicated encoder pool are encoded on it.
+    """
+    worker, vl_metadata = _resolve_host_profile(engine, worker, workload)
+    _check_frontend_measurement(engine, worker, workload)
+    vision = None
+    if workload.get("images") is not None and engine.workers.encoder is None:
+        vision = worker.vision or VisionPredictionConfig()
+    return worker, vl_metadata, vision
+
+
+def _resolve_host_profile(
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[HostWorkerPredictionConfig, dict[str, JSONValue]]:
+    """Fill the worker's frontend stages from its measured host cost table, if it names one."""
+    if worker.host_profile is None:
+        return worker, {}
+    from .vl.table import resolve_frontend
+
+    images = workload.get("images")
+    if not isinstance(images, dict):
+        raise ValueError("host_profile requires an image workload")
+    frontend, digest = resolve_frontend(
+        worker.host_profile, model=engine.model, images=images, tensor=worker.parallelism.tensor
+    )
+    resolved = worker.model_copy(update={"frontend": frontend, "host_profile": None})
+    return resolved, {"vl": {"host_profile_digest": digest, "frontend": worker.host_profile.frontend}}
+
+
+def _check_frontend_measurement(
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> None:
+    """Stages measured on one model, workload and feature transport price only that combination."""
+    measured = worker.frontend.measured_for if worker.frontend is not None else None
+    if measured is None:
+        return
+    images = workload.get("images")
+    if not isinstance(images, dict):
+        raise ValueError(f"frontend stages were measured for {measured.describe()}; this workload has no images")
+    needed = FrontendMeasurementConfig.for_workload(engine.model, measured.frontend, images, worker.parallelism.tensor)
+    if needed != measured:
+        raise ValueError(
+            f"frontend stages were measured for {measured.describe()}; this prediction needs {needed.describe()}"
+        )
+
+
+def sglang_host_engine_args(
+    *,
+    host_loop: bool,
+    vision: VisionPredictionConfig | None,
+    max_batched_tokens: int,
+    frontend: FrontendPredictionConfig | None,
+) -> dict[str, JSONValue]:
+    """Rank arguments of the SGLang host-aware VL path, shared by predict and the sweeper.
+
+    SGLang reads its batch budget from `sglang.chunked_prefill_size`; the public
+    token knob only becomes effective on this path so other predictions keep
+    their bytes. The frontend's measurement record stays on the Python side.
+    """
+    result: dict[str, JSONValue] = {}
+    sglang: dict[str, JSONValue] = {}
+    if host_loop or vision is not None:
+        sglang["chunked_prefill_size"] = max_batched_tokens
+    if vision is not None:
+        sglang["vlm_cache_bytes"] = vision.cache_mib << 20
+        result["vision"] = True
+    if host_loop:
+        sglang["host_loop"] = True
+    if sglang:
+        result["sglang"] = sglang
+    if frontend is not None:
+        result["frontend"] = frontend.model_dump(mode="json", exclude={"measured_for"})
+    return result
+
+
 def _worker_performance_model_metadata(
     engine: EnginePredictionConfig, worker: WorkerPredictionConfig
 ) -> dict[str, JSONValue]:
@@ -582,6 +702,7 @@ def _worker_engine_args(
     role: str,
     *,
     transfer_bytes_per_token: int | None,
+    vision: VisionPredictionConfig | None = None,
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -624,6 +745,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if worker.scheduler.async_scheduling is not None:
+        payload["async_scheduling"] = worker.scheduler.async_scheduling
     if engine.speculation is not None:
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
@@ -744,6 +867,8 @@ def _worker_engine_args(
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+            # A rank hosting the vision tower prices encoder calls through the same estimator.
+            encoder_parallel=vision.encoder_parallel if vision is not None else None,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
         if timing.fpm_parquet_path is not None:
@@ -784,11 +909,22 @@ def _worker_engine_args(
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
     if cache.g3_offload is not None:
         payload["g3_offload"] = cache.g3_offload.model_dump(mode="json")
+    if cache.kvcr is not None:
+        payload["kvcr"] = cache.kvcr.model_dump(mode="json")
     if engine.kv_transfer is not None:
         transfer = engine.kv_transfer
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
+    if backend == "sglang" and isinstance(worker, HostWorkerPredictionConfig):
+        payload.update(
+            sglang_host_engine_args(
+                host_loop=worker.host_loop,
+                vision=vision,
+                max_batched_tokens=worker.scheduler.max_batched_tokens,
+                frontend=worker.frontend,
+            )
+        )
     return payload
 
 
@@ -855,6 +991,8 @@ def _traffic(
                 workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
             if load.agentic_warmup:
                 workload["agentic_warmup"] = True
+            if load.agentic_warmup_policy != "repeated_prefixes":
+                workload["agentic_warmup_policy"] = load.agentic_warmup_policy
             if load.agentic_profile is not None:
                 workload["agentic_profile"] = load.agentic_profile.model_dump(mode="json")
         if stop is not None and stop.max_virtual_time_seconds is not None:

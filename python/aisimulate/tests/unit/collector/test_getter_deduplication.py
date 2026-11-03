@@ -137,6 +137,7 @@ def _install_vllm_stubs(monkeypatch):
         "collector.helper",
         balanced_logits=_noop,
         benchmark_with_power=_noop,
+        flashinfer_autotuned=_noop,
         get_sm_version=lambda: 100,
         log_perf=_noop,
         power_law_logits_v3=_noop,

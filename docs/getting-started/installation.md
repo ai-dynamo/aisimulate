@@ -129,16 +129,15 @@ The [artifact contract](../ci/release.md) describes wheel/crate versioning.
 
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
-same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.6.0.dev20260930` and
-`aisimulate==0.13.0.dev202609270000000058`, from the NVIDIA prerelease index.
+same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.7.0.dev20261028` and
+`aisimulate==0.13.0.dev202610240000000082`, from the NVIDIA prerelease index.
 Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
 prediction of the best candidate pass with Python 3.12 on Linux.
 
 The AISimulate wheel corresponds to source
-[`9f140b71b75e43147e88ac76a8c72371077c2bee`](https://github.com/ai-dynamo/aisimulate/commit/9f140b71b75e43147e88ac76a8c72371077c2bee)
-and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/runs/36305697606).
-Dynamo's September 30 build source is
-[`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
+[`f3a3e3156530574f5e7a10446f19e571b82db871`](https://github.com/ai-dynamo/aisimulate/commit/f3a3e3156530574f5e7a10446f19e571b82db871)
+and [nightly run 40076769417](https://github.com/ai-dynamo/aisimulate/actions/runs/40076769417).
+The Dynamo wheel is the October 28 nightly build.
 This is a README simulation qualification, not a claim that Dynamo's entire
 nightly pipeline passed. Full CI README checks retest the installed artifacts
 when relevant files change.

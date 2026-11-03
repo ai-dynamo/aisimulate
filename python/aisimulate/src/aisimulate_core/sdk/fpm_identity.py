@@ -13,6 +13,16 @@ EXECUTION_COLUMNS = ("model_config_sha256", "execution_profile", "engram_residen
 LEGACY_EXECUTION_IDENTITY = ("", "full", "none", "text")
 
 
+def speculative_execution_identity(model_revision: str, execution_profile: dict) -> tuple[str, ...]:
+    """Carry the Rust-validated full-round selector; do not infer timing facts."""
+    import aisimulate_core
+
+    selector = aisimulate_core.RustForwardPassPerfModel._normalize_fpm_execution_profile(
+        model_revision, json.dumps(execution_profile)
+    )
+    return ("", selector, "none", "text")
+
+
 def execution_identity(
     raw_config: dict,
     *,

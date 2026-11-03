@@ -4,7 +4,6 @@
 import copy
 import functools
 import logging
-import warnings
 from collections import defaultdict, namedtuple
 
 import pandas as pd
@@ -26,7 +25,6 @@ from aisimulate.sdk.step_estimate import MixedStepInput, StepEstimate
 from aisimulate.sdk.utils import enumerate_ttft_tpot_constraints
 
 logger = logging.getLogger(__name__)
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class InferenceSession:
@@ -2005,10 +2003,8 @@ class AFDInferenceSession:
         paired columns are the source of truth in that mode.
 
         In AFD-with-PD combined runs the static side does not produce these
-        scalars at all; ``_combine_afd_static_estimate_results`` inherits
-        the AFD-side raw dict unchanged, so the NaN/None ``prefill_<x>`` or
-        ``decode_<x>`` block produced here correctly flags the static side
-        as non-AFD.
+        scalars at all, so the NaN/None ``prefill_<x>`` or ``decode_<x>``
+        block produced here correctly flags the static side as non-AFD.
         """
         cfg = self._afd_config
         isl = runtime_config.isl

@@ -162,6 +162,66 @@ pub enum SglangSchedulePolicy {
     Lpm,
 }
 
+/// One frontend processing stage: a request-level black box served by a pool
+/// of `workers`. Measured frontend service times are lowered into it by the
+/// Python configuration layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendStage {
+    #[serde(default = "one_worker")]
+    pub workers: usize,
+    /// Service time of one request running alone on the pool, in milliseconds.
+    pub service_ms: f64,
+    /// Entry `c - 1` scales the service time while `c` jobs share the pool;
+    /// empty keeps the service time independent of sharing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concurrency_scale: Vec<f64>,
+}
+
+/// Frontend stages that requests traverse, in order, before reaching the scheduler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendConfig {
+    pub stages: Vec<FrontendStage>,
+}
+
+const fn one_worker() -> usize {
+    1
+}
+
+impl FrontendConfig {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.stages.is_empty(),
+            "frontend requires at least one stage"
+        );
+        for (index, stage) in self.stages.iter().enumerate() {
+            ensure!(
+                stage.workers > 0,
+                "frontend.stages[{index}].workers must be positive"
+            );
+            ensure!(
+                stage.service_ms.is_finite() && stage.service_ms >= 0.0,
+                "frontend.stages[{index}].service_ms must be finite and non-negative"
+            );
+            ensure!(
+                stage.concurrency_scale.is_empty()
+                    || stage.concurrency_scale.len() == stage.workers,
+                "frontend.stages[{index}].concurrency_scale needs one entry per worker ({})",
+                stage.workers
+            );
+            ensure!(
+                stage
+                    .concurrency_scale
+                    .iter()
+                    .all(|scale| scale.is_finite() && *scale > 0.0),
+                "frontend.stages[{index}].concurrency_scale entries must be finite and positive"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Serializable SGLang scheduler controls.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -180,6 +240,19 @@ pub struct SglangConfig {
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+    /// Vision embedding cache capacity in bytes (`SGLANG_VLM_CACHE_SIZE_MB`).
+    #[serde(default = "default_vlm_cache_bytes")]
+    pub vlm_cache_bytes: u64,
+    /// Model one pass as one iteration of SGLang's overlap scheduler loop:
+    /// requests are received at iteration boundaries and a forward's outputs,
+    /// terminals, and prefix-cache commits become visible one iteration later.
+    /// Off, a pass is one forward whose outputs are visible when it ends. See
+    /// `crates/core/src/engine/scheduler/sglang/host_loop.rs`.
+    pub host_loop: bool,
+}
+
+const fn default_vlm_cache_bytes() -> u64 {
+    100 * 1024 * 1024
 }
 
 impl Default for SglangConfig {
@@ -190,6 +263,8 @@ impl Default for SglangConfig {
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
+            vlm_cache_bytes: default_vlm_cache_bytes(),
+            host_loop: false,
         }
     }
 }
@@ -288,6 +363,38 @@ impl G3OffloadConfig {
             );
         }
         Ok(())
+    }
+}
+
+/// KVCR peer G2 fetch timing. Replay-owned, like `g3_offload`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KvcrConfig {
+    /// Fixed delay before a pull moves bytes: control round trip plus source pin.
+    pub latency_to_first_byte_ms: f64,
+    /// Per-source-rank bandwidth in decimal GB/s, shared by the rank's GPUs
+    /// and by concurrent pulls from it. Zero is unlimited.
+    pub bandwidth_gbps: f64,
+}
+
+impl KvcrConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        for value in [self.latency_to_first_byte_ms, self.bandwidth_gbps] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "kvcr timing must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Default for KvcrConfig {
+    fn default() -> Self {
+        Self {
+            latency_to_first_byte_ms: 1.0,
+            bandwidth_gbps: 50.0,
+        }
     }
 }
 
@@ -518,6 +625,11 @@ pub struct EngineConfig {
     /// Includes chunk continuation and idle rounds; zero disables the interval.
     #[serde(default)]
     pub prefill_decode_interval: usize,
+    /// vLLM `--async-scheduling`. The engine then keeps a second batch queued
+    /// behind the running one, which a request arriving at a busy engine
+    /// misses. `None` selects vLLM's default: on, except with ngram drafts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub async_scheduling: Option<bool>,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -565,6 +677,9 @@ pub struct EngineConfig {
     pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub g3_offload: Option<crate::engine::G3OffloadConfig>,
+    /// Optional KVCR peer G2 fetch. Replay-owned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kvcr: Option<crate::engine::KvcrConfig>,
     /// Optional manual vLLM G1 token/state cache configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_cache: Option<StateCacheConfig>,
@@ -582,6 +697,14 @@ pub struct EngineConfig {
     pub sglang: SglangConfig,
     /// TensorRT-LLM-only scheduler controls.
     pub trtllm: TrtllmConfig,
+    /// SGLang-only frontend stages; requires `sglang.host_loop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend: Option<FrontendConfig>,
+    /// The rank hosts the model's vision encoder: image batches are timed
+    /// through the timing provider and the encoder weights and embedding cache
+    /// are deducted from the KV budget.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -613,6 +736,8 @@ struct EngineConfigWire {
     prefill_schedule_interval: usize,
     #[serde(default)]
     prefill_decode_interval: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    async_scheduling: Option<bool>,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -652,6 +777,8 @@ struct EngineConfigWire {
     #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
+    kvcr: Option<crate::engine::KvcrConfig>,
+    #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
     #[serde(default)]
     kv_transfer_timing_mode: TransferTimingMode,
@@ -661,6 +788,10 @@ struct EngineConfigWire {
     sglang: SglangConfig,
     #[serde(default)]
     trtllm: TrtllmConfig,
+    #[serde(default)]
+    frontend: Option<FrontendConfig>,
+    #[serde(default)]
+    vision: bool,
 }
 
 impl<'de> Deserialize<'de> for EngineConfig {
@@ -691,6 +822,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             max_num_batched_tokens: wire.max_num_batched_tokens,
             prefill_schedule_interval: wire.prefill_schedule_interval,
             prefill_decode_interval: wire.prefill_decode_interval,
+            async_scheduling: wire.async_scheduling,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -708,6 +840,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
+            kvcr: wire.kvcr,
             state_cache: wire.state_cache,
             prefix_match_unit: wire.prefix_match_unit,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
@@ -715,6 +848,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             timing_model: wire.timing_model,
             sglang: wire.sglang,
             trtllm: wire.trtllm,
+            frontend: wire.frontend,
+            vision: wire.vision,
         };
         config
             .validate_state_cache()
@@ -734,6 +869,7 @@ impl Default for EngineConfig {
             max_num_batched_tokens: default_max_num_batched_tokens(),
             prefill_schedule_interval: default_prefill_schedule_interval(),
             prefill_decode_interval: 0,
+            async_scheduling: None,
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -751,6 +887,7 @@ impl Default for EngineConfig {
             kv_cache_capacity_bytes: None,
             native_host_offload: None,
             g3_offload: None,
+            kvcr: None,
             state_cache: None,
             prefix_match_unit: None,
             kv_transfer_bandwidth: None,
@@ -758,11 +895,41 @@ impl Default for EngineConfig {
             timing_model: TimingModelConfig::Polynomial,
             sglang: SglangConfig::default(),
             trtllm: TrtllmConfig::default(),
+            frontend: None,
+            vision: false,
         }
     }
 }
 
 impl EngineConfig {
+    /// The public G2 exception requires the complete canonical cost identity;
+    /// flat draft fields alone cannot select this composition.
+    pub(crate) fn has_canonical_mtp_timing(&self) -> bool {
+        matches!(&self.timing_model, TimingModelConfig::External { provider, config }
+            if provider == "aic"
+                && config.get("speculation").and_then(|s| s.get("kind")).and_then(|v| v.as_str()) == Some("mtp")
+                && config.get("nextn").is_none_or(|v| v.as_u64() == Some(0)))
+    }
+
+    pub(crate) fn validate_host_offload_speculation(&self) -> anyhow::Result<()> {
+        let timing_speculative = match &self.timing_model {
+            TimingModelConfig::External { config, .. } => {
+                config.get("nextn").is_some_and(|v| v.as_u64() != Some(0))
+                    || config.get("speculation").is_some_and(|s| {
+                        !s.is_null() && s.get("kind").and_then(|v| v.as_str()) != Some("none")
+                    })
+            }
+            _ => false,
+        };
+        ensure!(
+            self.native_host_offload.is_none()
+                || (self.aic_nextn.is_none() && !timing_speculative)
+                || self.has_canonical_mtp_timing(),
+            "native_host_offload with speculative decoding requires canonical mtp speculation"
+        );
+        Ok(())
+    }
+
     /// Construct a configuration with the selected backend's native defaults.
     ///
     /// In particular, this selects [`Backend::default_block_size`] instead of
@@ -772,6 +939,20 @@ impl EngineConfig {
             backend,
             block_size: backend.default_block_size(),
             ..Self::default()
+        }
+    }
+
+    /// Batches a busy vLLM engine keeps committed, its `max_concurrent_batches`:
+    /// two with async scheduling and one without. Engine replay does not model
+    /// pipeline parallelism, which would raise this depth.
+    pub(crate) fn max_concurrent_batches(&self) -> usize {
+        if self.backend == Backend::Vllm
+            && self.async_scheduling != Some(false)
+            && !(self.native_host_offload.is_some() && self.aic_nextn.is_some())
+        {
+            2
+        } else {
+            1
         }
     }
 
@@ -804,8 +985,10 @@ impl EngineConfig {
                 "state_cache does not support g3_offload in the G1-only implementation"
             );
             ensure!(
-                self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
-                "prefix_match_unit does not support speculative decoding"
+                self.prefix_match_unit.is_none()
+                    || self.prefix_match_unit == Some(self.block_size)
+                    || self.aic_nextn.is_none(),
+                "sub-block prefix_match_unit does not support speculative decoding"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -849,6 +1032,33 @@ impl EngineConfig {
         ensure!(
             self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
             "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Vllm || self.async_scheduling.is_none(),
+            "async_scheduling is supported only for backend=vllm"
+        );
+        ensure!(
+            self.backend == Backend::Sglang || !self.sglang.host_loop,
+            "sglang.host_loop is supported only for backend=sglang"
+        );
+        ensure!(
+            !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
+            "sglang.host_loop is not modeled on a decode rank; the decode rank runs the text P/D decode loop"
+        );
+        if let Some(frontend) = &self.frontend {
+            ensure!(
+                self.backend == Backend::Sglang && self.sglang.host_loop,
+                "frontend requires backend=sglang with sglang.host_loop enabled"
+            );
+            frontend.validate()?;
+        }
+        ensure!(
+            !self.vision || self.backend == Backend::Sglang,
+            "vision is supported only for backend=sglang"
+        );
+        ensure!(
+            !self.vision || self.worker_type != WorkerType::Decode,
+            "vision is not modeled on a decode rank; the images are encoded on the prefill rank"
         );
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
@@ -954,6 +1164,26 @@ impl EngineConfig {
                 "g3_offload is supported only for worker_type=aggregated"
             );
         }
+        if let Some(kvcr) = &self.kvcr {
+            kvcr.validate()?;
+            let host = self
+                .native_host_offload
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("kvcr requires native_host_offload"))?;
+            ensure!(
+                host.scope == G2Scope::DpRankLocal,
+                "kvcr requires host_offload.scope=dp_rank_local"
+            );
+            ensure!(
+                self.g3_offload.is_none(),
+                "kvcr cannot be combined with g3_offload"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode,
+                "kvcr supports aggregated and prefill workers only"
+            );
+        }
+        self.validate_host_offload_speculation()?;
         if let Some(host_offload) = &self.native_host_offload {
             host_offload.validate()?;
             ensure!(
@@ -965,6 +1195,10 @@ impl EngineConfig {
                 "native_host_offload requires enable_prefix_caching=true"
             );
             if self.aic_nextn.is_some() {
+                ensure!(
+                    self.async_scheduling != Some(true),
+                    "native_host_offload with MTP requires async_scheduling=false"
+                );
                 ensure!(
                     self.worker_type == WorkerType::Aggregated,
                     "native_host_offload with aic_nextn requires worker_type=aggregated"
@@ -1145,11 +1379,16 @@ mod tests {
         );
         input["aic_nextn"] = serde_json::json!(1);
         assert!(
-            serde_json::from_value::<EngineConfig>(input)
+            serde_json::from_value::<EngineConfig>(input.clone())
                 .unwrap_err()
                 .to_string()
                 .contains("speculative")
         );
+        input["prefix_match_unit"] = serde_json::json!(64);
+        serde_json::from_value::<EngineConfig>(input)
+            .unwrap()
+            .validate()
+            .unwrap();
     }
 
     #[test]
@@ -1594,12 +1833,51 @@ mod tests {
         }
     }
 
+    fn set_canonical_mtp(config: &mut EngineConfig, depth: usize) {
+        config.aic_nextn = Some(depth);
+        config.timing_model = TimingModelConfig::External {
+            provider: "aic".into(),
+            config: serde_json::json!({"speculation": {"kind": "mtp", "params": {"depth": depth}}}),
+        };
+    }
+
+    #[test]
+    fn host_offload_rejects_legacy_depth_for_every_timing_kind() {
+        for timing in [
+            TimingModelConfig::Polynomial,
+            TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"nextn": 2}),
+            },
+            TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"speculation": {"kind": "eagle3"}}),
+            },
+        ] {
+            let mut config = native_host_offload_config();
+            config.aic_nextn = Some(2);
+            config.timing_model = timing;
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires canonical mtp")
+            );
+        }
+    }
+
     #[test]
     fn native_host_offload_accepts_supported_mtp_depths() {
         for depth in [1, 2, 5] {
             let mut config = native_host_offload_config();
-            config.aic_nextn = Some(depth);
+            set_canonical_mtp(&mut config, depth);
             config.validate().unwrap();
+            assert_eq!(config.max_concurrent_batches(), 1);
             let decoded: EngineConfig =
                 serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
             decoded.validate().unwrap();
@@ -1638,14 +1916,21 @@ mod tests {
             ),
             (
                 |config| {
-                    config.aic_nextn = Some(1);
+                    set_canonical_mtp(config, 2);
+                    config.async_scheduling = Some(true);
+                },
+                "requires async_scheduling=false",
+            ),
+            (
+                |config| {
+                    set_canonical_mtp(config, 1);
                     config.worker_type = WorkerType::Decode;
                 },
                 "requires worker_type=aggregated",
             ),
             (
                 |config| {
-                    config.aic_nextn = Some(2);
+                    set_canonical_mtp(config, 2);
                     let host = config.native_host_offload.as_mut().unwrap();
                     host.scope = G2Scope::ClusterShared;
                     host.kv_layout_id = Some("test-layout".into());
@@ -1654,7 +1939,7 @@ mod tests {
             ),
             (
                 |config| {
-                    config.aic_nextn = Some(2);
+                    set_canonical_mtp(config, 2);
                     config.g3_offload = serde_json::from_value(serde_json::json!(
                         {"scope": "worker_local", "num_g3_blocks": 1}
                     ))
@@ -1665,6 +1950,104 @@ mod tests {
         ];
         for &(mutate, expected) in cases {
             assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    #[test]
+    fn kvcr_defaults_round_trip_and_are_omitted_when_absent() {
+        let config: KvcrConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(
+            config,
+            KvcrConfig {
+                latency_to_first_byte_ms: 1.0,
+                bandwidth_gbps: 50.0
+            }
+        );
+        assert_eq!(config, KvcrConfig::default());
+        let unknown = serde_json::from_value::<KvcrConfig>(serde_json::json!({"policy": "x"}));
+        assert!(unknown.unwrap_err().to_string().contains("unknown field"));
+
+        // Absent KVCR leaves the rank descriptor unchanged.
+        let mut wire = serde_json::to_value(native_host_offload_config()).unwrap();
+        assert!(wire.get("kvcr").is_none());
+        assert!(
+            serde_json::to_value(EngineConfig::default())
+                .unwrap()
+                .get("kvcr")
+                .is_none()
+        );
+
+        // Both knobs serialize, so an explicit descriptor decodes to itself.
+        wire["kvcr"] = serde_json::json!({});
+        let engine: EngineConfig = serde_json::from_value(wire).unwrap();
+        assert_eq!(engine.kvcr, Some(KvcrConfig::default()));
+        engine.validate().unwrap();
+        let encoded = serde_json::to_value(&engine).unwrap();
+        assert_eq!(
+            encoded["kvcr"],
+            serde_json::json!({"latency_to_first_byte_ms": 1.0, "bandwidth_gbps": 50.0})
+        );
+        assert_eq!(
+            serde_json::from_value::<EngineConfig>(encoded).unwrap(),
+            engine
+        );
+    }
+
+    #[test]
+    fn kvcr_requires_per_rank_g2_and_rejects_unsupported_combinations() {
+        let base = || EngineConfig {
+            kvcr: Some(KvcrConfig::default()),
+            ..native_host_offload_config()
+        };
+        base().validate().unwrap();
+        let mut prefill = base();
+        prefill.worker_type = WorkerType::Prefill;
+        prefill.validate().unwrap();
+
+        let cases: &[InvalidHostConfigCase] = &[
+            (
+                |config| config.native_host_offload = None,
+                "kvcr requires native_host_offload",
+            ),
+            (
+                |config| {
+                    config.native_host_offload =
+                        Some(NativeHostOffloadConfig::new(8).cluster_shared("tp1"))
+                },
+                "kvcr requires host_offload.scope=dp_rank_local",
+            ),
+            (
+                |config| config.worker_type = WorkerType::Decode,
+                "kvcr supports aggregated and prefill workers only",
+            ),
+            (
+                |config| {
+                    config.g3_offload = Some(G3OffloadConfig {
+                        scope: G3Scope::WorkerLocal,
+                        num_g3_blocks: 8,
+                        latency_to_first_byte_ms: 0.1,
+                        read_bandwidth_gbps: 10.0,
+                        write_bandwidth_gbps: 10.0,
+                        shared_read_bandwidth_gbps: 80.0,
+                        shared_write_bandwidth_gbps: 80.0,
+                    })
+                },
+                "kvcr cannot be combined with g3_offload",
+            ),
+            (
+                |config| config.kvcr.as_mut().unwrap().bandwidth_gbps = -1.0,
+                "kvcr timing must be finite and non-negative",
+            ),
+            (
+                |config| config.kvcr.as_mut().unwrap().latency_to_first_byte_ms = f64::INFINITY,
+                "kvcr timing must be finite and non-negative",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            let mut config = base();
+            mutate(&mut config);
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected:?} not in {error:?}");
         }
     }
 
@@ -1780,6 +2163,43 @@ mod tests {
                         .to_string()
                         .contains("prefill_schedule_interval is supported only for backend=vllm")
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn async_scheduling_defaults_to_vllm_and_sets_the_batch_queue_depth() {
+        for (backend, depth) in [("vllm", 2), ("sglang", 1), ("trtllm", 1)] {
+            let mut config: EngineConfig =
+                serde_json::from_value(serde_json::json!({ "backend": backend })).unwrap();
+            assert_eq!(config.async_scheduling, None);
+            assert_eq!(config.max_concurrent_batches(), depth);
+            assert!(
+                !serde_json::to_value(&config)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("async_scheduling")
+            );
+            config.validate().unwrap();
+
+            for enabled in [false, true] {
+                config.async_scheduling = Some(enabled);
+                if backend == "vllm" {
+                    config.validate().unwrap();
+                    assert_eq!(config.max_concurrent_batches(), if enabled { 2 } else { 1 });
+                    let decoded: EngineConfig =
+                        serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+                    assert_eq!(decoded.async_scheduling, Some(enabled));
+                } else {
+                    assert!(
+                        config
+                            .validate()
+                            .unwrap_err()
+                            .to_string()
+                            .contains("async_scheduling is supported only for backend=vllm")
+                    );
+                }
             }
         }
     }
@@ -1954,6 +2374,22 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("requires aic_nextn")
+        );
+    }
+
+    #[test]
+    fn vision_is_rejected_on_a_decode_rank() {
+        let config = EngineConfig {
+            vision: true,
+            worker_type: WorkerType::Decode,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("vision is not modeled on a decode rank")
         );
     }
 

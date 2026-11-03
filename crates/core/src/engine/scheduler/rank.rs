@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use uuid::Uuid;
 
 use crate::engine::common::perf_model::PerfModel;
@@ -14,13 +14,15 @@ use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvTransferTimingMode, MockEngineArgs,
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
-use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
-use crate::engine::host_offload::G2Binding;
+use crate::engine::generalized::{
+    CommandContext, RankEngine, RankIdentity, RankPass, ScheduledPass,
+};
+use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
-    HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
-    PassStartEffects, PendingPass, PreemptionMode, Request, TimingModel, TransferTimingMode,
-    WorkerType,
+    HandoffId, HostOffloadObserver, IterationMs, KvHintSource, LifecycleEvent, Metrics, Output,
+    PassCompletionEffects, PassStartEffects, PendingPass, PreemptionMode, RankWork, Request,
+    TimingModel, TransferTimingMode, WorkerType, predict_group_iteration_ms,
 };
 
 use super::{
@@ -42,6 +44,15 @@ pub fn engine_seed_offset(identity: RankIdentity) -> Result<u64> {
 pub struct SchedulerRank {
     core: EngineCore,
     handoff_requests: HashMap<HandoffId, Uuid>,
+    /// The timing provider every rank of the logical engine shares.
+    timing: Arc<dyn TimingModel>,
+    dp_rank: u32,
+    /// Whether a group pass may be priced as one iteration: only while the
+    /// decode speedup is 1, so the shared duration takes one speedup. With
+    /// another decode speedup, every rank keeps its own phase pricing.
+    group_pricing: bool,
+    /// When the scheduled pass started, until it is resolved.
+    scheduled_at_ms: Option<f64>,
 }
 
 impl SchedulerRank {
@@ -60,8 +71,26 @@ impl SchedulerRank {
         self.core.set_g3_offload(registry, node);
     }
 
+    /// Pull hinted prefixes from peer ranks' G2. Returns this rank's own G2,
+    /// or `None` for an engine without KVCR.
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> Option<HostTierHandle> {
+        self.core.set_kvcr(registry, rank)
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
+    }
+
+    /// Per-rank G2 only. Shared G2 is observed through its deployment registry.
+    pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        match &self.core {
+            EngineCore::Vllm(core) => core.per_rank_host_cache_metrics(),
+            EngineCore::Sglang(_) => None,
+        }
     }
 
     pub fn new_with_timing_model(
@@ -86,7 +115,11 @@ impl SchedulerRank {
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
         );
-        let mut args = core_args(config, timing);
+        ensure!(
+            config.kvcr.is_none(),
+            "kvcr is Replay-owned; construct it through ReplaySpec"
+        );
+        let mut args = core_args(config, Arc::clone(&timing));
         if config.backend == Backend::Sglang {
             normalize_sglang_attention_dp(&mut args, identity.dp_size.get())?;
         }
@@ -111,6 +144,10 @@ impl SchedulerRank {
         Ok(Self {
             core,
             handoff_requests: HashMap::new(),
+            timing,
+            dp_rank: identity.dp_rank,
+            group_pricing: config.decode_speedup_ratio == 1.0,
+            scheduled_at_ms: None,
         })
     }
 
@@ -203,9 +240,8 @@ impl RankEngine for SchedulerRank {
                 .lifecycle_events
                 .retain(|event| match *event {
                     LifecycleEvent::SourceHeld { request_id: id, .. }
-                    | LifecycleEvent::DestinationReserved { request_id: id, .. } => {
-                        id != request_id
-                    }
+                    | LifecycleEvent::DestinationReserved { request_id: id, .. }
+                    | LifecycleEvent::TtftMilestone { request_id: id, .. } => id != request_id,
                 });
             before != pending.effects.outputs.len()
         } else {
@@ -256,11 +292,51 @@ impl RankEngine for SchedulerRank {
             .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
     }
 
+    /// A pass of this rank alone: a one-rank group.
     fn execute_pass(
         &mut self,
         now_ms: f64,
     ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
-        let pass = self.core.try_execute_hidden_pass(now_ms)?;
+        let ScheduledPass::Unpriced(work) = self.schedule_pass(now_ms)? else {
+            unreachable!("scheduler ranks leave their passes to the group price");
+        };
+        let iteration = self.price_group_pass(std::slice::from_ref(&work))?;
+        self.resolve_pass(iteration.as_ref())
+    }
+
+    fn schedule_pass(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<ScheduledPass<Self::PassStartEffects, Self::PendingPass>> {
+        let work = self.core.schedule_pass(now_ms)?;
+        self.scheduled_at_ms = Some(now_ms);
+        Ok(ScheduledPass::Unpriced(work))
+    }
+
+    fn idle_pass_work(&self) -> Option<RankWork> {
+        Some(RankWork::idle(self.dp_rank))
+    }
+
+    /// One timing query for the whole group. Providers without iteration
+    /// pricing return `None`, so every rank prices its own phases, as it also
+    /// does under a decode speedup other than 1 and in an all-idle group.
+    fn price_group_pass(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        if !self.group_pricing {
+            return Ok(None);
+        }
+        predict_group_iteration_ms(self.timing.as_ref(), ranks)
+            .context("external iteration prediction failed")
+    }
+
+    fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        let started_at_ms = self
+            .scheduled_at_ms
+            .take()
+            .ok_or_else(|| anyhow!("scheduler rank has no scheduled pass to resolve"))?;
+        let pass = self.core.resolve_pass(iteration)?;
         let end_ms = pass.end_ms;
         let (same_timestamp_retry, start_effects, completion_effects) = split_pass(pass)?;
         Ok(RankPass {
@@ -268,7 +344,7 @@ impl RankEngine for SchedulerRank {
             same_timestamp_retry,
             start_effects,
             pending: PendingPass {
-                started_at_ms: now_ms,
+                started_at_ms,
                 effects: completion_effects,
             },
         })
@@ -302,8 +378,12 @@ impl RankEngine for SchedulerRank {
         pending.effects.metrics = self.metrics();
         pending.effects.metrics.sglang_cache_hit_tokens = sglang_cache_hit_tokens;
         pending.effects.metrics.sglang_cache_total_tokens = sglang_cache_total_tokens;
-        pending.effects.forward_pass_metrics.duration_ms =
-            (end_ms - pending.started_at_ms).max(0.0);
+        // Under the SGLang host loop a pass ends when the scheduler thread returns
+        // to its loop, not when its forward does; FPM telemetry wants the forward.
+        pending.effects.forward_pass_metrics.duration_ms = self
+            .core
+            .last_forward_ms()
+            .unwrap_or((end_ms - pending.started_at_ms).max(0.0));
         for output in &pending.effects.outputs {
             if output.completed {
                 self.handoff_requests
@@ -423,6 +503,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
         prefill_decode_interval: config.prefill_decode_interval,
+        max_concurrent_batches: config.max_concurrent_batches(),
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,
@@ -465,6 +546,9 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             chunked_prefill_size: Some(config.sglang.chunked_prefill_size),
             clip_max_new_tokens: Some(config.sglang.clip_max_new_tokens),
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
+            vlm_cache_bytes: Some(config.sglang.vlm_cache_bytes),
+            host_loop: config.sglang.host_loop,
+            frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,
@@ -510,6 +594,8 @@ fn core_request(request: Request) -> DirectRequest {
         uuid: Some(request.request_id),
         arrival_timestamp_ms: None,
         session_id: request.session_id,
+        images: request.images,
+        kv_hint: request.kv_hint,
     }
 }
 
@@ -579,6 +665,15 @@ fn map_lifecycle(event: CoreLifecycle) -> LifecycleEvent {
             request_id,
             transferable_prompt_tokens,
         },
+        CoreLifecycle::TtftMilestone {
+            request_id,
+            stage,
+            at_ms,
+        } => LifecycleEvent::TtftMilestone {
+            request_id,
+            stage,
+            at_ms,
+        },
     }
 }
 
@@ -612,6 +707,7 @@ fn split_pass(
         same_timestamp_retry,
         output_signals,
         admissions,
+        g1_prefix_cache_lookup,
         pressure_events,
         lifecycle_events,
         mocker_metrics,
@@ -636,6 +732,7 @@ fn split_pass(
             .collect(),
         pressure_events,
         kv_events: start_kv,
+        g1_prefix_cache_lookup,
     };
     let completion = PassCompletionEffects {
         outputs: output_signals
@@ -683,9 +780,128 @@ mod tests {
 
     use super::*;
     use crate::engine::{
-        HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
-        TimingModelConfig,
+        EncoderShape, HostOffloadObservation, HostOffloadObservationData, ImageSpec,
+        NativeHostOffloadConfig, PressureKind, TimingModelConfig,
     };
+
+    #[rstest::rstest]
+    fn unsupported_native_images_reject_without_consuming_request_or_handoff_ids(
+        #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+        #[values(WorkerType::Aggregated, WorkerType::Prefill, WorkerType::Decode)]
+        worker_type: WorkerType,
+    ) {
+        let config = EngineConfig {
+            backend,
+            worker_type,
+            num_gpu_blocks: 8,
+            block_size: 4,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::default()
+        };
+        let mut rank = SchedulerRank::new(
+            RankIdentity {
+                worker_id: 0,
+                dp_rank: 0,
+                dp_size: NonZeroU32::MIN,
+            },
+            &config,
+        )
+        .unwrap();
+        let request_id = Uuid::from_u128(1);
+        let handoff_id = HandoffId::from(Uuid::from_u128(2));
+        let mut request = Request {
+            request_id,
+            tokens: (0..8).collect(),
+            max_output_tokens: 1,
+            output_token_ids: None,
+            session_id: None,
+            images: vec![ImageSpec {
+                identity: 1,
+                token_start: 4,
+                token_end: 8,
+                encoder: EncoderShape {
+                    sequences: 1,
+                    patch_tokens: 16,
+                    transformer_tokens: 16,
+                    output_tokens: 4,
+                },
+                embedding_bytes: 128,
+            }],
+            kv_hint: None,
+        };
+        let command = |request| match worker_type {
+            WorkerType::Aggregated => Command::Submit(request),
+            WorkerType::Prefill => Command::SubmitHandoffPrefill {
+                handoff_id,
+                request,
+            },
+            WorkerType::Decode => Command::ReserveDestination {
+                handoff_id,
+                request,
+            },
+        };
+        let context = CommandContext {
+            now_ms: 0.0,
+            pass_in_flight: false,
+        };
+        let before = rank.metrics();
+        let error = rank
+            .apply_command_effects(command(request.clone()), context, None)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("images require the SGLang backend"),
+            "{error:#}"
+        );
+        assert_eq!(rank.metrics(), before);
+        assert!(rank.is_drained());
+        assert!(rank.handoff_requests.is_empty());
+
+        // The same request and handoff IDs remain usable for a text request.
+        request.images.clear();
+        let effects = rank
+            .apply_command_effects(command(request), context, None)
+            .unwrap();
+        let expected = if worker_type == WorkerType::Decode {
+            CommandResult::DestinationAccepted { request_id }
+        } else {
+            CommandResult::Submitted(request_id)
+        };
+        assert_eq!(effects.result, expected);
+        if worker_type == WorkerType::Decode {
+            rank.apply_command_effects(Command::ActivateDestination { handoff_id }, context, None)
+                .unwrap();
+        }
+        let pass = rank.execute_pass(0.0).unwrap();
+        let completion = rank.complete_pass(pass.pending, pass.end_ms).unwrap();
+        if worker_type == WorkerType::Prefill {
+            assert!(completion.lifecycle_events.iter().any(|event| matches!(
+                event,
+                LifecycleEvent::SourceHeld { handoff_id: id, .. } if *id == handoff_id
+            )));
+            rank.apply_command_effects(
+                Command::ReleaseSource { handoff_id },
+                CommandContext {
+                    now_ms: pass.end_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        } else {
+            assert!(
+                completion
+                    .outputs
+                    .iter()
+                    .any(|output| output.request_id == request_id && output.completed)
+            );
+        }
+        assert!(rank.is_drained());
+    }
 
     #[test]
     fn state_cache_parameters_reach_rank_local_args() {
@@ -704,6 +920,29 @@ mod tests {
         assert!(args.state_cache.is_none());
         assert_eq!(args.num_gpu_blocks, legacy.num_gpu_blocks);
         assert_eq!(args.block_size, legacy.block_size);
+    }
+
+    #[test]
+    fn kvcr_is_replay_owned() {
+        let config = EngineConfig {
+            kv_cache_bytes_per_token: Some(250_000),
+            native_host_offload: Some(NativeHostOffloadConfig::new(4)),
+            kvcr: Some(crate::engine::KvcrConfig::default()),
+            ..EngineConfig::default()
+        };
+        let identity = RankIdentity {
+            worker_id: 1,
+            dp_rank: 0,
+            dp_size: NonZeroU32::MIN,
+        };
+        let timing = config.built_in_timing_model().unwrap();
+        let error = SchedulerRank::new_with_g2(identity, &config, timing, 0, None)
+            .err()
+            .expect("a bare rank must reject kvcr");
+        assert_eq!(
+            error.to_string(),
+            "kvcr is Replay-owned; construct it through ReplaySpec"
+        );
     }
 
     #[test]
@@ -768,6 +1007,8 @@ mod tests {
                     max_output_tokens: 20,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -789,6 +1030,8 @@ mod tests {
                     max_output_tokens: 1,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: first_end_ms,
@@ -929,6 +1172,8 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms,
@@ -974,6 +1219,8 @@ mod tests {
                         max_output_tokens: 0,
                         output_token_ids: None,
                         session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1003,6 +1250,8 @@ mod tests {
                     max_output_tokens: output_token_ids.len(),
                     output_token_ids: Some(output_token_ids),
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -1121,6 +1370,8 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1143,6 +1394,8 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 0.5,
@@ -1201,6 +1454,8 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 1.0,
@@ -1258,6 +1513,8 @@ mod tests {
                         max_output_tokens: 0,
                         output_token_ids: None,
                         session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
                     }),
                     CommandContext {
                         now_ms,
@@ -1296,6 +1553,8 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1388,6 +1647,8 @@ mod tests {
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
                         session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1457,6 +1718,8 @@ mod tests {
                         max_output_tokens: 8,
                         output_token_ids: None,
                         session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
                     }),
                     CommandContext {
                         now_ms: 0.0,
@@ -1513,6 +1776,8 @@ mod tests {
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
                         session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1601,11 +1866,13 @@ mod tests {
                 Command::ReserveDestination {
                     handoff_id: historical_handoff,
                     request: Request {
+                        images: Vec::new(),
                         request_id: history,
                         tokens: (1..=9).collect(),
                         max_output_tokens: 2,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 0.0,
@@ -1650,11 +1917,13 @@ mod tests {
                 Command::SubmitHandoffPrefill {
                     handoff_id: consumer_handoff,
                     request: Request {
+                        images: Vec::new(),
                         request_id: consumer,
                         tokens: (1..=9).collect(),
                         max_output_tokens: 1,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 now_ms,

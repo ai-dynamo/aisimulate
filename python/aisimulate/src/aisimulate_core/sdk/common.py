@@ -276,6 +276,10 @@ class VisionEncoderConfig:
     projector_post_norm: bool = field(default=False, kw_only=True)
     encoder_type: str = field(default="", kw_only=True)
     projector_pre_norm: bool = field(default=True, kw_only=True)
+    # Qwen `smart_resize` pixel budget (processor `size.shortest_edge` /
+    # `size.longest_edge`); zero leaves the corresponding bound unset.
+    min_pixels: int = field(default=0, kw_only=True)
+    max_pixels: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -703,8 +707,16 @@ DefaultHFModels = {
     "zai-org/GLM-5.2",
     "zai-org/GLM-5.2-FP8",
     "nvidia/GLM-5.2-NVFP4",
+    # GLM-5.3: Z.AI ships the FP8-block weights under the plain repository
+    # and the BF16 weights under -BF16 (the reverse of the GLM-5.2 naming;
+    # no zai-org/GLM-5.3-FP8 repository exists). The zai-org bundles are
+    # unmodified copies of zai-org/GLM-5.3@ba32f8c1 and
+    # zai-org/GLM-5.3-BF16@abf42e6c (see THIRD_PARTY_NOTICES.md).
     "zai-org/GLM-5.3",
-    "zai-org/GLM-5.3-FP8",
+    "zai-org/GLM-5.3-BF16",
+    # Unmodified copy of nvidia/GLM-5.3-NVFP4@e3b8f9f2 (ModelOpt
+    # MIXED_PRECISION; unlisted attention and shared experts run BF16).
+    # See model_configs/GLM53_NVFP4_PROVENANCE.md.
     "nvidia/GLM-5.3-NVFP4",
     # GLM-5.3-Flash: bundled configs are byte-identical to the pinned
     # checkpoint revisions in aisimulate_core.sdk.glm53flash.MODEL_REVISIONS.
@@ -871,6 +883,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "NemotronForCausalLM": "NEMOTRONNAS",
     "DeciLMForCausalLM": "NEMOTRONNAS",
     "NemotronHForCausalLM": "NEMOTRONH",
+    "NemotronH_Omni_Reasoning_V3": "NEMOTRONH",
     "MixtralForCausalLM": "MOE",
     "GptOssForCausalLM": "MOE",
     "Qwen2MoeForCausalLM": "MOE",
@@ -901,6 +914,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
 # _parse_hf_config_json will flatten these before parsing.
 MULTIMODAL_TEXT_CONFIG_KEY = {
+    "NemotronH_Omni_Reasoning_V3": "llm_config",
     "DeepseekV41ForCausalLM": "text_config",
     "Glm5NextForConditionalGeneration": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",
@@ -1394,14 +1408,13 @@ class PerfDataFilename(Enum):
     # DeepSeek-V4 sparse-op family — all share one column schema, served by
     # the engine table view (``_dsv4_sparse_kernel_data.*`` /
     # ``_dsv4_csa_topk_calib_data``):
-    #   csa_attn / hca_attn / paged_mqa_logits : FMLA & indexer kernel latency,
-    #     keyed ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
-    #     queried by ``_lookup_sparse_kernel``).
+    #   paged_mqa_logits : indexer kernel latency, keyed
+    #     ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
+    #     queried by ``_lookup_sparse_kernel``). The csa_attn / hca_attn FMLA
+    #     sidecars were removed 2026-10-15 (retired placeholders, no query path).
     #   csa_topk_calib : two rows/shape (score_mode=flat|top_last); the topK
     #     DELTA (flat-top_last) correction applied to CSA module latency.
     dsv4_paged_mqa_logits_module = "dsv4_paged_mqa_logits_module_perf.parquet"
-    dsv4_hca_attn_module = "dsv4_hca_attn_module_perf.parquet"
-    dsv4_csa_attn_module = "dsv4_csa_attn_module_perf.parquet"
     dsv4_csa_topk_calib = "dsv4_csa_topk_calib_perf.parquet"
     dsv4_megamoe_module = "dsv4_megamoe_module_perf.parquet"
     # Whole-model forward-pass data (forward_model="fpm"). Paired with a

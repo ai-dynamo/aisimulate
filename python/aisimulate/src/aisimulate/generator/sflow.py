@@ -28,6 +28,7 @@ from aisimulate.generator.dynamo_features import (
     frontend_cli_args_string,
     kvbm_shell_exports_from_dyn_config,
 )
+from aisimulate.generator.utils import has_fixed_request_lengths
 
 _SUPPORTED_BACKENDS = {"trtllm", "sglang", "vllm"}
 _SFLOW_EXPR_RE = re.compile(r"\$\[\[(.+?)\]\]")
@@ -156,12 +157,17 @@ def enrich_context_for_sflow(
             gpn,
         )
 
-    # Benchmark script
-    ctx["sflow_bench_script"] = _build_bench_script(
-        context=context,
-        sla=sla,
-        bench_run_content=ctx["sflow_bench_run_content"],
-        profile=variable_profile,
+    # Benchmark script. It runs one fixed ISL/OSL, so a request without
+    # lengths, such as a trace, gets no benchmark task.
+    ctx["sflow_bench_script"] = (
+        _build_bench_script(
+            context=context,
+            sla=sla,
+            bench_run_content=ctx["sflow_bench_run_content"],
+            profile=variable_profile,
+        )
+        if has_fixed_request_lengths(bench, sla)
+        else ""
     )
     ctx["sflow_variables"] = _build_sflow_variables(
         backend=backend,
@@ -456,6 +462,7 @@ def _build_sflow_variables(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     bench = param_values.get("BenchConfig", {}) or {}
+    sla = param_values.get("SlaConfig", {}) or {}
     wp = param_values.get("params", {}) or {}
     wc = param_values.get("WorkerConfig", {}) or {}
     model_path = context.get("model_path", "")
@@ -496,8 +503,9 @@ def _build_sflow_variables(
 
     vars_out.extend(
         [
-            _var("ISL", "Input sequence length", _int(bench.get("isl"), 4000), "integer"),
-            _var("OSL", "Output sequence length", _int(bench.get("osl"), 1000), "integer"),
+            # Same lengths that has_fixed_request_lengths gates the benchmark task on.
+            _var("ISL", "Input sequence length", _int(bench.get("isl") or sla.get("isl"), 4000), "integer"),
+            _var("OSL", "Output sequence length", _int(bench.get("osl") or sla.get("osl"), 1000), "integer"),
             _var("MULTI_ROUND", "Number of benchmark rounds", 20, "integer"),
             _var("CONCURRENCY", "Concurrency", ctx["sflow_concurrency"], "integer", domain=[ctx["sflow_concurrency"]]),
             _var("AIPERF_IMAGE", "AIPerf container image", ctx["sflow_aiperf_image"]),

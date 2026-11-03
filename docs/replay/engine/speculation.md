@@ -33,7 +33,7 @@ verification round, including draft operations for schemes that model them.
 | `engine.speculation.num_speculative_tokens` | Required for flat ngram input | fixed | Integer from 1 to 5. |
 | `engine.speculation.acceptance_rates` | Required for flat ngram input | fixed | Exactly one conditional acceptance probability per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
-| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. |
+| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
 `recommend` retains the flat ngram and legacy `nextn` inputs, fixed for every
@@ -113,14 +113,17 @@ with a uniform shared FullAttention cache. Agentic G2 additionally requires a
 single static worker. Separate draft models, other speculative schemes,
 asynchronous scheduling, P/D, shared G2 pools, and G3 are outside this combined
 scope. Keep the canonical `engine.speculation` block, fixed KV capacity and
-default timing; acceptance and seed remain workload assumptions.
+default timing; acceptance and seed remain workload assumptions. This composition
+defaults `scheduler.async_scheduling` to `false` and rejects an explicit `true`.
+It is supported by `--stack engine`; the optional Dynamo stack retains its
+independent G2/speculation rejection until its consumer and dependency pins are updated.
 
 The combined scheduler and cache behavior is a modified simulation adaptation
 of [vLLM v0.32.0](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be),
 Copyright contributors to the vLLM project, Apache-2.0. It does not change the
 backend-version labels or provenance of the selected performance data.
 
-Grouped caches, other G2 speculation, G3 offload, state-cache `prefix_match_unit`, AFD/EPD,
+Grouped caches, other G2 speculation, G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -212,7 +215,7 @@ draft readiness. TensorRT-LLM retains its existing scheduling approximation.
 These are scheduling/progress semantics, not a new timing estimator: the
 current timing callback still prices the configured verification round for a
 partial-width decode. It does not interpolate dynamically by actual draft
-width or enable measured full-SD-round FPM ingestion. These limits matter
+width. Measured full-SD-round profiles use the separate timing contract below. These limits matter
 when benchmarking tiny token budgets.
 
 HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
@@ -220,6 +223,34 @@ including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
 For MTP with G2, use the scoped canonical `engine.speculation` composition
 above. Grouped caches, G3 offload, and state-cache prefix matching with
-`prefix_match_unit` remain unsupported. Combinations accepted by the
+`prefix_match_unit` smaller than `block_size` remain unsupported. Full-block alignment is supported. Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
+
+### Measured SD-round FPM
+
+Ordinary `predict` can consume an explicitly tagged EAGLE3 profile through
+`engine.fpm_profile`, including HBM-only AgentX traffic. Each deployment records
+the [SD execution identity](../../perf-model/methods/whole-forward.md#recorded-speculative-round-identity)
+and observed linear-cache `runtime_memory`. Select `fpm_interpolation`, direct
+interpolation and deny fallback in the worker's timing configuration; `nextn`
+must match the recorded depth. For three drafts and mean total acceptance length
+2.78, use `nextn: 3` and `nextn_accepted: 1.78`. Leave `engine.speculation`
+unset: the registered-scheme configuration above models analytical draft work
+and cannot be combined with a measured full-round profile.
+
+Acceptance determines sampled output progress, not a latency multiplier. Each
+decode query consumes one measured complete round at the request count and
+actual past-KV total, without another draft charge. Prefill uses its own matching
+SD cell. A mixed scheduled iteration costs its prefill plus a full decode
+round as one forward. Without online corrections that equals replay's separate
+P/D phase costs; a tuned model applies the mixed iteration's correction to the
+sum instead of each phase's own. The data does not establish mixed-round
+fidelity. Small token budgets can produce partial-width rounds that are still
+priced at the configured depth. Query coverage and a measured serving
+comparison remain separate checks.
+
+The recorded usable pool is already net of draft/graph allocations. Do not add
+another reservation or scalar capacity override. This path requires vLLM pure
+TP, PP1/DP1/CP1, no recorded DCP, linear cache and HBM-only replay. It does not
+enable grouped-cache or offload SD, nor expand guided `onboard` collection.

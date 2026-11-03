@@ -83,7 +83,8 @@ impl EngineFactory {
     /// This is a configuration capability, not whether work is currently pending.
     pub(crate) fn can_have_internal_deadlines(&self) -> bool {
         // G3 also uses the native host-offload adapter and requires it during validation.
-        self.config.native_host_offload.is_some()
+        // Frontend stages deliver parked requests to the scheduler inbox between passes.
+        self.config.native_host_offload.is_some() || self.config.frontend.is_some()
     }
 
     /// Build one scheduler/KV/timing rank with an explicit identity.

@@ -61,7 +61,11 @@ Standalone drafts support registry model families, including MoE, subject to the
 
 ## Whole-forward FPM
 
-With `forward_model="fpm"`, target verification uses a whole-model FPM operation and draft operations remain explicit. At concurrency `c` and verification width `w`, the target query uses `c * w` tokens while retaining the total KV of `c` requests. Existing FPM model, system, backend, worker-role, and coverage requirements still apply. Plain MTP remains unsupported with FPM because the collected target curves do not include its draft-head cost.
+The legacy `forward_model="fpm"` combination of target FPM timing and explicit OP draft operations is deprecated. Construction emits a warning when it retains draft operations, while existing timing remains available during migration. Pure OP speculative decoding remains supported; ordinary AR FPM and n-gram FPM verification without a draft network are outside this deprecation.
+
+In the preserved hybrid route, target verification uses a whole-model FPM operation and draft operations remain explicit. At concurrency `c` and verification width `w`, the target query uses `c * w` tokens while retaining the total KV of `c` requests. Existing FPM model, system, backend, worker-role, and coverage requirements still apply. Plain MTP remains unsupported with this legacy FPM rewrite because the collected target curves do not include its draft-head cost.
+
+Migrate to [Option 1: an ordinary non-SD FPM queried with `draft_length`, or Option 2: a measured complete SD-round profile](../../../../../../docs/perf-model/methods/whole-forward.md#hybrid-fpmop-deprecation-and-migration). Option 1 currently supports pure-decode prediction queries, and Option 2 requires its exact measured identity, timing coverage and observed resources. During the transition, preserve applicable OP draft estimates; explicitly use Option 1 when its query contract and STP coverage apply. `best_available` does not automatically substitute that approximation for unsupported speculative inputs. Removal depends on replacement readiness for affected callers and workloads, with no fixed date.
 
 The operation schema changes to version 18; rebuild the native extension and recompile cached engine plans. Existing autoregressive defaults remain width one.
 

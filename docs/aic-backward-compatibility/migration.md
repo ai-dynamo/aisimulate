@@ -182,7 +182,7 @@ aggregate-only SLA semantics, described in its feature guide.
 | Workflow | Current mapping and limits |
 | --- | --- |
 | Request-rate sizing | `traffic.load.type: constant_rate` and `requests_per_second` set offered load. `goodput_per_gpu` ranks SLA-qualified output tokens/s/GPU; it does not minimize GPU count. |
-| Minimum-GPU sizing | `optimization.target: min_gpus` minimizes GPUs among evaluated qualifying candidates. Fixed request-rate traffic also requires `optimization.constraints.min_goodput_rps`; fixed concurrency does not. |
+| Minimum-GPU sizing | `optimization.target: min_gpus` minimizes GPUs among evaluated qualifying candidates. Open-loop traffic (a request or session rate, or trace timestamps without agentic lanes) also requires `optimization.constraints.min_goodput_rps`; fixed concurrency does not. |
 | Parallelism search | `engine.workers.<role>.parallelism` controls tensor, attention-data, MoE tensor/expert, and replica domains. `optimization.target: pareto` returns throughput/GPU versus throughput/user tradeoffs. |
 | Regular P/D | `engine.mode: disaggregated` with `prefill` and `decode` workers replaces AIC disaggregated estimates with scheduled serving traffic. `engine.kv_transfer` controls bandwidth and prompt-KV accounting. |
 | Traces and sessions | `traffic.source` accepts supported trace/session inputs. `--capture-per-request` writes individual request evidence. AIC has no equivalent replay command. |
@@ -196,9 +196,10 @@ startup and drain count toward the replay duration. Random `min_gpus` searches
 visit the smallest legal backend/topology pairs first, before revisiting their
 scheduler domains. The CLI reports suggestion-budget coverage.
 
-Minimum-GPU selection supports static engine pools and fixed synthetic rate or
-concurrency traffic. It rejects Dynamo/adapters, traces, sessions, searched loads,
-and candidate-relative KV load. Analytical EPD supports fixed concurrency and
+Minimum-GPU selection supports static engine pools, optionally behind the Dynamo
+Router, and synthetic request, synthetic session, or trace traffic at a fixed
+load. It rejects the Dynamo Planner and other adapters, searched loads, and
+candidate-relative KV load. Analytical EPD supports fixed concurrency and
 aggregate latency only. See [optimization goals](../sweeper/optimization-goals.md#minimum-gpus).
 
 ### Context parallelism
@@ -413,7 +414,10 @@ engine cache block size can produce zero hits.
 
 ### AFD translation
 
-AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
+The legacy compatibility CLI no longer supports `--estimate-mode afd` or
+`--serving-mode afd`; `--serving-mode all` now includes only agg and disagg.
+Use the unified `aisimulate recommend` and `aisimulate predict` commands for AFD.
+The former AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
 `phase: decode` and `combined_with_pd: true` select decode-side AFD with a regular
 prefill companion. The total GPU budget includes attention, FFN, and companion
 pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
@@ -560,12 +564,17 @@ metadata does not load the native extension.
 
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
-| Legacy `sweep_agg`, `sweep_disagg`, `sweep_afd` | `aisimulate.sweeper.Sweeper(...).run(config)` | All three remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_agg`, `sweep_disagg` | `aisimulate.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `engine.afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
 | Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
 
 ### Saved performance-model configuration
+
+Saved agg/disagg `exp_config.yaml` files remain loadable: `Task.from_yaml()`
+ignores removed legacy `afd_*` fields with a deprecation warning.
+Other unknown keys remain errors.
 
 Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
 worker_type, old_options, allow_regression=False)` to convert a saved flat
@@ -606,6 +615,30 @@ explains the retained workload routing and feature mathematics.
   supply `runtime_memory: None` when using declared memory. Runtime memory and
   the four legacy non-KV fields cannot coexist. See the
   [resource contract](../perf-model/memory.md).
+
+### Rust AgentX snapshot options
+
+The snapshot-import extension changes the public Rust
+`aisimulate_core::replay::loadgen::AgenticSnapshotOptions` source API. Replace
+seed-only literals such as `AgenticSnapshotOptions { seed }` with
+`AgenticSnapshotOptions::seeded(seed)`; the constructor leaves imported
+selections and the corpus cursor unset. Code importing exact selections must
+provide those two optional fields together.
+
+The options now own imported selections and are no longer `Copy`. Move the
+options into their consumer, borrow them where the API permits, or explicitly
+`.clone()` when the same selection must be consumed more than once. Floating-point
+cuts also mean the type retains `PartialEq` but no longer implements `Eq`; update
+generic bounds accordingly. These changes break Rust source compatibility, not
+legacy seed-only JSON:
+`{"seed": 42}` still deserializes and serializes without optional fields.
+
+Before the next stable `aisimulate-core` publication, the release owner must
+record this source API break in the release notes, select a compatible release
+version, and coordinate downstream caller migration and exact-artifact tests.
+This migration note neither changes package versions nor certifies downstream
+compatibility; nightly availability and the stable-release checklist remain
+separate steps under the [release contract](../ci/release.md#nightly-ci-and-fpe-qualification).
 
 ### Release and downstream contracts
 

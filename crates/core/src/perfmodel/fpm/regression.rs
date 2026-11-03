@@ -4,17 +4,21 @@
 //! Worker-type-bound regression fallback for the forward-pass perf model.
 //!
 //! Regression defaults to critical attention work and global FFN/MoE work.
-//! Linear models can select independent fitting and retention coordinates.
+//! Linear models can select independent fitting and retention coordinates,
+//! or fit the learned model's `fpm5` cross-rank aggregates instead.
 //! Samples are retained using `log1p`-transformed bucket
 //! coordinates, while fitting and prediction use standardized raw features.
 
 use serde::{Deserialize, Serialize};
 
-use super::estimator::{RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig};
+use super::estimator::{
+    RegressionFeatureSet, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
+};
 use super::options::ForwardPassPerfOptions;
 use super::samples::{BucketedSamples, SampleInsertion, StoreStats};
 use crate::{AicError, ForwardPassMetrics};
 
+mod aggregate;
 mod feature_axes;
 mod recursive;
 mod selected;
@@ -39,11 +43,13 @@ pub struct ForwardPassSplineDiagnostics {
     pub batch_fallbacks: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum RegressionStore {
     Linear(BucketedRegression),
     Selected(Box<selected::SelectedRegression>),
     Spline(Box<spline::BucketedSpline>),
+    /// Appended: snapshot variant indices are positional.
+    Aggregate(Box<aggregate::AggregateRegression>),
 }
 
 impl RegressionStore {
@@ -53,6 +59,14 @@ impl RegressionStore {
         sampling: &RegressionSamplingConfig,
     ) -> Self {
         match fit.kind {
+            RegressionFitKind::StandardizedNnls
+                if fit.linear.as_ref().and_then(|linear| linear.feature_set)
+                    == Some(RegressionFeatureSet::Fpm5) =>
+            {
+                Self::Aggregate(Box::new(aggregate::AggregateRegression::new(
+                    options, fit, sampling,
+                )))
+            }
             RegressionFitKind::StandardizedNnls => {
                 let axes = [
                     super::estimator::RegressionFeatureAxis::Attention,
@@ -89,6 +103,7 @@ impl RegressionStore {
             Self::Selected(store) => store.add(raw_x, observed_ms, metrics),
             Self::Linear(store) => Ok(store.add_observation(raw_x, observed_ms)),
             Self::Spline(store) => Ok(store.add_observation(raw_x, observed_ms)),
+            Self::Aggregate(store) => store.add(raw_x, observed_ms, metrics),
         }
     }
     pub(crate) fn predict_metrics(
@@ -100,6 +115,7 @@ impl RegressionStore {
             Self::Selected(store) => store.predict(raw_x, metrics),
             Self::Linear(store) => Ok(store.predict(&raw_x)),
             Self::Spline(store) => Ok(store.predict(&raw_x)),
+            Self::Aggregate(store) => Ok(store.predict(metrics)),
         }
     }
 
@@ -109,6 +125,7 @@ impl RegressionStore {
             Self::Linear(store) => store.add_observation(raw_x, observed_ms),
             Self::Selected(store) => store.add(raw_x, observed_ms, &[]).unwrap_or(false),
             Self::Spline(store) => store.add_observation(raw_x, observed_ms),
+            Self::Aggregate(store) => store.add(raw_x, observed_ms, &[]).unwrap_or(false),
         }
     }
 
@@ -118,12 +135,13 @@ impl RegressionStore {
             Self::Linear(store) => store.predict(raw_x),
             Self::Selected(store) => store.predict(*raw_x, &[]).ok().flatten(),
             Self::Spline(store) => store.predict(raw_x),
+            Self::Aggregate(store) => store.predict(&[]),
         }
     }
 
     pub(crate) fn spline_diagnostics(&self) -> Option<ForwardPassSplineDiagnostics> {
         match self {
-            Self::Linear(_) | Self::Selected(_) => None,
+            Self::Linear(_) | Self::Selected(_) | Self::Aggregate(_) => None,
             Self::Spline(store) => Some(store.diagnostics()),
         }
     }
@@ -134,6 +152,8 @@ impl RegressionStore {
             Self::Linear(store) => store.mutations_since_rebuild(),
             Self::Selected(store) => store.mutations_since_rebuild(),
             Self::Spline(store) => store.mutations_since_rebuild(),
+            // Batch refits keep no incremental statistics to rebuild.
+            Self::Aggregate(_) => 0,
         }
     }
 }
@@ -144,6 +164,7 @@ impl StoreStats for RegressionStore {
             Self::Linear(store) => store.observation_count(),
             Self::Selected(store) => store.observation_count(),
             Self::Spline(store) => store.observation_count(),
+            Self::Aggregate(store) => store.observation_count(),
         }
     }
 
@@ -152,6 +173,28 @@ impl StoreStats for RegressionStore {
             Self::Linear(store) => store.is_ready(),
             Self::Selected(store) => store.is_ready(),
             Self::Spline(store) => store.is_ready(),
+            Self::Aggregate(store) => store.is_ready(),
+        }
+    }
+}
+
+impl RegressionStore {
+    /// Adopt configuration-only fields from a store freshly built from the
+    /// same configuration, then validate the decoded state against it.
+    pub(crate) fn restore_snapshot(&mut self, fresh: &Self) -> Result<(), String> {
+        match (self, fresh) {
+            (Self::Linear(saved), Self::Linear(fresh)) => {
+                saved.restore_snapshot(fresh, |x, raw_x| {
+                    x.len() == 2
+                        && x.iter()
+                            .zip(raw_x)
+                            .all(|(bucket, raw)| bucket.to_bits() == raw.ln_1p().to_bits())
+                })
+            }
+            (Self::Selected(saved), Self::Selected(fresh)) => saved.restore_snapshot(fresh),
+            (Self::Spline(saved), Self::Spline(fresh)) => saved.restore_snapshot(fresh),
+            (Self::Aggregate(saved), Self::Aggregate(fresh)) => saved.restore_snapshot(fresh),
+            _ => Err("regression fit kind differs from configuration".into()),
         }
     }
 }
@@ -161,13 +204,14 @@ const FEATURE_DIMENSION: usize = 2;
 const INACTIVE_SCALE_RELATIVE_TOLERANCE: f64 = 1e-12;
 const MIN_POSITIVE_PREDICTION_MS: f64 = 1e-6;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct RegressionObservation<const D: usize = 2> {
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     raw_x: [f64; D],
     observed_ms: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct BucketedRegression<const D: usize = 2, const S: usize = 3> {
     samples: BucketedSamples<RegressionObservation<D>>,
     min_observations: usize,
@@ -300,14 +344,80 @@ impl<const D: usize, const S: usize> BucketedRegression<D, S> {
     }
 }
 
+impl<const D: usize, const S: usize> BucketedRegression<D, S> {
+    /// `bucket` checks a retained bucket coordinate against its raw features
+    /// where the projection is recoverable from the stored observation.
+    fn restore_snapshot(
+        &mut self,
+        fresh: &Self,
+        bucket: impl Fn(&[f64], &[f64; D]) -> bool,
+    ) -> Result<(), String> {
+        if self.min_observations != fresh.min_observations {
+            return Err("regression min_observations differs from configuration".into());
+        }
+        self.samples
+            .validate_restored(&fresh.samples, |x, observation| {
+                if !observation.is_valid() {
+                    return Err("retained regression observation is invalid".into());
+                }
+                if !bucket(x, &observation.raw_x) {
+                    return Err(
+                        "retained regression bucket coordinate differs from its features".into(),
+                    );
+                }
+                Ok(())
+            })?;
+        self.recursive
+            .validate_restored(&fresh.recursive, self.samples.total_observations)?;
+        self.update.restore_snapshot(&fresh.update)?;
+        if let Some(fit) = &self.fit {
+            fit.validate(self.recursive.non_negative())?;
+        }
+        Ok(())
+    }
+}
+
+impl<const D: usize> RegressionObservation<D> {
+    fn is_valid(&self) -> bool {
+        valid_features(&self.raw_x) && self.observed_ms.is_finite() && self.observed_ms > 0.0
+    }
+}
+
+impl<const D: usize> LinearFit<D> {
+    /// Published fits are finite and only weight varying axes.
+    fn validate(&self, non_negative: bool) -> Result<(), String> {
+        let standardization = &self.standardization;
+        let valid = self.intercept.is_finite()
+            && (0..D).all(|axis| {
+                let coefficient = self.coefficients[axis];
+                let scale = standardization.scales[axis];
+                coefficient.is_finite()
+                    && (!non_negative || coefficient >= 0.0)
+                    && standardization.means[axis].is_finite()
+                    && scale.is_finite()
+                    && scale >= 0.0
+                    && (!standardization.active[axis] || scale > 0.0)
+                    && (standardization.active[axis] || coefficient == 0.0)
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err("published regression fit is not finite or not consistent".into())
+        }
+    }
+}
+
 fn valid_features<const D: usize>(x: &[f64; D]) -> bool {
     x.iter().all(|value| value.is_finite() && *value >= 0.0)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Standardization<const D: usize = 2> {
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     means: [f64; D],
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     scales: [f64; D],
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     active: [bool; D],
 }
 
@@ -371,9 +481,10 @@ impl<const D: usize> Standardization<D> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct LinearFit<const D: usize = 2> {
     intercept: f64,
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     coefficients: [f64; D],
     standardization: Standardization<D>,
 }

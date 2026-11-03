@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +20,9 @@ def _mock_helper_imports(monkeypatch):
     fake_helper.get_sm_version = lambda: 90  # default Hopper
     fake_helper.log_perf = lambda **kw: None
     fake_helper.benchmark_with_power = lambda **kw: None
+    fake_helper.PhaseClock = PhaseClock
+    fake_helper.render_phase_totals = render_phase_totals
+    fake_helper.run_measurement_subprocess = run_measurement_subprocess
     monkeypatch.setitem(__import__("sys").modules, "helper", fake_helper)
 
     fake_torch = types.ModuleType("torch")
@@ -149,7 +153,8 @@ class TestGetGenerationTestCases:
 
 
 class TestDsaContextPrefixShape:
-    def test_rejects_single_token_prefill(self):
+    def test_single_token_extend_stays_out_while_prefill_is_timed_eagerly(self):
+        # 0.5.21: prefill graphs off, and the eager DSA indexer faulted on a one-token extend
         mod = _import_module()
         assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
         assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
@@ -239,7 +244,16 @@ class TestDsaSkipIndexer:
         assert "attention_module.next_skip_topk = True" in prefill
         assert '_skip_state["prev_topk"] = warmup_output[1].detach()' in prefill
         assert "attention_module.skip_topk = _skip_uses_dense_mha" in prefill
-        assert 'not _skip_uses_dense_mha and _skip_state["prev_topk"] is None' in prefill
+        prefill_tree = ast.parse(prefill)
+        missing_producer = ast.parse(
+            "_skip_indexer and native_graph_context is None "
+            'and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None',
+            mode="eval",
+        ).body
+        assert any(
+            isinstance(node, ast.If) and ast.dump(node.test) == ast.dump(missing_producer)
+            for node in ast.walk(prefill_tree)
+        )
         assert "sglang_dsa_dense_mha_" in prefill
         assert "dsa_backend.dsa_prefill_impl" in prefill
 
@@ -269,7 +283,7 @@ class TestBuildModuleTestCases:
 
     @pytest.mark.parametrize(
         "model_path",
-        ["zai-org/GLM-5.3", "zai-org/GLM-5.3-FP8", "nvidia/GLM-5.3-NVFP4"],
+        ["zai-org/GLM-5.3", "zai-org/GLM-5.3-BF16", "nvidia/GLM-5.3-NVFP4"],
     )
     def test_glm53_alias_configs_match_glm52_geometry(self, model_path):
         mod = _import_module()
@@ -480,9 +494,12 @@ class TestBuildModuleTestCases:
         batch_sizes = {c[1] for c in cases}
         assert batch_sizes == set(mod.get_mla_module_sweep_spec("sglang").context_batch_sizes)
 
-    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch):
+    # Reads the bundled export files, whatever shape they hold. The MIXED_PRECISION shape is pinned in
+    # test_collect_mla_module_native_quant.py with export files written to tmp_path.
+    @pytest.mark.parametrize("model_path", ["nvidia/GLM-5-NVFP4", "nvidia/GLM-5.3-NVFP4"])
+    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch, model_path):
         mod = _import_module()
-        monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
         with patch.object(mod, "get_sm_version", return_value=90):
             cases = mod._build_module_test_cases("dsa", "context")
         assert cases == []
@@ -683,28 +700,16 @@ class TestFailClosedOrchestration:
                 attention_backend="fa3",
             )
 
-    def test_configured_subprocess_timeout_raises(self, monkeypatch):
+    def test_configured_subprocess_timeout_raises(self, monkeypatch, capsys):
         mod = _import_module()
 
-        class TimedOutProcess:
-            returncode = None
-            killed = False
-            waited = False
+        def timed_out(argv, *, env, cwd, timeout):
+            # helper.run_measurement_subprocess kills the child and keeps its output
+            assert timeout == 7
+            raise mod.subprocess.TimeoutExpired(cmd=argv, timeout=timeout, output=b"partial sweep")
 
-            def communicate(self, timeout=None):
-                assert timeout == 7
-                raise mod.subprocess.TimeoutExpired(cmd="mla-collector", timeout=timeout)
-
-            def kill(self):
-                self.killed = True
-
-            def wait(self):
-                self.waited = True
-                self.returncode = -9
-
-        process = TimedOutProcess()
         monkeypatch.setenv("AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC", "7")
-        monkeypatch.setattr(mod.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        monkeypatch.setattr(mod, "run_measurement_subprocess", timed_out)
 
         with pytest.raises(RuntimeError, match=r"MLA module context subprocess timed out after 7s"):
             mod._run_mla_subprocess(
@@ -719,8 +724,7 @@ class TestFailClosedOrchestration:
                 attention_backend="fa3",
             )
 
-        assert process.killed
-        assert process.waited
+        assert "partial sweep" in capsys.readouterr().out
 
 
 class TestOrdinaryMLAPrecision:
@@ -760,14 +764,14 @@ class TestOrdinaryMLACli:
         def capture_call(*_args, **kwargs):
             captured.update(kwargs)
 
-        def popen(argv, **_kwargs):
+        def run_child(argv, **_kwargs):
             # Execute the generated child call without importing the GPU runtime.
             tree = ast.parse(argv[2])
             call = ast.Expression(tree.body[-1].value)
             eval(compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": capture_call})
-            return types.SimpleNamespace(returncode=0, communicate=lambda timeout: (b"", None))
+            return 0, b""
 
-        monkeypatch.setattr(mod.subprocess, "Popen", popen)
+        monkeypatch.setattr(mod, "run_measurement_subprocess", run_child)
         mod.run_mla_module_worker(
             128,
             1,

@@ -17,8 +17,13 @@ from typing import Any
 FPM_SELF_SERVICE_GUIDE = "docs/perf-model/fpm-self-service/README.md"
 
 _UNSUPPORTED_ARCHITECTURE = re.compile(r"architecture (\S+) is not supported")
-_MODE_PREFIX = re.compile(r"^(OpLevel|FpmInterpolation|FpmRegression): ")
-_MODE_LABELS = {"OpLevel": "op_level", "FpmInterpolation": "fpm_interpolation", "FpmRegression": "fpm_regression"}
+_MODE_PREFIX = re.compile(r"^(OpLevel|FpmInterpolation|FpmRegression|FpmLearned): ")
+_MODE_LABELS = {
+    "OpLevel": "op_level",
+    "FpmInterpolation": "fpm_interpolation",
+    "FpmRegression": "fpm_regression",
+    "FpmLearned": "fpm_learned",
+}
 _WRAPPER_PREFIXES = (
     "unsupported model for Rust core estimator: ",
     "compile_engine: ",

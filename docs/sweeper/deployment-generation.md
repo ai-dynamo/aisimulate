@@ -129,6 +129,15 @@ those choices. It rejects combinations it cannot lower, including analytical
 AFD/EPD and heterogeneous P/D hardware. AFD predictions instead produce their
 own analytical artifacts; see [AFD topology](../replay/engine/analytical.md#afd).
 
+A trace workload has no fixed request length, so the bridge lowers it without
+ISL/OSL. It rejects lengths supplied for a trace, whether on the workload or
+as `SlaConfig.isl`/`SlaConfig.osl` overrides, because generated fields would be
+sized from them. Benchmarks replay one fixed ISL/OSL, so unless
+`BenchConfig.isl` and `BenchConfig.osl` are set, a trace candidate gets no
+`bench_run.sh` or `k8s_bench.yaml`, and its `sflow.yaml` has no benchmark task.
+The bridge rejects a trace for the `slurm` target, whose bundle runs that
+benchmark by default.
+
 The renderer currently reports that vLLM `0.24.0` uses the closest prior
 `cli_args.0.20.1.j2` flag template. Keep that warning with the generated artifacts
 and verify the emitted flags against the actual `0.24.0` runtime.
@@ -145,12 +154,32 @@ not recreate the selected recommendation. See the
 
 Generated TRT-LLM prefill/decode engine YAML includes `cache_transceiver_config`
 for both roles, including when candidate batch, token and KV memory limits are
-preserved. A missing transfer buffer size receives the rule's block-aligned
-default; an explicitly preserved buffer size remains unchanged. This enables
+preserved. With fixed request lengths and an explicit block size, a missing
+transfer buffer size receives the rule's block-aligned default; an explicitly
+preserved buffer size remains unchanged. This enables
 the KV transfer required by P/D serving without resizing the evaluated scheduler
 limits. Aggregated deployments do not need this transfer configuration.
 Validate a real completion after readiness: worker startup alone does not test
 prefill-to-decode KV transfer.
+
+The rule derives that default from ISL, OSL, and the configured block size.
+When request lengths or block size are unset, `cache_transceiver_config` sets
+only `backend` and TensorRT-LLM picks the size. This avoids assuming a 32-token
+block when the runtime selects a different geometry, such as FlashMLA's 64.
+Since 1.3.0rc3 that default is `max_seq_len`, rounded up to a whole KV block
+since 1.3.0rc22.post1. In 1.3.0rc3 through 1.3.0rc22 it is unrounded, so a
+worker can fail at startup when `max_seq_len` is not a multiple of the KV block
+size; for those runtimes, choose a `context_length` aligned to the runtime's
+effective block size. Artifact generation warns for each role whose buffer the
+runtime sizes when `max_seq_len` is not a multiple of the block size, or when
+alignment cannot be checked because the block size or `max_seq_len` is unset
+(the runtime then takes the length from the model). It checks the deployed
+value for Sweeper candidates and direct generator calls alike: the final
+engine configuration, including `extra_engine_args` overrides, or for the
+`dynamo-python` target the `--max-seq-len` flag, because that target's
+translation of the engine configuration into flags omits `max_seq_len`. Earlier versions
+use a buffer sized by `TRTLLM_KVCACHE_TRANSFER_BUFFER_SIZE` (512 MB by
+default).
 
 ### vLLM KV precision versions
 

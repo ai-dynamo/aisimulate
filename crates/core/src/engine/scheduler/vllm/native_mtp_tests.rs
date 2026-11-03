@@ -257,7 +257,7 @@ fn small_budget_waits_for_running_decode_without_rejecting_a_fresh_prompt() {
 }
 
 #[test]
-fn loaded_prefix_rejects_a_permanently_impossible_padding_budget() {
+fn host_hit_with_impossible_padding_budget_falls_back_to_cold_prefill() {
     let mut core = VllmCore::new(args(2, 1, false, true));
     let mut collector = crate::engine::trace::TraceCollector::default();
     submit(&mut core, 182, 12, 1);
@@ -270,7 +270,7 @@ fn loaded_prefix_rejects_a_permanently_impossible_padding_budget() {
     assert!(core.is_empty());
     let restored = submit(&mut core, 183, 12, 1);
     let mut terminal = None;
-    for _ in 0..4 {
+    for _ in 0..24 {
         let pass = core.execute_pass(&mut collector, now);
         now = pass.end_ms;
         core.complete_engine_boundary(now);
@@ -282,9 +282,9 @@ fn loaded_prefix_rejects_a_permanently_impossible_padding_budget() {
             break;
         }
     }
-    let terminal = terminal.expect("impossible padding must not keep the request queued forever");
-    assert!(terminal.completed && terminal.rejected);
-    assert!(terminal.token_id.is_none());
+    let terminal = terminal.expect("cold admission must make progress when a host hit cannot pad");
+    assert!(terminal.completed && !terminal.rejected);
+    assert!(terminal.token_id.is_some());
     assert_eq!(core.kv_manager.num_active_blocks(), 0);
     assert!(core.is_drained());
 }
@@ -444,4 +444,92 @@ fn only_scheduled_drafts_can_be_accepted(#[case] nextn: usize, #[case] budget: u
         assert_eq!(request.sequence.generated_tokens(), 1 + generation * budget);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
     }
+}
+
+// Original regressions for review cases: 12 prompt tokens occupy exactly
+// three four-token blocks; zero generation needs no speculative tail.
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn zero_output_mtp_fits_an_exact_prompt_pool(#[case] host: bool) {
+    let mut config = args(2, 16, false, host);
+    config.num_gpu_blocks = 3;
+    let mut core = VllmCore::new(config);
+    let uuid = submit(&mut core, 195, 12, 0);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert_eq!(pass.output_signals.len(), 1);
+    let signal = &pass.output_signals[0];
+    assert_eq!(signal.uuid, uuid);
+    assert!(signal.completed && !signal.rejected);
+    assert!(signal.token_id.is_none());
+    core.complete_engine_boundary(pass.end_ms);
+    assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    assert!(core.is_drained());
+}
+
+#[rstest]
+#[case(false, 0, 3)]
+#[case(true, 0, 3)]
+#[case(false, 1, 4)]
+#[case(true, 1, 4)]
+fn warm_host_prefix_cannot_reject_a_request_that_fits_cold(
+    #[case] host: bool,
+    #[case] output: usize,
+    #[case] capacity: usize,
+) {
+    let mut config = args(2, 16, false, host);
+    config.num_gpu_blocks = capacity;
+    let mut core = VllmCore::new(config);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let mut now = 0.0;
+    let mut host_reused = 0;
+    for (id, start) in [(196, 0), (197, 100), (198, 0)] {
+        let uuid = core.receive(DirectRequest {
+            tokens: (start..start + 12).collect(),
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        });
+        let mut completed = false;
+        let mut tokens = 0;
+        for _ in 0..12 {
+            let pass = core.execute_pass(&mut collector, now);
+            now = pass.end_ms;
+            for admission in &pass.admissions {
+                if id == 198 {
+                    host_reused += admission
+                        .cache_tier_attribution
+                        .as_ref()
+                        .map_or(0, |tier| tier.host_reused_input_tokens);
+                }
+            }
+            for signal in &pass.output_signals {
+                assert_eq!(signal.uuid, uuid);
+                assert!(
+                    !signal.rejected,
+                    "a warm prefix cannot make a fitting request impossible"
+                );
+                tokens += usize::from(signal.token_id.is_some());
+                completed |= signal.completed;
+            }
+            core.complete_engine_boundary(now);
+            if let Some(deadline) = core.next_internal_deadline_ms() {
+                now = deadline;
+                core.process_internal_work(now);
+            }
+            if completed {
+                break;
+            }
+        }
+        assert!(completed);
+        assert_eq!(tokens, output);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+    assert_eq!(
+        host_reused > 0,
+        host,
+        "the final request must exercise a real G2 hit"
+    );
+    assert!(core.is_drained());
 }

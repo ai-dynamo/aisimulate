@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -208,6 +208,7 @@ impl WekaImporter {
         let file_count = snapshots.len();
         let mut canonical_rows =
             tempfile::NamedTempFile::new().context("creating Weka row spool")?;
+        let mut row_writer = BufWriter::new(canonical_rows.as_file_mut());
         for snapshot in &snapshots {
             for_each_source_trace(
                 File::open(&snapshot.file).context("reopening Weka source snapshot")?,
@@ -229,10 +230,9 @@ impl WekaImporter {
                     raw_zero_outputs += lowered.raw_zero_outputs;
                     requests += lowered.rows.len();
                     for row in lowered.rows {
-                        serde_json::to_writer(canonical_rows.as_file_mut(), &row)
+                        serde_json::to_writer(&mut row_writer, &row)
                             .context("writing preflighted Weka row spool")?;
-                        canonical_rows
-                            .as_file_mut()
+                        row_writer
                             .write_all(b"\n")
                             .context("writing preflighted Weka row delimiter")?;
                     }
@@ -241,10 +241,10 @@ impl WekaImporter {
                 },
             )?;
         }
-        canonical_rows
-            .as_file_mut()
+        row_writer
             .flush()
             .context("flushing preflighted Weka row spool")?;
+        drop(row_writer);
         canonical_rows
             .as_file_mut()
             .seek(SeekFrom::Start(0))
@@ -304,12 +304,18 @@ impl WekaImporter {
             .rows
             .reopen()
             .context("reopening preflighted Weka row spool")?;
-        let stream = serde_json::Deserializer::from_reader(BufReader::new(rows))
-            .into_iter::<AgenticMooncakeRow>();
+        // The private spool contains one compact JSON object per line.
+        let mut reader = BufReader::new(rows);
+        let mut buffer = Vec::new();
         let mut emitted = 0;
-        for row in stream {
-            emit(row.context("reading preflighted Weka row spool")?)?;
+        while reader
+            .read_until(b'\n', &mut buffer)
+            .context("reading preflighted Weka row spool")?
+            != 0
+        {
+            emit(serde_json::from_slice(&buffer).context("reading preflighted Weka row spool")?)?;
             emitted += 1;
+            buffer.clear();
         }
         if emitted != self.requests {
             bail!(
@@ -985,6 +991,7 @@ fn lower_trace(
 
     let mut rows = Vec::new();
     let mut used_hashes = HashMap::new();
+    let mut source_hashes = HashMap::new();
     for stream in streams {
         for request in stream.requests {
             let request_id = row_by_source[&request.source_id].clone();
@@ -994,6 +1001,7 @@ fn lower_trace(
                 &request.request,
                 trace.block_size,
                 &mut used_hashes,
+                &mut source_hashes,
             )?;
             rows.push(AgenticMooncakeRow {
                 request_id,
@@ -1420,16 +1428,27 @@ fn normalized_hashes(
     request: &WekaRequest,
     block_size: usize,
     used: &mut HashMap<u64, String>,
+    source_hashes: &mut HashMap<u64, u64>,
 ) -> Result<Vec<u64>> {
     let full_blocks = request.input_length / block_size;
     let has_partial = !request.input_length.is_multiple_of(block_size);
     let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
     for block_index in 0..full_blocks {
-        let identity = request.hash_ids.get(block_index).map_or_else(
-            || format!("private:missing:{request_id}:{block_index}"),
-            |hash| format!("source:{relative_path}:{hash}"),
-        );
-        result.push(unique_hash("weka-full-block", &identity, used)?);
+        let value = if let Some(hash) = request.hash_ids.get(block_index) {
+            // Prefix repetitions reuse the first collision-checked hash in this play.
+            if let Some(value) = source_hashes.get(hash) {
+                *value
+            } else {
+                let identity = format!("source:{relative_path}:{hash}");
+                let value = unique_hash("weka-full-block", &identity, used)?;
+                source_hashes.insert(*hash, value);
+                value
+            }
+        } else {
+            let identity = format!("private:missing:{request_id}:{block_index}");
+            unique_hash("weka-full-block", &identity, used)?
+        };
+        result.push(value);
     }
     if has_partial {
         result.push(unique_hash(
@@ -1998,6 +2017,60 @@ mod tests {
     }
 
     #[test]
+    fn normalized_source_hashes_reuse_collision_resolutions() {
+        let request: WekaRequest = serde_json::from_value(request(0.0, 9, 1, &[7])).unwrap();
+        let mut used = HashMap::new();
+        let mut source_hashes = HashMap::new();
+        let collision = unique_hash("weka-full-block", "source:trace:7", &mut used).unwrap();
+        used.insert(collision, "another identity".to_string());
+
+        let first = normalized_hashes("trace", "first", &request, 4, &mut used, &mut source_hashes)
+            .unwrap();
+        let second = normalized_hashes(
+            "trace",
+            "second",
+            &request,
+            4,
+            &mut used,
+            &mut source_hashes,
+        )
+        .unwrap();
+
+        assert_ne!(first[0], collision);
+        assert_eq!(first[0], second[0]);
+        assert_ne!(first[1], second[1], "missing blocks remain request-private");
+        assert_ne!(first[2], second[2], "partial blocks remain request-private");
+        assert_eq!(source_hashes.len(), 1);
+    }
+
+    #[test]
+    fn row_spool_streams_large_rows_and_rejects_a_malformed_tail() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        let hashes = (0..4096).collect::<Vec<_>>();
+        write_trace(&path, serde_json::json!([request(0.0, 16384, 1, &hashes)]));
+        let mut importer = WekaImporter::open(&path).unwrap();
+        let (_, rows) = importer.collect_rows().unwrap();
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 4096);
+
+        importer.rows.as_file_mut().seek(SeekFrom::End(0)).unwrap();
+        importer.rows.write_all(b"{").unwrap();
+        let mut emitted = 0;
+        let error = importer
+            .for_each_row(|_| {
+                emitted += 1;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(emitted, 1);
+        assert!(
+            error
+                .to_string()
+                .contains("reading preflighted Weka row spool")
+        );
+    }
+
+    #[test]
     fn explicit_overlap_join_and_background_lower_to_typed_edges() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("trace.json");
@@ -2397,6 +2470,32 @@ mod tests {
             .err()
             .expect("mixed blocks");
         assert!(error.to_string().contains("mixes block sizes"), "{error:#}");
+    }
+
+    #[test]
+    fn row_spool_preserves_large_rows_and_the_final_partial_buffer() {
+        let directory = tempdir().unwrap();
+        let hashes: Vec<u64> = (0..4096).collect();
+        write_trace(
+            &directory.path().join("a.json"),
+            serde_json::json!([request(0.0, 16384, 1, &hashes)]),
+        );
+        write_trace(
+            &directory.path().join("z.json"),
+            serde_json::json!([request(0.0, 4, 2, &[9])]),
+        );
+
+        let importer = WekaImporter::open(directory.path()).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(summary.requests, 2);
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 4096);
+        assert_eq!(rows[1].hash_ids.as_ref().unwrap().len(), 1);
+        assert_eq!(rows[1].output_length, Some(2));
+        let (_, repeated) = importer.collect_rows().unwrap();
+        assert_eq!(
+            serde_json::to_value(rows).unwrap(),
+            serde_json::to_value(repeated).unwrap()
+        );
     }
 
     #[test]

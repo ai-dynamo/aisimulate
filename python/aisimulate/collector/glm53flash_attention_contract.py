@@ -45,18 +45,44 @@ CHECKPOINT_CONFIG_SHA256 = {
     "nvfp4": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee",
 }
 # Exact runtimes the collectors are pinned to: stock vLLM v0.31.0 (upstream
-# tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6, aarch64 image digest
-# below) and SGLang 0.5.20. Stock v0.31.0 still corrupts the boundary pool of
+# tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6) and SGLang 0.5.20, each
+# as the per-architecture child image of one pinned multi-arch index (vLLM
+# index sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3,
+# SGLang index sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f).
+# Stock v0.31.0 still corrupts the boundary pool of
 # a prefill chunk whose start is not a multiple of index_kpool (4)
 # (vllm/models/glm5next/nvidia/sparse_indexer.py:47-90 _kpool_compress_insert,
 # "Assumes pool-aligned chunk starts"); every planned vLLM chunk therefore
 # starts on a multiple of KPOOL_ALIGN (see build_plan and the vLLM runner).
 RUNTIME_VERSIONS = {"vllm": "0.31.0", "sglang": "0.5.20"}
+ARCHES = ("arm64", "amd64")
+# platform.machine() of the container -> image architecture.
+MACHINE_ARCH = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 RUNTIME_IMAGES = {
-    "vllm": "sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971",
-    "sglang": "sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862",
+    ("vllm", "arm64"): "sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971",
+    ("vllm", "amd64"): "sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+    ("sglang", "arm64"): "sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862",
+    ("sglang", "amd64"): "sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4",
 }
+# Sparse-MLA latent KV precision (the geometry's ``kv_cache_dtype``) and the
+# framework flag that serves it (always explicit; the launcher default is fp8
+# except on SM90, where the dtype must be named).
+# One table never mixes KV dtypes and serves only deployments of its dtype.
+# SM10x collections use FP8 KV (vLLM's ``auto`` would resolve BF16 for this
+# checkpoint, so BF16 there is a separate identity collected with
+# ``--kv-cache-dtype bfloat16``). On SM90 both runtimes serve only BF16 KV:
+# - SGLang 0.5.20: the IndexPool DSA backends cannot read FP8 KV
+#   (dsa_backend_kpool.py:41-68 admits only fa3/tilelang/trtllm; tilelang
+#   rejects FP8 KV, arg_groups/overrides.py:639-647); its default is BF16
+#   (:603-605).
+# - vLLM 0.31.0: FLASHINFER_MLA_SPARSE_SM90 hands an FP8 cache to FlashInfer
+#   0.7.0.post1 ``plan()`` as ``kv_data_type=torch.uint8`` storage, which the
+#   fa3 MLA planner rejects ("MLA kv_data_type torch.uint8 is not supported").
+KV_CACHE_DTYPES = {"vllm": ("fp8", "bfloat16"), "sglang": ("fp8", "bfloat16")}
+SERVING_KV_CACHE_DTYPE = {"fp8": "fp8_e4m3", "bfloat16": "bfloat16"}
 KPOOL_ALIGN = 4
+# System of attempt manifests that predate the recorded ``system`` field.
+LEGACY_SYSTEM = "gb300"
 PHASES = ("context", "generation")
 # Published columns, exactly the Rust reader's schema.
 COLUMNS = (
@@ -125,6 +151,10 @@ TABLE_NOTES = [
 # Capacity-only attempt settings (memory pool sizes, allocator split); they
 # never change a kernel, bucket or schedule and are frozen per manifest.
 CAPACITY_KNOBS = ("vllm_gpu_memory_utilization", "sglang_mem_fraction_static", "allocator_max_split_size_mb")
+# Deployment facts frozen by the launcher and echoed per attempt in
+# collection_meta.yaml: target system, image architecture, GPUs per node and
+# the serving environment exported to the framework.
+DEPLOYMENT_FIELDS = ("system", "runtime_arch", "gpus_per_node", "serving_env")
 
 
 def canonical_json(value: object) -> str:
@@ -191,19 +221,49 @@ def representative_layer_is_uniform(config: dict, layer_id: int, checkpoint_form
             raise ValueError(f"layer {layer} quantization differs from representative layer {layer_id}")
 
 
-def geometry(config: dict, backend: str, checkpoint_format: str, tp_size: int) -> dict:
-    """Physical key fields for one (backend, checkpoint, TP) deployment."""
+def runtime_image(backend: str, arch: str) -> str:
+    """Pinned image digest of one backend on one CPU architecture."""
+    try:
+        return RUNTIME_IMAGES[(backend, arch)]
+    except KeyError:
+        raise ValueError(f"no pinned {backend!r} image for architecture {arch!r}") from None
+
+
+def runtime_arch(backend: str, digest: str) -> str:
+    """Architecture of a pinned image digest; any other digest is rejected."""
+    for arch in ARCHES:
+        if RUNTIME_IMAGES.get((backend, arch)) == digest:
+            return arch
+    raise ValueError(f"runtime digest {digest!r} is not a pinned {backend!r} image")
+
+
+def check_runtime_arch(manifest: dict, machine: str) -> str:
+    """The running container must be the manifest's pinned architecture image."""
+    backend = manifest["geometry"]["backend"]
+    arch = runtime_arch(backend, manifest["runtime_digest"])
+    if manifest.get("runtime_arch") != arch or MACHINE_ARCH.get(machine) != arch:
+        raise RuntimeError(
+            f"{backend} image {manifest['runtime_digest']} is {arch}; manifest says "
+            f"{manifest.get('runtime_arch')!r} and this host is {machine!r}"
+        )
+    return arch
+
+
+def geometry(config: dict, backend: str, checkpoint_format: str, tp_size: int, kv_cache_dtype: str = "fp8") -> dict:
+    """Physical key fields for one (backend, checkpoint, TP, KV dtype) deployment."""
     text = text_config(config)
     heads = text["num_attention_heads"]
     if tp_size < 1 or heads % tp_size:
         raise ValueError(f"TP {tp_size} does not divide {heads} attention heads")
+    if kv_cache_dtype not in KV_CACHE_DTYPES.get(backend, ()):
+        raise ValueError(f"{backend} GLM attention does not serve {kv_cache_dtype!r} KV")
     if text.get("qk_rope_head_dim", 0) != 0 or not text.get("mla_use_nope", False):
         raise ValueError("GLM-5.3-Flash attention contract requires NoPE MLA")
     return {
         "backend": backend,
         "checkpoint_format": checkpoint_format,
         "projection_quant_mode": projection_quant_mode(backend, checkpoint_format),
-        "kv_cache_dtype": "fp8",
+        "kv_cache_dtype": kv_cache_dtype,
         "tp_size": tp_size,
         "hidden_size": text["hidden_size"],
         "num_heads": heads // tp_size,
@@ -464,8 +524,8 @@ def validate_row(row: dict) -> dict:
         raise ValueError("unknown backend or checkpoint")
     if body["projection_quant_mode"] != projection_quant_mode(body["backend"], body["checkpoint_format"]):
         raise ValueError("projection precision contradicts the pinned framework model builder")
-    if body["kv_cache_dtype"] != "fp8" or body["tp_size"] * body["num_heads"] != 64:
-        raise ValueError("GLM attention rows require FP8 KV and TP-sharded 64 MLA heads")
+    if body["kv_cache_dtype"] not in KV_CACHE_DTYPES[body["backend"]] or body["tp_size"] * body["num_heads"] != 64:
+        raise ValueError("GLM attention rows require the backend's served KV dtype and TP-sharded 64 MLA heads")
     if not row["batch_size"] or not row["x"] or not row["sample_count"]:
         raise ValueError("empty measurement")
     latency = row["latency"]
@@ -487,8 +547,7 @@ def validate_row(row: dict) -> dict:
             raise ValueError(f"invalid {key}")
     if row["config_sha256"] != CHECKPOINT_CONFIG_SHA256[body["checkpoint_format"]]:
         raise ValueError("config_sha256 does not match the pinned checkpoint revision's config.json")
-    if row["runtime_digest"] != RUNTIME_IMAGES[body["backend"]]:
-        raise ValueError("runtime digest is not the pinned immutable image")
+    runtime_arch(body["backend"], row["runtime_digest"])
     return body
 
 
@@ -562,8 +621,9 @@ def aggregate_rank_samples(records: list[dict], tp_size: int, iterations: int) -
 def validate_table(rows: list[dict]) -> None:
     """Duplicate keys and mixed provenance fail.
 
-    ``source_sha256``/``runtime_digest`` are table-wide (one runtime per
-    <backend>/<version> directory); ``config_sha256`` is uniform per
+    ``source_sha256``/``runtime_digest`` (hence one image architecture) and
+    the latent ``kv_cache_dtype`` are table-wide (one runtime per
+    <system>/<backend>/<version> directory); ``config_sha256`` is uniform per
     checkpoint; ``used_cuda_graph`` per (checkpoint, TP, phase) (serving runs
     both phases under the frameworks' CUDA graphs). ``kernel_source`` is a
     per-row witness: the dispatched method changes with the IndexPool regime.
@@ -580,12 +640,12 @@ def validate_table(rows: list[dict]) -> None:
         if key in keys:
             raise ValueError(f"duplicate physical GLM attention key {key}")
         keys.add(key)
-        table.add((body["backend"], row["source_sha256"], row["runtime_digest"]))
+        table.add((body["backend"], row["source_sha256"], row["runtime_digest"], body["kv_cache_dtype"]))
         by_checkpoint[body["checkpoint_format"]].add(row["config_sha256"])
         phase = (body["checkpoint_format"], body["tp_size"], body["is_context"])
         by_phase[phase].add(row["used_cuda_graph"])
     if len(table) != 1:
-        raise ValueError("a table needs one backend/runtime/source identity")
+        raise ValueError("a table needs one backend/runtime/source/KV-dtype identity")
     if any(len(v) != 1 for v in by_checkpoint.values()):
         raise ValueError("a checkpoint's rows mix configuration identities")
     if any(len(v) != 1 for v in by_phase.values()):
@@ -805,6 +865,7 @@ def main() -> None:
                 "deployment": f"{manifest['geometry']['checkpoint_format']}-tp{manifest['geometry']['tp_size']}",
                 "source_commit": manifest["source_commit"],
                 "max_model_len": manifest["max_model_len"],
+                **{k: manifest[k] for k in DEPLOYMENT_FIELDS if manifest.get(k) is not None},
                 **{k: manifest[k] for k in CAPACITY_KNOBS if manifest.get(k) is not None},
                 **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
                 **(
@@ -825,6 +886,9 @@ def main() -> None:
         if set(entry) != {"deployment", "key", "reason", "evidence"} or not entry["reason"] or not entry["evidence"]:
             raise ValueError(f"classified failure needs deployment, key, reason and evidence: {entry}")
     check_split_closure(loaded, classified)
+    systems = {m.get("system") for m, _ in loaded}
+    if len(systems) != 1:
+        raise ValueError("one table holds attempts of one system")
     # Request token provenance (glm53flash_attention_tokens) must be one spec.
     input_specs = {canonical_json(m.get("input_tokens")) for m, _ in loaded}
     if len(input_specs) != 1 or None in (m.get("input_tokens") for m, _ in loaded):
@@ -834,7 +898,17 @@ def main() -> None:
     if len(backends) != 1:
         raise ValueError("one table holds one backend")
     backend = backends.pop()
+    # The Rust reader identifies the system only by the table's directory, so
+    # the output must sit at data/<system>/glm53_attention/<backend>/<version>/
+    # of the attempts' recorded system. Attempts without a recorded system come
+    # from the launcher before per-system collection, which targeted GB300 only.
+    system = systems.pop() or LEGACY_SYSTEM
+    expected = ("data", system, "glm53_attention", backend, RUNTIME_VERSIONS[backend], BASENAME)
+    if Path(args.output).parts[-len(expected) :] != expected:
+        raise ValueError(f"output must end with {'/'.join(expected)} for attempts of system {system}")
     write_parquet(rows, args.output)
+    digest = rows[0]["runtime_digest"]
+    kv_cache_dtype = json.loads(rows[0]["geometry"])["kv_cache_dtype"]
     import yaml
 
     meta = {
@@ -843,7 +917,8 @@ def main() -> None:
             "framework": backend,
             "version": RUNTIME_VERSIONS[backend],
             "image": {"vllm": "vllm/vllm-openai", "sglang": "lmsysorg/sglang"}[backend],
-            "image_digest": RUNTIME_IMAGES[backend],
+            "image_digest": digest,
+            "image_arch": runtime_arch(backend, digest),
         },
         "tables": {
             Path(BASENAME).stem: {
@@ -856,6 +931,7 @@ def main() -> None:
                 # memcpys and memsets per repetition under the serving graphs.
                 "timing_method": {phase: sorted(methods) for phase, methods in TIMING_METHODS.items()},
                 "notes": TABLE_NOTES,
+                "kv_cache_dtype": kv_cache_dtype,
                 "input_tokens": input_tokens,
                 # One execution mode per geometry (checkpoint, TP, phase).
                 "execution_mode": dict(sorted(_execution_modes(rows).items())),

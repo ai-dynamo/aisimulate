@@ -28,7 +28,7 @@ import math
 import multiprocessing as mp
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -47,7 +47,7 @@ from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_a
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
-from .epd import add_encoder_choices, resolve_encoder_catalog
+from .epd import add_encoder_choices, apply_encoder_overlay, language_replay_key, resolve_encoder_catalog
 from .forward_pass_estimator import ForwardPassEstimatorResolver
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
@@ -135,6 +135,8 @@ class _PreparedCandidate:
     sample: dict[str, Any]
     replay_spec: ReplaySpec
     prediction_config: dict[str, Any] | None = None
+    # With a deferred encoder overlay: the language replay this pool shares.
+    language_key: str | None = None
 
 
 @dataclass
@@ -755,6 +757,13 @@ def _materialize_one(
 
             validate_epd_prediction_mapping(prediction_config, replay_spec)
             sample["prediction_config_supported"] = True
+        elif prediction_config_factory is not None and any(
+            sample.get(f"{role}_vision") is not None or sample.get(f"{role}_host_loop") for role in ("agg", "prefill")
+        ):
+            from ..config.vl import validate_vl_prediction_mapping
+
+            validate_vl_prediction_mapping(prediction_config, replay_spec)
+            sample["prediction_config_supported"] = True
     except InfeasibleKVCapacity as exc:
         return None, _EvalResult(
             candidate=None,
@@ -799,23 +808,57 @@ def _run_replay_detailed(
     """Run one replay while retaining validated runner provenance metadata."""
 
     try:
-        try:
-            report = (
-                runner.run(spec)
-                if output_requirements is None
-                else runner.run(spec, output_requirements=output_requirements)
-            )
-        except ResourceLimitError:
-            raise
-        except Exception as exc:
-            logger.exception("Sweeper candidate replay failed")
-            return _ReplayEvaluation(
-                metrics=None,
-                metadata={},
-                outcome="failed",
-                reason=f"replay failed: {type(exc).__name__}: {exc}",
-                reason_category=ReasonCategory.REPLAY_RUNTIME,
-            )
+        report = (
+            runner.run(spec)
+            if output_requirements is None
+            else runner.run(spec, output_requirements=output_requirements)
+        )
+    except ResourceLimitError:
+        raise
+    except Exception as exc:
+        return _failed_replay(exc)
+    return _evaluate_report(report)
+
+
+def _overlay_language_replay(language: _ReplayEvaluation, spec: ReplaySpec) -> _ReplayEvaluation:
+    """Evaluate one pool's overlay of a deferred language replay, as the runner would have applied it."""
+
+    if language.outcome != "replayed":
+        return language
+    if language.metadata.get("metric_semantics") == "analytical_epd_overlay":
+        return _ReplayEvaluation(
+            metrics=None,
+            metadata={},
+            outcome="failed",
+            reason=(
+                "runner contract violation: defer_encoder_overlay was requested "
+                "but the report already carries the encoder overlay"
+            ),
+            reason_category=ReasonCategory.RUNNER_CONTRACT,
+        )
+    try:
+        # The overlay reads only the language metrics and rebuilds the metadata.
+        overlaid = apply_encoder_overlay(ReplayReport(metrics=language.metrics), spec)
+    except Exception as exc:
+        return _failed_replay(exc)
+    return _evaluate_report(overlaid)
+
+
+def _failed_replay(exc: Exception) -> _ReplayEvaluation:
+    logger.exception("Sweeper candidate replay failed")
+    return _ReplayEvaluation(
+        metrics=None,
+        metadata={},
+        outcome="failed",
+        reason=f"replay failed: {type(exc).__name__}: {exc}",
+        reason_category=ReasonCategory.REPLAY_RUNTIME,
+    )
+
+
+def _evaluate_report(report: Any) -> _ReplayEvaluation:
+    """Validate a runner report while retaining its provenance metadata."""
+
+    try:
         if not isinstance(report, ReplayReport):
             return _ReplayEvaluation(
                 metrics=None,
@@ -1105,6 +1148,27 @@ def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
     return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
+def _in_suggestion_order(
+    todo: list[tuple[Suggestion, _PreparedCandidate]],
+    results: Iterable[tuple[Suggestion, _EvalResult]],
+) -> Iterator[tuple[Suggestion, _EvalResult]]:
+    """Yield a batch's ``(suggestion, result)`` pairs in ``todo`` order, each as soon as
+    every earlier suggestion has finished, so candidate ids, the ledger and optimizer
+    feedback do not depend on which worker finished first. A finished result therefore
+    reaches the ledger and the execution checkpoint only after its earlier siblings.
+    """
+    position = {id(suggestion): index for index, (suggestion, _) in enumerate(todo)}
+    finished: dict[int, tuple[Suggestion, _EvalResult]] = {}
+    next_position = 0
+    for suggestion, result in results:
+        finished[position[id(suggestion)]] = (suggestion, result)
+        while next_position in finished:
+            yield finished.pop(next_position)
+            next_position += 1
+    if next_position != len(todo):
+        raise RuntimeError("Sweeper runner contract violation: a batch did not report every suggestion")
+
+
 class Sweeper:
     """Compose and execute isolated backend-neutral configuration sweeps.
 
@@ -1157,7 +1221,8 @@ class Sweeper:
         ``on_candidate``, when provided, is invoked once per recorded candidate
         outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
         failed) with a deep copy of the ``CandidateRecord`` appended to the run's
-        candidate ledger, in evaluation order. The copy is detached: mutating it
+        candidate ledger, in recording order: each batch's pre-replay rejections,
+        then its replays in suggestion order. The copy is detached: mutating it
         has no effect on the ledger used to build ``SweepResult``. It complements
         ``on_round``, which only reports the cumulative feasible-candidate list at
         round boundaries.
@@ -1168,7 +1233,6 @@ class Sweeper:
         runner_factory = self._runner_factory
         from functools import partial
 
-        worker_initializer = partial(_init_worker, output_requirements=self._output_requirements)
         providers = self._providers
         sampler_factory = self._sampler_factory
         show_progress = self._show_progress
@@ -1180,10 +1244,27 @@ class Sweeper:
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
         encoder_catalog = None
+        output_requirements = self._output_requirements
+        language_replays: dict[str, _ReplayEvaluation] | None = None
         if config.search_space.encoder is not None:
-            if not capabilities.supports_analytical_epd:
-                raise ValueError("runner does not support analytical EPD")
+            mode = config.search_space.encoder.mode
+            supported = capabilities.supports_native_epd if mode == "native" else capabilities.supports_analytical_epd
+            if not supported:
+                raise ValueError(f"runner does not support {mode} EPD")
             encoder_catalog = resolve_encoder_catalog(config)
+            # Analytical EPD candidates that differ only in their encoder pool share one
+            # language replay, and the coordinator applies each pool's overlay. Memory
+            # diagnostics are attached after the runner's overlay, so they keep it there.
+            if (
+                mode == "analytical"
+                and capabilities.supports_deferred_encoder_overlay
+                and not (output_requirements is not None and output_requirements.capture_memory_diagnostics)
+            ):
+                language_replays = {}
+                output_requirements = replace(
+                    output_requirements or ReplayOutputRequirements(), defer_encoder_overlay=True
+                )
+        worker_initializer = partial(_init_worker, output_requirements=output_requirements)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
@@ -1322,7 +1403,46 @@ class Sweeper:
                 '"__main__":`, or set sweep.parallel_evals=1 to evaluate sequentially.'
             )
 
+        def _finish(prepared: _PreparedCandidate, result: _ReplayEvaluation) -> _EvalResult:
+            if language_replays is not None and prepared.language_key is not None:
+                # A deferred language replay: keep it for the pools that share it, then overlay this one.
+                if result.outcome == "replayed":
+                    language_replays[prepared.language_key] = result
+                result = _overlay_language_replay(result, prepared.replay_spec)
+            return _score_prepared(prepared, result, config=config, goal=goal)
+
         def _eval_batch(todo: list[tuple[Suggestion, _PreparedCandidate]]):
+            """Like ``_replay_batch``, but with a deferred encoder overlay the pools that
+            share a language deployment share one replay per batch: each pool overlays its
+            report, or records its failure, as soon as that replay finishes.
+            """
+            if language_replays is None:
+                yield from _replay_batch(todo)
+                return
+            groups: dict[str, list[tuple[Suggestion, _PreparedCandidate]]] = {}
+            for suggestion, prepared in todo:
+                key = language_replay_key(prepared.replay_spec)
+                groups.setdefault(key, []).append((suggestion, replace(prepared, language_key=key)))
+            replays: list[tuple[Suggestion, _PreparedCandidate]] = []
+            siblings: dict[int, list[tuple[Suggestion, _PreparedCandidate]]] = {}
+            for key, members in groups.items():
+                if key in language_replays:
+                    for suggestion, prepared in members:
+                        yield suggestion, _finish(prepared, language_replays[key])
+                    continue
+                replays.append(members[0])
+                siblings[id(members[0][0])] = members[1:]
+            for suggestion, evaluation in _replay_batch(replays):
+                yield suggestion, evaluation
+                for sibling, prepared in siblings[id(suggestion)]:
+                    language = language_replays.get(prepared.language_key)
+                    if language is not None:
+                        yield sibling, _finish(prepared, language)
+                    else:
+                        # A failed, timed-out or refused language replay fails every pool alike.
+                        yield sibling, replace(evaluation, runner_metadata=deepcopy(evaluation.runner_metadata))
+
+        def _replay_batch(todo: list[tuple[Suggestion, _PreparedCandidate]]):
             """Yield ``(suggestion, _EvalResult)`` for each supported suggestion — across worker
             processes when a pool is set, else sequentially in-process. On the pool path it
             evaluates waves no larger than the worker count so queued work never consumes a
@@ -1356,7 +1476,7 @@ class Sweeper:
                             runner_metadata=result.metadata,
                         )
                     else:
-                        evaluation = _score_prepared(prepared, result, config=config, goal=goal)
+                        evaluation = _finish(prepared, result)
                     yield suggestion, evaluation
                 return
 
@@ -1365,11 +1485,8 @@ class Sweeper:
                 for suggestion, prepared in todo:
                     yield (
                         suggestion,
-                        _score_prepared(
-                            prepared,
-                            _run_replay_detailed(prepared.replay_spec, sequential_runner, self._output_requirements),
-                            config=config,
-                            goal=goal,
+                        _finish(
+                            prepared, _run_replay_detailed(prepared.replay_spec, sequential_runner, output_requirements)
                         ),
                     )
                 return
@@ -1408,15 +1525,7 @@ class Sweeper:
                         except Exception as exc:
                             raise _pool_error(f"collecting a candidate result ({type(exc).__name__}: {exc})") from exc
                         suggestion, prepared = futures[future]
-                        yield (
-                            suggestion,
-                            _score_prepared(
-                                prepared,
-                                replay_result,
-                                config=config,
-                                goal=goal,
-                            ),
-                        )
+                        yield suggestion, _finish(prepared, replay_result)
 
                 if pending:
                     seconds = max_eval_seconds or 0.0
@@ -1506,14 +1615,14 @@ class Sweeper:
                     ),
                 )
                 candidate_records.append(record)
-                if on_candidate is not None:
-                    # Detach: on_candidate must not be able to mutate the ledger
-                    # entry that SweepResult is built from.
-                    on_candidate(record.model_copy(deep=True))
                 if resource_aware:
                     from ..supervision import checkpoint
 
                     checkpoint("candidate_completed", record.model_dump(mode="json"))
+                if on_candidate is not None:
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
@@ -1697,7 +1806,7 @@ class Sweeper:
                         todo.append((suggestion, prepared))
                         prepared_by_key[key] = prepared
 
-                    for suggestion, evaluation in _eval_batch(todo):
+                    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
                         candidate = evaluation.candidate
                         observe_metrics = evaluation.observe_metrics
                         outcome = evaluation.outcome

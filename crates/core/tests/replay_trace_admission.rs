@@ -29,6 +29,7 @@ fn engine(backend: Backend) -> ReplayEngineConfig {
 fn spec(backend: Backend, disagg: bool) -> ReplaySpec {
     ReplaySpec {
         version: CURRENT_REPLAY_SPEC_VERSION,
+        encoder: None,
         topology: if disagg {
             ReplayTopology::Disaggregated {
                 prefill: WorkerPoolSpec::default(),

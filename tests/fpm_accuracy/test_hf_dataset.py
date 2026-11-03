@@ -54,6 +54,7 @@ def _build_dataset(
     tp: int = 1,
     dcp: int | None = None,
     fpm_schema_version: int = 6,
+    selector_extensions: dict | None = None,
 ) -> HfDataset:
     measurement_entries = []
     for index, (role, suffix, content) in enumerate(files):
@@ -128,6 +129,7 @@ def _build_dataset(
                 engram_residency="hbm_tp_sharded",
                 fmha_resolution="checkpoint_native",
             )
+        configuration_selector.update(selector_extensions or {})
         fpm_relative = f"{CONFIGURATION_PATH}/fpm/fpm.parquet"
         fpm_path = root / fpm_relative
         fpm_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1490,6 +1492,107 @@ def test_v7_execution_identity_must_match_parquet(tmp_path):
     metadata["configuration_selector"]["execution_profile"] = "full"
     _write_json(metadata_path, metadata)
     with pytest.raises(DataError, match="contains rows for a different configuration.*execution_profile"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+V7_COLLECTION_FIELDS = {
+    "measurement_policy": "test_median_v1",
+    "measurement_repeats": 10,
+    "warmup_repeats": 5,
+    "state_protocol": "test_real_state_v1",
+    "timing_boundary": "test_forward_wall_time",
+    "sglang_allocator_max_split_size_mb": 16384,
+    "sglang_allocator_policy_sha256": "c" * 64,
+}
+
+
+@pytest.mark.parametrize("extensions", [V7_COLLECTION_FIELDS, {"warmup_repeats": 0}])
+def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=7,
+        selector_extensions=extensions,
+    )
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert len(case.fpm_artifacts) == 1
+
+
+@pytest.mark.parametrize("field", V7_COLLECTION_FIELDS)
+@pytest.mark.parametrize("mutation", ["mismatch", "missing"])
+def test_v7_collection_selector_must_match_parquet(tmp_path, field, mutation):
+    _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=7,
+        selector_extensions=V7_COLLECTION_FIELDS,
+    )
+    fpm_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet"
+    table = pq.read_table(fpm_path)
+    if mutation == "missing":
+        table = table.drop([field])
+    else:
+        value = V7_COLLECTION_FIELDS[field]
+        changed = value + 1 if isinstance(value, int) else "d" * 64
+        table = pa.concat_tables([table, table])
+        table = table.set_column(table.schema.get_field_index(field), field, pa.array([value, changed]))
+    pq.write_table(table, fpm_path)
+    metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["row_count"] = table.num_rows
+    metadata["parquet_sha256"] = _sha256(fpm_path)
+    _write_json(metadata_path, metadata)
+    manifest_path = tmp_path / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fpm"][0]["row_count"] = table.num_rows
+    manifest["fpm"][0]["sha256"] = _sha256(fpm_path)
+    _write_json(manifest_path, manifest)
+    dataset = HfDataset.from_local(tmp_path, revision=REVISION)
+    with pytest.raises(DataError, match=f"(identity columns|different configuration).*{field}"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("measurement_policy", ""),
+        ("state_protocol", None),
+        ("timing_boundary", " "),
+        ("measurement_repeats", 0),
+        ("measurement_repeats", True),
+        ("warmup_repeats", -1),
+        ("warmup_repeats", 5.0),
+        ("sglang_allocator_max_split_size_mb", 0),
+        ("sglang_allocator_max_split_size_mb", "16384"),
+        ("sglang_allocator_policy_sha256", ""),
+        ("sglang_allocator_policy_sha256", "A" * 64),
+        ("sglang_allocator_policy_sha256", "c" * 63),
+    ],
+)
+def test_malformed_v7_collection_selector_fails_even_when_parquet_agrees(tmp_path, field, value):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=7,
+        selector_extensions={field: value},
+    )
+    with pytest.raises(DataError, match=f"invalid v7 selector field '{field}'"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("version,extensions", [(6, V7_COLLECTION_FIELDS), (7, {"unknown_policy": "value"})])
+def test_selector_extensions_remain_closed_to_unknown_fields(tmp_path, version, extensions):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=version,
+        selector_extensions=extensions,
+    )
+    with pytest.raises(DataError, match="invalid configuration_selector fields.*unknown="):
         dataset.measurement_case(CONFIGURATION_PATH)
 
 

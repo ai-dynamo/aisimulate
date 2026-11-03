@@ -909,6 +909,23 @@ class TestKVCacheElementsPerToken:
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
 
+    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+        model = self._build_model(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            tp,
+            kvcache_quant_mode=kv_dtype,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+        )
+        # The bundled config has 8 attention layers, 2 KV heads, and 128-wide heads.
+        # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
+        assert model.get_kvcache_elements_per_token() == expected_elements
+        bytes_per_token = expected_elements * kv_dtype.value.memory
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
+
     @pytest.mark.parametrize(
         "hf_id",
         [
@@ -1898,23 +1915,10 @@ class TestAttentionProjectionExclusions:
     """Per-projection exclusion parsing (V3.1/V3.2 exclude q/kv but not o_proj)."""
 
     @staticmethod
-    def _excl(patterns, *, precise_module_paths=True):
+    def _excl(patterns):
         from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
-        return attention_projection_exclusions(
-            {"quantization_config": {"ignore": patterns}}, precise_module_paths=precise_module_paths
-        )
-
-    def test_existing_consumers_keep_their_projection_exclusion_interpretation(self):
-        from aisimulate.sdk.models.helpers import attention_projection_exclusions
-
-        # SGLang, TRT-LLM and ordinary MLA retain the default exclusion matching.
-        # vLLM DSA opts into precise projection paths.
-        raw = {"quantization_config": {"ignore": ["model.layers.0.self_attn.q_a_layernorm"]}}
-        assert attention_projection_exclusions(raw) == frozenset({"q", "kv", "o", "indexer"})
-        assert self._excl(["model.layers.0.self_attn.indexers_proj"], precise_module_paths=False) == frozenset(
-            {"indexer"}
-        )
+        return attention_projection_exclusions({"quantization_config": {"ignore": patterns}})
 
     def test_whole_block_glob_covers_all_groups(self):
         assert self._excl(["model.layers.3.self_attn*"]) == frozenset({"q", "kv", "o", "indexer"})
@@ -1982,25 +1986,44 @@ class TestAttentionProjectionExclusions:
     def test_named_indexer_projection_exclusion(self, projection):
         assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
 
-    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-    @pytest.mark.parametrize("phase", ["context", "generation"])
-    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
-    def test_native_glm52_precision_correction_is_scoped_to_vllm_dsa(self, backend, phase, quant):
-        # The real checkpoint excludes layernorms and indexers_proj, not the
-        # q/kv/o projection GEMMs. NVFP4 mixed exclusions have separate tests
-        # in TestDSV32NVFP4AttentionExclusion above.
+    @staticmethod
+    def _dsa_gemm_mode(model_path, backend, phase, **model_config):
         from aisimulate.sdk import engine
 
         model = models.get_model(
-            "zai-org/GLM-5.2-FP8",
-            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode[quant]),
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, **model_config),
             backend_name=backend,
         )
-        expected_exclusions = frozenset() if backend == "vllm" else frozenset({"q", "kv", "o", "indexer"})
-        assert model.extra_params["dsa_attn_quant_exclusions"] == expected_exclusions
         specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
         attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
-        assert attention["gemm_quant_mode"] == (quant if backend == "vllm" else "bfloat16")
+        return model.extra_params["dsa_attn_quant_exclusions"], attention["gemm_quant_mode"]
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
+    def test_native_glm52_projections_follow_the_gemm_mode_on_every_backend(self, backend, phase, quant):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs, and every backend loads it that way. NVFP4
+        # mixed exclusions have separate tests in
+        # TestDSV32NVFP4AttentionExclusion above.
+        exclusions, gemm = self._dsa_gemm_mode(
+            "zai-org/GLM-5.2-FP8", backend, phase, gemm_quant_mode=common.GEMMQuantMode[quant]
+        )
+        assert exclusions == frozenset()
+        assert gemm == quant
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize(
+        "model_path", ["zai-org/GLM-5-FP8", "zai-org/GLM-5.1-FP8", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.3"]
+    )
+    def test_native_glm_fp8_checkpoint_prices_block_fp8_projections(self, model_path, backend, phase):
+        # quant_method fp8 with weight_block_size [128, 128]: without an
+        # explicit override, every backend's DSA module key is fp8_block.
+        exclusions, gemm = self._dsa_gemm_mode(model_path, backend, phase)
+        assert exclusions == frozenset()
+        assert gemm == "fp8_block"
 
     @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
     @pytest.mark.parametrize(
@@ -2079,6 +2102,51 @@ class TestBundledModelConfigsOffline:
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+    @pytest.mark.parametrize(
+        "model_path,gemm,moe,kv",
+        [
+            # Z.AI publishes the FP8-block release under the plain name and the
+            # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
+            # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
+            # NVIDIA ModelOpt MIXED_PRECISION export lists FP8 dense layers 0-2
+            # and NVFP4 routed experts; its per-module modes are pinned in
+            # test_modelopt_mixed_precision_targets.py.
+            # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
+            # backend default for fp8_block, not a checkpoint fact, so it is
+            # not asserted here.
+            ("zai-org/GLM-5.3", "fp8_block", "fp8_block", None),
+            ("zai-org/GLM-5.3-BF16", "bfloat16", "bfloat16", "bfloat16"),
+            ("nvidia/GLM-5.3-NVFP4", "fp8_static", "nvfp4", "fp8"),
+        ],
+    )
+    def test_glm53_bundles_resolve_checkpoint_quant_modes(self, monkeypatch, model_path, gemm, moe, kv):
+        """The GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        try:
+            cfg = sdk_utils.get_model_config_from_model_path(model_path)
+            assert cfg["architecture"] == "GlmMoeDsaForCausalLM"
+            model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+            get_model(model_path, model_config, backend_name="sglang")
+        finally:
+            sdk_utils.get_model_config_from_model_path.cache_clear()
+            sdk_utils._load_model_config_from_model_path.cache_clear()
+
+        assert model_config.gemm_quant_mode == common.GEMMQuantMode[gemm]
+        assert model_config.moe_quant_mode == common.MoEQuantMode[moe]
+        if kv is not None:
+            assert model_config.kvcache_quant_mode == common.KVCacheQuantMode[kv]
+
+    def test_glm53_registered_identifiers_match_the_published_repositories(self):
+        assert "zai-org/GLM-5.3-BF16" in common.DefaultHFModels
+        assert "zai-org/GLM-5.3-FP8" not in common.DefaultHFModels
 
     def test_qwen38max_loads_from_bundle_with_gdn_and_moe_fields(self, monkeypatch):
         import aisimulate.sdk.utils as sdk_utils

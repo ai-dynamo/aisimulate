@@ -7,6 +7,9 @@
 //! db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0), vllm/models/glm5next/common/{model,attention,kda}.py,
 //! and sgl-project/sglang 94602c9c2b7cbdb8efd5c52802dac6a1c180089e,
 //! python/sglang/srt/models/glm5_next.py (Apache-2.0). See THIRD_PARTY_NOTICES.md.
+//! Hopper FP8-KV precision: sgl-project/sglang 9336681310c7a7153c4fbd7c2b9ae62011899014,
+//! python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py (Apache-2.0,
+//! Copyright SGLang contributors); modified analytical adaptation, no kernel copy.
 //! These are payload/roofline bounds, not allocator or kernel-launch predictions.
 
 use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode};
@@ -228,7 +231,7 @@ impl Glm53AttentionOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         if !matches!(self.layer_kind.as_str(), "kda" | "sparse_mla")
-            || !matches!(self.tp_size, 1 | 2 | 4)
+            || !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.num_heads == 0
             || self.head_dim == 0
             || self.hidden_size == 0
@@ -251,10 +254,15 @@ impl Glm53AttentionOp {
                 || self.index_topk != 2048
                 || self.kv_lora_rank == 0
                 || self.index_head_dim != 128
-                || self.kv_cache_dtype != KvCacheQuantMode::Fp8)
+                || !matches!(
+                    self.kv_cache_dtype,
+                    KvCacheQuantMode::Fp8 | KvCacheQuantMode::Bfloat16
+                ))
         {
             return Err(AicError::ModelConfig(
-                "GLM-5.3-Flash sparse MLA requires FP8 latent cache and IndexPool4/topk2048".into(),
+                "GLM-5.3-Flash sparse MLA requires an FP8 or BF16 latent cache and \
+                 IndexPool4/topk2048"
+                    .into(),
             ));
         }
         // Only SGLang keeps the FP8 checkpoint's block-quantized main sparse
@@ -278,6 +286,21 @@ impl Glm53AttentionOp {
         }
         validate_measured("attention", &self.measured)
     }
+    /// Bytes per latent KV element: FP8 (1) or BF16 (2). SGLang 0.5.20 sizes
+    /// the DSA latent as `kv_lora_rank + qk_rope_head_dim` elements of the KV
+    /// dtype outside its scaled-FP8 layouts
+    /// (`mem_cache/kv_cache_configurator.py` `calculate_mla_kv_cache_dim`),
+    /// while the IndexPool keys stay FP8 + FP32 scale and the pool tails BF16
+    /// whatever the KV dtype (`mem_cache/index_key_cache.py` `_buffer_shape`,
+    /// `mem_cache/memory_pool.py` `DSATokenToKVPool`). vLLM 0.31.0 sizes the
+    /// sparse-MLA page as `kv_lora_rank + qk_rope_head_dim` (512 for NoPE)
+    /// elements of the KV dtype, and its indexer cache is FP8 + scale
+    /// independently of it; on SM90 stock vLLM serves only BF16 KV (its
+    /// `FLASHINFER_MLA_SPARSE_SM90` hands FP8 as uint8 storage to FlashInfer
+    /// 0.7.0 `plan()`, which rejects it), so BF16 is priced the same way.
+    fn latent_bytes(&self) -> f64 {
+        self.kv_cache_dtype.mapping().memory
+    }
     /// One active sequence's persistent payload; no allocator pages, prefix
     /// snapshots or speculative states. Cache precision is independent of weights.
     pub fn cache_bytes(&self, seq_len: u32) -> Result<f64, AicError> {
@@ -287,12 +310,14 @@ impl Glm53AttentionOp {
             // FP32 D-by-D recurrence; BF16 q/k/v histories of conv_width-1.
             Ok(n * d * d * 4.0 + 3.0 * n * d * f64::from(self.conv_kernel - 1) * 2.0)
         } else {
-            // Replicated FP8 latent KV, FP8 index keys with FP32 block scale,
-            // and two BF16 pool-tail buffers (raw key and compression score).
+            // Replicated FP8/BF16 latent KV, FP8 index keys with FP32 block
+            // scale, and two BF16 pool-tail buffers (raw key and compression score).
             let pooled = seq_len / self.index_pool;
-            Ok(f64::from(seq_len) * f64::from(self.kv_lora_rank)
-                + f64::from(pooled) * f64::from(self.index_head_dim + 4)
-                + f64::from(self.index_pool * self.index_head_dim) * 4.0)
+            Ok(
+                f64::from(seq_len) * f64::from(self.kv_lora_rank) * self.latent_bytes()
+                    + f64::from(pooled) * f64::from(self.index_head_dim + 4)
+                    + f64::from(self.index_pool * self.index_head_dim) * 4.0,
+            )
         }
     }
     pub fn weight_bytes(&self) -> f64 {
@@ -465,16 +490,33 @@ impl Glm53AttentionOp {
                 pooled_pairs * 4.0 + selected_pairs * 4.0,
                 fp32,
             ));
+            let latent = self.latent_bytes();
+            // SGLang's raw-FP8 TileLang path casts Q to FP8 and uses FP8
+            // tensor cores for QK/PV. The runtime gate admits this Hopper
+            // combination from 0.5.22; other backend/hardware paths keep
+            // their existing arithmetic contract.
+            // https://github.com/sgl-project/sglang/blob/9336681310c7a7153c4fbd7c2b9ae62011899014/python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py
+            let latent_attention_rate = if self.backend == "sglang"
+                && self.kv_cache_dtype == KvCacheQuantMode::Fp8
+                && spec
+                    .gpu
+                    .sm_version
+                    .is_some_and(|sm| (90..100).contains(&sm))
+            {
+                fp8
+            } else {
+                bf16
+            };
             result = result.plus(leaf(
                 spec,
                 4.0 * selected_pairs * n * k,
-                selected_pairs * k + 4.0 * x * n * k,
-                bf16,
+                selected_pairs * k * latent + 4.0 * x * n * k,
+                latent_attention_rate,
             ));
             result = result.plus(leaf(
                 spec,
                 x * (5.0 * (q + k) + 12.0 * j + 7.0 * query_width),
-                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k),
+                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k * latent),
                 fp32,
             ));
         }
@@ -606,9 +648,9 @@ impl Glm53MhcOp {
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
-        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
+        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4 | 8) {
             return Err(AicError::ModelConfig(
-                "GLM mHC requires TP1/2/4, multiplier 4 and 20 Sinkhorn iterations".into(),
+                "GLM mHC requires TP1/2/4/8, multiplier 4 and 20 Sinkhorn iterations".into(),
             ));
         }
         if x <= 0.0 {
@@ -771,6 +813,18 @@ pub(crate) fn routed_moe_sol(
         .scaled(m.scale_factor))
 }
 
+/// Routed experts over the attention TP group: MoE TP x EP = TP with TP
+/// attention (attention DP 1). Every rank holds all tokens, so dispatch and
+/// combine are the explicit TP all-reduces; no all-to-all is involved.
+/// vLLM expert parallelism always shards experts over the whole group
+/// (MoE TP 1); SGLang also runs MoE TP = TP / EP.
+fn routed_layout_ok(m: &MoeOp, tp: u32, backend: &str) -> bool {
+    matches!(m.moe_ep_size, 1 | 2 | 4 | 8)
+        && m.moe_tp_size.checked_mul(m.moe_ep_size) == Some(tp)
+        && m.attention_dp_size == 1
+        && (backend != "vllm" || m.moe_ep_size == 1 || m.moe_tp_size == 1)
+}
+
 /// Native local FFN boundary, including gate/router, routed and shared experts,
 /// clamp and activation; excluding the final separately modeled collective.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -807,7 +861,7 @@ pub struct Glm53FfnOp {
 impl Glm53FfnOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.swiglu_limit != 10.0
             || self.scoring_func != "sigmoid"
@@ -828,7 +882,7 @@ impl Glm53FfnOp {
             })
         {
             return Err(AicError::ModelConfig(
-                "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 pure-TP contract"
+                "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 TP-attention contract"
                     .into(),
             ));
         }
@@ -874,12 +928,25 @@ impl Glm53FfnOp {
                 && r.hidden_size==self.hidden_size && r.num_experts==self.num_experts && r.topk==self.topk)
                     && matches!(&self.children[4],Op::Moe(m) if m.hidden_size==self.hidden_size
                 && m.inter_size==self.intermediate_size && m.topk==self.topk && m.num_experts==self.num_experts
-                && m.moe_tp_size==self.tp_size && m.moe_ep_size==1 && m.attention_dp_size==1
+                && routed_layout_ok(m, self.tp_size, &self.backend)
                 && m.quant_mode==self.moe_quant_mode && m.scale_factor==1.0 && m.is_gated)));
         if !valid {
             return Err(AicError::ModelConfig(
                 "GLM FFN analytical children disagree with its measured geometry".into(),
             ));
+        }
+        // SOL and SILICON must price one routed-expert layout.
+        if let (Some(Op::Moe(sol)), Some(Op::Moe(measured))) = (
+            self.children.get(4),
+            self.measured.iter().find(|op| matches!(op, Op::Moe(_))),
+        ) {
+            if (sol.moe_tp_size, sol.moe_ep_size) != (measured.moe_tp_size, measured.moe_ep_size)
+                || measured.attention_dp_size != 1
+            {
+                return Err(AicError::ModelConfig(
+                    "GLM FFN measured MoE layout disagrees with its analytical child".into(),
+                ));
+            }
         }
         validate_measured("ffn", &self.measured)
     }
@@ -941,7 +1008,7 @@ pub struct Glm53PrimitiveOp {
 impl Glm53PrimitiveOp {
     pub fn validate_physical(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.vocab_size != 154880
         {
@@ -1329,6 +1396,215 @@ pub(crate) mod tests {
             assert!(routed <= moe.query(&db, t).unwrap().latency_ms);
         }
     }
+    /// Sparse GLM FFN on `tp` attention ranks with a `moe_tp x moe_ep`
+    /// routed-expert layout; the measured MoE child is the analytical one.
+    fn sparse_ffn(tp: u32, moe_tp: u32, moe_ep: u32) -> Glm53FfnOp {
+        use crate::operators::{elementwise::ElementwiseOp, gemm::GemmOp};
+        let q = GemmQuantMode::Fp8Block;
+        let width = 2048 / tp;
+        let moe = Op::Moe(MoeOp::new(
+            "moe",
+            4096,
+            2048,
+            8,
+            288,
+            moe_tp,
+            moe_ep,
+            MoeQuantMode::Fp8Block,
+            "uniform",
+        ));
+        Glm53FfnOp {
+            name: "ffn_3".into(),
+            backend: "sglang".into(),
+            checkpoint_format: "fp8".into(),
+            is_context: false,
+            is_dense: false,
+            hidden_size: 4096,
+            intermediate_size: 2048,
+            num_experts: 288,
+            topk: 8,
+            tp_size: tp,
+            n_shared_experts: 1,
+            swiglu_limit: 10.0,
+            scoring_func: "sigmoid".into(),
+            routed_scaling_factor: 2.5,
+            n_group: 1,
+            topk_group: 1,
+            norm_topk_prob: true,
+            gemm_quant_mode: q,
+            shared_quant_mode: q,
+            moe_quant_mode: MoeQuantMode::Fp8Block,
+            children: vec![
+                Op::Gemm(GemmOp::new("shared_up", 2 * width, 4096, q)),
+                Op::Elementwise(ElementwiseOp::new("shared_act", 6.0 * f64::from(width))),
+                Op::Gemm(GemmOp::new("shared_down", 4096, width, q)),
+                Op::Glm53Router(Glm53RouterOp {
+                    name: "router".into(),
+                    backend: "sglang".into(),
+                    checkpoint_format: "fp8".into(),
+                    hidden_size: 4096,
+                    num_experts: 288,
+                    topk: 8,
+                }),
+                moe.clone(),
+            ],
+            measured: vec![moe],
+        }
+    }
+
+    fn routed(op: &Glm53FfnOp) -> &MoeOp {
+        match &op.children[4] {
+            Op::Moe(m) => m,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn ffn_accepts_expert_parallel_routed_experts_only_under_tp_attention() {
+        for (tp, moe_tp, moe_ep) in [
+            (1, 1, 1),
+            (4, 4, 1),
+            (4, 1, 4),
+            (4, 2, 2),
+            (8, 1, 8),
+            (8, 2, 4),
+        ] {
+            let op = sparse_ffn(tp, moe_tp, moe_ep);
+            assert!(op.validate().is_ok(), "tp={tp} moe_tp={moe_tp} ep={moe_ep}");
+        }
+        // MoE width must equal the attention TP group: no partial or
+        // over-wide expert groups, no EP16.
+        for (tp, moe_tp, moe_ep) in [(4, 1, 8), (4, 2, 4), (4, 1, 2), (8, 1, 16), (2, 4, 1)] {
+            let op = sparse_ffn(tp, moe_tp, moe_ep);
+            assert!(
+                op.validate().is_err(),
+                "tp={tp} moe_tp={moe_tp} ep={moe_ep}"
+            );
+        }
+        // vLLM has no MoE TP x EP hybrid without DP.
+        let mut hybrid = sparse_ffn(4, 2, 2);
+        hybrid.backend = "vllm".into();
+        if let Op::Glm53Router(r) = &mut hybrid.children[3] {
+            r.backend = "vllm".into();
+        }
+        assert!(hybrid.validate().is_err());
+        let mut pure_ep = sparse_ffn(4, 1, 4);
+        pure_ep.backend = "vllm".into();
+        if let Op::Glm53Router(r) = &mut pure_ep.children[3] {
+            r.backend = "vllm".into();
+        }
+        assert!(pure_ep.validate().is_ok());
+        // Data-parallel attention (tokens gathered into the expert pool)
+        // needs AG/RS modelling and stays rejected.
+        let mut dp = sparse_ffn(4, 1, 4);
+        for child in dp.children.iter_mut().chain(dp.measured.iter_mut()) {
+            if let Op::Moe(m) = child {
+                m.attention_dp_size = 2;
+            }
+        }
+        assert!(dp.validate().is_err());
+        // SOL and SILICON must price the same routed layout.
+        let mut split = sparse_ffn(4, 1, 4);
+        if let Op::Moe(m) = &mut split.measured[0] {
+            (m.moe_tp_size, m.moe_ep_size) = (4, 1);
+        }
+        let err = split.validate().unwrap_err();
+        assert!(err.to_string().contains("measured MoE layout"), "{err}");
+    }
+
+    #[test]
+    fn ep4_routed_experts_hold_72_local_experts() {
+        let ep4 = sparse_ffn(4, 1, 4);
+        let tp4 = sparse_ffn(4, 4, 1);
+        let m = routed(&ep4);
+        assert_eq!((m.moe_tp_size, m.moe_ep_size), (1, 4));
+        assert_eq!(m.num_experts / m.moe_ep_size, 72);
+        let expert = 4096.0 * 2048.0 * 3.0 * MoeQuantMode::Fp8Block.mapping().memory;
+        assert_eq!(m.weight_bytes(), 72.0 * expert);
+        // TP4 holds a quarter of all 288 experts: the same bytes per rank, so
+        // the FFN inventory (shared expert still TP4-sharded) is unchanged.
+        assert_eq!(routed(&tp4).weight_bytes(), 288.0 * expert / 4.0);
+        assert_eq!(ep4.weight_bytes(), tp4.weight_bytes());
+    }
+
+    #[test]
+    fn ep4_sol_changes_only_routed_expert_activation_traffic() {
+        let db = db(DatabaseMode::Sol);
+        let spec = &db.system_spec;
+        let (ep4, tp4) = (sparse_ffn(4, 1, 4), sparse_ffn(4, 4, 1));
+        for t in [1u32, 8, 32, 2048] {
+            let ctx = RuntimeContext {
+                batch_size: t,
+                num_tokens: t,
+                ..RuntimeContext::default()
+            };
+            let x = f64::from(t);
+            let (e, p) = (
+                routed_moe_sol(routed(&ep4), spec, x).unwrap().sol.unwrap(),
+                routed_moe_sol(routed(&tp4), spec, x).unwrap().sol.unwrap(),
+            );
+            // Same expert FLOPs per rank: tokens*topk/4 full experts versus
+            // tokens*topk quarter-width shards.
+            assert!((e.math_ms - p.math_ms).abs() <= 1e-12 * p.math_ms, "t={t}");
+            // Same distinct-expert weight bytes; EP4 reads/writes the full
+            // intermediate activation for a quarter of the assignments, so
+            // its activation traffic is a*(2h+3i)/4 versus a*(2h+3i/4).
+            let a = x * 8.0;
+            let (h, i) = (4096.0, 2048.0);
+            let delta = a
+                * (2.0 * h + 0.75 * i - (2.0 * h + 3.0 * i) / 4.0)
+                * MoeQuantMode::Fp8Block.mapping().memory;
+            let bytes = |r: &SolComponents| r.mem_ms * spec.gpu.mem_bw / 1e3;
+            assert!(
+                ((bytes(&p) - bytes(&e)) - delta).abs() <= 1e-6 * delta,
+                "t={t}"
+            );
+            // Every non-routed child (shared expert, router) is identical.
+            let rest = |op: &Glm53FfnOp| {
+                op.sol(&db, &ctx).unwrap().latency_ms
+                    - routed_moe_sol(routed(op), spec, x).unwrap().latency_ms
+            };
+            assert!(
+                (rest(&ep4) - rest(&tp4)).abs() <= 1e-12 * rest(&tp4),
+                "t={t}"
+            );
+        }
+    }
+
+    #[test]
+    fn measured_routed_lookup_is_keyed_on_moe_ep() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        // TEST_ONLY synthetic EP4 rows; not measured timings.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["fp8_block"; 3]),
+                Col::I64("num_tokens", vec![1, 8, 64]),
+                Col::I64("hidden_size", vec![4096; 3]),
+                Col::I64("inter_size", vec![2048; 3]),
+                Col::I64("topk", vec![8; 3]),
+                Col::I64("num_experts", vec![288; 3]),
+                Col::I64("moe_tp_size", vec![1; 3]),
+                Col::I64("moe_ep_size", vec![4; 3]),
+                Col::Str("distribution", vec!["uniform"; 3]),
+                Col::F64("latency", vec![0.05, 0.1, 0.4]),
+            ],
+        );
+        let silicon = PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        let ep4 = routed(&sparse_ffn(4, 1, 4)).query(&silicon, 8).unwrap();
+        assert_eq!(ep4.source, Source::Silicon);
+        assert_eq!(ep4.latency_ms, 0.1);
+        // The TP4 layout never borrows the EP4 rows.
+        let err = routed(&sparse_ffn(4, 4, 1)).query(&silicon, 8).unwrap_err();
+        assert!(err.is_missing_perf_data(), "{err}");
+    }
+
     #[test]
     fn sparse_mla_projection_precision_matches_backend_and_checkpoint() {
         for backend in ["vllm", "sglang"] {
@@ -1495,43 +1771,144 @@ pub(crate) mod tests {
     }
 
     fn sparse_tree(version: &str) -> tempfile::TempDir {
-        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let root = tempfile::tempdir().unwrap();
+        sparse_table(
+            root.path(),
+            "gb300",
+            "vllm",
+            version,
+            &[attention("sparse_mla")],
+        );
+        root
+    }
+
+    /// External systems root fixture: the packaged system YAML plus one GLM
+    /// attention table with rows (B=2, prefix 0, x 512/4096) per geometry.
+    fn sparse_table(
+        root: &std::path::Path,
+        system: &str,
+        backend: &str,
+        version: &str,
+        ops: &[Glm53AttentionOp],
+    ) {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../python/aisimulate/src/aisimulate_core/systems");
-        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let yaml = format!("{system}.yaml");
+        std::fs::copy(systems.join(&yaml), root.join(&yaml)).unwrap();
         let dir = root
-            .path()
-            .join("data/gb300/glm53_attention/vllm")
+            .join(format!("data/{system}/glm53_attention/{backend}"))
             .join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        let geometry: &'static str =
-            crate::perf_database::glm53flash::geometry(&attention("sparse_mla"))
-                .unwrap()
-                .leak();
+        let n = 2 * ops.len();
+        let geometry: Vec<&'static str> = ops
+            .iter()
+            .flat_map(|op| {
+                let g: &'static str = crate::perf_database::glm53flash::geometry(op)
+                    .unwrap()
+                    .leak();
+                [g, g]
+            })
+            .collect();
         let sha: &'static str = "a".repeat(64).leak();
         let digest: &'static str = format!("sha256:{sha}").leak();
         write_parquet(
             &dir.join(crate::perf_database::glm53flash::BASENAME),
             &[
-                Col::Str("component", vec!["attention"; 2]),
-                Col::Str("geometry", vec![geometry; 2]),
-                Col::I64("batch_size", vec![2; 2]),
-                Col::I64("prefix", vec![0; 2]),
-                Col::I64("x", vec![512, 4096]),
-                Col::F64("latency", vec![1.5, 9.0]),
-                Col::Str("kernel_source", vec!["glm53_sparse_mla"; 2]),
-                Col::Str("measurement_scope", vec!["local_compute"; 2]),
-                Col::Str("source_sha256", vec![sha; 2]),
-                Col::Str("config_sha256", vec![sha; 2]),
-                Col::Str("runtime_digest", vec![digest; 2]),
-                Col::Bool("used_cuda_graph", vec![false; 2]),
-                Col::I64("sample_count", vec![5; 2]),
-                Col::Str("kv_seed_regime", vec!["n/a"; 2]),
-                Col::Str("execution_profile", vec!["full"; 2]),
+                Col::Str("component", vec!["attention"; n]),
+                Col::Str("geometry", geometry),
+                Col::I64("batch_size", vec![2; n]),
+                Col::I64("prefix", vec![0; n]),
+                Col::I64("x", [512, 4096].repeat(ops.len())),
+                Col::F64("latency", [1.5, 9.0].repeat(ops.len())),
+                Col::Str("kernel_source", vec!["glm53_sparse_mla"; n]),
+                Col::Str("measurement_scope", vec!["local_compute"; n]),
+                Col::Str("source_sha256", vec![sha; n]),
+                Col::Str("config_sha256", vec![sha; n]),
+                Col::Str("runtime_digest", vec![digest; n]),
+                Col::Bool("used_cuda_graph", vec![false; n]),
+                Col::I64("sample_count", vec![5; n]),
+                Col::Str("kv_seed_regime", vec!["n/a"; n]),
+                Col::Str("execution_profile", vec!["full"; n]),
             ],
         );
-        root
+    }
+
+    #[test]
+    fn multi_system_tp8_rows_resolve_by_exact_kv_identity() {
+        const RUNTIME: &str = "0.5.20";
+        // SGLang FP8 checkpoint TP8 on Hopper (BF16 KV) and Blackwell (FP8 KV).
+        let deployment = |kv: KvCacheQuantMode| {
+            let mut op = attention("sparse_mla");
+            op.backend = "sglang".into();
+            op.checkpoint_format = "fp8".into();
+            op.projection_quant_mode = GemmQuantMode::Fp8Block;
+            op.tp_size = 8;
+            op.num_heads = 8;
+            op.kv_cache_dtype = kv;
+            op
+        };
+        let c = ctx(2, 512, 0, true);
+        for (system, kv, other) in [
+            (
+                "h100_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "h200_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "b300_sxm",
+                KvCacheQuantMode::Fp8,
+                KvCacheQuantMode::Bfloat16,
+            ),
+            ("gb200", KvCacheQuantMode::Fp8, KvCacheQuantMode::Bfloat16),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            sparse_table(root.path(), system, "sglang", RUNTIME, &[deployment(kv)]);
+            let db = PerfDatabase::load_resolved(
+                root.path(),
+                system,
+                "sglang",
+                RUNTIME,
+                true,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+            let hit = deployment(kv).query(&db, &c).unwrap();
+            assert_eq!(
+                (hit.latency_ms, hit.source),
+                (1.5, Source::Silicon),
+                "{system}"
+            );
+            // The other KV identity is a coverage gap, never a borrowed row.
+            assert!(deployment(other).query(&db, &c).is_err(), "{system}");
+        }
+        // One table never mixes the two KV identities.
+        let root = tempfile::tempdir().unwrap();
+        let ops = [
+            deployment(KvCacheQuantMode::Fp8),
+            deployment(KvCacheQuantMode::Bfloat16),
+        ];
+        sparse_table(root.path(), "h200_sxm", "sglang", RUNTIME, &ops);
+        let db = PerfDatabase::load_resolved(
+            root.path(),
+            "h200_sxm",
+            "sglang",
+            RUNTIME,
+            true,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        let err = ops[1].query(&db, &c).unwrap_err();
+        assert!(err.to_string().contains("mixes FP8 and BF16"), "{err}");
     }
 
     #[test]
@@ -1733,5 +2110,204 @@ pub(crate) mod tests {
             op.query(&load(DatabaseMode::Sol), &c).unwrap().latency_ms,
             op.sol(&silicon.system_spec, 1024.0).unwrap().latency_ms
         );
+    }
+
+    #[test]
+    fn tensor_parallel_gate_accepts_tp8_and_rejects_non_divisors() {
+        use crate::operators::{communication::NcclOp, elementwise::ElementwiseOp, gemm::GemmOp};
+        // 64 attention/KDA heads, 12288 dense and 154880 vocab all divide by
+        // 8; TP8 is the FP8 deployment on 80/141 GiB Hopper GPUs.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (tp, accepted) in [
+            (1u32, true),
+            (2, true),
+            (4, true),
+            (8, true),
+            (3, false),
+            (16, false),
+        ] {
+            let mut kda = attention("kda");
+            kda.tp_size = tp;
+            kda.num_heads = (64 / tp).max(1);
+            assert_eq!(kda.validate().is_ok(), accepted, "attention tp={tp}");
+            let mhc = Glm53MhcOp {
+                name: "mhc_pre_attn_1".into(),
+                role: "pre".into(),
+                backend: "sglang".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: tp,
+                is_context: false,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            };
+            assert_eq!(mhc.sol(&spec, 8.0).is_ok(), accepted, "mhc tp={tp}");
+            let allreduce: Glm53PrimitiveOp = serde_json::from_value(serde_json::json!({
+                "name": "allreduce_0", "role": "allreduce", "backend": "vllm",
+                "checkpoint_format": "fp8", "tp_size": tp, "is_context": true,
+                "hidden_size": 4096, "vocab_size": 154880, "token_selection": "all_scheduled",
+                "output_dtype": "bfloat16", "collective": "all_reduce",
+                "children": [Op::Nccl(NcclOp::new("ar", 1.0, 4096.0, tp, "all_reduce"))],
+            }))
+            .unwrap();
+            assert_eq!(allreduce.validate().is_ok(), accepted, "primitive tp={tp}");
+            let width = 12288 / tp;
+            let q = GemmQuantMode::Fp8Block;
+            let dense: Glm53FfnOp = serde_json::from_value(serde_json::json!({
+                "name": "ffn_0", "backend": "vllm", "checkpoint_format": "fp8",
+                "is_context": true, "is_dense": true, "hidden_size": 4096,
+                "intermediate_size": 12288, "num_experts": 288, "topk": 8, "tp_size": tp,
+                "n_shared_experts": 1, "swiglu_limit": 10.0, "scoring_func": "sigmoid",
+                "routed_scaling_factor": 2.5, "n_group": 1, "topk_group": 1,
+                "norm_topk_prob": true, "gemm_quant_mode": q,
+                "shared_quant_mode": q, "moe_quant_mode": MoeQuantMode::Fp8Block,
+                "children": [
+                    Op::Gemm(GemmOp::new("up", 2 * width, 4096, q)),
+                    Op::Elementwise(ElementwiseOp::new("act", 6.0 * f64::from(width))),
+                    Op::Gemm(GemmOp::new("down", 4096, width, q)),
+                ],
+            }))
+            .unwrap();
+            assert_eq!(dense.validate().is_ok(), accepted, "ffn tp={tp}");
+        }
+    }
+
+    #[test]
+    fn sglang_bf16_latent_cache_doubles_only_latent_bytes() {
+        // SGLang 0.5.20 BF16 KV: 512 latent elements x 2 bytes per token;
+        // IndexPool keys (128 FP8 + 4-byte scale per 4 tokens) and the two
+        // 4x128 BF16 pool-tail buffers (2048 B) are dtype-independent.
+        let mut fp8 = attention("sparse_mla");
+        fp8.backend = "sglang".into();
+        fp8.checkpoint_format = "nvfp4".into();
+        let mut bf16 = fp8.clone();
+        bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        assert_eq!(bf16.cache_bytes(0).unwrap(), 2048.0);
+        assert_eq!(bf16.cache_bytes(4).unwrap(), 2048.0 + 4.0 * 1024.0 + 132.0);
+        assert_eq!(
+            bf16.cache_bytes(131072).unwrap() - fp8.cache_bytes(131072).unwrap(),
+            131072.0 * 512.0
+        );
+        // The latent read/write grows with the KV width; FP8 is unchanged.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (is_context, s, prefix) in [(false, 65536.0, 0.0), (true, 1024.0, 65536.0)] {
+            let (mut a, mut b) = (fp8.clone(), bf16.clone());
+            a.is_context = is_context;
+            b.is_context = is_context;
+            let sol = |op: &Glm53AttentionOp| op.sol(&spec, 8.0, s, prefix).unwrap().latency_ms;
+            assert!(sol(&b) > sol(&a), "context={is_context}");
+        }
+        // An INT8 latent is not a served layout on either backend.
+        let mut int8 = fp8.clone();
+        int8.kv_cache_dtype = KvCacheQuantMode::Int8;
+        assert!(int8.validate().is_err());
+    }
+
+    #[test]
+    fn vllm_bf16_latent_is_priced_exactly_like_sglang_bf16() {
+        // Stock vLLM 0.31.0 on SM90 serves BF16 KV. The payload and the
+        // latent traffic are backend-independent: the SGLang BF16 values
+        // (512 x 2 B latent per token) apply unchanged.
+        let mut vllm = attention("sparse_mla");
+        vllm.checkpoint_format = "fp8".into();
+        let mut vllm_bf16 = vllm.clone();
+        vllm_bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        vllm_bf16.validate().unwrap();
+        let mut sglang_bf16 = vllm_bf16.clone();
+        sglang_bf16.backend = "sglang".into();
+        sglang_bf16.projection_quant_mode = GemmQuantMode::Fp8Block;
+        for seq in [0, 3, 4, 4096, 131072] {
+            assert_eq!(
+                vllm_bf16.cache_bytes(seq).unwrap(),
+                sglang_bf16.cache_bytes(seq).unwrap()
+            );
+        }
+        assert_eq!(
+            vllm_bf16.cache_bytes(4).unwrap(),
+            2048.0 + 4.0 * 1024.0 + 132.0
+        );
+        // vLLM FP8 keeps its 512 B/token latent (the pinned FP8 payload).
+        assert_eq!(vllm.cache_bytes(4).unwrap(), 4228.0);
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        let fp8_ms = vllm.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        let bf16_ms = vllm_bf16.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        assert!(bf16_ms > fp8_ms);
+    }
+
+    #[test]
+    fn bf16_latent_traffic_has_a_hand_calculated_byte_delta() {
+        // BF16 vs FP8 changes exactly two SOL byte terms, each by one extra
+        // byte per latent element (kv_lora_rank 512): the NoPE latent read
+        // over the selected pairs and the KV publication of the x new
+        // tokens. Every FLOP term is unchanged.
+        let mut spec = db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.mem_bw = 1e6;
+        for backend in ["vllm", "sglang"] {
+            let mut fp8 = attention("sparse_mla");
+            fp8.backend = backend.into();
+            let mut bf16 = fp8.clone();
+            bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+            // Decode, B=1 at s=4098: sparse_pairs(4097, 4098) selects 2050
+            // pairs, x = 1 token -> (2050 + 1) * 512 bytes.
+            // Context, B=1, s=4, prefix 0: sparse_pairs(0, 4) selects 10
+            // pairs, x = 4 tokens -> (10 + 4) * 512 bytes.
+            for (is_context, s, extra_bytes) in
+                [(false, 4098.0, 2051.0 * 512.0), (true, 4.0, 14.0 * 512.0)]
+            {
+                fp8.is_context = is_context;
+                bf16.is_context = is_context;
+                let a = fp8.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let b = bf16.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let expected_ms = extra_bytes / 1e6 * 1e3;
+                assert!(
+                    (b.mem_ms - a.mem_ms - expected_ms).abs() <= 1e-9 * expected_ms,
+                    "{backend} context={is_context}: {} vs {expected_ms}",
+                    b.mem_ms - a.mem_ms
+                );
+                assert_eq!(b.math_ms, a.math_ms, "{backend} context={is_context}");
+            }
+        }
+    }
+
+    #[test]
+    fn hopper_sglang_fp8_latent_attention_uses_fp8_math() {
+        // With BF16=1 TFLOP/s and FP8=2 TFLOP/s, the two 32-head,
+        // width-512 attention matmuls cost 65,536 FLOPs per selected pair.
+        // Decode at position 4098 selects 2048 pooled tokens + 2 live-tail
+        // tokens: 134,348,800 FLOPs, saving 0.0671744 ms at FP8 precision.
+        // A four-token causal prefill has 1+2+3+4=10 pairs, saving
+        // 0.00032768 ms. All other arithmetic has identical precision.
+        let mut spec = db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.bfloat16_tc_flops = Some(1e12);
+        spec.gpu.fp8_tc_flops = Some(2e12);
+        for (backend, sm, uses_fp8_math) in [
+            ("sglang", 90, true),
+            ("sglang", 100, false),
+            ("vllm", 90, false),
+        ] {
+            spec.gpu.sm_version = Some(sm);
+            let mut fp8 = attention("sparse_mla");
+            fp8.backend = backend.into();
+            let mut bf16 = fp8.clone();
+            bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+            for (is_context, s, expected_delta_ms) in
+                [(false, 4098.0, 0.0671744), (true, 4.0, 0.00032768)]
+            {
+                fp8.is_context = is_context;
+                bf16.is_context = is_context;
+                let a = fp8.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let b = bf16.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let expected = if uses_fp8_math {
+                    expected_delta_ms
+                } else {
+                    0.0
+                };
+                assert!(
+                    (b.math_ms - a.math_ms - expected).abs() < 1e-10,
+                    "{backend} SM{sm} context={is_context}: math delta {} vs {expected}",
+                    b.math_ms - a.math_ms
+                );
+            }
+        }
     }
 }

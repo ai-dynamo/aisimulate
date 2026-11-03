@@ -116,6 +116,12 @@ Two kinds of validation then run:
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
   [required native probes](../../.github/fpe-required-probes.json).
+  Before probing, discovery resolves each required probe's `current` version
+  through the selected source's installed SDK and checks it against that source's
+  inventory. The resulting plan binds concrete versions to the source, tooling,
+  and wheel identities; packaging validates that plan and records its versions in
+  `fpe-qualification.json`. A passing older version cannot replace a failing
+  required version. Release branches resolve their own `current` versions.
 
 FPE generates deterministic web-matrix artifacts. Its standalone manual mode
 builds one wheel for the requested source SHA and uses that same wheel for all

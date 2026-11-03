@@ -388,7 +388,7 @@ def test_agentx_replay_cli_table_and_help_identify_qualification(tmp_path: Path)
         "agentic_mooncake",
         "HBM-only",
         "vLLM/SGLang",
-        "speculative decoding disabled",
+        "canonical MTP",
         "functional_only",
     ):
         assert expected in help_text
@@ -479,15 +479,36 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
         _check_documented_candidate_renderer(output, tmp_path)
 
 
-@pytest.mark.parametrize("load_type", ["concurrency", "constant_rate", "poisson"])
+@pytest.mark.parametrize("load_type", ["concurrency", "constant_rate", "poisson", "session_rate", "trace_timestamps"])
 def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Path) -> None:
     data = yaml.safe_load((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine/03-preset-off-ttft.yaml").read_text())
-    data["traffic"]["load"] = (
-        {"type": "concurrency", "concurrency": 2}
-        if load_type == "concurrency"
-        else {"type": load_type, "requests_per_second": 10}
-    )
-    data["traffic"]["stop"] = {"requests": 20}
+    requests = 20
+    if load_type == "session_rate":
+        # Ten two-turn sessions at 5 sessions/s offer 10 requests/s.
+        data["traffic"] = {
+            "source": {
+                "type": "synthetic-session",
+                "new_input_tokens_per_turn": 32,
+                "output_tokens_per_turn": 4,
+                "session": {"turns": 2},
+            },
+            "load": {"type": "constant_rate", "sessions_per_second": 5},
+            "stop": {"sessions": 10},
+        }
+    elif load_type == "trace_timestamps":
+        trace = _REPO_ROOT / _CONFIG_ROOT / "fixtures/traces/mooncake.jsonl"
+        data["traffic"] = {
+            "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)]},
+            "load": {"type": "trace_timestamps"},
+        }
+        requests = 2
+    else:
+        data["traffic"]["load"] = (
+            {"type": "concurrency", "concurrency": 2}
+            if load_type == "concurrency"
+            else {"type": load_type, "requests_per_second": 10}
+        )
+        data["traffic"]["stop"] = {"requests": 20}
     data["evaluation"] = {"sla": {"e2e_ms": 100}}
     data["optimization"] = {"target": "min_gpus", "constraints": {"max_candidate_gpus": 2}}
     if load_type != "concurrency":
@@ -512,7 +533,7 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
     prediction = _run_cli(
         "predict", "--config", str(selected_path), "--output-dir", str(tmp_path / "predict"), "--format", "json"
     )
-    assert json.loads(prediction.stdout)["completed_requests"] == 20
+    assert json.loads(prediction.stdout)["completed_requests"] == requests
 
     # All candidates miss this SLA: fail explicitly without manufacturing a smallest result.
     no_result = tmp_path / "no-result"

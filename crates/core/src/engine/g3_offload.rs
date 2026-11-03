@@ -3,5 +3,5 @@
 
 mod tier;
 
-pub(crate) use tier::{Direction, G3Tier, Probe, SharedG3Tier};
+pub(crate) use tier::{Direction, G3Tier, Probe, SharedG3Tier, is_zero};
 pub use tier::{G3IoStats, G3Stats};

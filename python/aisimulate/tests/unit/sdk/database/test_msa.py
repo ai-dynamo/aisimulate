@@ -57,17 +57,19 @@ def test_msa_sol_scales_with_workload():
     assert with_prefix > large  # cached prefix adds indexer work beyond index_topk
 
 
-def test_rtx_trtllm_rc23_loads_and_m3_is_explicitly_rejected():
-    """Dynamo 1.3 pins trtllm 1.3.0rc23; rtx ships rc20-reuse markers so the
-    exact-version gate passes (review 4969690316 Spec-3) and every reused
-    family serves, while M3 MSA — no rtx table, no DSA xop donor on trtllm —
-    fails with a typed empirical error (an explicitly rejected cell), never
-    a silent fallback or a version-gate exit."""
+def test_rtx_trtllm_next_loads_and_m3_is_explicitly_rejected():
+    """The rtx trtllm `next` slot loads (review 4969690316 Spec-3) and every
+    served family resolves, while M3 MSA — no rtx table, no DSA xop donor on
+    trtllm — fails with a typed empirical error (an explicitly rejected cell),
+    never a silent fallback or a version-gate exit. Queried through the slot
+    alias: Dynamo and the SDK address versions as current/previous/next, and
+    the raw version behind `next` moves with every fleet upgrade (rc23 -> rc29
+    in 2026-10)."""
     from aisimulate.sdk.perf_database import get_database_view
     from aisimulate_core.sdk.errors import EmpiricalNotImplementedError
 
-    db = get_database_view("rtx_pro_6000_server", "trtllm", "1.3.0rc23", database_mode="HYBRID")
-    assert db is not None, "rc23 reuse markers must make the version root loadable"
+    db = get_database_view("rtx_pro_6000_server", "trtllm", "next", database_mode="HYBRID")
+    assert db is not None, "the derived next slot must make the version root loadable"
     op = _ctx_msa()
     # The EXACT typed contract (review 4972622548 item 3): the miss crosses
     # the engine FFI as EmpiricalNotImplementedError — never a version-gate
@@ -170,7 +172,7 @@ def test_nvfp4_checkpoint_lane_resolution_per_backend():
             gemm_quant_mode=common.GEMMQuantMode.fp8_block,
         )
 
-    for backend, version in (("trtllm", "1.3.0rc23"), ("vllm", "0.24.0")):
+    for backend, version in (("trtllm", "next"), ("vllm", "current")):
         db = get_database_view("b200_sxm", backend, version, database_mode="SILICON")
         assert db is not None, f"b200 {backend} data missing"
         latency = float(op()._engine_query(db, batch_size=2, s=512, prefix=0))

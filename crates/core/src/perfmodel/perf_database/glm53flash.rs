@@ -21,8 +21,9 @@
 //! attention measurements are never inherited from sibling versions, declared
 //! donors or other backends. A missing file or geometry is a coverage gap;
 //! every malformed present file is fatal. Provenance: one source/runtime
-//! identity per file, one `config_sha256` per checkpoint format (a version
-//! directory holds both checkpoints), and one `used_cuda_graph` value per
+//! identity and one latent `kv_cache_dtype` per file, one `config_sha256`
+//! per checkpoint format (a version directory holds both checkpoints), and
+//! one `used_cuda_graph` value per
 //! geometry (shipped tables time both prefill and decode under the serving
 //! CUDA graphs; prefill uses the frameworks' breakable/piecewise graphs).
 //! Within one geometry the reader
@@ -267,6 +268,9 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
     let mut configs: BTreeMap<String, String> = BTreeMap::new();
     let mut graphs: BTreeMap<String, bool> = BTreeMap::new();
     let mut validated: BTreeMap<String, (bool, String)> = BTreeMap::new();
+    // One latent KV dtype per file: FP8- and BF16-KV deployments are distinct
+    // identities collected by distinct runs and never share a table.
+    let mut kv_cache_dtype: Option<String> = None;
     let mut grids: BTreeMap<String, BatchCurves> = BTreeMap::new();
     for row in reader.rows()? {
         let row = row?;
@@ -283,6 +287,12 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
+            let kv = body["kv_cache_dtype"].as_str().unwrap_or_default();
+            if kv_cache_dtype.get_or_insert_with(|| kv.to_owned()) != kv {
+                return Err(invalid(
+                    "GLM attention table mixes FP8 and BF16 latent KV identities",
+                ));
+            }
             validated.insert(encoded.to_owned(), (is_context, checkpoint));
         }
         let (is_context, checkpoint) = validated[encoded].clone();
