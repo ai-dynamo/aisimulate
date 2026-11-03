@@ -115,7 +115,8 @@ completion, output-length conservation and coverage before comparison. Server
 retained/processed-token counts and client-delivered counts are distinct; preserve
 any terminal over-generation rather than silently equating them.
 
-`analyze_timing.py` accounts for 221 planned identities per mode, validates
+`analyze_timing.py` accounts for 221 planned identities per mode, retains missing
+records as unrecorded-or-unattempted (a killed case may have started), validates
 counter/clock ordering and exact delivered lengths, and uses rank-0 readiness.
 It ends native spans at first attainment of the delivered length, excluding
 duplicate terminal frames. One-token intervals and chat token-interval scores

@@ -122,7 +122,7 @@ def analyze(root):
         result[mode] = {
             "planned": len(expected),
             "recorded": len(rows),
-            "not_attempted": sorted(expected - set(counts)),
+            "unrecorded_or_unattempted": sorted(expected - set(counts)),
             "status_counts": dict(Counter(row["status"] for row in rows)),
             "server_event_ranks": dict(ranks),
             "collector_completed": (directory / "completion.json").exists(),
