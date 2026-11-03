@@ -1656,3 +1656,53 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+### SGLang shaped forward-span diagnostic instrumentation
+
+The NVTX-only runtime patch in
+`benchmarks/evidence/accuracy/glm-agentx-rsi/instrument.py` adapts the existing
+`ModelRunner.forward` shaped span from SGLang commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original path
+`python/sglang/srt/model_executor/model_runner.py`. Source:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/model_executor/model_runner.py .
+Copyright 2023-2024 SGLang Team and contributors; Apache-2.0. The license text
+is included in `LICENSE`; upstream license:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE .
+The self-authored `rsi_forward_nvtx.py` adapter preserves the existing Torch
+span and adds an NVTX span with the same backend-generated label. The generated
+backend file remains inside an isolated writable diagnostic container, retains
+its upstream copyright/license header and is prominently marked modified. Its
+original and modified SHA256 values are retained. No upstream model-runner body
+or benchmark input is copied into this repository.
+
+The optional numerical-geometry diagnostic additionally wraps the existing
+draft and draft-extension CUDA-graph entry points in
+`python/sglang/srt/speculative/eagle_worker_v2.py` from that same immutable
+commit. Source:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/speculative/eagle_worker_v2.py .
+The generated file retains the upstream copyright/license and is marked modified;
+original and modified checksums are retained. The diagnostic reads bounded
+numerical geometry only during explicit profiler windows, preserves graph-call
+arguments, and changes no serving algorithm. Its synchronous metadata reads are
+declared measurement perturbations, not uninstrumented performance evidence.
+The optional draft input-count receipt follows the captured-width contract of
+`python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py` at the same
+immutable commit; the unmodified image source checksum is required. It records
+`batch_size * captured_req_width` when the native graph intentionally has not
+constructed its input-ID buffer. No token-ID values are read.
+
+### SGLang paged-indexer width diagnostic
+
+`benchmarks/evidence/accuracy/glm-agentx-rsi/paged_indexer_probe.py` reuses the
+unmodified synthetic generator from SGLang commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`,
+`test/registered/kernels/ops/attention/test_deepgemm_paged_mqa_logits.py`,
+and calls that runtime's native/split paged-MQA wrappers. Source:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/test/registered/kernels/ops/attention/test_deepgemm_paged_mqa_logits.py .
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES, Apache-2.0. The license
+text is included as `LICENSE`. The upstream file is checksum-pinned and
+retained with private experiment inputs, not copied into the package.
+The self-authored diagnostic changes context metadata to the historical
+fused verification contract, holds query/KV values fixed across three
+layout/grouping controls, and records numerical checks and graph timings.
+It produces no performance-database rows or historical accuracy changes.

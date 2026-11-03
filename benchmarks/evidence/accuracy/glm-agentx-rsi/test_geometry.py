@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import copy
+
+import pytest
+from audit_geometry import qualify_rows
+
+
+def records(rounds=11):
+    result = []
+    for context in (8192, 393216):
+        prefill = 8192 if context == 8192 else 64
+        phases = [("step[EXTEND bs=1]", prefill, False, context, context - prefill),
+                  ("step[DRAFT bs=1]", prefill, False, context, context - prefill)]
+        for index in range(rounds):
+            base = context + index * 3
+            phases += [("draft", 1, True, base, base), ("step[VERIFY bs=1]", 4, False, base, base),
+                       ("draft_extend", 4, True, base + 4, base)]
+        for phase, tokens, graph, length, position in phases:
+            result.append({"schema": "aisimulate.glm-rsi.forward-geometry.v1", "ordinal": len(result),
+                           "device": 0, "batch_size": 1, "begin_ns": "1", "end_ns": "2",
+                           "seq_lens": [length], "input_token_count": tokens, "stage": phase,
+                           "num_tokens_per_req": tokens, "graph_entry": graph,
+                           "positions_bounded": list(range(position, position + tokens)) if tokens <= 64 else None,
+                           "dsa_topk_seed_present": False})
+    return result
+
+
+def test_geometry_keeps_all_executions_and_rejects_incomplete_or_wrong_width():
+    rows = records()
+    result = qualify_rows(rows, 0)
+    assert result["8192"]["counts"]["target_verify"] == 11
+    assert sum(len(value["forwards"]) for value in result.values()) == len(rows)
+    changed = copy.deepcopy(rows)
+    changed[3]["input_token_count"] = 3
+    with pytest.raises(ValueError, match="token width"):
+        qualify_rows(changed, 0)
+    changed = copy.deepcopy(rows)
+    changed[3]["positions_bounded"] = [1, 2, 2, 4]
+    with pytest.raises(ValueError, match="consecutive"):
+        qualify_rows(changed, 0)
+    with pytest.raises(ValueError, match="rank"):
+        qualify_rows(rows, 1)
+    with pytest.raises(ValueError, match="Incomplete numerical profile"):
+        qualify_rows(rows[:35], 0)
+    changed = copy.deepcopy(rows)
+    for row in changed:
+        if row["stage"] == "draft":
+            row.update(num_tokens_per_req=-1, native_captured_req_width=1)
+    assert qualify_rows(changed, 0)["8192"]["counts"]["draft"] == 11
+    changed[2]["status"] = "unavailable"
+    with pytest.raises(ValueError, match="Unavailable numerical"):
+        qualify_rows(changed, 0)
+    # Preserve the completed request's already-launched full-width overlap tail.
+    tail = qualify_rows(records(rounds=44), 0)
+    assert tail["8192"]["counts"]["target_verify"] == 44
+    assert tail["8192"]["forwards"][-1]["seq_lens"] == [8192 + 133]
+    with pytest.raises(ValueError, match="Decode KV geometry"):
+        qualify_rows(records(rounds=46), 0)
