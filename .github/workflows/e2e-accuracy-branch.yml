@@ -95,7 +95,8 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           directory = Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel'
-          wheels = list(directory.glob('aisimulate-*.whl'))
+          from scripts.release.package_identity import wheels as product_wheels
+          wheels = product_wheels(directory)
           if len(wheels) != 1:
               raise SystemExit('expected one unified wheel')
           wheel = wheels[0]
@@ -117,7 +118,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-wheel-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-wheel/aisimulate-*.whl
+          path: ${{ runner.temp }}/accuracy-wheel/*.whl
           overwrite: true
           if-no-files-found: error
           compression-level: 0

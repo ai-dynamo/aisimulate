@@ -45,10 +45,10 @@ def _ai_dynamo_distribution_or_skip():
 
 
 def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
     packaged_files = {str(path) for path in distribution.files or ()}
 
-    assert distribution.metadata["Name"] == "aisimulate"
+    assert distribution.metadata["Name"] == "aisim"
     assert importlib.util.find_spec("aisimulate.replay") is not None
     assert importlib.util.find_spec("aisimulate.sweeper") is not None
     assert importlib.util.find_spec("aisimulate.afd_artifacts") is not None
@@ -91,7 +91,7 @@ def test_ai_dynamo_has_no_aisimulate_extra():
 
 
 def test_aisimulate_has_no_dynamo_or_component_adapter_dependencies():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
 
     requirements = distribution.requires or []
     names = {Requirement(requirement).name.lower() for requirement in requirements}

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify that one ``aisimulate`` wheel owns every Python runtime payload."""
+"""Verify that one ``aisim`` wheel owns every Python runtime payload."""
 
 from __future__ import annotations
 
@@ -211,7 +211,7 @@ def _verify_wheel(wheel: Path, expected_payload: set[str]) -> set[str]:
     split_dependencies = sorted(
         requirement
         for requirement in requirements
-        if _requirement_name(requirement) in {"aisimulate-core", "aiconfigurator-core"}
+        if _requirement_name(requirement) in {"aisim-core", "aisimulate-core", "aiconfigurator-core"}
     )
     if split_dependencies:
         raise RuntimeError(f"{wheel.name}: split Python core dependency remains: {split_dependencies}")
@@ -223,7 +223,7 @@ def main() -> int:
     parser.add_argument("dist_dir", type=Path)
     args = parser.parse_args()
 
-    wheel = _one_wheel(args.dist_dir, "aisimulate-*.whl")
+    wheel = _one_wheel(args.dist_dir, "aisim-*.whl")
     payload = _verify_wheel(wheel, _source_payloads())
     _verify_rust_crate_package()
     print(f"Verified unified {wheel.name}: {len(payload)} application, SDK, data, and native payload files")

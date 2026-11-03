@@ -42,7 +42,7 @@ def _source_sha() -> str:
 
 def _source_version() -> str:
     try:
-        return importlib.metadata.version("aisimulate")
+        return importlib.metadata.version("aisim")
     except importlib.metadata.PackageNotFoundError:
         import tomllib
 
