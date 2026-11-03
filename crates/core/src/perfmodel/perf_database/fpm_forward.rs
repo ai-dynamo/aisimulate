@@ -3216,6 +3216,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&258018], 33.235794);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 0);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 0);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(!normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, row.raw_latency_ms);
+        assert!(!row.replaced);
     }
 
     /// A station with fewer than two `real_kv` anchors keeps its original
@@ -3251,6 +3262,22 @@ pub(crate) mod tests {
         assert_eq!(curves[&64][&16384], healed);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 5);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 2);
+        let kept = &normalization.rows[0];
+        assert_eq!(kept.row_index, 1);
+        assert_eq!(kept.raw_latency_ms, 5.0);
+        assert_eq!(kept.effective_latency_ms, kept.raw_latency_ms);
+        assert!(!kept.replaced);
+        let replaced = &normalization.rows[1];
+        assert_eq!(replaced.row_index, 4);
+        assert_eq!(replaced.raw_latency_ms, 9.0);
+        assert_eq!(replaced.effective_latency_ms, healed);
+        assert!(replaced.replaced);
     }
 
     /// A fake rung that is NOT its station's kv top anchors on the two

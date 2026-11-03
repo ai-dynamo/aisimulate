@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -127,9 +128,20 @@ class Native:
 
 
 @pytest.fixture
-def backend():
+def backend(monkeypatch):
     import sklearn
 
+    class PerfDataNotAvailableError(Exception):
+        pass
+
+    # Pages runs these adapter tests without the SDK. Supply the exception
+    # contract alongside the fake trainer/model, restoring the real module
+    # after each test when an installed SDK is available.
+    monkeypatch.setitem(
+        sys.modules,
+        "aisimulate_core.sdk.errors",
+        SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError),
+    )
     Native.models = []
     calls = []
 

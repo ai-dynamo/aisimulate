@@ -892,9 +892,8 @@ def test_public_contract_preserves_and_validates_interpolation_semantics(
             validate_scenarios(altered, summary)
 
 
-def test_public_contract_binds_effective_seed_targets_to_original_artifact(
-    public_scenarios,
-):
+@pytest.fixture
+def normalized_public_scenarios(public_scenarios):
     document, summary = public_scenarios
     cell = document["rows"][0]["results"]["a"]["linear"]
     cell["seed_target_normalization"] = {
@@ -909,18 +908,50 @@ def test_public_contract_binds_effective_seed_targets_to_original_artifact(
         "effective_targets_sha256": "e" * 64,
         "target_scope": "native_profile_seed_targets_not_additional_measurements",
     }
+    return document, summary
+
+
+def test_public_contract_binds_effective_seed_targets_to_original_artifact(normalized_public_scenarios):
+    document, summary = normalized_public_scenarios
     assert validate_scenarios(document, summary) is document
-    for field, value in (
-        ("source_parquet_sha256", ["f" * 64]),
-        ("kept_source_rows", 1),
-        ("replicated_seed_rows", cell["training_count"] + 1),
-        ("replacement_enabled", False),
-        ("target_scope", "additional_measurements"),
-    ):
-        changed = deepcopy(document)
-        changed["rows"][0]["results"]["a"]["linear"]["seed_target_normalization"][field] = value
-        with pytest.raises(ValueError, match="seed"):
-            validate_scenarios(changed, summary)
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("source_parquet_sha256", ["f" * 64], "seed normalization source mismatch"),
+        ("source_metadata_sha256", ["f" * 64], "seed normalization source mismatch"),
+        ("policies", [], "invalid seed normalization policy"),
+        ("policies", ["unknown_policy"], "invalid seed normalization policy"),
+        ("marked_source_rows", 0, "seed normalization has no marked source rows"),
+        ("kept_source_rows", 1, "seed normalization row count mismatch"),
+        ("replicated_seed_rows", 0, "seed normalization replication count mismatch"),
+        ("replicated_seed_rows", 3, "seed normalization replication count mismatch"),
+        ("replacement_enabled", False, "disabled seed replacement changed targets"),
+        ("effective_targets_sha256", "e" * 63, "invalid SHA"),
+        ("effective_targets_sha256", "z" * 64, "invalid SHA"),
+        ("target_scope", "additional_measurements", "invalid seed target scope"),
+    ],
+)
+def test_public_contract_rejects_invalid_seed_normalization(normalized_public_scenarios, field, value, message):
+    document, summary = normalized_public_scenarios
+    cell = document["rows"][0]["results"]["a"]["linear"]
+    assert cell["training_count"] == 2
+    cell["seed_target_normalization"][field] = value
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        validate_scenarios(document, summary)
+
+
+@pytest.mark.parametrize("scenario,method", [("b", "linear"), ("a", "warmup"), ("a", "nowarmup")])
+def test_public_contract_rejects_seed_normalization_outside_learned_artifact_scenarios(
+    normalized_public_scenarios, scenario, method
+):
+    document, summary = normalized_public_scenarios
+    results = document["rows"][0]["results"]
+    details = results["a"]["linear"].pop("seed_target_normalization")
+    results[scenario][method]["seed_target_normalization"] = details
+    with pytest.raises(ValueError, match="^unexpected seed normalization$"):
+        validate_scenarios(document, summary)
 
 
 @pytest.mark.parametrize(
