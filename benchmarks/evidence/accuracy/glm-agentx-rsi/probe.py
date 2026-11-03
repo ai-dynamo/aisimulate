@@ -23,6 +23,16 @@ def call(url, value=None):
     return urllib.request.urlopen(request, timeout=600)
 
 
+def retain_case(rows, records):
+    failed = False
+    for row in rows:
+        records.write(json.dumps(row) + "\n")
+        records.flush()
+        failed |= row["status"] != "completed"
+    if failed:
+        raise RuntimeError("Incomplete diagnostic case; all attempted requests retained")
+
+
 def request(url, identity, prompt, output_length, barrier, first_output=None):
     body = {
         "rid": identity,
@@ -103,10 +113,7 @@ def overlap_control(url, seed, records):
             rows = [task.result()] + ([other.result()] if other else [])
             for row in rows:
                 row.update(role="diagnostic_overlap", overlap_requested=overlap)
-                records.write(json.dumps(row) + "\n")
-                if row["status"] != "completed":
-                    raise RuntimeError("Incomplete overlap control")
-            records.flush()
+            retain_case(rows, records)
 
 
 def chat_controls(url, seed, tokenizer, records):
@@ -134,21 +141,25 @@ def chat_controls(url, seed, tokenizer, records):
                 barrier.wait()
                 start = time.monotonic_ns()
                 events, usage = [], {}
-                with call(url + "/v1/chat/completions", body) as stream:
-                    for line in stream:
-                        now = time.monotonic_ns()
-                        if not line.startswith(b"data:") or line.strip() == b"data: [DONE]":
-                            continue
-                        payload = json.loads(line.removeprefix(b"data:"))
-                        chars = {
-                            key: sum(len(c.get("delta", {}).get(key) or "") for c in payload.get("choices", []))
-                            for key in ("content", "reasoning_content")
-                        }
-                        if any(chars.values()):
-                            events.append(
-                                {"at_ns": str(now), **{key + "_chars": value for key, value in chars.items()}}
-                            )
-                        usage = payload.get("usage") or usage
+                error = None
+                try:
+                    with call(url + "/v1/chat/completions", body) as stream:
+                        for line in stream:
+                            now = time.monotonic_ns()
+                            if not line.startswith(b"data:") or line.strip() == b"data: [DONE]":
+                                continue
+                            payload = json.loads(line.removeprefix(b"data:"))
+                            chars = {
+                                key: sum(len(c.get("delta", {}).get(key) or "") for c in payload.get("choices", []))
+                                for key in ("content", "reasoning_content")
+                            }
+                            if any(chars.values()):
+                                events.append(
+                                    {"at_ns": str(now), **{key + "_chars": value for key, value in chars.items()}}
+                                )
+                            usage = payload.get("usage") or usage
+                except Exception as exc:
+                    error = type(exc).__name__
                 return {
                     "rid": rid,
                     "role": "diagnostic_chat_frontend",
@@ -160,15 +171,16 @@ def chat_controls(url, seed, tokenizer, records):
                     "input_tokens": usage.get("prompt_tokens"),
                     "output_tokens": usage.get("completion_tokens"),
                     "requested_output_tokens": length,
-                    "status": "completed" if usage.get("completion_tokens") == length else "incomplete",
+                    "status": "failed"
+                    if error
+                    else "completed"
+                    if usage.get("completion_tokens") == length
+                    else "incomplete",
+                    "error": error,
                 }
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=lanes) as pool:
-                for row in pool.map(one, range(lanes)):
-                    records.write(json.dumps(row) + "\n")
-                    records.flush()
-                    if row["status"] != "completed":
-                        raise RuntimeError("Incomplete OpenAI frontend control")
+                retain_case(pool.map(one, range(lanes)), records)
 
 
 def main():
@@ -197,13 +209,8 @@ def main():
                                 prompt = (prefix + seed * (context // len(seed) + 1))[:context]
                                 identity = f"rsi-r{repeat}-c{context}-o{length}-l{lanes}-i{lane}"
                                 futures.append(pool.submit(request, args.url, identity, prompt, length, barrier))
-                            for future in futures:
-                                row = future.result()
-                                row.update(lanes=lanes, repeat=repeat)
-                                records.write(json.dumps(row) + "\n")
-                                records.flush()
-                                if row["status"] != "completed":
-                                    raise RuntimeError("Incomplete diagnostic request; stop rather than dropping it")
+                            rows = [dict(future.result(), lanes=lanes, repeat=repeat) for future in futures]
+                            retain_case(rows, records)
                         print(f"repeat={repeat} context={context} output={length} lanes={lanes} completed", flush=True)
         overlap_control(args.url, seed, records)
         chat_controls(args.url, seed, tokenizer, records)

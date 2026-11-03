@@ -5,9 +5,11 @@
 import io
 import json
 import threading
+import urllib.error
 from types import SimpleNamespace
 
 import probe
+import pytest
 
 
 def test_native_stream_preserves_counts_and_drops_text(monkeypatch):
@@ -39,4 +41,22 @@ def test_chat_projection_retains_usage_and_reasoning_boundary_without_content(mo
     rows = [json.loads(line) for line in output.getvalue().splitlines()]
     assert len(rows) == 32 and all(row["status"] == "completed" for row in rows)
     assert all(row["events"][0]["reasoning_content_chars"] == len("private reasoning") for row in rows)
+    assert "private" not in output.getvalue()
+
+
+def test_failed_chat_case_retains_every_concurrent_attempt(monkeypatch):
+    def response(url, body):
+        if url.endswith("flush_cache"):
+            return io.BytesIO(b"true")
+        if "-l14-" in body["rid"]:
+            raise urllib.error.URLError("private failure body")
+        return io.BytesIO(b'data: {"usage":{"prompt_tokens":8192,"completion_tokens":16},"choices":[]}\n\n')
+
+    monkeypatch.setattr(probe, "call", response)
+    output = io.StringIO()
+    with pytest.raises(RuntimeError, match="all attempted"):
+        probe.chat_controls("http://test", [1, 2], SimpleNamespace(decode=lambda _: "private prompt"), output)
+    rows = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(rows) == 15
+    assert sum(row["status"] == "failed" for row in rows) == 14
     assert "private" not in output.getvalue()

@@ -350,3 +350,17 @@ Charge 96 seconds through cleanup at eight reserved GPUs (768 GPU-seconds),
 conservatively including the longest Slurm cleanup record; parent elapsed was
 87 seconds. Remaining budget before the next reservation: 229632 GPU-seconds.
 No measured accuracy result is attributed to this canceled allocation.
+
+## Active timing controls and accounting guard
+
+Corrected GPU job 1002848 uses frozen collector commit
+`c7bcd50b0dc7eeefea78754aaa00462c2332584c`; CPU preflight and checkpoint
+checksums qualified before submission. It has a two-node-hour allocation limit.
+Keep its own runtime hashes immutable while it runs.
+
+A later client-retention guard records every concurrent attempted request before
+stopping a failed case. Its regression test forces fourteen simultaneous HTTP
+failures and verifies all fourteen are retained without error-body or prompt
+content. This source update does not alter job 1002848. If that frozen run has a
+client-case failure, reconstruct explicit missing-attempt accounting from the
+case protocol and reject incomplete comparisons; do not infer missing timings.
