@@ -75,7 +75,9 @@ def request_metrics(row, server):
         result.update(
             visible_ttft_ms=(first - int(row["start_ns"])) / 1e6,
             visible_span_ms=(final - first) / 1e6,
-            tpot_unavailable="chat frames do not contain per-frame token counts; content/reasoning boundary only",
+            visible_mean_interval_ms=(final - first) / 1e6 / (target - 1) if target > 1 else None,
+            interval_scope="captured content/reasoning frames only; legacy probe did not retain tool-only boundaries",
+            per_token_alignment_unavailable="chat frames do not contain per-frame token counts",
         )
     else:
         client = span(events, target)

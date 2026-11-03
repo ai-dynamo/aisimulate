@@ -38,6 +38,23 @@ def test_one_token_undefined_interval_and_invalid_counter_accounting():
     assert "unavailable" in span([event(2, 2)], 4)
 
 
+def test_chat_mean_uses_total_length_without_claiming_per_token_alignment():
+    row = {
+        "rid": "rsi-chat",
+        "role": "diagnostic_chat_frontend",
+        "status": "completed",
+        "start_ns": "0",
+        "end_ns": "13000000",
+        "output_tokens": 5,
+        "requested_output_tokens": 5,
+        "events": [{"at_ns": "2000000", "reasoning_content_chars": 2}, {"at_ns": "10000000", "content_chars": 4}],
+    }
+    result = request_metrics(row, [])
+    assert result["visible_mean_interval_ms"] == 8 / 4
+    assert "tool-only" in result["interval_scope"]
+    assert "per-frame" in result["per_token_alignment_unavailable"]
+
+
 def test_failed_request_is_retained_and_full_manifest_has_221_identities():
     result = request_metrics({"rid": "rsi-failed", "status": "failed", "requested_output_tokens": 16, "events": []}, [])
     assert result["status"] == "failed" and result["rid"] == "rsi-failed"

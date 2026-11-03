@@ -147,8 +147,11 @@ any terminal over-generation rather than silently equating them.
 records as unrecorded-or-unattempted (a killed case may have started), validates
 counter/clock ordering and exact delivered lengths, and uses rank-0 readiness.
 It ends native spans at first attainment of the delivered length, excluding
-duplicate terminal frames. One-token intervals and chat token-interval scores
-remain unavailable. Numerical tests cover units, terminal over-generation,
+duplicate terminal frames. One-token intervals and exact chat per-token alignment
+remain unavailable. Mean visible chat intervals use total output length and do
+not require per-frame token counts; legacy probes lack tool-only boundaries, so
+these remain separately labeled visible-content diagnostics, not qualified
+historical TPOT. Numerical tests cover units, terminal over-generation,
 missing rank identity, backward counters/clocks and failed-attempt retention.
 The frozen active run uses its container-local SGLang autotune cache; a later
 collector revision explicitly scopes `SGLANG_CACHE_DIR` to campaign storage.
@@ -196,6 +199,17 @@ schedule: the overlap victim is 23.7345 ms versus 2.6929 ms uninstrumented, whil
 standalone is 2.7341 versus 2.7258 ms. Preserve this behavioral difference and
 require actual scheduling/forward boundaries; do not assign it to profiler cost
 or a silicon scheduler bug from one control. Plain mode remains pending.
+
+**E017 conclusion — complete, qualified diagnostic scope.** Job 1005806 completes
+all 663 planned requests, including six unscored preparation requests; both
+instrumented modes cover every request at rank 0 with no counter/clock/delivery
+failures. Plain repeat-1 C1 TPOT at 8K/131K with 128 outputs is 6.4300/6.7868 ms
+versus 5.9790/6.1341 predicted (7.01%/9.62% error); TTFT is 394.536/5454.561 ms
+versus 242.361/5040.178 predicted (38.57%/7.60% error). Both speculation modes
+retain a similar narrow cold-decode residual, so an MTP-only explanation of that
+residual is not established. Correlated acceptance and overlap sensitivity remain
+separate findings. Cross-version and synthetic-input limitations still apply.
+Neither headline MAPE, coverage nor accepted modeling fixes change.
 
 ## H2 — Recipe, tokenization, snapshots and cache history
 
@@ -249,6 +263,10 @@ match the server's separate render/encode path exactly. The GPU suite requires
 this receipt and refuses mismatched model-config or tokenizer-runtime identities.
 CPU-data-mover timings are retained as diagnostics and will not supply a serving
 host cost model.
+GPU job **1006430** runs this experiment from immutable source
+`9e52b65563b527712cb8428f2f72daf831932474`, with 22 source checksums verified
+against a clean Git archive. Charge it to controlled-workload experiments;
+independently audit both modes before selecting a cost model or next experiment.
 
 **Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
 cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
@@ -549,6 +567,16 @@ charge 2101 × eight = 16808 GPU-seconds. Total completed allocation cost is now
 reserves 36480 GPU-seconds including cleanup, leaving 159664 unreserved. Replace
 this reservation with its actual terminal allocation through cleanup before the
 next GPU submission. Preserve scheduler receipts and all failed attempts.
+
+Job 1005806 completes with exit 0 after 2677 seconds including batch/extern
+cleanup; charge 21416 GPU-seconds. Completed collection totals
+**55672 GPU-seconds / 15.4644 GPU-hours / 1.9331 TP8 node-hours**, leaving
+**174728 GPU-seconds / 48.5356 GPU-hours / 6.0669 TP8 node-hours**. Baseline/timing
+uses 6959 of its allocated 7200 node-seconds. The remaining pools are controlled
+workloads (7200), targeted op/forward (3600) and validation (10800), before any
+documented transfer of unused time. E018 job 1006430 reserves 36480 GPU-seconds,
+leaving 138248 unreserved. Its reservation must become actual charged time when
+terminal; the eight-node-hour campaign limit remains the hard admission bound.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
