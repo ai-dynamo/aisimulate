@@ -5,7 +5,16 @@
 import json
 
 import pytest
-from analyze_timing import analyze_blocking, analyze_frontend, blocking_comparison, planned_ids, request_metrics, span
+from analyze_timing import (
+    analyze_blocking,
+    analyze_forward,
+    analyze_frontend,
+    blocking_comparison,
+    forward_request,
+    planned_ids,
+    request_metrics,
+    span,
+)
 
 
 def event(ms, tokens, rank=0):
@@ -165,3 +174,25 @@ def test_coding_control_manifest_preserves_all_unattempted_requests(tmp_path):
     assert result["schema"] == "aisimulate.glm-rsi.coding-blocking-audit.v1"
     assert all(mode["planned"] == 17 and mode["recorded"] == 0
                and len(mode["unrecorded_or_unattempted"]) == 17 for mode in result["modes"].values())
+
+
+def test_forward_audit_preserves_zero_interval_and_rejects_unknown_cache():
+    row = {"rid": "rsi-profile-c393216-profiled", "status": "completed", "role": "profile",
+           "context": 393216, "arm": "profiled", "input_tokens": 393216,
+           "requested_output_tokens": 128, "start_ns": "0", "end_ns": "3000000",
+           "events": [{"at_ns": "2000000", "output_tokens": 128,
+                       "meta": {"prompt_tokens": 393216, "cached_tokens": 393152}}]}
+    result = forward_request(row)
+    assert result["qualified"] and result["client"]["mean_interval_ms"] == 0
+    row["events"][0]["meta"].pop("cached_tokens")
+    assert not forward_request(row)["qualified"]
+    row["events"][0]["meta"]["cached_tokens"] = 393151
+    assert not forward_request(row)["qualified"]
+
+
+def test_forward_audit_empty_campaign_retains_both_missing_matrices(tmp_path):
+    result = analyze_forward(tmp_path)
+    assert result["modes"]["unprofiled-mtp"]["planned"] == 7
+    assert result["modes"]["instrumented-mtp"]["planned"] == 10
+    for mode in result["modes"].values():
+        assert not mode["qualified"] and len(mode["missing"]) == mode["planned"]

@@ -1895,3 +1895,16 @@ same trace gate again before model startup. Remaining global budget is
 **124,338 GPU-seconds**, with **3,521 node-seconds** left in the op/forward
 pool; validation's 10,800 node-seconds remain untouched. This collection setup
 failure is not a model-accuracy experiment or a MAPE improvement.
+
+E040 retry **1015148** uses signed source
+`7b131141bd7778dcada2bcf0ca662a3974374ddb`, archive SHA256
+`77fcb4966580da87775491b9fc13845489fa4dde30301a00f5de96c624a02afc`.
+All 45 archived source/notice checksums verify. Its 22,080-GPU-second maximum
+reservation fits the remaining op/forward pool without moving validation
+budget. Keep the earlier failed graph smoke separate. Extend the existing
+independent timing auditor with `--suite forward-profile`: check both finite
+matrices, each attempted identity, request clock ordering, native cache/token
+receipts, first-positive/first-final stream boundaries and the two capture API
+windows. Undefined one-token preparation TPOT remains unavailable; a valid
+zero delivered interval remains zero. The request audit does not substitute
+for all-rank GPU-projected trace qualification or establish historical MAPE.

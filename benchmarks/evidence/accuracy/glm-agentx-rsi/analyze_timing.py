@@ -384,17 +384,105 @@ def analyze_blocking(root, coding=False):
     }
 
 
+def forward_request(row):
+    """Audit numerical counters independently of the collection qualifier."""
+    result = request_metrics(row, [])
+    events = row["events"]
+    context = row["context"]
+    role = row["role"]
+    expected_output = 128 if role == "profile" else (16 if context == 512 else 1)
+    reasons = []
+    if result.get("unavailable"):
+        reasons.append(result["unavailable"])
+    if (context not in (512, 8192, 393216) or role not in ("profile", "preparation")
+            or row["input_tokens"] != context or row["requested_output_tokens"] != expected_output):
+        reasons.append("declared context/output differs from finite matrix")
+    meta = events[-1].get("meta", {}) if events else {}
+    cached = meta.get("cached_tokens")
+    if (meta.get("prompt_tokens") != context or type(cached) is not int
+            or not 0 <= cached <= context):
+        reasons.append("native prompt/cache receipt unavailable or invalid")
+    elif context == 393216 and role == "profile":
+        if cached % 64 or cached < context - 64:
+            reasons.append("seeded long prefix not retained within one physical page")
+    elif cached != 0:
+        reasons.append("cold/preparation request unexpectedly reused cache")
+    result.update(context=context, arm=row["arm"], cached_tokens=cached, reasons=reasons,
+                  qualified=not reasons)
+    return result
+
+
+def analyze_forward(root):
+    modes = {}
+    for mode, arms in (("unprofiled-mtp", ("before", "after")),
+                       ("instrumented-mtp", ("before", "profiled", "after"))):
+        directory = root / mode
+        rows_path = directory / "client/requests.jsonl"
+        rows = [json.loads(line) for line in rows_path.read_text().splitlines()] if rows_path.exists() else []
+        expected = {"rsi-profile-warmup": (512, "preparation", "warmup")}
+        for context in (8192, 393216):
+            for arm in arms:
+                expected[f"rsi-profile-c{context}-{arm}"] = (context, "profile", arm)
+                if context == 393216:
+                    expected[f"rsi-profile-seed-{arm}"] = (context, "preparation", arm)
+        counts = Counter(row["rid"] for row in rows)
+        cases = [forward_request(row) for row in rows]
+        reasons = []
+        if any(expected.get(row["rid"]) != (row["context"], row["role"], row["arm"]) for row in rows):
+            reasons.append("request identity/role/context does not match finite matrix")
+        caches = {case["cached_tokens"] for case in cases
+                  if case["context"] == 393216 and case["role"] == "profile"}
+        if len(caches) != 1:
+            reasons.append("long-prefix cache receipts differ or are missing")
+        manifest_path = directory / "client/manifest.json"
+        manifest = json.loads(manifest_path.read_bytes()) if manifest_path.exists() else {}
+        if manifest.get("status") != "completed" or not (directory / "completion.json").exists():
+            reasons.append("finite collector did not complete")
+        if (manifest.get("planned_requests") != len(expected)
+                or manifest.get("attempted_requests") != len(rows)
+                or manifest.get("qualified_requests") != sum(case["qualified"] for case in cases)
+                or manifest.get("unattempted_requests") != len(expected) - len(rows)):
+            reasons.append("collector manifest does not reconcile with independent accounting")
+        captures = manifest.get("capture_ranges", [])
+        if mode == "instrumented-mtp":
+            profiled = [row for row in rows if row["arm"] == "profiled" and row["role"] == "profile"]
+            if len(captures) != 4 or len(profiled) != 2:
+                reasons.append("two bounded capture ranges unavailable")
+            else:
+                for i, row in enumerate(profiled):
+                    start, stop = captures[2 * i:2 * i + 2]
+                    times = [int(start["begin_ns"]), int(start["end_ns"]), int(row["start_ns"]),
+                             int(row["end_ns"]), int(stop["begin_ns"]), int(stop["end_ns"])]
+                    if times != sorted(times) or start["start"] is not True or stop["start"] is not False:
+                        reasons.append("capture API boundary does not enclose measured request")
+        elif captures:
+            reasons.append("unprofiled control unexpectedly enabled capture")
+        if set(counts) != set(expected) or any(n != 1 for n in counts.values()):
+            reasons.append("request identity coverage is incomplete or duplicated")
+        modes[mode] = {"planned": len(expected), "recorded": len(rows),
+                       "status_counts": dict(Counter(row["status"] for row in rows)),
+                       "collector_completed": (directory / "completion.json").exists(),
+                       "missing": sorted(set(expected) - set(counts)), "cases": cases, "reasons": reasons,
+                       "qualified": not reasons and all(case["qualified"] for case in cases)}
+    return {"schema": "aisimulate.glm-rsi.forward-controls-audit.v1", "modes": modes,
+            "scope": "Finite synthetic controls only; no historical AgentX accuracy score.",
+            "gpu_trace_qualification": "Separate GPU-projected rank/kernel/shape audit required.",
+            "collector_completed": (root / "completion.json").exists()}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "coding-blocking"), default="timing")
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "coding-blocking", "forward-profile"),
+                        default="timing")
     args = parser.parse_args()
     result = {
         "frontend": analyze_frontend,
         "blocking": analyze_blocking,
         "coding-blocking": lambda root: analyze_blocking(root, coding=True),
         "timing": analyze,
+        "forward-profile": analyze_forward,
     }[args.suite](args.root)
     with args.output.open("x") as stream:
         stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
