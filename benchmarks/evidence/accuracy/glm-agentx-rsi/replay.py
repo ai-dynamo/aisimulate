@@ -43,9 +43,14 @@ def main():
             config["engine"]["workers"]["aggregated"]["scheduler"]["max_sequences"] = args.max_sequences
         path = directory / "input-config.json"
         write(path, config)
+        trace = directory / "traces.jsonl"
+        with trace.open("rb") as stream:
+            trace_sha = hashlib.file_digest(stream, "sha256").hexdigest()
         command = [sys.executable, str(args.tooling / "scripts/e2e_accuracy/agentx_predict.py"), str(path), str(directory)]
         start = time.monotonic()
-        execution = {"status": "running", "command": command, "config_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        execution = {"status": "running", "command": command, "config_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                     "derived_trace": {"sha256": trace_sha, "bytes": trace.stat().st_size,
+                                       "retention": "Regenerate from retained frozen HF trace and observed-output overrides"}}
         write(directory / "execution.json", execution)
         with (directory / "replay.log").open("w") as stream:
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=1800, check=False)
@@ -61,6 +66,7 @@ def main():
         observations = read(artifact(args.inputs, run, "observations"))
         scores = score(observations, normalize_native(native, observations, run["category"], run["boundary"]), run["boundary"])
         write(directory / "score.json", scores)
+        trace.unlink()
         print(json.dumps({"id": run["id"], "metrics": scores["request_errors"], "coverage": scores["coverage"]}), flush=True)
 
 

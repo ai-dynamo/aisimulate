@@ -240,3 +240,30 @@ client receipt can be distinguished. Native streaming, chat projection, frozen
 scoring and resource accounting have seven passing focused tests. For stream
 projection tests, run `uv run --no-project --with 'transformers>=4.57,<5' --with pytest
 python -m pytest -c /dev/null -p no:cacheprovider test_probe.py`.
+
+## E008 — Recorded cache-read alignment
+
+**Hypothesis.** A broad cache-reuse mismatch explains most TTFT error.
+
+**Experiment.** On development lanes only, join source-unique successful profile
+records with equal output lengths to current-main telemetry and compare recorded
+`usage_prompt_cache_read_tokens` with native first-admission reuse. Preserve
+requests lacking this optional metric in headline accounting; they are unavailable
+only for this cache diagnostic. All compared cache counts are within input lengths.
+
+**Conclusion — broad mismatch not supported by averages; individual cases remain open.**
+
+| Lanes | Diagnostic pairs | Mean silicon uncached tokens | Mean replay uncached tokens |
+|---:|---:|---:|---:|
+| 1 | 314 | 4163 | 4090 |
+| 8 | 1388 | 3261 | 2987 |
+| 14 | 2332 | 4253 | 3766 |
+
+These averages do not prove matching batch/cache histories; they do not independently
+explain the large TTFT gap. Keep frontend/tokenization and per-request tails in
+the queue. Private paired rows and source identities are retained.
+
+The runtime probe records distributed rank when available, keeping unknown ranks
+explicit. Completed derived corpus copies are removed only after their checksums
+are recorded; frozen source corpora, observed-output substitutions and numerical
+results remain retained and reproduce them exactly.

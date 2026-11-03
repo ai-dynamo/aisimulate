@@ -4,6 +4,7 @@
 
 import json
 import os
+import sys
 import time
 
 _last = {}
@@ -16,6 +17,8 @@ def record(requests):
     if not root:
         return
     now = time.monotonic_ns()
+    torch = sys.modules.get("torch")
+    rank = torch.distributed.get_rank() if torch and torch.distributed.is_initialized() else None
     events = []
     for request in requests:
         rid = str(request.rid)
@@ -25,7 +28,7 @@ def record(requests):
         if _last.get(rid) == count:
             continue
         _last[rid] = count
-        events.append({"rid": rid, "at_ns": str(now), "output_tokens": count, "batch_requests": len(requests)})
+        events.append({"rid": rid, "at_ns": str(now), "output_tokens": count, "batch_requests": len(requests), "rank": rank})
     if events:
         if _stream is None:
             _stream = open(f"{root}/scheduler-{os.getpid()}.jsonl", "a", buffering=1)

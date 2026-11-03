@@ -21,7 +21,8 @@ def test_probe_records_numerical_transitions_and_ignores_other_requests(tmp_path
         rsi_timing.record([request])
         rows = [json.loads(line) for line in next(tmp_path.glob("*.jsonl")).read_text().splitlines()]
         assert [row["output_tokens"] for row in rows] == [2, 3]
-        assert all(set(row) == {"rid", "at_ns", "output_tokens", "batch_requests"} for row in rows)
+        assert all(set(row) == {"rid", "at_ns", "output_tokens", "batch_requests", "rank"} for row in rows)
+        assert rows[0]["rank"] is None
         assert rows[0]["batch_requests"] == 2
     finally:
         if rsi_timing._stream:
