@@ -37,8 +37,8 @@ def main():
     tokenization = None
     profile_sha = None
     if args.tokenization_profile:
-        if args.host_loop or args.max_sequences is not None:
-            raise ValueError("Change CPU admission separately from scheduler controls")
+        if args.max_sequences is not None or (args.host_loop and not args.shared_response_gate):
+            raise ValueError("CPU scheduler composition requires shared delivery; capacity changes stay separate")
         profile_bytes = args.tokenization_profile.read_bytes()
         profile = json.loads(profile_bytes)
         if profile.get("schema") != "aisimulate.glm-rsi.component-tokenization.v1":

@@ -2073,3 +2073,60 @@ all eight draft receipts share the BF16/unquantized-MoE signature. This upgrades
 the precision observation from rank-0 evidence to all-rank evidence, without
 attributing a numerical accuracy gap to it yet. No historical measurement,
 scoring cohort or headline MAPE changes.
+
+
+**E040 conclusion:** supported all-rank BF16 draft / NVFP4 target distinction,
+source-qualified overlap overshoot, and correlated executed-forward timing;
+**inconclusive for an op-data accuracy correction**. V2 SHA256
+`dfc689ab6591b77a6c43d08c37a70751f3a18942f7669c197df916f37cd35f2a`.
+Every executed VERIFY range remains: 44 per rank and context, versus 43 reported
+request rounds. GPU projections qualify on every range/rank, while request-round
+alignment and exact decode-shape lookup remain unavailable. TP-max executed
+VERIFY mean spans are 6.997891ms (8K) / 7.643710ms (393216); corresponding
+start-cadence means are 8.076842/8.941932ms. These are execution-population
+diagnostics, not request MAPEs or matched 43-round scores. Do not average ranks,
+choose a favorable subset or change historical accounting.
+
+The cold profiled target prefill spans 716.855ms; rank 0 records 176.663ms in
+`cuMemCreate` and 76.873ms in `cuMemMap`. Its 268.633ms summed kernel busy time
+is a separate diagnostic, not its critical path. The exact scheduler's
+`flush_cache(empty_cache=True)` clears device allocator state as well as KV
+state. Native cold-control TTFT is 600.279/845.468/825.968ms for
+before/profiled/after, whereas seeded controls are 147.914/130.746/145.542ms.
+These allocator/observer-state differences prevent assigning cold wall-time
+residuals wholesale to op data or using them as historical repeat-variability
+bounds. Keep cold-control limitations explicit; do not calibrate a latency
+multiplier. A warm-allocator controlled experiment remains a separate option.
+
+## H4/H1 follow-up — E041 overlap with causal shared frontend (predeclared)
+
+- **Hypothesis:** the source-confirmed native overlap loop and the shared
+  input/response CPU queue interact. Modeling only one changes completion,
+  inbox visibility and controller feedback against an inconsistent boundary.
+  Confidence is high in both runtime mechanisms, not in a numerical win.
+  Competing causes remain input/cache-history divergence and MTP composition.
+- **Experiment:** start from E039's exact wheel and fixed independently measured
+  CPU profile. Change **only `aggregated.host_loop` to true**; retain the shared
+  response gate, one CPU worker, base zero, 1.3222043548296005us/input token,
+  op data, seed, original sequence caps, observed outputs and frozen HF revision.
+  E023's overlap-only negative result remains unchanged. This tests a newly
+  source-supported interaction rather than selecting another CPU rate.
+- Permit this explicit combination in `replay.py` only with shared response
+  gating; CPU-admission-only plus host-loop and CPU/capacity combinations remain
+  rejected. No production model implementation or default changes.
+- Pin source E039 `aa4c2aeab0050ad453295b9dff7c70cc80c29dab`, wheel SHA256
+  `3d374c21878e88144ac814947b4f7a83fdc95b314b39020f1d21750474ef059a`,
+  native SHA256 `6433d41834435d1b1b27d3d1baaa11d09ec0a424756d54de40fb9b4b8f304eeb`,
+  CPU profile SHA256 `741c9b07352c57c267d0890403a0950435a048e32926c77456018d61025c8158`,
+  HF revision `da115d648f0be20a1c4e0408d552a4a1e8bebf9d` and frozen cohort SHA256
+  `26e3a6b64e9a7a640d64a8d8e057c5e383a23f7a458a1f0bd496423922a33c1b`.
+- Run **1/8/14 only**, sequentially with one CPU replay process and no GPUs:
+  `replay.py --host-loop --shared-response-gate --tokenization-profile FIXED_PROFILE`
+  with the same frozen tooling/inputs. Independently check normalized config
+  differences, both request MAPEs, all original eligible identities, native
+  completion, CPU service units and output conservation. Report lost/recovered
+  matches; no smaller cohort can win. Keep all failures and do not extend phase
+  lengths or grace to recover a score.
+- **Conclusion:** pending execution. Extend to unchanged 4/10/13 only if
+  development evidence warrants validation. No GPU reservation, calibration,
+  HF promotion or dashboard replacement follows from this CPU experiment.
