@@ -565,15 +565,20 @@ class RunnerCapabilities:
                     raise ValueError("generic speculation is unsupported for AFD")
                 if not self.supports_generic_speculation:
                     raise ValueError("runner does not support generic speculation; use --stack engine")
-            if (
-                rank.get("native_host_offload") is not None
-                and any(
+            if rank.get("native_host_offload") is not None:
+                canonical_mtp = any(
                     isinstance(selection, Mapping) and selection.get("kind") == "mtp"
                     for selection in (requested_speculation, identity.get("speculation"))
                 )
-                and not self.supports_mtp_host_offload
-            ):
-                raise ValueError("runner does not support MTP with host offload; use --stack engine")
+                legacy_depth = any(
+                    controls.get(name) not in (None, 0)
+                    for controls in (rank, identity)
+                    for name in ("aic_nextn", "nextn")
+                )
+                if legacy_depth and not canonical_mtp:
+                    raise ValueError("native_host_offload with speculative decoding requires canonical mtp speculation")
+                if canonical_mtp and not self.supports_mtp_host_offload:
+                    raise ValueError("runner does not support MTP with host offload; use --stack engine")
             explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
             if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:

@@ -214,6 +214,40 @@ def test_mtp_host_offload_requires_explicit_composition_capability(location, nes
     consumer.require_compatible(spec)
 
 
+@pytest.mark.parametrize("location,name", [("rank", "aic_nextn"), ("rank", "nextn"), ("canonical", "nextn")])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("supports_composition", [False, True])
+def test_host_offload_rejects_legacy_depth_during_capability_preflight(
+    location, name, nested_rank, supports_composition
+):
+    args = _engine_args()
+    args["native_host_offload"] = {"num_host_blocks": 16}
+    if location == "rank":
+        controls = args
+    else:
+        args["timing_model"] = {"type": "external", "provider": "aic", "config": {}}
+        controls = args["timing_model"]["config"]
+    controls[name] = 2
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={"rank": args} if nested_rank else args,
+            num_workers=1,
+        )
+    )
+    capabilities = replace(EngineReplayRunnerFactory().capabilities(), supports_mtp_host_offload=supports_composition)
+    with pytest.raises(ValueError, match="requires canonical mtp speculation"):
+        capabilities.require_compatible(spec)
+    # Disabled legacy depth and legacy speculation without G2 remain compatible.
+    controls[name] = 0
+    capabilities.require_compatible(spec)
+    controls[name] = 2
+    args.pop("native_host_offload")
+    capabilities.require_compatible(spec)
+
+
 def _canonical_speculation_deployment(speculation, *, backend="vllm"):
     version = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}[backend]
     timing = {
@@ -700,7 +734,7 @@ def test_agentic_g2_preserves_disabled_speculation_default_in_canonical_timing()
     capabilities = EngineReplayRunnerFactory().capabilities()
     capabilities.require_compatible(spec)
     identity["nextn"] = 1
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
+    with pytest.raises(ValueError, match="requires canonical mtp speculation"):
         capabilities.require_compatible(spec)
 
 
