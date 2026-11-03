@@ -24,6 +24,9 @@ python3 -m pip install aisimulate
 aisimulate --help
 ```
 
+Source builds also provide `aisim` as an alias for `aisimulate`; both commands
+use the same entry point. Python imports remain `aisimulate` and `aisimulate_core`.
+
 The built-in engine runs without Dynamo. See the
 [installation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/getting-started/installation.md)
 for platform requirements, source builds, nightly artifacts, and compatible

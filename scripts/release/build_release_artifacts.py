@@ -92,6 +92,7 @@ def check_manifests() -> tuple[str, str]:
     assert not any(str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies)
     assert app["scripts"] == {
         "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisim": "aisimulate.supervision:main",
         "aisimulate": "aisimulate.supervision:main",
     }
     return py_version, crate_version

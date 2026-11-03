@@ -73,11 +73,12 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
 
 
 def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
 
     scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
         "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisim": "aisimulate.supervision:main",
         "aisimulate": "aisimulate.supervision:main",
     }
 

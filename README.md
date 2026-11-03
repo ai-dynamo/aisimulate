@@ -433,7 +433,7 @@ Collector, tests, documentation, and development tooling live under
 
 This repository produces exactly two release artifacts:
 
-1. `aisimulate` Python wheel — the application, both console commands,
+1. `aisimulate` Python wheel — the application, console commands,
    estimator SDK, model/performance data, Replay, Sweeper, and unified native
    extension;
 2. `aisimulate-core` Rust crate — the native estimator and simulation core for
@@ -444,6 +444,9 @@ Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 `aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
 [Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
+
+Source builds also provide `aisim` as an alias for `aisimulate`; both commands
+use the same entry point. Python imports remain `aisimulate` and `aisimulate_core`.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations

@@ -108,6 +108,7 @@ build-backend = "maturin"
 
 [project.scripts]
 # Retain the legacy executable; all Python implementation lives under AISimulate.
+aisim = "aisimulate.supervision:main"
 aisimulate = "aisimulate.supervision:main"
 aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"
 
