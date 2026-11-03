@@ -362,7 +362,8 @@ async def check():
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator(".agentx-summary-main h2")).to_have_text("Concurrency summary")
-                await expect(frame.locator("#profile-accuracy table")).to_have_count(1)
+                await expect(frame.locator("#profile-accuracy .agentx-summary-table")).to_have_count(1)
+                await expect(frame.locator("#profile-accuracy .agentx-feature-table")).to_have_count(1)
                 await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(
                     ["Metric", "Silicon", "AISim", "Error", "Samples"]
                 )
@@ -385,7 +386,12 @@ async def check():
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
                 await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
-                await expect(frame.locator(".agentx-feature.unknown")).to_have_count(8)
+                await expect(frame.locator('[data-source="silicon"] .agentx-feature-status.unknown')).to_have_count(8)
+                await expect(frame.locator(".agentx-feature-table thead th")).to_have_text(
+                    ["Feature", "Silicon", "AISim"]
+                )
+                await expect(frame.locator(".agentx-feature-icon")).to_have_count(0)
+                await expect(frame.locator(".agentx-feature-note")).to_have_count(0)
                 await expect(frame.locator(".agentx-feature-name")).to_have_text(
                     [
                         "Prefix caching",
@@ -650,10 +656,27 @@ async def check():
                     f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&campaign=finite-v1&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=1"
                 )
                 cache_feature = page.locator('[data-feature="cache.g1_prefix"]')
-                await expect(cache_feature.locator(".agentx-feature-status")).to_have_text("On")
+                await expect(cache_feature.locator('[data-source="silicon"] .agentx-feature-status')).to_have_text("On")
+                await expect(cache_feature.locator('[data-source="aisim"] .agentx-feature-status')).to_have_text(
+                    "?Unknown"
+                )
+                assert (
+                    await cache_feature.locator(".on .agentx-status-symbol").evaluate(
+                        "node => getComputedStyle(node).backgroundColor"
+                    )
+                    == "rgb(22, 163, 74)"
+                )
                 await expect(page.locator(".agentx-feature-revision")).to_contain_text("f" * 12)
                 await page.locator("#repeat").select_option("1")
-                await expect(cache_feature).to_contain_text("Off")
+                await expect(cache_feature.locator('[data-source="silicon"] .agentx-feature-status')).to_have_text(
+                    "Off"
+                )
+                assert (
+                    await cache_feature.locator(".off .agentx-status-symbol").evaluate(
+                        "node => getComputedStyle(node).backgroundColor"
+                    )
+                    == "rgb(220, 38, 38)"
+                )
                 await page.locator('[data-view="evidence"]').click()
                 await expect(page.locator("#view-evidence")).to_contain_text("Feature metadata dataset revision")
                 await expect(page.locator("#view-evidence")).to_contain_text(summary["snapshot"]["dataset_revision"])

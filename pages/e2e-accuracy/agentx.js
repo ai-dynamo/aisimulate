@@ -58,25 +58,39 @@ window.AgentX = (() => {
     const record=point.feature_metadata;
     const valid=record?.schema==="aisimulate.benchmark.features.v1" && record.benchmark_id===point.id && Array.isArray(record.features);
     const features=new Map((valid?record.features:[]).map(f=>[f.id,f]));
-    // Actual settings come only from silicon metadata, never replay config or support defaults.
-    // v1 has no sub-block field and conflates routing with Planner; neither establishes router state.
-    const state=id=>["sub-block-prefix","kv-aware-routing"].includes(id)?"unknown":features.get(id)?.state;
-    const statuses={enabled:["on","✓","On"],disabled:["off","×","Off"],not_applicable:["na","–","N/A"]};
+    // Silicon settings never fall back to replay config or support defaults.
+    // v1 has no sub-block field and conflates routing with Planner.
+    const siliconState=id=>["sub-block-prefix","kv-aware-routing"].includes(id)?"unknown":features.get(id)?.state;
+    const settings=Array.isArray(point.config_summary)?point.config_summary:[];
+    const setting=name=>{const matches=settings.filter(item=>item.name===name);return matches.length===1?matches[0].value:undefined;};
+    const draft=setting("Speculative tokens"), hasDraft=Number.isSafeInteger(draft) && draft>=0;
+    const aisimState=id=>{
+      const name=benchmarkFeatureLabels[id], value=setting(name);
+      // An explicit feature result takes precedence over the legacy token count.
+      if(settings.some(item=>item.name===name)) {
+        if(value===true) return id==="speculation" && hasDraft && draft===0?"unknown":"enabled";
+        if(value===false) return id==="speculation" && hasDraft && draft>0?"unknown":"disabled";
+        return value==="unsupported"?"unsupported":"unknown";
+      }
+      return id==="speculation" && hasDraft?(draft>0?"enabled":"disabled"):"unknown";
+    };
+    const statuses={enabled:["on","On"],disabled:["off","Off"],not_applicable:["na","N/A"],unsupported:["unsupported","Unsupported"]};
+    const cell=(source,current,details)=>{
+      const [status,label]=Object.hasOwn(statuses,current) && (source==="aisim" || current!=="unsupported")?statuses[current]:["unknown","Unknown"];
+      const title=status==="unknown"?`${source==="silicon"?"Silicon":"AISim"} setting unavailable in this run's saved evidence.`:
+        status==="unsupported"?"Explicitly recorded as unsupported for this AISim run.":`${source==="silicon"?"Silicon":"AISim"} setting: ${label}.`;
+      const icon=["on","off","unknown"].includes(status)?`<span class="agentx-status-symbol" aria-hidden="true">${status==="unknown"?"?":""}</span>`:"";
+      return `<td data-source="${source}"><span class="agentx-feature-status ${status}" title="${esc(title)}">${icon}${label}</span>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}</td>`;
+    };
     const rows=Object.entries(benchmarkFeatureLabels).map(([id,name])=>{
-      const current=state(id), [status,icon,value]=Object.hasOwn(statuses,current)?statuses[current]:["unknown","?","Unknown"];
-      const details=[];
-      if(current==="enabled" && ["cache.g2","cache.g3"].includes(id)) {
-        details.push("Scope: Unknown");
-      }
-      if(current==="enabled" && id==="cache.hybrid_state") {
-        details.push("State-cache type: Unknown");
-      }
-      if(current==="enabled" && id==="speculation") {
-        details.push("Method: Unknown · draft length: Unknown");
-      }
-      return `<li class="agentx-feature ${status}" data-feature="${id}"><span class="agentx-feature-icon" aria-hidden="true">${icon}</span><div><div class="agentx-feature-line"><span class="agentx-feature-name">${name}</span><span class="agentx-feature-status">${esc(value)}</span></div>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}</div></li>`;
+      const silicon=siliconState(id), aisim=aisimState(id), details=[];
+      if(silicon==="enabled" && ["cache.g2","cache.g3"].includes(id)) details.push("Scope: Unknown");
+      if(silicon==="enabled" && id==="cache.hybrid_state") details.push("State-cache type: Unknown");
+      if(silicon==="enabled" && id==="speculation") details.push("Method: Unknown", "Draft length: Unknown");
+      const predicted=id==="speculation" && aisim==="enabled" && hasDraft?[`Draft length: ${draft}`]:[];
+      return `<tr class="agentx-feature" data-feature="${id}"><th scope="row" class="agentx-feature-name">${name}</th>${cell("silicon",silicon,details)}${cell("aisim",aisim,predicted)}</tr>`;
     }).join("");
-    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows}</ul><p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Unknown means not recorded separately. On does not imply AISim support. Support has not been assessed for this run.</p></aside>`;
+    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run</p><table class="agentx-feature-table" aria-label="Selected run feature settings"><thead><tr><th scope="col">Feature</th><th scope="col">Silicon</th><th scope="col">AISim</th></tr></thead><tbody>${rows}</tbody></table>${point.feature_dataset_revision?`<p class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></p>`:""}</aside>`;
   }
   const pointDefinition = `<p><strong>Per-point:</strong> compare the aggregate result across the benchmark’s conversation requests.</p><p><strong>Request average:</strong> compare requests individually, then average their errors.</p><p>Tool-call waits are excluded from TTFT/TPOT calculations. Point error can be smaller because over- and under-predictions cancel when averaged.</p>`;
   const pointHelp = `<button type="button" id="agentx-point-info" class="agentx-info" aria-label="About point TTFT and TPOT error" aria-describedby="agentx-point-tooltip"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4"/><circle cx="8" cy="4.5" r="0.6" fill="currentColor" stroke="none"/></svg></button>`;

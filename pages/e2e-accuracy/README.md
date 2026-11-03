@@ -815,7 +815,13 @@ Speculative decoding, Dynamo - KVCR, and Dynamo - KV-aware routing. Model, backe
 parallelism, and workload dimensions remain in configuration/evidence, outside
 this checklist. Evidence retains the full saved inventory for provenance.
 
-The checklist uses the existing `aisimulate.benchmark.features.v1` silicon record.
+The checklist has separate Silicon and AISim columns. Feature names have no
+status icons; each status cell shows a green dot for On, a red dot for Off, or a
+question mark for Unknown, with text labels for accessibility. Unsupported is
+separate from Off. The explanatory footer is omitted; cell tooltips describe
+missing evidence, and the feature dataset revision remains visible.
+
+Silicon uses the existing `aisimulate.benchmark.features.v1` record.
 On, Off, N/A, and Unknown remain distinct. Missing values stay Unknown, with no
 inference from model names, replay settings, or the support matrix. The current
 schema does not record sub-block reuse separately and conflates Planner with
@@ -825,6 +831,16 @@ hybrid state-cache type, and speculative method/actual draft length are also
 unavailable in the current metadata contract. Replay configuration is not a
 substitute for those measured settings.
 
+AISim uses only the selected run's existing `config_summary` projection. An
+explicit boolean under the matching feature name means On/Off; an explicit
+`unsupported` value means Unsupported. For historical speculation records,
+`Speculative tokens` supplies On/Off and the unmodified draft length. Conflicting,
+duplicate, absent, or invalid settings remain Unknown. A failed/unsupported replay
+does not identify an unsupported feature. Existing published runs record only
+prefix caching and speculative token count for this checklist, so the other six
+AISim settings remain Unknown. No silicon state or model-specific default fills
+that gap, and the UI makes no general capability claim from an On setting.
+
 The eight-feature checklist shows the selected run's settings together, without
 a separate Combination support section. On does not imply exercised or supported.
 The matrix link provides reference information, not a parity result for the
@@ -832,7 +848,7 @@ evaluated wheel; these artifacts contain no scoped AISim support assessment.
 
 This is a UX-only update. New silicon metadata contracts, collectors/backfills,
 CI configuration/parity checks, and their publication contracts are deferred.
-Populated method/draft values and an `Unsupported (actual: 7, AISim max: 5)` label
+Populated silicon method/draft values and an `Unsupported (actual: 7, AISim max: 5)` label
 require recorded actual settings and an applicable, revision-scoped CI limit;
 there is no universal maximum or inferred value in this UI. HF must contain only
 silicon truth/configuration/provenance; simulation settings, predictions, and

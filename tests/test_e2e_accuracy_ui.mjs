@@ -1154,14 +1154,20 @@ test("AgentX pools requests directly and averages run errors equally", () => {
   assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
 });
 
-test("AgentX checklist uses the selected silicon record without inferring feature use", () => {
+function featureCell(html,id,source) {
+  return html.split(`data-feature="${id}">`)[1].split("</tr>")[0].split(`<td data-source="${source}">`)[1].split("</td>")[0];
+}
+
+test("AgentX checklist separates silicon evidence from AISim settings", () => {
   const context = vm.createContext({window: {}});
   vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
   const checklist = context.window.AgentX.featureChecklist;
   const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
   const missing = checklist(point);
-  assert.equal((missing.match(/class="agentx-feature unknown"/g)||[]).length,8);
-  assert.match(missing,/Feature settings were not recorded/);
+  assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/class="agentx-feature-status on"/);
+  assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
+  assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unknown means|Support has not been assessed/);
   assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
     "Prefix caching", "Sub-block prefix reuse", "Host offload (G2)", "Storage offload (G3)",
     "Hybrid KV/state cache", "Speculative decoding", "Dynamo - KVCR", "Dynamo - KV-aware routing",
@@ -1170,25 +1176,19 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   point.feature_metadata = {
     schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
     features:[
-      feature("cache.g1_prefix","enabled"),
-      feature("speculation","disabled"),
-      feature("cache.g2","not_applicable"),
+      feature("cache.g1_prefix","enabled"), feature("speculation","disabled"), feature("cache.g2","not_applicable"),
       feature("agentx.weka","enabled",{state:"not_observed",count:0}),
       feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
       {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
-      feature("routing.planner","enabled"),
-      feature("unrecognized","enabled"),
+      feature("routing.planner","enabled"), feature("unrecognized","enabled"),
     ],
   };
   const saved = checklist(point);
-  assert.match(saved,/class="agentx-feature on" data-feature="cache.g1_prefix"/);
-  assert.match(saved,/class="agentx-feature off" data-feature="speculation"/);
-  assert.match(saved,/class="agentx-feature na" data-feature="cache.g2"/);
+  for(const [id,status] of [["cache.g1_prefix","on"],["speculation","off"],["cache.g2","na"],["kv-aware-routing","unknown"],["sub-block-prefix","unknown"]]) {
+    assert.ok(featureCell(saved,id,"silicon").includes(`class="agentx-feature-status ${status}"`));
+  }
   assert.doesNotMatch(saved,/More features|Weka|Observed ·|Not observed|topology|Planner|<unsafe>|unrecognized/);
-  assert.match(saved,/class="agentx-feature unknown" data-feature="kv-aware-routing"/);
-  assert.match(saved,/class="agentx-feature unknown" data-feature="sub-block-prefix"/);
-  assert.match(saved,/On does not imply AISim support/);
-  assert.equal((saved.match(/class="agentx-feature unknown"/g)||[]).length,5);
+  assert.equal((saved.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,5);
   point.feature_metadata.features.find(f=>f.id==="routing.planner").state="disabled";
   assert.equal(checklist(point),saved);
   point.feature_metadata.benchmark_id="another-run";
@@ -1198,7 +1198,7 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   assert.equal(checklist(point),missing);
 });
 
-test("AgentX checklist keeps unrecorded parameters unknown", () => {
+test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   const context = vm.createContext({window: {}});
   vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
   const checklist = context.window.AgentX.featureChecklist;
@@ -1208,14 +1208,52 @@ test("AgentX checklist keeps unrecorded parameters unknown", () => {
   const html=checklist(point);
   assert.equal((html.match(/Scope: Unknown/g)||[]).length,2);
   assert.match(html,/State-cache type: Unknown/);
-  assert.match(html,/Method: Unknown · draft length: Unknown/);
-  assert.match(html,/Support has not been assessed for this run/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: Unknown.*Draft length: Unknown/);
+  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Draft length: 3/);
   assert.doesNotMatch(html,/Combination support|data-combination/);
   // Historical parameters do not define draft length, scope, or state-cache type.
   for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
   assert.equal(checklist(point),html);
   features.find(f=>f.id==="speculation").state="disabled";
-  assert.doesNotMatch(checklist(point),/draft length:|AISim max:|Unsupported|Supported for/);
+  assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Draft length: 3/);
+});
+
+test("AgentX AISim column requires explicit per-feature settings and preserves draft values", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point={id:"example",outcome:"unsupported",reason:"replay_capability_unavailable",config_summary:[]};
+  const check=(id,status)=>assert.ok(featureCell(checklist(point),id,"aisim").includes(`class="agentx-feature-status ${status}"`));
+  check("cache.g1_prefix","unknown"); // An unsupported run doesn't identify unsupported features.
+  point.config_summary=[{name:"Prefix caching",value:false},{name:"Host offload (G2)",value:"unsupported"},
+    {name:"Dynamo - KV-aware routing",value:true},{name:"Speculative tokens",value:7}];
+  check("cache.g1_prefix","off");
+  check("cache.g2","unsupported");
+  check("kv-aware-routing","on");
+  check("speculation","on");
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Draft length: 7/);
+  assert.match(featureCell(checklist(point),"kv-aware-routing","silicon"),/class="agentx-feature-status unknown"/);
+  for(const invalid of [null,"true",1,"<unsafe>"]) {
+    point.config_summary=[{name:"Prefix caching",value:invalid}];
+    check("cache.g1_prefix","unknown");
+    assert.doesNotMatch(checklist(point),/<unsafe>/);
+  }
+  point.config_summary=[{name:"Prefix caching",value:true},{name:"Prefix caching",value:false}];
+  check("cache.g1_prefix","unknown");
+  for(const invalid of [-1,1.5,"3",null]) {
+    point.config_summary=[{name:"Speculative tokens",value:invalid}];
+    check("speculation","unknown");
+  }
+  point.config_summary=[{name:"Speculative tokens",value:0}];
+  check("speculation","off");
+  point.config_summary.push({name:"Speculative decoding",value:true});
+  check("speculation","unknown");
+  point.config_summary=[{name:"Speculative tokens",value:7},{name:"Speculative decoding",value:false}];
+  check("speculation","unknown");
+  point.config_summary[1].value="unsupported";
+  check("speculation","unsupported");
+  assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/Draft length/);
 });
 
 test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
