@@ -795,6 +795,26 @@ reservation. Controlled workloads have used 1298 of their 7200 node-seconds;
 op/forward and validation reserves remain unused. No GPU job is active at this
 checkpoint. All startup and diagnostic-step time is included.
 
+E028 attempt **1009422**, source `d66bcdad46cc6b67735803c958453fbe6b6d1a10`,
+fails the 1200-second server-readiness guard on pool0-0281. All 50 checkpoint
+shards report read completion, but model weight processing never reports completion.
+No benchmark request runs: the independent blocking audit records **0/64 requests**,
+with both arms incomplete. This is an operational failure, not evidence against H1/H6.
+The resolved server arguments match successful control 1006430 except for the
+framework-generated random seed; no seed effect is established. The successful
+control finishes weight loading in 402 seconds. The historical loader source has
+a separate DeepSeek `ThreadPoolExecutor`; changing the checkpoint iterator flag
+would not establish a repair to that pool. Keep inference settings unchanged for
+a bounded retry on another node and retain startup stacks if it stalls.
+
+Charge Slurm parent/extern elapsed **1250 seconds × eight GPUs = 10000 GPU-seconds**;
+diagnostic steps are already inside that allocation. Cumulative cost is now
+**76056 GPU-seconds / 21.1267 GPU-hours / 2.6408 TP8 node-hours**, leaving
+**154344 GPU-seconds / 42.8733 GPU-hours / 5.3592 TP8 node-hours**. Release the
+reservation. Controlled-workload allocation uses 2548 of 7200 node-seconds;
+the next 4560-second reservation fits its remaining 4652 seconds. No scoring
+baseline or hypothesis conclusion changes after this startup failure.
+
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
 them without prompt/error-body content. It does not modify frozen job 1002848.
