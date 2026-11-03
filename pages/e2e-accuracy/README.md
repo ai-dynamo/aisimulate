@@ -825,13 +825,10 @@ hybrid state-cache type, and speculative method/actual draft length are also
 unavailable in the current metadata contract. Replay configuration is not a
 substitute for those measured settings.
 
-Combination support expands separately for offload + speculation, offload +
-hybrid state, and sub-block reuse + speculation. A recorded Off makes a combination
-Not used; missing settings remain Unknown settings. Enabled combinations are
-Not assessed because these artifacts contain no scoped AISim support assessment.
-On does not imply exercised or supported, and individual support does not prove
-combination support. The matrix link provides reference information, not a parity
-result for the evaluated wheel.
+The eight-feature checklist shows the selected run's settings together, without
+a separate Combination support section. On does not imply exercised or supported.
+The matrix link provides reference information, not a parity result for the
+evaluated wheel; these artifacts contain no scoped AISim support assessment.
 
 This is a UX-only update. New silicon metadata contracts, collectors/backfills,
 CI configuration/parity checks, and their publication contracts are deferred.

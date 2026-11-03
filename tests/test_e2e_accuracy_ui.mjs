@@ -1198,7 +1198,7 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   assert.equal(checklist(point),missing);
 });
 
-test("AgentX checklist keeps unrecorded parameters and combination support unknown", () => {
+test("AgentX checklist keeps unrecorded parameters unknown", () => {
   const context = vm.createContext({window: {}});
   vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
   const checklist = context.window.AgentX.featureChecklist;
@@ -1210,19 +1210,11 @@ test("AgentX checklist keeps unrecorded parameters and combination support unkno
   assert.match(html,/State-cache type: Unknown/);
   assert.match(html,/Method: Unknown · draft length: Unknown/);
   assert.match(html,/Support has not been assessed for this run/);
-  assert.match(html,/data-combination="offload_speculation">Offload \+ speculation<small>Not assessed/);
-  assert.match(html,/data-combination="offload_hybrid_state">Offload \+ hybrid state<small>Not assessed/);
-  assert.match(html,/data-combination="sub_block_speculation">Sub-block reuse \+ speculation<small>Unknown settings/);
+  assert.doesNotMatch(html,/Combination support|data-combination/);
   // Historical parameters do not define draft length, scope, or state-cache type.
   for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
   assert.equal(checklist(point),html);
-  features.find(f=>f.id==="cache.g2").state="disabled";
-  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Not assessed/);
-  features.find(f=>f.id==="cache.g3").state="unknown";
-  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Unknown settings/);
   features.find(f=>f.id==="speculation").state="disabled";
-  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Not used/);
-  assert.match(checklist(point),/data-combination="sub_block_speculation">Sub-block reuse \+ speculation<small>Not used/);
   assert.doesNotMatch(checklist(point),/draft length:|AISim max:|Unsupported|Supported for/);
 });
 

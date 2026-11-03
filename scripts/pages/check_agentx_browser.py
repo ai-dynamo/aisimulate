@@ -399,13 +399,7 @@ async def check():
                     ]
                 )
                 await expect(frame.locator(".agentx-more-features")).to_have_count(0)
-                combinations = frame.locator(".agentx-combinations")
-                await combinations.locator("summary").focus()
-                await page.keyboard.press("Enter")
-                await expect(combinations).to_have_attribute("open", "")
-                await expect(combinations.locator("li")).to_have_count(3)
-                await page.keyboard.press("Enter")
-                await expect(combinations).not_to_have_attribute("open", "")
+                await expect(frame.locator(".agentx-combinations")).to_have_count(0)
                 await expect(frame.locator(".agentx-features a")).to_have_attribute(
                     "href", "../../feature-support-matrix/#agentx"
                 )
