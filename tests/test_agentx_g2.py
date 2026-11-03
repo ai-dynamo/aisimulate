@@ -135,6 +135,43 @@ def test_weka_g2_restore_has_causal_bandwidth_and_capacity_controls(name) -> Non
     assert fast["committed_prefill_tokens"] < hbm["committed_prefill_tokens"]
 
 
+@pytest.mark.parametrize("name", ["agentx-g2-local.yaml", "agentx-g2-shared-pd.yaml"])
+def test_weka_g2_runs_on_multiple_replicas(name) -> None:
+    config = _config(name)
+    single = _run(config)
+    for worker in config["engine"]["workers"].values():
+        worker["parallelism"] = {**worker["parallelism"], "replicas": 2}
+    report = _run(config)
+    assert report["completed_requests"] == single["completed_requests"]
+    assert len({route["logical_worker_id"] for row in report["per_request"] for route in row["routing_history"]}) == 2
+    # One cluster-shared pool, counted once whatever the replica count.
+    assert report.get("g2_domains", []) == single.get("g2_domains", [])
+
+
+def test_weka_shared_g2_contract_across_replicas() -> None:
+    config = _config("agentx-g2-shared-pd.yaml")
+    for worker in config["engine"]["workers"].values():
+        worker["parallelism"] = {**worker["parallelism"], "replicas": 2}
+    shared = _run(config)
+    # Four participants join one deployment-owned pool, counted once.
+    assert [domain["capacity_blocks"] for domain in shared["g2_domains"]] == [8]
+    assert shared["completed_requests"] == _run(_config("agentx-g2-shared-pd.yaml"))["completed_requests"]
+
+    disabled, private = copy.deepcopy(config), copy.deepcopy(config)
+    for worker in disabled["engine"]["workers"].values():
+        worker["kv_cache"]["host_offload"] = {**worker["kv_cache"]["host_offload"], "scope": "dp_rank_local"}
+    for worker in private["engine"]["workers"].values():
+        offload = dict(worker["kv_cache"]["host_offload"], scope="dp_rank_local")
+        for field in ("shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps"):
+            offload.pop(field, None)
+        worker["kv_cache"]["host_offload"] = offload
+    disabled_report, private_report = _run(disabled), _run(private)
+    # Disabling sharing reproduces private G2 even with shared-only fields left set.
+    assert "g2_domains" not in disabled_report or not disabled_report["g2_domains"]
+    assert disabled_report["per_request"] == private_report["per_request"]
+    assert disabled_report["committed_prefill_tokens"] == private_report["committed_prefill_tokens"]
+
+
 @pytest.mark.parametrize("field,value", [("num_host_blocks", 16), ("shared_h2d_bandwidth_gbps", 2)])
 def test_weka_g2_rejects_inconsistent_shared_pool(field, value) -> None:
     config = _config("agentx-g2-shared-pd.yaml")
@@ -156,7 +193,6 @@ def test_weka_g2_rejects_incompatible_shared_layout() -> None:
 @pytest.mark.parametrize(
     "fault,message",
     [
-        ("workers", "agentic host offload requires one aggregated worker or one prefill and one decode worker"),
         ("dp", "agentic host offload requires attention DP=1 on every role"),
         ("backend", "agentic host offload requires backend=vllm on every role"),
         ("aic_nextn", "agentic replay requires speculative decoding disabled"),
@@ -183,11 +219,7 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
     args = getattr(spec.backend_deployment, args_field)
     engine = payload["spec"]["engine"] if aggregated else payload["spec"]["engine"][role]
     rank = engine["rank"]
-    if fault == "workers":
-        workers_field = "num_workers" if aggregated else f"num_{role}_workers"
-        spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{workers_field: 2}))
-        payload["spec"]["topology"]["workers" if aggregated else role]["initial_workers"] = 2
-    elif fault == "dp":
+    if fault == "dp":
         args["aic_attention_dp_size"] = 2
         engine["dp_size"] = 2
         if not aggregated:
