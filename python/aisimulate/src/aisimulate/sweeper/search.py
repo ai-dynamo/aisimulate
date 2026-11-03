@@ -48,7 +48,7 @@ from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearch
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
 from .epd import add_encoder_choices, apply_encoder_overlay, language_replay_key, resolve_encoder_catalog
-from .forward_pass_estimator import ForwardPassEstimatorResolver
+from .forward_pass_estimator import ForwardPassEstimatorResolver, UnavailableLearnedCandidate
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -771,6 +771,22 @@ def _materialize_one(
 
             validate_vl_prediction_mapping(prediction_config, replay_spec)
             sample["prediction_config_supported"] = True
+    except UnavailableLearnedCandidate as exc:
+        snapshot = deepcopy(sample)
+        snapshot["unavailable_estimator"] = {
+            "role": exc.role,
+            "config": exc.config,
+            "readiness": exc.readiness,
+        }
+        return None, _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="unsupported",
+            reason=str(exc),
+            reason_category=ReasonCategory.ESTIMATOR_UNAVAILABLE,
+            runner_metadata={},
+            config_snapshot=snapshot,
+        )
     except InfeasibleKVCapacity as exc:
         return None, _EvalResult(
             candidate=None,
@@ -1573,7 +1589,8 @@ class Sweeper:
                 replay_spec: ReplaySpec | None = None,
             ) -> None:
                 tally["timed_out" if reason_category is ReasonCategory.RUNTIME_TIMEOUT else outcome] += 1
-                bar.update(1)
+                if reason_category is not ReasonCategory.ESTIMATOR_UNAVAILABLE:
+                    bar.update(1)
                 if candidate is not None:
                     candidates.append(candidate)
                 if outcome == "feasible":
@@ -1791,6 +1808,13 @@ class Sweeper:
                             reason = build_result.reason
                             assert candidate is None and observe_metrics is None
                             duplicates = duplicates_by_key.get(key, [])
+                            unavailable = build_result.reason_category is ReasonCategory.ESTIMATOR_UNAVAILABLE
+                            if unavailable:
+                                # Discovery/readiness misses are not simulation
+                                # trials and must not consume the search budget.
+                                # Do not cache them: a bundle may be installed
+                                # before this deployment is suggested again.
+                                state.attempts -= 1 + len(duplicates)
                             sampler.observe_infeasible(suggestion, reason)
                             for duplicate in duplicates:
                                 sampler.observe_infeasible(duplicate, reason)
@@ -1807,7 +1831,8 @@ class Sweeper:
                                 reason_category=build_result.reason_category,
                                 runner_metadata=build_result.runner_metadata,
                             )
-                            _cache_hits(len(duplicates))
+                            if not unavailable:
+                                _cache_hits(len(duplicates))
                             continue
                         assert prepared is not None
                         todo.append((suggestion, prepared))
@@ -1954,7 +1979,7 @@ class Sweeper:
             replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"] + tally["timed_out"]
             summary = (
                 f"Sweeper done: {tally['feasible']}/{replay_attempts} replay attempt(s) feasible, "
-                f"{tally['infeasible']} gated, {tally['unsupported']} backend-unsupported, "
+                f"{tally['infeasible']} gated, {tally['unsupported']} unsupported, "
                 f"{tally['timed_out']} timed out, "
                 f"{tally['failed']} replay-failed, {tally['resource_limited']} resource-limited, "
                 f"{tally['cache_hit']} cache hit(s)"

@@ -464,7 +464,6 @@ def test_invalid_quantization_does_not_degrade_to_another_estimator(monkeypatch)
 
 
 def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(monkeypatch):
-    import aisimulate_core
     from aisimulate.sweeper.config import SearchSpace
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
@@ -473,10 +472,8 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
     class Model:
         def __init__(self, config):
             seen.append(config)
-            self.config = json.loads(
-                aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict()))
-            )
-            self.config["backend_version"] = "0.24.0" if config.backend == "vllm" else "0.5.10"
+            self.config = json.loads(json.dumps(config))
+            self.config["backend_version"] = "0.24.0" if config["backend"] == "vllm" else "0.5.10"
             self.config["estimation_mode"] = "op_level"
 
         def dependency_info(self):
@@ -516,16 +513,114 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
     cached = resolver.resolve_candidate(sample)["agg"]
     assert cached.config["estimator_config"]["correction"]["enabled"] is True
     assert len(seen) == 1
-    assert seen[0].worker_type == "aggregated"
-    assert (seen[0].tp, seen[0].kv_block_size, seen[0].backend_version) == (2, 64, "current")
+    assert seen[0].get("worker_type") == "aggregated"
+    assert (seen[0].get("tp"), seen[0].get("kv_block_size"), seen[0].get("backend_version")) == (2, 64, "current")
     resolver.resolve_candidate({**sample, "tp": 4, "backend": "sglang", "agg_block_size": 1})
-    assert (seen[-1].tp, seen[-1].kv_block_size, seen[-1].backend_version) == (4, 1, None)
+    assert (seen[-1].get("tp"), seen[-1].get("kv_block_size"), seen[-1].get("backend_version")) == (4, 1, None)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["untrained_forest_store", "unexpected_failure"],
+)
+@pytest.mark.parametrize("pinned", [False, True])
+def test_learned_search_uses_native_execution_gate_and_preserves_errors(monkeypatch, reason, pinned):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+        UnavailableLearnedCandidate,
+    )
+
+    calls = []
+    unavailable = {
+        "workload_kind": "contains_locally_mixed",
+        "ready": False,
+        "not_ready_reason": reason,
+    }
+    report = {
+        "ready": True,  # Pure prefill readiness does not authorize aggregated replay.
+        "stores": [{"workload_kind": "pure_prefill", "ready": True}, unavailable],
+        "execution": {
+            "ready": False,
+            "required_stores": ["pure_prefill", "contains_locally_mixed"],
+            "unavailable": [unavailable],
+        },
+    }
+
+    class Model:
+        def __init__(self, config):
+            self.config = json.loads(json.dumps(config))
+            self.config["backend_version"] = "0.24.0"
+            calls.append(self.config)
+
+        def diagnostics(self):
+            return {
+                "readiness": "ready",
+                "provenance": {"config": self.config},
+                "readiness_report": report,
+                "dependencies": {},
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Model)
+    monkeypatch.setattr(RustForwardPassPerfModel, "normalize_config", lambda request: request.to_dict())
+    space = SearchSpace(
+        model_name="Qwen/Qwen3-32B",
+        hardware_sku="h200_sxm",
+        estimation_mode="fpm_learned",
+        deployment_mode=["agg"],
+        parallel_configs=[{"tp": 2, "replicas": 1}] if pinned else [],
+    )
+    sample = {
+        "deployment_mode": "agg",
+        "hardware_sku": "h200_sxm",
+        "backend": "vllm",
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "agg_block_size": 64,
+    }
+    resolver = ForwardPassEstimatorResolver(space)
+    for _ in range(2):
+        with pytest.raises(ForwardPassEstimatorResolutionError, match=reason) as failure:
+            resolver.resolve_candidate(sample)
+        assert isinstance(failure.value, UnavailableLearnedCandidate) is (
+            not pinned and reason == "untrained_forest_store"
+        )
+    assert len(calls) == 2  # No discovery-miss cache hides a newly installed source.
+    unavailable["ready"] = True
+    unavailable["not_ready_reason"] = None
+    report["execution"].update(ready=True, unavailable=[])
+    resolved = resolver.resolve_candidate(sample)["agg"]
+    assert resolved.diagnostics["readiness_report"]["execution"]["ready"] is True
+
+
+def test_learned_search_does_not_classify_corrupt_source_as_unavailable(monkeypatch):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+        UnavailableLearnedCandidate,
+    )
+
+    def invalid(_request):
+        raise ValueError("bundle checkpoint hash mismatch")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "normalize_config", invalid)
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name="m", hardware_sku="h200_sxm"))
+    with pytest.raises(ForwardPassEstimatorResolutionError, match="hash mismatch") as failure:
+        resolver._resolve(request(estimation_mode="fpm_learned"), "decode", allow_unavailable=True)
+    assert not isinstance(failure.value, UnavailableLearnedCandidate)
 
 
 def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(monkeypatch):
     # A dcp=8 candidate must not resolve to (or share a cache entry with) the
     # dcp=1 estimator: the native engine is built from this request.
-    import aisimulate_core
     from aisimulate.sweeper.config import SearchSpace
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
@@ -534,9 +629,7 @@ def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(m
     class Model:
         def __init__(self, config):
             seen.append(config)
-            self.config = json.loads(
-                aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict()))
-            )
+            self.config = json.loads(json.dumps(config))
             self.config["backend_version"] = "0.24.0"
             self.config["estimation_mode"] = "op_level"
 
@@ -570,15 +663,15 @@ def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(m
     plain = resolver.resolve_candidate(sample)["agg"]
     striped = resolver.resolve_candidate({**sample, "dcp": 8})["agg"]
     assert len(seen) == 2
-    assert (seen[0].cp_size, seen[0].dcp) == (None, None)
-    assert (seen[1].cp_size, seen[1].dcp) == (None, 8)
+    assert (seen[0].get("cp_size"), seen[0].get("dcp")) == (None, None)
+    assert (seen[1].get("cp_size"), seen[1].get("dcp")) == (None, 8)
     # Unit knobs stay out of the serialized identity; a set knob is carried.
     assert plain.config.get("dcp") is None and "cp_size" not in plain.config
     assert striped.config["dcp"] == 8
 
     # Prefill CP folds into the width identity; the sample carries the wider MoE side.
     resolver.resolve_candidate({**sample, "tp": 1, "moe_ep": 8, "cp": 8})
-    assert (seen[-1].tp, seen[-1].cp_size, seen[-1].dcp) == (1, 8, None)
+    assert (seen[-1].get("tp"), seen[-1].get("cp_size"), seen[-1].get("dcp")) == (1, 8, None)
 
 
 def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
@@ -841,3 +934,88 @@ def test_explicit_default_moe_backend_compiles_and_preserves_canonical_identity(
     assert resolved["moe_backend"] == "default"
     reloaded = RustForwardPassPerfModel.best_available(resolved).diagnostics()["provenance"]["config"]
     assert reloaded == resolved
+
+
+@pytest.mark.parametrize("allow_unavailable", [False, True])
+@pytest.mark.parametrize("mode", ["auto", "fpm_learned"])
+def test_only_explicit_learned_enumeration_skips_typed_source_absence(monkeypatch, allow_unavailable, mode):
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+        UnavailableLearnedCandidate,
+    )
+    from aisimulate_core.sdk.errors import LearnedSourceUnavailableError
+
+    def absent(_request):
+        raise LearnedSourceUnavailableError("no compatible installed bundle")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "normalize_config", absent)
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name="m", hardware_sku="h200_sxm"))
+    with pytest.raises(ForwardPassEstimatorResolutionError, match="no compatible") as failure:
+        resolver._resolve(request(estimation_mode=mode), "decode", allow_unavailable=allow_unavailable)
+    assert isinstance(failure.value, UnavailableLearnedCandidate) is (allow_unavailable and mode == "fpm_learned")
+
+
+def test_learned_resolver_keeps_source_pins_when_catalogue_changes_before_construction(monkeypatch):
+    from copy import deepcopy
+
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    catalogue = {"selected": "a"}
+    constructed = []
+    normalized = []
+
+    def normalize(authored):
+        payload = authored.to_dict()
+        selected = catalogue["selected"]
+        payload["estimator_config"] = {
+            "fpm_learned": {
+                "resolved_source": {"kind": "bundle", "path": f"/{selected}/bundle.json", "sha256": selected * 64},
+                "resolved_fallback": {"kind": "none"},
+            }
+        }
+        normalized.append(deepcopy(payload))
+        # A different default is installed after source resolution. Construction
+        # must keep the already selected source and its explicit fallback absence.
+        catalogue["selected"] = "b"
+        return payload
+
+    class Model:
+        def __init__(self, config):
+            payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else config
+            self.config = deepcopy(payload)
+            pin = self.config.get("estimator_config", {}).get("fpm_learned", {}).get("resolved_source")
+            self.selected = pin["sha256"][0] if pin else catalogue["selected"]
+            constructed.append((deepcopy(self.config), self.selected))
+
+        def diagnostics(self):
+            return {
+                "readiness": "ready",
+                "readiness_report": {"execution": {"ready": True}},
+                "provenance": {"config": self.config},
+                "selected_source": self.selected,
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "normalize_config", normalize)
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Model)
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name="Qwen/Qwen3-32B", hardware_sku="h200_sxm"))
+    authored = request(estimation_mode="fpm_learned", backend_version="0.24.0")
+    first = resolver._resolve(authored, "agg")
+    assert first.diagnostics["selected_source"] == "a"
+    assert constructed == [(normalized[0], "a")]
+    assert authored.estimator_config == {}
+
+    catalogue["selected"] = "a"
+    cached = resolver._resolve(authored, "agg")
+    assert cached.diagnostics["selected_source"] == "a"
+    assert len(constructed) == 1
+
+    replacement = resolver._resolve(authored, "agg")
+    assert replacement.diagnostics["selected_source"] == "b"
+    assert constructed[-1] == (normalized[-1], "b")
+    assert len(constructed) == 2

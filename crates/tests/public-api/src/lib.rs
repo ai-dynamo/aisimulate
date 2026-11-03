@@ -1372,3 +1372,35 @@ pub fn shared_g2_factories(
     let _: Option<(usize, usize, usize)> = pool.occupancy();
     Ok((pool, factories))
 }
+
+/// Existing Rust consumers can still construct the public four-field report.
+#[test]
+fn legacy_readiness_report_literal_remains_source_compatible() {
+    let report = aisimulate_core::ForwardPassReadinessReport {
+        worker_type: Some(ForwardPassWorkerType::Decode),
+        ready: false,
+        stores: vec![aisimulate_core::ForwardPassStoreReadiness {
+            workload_kind: aisimulate_core::ForwardPassRegressionWorkloadKind::PureDecode,
+            ready: false,
+            not_ready_reason: Some(
+                aisimulate_core::ForwardPassStoreNotReadyReason::UntrainedForestStore,
+            ),
+            retained_observations: 0,
+        }],
+        corrections: Vec::new(),
+    };
+    let execution: aisimulate_core::ForwardPassExecutionReadiness =
+        report.for_execution(ForwardPassWorkerType::Decode, &BackendKind::Vllm, 1);
+    assert!(!execution.ready);
+    assert_eq!(execution.unavailable, report.stores);
+
+    let mut config = ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.estimation_mode = EstimationMode::FpmRegression;
+    let model = ForwardPassPerfModel::best_available(config).unwrap();
+    assert!(!model.execution_readiness().unwrap().ready);
+}

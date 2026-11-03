@@ -1351,6 +1351,45 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
 
 
+def test_unavailable_learned_candidates_preserve_budget_and_are_rechecked(monkeypatch):
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolver,
+        UnavailableLearnedCandidate,
+    )
+
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    factory = _FakeRunnerFactory()
+    attempts = []
+
+    def resolve(_resolver, sample):
+        attempts.append(sample["tp"])
+        if len(attempts) == 1:
+            raise UnavailableLearnedCandidate(
+                "pure_decode: untrained_forest_store",
+                role="agg",
+                config={"tp": sample["tp"]},
+                readiness={"execution": {"ready": False, "required_stores": ["pure_decode"]}},
+            )
+        return {}
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", resolve)
+    result = Sweeper(
+        runner_factory=factory,
+        sampler_factory=lambda branch, **kwargs: _FakeSampler(branch, "test"),
+        show_progress=False,
+    ).run(_config(max_trials=1, max_eval_seconds=None), top_n=None)
+    assert factory.runner.calls == 1
+    assert len(attempts) == 2
+    assert result.counts.evaluated == 1
+    assert result.counts.unsupported == 1
+    assert result.counts.failed == result.counts.cache_hits == 0
+    unavailable = next(record for record in result.candidates if record.status == CandidateStatus.UNSUPPORTED)
+    assert unavailable.reason_category.value == "estimator_unavailable"
+    assert unavailable.config["unavailable_estimator"]["config"]["tp"] == _pc().shape.tp
+    assert unavailable.config["unavailable_estimator"]["readiness"]["execution"]["ready"] is False
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
     from aisimulate.sweeper.forward_pass_estimator import (

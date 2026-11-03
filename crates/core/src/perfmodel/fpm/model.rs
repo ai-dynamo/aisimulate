@@ -217,6 +217,15 @@ pub struct ForwardPassStoreReadiness {
     pub retained_observations: usize,
 }
 
+/// Store requirements shared by replay, recommendation and snapshot inspection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardPassExecutionReadiness {
+    pub required_stores: Vec<ForwardPassRegressionWorkloadKind>,
+    pub ready: bool,
+    pub unavailable: Vec<ForwardPassStoreReadiness>,
+}
+
 /// Rank-local workload that selects a correction store.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -263,6 +272,72 @@ pub struct ForwardPassReadinessReport {
     /// Correction stores in prefill, decode, mixed order (per forest store for
     /// the causal selector). Empty for regression.
     pub corrections: Vec<ForwardPassCorrectionReadiness>,
+}
+
+/// Internal JSON/snapshot envelope. Keep the established public readiness
+/// struct constructible by Rust consumers with its original four fields.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReadinessRecord {
+    pub worker_type: Option<ForwardPassWorkerType>,
+    pub ready: bool,
+    pub stores: Vec<ForwardPassStoreReadiness>,
+    pub corrections: Vec<ForwardPassCorrectionReadiness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ForwardPassExecutionReadiness>,
+}
+
+impl ForwardPassReadinessReport {
+    /// Reuse the replay scheduler's requirements with actual engine topology.
+    /// Unknown attention-DP adds no cross-rank requirement until the engine
+    /// supplies its width. SGLang's modeled scheduler never mixes work locally.
+    pub fn for_execution(
+        &self,
+        worker_type: ForwardPassWorkerType,
+        backend: &crate::BackendKind,
+        attention_dp: u32,
+    ) -> ForwardPassExecutionReadiness {
+        use ForwardPassRegressionWorkloadKind::*;
+        let mut required_stores = match worker_type {
+            ForwardPassWorkerType::Prefill => vec![PurePrefill],
+            ForwardPassWorkerType::Decode => vec![PureDecode],
+            ForwardPassWorkerType::Aggregated => vec![PurePrefill, PureDecode],
+        };
+        if worker_type == ForwardPassWorkerType::Aggregated {
+            if !matches!(backend, crate::BackendKind::Sglang) {
+                required_stores.push(ContainsLocallyMixed);
+            }
+            if attention_dp > 1 && attention_dp != super::UNKNOWN_SIZE {
+                required_stores.push(CrossRankAggregated);
+            }
+        }
+        let unavailable: Vec<_> = required_stores
+            .iter()
+            .filter_map(|kind| {
+                match self
+                    .stores
+                    .iter()
+                    .find(|store| store.workload_kind == *kind)
+                {
+                    Some(store) if store.ready => None,
+                    Some(store) => Some(store.clone()),
+                    None => Some(ForwardPassStoreReadiness {
+                        workload_kind: *kind,
+                        ready: false,
+                        not_ready_reason: Some(
+                            ForwardPassStoreNotReadyReason::UntrainedForestStore,
+                        ),
+                        retained_observations: 0,
+                    }),
+                }
+            })
+            .collect();
+        ForwardPassExecutionReadiness {
+            ready: unavailable.is_empty(),
+            required_stores,
+            unavailable,
+        }
+    }
 }
 
 /// Fixed correction-grid limits; queries beyond them use factor 1.0 (fixed)
@@ -1652,6 +1727,7 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Learned {
                 corrections,
                 online,
+                learned,
                 ..
             } => {
                 let ready_buckets = corrections.ready_bucket_count();
@@ -1664,7 +1740,14 @@ impl ForwardPassPerfModel {
                     } else {
                         ForwardPassPerfSource::Learned
                     },
-                    readiness: ForwardPassPerfReadiness::Ready,
+                    readiness: if workload_kinds_for(learned.worker_type())
+                        .iter()
+                        .any(|&kind| self.learned_store_ready(kind))
+                    {
+                        ForwardPassPerfReadiness::Ready
+                    } else {
+                        ForwardPassPerfReadiness::InsufficientData
+                    },
                     retained_observations: online.as_ref().map_or_else(
                         || corrections.observation_count(),
                         OnlineLearner::retained_observations,
@@ -1826,6 +1909,32 @@ impl ForwardPassPerfModel {
             ready,
             stores,
             corrections,
+        }
+    }
+
+    /// Execution requirements for the constructed deployment. Callers whose
+    /// actual attention-DP width differs can use `readiness_report().for_execution`.
+    pub fn execution_readiness(&self) -> Option<ForwardPassExecutionReadiness> {
+        let config = &self.provenance.as_ref()?.config;
+        Some(self.readiness_report().for_execution(
+            config.worker_type,
+            &config.backend,
+            config.attention_dp,
+        ))
+    }
+
+    pub(crate) fn readiness_record(&self) -> ReadinessRecord {
+        let report = self.readiness_report();
+        let execution = self.provenance.as_ref().map(|provenance| {
+            let config = &provenance.config;
+            report.for_execution(config.worker_type, &config.backend, config.attention_dp)
+        });
+        ReadinessRecord {
+            worker_type: report.worker_type,
+            ready: report.ready,
+            stores: report.stores,
+            corrections: report.corrections,
+            execution,
         }
     }
 

@@ -182,6 +182,20 @@ def test_explicit_untrained_regression_keeps_training_message(vllm_slots):
     )
 
 
+def test_learned_message_guides_external_fitting_for_missing_stores():
+    diagnostics = _diagnostics([], estimation_mode="fpm_learned")
+    diagnostics["readiness_report"] = {
+        "execution": {
+            "ready": False,
+            "unavailable": [{"workload_kind": "pure_decode", "not_ready_reason": "untrained_forest_store"}],
+        },
+    }
+    message = unready_estimator_message(diagnostics)
+    assert "pure_decode: untrained_forest_store" in message
+    assert "fit and export those stores in the calling application" in message
+    assert "fpm_regression" not in message
+
+
 def test_missing_perf_table_row_is_explained():
     error = RuntimeError(
         "AISimulate replay failed: engine error: generalized engine worker 0 is now poisoned because a rank may "
@@ -231,6 +245,9 @@ def test_recommend_unready_error_reports_cause_without_regression_text(vllm_slot
     class UnsupportedModel:
         def diagnostics(self):
             return diagnostics
+
+        def dependency_info(self):
+            return {}
 
         def close(self):
             pass

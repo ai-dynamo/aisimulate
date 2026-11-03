@@ -733,7 +733,13 @@ class RustForwardPassPerfModel:
         ``corrections`` lists correction stores
         by ``query_type`` (per forest ``workload_kind`` for the causal selector)
         with ``enabled``, ``ready``, ``retained_observations`` and
-        ``ready_buckets``. Gate on the stores a caller actually queries.
+        ``ready_buckets``. Canonical models also report ``execution`` with
+        Rust-owned ``required_stores``, ``ready`` and ``unavailable`` entries
+        for the deployment's role, backend scheduler and attention-DP width.
+        Missing forest stores require caller-managed fitting and seed export.
+        These reports never fit or advance the admission clock. The same report
+        is included as additive ``readiness_report`` diagnostics metadata; the
+        existing coarse ``readiness`` field retains its prior meaning.
         """
         return json.loads(self._inner.readiness_report())
 
@@ -882,6 +888,10 @@ class RustForwardPassPerfModel:
         Readiness does not guarantee query coverage: another store may be cold,
         and spline predictions require an available linear prediction for the
         same query.
+
+        Additive ``readiness_report`` and ``dependencies`` fields expose the
+        native execution gate and complete dependency inventory. The coarse
+        ``readiness`` field keeps its existing meaning.
 
         ``source`` is one of ``aic``, ``aic_with_correction``,
         ``fallback_regression``, ``learned``, ``learned_with_correction``,

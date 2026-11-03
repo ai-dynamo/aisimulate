@@ -65,6 +65,7 @@ class ReasonCategory(str, Enum):
     SLA_CONSTRAINT = "sla_constraint"
     LOAD_CONSTRAINT = "load_constraint"
     BACKEND_TOPOLOGY = "backend_topology"
+    ESTIMATOR_UNAVAILABLE = "estimator_unavailable"
     RUNTIME_TIMEOUT = "runtime_timeout"
     RESOURCE_LIMIT = "resource_limit"
     CANDIDATE_MATERIALIZATION = "candidate_materialization"
