@@ -2334,3 +2334,25 @@ the checkpoint. GPU budget remains **34.2839/64 hours**, no active allocation.
 - **Conclusion:** pending. This tests deterministic input geometry, not cache
   residency or eviction, and cannot establish a new headline MAPE win. GPU cost
   zero, no reservations or changes to held-out points.
+
+**E044 conclusion — small logical-prefix difference supported; historical cache
+attribution still open.** Both C1 and C8 reconstruct all 36 first-play root
+profile records. All **71 available** server prompt counts match E033 exactly;
+one C1 missing usage remains unavailable. Each point has 35 adjacent pairs:
+none has identical complete-page prefix counts, but every reconstructed literal
+prefix is only **128–192 tokens longer** than its source hash prefix (mean
+149.9429). This is not evidence of a large prefix collapse. More logical reuse
+would reduce prefill work in isolation, so the result does not explain baseline
+TTFT underprediction by itself. Input-length changes and real residency remain
+separate; no cache offset or latency correction is applied.
+
+The independent cross-check verifies all per-turn input identities/counts against
+the immutable E033 audit, pairing totals, complete-page rounding and signed
+prefix arithmetic. It cannot establish original wire bytes or resident silicon
+KV. The native loader warns about authored >60s delays; this offline audit sends
+no requests and measures no delay/latency. Source remains signed commit
+`e336afb53d495fc7075ec585bb2f46e7f6f2e20a`; GPU cost zero. Evidence SHA256:
+C1 `2f72d89811b90a7a3af4eaf5188233692f2e742f03a0f093fcd6160f703d7483`,
+C8 `6e71ea4ef74c7ab43c0fd591cb89b6c0ec8d2bbddea637b56b23421f18c899e7`,
+independent cross-check
+`f88e312b11b6c4038981b0f3c11c8e0a364c030abc87503662968404532812c7`.
