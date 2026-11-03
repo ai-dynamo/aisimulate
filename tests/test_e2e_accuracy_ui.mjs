@@ -1167,7 +1167,7 @@ test("AgentX checklist separates silicon evidence from AISim settings", () => {
   assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
   assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/class="agentx-feature-status on"/);
   assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
-  assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unknown means|Support has not been assessed/);
+  assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
   assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
     "Prefix caching", "Sub-block prefix reuse", "Host offload (G2)", "Storage offload (G3)",
     "Hybrid KV/state cache", "Speculative decoding", "Dynamo - KVCR", "Dynamo - KV-aware routing",
@@ -1206,10 +1206,10 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   const point={id:"example",config_summary:[{name:"Speculative tokens",value:3}],
     feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features}};
   const html=checklist(point);
-  assert.equal((html.match(/Scope: Unknown/g)||[]).length,2);
-  assert.match(html,/State-cache type: Unknown/);
-  assert.match(featureCell(html,"speculation","silicon"),/Method: Unknown.*Draft length: Unknown/);
-  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Method: Unknown.*Draft length: 3/);
+  assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
+  assert.match(html,/State-cache type: Unrecorded/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
+  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Method: Unrecorded.*Draft length: 3/);
   for(const source of ["silicon","aisim"]) {
     assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
     assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
@@ -1271,14 +1271,14 @@ test("AgentX speculation badges use only a recorded AISim method", () => {
   }
   for(const value of [null,3,"<unsafe>","eagle"]) {
     point.config_summary[1].value=value;
-    assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unknown"/);
+    assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unrecorded"/);
     assert.doesNotMatch(checklist(point),/<unsafe>/);
   }
   point.config_summary[1].value="mtp";
   point.config_summary.push({name:"Speculative method",value:"eagle3"});
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unknown"/);
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unrecorded"/);
   point.config_summary=[{name:"Speculative decoding",value:true},{name:"Speculative method",value:"MTP"}];
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Method: MTP.*Draft length: Unknown/);
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Method: MTP.*Draft length: Unrecorded/);
   point.config_summary=[{name:"Speculative tokens",value:0},{name:"Speculative method",value:"MTP"}];
   assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/agentx-feature-badge/);
 });
