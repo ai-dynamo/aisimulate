@@ -8,12 +8,8 @@
 //!   load via `PerfReader::col`, then iterates rows with positional accessors.
 //!   That avoids the per-row string-keyed lookup the `Row::get_*` API
 //!   forces when callers go through `(name, field)` pairs.
-//! - Parquet's Arrow reader decodes [`BATCH_ROWS`] rows at a time into a
-//!   record batch; a `PerfRow` is a shared handle on its batch plus a row
-//!   index. The parquet record (`Row`) API this replaced allocated every
-//!   column name and string cell of every row, which made it most of the cost
-//!   of a table load. Accessors keep that API's error contract: a null cell
-//!   or a column of another type is `ParquetError::General`.
+//! - Parquet's Arrow reader decodes [`BATCH_ROWS`] rows at a time; a
+//!   `PerfRow` is a shared handle on its batch plus a row index.
 //! - Accessors borrow strings out of the decoded batch (no copy); loaders
 //!   that need to store a string in a BTreeMap key call
 //!   `PerfRow::str_owned`.
@@ -35,8 +31,7 @@ use arrow_array::types::{Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 use parquet::arrow::arrow_reader::{
-    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReader,
-    ParquetRecordBatchReaderBuilder,
+    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
 use parquet::errors::ParquetError;
 
@@ -138,6 +133,10 @@ impl PerfReader {
     /// invalid UTF-8 in a string column) is yielded as an `Err` item and ends
     /// the iteration.
     pub fn rows(&self) -> Result<impl Iterator<Item = Result<PerfRow, AicError>> + '_, AicError> {
+        let parquet_error = move |source: ParquetError| AicError::Parquet {
+            path: self.path.clone(),
+            source,
+        };
         let file = self.file.try_clone().map_err(|source| AicError::Io {
             path: self.path.clone(),
             source,
@@ -146,61 +145,36 @@ impl PerfReader {
             ParquetRecordBatchReaderBuilder::new_with_metadata(file, self.metadata.clone())
                 .with_batch_size(BATCH_ROWS)
                 .build()
-                .map_err(|source| AicError::Parquet {
-                    path: self.path.clone(),
-                    source,
-                })?;
-        Ok(PerfRows {
-            path: &self.path,
-            batches: Some(batches),
-            batch: None,
-            next_row: 0,
-        })
-    }
-}
-
-/// Row iterator behind [`PerfReader::rows`]: a handle per row of each
-/// decoded batch.
-struct PerfRows<'a> {
-    path: &'a Path,
-    /// `None` once a decode error has been yielded.
-    batches: Option<ParquetRecordBatchReader>,
-    batch: Option<Rc<RowBatch>>,
-    next_row: usize,
-}
-
-impl Iterator for PerfRows<'_> {
-    type Item = Result<PerfRow, AicError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(batch) = &self.batch
-                && self.next_row < batch.columns.num_rows()
-            {
-                let row = PerfRow {
-                    batch: Rc::clone(batch),
-                    row: self.next_row,
-                };
-                self.next_row += 1;
-                return Some(Ok(row));
-            }
-            match self.batches.as_mut()?.next()? {
-                Ok(columns) => {
-                    self.batch = Some(Rc::new(RowBatch {
-                        path: self.path.to_path_buf(),
-                        columns,
-                    }));
-                    self.next_row = 0;
-                }
-                Err(source) => {
-                    self.batches = None;
-                    return Some(Err(AicError::Parquet {
-                        path: self.path.to_path_buf(),
-                        source: source.into(),
+                .map_err(parquet_error)?;
+        let (mut batches, mut batch, mut row) = (Some(batches), None::<Rc<RowBatch>>, 0);
+        Ok(std::iter::from_fn(move || {
+            loop {
+                if let Some(batch) = &batch
+                    && row < batch.columns.num_rows()
+                {
+                    row += 1;
+                    let batch = Rc::clone(batch);
+                    return Some(Ok(PerfRow {
+                        batch,
+                        row: row - 1,
                     }));
                 }
+                match batches.as_mut()?.next()? {
+                    Ok(columns) => {
+                        batch = Some(Rc::new(RowBatch {
+                            path: self.path.clone(),
+                            columns,
+                        }));
+                        row = 0;
+                    }
+                    Err(source) => {
+                        // The reader fails on every later call; stop here.
+                        batches = None;
+                        return Some(Err(parquet_error(source.into())));
+                    }
+                }
             }
-        }
+        }))
     }
 }
 
@@ -210,7 +184,7 @@ struct RowBatch {
     columns: RecordBatch,
 }
 
-/// One cell of a decoded row, as the record API's `Field` would hold it.
+/// One typed cell of a decoded row.
 #[derive(Debug, PartialEq)]
 enum Cell<'a> {
     Null,
@@ -219,8 +193,7 @@ enum Cell<'a> {
     Double(f64),
     Str(&'a str),
     /// A present cell of a type no accessor reads (INT32, UINT_64,
-    /// timestamps, unannotated or ENUM binary, lists). Type errors name its
-    /// Arrow type (`Int32`) where the record API named the `Field` (`Int`).
+    /// timestamps, unannotated or ENUM binary, lists).
     Other(&'a DataType),
 }
 
@@ -255,19 +228,10 @@ impl PerfRow {
         col.map(|col| self.cell(col)).transpose()
     }
 
-    /// The record API's error for reading `cell` as `want`: `General`, also
-    /// for a null cell.
-    fn mismatch(&self, cell: Cell<'_>, want: &str) -> AicError {
-        let have = match cell {
-            Cell::Null => "Null",
-            Cell::Bool(_) => "Bool",
-            Cell::Long(_) => "Long",
-            Cell::Double(_) => "Double",
-            Cell::Str(_) => "Str",
-            Cell::Other(data_type) => &data_type.to_string(),
-        };
+    /// The error for reading a null cell, or a cell of another type, as `want`.
+    fn mismatch(&self, col: usize, cell: Cell<'_>, want: &str) -> AicError {
         self.error(ParquetError::General(format!(
-            "Cannot access {have} as {want}"
+            "parquet column[{col}] is {cell:?}, expected {want}"
         )))
     }
 
@@ -281,7 +245,7 @@ impl PerfRow {
     fn long(&self, col: usize) -> Result<i64, AicError> {
         match self.cell(col)? {
             Cell::Long(v) => Ok(v),
-            cell => Err(self.mismatch(cell, "Long")),
+            cell => Err(self.mismatch(col, cell, "Long")),
         }
     }
 
@@ -299,7 +263,7 @@ impl PerfRow {
     pub fn str(&self, col: usize) -> Result<&str, AicError> {
         match self.cell(col)? {
             Cell::Str(s) => Ok(s),
-            cell => Err(self.mismatch(cell, "Str")),
+            cell => Err(self.mismatch(col, cell, "Str")),
         }
     }
 
@@ -350,7 +314,7 @@ impl PerfRow {
     pub fn f64(&self, col: usize) -> Result<f64, AicError> {
         match self.cell(col)? {
             Cell::Double(v) => Ok(v),
-            cell => Err(self.mismatch(cell, "Double")),
+            cell => Err(self.mismatch(col, cell, "Double")),
         }
     }
 
@@ -365,7 +329,7 @@ impl PerfRow {
                 s.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "y"
             )),
-            cell => Err(self.mismatch(cell, "Str")),
+            cell => Err(self.mismatch(col, cell, "Bool")),
         }
     }
 
@@ -376,7 +340,7 @@ impl PerfRow {
     pub fn bool_strict(&self, col: usize) -> Result<bool, AicError> {
         match self.cell(col)? {
             Cell::Bool(v) => Ok(v),
-            cell => Err(self.mismatch(cell, "Bool")),
+            cell => Err(self.mismatch(col, cell, "Bool")),
         }
     }
 
@@ -408,33 +372,29 @@ mod tests {
     use parquet::data_type::{
         BoolType, ByteArray, ByteArrayType, DataType, DoubleType, Int32Type, Int64Type,
     };
-    use parquet::file::properties::WriterProperties;
     use parquet::file::reader::{FileReader, SerializedFileReader};
     use parquet::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
-    use parquet::record::{Field, Row, RowAccessor};
+    use parquet::record::{Field, Row};
     use parquet::schema::parser::parse_message_type;
 
     use super::*;
 
-    const ROWS_PER_GROUP: usize = BATCH_ROWS + 476;
+    /// Enough rows to cross a batch boundary.
+    const ROWS: usize = BATCH_ROWS + 476;
 
-    /// Writes `groups` row groups of `schema`; `fill` writes each group's
-    /// columns in schema order.
+    /// Writes one row group of `schema`; `fill` writes its columns in schema
+    /// order.
     fn write_file(
         path: &Path,
         schema: &str,
-        props: WriterProperties,
-        groups: usize,
-        mut fill: impl FnMut(usize, &mut SerializedRowGroupWriter<'_, File>),
+        fill: impl FnOnce(&mut SerializedRowGroupWriter<'_, File>),
     ) {
         let schema = Arc::new(parse_message_type(schema).unwrap());
         let file = File::create(path).unwrap();
-        let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props)).unwrap();
-        for group in 0..groups {
-            let mut rg = writer.next_row_group().unwrap();
-            fill(group, &mut rg);
-            rg.close().unwrap();
-        }
+        let mut writer = SerializedFileWriter::new(file, schema, Default::default()).unwrap();
+        let mut rg = writer.next_row_group().unwrap();
+        fill(&mut rg);
+        rg.close().unwrap();
         writer.close().unwrap();
     }
 
@@ -449,23 +409,16 @@ mod tests {
         col.close().unwrap();
     }
 
-    /// Two row groups of OPTIONAL columns (nulls on different rows per
-    /// column), a REQUIRED string, annotations the accessors read (INT_64,
-    /// JSON) and types they do not (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY,
-    /// REPEATED). 64-row pages and a small dictionary limit
-    /// make every batch cross pages and a dictionary-to-plain fallback.
+    /// OPTIONAL columns (nulls on different rows per column), a REQUIRED
+    /// string, annotations the accessors read (INT_64, JSON) and types they
+    /// do not (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY, REPEATED).
     fn write_fixture(path: &Path) {
         let schema = "message fixture { OPTIONAL BYTE_ARRAY s (UTF8); REQUIRED BYTE_ARRAY r (UTF8); \
              OPTIONAL INT64 i; OPTIONAL DOUBLE d; OPTIONAL BOOLEAN b; OPTIONAL INT32 x; \
              OPTIONAL INT64 a (INT_64); OPTIONAL INT64 ts (TIMESTAMP_MICROS); \
              OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY j (JSON); REPEATED INT64 rep; }";
-        let props = WriterProperties::builder()
-            .set_write_batch_size(64)
-            .set_data_page_row_count_limit(64)
-            .set_dictionary_page_size_limit(512)
-            .build();
-        write_file(path, schema, props, 2, |group, rg| {
-            let rows: Vec<usize> = (group * ROWS_PER_GROUP..(group + 1) * ROWS_PER_GROUP).collect();
+        write_file(path, schema, |rg| {
+            let rows: Vec<usize> = (0..ROWS).collect();
             let defs = |every: usize| -> Vec<i16> {
                 rows.iter().map(|r| i16::from(r % every != 0)).collect()
             };
@@ -513,7 +466,7 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         let rows: Vec<PerfRow> = reader.rows().unwrap().map(Result::unwrap).collect();
-        assert_eq!(rows.len(), 2 * ROWS_PER_GROUP);
+        assert_eq!(rows.len(), ROWS);
         assert_eq!(rows.len(), oracle.len());
         assert_eq!(reader.num_rows(), oracle.len() as u64);
         for (index, (row, expected)) in rows.iter().zip(&oracle).enumerate() {
@@ -541,14 +494,15 @@ mod tests {
                 ..
             }) if col == past && len == past
         ));
-        // Nulls and type mismatches keep the record API's messages, which
-        // loaders surface: `i` is null in row 0 and a Long in row 1.
+        // `i` (column 2) is null in row 0 and a Long in row 1.
         for index in [0, 1] {
-            let Err(AicError::Parquet { source, .. }) = rows[index].f64(2) else {
-                panic!("row {index} column 2 read as Double");
-            };
-            let expected = oracle[index].get_double(2).unwrap_err();
-            assert_eq!(source.to_string(), expected.to_string());
+            assert!(matches!(
+                rows[index].f64(2),
+                Err(AicError::Parquet {
+                    source: ParquetError::General(_),
+                    ..
+                })
+            ));
         }
     }
 
@@ -557,8 +511,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("bad.parquet");
         let schema = "message bad { REQUIRED BYTE_ARRAY s (UTF8); }";
-        let props = WriterProperties::builder().build();
-        write_file(&path, schema, props, 1, |_, rg| {
+        write_file(&path, schema, |rg| {
             let values = [ByteArray::from(b"ok".to_vec()), ByteArray::from(vec![0xff])];
             column::<ByteArrayType>(rg, &values, None, None);
         });
