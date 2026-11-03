@@ -437,6 +437,49 @@ receipt. The GPU batch also rejects anything other than eight B300 devices
 before loading weights. Collection source, results and actual allocation cost
 are pending; independent audit additionally requires a shared API process.
 
+**E028 conclusion — synthetic blocking supported; historical attribution open.**
+Retry 1009781 freezes collector `d66bcdad46cc6b67735803c958453fbe6b6d1a10`
+and completes all **64/64 requests** on pool0-0107 (B300 TP8, Xeon 8559C,
+64 logical CPUs available). Both fresh-server arms retain the original image,
+model, settings and forced acceptance. There are 36 GPU victims, 24 CPU actors
+and four unscored CPU warmups. Every client request succeeds, with zero missing
+or duplicate identities. Native inputs agree and cold-cache receipts are zero.
+
+All three instrumented small-GPU/long-CPU cases independently satisfy the
+predeclared exposure rule: server outputs become ready during a synchronous CPU
+stage in the same API process, and client delivery starts after that stage ends.
+
+| Repeat | CPU stage ms | Server-ready interval ms/token | Client interval ms/token |
+|---:|---:|---:|---:|
+| 0 | 912.647 | 2.6038 | 0.06493 |
+| 1 | 975.104 | 2.8507 | 0.06143 |
+| 2 | 883.247 | 2.6168 | 0.05881 |
+
+The dispatch-only arm reproduces small client intervals of 0.05263/0.07486/0.07559
+ms/token with the long actor. Short actors finish before small-GPU outputs are
+ready, and all six instrumented large-GPU/actor controls finish CPU work before
+the first GPU output. Their client intervals remain about 2.6–2.7 ms/token.
+This distinguishes API blocking from a GPU computation slowdown in these controls.
+The `/v1/tokenize` actor also serializes a large token-array response: client
+receipt begins about 196–199 ms after the measured CPU stage ends. Do not assign
+that extra cost to ordinary chat or treat this method-only timer as full HTTP cost.
+
+**Qualification limitation retained:** the original gate qualifies 18/18
+unprofiled and **17/18 instrumented victims**. One no-actor repeat reports 18
+internal tokens but delivers the requested 16. Original runtime source methods
+`update_finish_state` and `output_ids_through_stop`, executed with controlled
+synthetic IDs, verify that a speculative burst can cross the cap and trim two
+tokens. The hook records untrimmed `output_ids`; the streamer emits the trimmed
+view. Keep the original failed gate, since this run did not retain `finished_len`.
+No exposed case has this discrepancy. Future instrumentation must distinguish
+committed, emitted and discarded-tail counters rather than relaxing conservation.
+
+Independent receipts: `E028-complete-audit-1009781.json`,
+`E028-independent-audit-1009781.json`, `E028-counter-source-audit.json` and
+`E028-loader-source-audit.json`. No historical request MAPE or baseline changes.
+The next discriminating experiment measures actual coding-chat CPU service, not
+a fitted latency multiplier; historical CPU/trajectory applicability remains open.
+
 **E029 — coding-chat primitive preparation (CPU only).** Hypothesis: the
 single-message generic controls do not establish the CPU cost of the measured
 coding workload. Reconstruct the first frozen Weka play with harness 1.0.12,
@@ -463,6 +506,19 @@ receipts `E029-prepared-v1/receipt.json`, `E029-prepared-v2/receipt.json` and
 `E029-independent-audit.json` pin source/config/model assets and payload checksums;
 payload text and token arrays stay private. Next use these primitives for
 independently measured CPU-stage controls after E028 qualifies receipt blocking.
+
+**E030 — coding frontend component cost (predeclared, CPU only).** Measure
+E029's three private primitives with the exact historical
+`_render_and_encode_chat_template` method, extracted unchanged from the pinned
+image and checksum-checked before execution. Use model/tokenizer asset checksums,
+Xeon 8559C and 64-CPU process affinity; no GPU allocation or CUDA visibility.
+Seven repeats per primitive alternate case order; retain every first-use sample.
+Require byte-identical token identities against the prepared receipts and capture
+wall, process-CPU and thread-CPU times. Preparation/JSON parsing/HTTP and GPU
+execution are outside this component boundary. Do not transfer the result to
+historical hardware or fit a coefficient to MAPE. The bounded ten-minute CPU job
+and original source/configuration checksums accompany the results. Qualification
+failure retains its observations and blocks cost-model use.
 
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
@@ -841,6 +897,14 @@ diagnostic steps are already inside that allocation. Cumulative cost is now
 reservation. Controlled-workload allocation uses 2548 of 7200 node-seconds;
 the next 4560-second reservation fits its remaining 4652 seconds. No scoring
 baseline or hypothesis conclusion changes after this startup failure.
+
+E028 retry **1009781** completes with exit 0 after **791 allocated seconds**
+including cleanup, charging **6328 GPU-seconds**. Total completed allocation is
+**82384 GPU-seconds / 22.8844 GPU-hours / 2.8606 TP8 node-hours**. Remaining:
+**148016 GPU-seconds / 41.1156 GPU-hours / 5.1394 TP8 node-hours**. Release the
+reservation; no GPU job is active. Controlled workloads use 3339 of 7200
+node-seconds. Preserve the first failed startup and the single unqualified
+counter comparison in this successful collection's complete accounting.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
