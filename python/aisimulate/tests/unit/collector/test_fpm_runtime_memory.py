@@ -1730,6 +1730,10 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
             assert not any(argument.startswith("--prefix-match-unit") for argument in args)
             assert "DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT" not in env
             assert {name: env.get(name) for name in producer_env} == producer_env
+            # vLLM loads the revision whose configuration and tokenizer the producer reads. Without the flag it loads
+            # the default branch of a Hub ID.
+            assert args.count("--revision") == 1
+            assert args[args.index("--revision") + 1] == producer_env["DYN_FPM_TOKENIZER_REVISION"]
 
     with pytest.raises(ValueError) as error:
         launch(replace(plan, options=replace(plan.options, warmup_iterations=5)), plan.cells[0])

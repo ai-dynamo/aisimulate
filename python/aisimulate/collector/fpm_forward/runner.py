@@ -1493,6 +1493,10 @@ def _cell_generator_overrides(
                 "GLM-5.3-Flash collection requires a probe launch or an FPM profile that names the model revision"
             )
         revision = launch["identity"]["model_revision"] if launch is not None else fpm_profile.model_revision
+        # vLLM loads the weights of this revision, and the producer reads the configuration and the tokenizer of the
+        # same revision. Without the flag, vLLM loads the default branch of a Hub ID. The probe launch passes it above.
+        if "--revision" not in model_args:
+            model_args.extend(["--revision", revision])
         env.extend(
             {"name": name, "value": value}
             for name, value in {

@@ -76,6 +76,9 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   launch by Hub ID reads that revision's snapshot in the local Hugging Face
   cache. The artifact records the loaded revision and the pinned checkpoint
   that matched.
+- The producer refuses a run whose vLLM model revision is set and differs from
+  `DYN_FPM_TOKENIZER_REVISION`. A launch by Hub ID therefore passes
+  `--revision` with the same value. Without it, vLLM loads the default branch.
 - `--max-model-len` must be at least the measured context plus 7 internal
   positions, and a larger value is accepted. `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT`
   sets the measured context (131,072 at most).
@@ -107,8 +110,9 @@ smoke. A runtime probe of the same deployment keeps Dynamo's generic grid and
 does not run the producer.
 
 Both phases get `--language-model-only`, `--cudagraph-metrics`,
-`--no-async-scheduling`, `--benchmark-warmup-iterations 0` and
-`--benchmark-points-file` for the staged point list. The request sets
+`--no-async-scheduling`, `--benchmark-warmup-iterations 0`,
+`--benchmark-points-file` for the staged point list and `--revision` with the
+value of `DYN_FPM_TOKENIZER_REVISION`. The request sets
 `--max-model-len`, `--max-num-batched-tokens` and `--max-num-seqs`. The
 collector passes no `--prefix-match-unit`. It also sets these variables:
 

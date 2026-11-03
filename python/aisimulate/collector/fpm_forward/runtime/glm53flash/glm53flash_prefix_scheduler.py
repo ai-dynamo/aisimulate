@@ -327,6 +327,14 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
         from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
+        # vLLM loads the weights of the revision in its model configuration, and this producer reads the configuration
+        # and the tokenizer of DYN_FPM_TOKENIZER_REVISION. A launch by Hub ID without --revision loads the default
+        # branch.
+        loaded = config.model_config.revision
+        if loaded is not None and loaded != revision:
+            raise ValueError(
+                f"GLM-5.3-Flash launch revision {loaded!r} differs from DYN_FPM_TOKENIZER_REVISION {revision!r}"
+            )
         checkpoint_dir = glm_checkpoint_dir(config.model_config.model, revision)
         raw_config = get_model_config_from_model_path(str(checkpoint_dir))["raw_config"]
         Glm53FlashConfig.from_text_config(raw_config["text_config"])

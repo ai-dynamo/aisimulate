@@ -551,8 +551,9 @@ def init_scheduler(module, monkeypatch, *, model, checkpoint):
     """A producer scheduler whose ``_bench_init`` runs end to end on fakes of the native base and the vLLM config.
 
     ``checkpoint`` is the folder that holds the loaded checkpoint's ``tokenizer.json``. Its configuration is the
-    pinned FP8 checkpoint's. Returns the scheduler, the vLLM config and the configuration and tokenizer loads that
-    the producer made.
+    pinned FP8 checkpoint's. vLLM loaded the revision that ``DYN_FPM_TOKENIZER_REVISION`` names, as in the launch that
+    the collector renders. Returns the scheduler, the vLLM config and the configuration and tokenizer loads that the
+    producer made.
     """
     monkeypatch.setattr(FakeBase, "_bench_init", lambda self, config: setattr(self, "_bench_active", True))
     for name in (
@@ -587,6 +588,7 @@ def init_scheduler(module, monkeypatch, *, model, checkpoint):
     config = types.SimpleNamespace(
         model_config=types.SimpleNamespace(
             model=model,
+            revision=LOADED_REVISION,
             tokenizer=model,
             tokenizer_mode="auto",
             trust_remote_code=False,
@@ -640,6 +642,25 @@ def test_bench_init_reads_the_resolved_checkpoint(monkeypatch, tmp_path, launch)
 def test_bench_init_refuses_an_unset_tokenizer_revision(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
     scheduler, config, _ = init_scheduler(module, monkeypatch, model=str(tmp_path), checkpoint=tmp_path)
+    # A folder launch without a revision, so vLLM records none.
+    config.model_config.revision = None
     monkeypatch.delenv("DYN_FPM_TOKENIZER_REVISION")
     with pytest.raises(ValueError, match="DYN_FPM_TOKENIZER_REVISION must be the 40-hex revision"):
         scheduler._bench_init(config)
+
+
+@pytest.mark.parametrize("loaded", ["main", FP8_PIN], ids=["hub-default-branch", "other-commit"])
+def test_bench_init_refuses_a_launch_revision_that_differs_from_the_tokenizer_revision(monkeypatch, tmp_path, loaded):
+    module = load_producer(monkeypatch)
+    lookups = hub_stand_in(monkeypatch, str(tmp_path / "config.json"))
+    scheduler, config, loads = init_scheduler(module, monkeypatch, model=FP8_MODEL, checkpoint=tmp_path)
+    # vLLM loads the weights of the revision in its model configuration. A launch by Hub ID without --revision loads
+    # the default branch: vLLM 0.31.0 stores the requested revision as a string subclass whose value is "main".
+    config.model_config.revision = loaded
+    with pytest.raises(ValueError) as refused:
+        scheduler._bench_init(config)
+    assert str(refused.value) == (
+        f"GLM-5.3-Flash launch revision {loaded!r} differs from DYN_FPM_TOKENIZER_REVISION {LOADED_REVISION!r}"
+    )
+    # The producer refuses before it reads the configuration or the tokenizer of a snapshot.
+    assert (lookups, loads) == ([], {"config": [], "tokenizer": []})
