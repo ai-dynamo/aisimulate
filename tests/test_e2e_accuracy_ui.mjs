@@ -1192,3 +1192,23 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   point.feature_metadata.schema="future-schema";
   assert.equal(checklist(point),missing);
 });
+
+test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const validate = context.window.AgentX.validateFeatureEvidence;
+  const summary={snapshot:{dataset_revision:"a".repeat(40)},runs:[{id:"run-one"},{id:"run-two"}]};
+  const original=structuredClone(summary);
+  const evidence={schema:"aisimulate.agentx.features.v1",measurement_dataset_revision:"a".repeat(40),feature_dataset_revision:"b".repeat(40),records:summary.runs.map(r=>({
+    benchmark_id:r.id,feature_artifact_sha256:"c".repeat(64),feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:r.id,features:[]},
+  }))};
+  assert.equal(validate(evidence,summary),evidence);
+  assert.deepEqual(summary,original);
+  for(const invalid of [
+    {...evidence,measurement_dataset_revision:"d".repeat(40)},
+    {...evidence,records:[evidence.records[0]]},
+    {...evidence,records:[evidence.records[0],evidence.records[0]]},
+    {...evidence,records:[{...evidence.records[0],benchmark_id:"wrong"},evidence.records[1]]},
+    {...evidence,records:[{...evidence.records[0],feature_artifact_sha256:"bad"},evidence.records[1]]},
+  ]) assert.throws(()=>validate(invalid,summary),/Feature evidence|feature evidence/);
+});

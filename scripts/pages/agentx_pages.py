@@ -23,6 +23,7 @@ from scripts.e2e_accuracy.agentx_contract import (
     validate_public,
     validate_result,
 )
+from scripts.e2e_accuracy.benchmark_features import validate as validate_features
 from scripts.pages.prepare_e2e_accuracy_pages import ancestor, api, api_items, artifact_key, strict_json, trusted_run
 
 
@@ -249,6 +250,79 @@ def write_assets(repo, destination):
         (destination / name).write_bytes((source / name).read_bytes())
     (destination / "plotly.min.js").write_text(get_plotlyjs())
     (destination / "PLOTLY-LICENSE.txt").write_text((source / "plotly-js-LICENSE.txt").read_text())
+
+
+def validate_feature_evidence(value, summary):
+    """Backfilled silicon metadata has its own revision, never a replacement prediction snapshot."""
+    fields = {
+        "schema",
+        "measurement_dataset_revision",
+        "feature_dataset_revision",
+        "measurement_catalog_sha256",
+        "feature_catalog_sha256",
+        "records",
+    }
+    if not isinstance(value, dict) or set(value) != fields or value["schema"] != "aisimulate.agentx.features.v1":
+        raise ValueError("Invalid AgentX feature evidence fields")
+    for key in fields - {"schema", "records"}:
+        length = 40 if key.endswith("revision") else 64
+        if not isinstance(value[key], str) or not re.fullmatch(f"[0-9a-f]{{{length}}}", value[key]):
+            raise ValueError("Feature evidence requires pinned revisions and checksums")
+    if value["measurement_dataset_revision"] != summary["snapshot"]["dataset_revision"]:
+        raise ValueError("Feature evidence belongs to another measurement dataset")
+    if not isinstance(value["records"], list):
+        raise ValueError("Invalid feature evidence records")
+    expected, seen = {run["id"] for run in summary["runs"]}, set()
+    for record in value["records"]:
+        if not isinstance(record, dict) or set(record) != {
+            "benchmark_id",
+            "feature_artifact_sha256",
+            "feature_metadata",
+        }:
+            raise ValueError("Invalid feature evidence record fields")
+        identity = record["benchmark_id"]
+        if not isinstance(identity, str) or identity not in expected or identity in seen:
+            raise ValueError("Unknown or duplicate feature evidence identity")
+        seen.add(identity)
+        metadata = validate_features(record["feature_metadata"], identity)
+        if hashlib.sha256(canonical(metadata)).hexdigest() != record["feature_artifact_sha256"]:
+            raise ValueError("Feature artifact checksum mismatch")
+    if seen != expected:
+        raise ValueError("Incomplete feature evidence accounting")
+    return value
+
+
+def attach_feature_evidence(destination, branch, evidence_path, *, preview=False):
+    """Attach a reviewed feature sidecar after packaging; numerical artifacts remain byte-identical."""
+    catalog_path = destination / "branches.json"
+    catalog = strict_json(catalog_path.read_bytes())
+    matches = [entry for entry in catalog["branches"] if entry["branch"] == branch]
+    if len(matches) != 1 or matches[0]["status"] != "evaluated":
+        raise ValueError("Feature evidence requires an evaluated branch")
+    entry = matches[0]
+    key = artifact_key(branch)
+    if entry["summary_path"] != f"branches/{key}/summary.json":
+        raise ValueError("Invalid feature evidence destination")
+    base = destination / "branches" / key
+    paths = list(base.rglob("*"))
+    if any(path.is_symlink() for path in (destination, destination / "branches", base, *paths)):
+        raise ValueError("Feature evidence destination cannot contain symlinks")
+    files = {
+        path.relative_to(base).as_posix(): path.read_bytes()
+        for path in paths
+        if path.is_file() and path.relative_to(base).as_posix() != "feature-evidence.json"
+    }
+    summary = validate_bundle(files, preview=preview)
+    if summary["snapshot"]["branch"] != branch:
+        raise ValueError("Feature evidence branch mismatch")
+    value = validate_feature_evidence(strict_json(evidence_path.read_bytes()), summary)
+    content = canonical(value)
+    (base / "feature-evidence.json").write_bytes(content)
+    entry["feature_evidence"] = {
+        "path": f"branches/{key}/feature-evidence.json",
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+    catalog_path.write_bytes(canonical(catalog))
 
 
 def package(repo, destination, branches, artifacts=None, *, preview=False, _archive=False):

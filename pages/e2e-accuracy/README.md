@@ -786,6 +786,15 @@ when recorded. Missing historical records stay Not recorded, with
 no inference from model names, replay settings, or the support matrix. Core AgentX
 features appear first; additional recorded features expand under More features.
 The checklist links to the AgentX support matrix and exposes no raw evidence.
+Reviewed historical backfills may attach a separate `aisimulate.agentx.features.v1`
+sidecar through `scripts.pages.agentx_pages.attach_feature_evidence`. It pins the
+original measurement revision, the feature-record revision, both catalog hashes,
+and each canonical feature artifact hash. Publication requires the same complete
+run inventory and allowlisted metadata; it rejects mismatched datasets, duplicate
+identities, private fields, checksum failures, and unsafe destinations. The branch
+catalog advertises the sidecar path and checksum. Details verify that checksum and
+measurement revision before using the records, and show the supplemental HF revision
+separately. Prediction payloads, qualification hashes, and accuracy values stay intact.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 

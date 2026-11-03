@@ -85,7 +85,7 @@ window.AgentX = (() => {
       return `<li class="agentx-feature ${status}" data-feature="${id}"><span class="agentx-feature-icon" aria-hidden="true">${icon}</span><span class="agentx-feature-name">${labels[id]}${parameters?`<small>${esc(parameters)}</small>`:""}${usage?`<small>${usage}</small>`:""}</span><span class="agentx-feature-status">${label}</span></li>`;
     }).join("");
     const more=[...features.keys()].filter(id=>!core.includes(id));
-    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
+    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
   }
   const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TTFT MAPE</th><th scope="col">Request TPOT MAPE</th><th scope="col">Matched / measured</th></tr>`;
   function source(run) {
@@ -102,6 +102,28 @@ window.AgentX = (() => {
     const response = await fetch(path);
     if (!response.ok) throw new Error(`Evidence unavailable (HTTP ${response.status}).`);
     return response.json();
+  }
+  function validateFeatureEvidence(value, summary) {
+    if(value?.schema!=="aisimulate.agentx.features.v1" || value.measurement_dataset_revision!==summary.snapshot.dataset_revision || !/^[a-f0-9]{40}$/.test(value.feature_dataset_revision) || !Array.isArray(value.records)) throw new Error("Feature evidence dataset mismatch.");
+    const expected=new Set(summary.runs.map(r=>r.id)),seen=new Set();
+    for(const record of value.records) {
+      const id=record.benchmark_id,metadata=record.feature_metadata;
+      if(!expected.has(id)||seen.has(id)||metadata?.schema!=="aisimulate.benchmark.features.v1"||metadata.benchmark_id!==id||!Array.isArray(metadata.features)||!/^[a-f0-9]{64}$/.test(record.feature_artifact_sha256)) throw new Error("Invalid feature evidence identity.");
+      seen.add(id);
+    }
+    if(seen.size!==expected.size)throw new Error("Incomplete feature evidence accounting.");
+    return value;
+  }
+  async function loadFeatureEvidence(loaded) {
+    const entry=loaded.entry.feature_evidence;
+    if(entry===undefined)return null;
+    if(entry.path!==loaded.entry.summary_path.replace(/summary\.json$/,"feature-evidence.json")||!/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("Invalid feature evidence path or checksum.");
+    const response=await fetch(loaded.base+"feature-evidence.json");
+    if(!response.ok)throw new Error(`Feature evidence unavailable (HTTP ${response.status}).`);
+    const bytes=await response.arrayBuffer();
+    const digest=[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(b=>b.toString(16).padStart(2,"0")).join("");
+    if(digest!==entry.sha256)throw new Error("Feature evidence checksum mismatch.");
+    return validateFeatureEvidence(JSON.parse(new TextDecoder().decode(bytes)),loaded.data);
   }
   async function summary(branch, prefix) {
     const campaign=new URL(location.href).searchParams.get("campaign");
@@ -163,7 +185,7 @@ window.AgentX = (() => {
   function featureEvidence(point) {
     const record=point.feature_metadata;
     if(!record) return '<h2>Silicon features</h2><p>Feature record unavailable for this historical measurement.</p>';
-    return `<h2>Silicon features · HF dataset record</h2><p>Measured settings are saved with the silicon dataset. Enabled does not imply exercised. <a href="../../feature-support-matrix/#agentx">Feature support matrix ↗</a></p><p>Feature taxonomy · <code>${esc(record.taxonomy.revision)}</code></p><div class="table-scroll"><table><thead><tr><th>Feature</th><th>Measured state</th><th>Parameters</th><th>Observed use</th></tr></thead><tbody>${record.features.map(f=>`<tr><th>${esc(f.id.replaceAll("."," · ").replaceAll("_"," "))}</th><td>${esc(f.state.replaceAll("_"," "))}</td><td>${f.parameters.map(p=>`${esc(p.name)}: ${esc(p.value??"unknown")}`).join("; ")||"—"}</td><td>${esc(f.observed.state.replaceAll("_"," "))}${f.observed.count===null?"":` · ${f.observed.count}`}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<h2>Silicon features · HF dataset record</h2><p>Measured settings are saved with the silicon dataset. Enabled does not imply exercised. <a href="../../feature-support-matrix/#agentx">Feature support matrix ↗</a></p><p>🤗 <strong>Feature metadata dataset revision:</strong> <code>${esc(point.feature_dataset_revision||point.snapshot.dataset_revision)}</code>${point.feature_dataset_revision?" · Supplemental evidence; the evaluated dataset revision is unchanged.":""}</p><p>Feature taxonomy · <code>${esc(record.taxonomy.revision)}</code></p><div class="table-scroll"><table><thead><tr><th>Feature</th><th>Measured state</th><th>Parameters</th><th>Observed use</th></tr></thead><tbody>${record.features.map(f=>`<tr><th>${esc(f.id.replaceAll("."," · ").replaceAll("_"," "))}</th><td>${esc(f.state.replaceAll("_"," "))}</td><td>${f.parameters.map(p=>`${esc(p.name)}: ${esc(p.value??"unknown")}`).join("; ")||"—"}</td><td>${esc(f.observed.state.replaceAll("_"," "))}${f.observed.count===null?"":` · ${f.observed.count}`}</td></tr>`).join("")}</tbody></table></div>`;
   }
   async function detail() {
     const root=document.getElementById("agentx-point"), params=new URL(location.href).searchParams, branch=params.get("branch")||"main";
@@ -197,7 +219,7 @@ window.AgentX = (() => {
         }
       }
       document.getElementById("selected-run").textContent="Loading concurrency measurements…";
-      const [fragment,points]=await Promise.all([
+      const [fragment,points,featureData]=await Promise.all([
         fetch("./dashboard-body.html").then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();}),
         Promise.all(runs.map(async run=>{
           if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path))throw new Error("Invalid detail path.");
@@ -205,6 +227,7 @@ window.AgentX = (() => {
           if(point.id!==run.id||JSON.stringify(point.snapshot)!==JSON.stringify(loaded.data.snapshot)||JSON.stringify(point.request_errors)!==JSON.stringify(run.request_errors))throw new Error("Point provenance or request summary mismatch.");
           return point;
         })),
+        loadFeatureEvidence(loaded),
       ]);
       const group=aggregate(points);
       async function select() {
@@ -213,7 +236,8 @@ window.AgentX = (() => {
         if(!run)throw new Error("Selected workload is unavailable.");
         const url=new URL(location.href);if(length)for(const [key,value] of Object.entries({length,cache,repeat}))url.searchParams.set(key,value);history.replaceState(null,"",url);
         const target=document.getElementById("selected-run");renderer?.destroy();target.innerHTML='<p role="status">Loading selected run…</p>';
-        const point=points.find(p=>p.id===run.id);
+        const measured=points.find(p=>p.id===run.id),record=featureData?.records.find(r=>r.benchmark_id===run.id);
+        const point=record?{...measured,feature_metadata:record.feature_metadata,feature_dataset_revision:featureData.feature_dataset_revision}:measured;
         document.getElementById("selected-run-label").textContent=`Selected run · ${!finite?"Observed outputs · Weka profile":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
         const lanes=`${first.lanes} lane${first.lanes===1?"":"s"}`;
         const accuracy=`<div class="agentx-summary-layout">${featureChecklist(point)}<section class="agentx-summary-main"><h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p></section></div>`;
@@ -231,5 +255,5 @@ window.AgentX = (() => {
       await select();
     }catch(error){root.innerHTML=`<p role="alert">${esc(error.message)}</p>`;}
   }
-  return {load,detail,aggregate,featureChecklist};
+  return {load,detail,aggregate,featureChecklist,validateFeatureEvidence};
 })();
