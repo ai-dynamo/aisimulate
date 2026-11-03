@@ -190,15 +190,18 @@ list has 496 prefill points and 96 decode points. That needs an accepted cache
 of at least 2,113 pool blocks (the profile's `kv_cache_bytes` divided by its
 largest `page_size_bytes`).
 
-The smoke measures four points of this list. It runs under the plan hash of
-formal collection and keeps its own campaign directory. The prefill points are
-one request with 64 new tokens, once without a prefix and once after one hash
-block of prefix. The decode points are one request and two requests, each at the
-smallest context of the list above one hash block. When the list has no decode
-point of two requests above one hash block, the decode points are one request
-at each of the two smallest contexts of the list above one hash block. That
-happens when `max_batch_size` is 1, or when the cache capacity leaves room for
-one request only.
+The smoke measures two points of this list for each phase that the plan
+collects. An aggregated request collects both phases, so its smoke measures
+four points. A prefill or decode role collects one phase, so its smoke measures
+the two points of that phase. The list needs no point of the other phase. The
+smoke runs under the plan hash of formal collection and keeps its own campaign
+directory. The prefill points are one request with 64 new tokens, once without
+a prefix and once after one hash block of prefix. The decode points are one
+request and two requests, each at the smallest context of the list above one
+hash block. When the list has no decode point of two requests above one hash
+block, the decode points are one request at each of the two smallest contexts of
+the list above one hash block. That happens when `max_batch_size` is 1, or when
+the cache capacity leaves room for one request only.
 A direct `collector --fpm` call can pass its own manifest with
 `--fpm-benchmark-points-file`. The collector refuses that file together with
 `--smoke`.

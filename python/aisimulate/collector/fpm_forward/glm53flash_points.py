@@ -156,8 +156,13 @@ def glm_plan_manifest(options: FPMCollectionOptions, deployments: Sequence[FpmDe
     return canonical, digest
 
 
-def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dict[str, Any], str, str]:
-    """Return the four smoke points of a generated list, with their canonical JSON and its SHA-256.
+def glm_smoke_subset(
+    payload: dict[str, Any], hash_block_size: int, phases: Sequence[str] = ("prefill", "decode")
+) -> tuple[dict[str, Any], str, str]:
+    """Return the smoke points of a generated list, with their canonical JSON and its SHA-256.
+
+    Each phase that the plan collects takes two points, so an aggregated plan takes four and a prefill or decode role
+    takes two. The other phase of a role keeps an empty list, because the cells of the plan never measure it.
 
     The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block
     of prefix. The context of a decode point is its total KV read tokens divided by its batch size. If a decode point
@@ -165,7 +170,7 @@ def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dic
     of two requests at the smallest context above one hash block. Otherwise, as in the list of a request limited to
     one sequence, they are the points of one request at the two smallest contexts above one hash block. A point is
     taken at a context only if its total KV read tokens equal its batch size times that context. A list that does
-    not give two prefill points and two decode points is refused.
+    not give two points for each collected phase is refused.
     """
     prefill = [
         point
@@ -192,6 +197,9 @@ def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dic
         if point["batch_size"] in batch_sizes
         and any(point["total_kv_read_tokens"] == point["batch_size"] * value for value in contexts)
     ]
-    if len(prefill) != 2 or len(decode) != 2:
-        raise ValueError("GLM-5.3-Flash smoke subset requires the generated list to hold its four points")
-    return _manifest({"schema_version": payload["schema_version"], "prefill": prefill, "decode": decode})
+    # The cells of the plan never measure a phase that it does not collect, so that phase keeps no point and needs none.
+    smoke = {"prefill": prefill if "prefill" in phases else [], "decode": decode if "decode" in phases else []}
+    if any(len(smoke[phase]) != 2 for phase in phases):
+        held = "four points" if len(phases) == 2 else f"two {phases[0]} points"
+        raise ValueError(f"GLM-5.3-Flash smoke subset requires the generated list to hold its {held}")
+    return _manifest({"schema_version": payload["schema_version"], **smoke})

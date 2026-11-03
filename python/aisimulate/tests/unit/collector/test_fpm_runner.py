@@ -1767,6 +1767,44 @@ def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
         )
 
 
+def test_run_collection_stages_the_smoke_of_a_prefill_role_glm_plan(monkeypatch, tmp_path):
+    from .test_fpm_runtime_memory import _glm_short_request_plan
+
+    # The list of this request holds the two smoke prefill points but only one decode context above one hash block.
+    plan = _glm_short_request_plan(tmp_path, "prefill")
+    staged, receipts, checkpoint = _staged_run(monkeypatch, tmp_path / "run", plan, smoke=True)
+
+    [cell] = plan.cells
+    assert set(staged) == {cell.cell_id}
+    assert POINTS_FILENAME in staged[cell.cell_id]
+    campaign = tmp_path / "run" / "artifacts" / plan.sha256[:16] / "smoke"
+    listed = (campaign / "cells" / cell.cell_id / POINTS_FILENAME).read_bytes()
+    assert json.loads(listed) == {
+        "schema_version": 3,
+        "prefill": [
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+        ],
+        "decode": [],
+    }
+    # The staged file, the receipt that the collector checks in the container and the checkpoint name one subset.
+    subset_sha256 = hashlib.sha256(listed).hexdigest()
+    entry = checkpoint["cells"][cell.cell_id]
+    assert entry["status"] == "passed"
+    assert receipts[cell.cell_id] == {
+        "plan_sha256": plan.sha256,
+        "cell_id": cell.cell_id,
+        "attempt_id": entry["attempt_id"],
+        "sha256": subset_sha256,
+        "phase": "after",
+    }
+    assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["smoke_manifest"]) == (
+        subset_sha256,
+        2,
+        "glm53flash_grid_v1_smoke",
+    )
+
+
 def test_formal_glm_run_stages_the_full_point_list(monkeypatch, tmp_path):
     from .test_fpm_runtime_memory import _probe_backed_glm_plan
 

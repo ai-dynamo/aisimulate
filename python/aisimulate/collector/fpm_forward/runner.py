@@ -1166,9 +1166,10 @@ def _cell_points(plan: FPMCollectionPlan, cell: FPMCell, *, smoke: bool) -> tupl
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     if not smoke:
         return canonical, plan.options.benchmark_points_sha256
-    # The smoke measures four points of the generated list, so it runs under the plan hash of formal collection.
+    # The smoke measures points of the generated list, so it runs under the plan hash of formal collection. Every cell
+    # of the plan stages the same subset, which holds the points of the phases that the plan collects.
     hash_block_size = plan.deployment_profile(cell).resources.runtime_memory.hash_block_size_tokens
-    _, subset, subset_sha256 = glm_smoke_subset(json.loads(canonical), hash_block_size)
+    _, subset, subset_sha256 = glm_smoke_subset(json.loads(canonical), hash_block_size, plan.options.workload_kinds)
     return subset, subset_sha256
 
 

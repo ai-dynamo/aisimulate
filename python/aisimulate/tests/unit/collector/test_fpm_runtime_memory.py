@@ -1497,13 +1497,13 @@ def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
         assert ("--language-model-only" in args) == (architecture is not None)
 
 
-def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, **changes):
+def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, max_num_tokens=8192, **changes):
     """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
 
     The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
-    8,192 tokens, ``max_batch_size`` sequences and a 1,048,576-token context. The profile records the same sequence
-    limit, because accepted runtime memory is exact for its scheduler settings. The producer runs no global warm-up
-    iterations. ``changes`` replace option fields before planning.
+    ``max_num_tokens`` tokens, ``max_batch_size`` sequences and a 1,048,576-token context. The profile records the
+    same token and sequence limits, because accepted runtime memory is exact for its scheduler settings. The producer
+    runs no global warm-up iterations. ``changes`` replace option fields before planning.
     """
     from .test_runtime_observations import glm_tp4_cache_groups
 
@@ -1545,7 +1545,7 @@ def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, **ch
                     "runtime_memory": memory,
                     "cache_layout": "grouped",
                     "cache_groups": glm_tp4_cache_groups(),
-                    "max_num_tokens": 8192,
+                    "max_num_tokens": max_num_tokens,
                     "max_batch_size": max_batch_size,
                     "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
                 },
@@ -1566,11 +1566,11 @@ def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, **ch
         "--fpm-max-model-len",
         "1048576",
         "--fpm-max-num-batched-tokens",
-        "8192",
+        str(max_num_tokens),
         "--fpm-max-num-seqs",
         str(max_batch_size),
         "--fpm-max-prefill-isl",
-        "8192",
+        str(max_num_tokens),
         "--fpm-max-prefill-batch-size",
         str(max_batch_size),
         "--fpm-prefill-cudagraph-policy",
@@ -1976,6 +1976,8 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
                 {"batch_size": 2, "total_kv_read_tokens": 8192},
             ],
         }
+        # Both cells of an aggregated plan stage the same four points, byte for byte.
+        assert hashlib.sha256(subset).hexdigest() == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
         # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
         for phase in ("prefill", "decode"):
             assert all(point in frozen[phase] for point in json.loads(subset)[phase])
@@ -2037,6 +2039,103 @@ def test_glm_smoke_of_a_one_sequence_request_stages_two_points_per_phase(tmp_pat
         formal_directory.mkdir()
         [formal] = runner._stage_points_file(plan, formal_directory, cell=cell, smoke=False)
         assert formal.read_bytes().decode() == plan.options.benchmark_points_json
+
+
+_FOUR_POINTS_TEXT = "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
+def _glm_short_request_plan(tmp_path, worker_type):
+    """The plan of a GLM-5.3-Flash request limited to one sequence, 4,096 tokens and a 4,096-token context."""
+    return _glm_plan(tmp_path, max_batch_size=1, max_num_tokens=4096, worker_type=worker_type, vllm_max_model_len=4096)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_prefill_role_stages_its_two_prefill_points(tmp_path):
+    plan = _glm_short_request_plan(tmp_path, "prefill")
+    frozen = json.loads(plan.options.benchmark_points_json)
+    # The measured context is 4,089 tokens. The list holds both smoke prefill points, but only one decode context above
+    # the hash block of 2,176 tokens, so it has no second decode point for the smoke to take.
+    assert {
+        point["total_kv_read_tokens"] // point["batch_size"]
+        for point in frozen["decode"]
+        if point["total_kv_read_tokens"] // point["batch_size"] > 2176
+    } == {4089}
+    [cell] = plan.cells
+    assert cell.workload_kind == "prefill"
+
+    # The role never measures a decode point, so the smoke stages the two prefill points and no decode point.
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+    subset = path.read_bytes()
+    assert json.loads(subset) == {
+        "schema_version": 3,
+        "prefill": [
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+        ],
+        "decode": [],
+    }
+    assert all(point in frozen["prefill"] for point in json.loads(subset)["prefill"])
+    assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+        "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+        "requested_point_count": 2,
+        "smoke_manifest": "glm53flash_grid_v1_smoke",
+    }
+    overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=True)
+    assert "--benchmark-points-file" in overrides["params"]["agg"]["extra_cli_args"]
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize("worker_type", ["aggregated", None])
+def test_glm_smoke_of_an_aggregated_request_still_needs_both_phases(tmp_path, worker_type):
+    # The same limits as the prefill role above, collected for both phases, leave the decode phase one point short.
+    plan = _glm_short_request_plan(tmp_path, worker_type)
+    assert {cell.workload_kind for cell in plan.cells} == {"prefill", "decode"}
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        with pytest.raises(ValueError) as error:
+            runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        assert str(error.value) == _FOUR_POINTS_TEXT
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_decode_role_stages_its_two_decode_points(tmp_path):
+    # A token budget of 32 holds no prefill point of 64 new tokens, so the list lacks the prefill smoke points.
+    limits = {"max_batch_size": 8, "max_num_tokens": 32}
+    plan = _glm_plan(tmp_path, worker_type="decode", **limits)
+    frozen = json.loads(plan.options.benchmark_points_json)
+    assert not any(point["total_prefill_tokens"] == 64 for point in frozen["prefill"])
+    [cell] = plan.cells
+    assert cell.workload_kind == "decode"
+
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+    subset = path.read_bytes()
+    assert json.loads(subset) == {
+        "schema_version": 3,
+        "prefill": [],
+        "decode": [
+            {"batch_size": 1, "total_kv_read_tokens": 4096},
+            {"batch_size": 2, "total_kv_read_tokens": 8192},
+        ],
+    }
+    assert all(point in frozen["decode"] for point in json.loads(subset)["decode"])
+    assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+        "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+        "requested_point_count": 2,
+        "smoke_manifest": "glm53flash_grid_v1_smoke",
+        "decode_prefix_caching": "enabled",
+    }
+
+    # An aggregated plan of the same limits measures the prefill phase too, and the list cannot serve it.
+    aggregated = _glm_plan(tmp_path, worker_type="aggregated", **limits)
+    for cell in aggregated.cells:
+        with pytest.raises(ValueError) as error:
+            runner._stage_points_file(aggregated, directory, cell=cell, smoke=True)
+        assert str(error.value) == _FOUR_POINTS_TEXT
 
 
 def test_glm_collection_without_a_model_revision_is_refused(tmp_path):

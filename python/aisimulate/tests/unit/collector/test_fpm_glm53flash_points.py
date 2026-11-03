@@ -133,10 +133,86 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
     path = tmp_path / "smoke-points.json"
     path.write_text(json.dumps(subset))
     assert _freeze_benchmark_points(str(path)) == (canonical, digest)
+    # The live smoke of an aggregated TP4 request stages these bytes, so their digest stays pinned.
+    assert digest == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
+    assert digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     without = {**payload, "decode": [point for point in payload["decode"] if point != subset["decode"][1]]}
     with pytest.raises(ValueError) as error:
         glm_smoke_subset(without, 2176)
     assert str(error.value) == "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
+_PREFILL_PAIR = [
+    {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+    {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+]
+_TWO_REQUEST_DECODE_PAIR = [
+    {"batch_size": 1, "total_kv_read_tokens": 4096},
+    {"batch_size": 2, "total_kv_read_tokens": 8192},
+]
+_FOUR_POINTS = "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
+def test_smoke_subset_keeps_the_points_of_the_collected_phases_only():
+    payload, _, _ = glm_point_manifest(**_TP4)
+
+    for phases, expected in (
+        (("prefill", "decode"), {"prefill": _PREFILL_PAIR, "decode": _TWO_REQUEST_DECODE_PAIR}),
+        (("prefill",), {"prefill": _PREFILL_PAIR, "decode": []}),
+        (("decode",), {"prefill": [], "decode": _TWO_REQUEST_DECODE_PAIR}),
+    ):
+        subset, canonical, digest = glm_smoke_subset(payload, 2176, phases)
+        assert subset == {"schema_version": 3, **expected}
+        assert digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    # Both phases are the default, and they give the same bytes as before the argument existed.
+    assert glm_smoke_subset(payload, 2176) == glm_smoke_subset(payload, 2176, ("prefill", "decode"))
+
+
+def test_smoke_subset_of_a_prefill_role_needs_no_second_decode_context(tmp_path):
+    # A prefill role limited to one sequence, 4,096 tokens and a 4,096-token context measures contexts up to 4,089.
+    # Its list holds both smoke prefill points, but only one decode context above the hash block of 2,176 tokens.
+    measured = glm_measured_context(SimpleNamespace(vllm_max_model_len=4096))
+    limits = {"token_budget": 4096, "prefill_batch_limit": 1, "decode_batch_limit": 1, "measured_context": measured}
+    payload, _, _ = glm_point_manifest(**{**_TP4, **limits})
+    above = {point["total_kv_read_tokens"] for point in payload["decode"] if point["total_kv_read_tokens"] > 2176}
+    assert above == {4089}
+    assert all(point in payload["prefill"] for point in _PREFILL_PAIR)
+
+    # The role never measures a decode point, so the list has no decode point to lack.
+    subset, canonical, digest = glm_smoke_subset(payload, 2176, ("prefill",))
+    assert subset == {"schema_version": 3, "prefill": _PREFILL_PAIR, "decode": []}
+    path = tmp_path / "smoke-points.json"
+    path.write_text(json.dumps(subset))
+    assert _freeze_benchmark_points(str(path)) == (canonical, digest)
+    # An aggregated plan measures both phases, so the same list is refused for it, with or without the argument.
+    for arguments in ((), (("prefill", "decode"),)):
+        with pytest.raises(ValueError) as error:
+            glm_smoke_subset(payload, 2176, *arguments)
+        assert str(error.value) == _FOUR_POINTS
+
+
+def test_smoke_subset_of_a_decode_role_needs_no_prefill_points():
+    payload, _, _ = glm_point_manifest(**_TP4)
+    without = {**payload, "prefill": [point for point in payload["prefill"] if point["total_prefill_tokens"] != 64]}
+
+    # A decode role never measures a prefill point, so a list without the 64-token prefill points still serves it.
+    subset, _, _ = glm_smoke_subset(without, 2176, ("decode",))
+    assert subset == {"schema_version": 3, "prefill": [], "decode": _TWO_REQUEST_DECODE_PAIR}
+    with pytest.raises(ValueError) as error:
+        glm_smoke_subset(without, 2176)
+    assert str(error.value) == _FOUR_POINTS
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_smoke_subset_of_one_phase_refuses_a_list_without_its_points(phase):
+    payload, _, _ = glm_point_manifest(**_TP4)
+    smoke = glm_smoke_subset(payload, 2176)[0][phase]
+    without = {**payload, phase: [point for point in payload[phase] if point not in smoke]}
+
+    with pytest.raises(ValueError) as error:
+        glm_smoke_subset(without, 2176, (phase,))
+    # A role that collects one phase needs the two points of that phase, not the four of an aggregated plan.
+    assert str(error.value) == f"GLM-5.3-Flash smoke subset requires the generated list to hold its two {phase} points"
 
 
 @pytest.mark.parametrize(
