@@ -8,6 +8,7 @@ import io
 import json
 import sys
 import urllib.error
+from pathlib import Path
 from types import SimpleNamespace
 
 import collect
@@ -20,7 +21,7 @@ from instrument import inject
 
 
 @pytest.mark.parametrize("invalid", ["model", "runtime", "cases"])
-@pytest.mark.parametrize("suite", ["frontend", "blocking"])
+@pytest.mark.parametrize("suite", ["frontend", "blocking", "matrix"])
 def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeypatch, invalid, suite):
     model = tmp_path / "model"
     model.mkdir()
@@ -46,6 +47,31 @@ def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeyp
     monkeypatch.setattr(collect.importlib.metadata, "version", lambda _: "5.12.1")
     monkeypatch.setattr(collect.subprocess, "Popen", lambda *_a, **_k: pytest.fail("server must remain unstarted"))
     with pytest.raises(ValueError, match="preflight"):
+        collect.main()
+    assert not output.exists()
+
+
+def test_matrix_source_change_is_rejected_before_server_start(tmp_path, monkeypatch):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    (tmp_path / "frontend-template-preflight.json").write_text(json.dumps({
+        "model_config_sha256": hashlib.sha256(b"{}").hexdigest(), "transformers": "5.12.1",
+        "cases": [{"context_label": n} for n in (8192, 131072, 393216)],
+    }))
+    sources = {name: hashlib.sha256(Path(collect.__file__).with_name(name).read_bytes()).hexdigest()
+               for name in rsi_dispatch.PREFLIGHT_SOURCE_FILES}
+    sources["matrix_dispatch.py"] = "changed-after-preflight"
+    (tmp_path / "matrix-dispatch-preflight.json").write_text(json.dumps({
+        "status": "passed", "sglang": "0.5.20", "prepared_request": {"status": "passed"},
+        "source_sha256": sources,
+    }))
+    output = tmp_path / "gpu-123/controls"
+    monkeypatch.setattr(sys, "argv", ["collect.py", "--model", str(model), "--output", str(output),
+                                    "--seconds", "30", "--suite", "matrix"])
+    monkeypatch.setattr(collect.importlib.metadata, "version", lambda name: "0.5.20" if name == "sglang" else "5.12.1")
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *_a, **_k: pytest.fail("server must remain unstarted"))
+    with pytest.raises(ValueError, match="source changed"):
         collect.main()
     assert not output.exists()
 
@@ -173,7 +199,7 @@ def test_probe_records_numerical_transitions_and_ignores_other_requests(tmp_path
     monkeypatch.setenv("RSI_TIMING_ROOT", str(tmp_path))
     monkeypatch.setattr(rsi_timing, "_last", {})
     monkeypatch.setattr(rsi_timing, "_stream", None)
-    request = SimpleNamespace(rid="rsi-test", output_ids=[11, 12])
+    request = SimpleNamespace(rid="rsi-test", output_ids=[11, 12], finished_len=None)
     unrelated = SimpleNamespace(rid="private-health-request", output_ids=[99])
     try:
         rsi_timing.record([request, unrelated])
@@ -182,9 +208,31 @@ def test_probe_records_numerical_transitions_and_ignores_other_requests(tmp_path
         rsi_timing.record([request])
         rows = [json.loads(line) for line in next(tmp_path.glob("*.jsonl")).read_text().splitlines()]
         assert [row["output_tokens"] for row in rows] == [2, 3]
-        assert all(set(row) == {"rid", "at_ns", "output_tokens", "batch_requests", "rank"} for row in rows)
+        assert all(set(row) == {
+            "schema", "rid", "at_ns", "output_tokens", "batch_requests", "rank",
+            "generated_output_tokens", "finished_len", "discarded_tail_tokens",
+        } for row in rows)
+        assert all(row["schema"] == "aisimulate.glm-rsi.output-ready.v2" for row in rows)
         assert rows[0]["rank"] is None
         assert rows[0]["batch_requests"] == 2
+    finally:
+        if rsi_timing._stream:
+            rsi_timing._stream.close()
+
+
+def test_output_probe_preserves_generated_emitted_and_discarded_tail_counts(tmp_path, monkeypatch):
+    monkeypatch.setenv("RSI_TIMING_ROOT", str(tmp_path))
+    monkeypatch.setattr(rsi_timing, "_last", {})
+    monkeypatch.setattr(rsi_timing, "_stream", None)
+    request = SimpleNamespace(rid="rsi-tail", output_ids=list(range(18)), finished_len=16)
+    try:
+        rsi_timing.record([request])
+        row = json.loads(next(tmp_path.glob("*.jsonl")).read_text())
+        assert row["output_tokens"] == 16
+        assert row["generated_output_tokens"] == 18
+        assert row["finished_len"] == 16
+        assert row["discarded_tail_tokens"] == 2
+        assert row["generated_output_tokens"] == row["output_tokens"] + row["discarded_tail_tokens"]
     finally:
         if rsi_timing._stream:
             rsi_timing._stream.close()

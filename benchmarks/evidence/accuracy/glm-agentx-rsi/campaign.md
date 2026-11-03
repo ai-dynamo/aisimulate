@@ -925,6 +925,63 @@ disabled speculation; plain control validation rejects that field. Retain this
 failed attempt and its four completed MTP predictions, omit the field when off,
 and generate all eight controls afresh in a separate output directory.
 
+## H7 — Arrival clocks and request ordering
+
+**Hypothesis.** Client-start timestamps recorded before body serialization do not
+establish the GPU scheduler's arrival order. With cold concurrent prefills, a
+request's position determines how much later prefill work stalls its decode.
+Confidence is high in the boundary difference, moderate in its contribution to
+paired errors. Competing explanations include actual scheduler ordering,
+framework-version differences, graph timing and forced-acceptance correlation.
+
+**E035 conclusion — modest batch-mean gaps conceal large request gaps.** All 24
+finite cases / 264 requests complete and qualify cold/input/output accounting,
+with no missing pairs. For MTP, batch-mean TPOT errors are about +13.6%/+8.0% at 8K
+and −5.2%/−5.6% at 131K (8/14 lanes). Plain decode shows the same sign reversal,
+not a universal MTP cost defect. Retain both repeats and all arms; these mean
+comparisons do not replace request-level objectives.
+
+In instrumented repeat 0 at 131K/8 lanes, mean TPOT is about 5% apart while matched
+request TPOT MAPE is 512.7% against client receipt and 514.2% against output-ready
+spans. All eight first-output positions differ; average rank displacement is 2.5.
+Other cases also differ in ordering. The old client starts its clock before
+`call` serializes the large request. Exact server-submission observations are
+absent, so ordering causality remains unproven. Do not re-pair requests to improve
+the score or apply a global timing multiplier. Evidence:
+`E035-independent-audit.json`, 24 native case receipts and original GPU 1005806.
+
+**E036 — prepared bodies and server submission (predeclared).** Reuse the
+verified model/image/recipe, cold 131072-token native requests and 128 outputs at
+eight lanes. Prepare all encoded bodies before releasing a batch barrier. Capture
+client start, actual API submission, rank-zero eligible output-ready and client
+receipt on shared monotonic clocks. Three repeats per arm; compare a minimal
+dispatch-only arm with dispatch+output instrumentation on fresh servers. Retain
+all 48 request identities, cached-token receipts, input/body hashes and numerical
+stream counters. No prompt text, token arrays or raw bodies enter observations.
+
+The v2 output probe separately records generated, eligible and discarded-tail
+counts plus the actual finished-length boundary; preserve all old artifacts and
+the E028 failed gate. Exact-image CPU preflight qualifies the prepared byte path,
+original dispatch source and all ten relevant Python files. Forty-seven focused
+tests pass, covering preflight drift rejection, no serialization inside the
+prepared request, and generated 18/emitted 16/discarded 2 conservation. A changed
+collector requires a new CPU receipt before GPU admission.
+
+Bound GPU allocation to 45 minutes plus 60 seconds cleanup: reserve 22080 GPU-seconds.
+The batch verifies Slurm's actual 45-minute limit, eight B300 devices, image and
+preflight before model loading. Against the reconciled 146994 remaining
+GPU-seconds, this leaves 124914 unreserved and fits the controlled-workload pool
+(3466.75 used + 2760 reserved < 7200 TP8-equivalent node-seconds). CPU preflight
+allocates no GPUs; startup/failure/cleanup all count when GPU allocated.
+
+Predeclare two subsequent CPU replays per retained batch, changing only the
+arrival clock: client-start versus recorded server-submission, with the same
+frozen wheel/op data and paired request IDs. Compare first-output order and both
+request metrics; keep batch means as diagnostics. These are finite native
+controls, not an oracle fix for historical AgentX cohorts. Support the hypothesis
+only if submission alignment improves ordering/error with qualified clocks and
+all pairs retained; otherwise investigate scheduler/perf-model semantics.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process

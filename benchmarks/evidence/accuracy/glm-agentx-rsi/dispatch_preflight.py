@@ -6,16 +6,40 @@
 import argparse
 import hashlib
 import importlib.metadata
+import io
 import json
 import multiprocessing
 import os
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
+import probe
 from blocking import actor_worker
 from instrument import install_dispatch
+from rsi_dispatch import PREFLIGHT_SOURCE_FILES
 
-SOURCE_FILES = ("instrument.py", "rsi_dispatch.py", "blocking.py", "frontend.py", "probe.py")
 EXPECTED_MANAGER = "952fdfcf54b13af6851993d4b7599d4b1efeb6aa630a7554584a1a047eda94f2"
+
+
+def prepared_request_check():
+    body = json.dumps({"rid": "rsi-preflight", "input_ids": [1, 2, 3, 4]}).encode()
+    wire = b'data: {"meta_info":{"completion_tokens":1,"prompt_tokens":4,"cached_tokens":0}}\n\n'
+    wire += b'data: {"meta_info":{"completion_tokens":3,"prompt_tokens":4,"cached_tokens":0}}\n\n'
+
+    def response(request, timeout):
+        if request.data != body or timeout != 600 or request.full_url != "http://127.0.0.1:1/generate":
+            raise ValueError("Prepared transport changed the encoded body")
+        return io.BytesIO(wire)
+
+    with patch("probe.urllib.request.urlopen", response), patch(
+        "probe.json.dumps", side_effect=AssertionError("Serialization occurred inside request measurement")
+    ):
+        row = probe.request("http://127.0.0.1:1", "rsi-preflight", [1, 2, 3, 4],
+                            3, threading.Barrier(1), encoded_body=body)
+    if row["status"] != "completed" or row["events"][-1]["output_tokens"] != 3:
+        raise ValueError("Prepared transport projection failed")
+    return {"status": "passed", "mock_transport": True, "body_sha256": hashlib.sha256(body).hexdigest()}
 
 
 def main():
@@ -27,6 +51,7 @@ def main():
     receipt = install_dispatch()
     if receipt["original_sha256"] != EXPECTED_MANAGER:
         raise ValueError("Historical tokenizer-manager source differs from archived evidence")
+    receipt["prepared_request"] = prepared_request_check()
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
     child = context.Process(target=actor_worker, args=("http://127.0.0.1:1", {}, jobs, results))
@@ -49,7 +74,8 @@ def main():
         actor_pid=ready["pid"],
         parent_pid=os.getpid(),
         source_sha256={
-            name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in SOURCE_FILES
+            name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+            for name in PREFLIGHT_SOURCE_FILES
         },
         scope="CPU source/actor qualification only; no GPU measurements or timing coefficients",
     )

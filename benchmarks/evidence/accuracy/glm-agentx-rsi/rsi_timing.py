@@ -24,12 +24,21 @@ def record(requests):
         rid = str(request.rid)
         if not rid.startswith("rsi-"):
             continue
-        count = len(request.output_ids)
-        if _last.get(rid) == count:
+        generated = len(request.output_ids)
+        finished_len = request.finished_len
+        count = generated if finished_len is None else min(generated, finished_len)
+        state = (generated, count, finished_len)
+        if _last.get(rid) == state:
             continue
-        _last[rid] = count
+        _last[rid] = state
         events.append(
-            {"rid": rid, "at_ns": str(now), "output_tokens": count, "batch_requests": len(requests), "rank": rank}
+            {
+                "schema": "aisimulate.glm-rsi.output-ready.v2",
+                "rid": rid, "at_ns": str(now), "output_tokens": count,
+                "generated_output_tokens": generated, "finished_len": finished_len,
+                "discarded_tail_tokens": generated - count,
+                "batch_requests": len(requests), "rank": rank,
+            }
         )
     if events:
         if _stream is None:

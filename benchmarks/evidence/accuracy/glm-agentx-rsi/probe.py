@@ -17,7 +17,7 @@ from transformers import AutoTokenizer
 def call(url, value=None):
     request = urllib.request.Request(
         url,
-        data=json.dumps(value).encode() if value is not None else None,
+        data=value if isinstance(value, bytes) else json.dumps(value).encode() if value is not None else None,
         headers={"Content-Type": "application/json"},
     )
     return urllib.request.urlopen(request, timeout=600)
@@ -39,8 +39,8 @@ def retain_case(rows, records):
         raise RuntimeError("Incomplete diagnostic case; all attempted requests retained")
 
 
-def request(url, identity, prompt, output_length, barrier, first_output=None):
-    body = {
+def request(url, identity, prompt, output_length, barrier, first_output=None, *, encoded_body=None):
+    body = encoded_body if encoded_body is not None else {
         "rid": identity,
         "input_ids": prompt,
         "stream": True,

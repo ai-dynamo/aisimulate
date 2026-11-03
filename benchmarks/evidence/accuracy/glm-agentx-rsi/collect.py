@@ -18,6 +18,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from rsi_dispatch import PREFLIGHT_SOURCE_FILES
+
 GOLDEN_ACCEPTANCE = {
     "SGLANG_SIMULATE_ACC_LEN": "2.99",
     "SGLANG_SIMULATE_ACC_METHOD": "match-expected",
@@ -140,7 +142,7 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
         environment["RSI_TIMING_ROOT"] = str(output)
     else:
         environment.pop("RSI_TIMING_ROOT", None)
-    if suite == "blocking":
+    if suite in ("blocking", "matrix"):
         dispatch_root = output / "dispatch"
         dispatch_root.mkdir()
         environment["RSI_DISPATCH_ROOT"] = str(dispatch_root)
@@ -187,7 +189,8 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
             subprocess.run(
                 [
                     sys.executable,
-                    str(code / {"frontend": "frontend.py", "blocking": "blocking.py", "timing": "probe.py"}[suite]),
+                    str(code / {"frontend": "frontend.py", "blocking": "blocking.py",
+                                "timing": "probe.py", "matrix": "matrix_dispatch.py"}[suite]),
                     "--url",
                     url,
                     "--model",
@@ -195,7 +198,7 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
                     "--output",
                     str(output / "client"),
                 ]
-                + (["--dispatch-root", str(output / "dispatch")] if suite == "blocking" else []),
+                + (["--dispatch-root", str(output / "dispatch")] if suite in ("blocking", "matrix") else []),
                 check=True,
                 timeout=max(1, deadline - time.monotonic() - 90),
                 env=environment,
@@ -220,12 +223,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
-    parser.add_argument("--suite", choices=("timing", "frontend", "blocking"), default="timing")
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "matrix"), default="timing")
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
     config_sha = hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest()
-    if args.suite in ("frontend", "blocking"):
+    if args.suite in ("frontend", "blocking", "matrix"):
         preflight = json.loads((args.output.parents[1] / "frontend-template-preflight.json").read_bytes())
         if preflight["model_config_sha256"] != config_sha or preflight["transformers"] != importlib.metadata.version(
             "transformers"
@@ -233,18 +236,21 @@ def main():
             raise ValueError("Frontend template preflight does not match model or tokenizer runtime")
         if [case["context_label"] for case in preflight["cases"]] != [8192, 131072, 393216]:
             raise ValueError("Incomplete frontend template preflight")
-    if args.suite == "blocking":
-        preflight = json.loads((args.output.parents[1] / "blocking-dispatch-preflight.json").read_bytes())
+    if args.suite in ("blocking", "matrix"):
+        name = "matrix-dispatch-preflight.json" if args.suite == "matrix" else "blocking-dispatch-preflight.json"
+        preflight = json.loads((args.output.parents[1] / name).read_bytes())
         if preflight["status"] != "passed" or preflight["sglang"] != importlib.metadata.version("sglang"):
-            raise ValueError("Blocking dispatch preflight does not match runtime")
-        for name in ("instrument.py", "rsi_dispatch.py", "blocking.py", "frontend.py", "probe.py"):
+            raise ValueError("Dispatch preflight does not match runtime")
+        if args.suite == "matrix" and preflight.get("prepared_request", {}).get("status") != "passed":
+            raise ValueError("Prepared request preflight is unavailable")
+        for name in PREFLIGHT_SOURCE_FILES:
             actual = hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            if preflight["source_sha256"][name] != actual:
-                raise ValueError("Blocking dispatch source changed after CPU preflight")
+            if preflight["source_sha256"].get(name) != actual:
+                raise ValueError("Dispatch source changed after CPU preflight")
         origin = importlib.util.find_spec("sglang").origin
         manager = Path(origin).parent / "srt/managers/tokenizer_manager.py"
         if hashlib.sha256(manager.read_bytes()).hexdigest() != preflight["original_sha256"]:
-            raise ValueError("Blocking dispatch runtime source differs from CPU preflight")
+            raise ValueError("Dispatch runtime source differs from CPU preflight")
     deadline = time.monotonic() + args.seconds
     args.output.mkdir(parents=True, exist_ok=False)
     save(
@@ -279,7 +285,7 @@ def main():
             },
         },
     )
-    if args.suite == "blocking":
+    if args.suite in ("blocking", "matrix"):
         subprocess.run(
             [sys.executable, str(Path(__file__).with_name("instrument.py")), "--dispatch-only"],
             check=True,

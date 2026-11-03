@@ -14,8 +14,16 @@
 set -euo pipefail
 : "${CAMPAIGN_ROOT:?}"
 : "${REMAINING_GPU_SECONDS:?Set from reconciled campaign ledger}"
-# Reserve the wall limit plus a minute for scheduler/GPU cleanup.
-test "$REMAINING_GPU_SECONDS" -ge 36480
+# The matrix wrapper has a 45-minute wall limit; the original runner has 75.
+control_seconds=4200
+reservation_seconds=36480
+if test "${RSI_SUITE:-timing}" = matrix; then
+    matrix_wall_limit=$(scontrol show job "$SLURM_JOB_ID" -o | awk '{for(i=1;i<=NF;i++) if($i ~ /^TimeLimit=/) print substr($i,11)}')
+    test "$matrix_wall_limit" = 00:45:00
+    control_seconds=2640
+    reservation_seconds=22080
+fi
+test "$REMAINING_GPU_SECONDS" -ge "$reservation_seconds"
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 cd "$storage_root"
 model="$storage_root/models/GLM-5.3-NVFP4-e3b8f9f2"
@@ -39,17 +47,20 @@ case "${RSI_RUNTIME:-prediction}" in
     *) echo 'Unknown RSI runtime' >&2; exit 1 ;;
 esac
 test -s "$model/config.json"
-if test "${RSI_SUITE:-timing}" = frontend || test "${RSI_SUITE:-timing}" = blocking; then
+if test "${RSI_SUITE:-timing}" = frontend || test "${RSI_SUITE:-timing}" = blocking || test "${RSI_SUITE:-timing}" = matrix; then
     test -s "$CAMPAIGN_ROOT/frontend-template-preflight.json"
 fi
 if test "${RSI_SUITE:-timing}" = blocking; then
     test -s "$CAMPAIGN_ROOT/blocking-dispatch-preflight.json"
 fi
+if test "${RSI_SUITE:-timing}" = matrix; then
+    test -s "$CAMPAIGN_ROOT/matrix-dispatch-preflight.json"
+fi
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
 export ENROOT_CONFIG_PATH="$storage_root/.config/enroot"
 export ENROOT_DATA_PATH="$CAMPAIGN_ROOT/enroot-$SLURM_JOB_ID"
 mkdir -p "$ENROOT_DATA_PATH" "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID"
-cp -R "$CAMPAIGN_ROOT/code" "$CAMPAIGN_ROOT/code-$SLURM_JOB_ID"
+cp -R "${RSI_CODE:-$CAMPAIGN_ROOT/code}" "$CAMPAIGN_ROOT/code-$SLURM_JOB_ID"
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv > "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
 # Refuse a different GPU or partial allocation before loading model weights.
 awk -F, 'NR > 1 {if ($1 !~ /B300/) bad=1; count++} END {exit (bad || count != 8)}' "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
@@ -58,5 +69,5 @@ srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     env "RSI_CACHE_ROOT=$root/runtime-cache/$cache_key" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
-    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 4200 --acceptance-policy agentx-golden \
+    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds "$control_seconds" --acceptance-policy agentx-golden \
     --suite "${RSI_SUITE:-timing}"

@@ -8,6 +8,11 @@ import os
 import time
 from pathlib import Path
 
+PREFLIGHT_SOURCE_FILES = (
+    "collect.py", "instrument.py", "rsi_dispatch.py", "blocking.py", "frontend.py", "probe.py",
+    "rsi_timing.py", "rsi_frontend.py", "matrix_dispatch.py", "dispatch_preflight.py",
+)
+
 
 def receipt_path(root, rid):
     return Path(root) / (hashlib.sha256(rid.encode()).hexdigest() + ".json")
