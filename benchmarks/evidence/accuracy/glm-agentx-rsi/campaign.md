@@ -1916,3 +1916,12 @@ Only then does GLM startup begin. This repairs the diagnostic probe, not model
 accuracy. The independent auditor also rejects overlapping/out-of-order C1
 attempts and malformed capture windows; a complete synthetic 17-request fixture
 passes before its stop boundary is deliberately corrupted and rejected.
+
+Post-capture numerical export runs separately through
+`forward_profile_export.sbatch`: CPU data mover, eight CPUs, 64GiB, fifteen
+minutes, **zero GPUs**. Require completed collection and exactly two reports,
+record their SHA256 values before export and recheck afterward, export kernel
+and GPU-projected NVTX CSVs with the same pinned image/tool, and checksum all
+four tables. Keep raw reports, SQLite intermediates and numerical tables in
+private campaign storage. A completion marker requires all exports and source
+checksums to pass; no GPU allocation is retained for offline trace parsing.
