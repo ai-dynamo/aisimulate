@@ -3,10 +3,8 @@
 """Read portable silicon bundles and build private, reproducible CI inputs."""
 
 import hashlib
-import importlib.util
 import json
 import re
-from pathlib import Path
 
 from scripts.e2e_accuracy.benchmark_features import SILICON_FEATURES, validate
 
@@ -225,6 +223,119 @@ def finite_trace(root, run, target):
             stream.write(json.dumps(value) + "\n")
 
 
+def derive_manual_geometry(worker):
+    """Accept only the inspected, equal-page, 15:45 baseline; fail on drift."""
+    if worker["vllm_version"].split("+")[0] != "0.31.0":
+        raise ValueError("cache mapping requires the inspected vLLM 0.31.0 runtime")
+    if worker["speculative_config"] is not None or worker["kv_transfer_config"] is not None:
+        raise ValueError("baseline requires speculation and KV transfer/offload disabled")
+    parallel = worker["parallelism"]
+    for name in (
+        "pipeline_parallel_size",
+        "data_parallel_size",
+        "prefill_context_parallel_size",
+        "decode_context_parallel_size",
+    ):
+        if parallel[name] != 1:
+            raise ValueError(f"baseline requires {name}=1")
+    scheduler = worker["scheduler"]
+    if scheduler["async_scheduling"] is not False or scheduler["enable_chunked_prefill"] is not True:
+        raise ValueError("baseline requires synchronous scheduling with chunked prefill")
+    if scheduler["disable_hybrid_kv_cache_manager"]:
+        raise ValueError("hybrid cache manager must be enabled")
+    cache = worker["cache_config"]
+    block_size = cache["block_size"]
+    if type(block_size) is not int or block_size < 2:
+        raise ValueError("resolved physical block size is missing")
+    if (
+        cache["mamba_cache_mode"] != "align"
+        or not cache["enable_prefix_caching"]
+        or cache["prefix_match_unit"] not in (None, block_size)
+        or cache["use_replayssm"]
+    ):
+        raise ValueError("baseline requires ordinary align state caching and full-block prefix matching")
+    if worker["prefix_cache_retention_interval"] != 0:
+        raise ValueError("baseline requires vLLM semantic-checkpoint retention=0")
+    groups = worker["groups"]
+    if len(groups) != 4 or sorted(group["spec_type"] for group in groups) != [
+        "FullAttentionSpec",
+        "MambaSpec",
+        "MambaSpec",
+        "MambaSpec",
+    ]:
+        raise ValueError("expected one full-attention group and three GDN state groups")
+    if any(len(group["layer_names"]) != 15 for group in groups):
+        raise ValueError("expected four groups of 15 layers without grouping padding")
+    names = [name for group in groups for name in group["layer_names"]]
+    if len(set(names)) != 60:
+        raise ValueError("cache groups must partition the 60 target layers")
+    pages = {group["page_size_bytes"] for group in groups}
+    if len(pages) != 1 or next(iter(pages)) <= 0:
+        raise ValueError("all cache groups must share one positive physical page size")
+    for group in groups:
+        spec = group["spec"]
+        if spec["block_size"] != block_size:
+            raise ValueError("token and state groups must use the same block size")
+        if group["spec_type"] == "MambaSpec" and (
+            spec["mamba_cache_mode"] != "align"
+            or spec.get("num_speculative_blocks", 0) != 0
+            or spec.get("num_prefill_checkpoint_blocks", 0) != 0
+        ):
+            raise ValueError("unexpected state scratch/checkpoint allocation")
+    state_specs = [group["spec"] for group in groups if group["spec_type"] == "MambaSpec"]
+    if any(spec != state_specs[0] for spec in state_specs[1:]):
+        raise ValueError("all three state groups must have identical specs")
+    pool_block_bytes = next(iter(pages)) * 15
+    blocks = worker["num_blocks"]
+    if type(blocks) is not int or blocks < 6 or pool_block_bytes % block_size:
+        raise ValueError("invalid shared block pool geometry")
+    # v0.31 tensor descriptors alias one backing allocation across groups.
+    # Each descriptor's size is the complete backing size, not an additive size.
+    tensors = worker["tensors"]
+    if len(tensors) != 4:
+        raise ValueError("expected one aliased tensor descriptor per cache group")
+    for group, tensor in zip(groups, tensors, strict=True):
+        if (
+            tensor["size"] != blocks * pool_block_bytes
+            or tensor["offset"] != 0
+            or tensor.get("host_resident", False)
+            or set(tensor["layers"]) != set(group["layer_names"])
+        ):
+            raise ValueError("tensor allocation disagrees with the shared-pool mapping")
+        end = 14 * tensor["layer_stride"] + (blocks - 1) * tensor["block_stride"] + group["page_size_bytes"]
+        if end != tensor["size"]:
+            raise ValueError("unexpected cache tensor padding or strides")
+    return {
+        "block_size": block_size,
+        "prefix_match_unit": block_size,
+        "bytes_per_token": pool_block_bytes // block_size,
+        "prefix_caching": True,
+        "capacity": {"type": "fixed", "blocks": blocks - 1},
+        "state_cache": {"bytes_per_request": 3 * pool_block_bytes},
+    }
+
+
+def manual_geometry(workers):
+    if not workers:
+        raise ValueError("probe returned no workers")
+    mapping = derive_manual_geometry(workers[0])
+    tensor_parallel = workers[0]["parallelism"]["tensor_parallel_size"]
+    if (
+        type(tensor_parallel) is not int
+        or tensor_parallel < 1
+        or any(type(worker["rank"]) is not int for worker in workers)
+        or len(workers) != tensor_parallel
+        or {worker["rank"] for worker in workers} != set(range(tensor_parallel))
+    ):
+        raise ValueError("probe must contain every tensor-parallel rank exactly once")
+    if any(derive_manual_geometry(worker) != mapping for worker in workers[1:]):
+        raise ValueError("rank cache geometry differs; a uniform AISim worker cannot represent it")
+    for key in ("parallelism", "scheduler", "cache_config", "model"):
+        if any(worker[key] != workers[0][key] for worker in workers[1:]):
+            raise ValueError(f"rank configuration differs: {key}")
+    return mapping
+
+
 def replay_config(root, run):
     """Simulation policy lives in CI; measured settings come from verified receipts."""
     if (run["backend"], run["model"], run["hardware"], run["tensor_parallel"], run["precision"]) not in {
@@ -258,13 +369,8 @@ def replay_config(root, run):
     worker = {"parallelism": parallel, "timing": {"type": "default"}}
     engine["workers"] = {"aggregated": worker}
     if run["backend"] == "vllm":
-        # Reuse the existing physical-geometry qualification, including every rank.
-        probe_path = Path(__file__).resolve().parents[2] / "benchmarks/evidence/accuracy/qwen-weka/cache_probe.py"
-        spec = importlib.util.spec_from_file_location("agentx_cache_probe", probe_path)
-        probe = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(probe)
         receipt = document(root, run, "cache_receipt" if "cache_receipt" in run["artifacts"] else "runtime_receipt")
-        worker["kv_cache"] = probe.make_receipt(receipt["workers"])["manual_kv_cache"]
+        worker["kv_cache"] = manual_geometry(receipt["workers"])
         observed = receipt["workers"][0]
         engine.update(
             context_length=observed["model"]["max_model_len"],

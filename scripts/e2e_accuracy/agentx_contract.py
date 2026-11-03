@@ -53,10 +53,10 @@ def driver_digest(read_file=None):
     if b'"benchmark_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("benchmark_features.py",)
     if b'"agentx_inputs.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
-        names += (
-            "agentx_inputs.py",
-            "../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",
-        )
+        names += ("agentx_inputs.py",)
+        # Historical producers loaded cache validation from the collection tree.
+        if b"importlib.util.spec_from_file_location" in read_file("scripts/e2e_accuracy/agentx_inputs.py"):
+            names += ("../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",)
     if b'"simulation_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("simulation_features.py",)
     return hashlib.sha256(

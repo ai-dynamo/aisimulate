@@ -662,8 +662,7 @@ as well as the selected filter.
 
 ## AgentX beta
 
-The [Qwen Weka collection protocol](../../benchmarks/evidence/accuracy/qwen-weka/README.md)
-defines the replacement six-profile campaign. It remains unpublished until all
+The replacement Qwen Weka campaign remains unpublished until all
 six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
 Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
 silicon records in HF. Evidence displays that saved record separately from
@@ -965,8 +964,11 @@ than the HF bundles. The reviewed policies currently cover B300 TP8 GLM/SGLang a
 Qwen/vLLM. They retain the existing op-level policy, correction disabled, SGLang
 0.5.21 / vLLM 0.31.0 databases, and GLM verification depth 3 with acceptance 1.99.
 These simulator choices are distinct from the silicon's configured draft length.
-Qwen cache geometry is requalified from all recorded worker ranks using the
-collection probe's shared-pool mapping.
+Qwen cache geometry is requalified by `scripts/e2e_accuracy/agentx_inputs.py`
+from all recorded worker ranks using the shared-pool mapping. Receipts must contain
+each integer rank from zero through TP minus one exactly once. The accuracy driver
+loads no collection scripts from `benchmarks/evidence/`; historical producer
+fingerprints still use their original file closure.
 
 The HF feature inventory has eight entries: prefix caching, sub-block reuse,
 G2, G3, hybrid state cache, speculation, KVCR, and KV-aware routing. States, scopes,

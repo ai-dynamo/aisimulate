@@ -5,6 +5,7 @@
 import hashlib
 import io
 import json
+import posixpath
 import sys
 import zipfile
 from pathlib import Path
@@ -215,6 +216,32 @@ def test_historical_driver_digest_preserves_the_original_file_closure():
     files = {"scripts/e2e_accuracy/" + name: name.encode() for name in names}
     expected = hashlib.sha256(
         canonical({name: hashlib.sha256(name.encode()).hexdigest() for name in names})
+    ).hexdigest()
+    assert driver_digest(files.__getitem__) == expected
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_portable_driver_digest_tracks_cache_validation_location(historical):
+    names = (
+        "agentx_contract.py",
+        "agentx_predict.py",
+        "run_agentx_accuracy.py",
+        "run_e2e_accuracy.py",
+        "agentx_inputs.py",
+    )
+    files = {"scripts/e2e_accuracy/" + name: name.encode() for name in names}
+    files["scripts/e2e_accuracy/agentx_contract.py"] = b'"agentx_inputs.py"'
+    if historical:
+        names += ("../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",)
+        files["scripts/e2e_accuracy/agentx_inputs.py"] = b"importlib.util.spec_from_file_location"
+        files["benchmarks/evidence/accuracy/qwen-weka/cache_probe.py"] = b"historical geometry"
+    expected = hashlib.sha256(
+        canonical(
+            {
+                name: hashlib.sha256(files[posixpath.normpath("scripts/e2e_accuracy/" + name)]).hexdigest()
+                for name in names
+            }
+        )
     ).hexdigest()
     assert driver_digest(files.__getitem__) == expected
 

@@ -14,6 +14,7 @@ from scripts.e2e_accuracy.agentx_inputs import (
     checked,
     finite_trace,
     load_runs,
+    manual_geometry,
     reconstruct,
     safe_path,
 )
@@ -164,3 +165,82 @@ def test_partial_measurement_snapshot_cannot_pass_public_gate():
     snapshot["measurement_campaign_status"] = "complete"
     with pytest.raises(ValueError, match="require a preview"):
         validate_snapshot(snapshot, preview=True)
+
+
+@pytest.fixture
+def cache_workers():
+    groups = [
+        {
+            "layer_names": [f"layer-{g * 15 + i}" for i in range(15)],
+            "spec_type": "FullAttentionSpec" if g == 0 else "MambaSpec",
+            "page_size_bytes": 256,
+            "spec": {"block_size": 64, **({"mamba_cache_mode": "align"} if g else {})},
+        }
+        for g in range(4)
+    ]
+    worker = {
+        "vllm_version": "0.31.0",
+        "speculative_config": None,
+        "kv_transfer_config": None,
+        "model": {"model": "Qwen/Qwen3.5-397B-A17B"},
+        "parallelism": {
+            "tensor_parallel_size": 8,
+            "pipeline_parallel_size": 1,
+            "data_parallel_size": 1,
+            "prefill_context_parallel_size": 1,
+            "decode_context_parallel_size": 1,
+        },
+        "scheduler": {
+            "async_scheduling": False,
+            "enable_chunked_prefill": True,
+            "disable_hybrid_kv_cache_manager": False,
+        },
+        "cache_config": {
+            "block_size": 64,
+            "mamba_cache_mode": "align",
+            "enable_prefix_caching": True,
+            "prefix_match_unit": None,
+            "use_replayssm": False,
+        },
+        "prefix_cache_retention_interval": 0,
+        "num_blocks": 10,
+        "groups": groups,
+        "tensors": [
+            {"size": 38400, "offset": 0, "layers": g["layer_names"], "layer_stride": 2560, "block_stride": 256}
+            for g in groups
+        ],
+    }
+    return [dict(copy.deepcopy(worker), rank=rank) for rank in range(8)]
+
+
+def test_qwen_geometry_retains_shared_pool_and_reserved_blocks(cache_workers):
+    assert manual_geometry(cache_workers) == {
+        "block_size": 64,
+        "prefix_match_unit": 64,
+        "bytes_per_token": 60,
+        "prefix_caching": True,
+        "capacity": {"type": "fixed", "blocks": 9},
+        "state_cache": {"bytes_per_request": 11520},
+    }
+
+
+@pytest.mark.parametrize(
+    "drift", ["missing_rank", "duplicate_rank", "out_of_range_rank", "bool_rank", "capacity", "scheduler", "tensor"]
+)
+def test_qwen_geometry_rejects_rank_or_allocation_drift(cache_workers, drift):
+    if drift == "missing_rank":
+        cache_workers.pop()
+    elif drift == "duplicate_rank":
+        cache_workers[-1]["rank"] = 0
+    elif drift == "out_of_range_rank":
+        cache_workers[-1]["rank"] = 8
+    elif drift == "bool_rank":
+        cache_workers[0]["rank"] = False
+    elif drift == "capacity":
+        cache_workers[-1]["num_blocks"] += 1
+    elif drift == "scheduler":
+        cache_workers[-1]["scheduler"]["max_num_seqs"] = 32
+    else:
+        cache_workers[-1]["tensors"][0]["size"] += 1
+    with pytest.raises(ValueError):
+        manual_geometry(cache_workers)
