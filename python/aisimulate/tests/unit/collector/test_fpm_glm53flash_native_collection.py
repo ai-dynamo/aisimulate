@@ -384,10 +384,32 @@ REFUSALS = [
     ),
     pytest.param("input_provenance.sampling", lambda p, _: _evidence(p).update(sampling=None), id="sampling"),
     pytest.param("input_provenance.seed", lambda p, _: _evidence(p).update(seed=True), id="seed"),
+    pytest.param("input_provenance.seed", lambda p, _: _evidence(p).update(seed=-1), id="seed-negative"),
+    pytest.param("input_provenance.seed", lambda p, _: _evidence(p).update(seed=2**64), id="seed-above-64-bits"),
     pytest.param("input_provenance.count", lambda p, _: _evidence(p).update(count="262240"), id="count"),
     pytest.param("input_provenance.count", lambda p, _: _evidence(p).update(count=0), id="count-zero"),
     pytest.param("input_provenance.count", lambda p, _: _evidence(p).update(count=-1), id="count-negative"),
     pytest.param("input_provenance.count", lambda p, _: _evidence(p).update(count=True), id="count-is-a-boolean"),
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(unique_token_count=_evidence(p)["count"] + 1),
+        id="unique-count-above-count",
+    ),
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(unique_token_count=0),
+        id="unique-count-zero",
+    ),
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(unique_token_count=True),
+        id="unique-count-is-a-boolean",
+    ),
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).pop("unique_token_count"),
+        id="unique-count-absent",
+    ),
     pytest.param(
         "input_provenance.tokenizer_json_sha256",
         lambda p, _: _evidence(p).update(tokenizer_json_sha256="abc"),
@@ -506,18 +528,26 @@ def test_glm_producer_artifact_refuses_each_unaudited_item(tmp_path, field, tamp
         _validate(tmp_path, cell)
 
 
-def test_glm_producer_token_count_only_has_to_be_positive(tmp_path, monkeypatch):
+def test_glm_producer_token_evidence_passes_for_real_and_boundary_values(tmp_path, monkeypatch):
     producer = load_producer(monkeypatch)
     # The producer draws its largest measured context of 131,072 tokens plus a window of 4,099 tokens for each of up
-    # to 32 requests.
-    real = producer.MAX_CONTEXT + producer.MAX_BATCH * seeded.REQUEST_STRIDE
-    assert real == 262240
-    for count in (real, 1):
+    # to 32 requests, from seed 53 over the pinned vocabulary. Its distinct-token count is that of the real stream.
+    count = producer.MAX_CONTEXT + producer.MAX_BATCH * seeded.REQUEST_STRIDE
+    tokens = seeded.generate(seeded.SEED, count, seeded.VOCAB_LOW, seeded.VOCAB_HIGH)
+    assert (seeded.SEED, count) == (53, 262240)
+    cases = {
+        "producer": (seeded.SEED, count, len(set(tokens))),
+        # The smallest seed and a stream of one token.
+        "smallest": (0, 1, 1),
+        # The largest seed and a stream whose tokens are all distinct.
+        "largest": (2**64 - 1, count, count),
+    }
+    for name, (seed, total, unique) in cases.items():
         cell = glm_cell("prefill")
         payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
-        payload["input_provenance"]["count"] = count
-        write_glm_rank(_pod(tmp_path / str(count), cell), payload)
-        assert len(_validate(tmp_path / str(count), cell).points) == 2
+        payload["input_provenance"].update(seed=seed, count=total, unique_token_count=unique)
+        write_glm_rank(_pod(tmp_path / name, cell), payload)
+        assert len(_validate(tmp_path / name, cell).points) == 2
 
 
 def _change_the_sidecar(payload: dict, sidecar: Path) -> None:

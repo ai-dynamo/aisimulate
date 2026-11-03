@@ -283,6 +283,15 @@ def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path)
     # The producer draws a nonempty token stream, so a count below 1 contradicts the input that it records.
     if evidence["count"] < 1:
         raise lacks("input_provenance.count")
+    # The generator encodes the seed with int(seed).to_bytes(8, "big") (collector/glm53flash_attention_tokens.py:71), so
+    # an unsigned 64-bit integer is the only seed that can have drawn the stream.
+    if not 0 <= evidence["seed"] < 2**64:
+        raise lacks("input_provenance.seed")
+    # A stream holds at most as many distinct tokens as tokens and a nonempty one holds at least one. The producer
+    # records this number in every artifact, so a record without it is refused like any other absent item.
+    unique = evidence.get("unique_token_count")
+    if type(unique) is not int or not 1 <= unique <= evidence["count"]:
+        raise lacks("input_provenance.unique_token_count")
     for key in ("tokenizer_json_sha256", "token_ids_sha256"):
         if not _is_hex(evidence.get(key), 64):
             raise lacks(f"input_provenance.{key}")
