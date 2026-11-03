@@ -511,7 +511,14 @@ independently measured CPU-stage controls after E028 qualifies receipt blocking.
 E029's three private primitives with the exact historical
 `_render_and_encode_chat_template` method, extracted unchanged from the pinned
 image and checksum-checked before execution. Use model/tokenizer asset checksums,
-Xeon 8559C and 64-CPU process affinity; no GPU allocation or CUDA visibility.
+Xeon 8559C and 64-CPU process affinity, with CUDA hidden. GPU-host policy rejects
+zero-GPU normal-QOS requests and CPU QOS on this partition before allocation.
+The 24-CPU-per-GPU admission rule requires three reserved B300s to preserve
+64-CPU affinity. Reserve three under normal QOS for at most ten minutes, with a one-minute
+cleanup margin: charge the actual three allocated GPUs and time against the campaign
+(maximum 1980 GPU-seconds).
+The component uses no CUDA kernels or model weights. Keep the rejected
+admission checks as zero-allocation operational evidence.
 Seven repeats per primitive alternate case order; retain every first-use sample.
 Require byte-identical token identities against the prepared receipts and capture
 wall, process-CPU and thread-CPU times. Preparation/JSON parsing/HTTP and GPU

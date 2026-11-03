@@ -84,7 +84,8 @@ def main():
         "cpu_model": cpu_model, "affinity": sorted(os.sched_getaffinity(0)), "load_average": os.getloadavg(),
         "thread_environment": environment, "encode_kwargs": encode_kwargs, "template_cache": False,
         "packages": {p: importlib.metadata.version(p) for p in ("sglang", "transformers", "tokenizers")},
-        "repeats": 7, "prepared_cases": len(cases), "allocated_gpus": 0,
+        "repeats": 7, "prepared_cases": len(cases),
+        "allocated_gpus": int(os.environ["RSI_ALLOCATED_GPUS"]), "cuda_visible_devices": "",
     }
     (args.output / "runtime.json").write_text(json.dumps(runtime, indent=2) + "\n")
     with (args.output / "measurements.jsonl").open("x") as stream:
