@@ -385,7 +385,27 @@ async def check():
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
                 await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
-                await expect(frame.locator(".agentx-feature.unknown")).to_have_count(11)
+                await expect(frame.locator(".agentx-feature.unknown")).to_have_count(8)
+                await expect(frame.locator(".agentx-feature-name")).to_have_text(
+                    [
+                        "Prefix caching",
+                        "Sub-block prefix reuse",
+                        "Host offload (G2)",
+                        "Storage offload (G3)",
+                        "Hybrid KV/state cache",
+                        "Speculative decoding",
+                        "Dynamo - KVCR",
+                        "Dynamo - KV-aware routing",
+                    ]
+                )
+                await expect(frame.locator(".agentx-more-features")).to_have_count(0)
+                combinations = frame.locator(".agentx-combinations")
+                await combinations.locator("summary").focus()
+                await page.keyboard.press("Enter")
+                await expect(combinations).to_have_attribute("open", "")
+                await expect(combinations.locator("li")).to_have_count(3)
+                await page.keyboard.press("Enter")
+                await expect(combinations).not_to_have_attribute("open", "")
                 await expect(frame.locator(".agentx-features a")).to_have_attribute(
                     "href", "../../feature-support-matrix/#agentx"
                 )
@@ -636,7 +656,7 @@ async def check():
                     f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&campaign=finite-v1&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=1"
                 )
                 cache_feature = page.locator('[data-feature="cache.g1_prefix"]')
-                await expect(cache_feature).to_contain_text("Enabled")
+                await expect(cache_feature.locator(".agentx-feature-status")).to_have_text("On")
                 await expect(page.locator(".agentx-feature-revision")).to_contain_text("f" * 12)
                 await page.locator("#repeat").select_option("1")
                 await expect(cache_feature).to_contain_text("Off")

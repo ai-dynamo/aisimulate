@@ -48,44 +48,45 @@ window.AgentX = (() => {
       return `<tr data-metric="${scope}-${metric}"${request&&metric==="ttft_ms"?' class="agentx-request-start"':""}><th scope="row">${request?"Request":"Point"} ${label}<small>${unit}</small></th><td>${fmt(request?values.silicon:result.silicon[metric],"")}</td><td>${fmt(request?values.prediction:result.prediction[metric],"")}</td><td class="agentx-error"><strong>${fmt(request?values.mape:result.point_errors[metric])}</strong><small>${request?"MAPE":"Mean point error"}</small><small class="agentx-inline-count">${samples}</small></td><td class="agentx-samples">${samples}</td></tr>`;
     }).join("");
   }
+  const benchmarkFeatureLabels = {
+    "cache.g1_prefix":"Prefix caching", "sub-block-prefix":"Sub-block prefix reuse",
+    "cache.g2":"Host offload (G2)", "cache.g3":"Storage offload (G3)",
+    "cache.hybrid_state":"Hybrid KV/state cache", "speculation":"Speculative decoding",
+    "cache.kvcr":"Dynamo - KVCR", "kv-aware-routing":"Dynamo - KV-aware routing",
+  };
   function featureChecklist(point) {
-    const primary = {
-      "agentx.weka":"Weka dependency graph", "agentx.seeded_snapshots":"Seeded snapshots",
-      "agentx.live_warmup":"Live-trajectory warmup", "agentx.continuous_profile":"Continuous profile",
-      "agentx.sequential_recycling":"Sequential lane recycling", "cache.g1_prefix":"GPU prefix caching",
-      "speculation":"Speculative decoding", "cache.g2":"Host offload (G2)",
-      "cache.g3":"Storage offload (G3)", "cache.kvcr":"Peer KV fetch (KVCR)",
-      "routing.planner":"KV-aware routing / Planner",
-    };
-    const labels = {
-      ...primary,
-      "agentx.cache_bust":"Cache bust", "agentx.shuffle":"Random / shuffled recycling",
-      "scheduling.continuous_batching":"Continuous batching", "scheduling.chunked_prefill":"Chunked prefill",
-      "scheduling.async":"Asynchronous scheduling", "cache.hybrid_state":"Hybrid KV / recurrent state",
-      "topology.aggregated":"Aggregated serving", "topology.tensor_parallel":"Tensor parallelism",
-      "topology.expert_parallel":"Expert parallelism", "topology.attention_dp":"Attention data parallelism",
-      "topology.pipeline_parallel":"Pipeline parallelism", "topology.context_parallel":"Context parallelism",
-      "topology.multi_node":"Multi-node serving", "topology.pd":"Prefill/decode disaggregation",
-      "precision.quantized_weights":"Quantized weights", "precision.quantized_kv":"Quantized KV",
-      "workload.multimodal":"Multimodal input", "events.subagent_spawn":"Subagent spawning",
-      "events.join":"Dependency joins", "events.tool_wait":"Tool waits", "events.cache_reuse":"Cache reuse",
-      "events.eviction":"Cache eviction", "events.preemption":"Request preemption",
-      "events.recompute":"Recomputation", "events.state_restore":"Recurrent-state restoration",
-    };
-    const core=Object.keys(primary), record=point.feature_metadata;
+    const record=point.feature_metadata;
     const valid=record?.schema==="aisimulate.benchmark.features.v1" && record.benchmark_id===point.id && Array.isArray(record.features);
-    const features=new Map((valid?record.features:[]).filter(f=>Object.hasOwn(labels,f.id)).map(f=>[f.id,f]));
-    const statuses={enabled:["on","✓","Enabled"],disabled:["off","×","Off"],not_applicable:["na","–","N/A"]};
-    const rows=ids=>ids.map(id=>{
-      const feature=features.get(id), state=feature?.state;
-      const [status,icon,label]=Object.hasOwn(statuses,state)?statuses[state]:["unknown","?","Not recorded"];
-      const observed=feature?.observed;
-      const usage=observed?.state==="exercised" && Number.isInteger(observed.count) && observed.count>0 ? `Observed · ${observed.count.toLocaleString()}` : observed?.state==="not_observed" && observed.count===0 ? "Not observed · 0" : "";
-      const parameters=(feature?.parameters||[]).map(p=>`${p.name.replaceAll("_"," ")}: ${p.value??"not recorded"}`).join(" · ");
-      return `<li class="agentx-feature ${status}" data-feature="${id}"><span class="agentx-feature-icon" aria-hidden="true">${icon}</span><span class="agentx-feature-name">${labels[id]}${parameters?`<small>${esc(parameters)}</small>`:""}${usage?`<small>${usage}</small>`:""}</span><span class="agentx-feature-status">${label}</span></li>`;
+    const features=new Map((valid?record.features:[]).map(f=>[f.id,f]));
+    // Actual settings come only from silicon metadata, never replay config or support defaults.
+    // v1 has no sub-block field and conflates routing with Planner; neither establishes router state.
+    const state=id=>["sub-block-prefix","kv-aware-routing"].includes(id)?"unknown":features.get(id)?.state;
+    const statuses={enabled:["on","✓","On"],disabled:["off","×","Off"],not_applicable:["na","–","N/A"]};
+    const rows=Object.entries(benchmarkFeatureLabels).map(([id,name])=>{
+      const current=state(id), [status,icon,value]=Object.hasOwn(statuses,current)?statuses[current]:["unknown","?","Unknown"];
+      const details=[];
+      if(current==="enabled" && ["cache.g2","cache.g3"].includes(id)) {
+        details.push("Scope: Unknown");
+      }
+      if(current==="enabled" && id==="cache.hybrid_state") {
+        details.push("State-cache type: Unknown");
+      }
+      if(current==="enabled" && id==="speculation") {
+        details.push("Method: Unknown · draft length: Unknown");
+      }
+      return `<li class="agentx-feature ${status}" data-feature="${id}"><span class="agentx-feature-icon" aria-hidden="true">${icon}</span><div><div class="agentx-feature-line"><span class="agentx-feature-name">${name}</span><span class="agentx-feature-status">${esc(value)}</span></div>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}</div></li>`;
     }).join("");
-    const more=[...features.keys()].filter(id=>!core.includes(id));
-    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
+    const offload=["cache.g2","cache.g3"].some(id=>state(id)==="enabled")?"enabled":
+      ["cache.g2","cache.g3"].every(id=>state(id)==="disabled")?"disabled":"unknown";
+    const combinations=[
+      ["offload_speculation","Offload + speculation",offload,state("speculation")],
+      ["offload_hybrid_state","Offload + hybrid state",offload,state("cache.hybrid_state")],
+      ["sub_block_speculation","Sub-block reuse + speculation",state("sub-block-prefix"),state("speculation")],
+    ].map(([id,label,a,b])=>{
+      const status=a==="disabled"||b==="disabled"?"Not used":a!=="enabled"||b!=="enabled"?"Unknown settings":"Not assessed";
+      return `<li data-combination="${id}">${label}<small>${status}</small></li>`;
+    }).join("");
+    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows}</ul><details class="agentx-combinations"><summary>Combination support</summary><ul>${combinations}</ul><p>Individual feature support does not establish combination support.</p></details><p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Unknown means not recorded separately. On does not imply AISim support. Support has not been assessed for this run.</p></aside>`;
   }
   const pointDefinition = `<p><strong>Per-point:</strong> compare the aggregate result across the benchmark’s conversation requests.</p><p><strong>Request average:</strong> compare requests individually, then average their errors.</p><p>Tool-call waits are excluded from TTFT/TPOT calculations. Point error can be smaller because over- and under-predictions cancel when averaged.</p>`;
   const pointHelp = `<button type="button" id="agentx-point-info" class="agentx-info" aria-label="About point TTFT and TPOT error" aria-describedby="agentx-point-tooltip"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 7v4"/><circle cx="8" cy="4.5" r="0.6" fill="currentColor" stroke="none"/></svg></button>`;

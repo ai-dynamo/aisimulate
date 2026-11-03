@@ -808,15 +808,39 @@ The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
 A benchmark feature checklist sits to the left of the concurrency summary in
 one bordered row. Both panels stretch to the same height; the summary table fills
-its panel. On smaller screens, they stack with the checklist first. Additional
-features scroll within the expanded list. The checklist follows the selected run,
-using its saved
-`aisimulate.benchmark.features.v1` silicon record. Enabled, Off, N/A, and Not recorded
-remain distinct. Enabled does not imply exercised; observed counts appear only
-when recorded. Missing historical records stay Not recorded, with
-no inference from model names, replay settings, or the support matrix. Core AgentX
-features appear first; additional recorded features expand under More features.
-The checklist links to the AgentX support matrix and exposes no raw evidence.
+its panel. On smaller screens, they stack with the checklist first. The checklist
+follows the selected run and shows exactly eight fields: Prefix caching, Sub-block
+prefix reuse, Host offload (G2), Storage offload (G3), Hybrid KV/state cache,
+Speculative decoding, Dynamo - KVCR, and Dynamo - KV-aware routing. Model, backend,
+parallelism, and workload dimensions remain in configuration/evidence, outside
+this checklist. Evidence retains the full saved inventory for provenance.
+
+The checklist uses the existing `aisimulate.benchmark.features.v1` silicon record.
+On, Off, N/A, and Unknown remain distinct. Missing values stay Unknown, with no
+inference from model names, replay settings, or the support matrix. The current
+schema does not record sub-block reuse separately and conflates Planner with
+KV-aware routing; neither field can establish router state, so routing stays
+Unknown even when legacy `routing.planner` is enabled or disabled. Offload scope,
+hybrid state-cache type, and speculative method/actual draft length are also
+unavailable in the current metadata contract. Replay configuration is not a
+substitute for those measured settings.
+
+Combination support expands separately for offload + speculation, offload +
+hybrid state, and sub-block reuse + speculation. A recorded Off makes a combination
+Not used; missing settings remain Unknown settings. Enabled combinations are
+Not assessed because these artifacts contain no scoped AISim support assessment.
+On does not imply exercised or supported, and individual support does not prove
+combination support. The matrix link provides reference information, not a parity
+result for the evaluated wheel.
+
+This is a UX-only update. New silicon metadata contracts, collectors/backfills,
+CI configuration/parity checks, and their publication contracts are deferred.
+Populated method/draft values and an `Unsupported (actual: 7, AISim max: 5)` label
+require recorded actual settings and an applicable, revision-scoped CI limit;
+there is no universal maximum or inferred value in this UI. HF must contain only
+silicon truth/configuration/provenance; simulation settings, predictions, and
+support assessments belong in GitHub CI artifacts. The layout update does not
+claim that producer-to-dashboard feature parity is complete.
 Reviewed historical backfills may attach a separate `aisimulate.agentx.features.v1`
 sidecar through `scripts.pages.agentx_pages.attach_feature_evidence`. It pins the
 original measurement revision, the feature-record revision, both catalog hashes,

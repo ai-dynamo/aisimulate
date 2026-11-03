@@ -1160,8 +1160,12 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   const checklist = context.window.AgentX.featureChecklist;
   const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
   const missing = checklist(point);
-  assert.equal((missing.match(/class="agentx-feature unknown"/g)||[]).length,11);
+  assert.equal((missing.match(/class="agentx-feature unknown"/g)||[]).length,8);
   assert.match(missing,/Feature settings were not recorded/);
+  assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
+    "Prefix caching", "Sub-block prefix reuse", "Host offload (G2)", "Storage offload (G3)",
+    "Hybrid KV/state cache", "Speculative decoding", "Dynamo - KVCR", "Dynamo - KV-aware routing",
+  ]);
   const feature = (id,state,observed={state:"unknown",count:null}) => ({id,state,observed,parameters:[]});
   point.feature_metadata = {
     schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
@@ -1172,6 +1176,7 @@ test("AgentX checklist uses the selected silicon record without inferring featur
       feature("agentx.weka","enabled",{state:"not_observed",count:0}),
       feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
       {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
+      feature("routing.planner","enabled"),
       feature("unrecognized","enabled"),
     ],
   };
@@ -1179,18 +1184,46 @@ test("AgentX checklist uses the selected silicon record without inferring featur
   assert.match(saved,/class="agentx-feature on" data-feature="cache.g1_prefix"/);
   assert.match(saved,/class="agentx-feature off" data-feature="speculation"/);
   assert.match(saved,/class="agentx-feature na" data-feature="cache.g2"/);
-  assert.match(saved,/Not observed · 0/);
-  assert.match(saved,/Observed · 7/);
-  assert.match(saved,/More features \(2\)/);
-  assert.match(saved,/size: &lt;unsafe&gt;/);
-  assert.doesNotMatch(saved,/<unsafe>|unrecognized/);
-  assert.match(saved,/Enabled does not imply exercised/);
-  assert.equal((saved.match(/class="agentx-feature unknown"/g)||[]).length,8);
+  assert.doesNotMatch(saved,/More features|Weka|Observed ·|Not observed|topology|Planner|<unsafe>|unrecognized/);
+  assert.match(saved,/class="agentx-feature unknown" data-feature="kv-aware-routing"/);
+  assert.match(saved,/class="agentx-feature unknown" data-feature="sub-block-prefix"/);
+  assert.match(saved,/On does not imply AISim support/);
+  assert.equal((saved.match(/class="agentx-feature unknown"/g)||[]).length,5);
+  point.feature_metadata.features.find(f=>f.id==="routing.planner").state="disabled";
+  assert.equal(checklist(point),saved);
   point.feature_metadata.benchmark_id="another-run";
   assert.equal(checklist(point),missing);
   point.feature_metadata.benchmark_id="example";
   point.feature_metadata.schema="future-schema";
   assert.equal(checklist(point),missing);
+});
+
+test("AgentX checklist keeps unrecorded parameters and combination support unknown", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const features=["cache.g2","cache.g3","cache.hybrid_state","speculation"].map(id=>({id,state:"enabled",parameters:[]}));
+  const point={id:"example",config_summary:[{name:"Speculative tokens",value:3}],
+    feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features}};
+  const html=checklist(point);
+  assert.equal((html.match(/Scope: Unknown/g)||[]).length,2);
+  assert.match(html,/State-cache type: Unknown/);
+  assert.match(html,/Method: Unknown · draft length: Unknown/);
+  assert.match(html,/Support has not been assessed for this run/);
+  assert.match(html,/data-combination="offload_speculation">Offload \+ speculation<small>Not assessed/);
+  assert.match(html,/data-combination="offload_hybrid_state">Offload \+ hybrid state<small>Not assessed/);
+  assert.match(html,/data-combination="sub_block_speculation">Sub-block reuse \+ speculation<small>Unknown settings/);
+  // Historical parameters do not define draft length, scope, or state-cache type.
+  for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
+  assert.equal(checklist(point),html);
+  features.find(f=>f.id==="cache.g2").state="disabled";
+  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Not assessed/);
+  features.find(f=>f.id==="cache.g3").state="unknown";
+  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Unknown settings/);
+  features.find(f=>f.id==="speculation").state="disabled";
+  assert.match(checklist(point),/data-combination="offload_speculation">Offload \+ speculation<small>Not used/);
+  assert.match(checklist(point),/data-combination="sub_block_speculation">Sub-block reuse \+ speculation<small>Not used/);
+  assert.doesNotMatch(checklist(point),/draft length:|AISim max:|Unsupported|Supported for/);
 });
 
 test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
