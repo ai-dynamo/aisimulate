@@ -106,13 +106,18 @@ def main():
         for row in predicted:
             by_key[row["request_id"]].append(row)
         measured_counts = Counter(r["key"] for r in observations)
-        values, retained, zeros = defaultdict(list), Counter(), Counter()
+        values, retained, zeros, recovered = defaultdict(list), Counter(), Counter(), Counter()
         frozen_rows = frozen[identity]["dashboard"]
-        if len(frozen_rows) != len(observations):
-            raise ValueError("Frozen measured accounting changed")
-        for actual, saved, original in zip(observations, score["pairs"], frozen_rows, strict=True):
+        original_by_id = {r["request_id"]: r for r in frozen_rows}
+        if len(original_by_id) != len(frozen_rows):
+            raise ValueError("Duplicate frozen identity")
+        measured_ids = {hashlib.sha256(r["key"].encode()).hexdigest()[:16] for r in observations}
+        if not original_by_id.keys() <= measured_ids:
+            raise ValueError("Frozen observation missing from silicon accounting")
+        for actual, saved in zip(observations, score["pairs"], strict=True):
             opaque = hashlib.sha256(actual["key"].encode()).hexdigest()[:16]
-            if opaque != saved["request_id"] or opaque != original["request_id"]:
+            original = original_by_id.get(opaque)
+            if opaque != saved["request_id"]:
                 raise ValueError("Request pairing or order changed")
             candidates = by_key[actual["key"]]
             eligible = (actual["status"] == "completed" and actual.get("identity_valid") is not False
@@ -134,10 +139,13 @@ def main():
                         raise ValueError("Undefined error was scored")
                 else:
                     close(saved_error, ape)
-                if original[metric + "_ms_ape"] is not None and ape is not None:
-                    retained[metric] += 1
-                    values[metric].append(ape)
-                    zeros[metric] += numerical[metric] == 0
+                if ape is not None:
+                    if original is not None and original[metric + "_ms_ape"] is not None:
+                        retained[metric] += 1
+                        values[metric].append(ape)
+                        zeros[metric] += numerical[metric] == 0
+                    else:
+                        recovered[metric] += 1
         profile = native["agentic_profile"]
         if profile["canceled_requests"] or profile["server_unsettled_requests"] or profile["client_in_flight_requests"]:
             raise ValueError("Incomplete native profile")
@@ -148,7 +156,8 @@ def main():
         for metric in ("ttft", "tpot"):
             count = sum(r[metric + "_ms_ape"] is not None for r in frozen_rows)
             point["metrics"][metric] = {**summary(values[metric]), "frozen": count,
-                                         "lost": count - retained[metric], "zeros": zeros[metric]}
+                                         "lost": count - retained[metric], "zeros": zeros[metric],
+                                         "recovered_outside_frozen": recovered[metric]}
             pooled[metric].extend(values[metric])
         results.append(point)
     result = {"schema": "aisimulate.glm-rsi.shared-frontend-audit.v1", "points": results,

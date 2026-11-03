@@ -1587,3 +1587,16 @@ Its unit test retains zero TPOT as 100% APE against a positive reference.
 ```bash
 python audit_shared_frontend.py --candidate NEW_DEV_REPLAY --inputs FROZEN_HF_INPUTS --frozen FROZEN_COHORTS --output NEW_INDEPENDENT_AUDIT
 ```
+
+The E039 independent auditor also reproduces E034's original retained values
+(56.61261203198% TTFT /4164, 71.74499281954% TPOT /4161) before reading any
+E039 flag-on result. Its first attempt incorrectly required the matched-only
+frozen cohort to have the full measured row count. The corrected audit verifies
+all measured rows against silicon and joins the frozen subset by identity,
+reporting any recovered observations separately. This correction changes no
+measurement, scoring denominator or saved result.
+
+Qwen compatibility checks pass with exact numerical request/cache parity at
+1/4/16 lanes (8/32/128 requests), explicit 0.31.0 and the unchanged approved
+#666 data root. The existing missing collection-sidecar warning remains; this
+is CPU compatibility evidence, not a new measured accuracy claim.
