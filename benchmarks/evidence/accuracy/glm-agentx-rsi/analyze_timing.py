@@ -277,6 +277,8 @@ def blocking_comparison(victim, actor, server_events, stages):
             result["reasons"].append("CPU stage absent or ambiguous")
         elif "unavailable" not in client and "unavailable" not in server:
             stage = matches[0]
+            if stage["pid"] != victim["dispatch"]["pid"]:
+                result["reasons"].append("CPU stage and scheduler submission use different API processes")
             result["cpu_stage"] = stage
             begin, end = int(stage["start_ns"]), int(stage["end_ns"])
             result["fully_buffered_during_cpu_stage"] = (
@@ -310,7 +312,9 @@ def analyze_blocking(root):
                 if event["rank"] == 0:
                     ready[event["rid"]].append(event)
         stages = [
-            json.loads(line) for path in directory.glob("frontend-*.jsonl") for line in path.read_text().splitlines()
+            {**json.loads(line), "pid": int(path.stem.rsplit("-", 1)[1])}
+            for path in directory.glob("frontend-*.jsonl")
+            for line in path.read_text().splitlines()
         ]
         cases = []
         for victim in rows:

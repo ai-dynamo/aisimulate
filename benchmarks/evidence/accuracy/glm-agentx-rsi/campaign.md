@@ -415,6 +415,7 @@ arms on fresh servers with the original model/image/forced acceptance policy.
 Predeclare 18 GPU victims plus 12 CPU-only actors and two unscored CPU warmups
 per arm, with all attempts retained. Cache reuse must be zero; request lengths,
 output counters, source hashes, clocks and separate client processes must qualify.
+CPU-stage and submission receipts must also identify the same API process.
 An exposed request must become ready while the CPU stage is active and reach the
 client after it ends before attributing delay to frontend blocking. Missing
 exposure is inconclusive. No historical MAPE claim or cost coefficient follows

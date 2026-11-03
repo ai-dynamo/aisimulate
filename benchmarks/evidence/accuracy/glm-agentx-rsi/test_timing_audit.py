@@ -123,11 +123,12 @@ def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_pa
 def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks():
     victim = {
         "output_tokens": 4,
+        "dispatch": {"pid": 23},
         "events": [{"at_ns": "1200000000", "output_tokens": 1}, {"at_ns": "1201000000", "output_tokens": 4}],
     }
     server = [{"at_ns": "1000000000", "output_tokens": 1}, {"at_ns": "1030000000", "output_tokens": 4}]
     actor = {"start_ns": "800000000", "body_received_ns": "1300000000", "input_sha256": "matched"}
-    stage = {"start_ns": "900000000", "end_ns": "1100000000", "input_sha256": "matched"}
+    stage = {"start_ns": "900000000", "end_ns": "1100000000", "input_sha256": "matched", "pid": 23}
     result = blocking_comparison(victim, actor, server, [stage])
     assert result["qualified"] and result["fully_buffered_during_cpu_stage"]
     assert result["server"]["mean_interval_ms"] == 10
@@ -138,6 +139,7 @@ def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks():
     assert not result["fully_buffered_during_cpu_stage"]
     assert not blocking_comparison(victim, actor, server, [])["qualified"]
     assert not blocking_comparison(victim, actor, server, [stage, stage])["qualified"]
+    assert not blocking_comparison(victim, actor, server, [dict(stage, pid=24)])["qualified"]
     late = [{"at_ns": "1400000000", "output_tokens": 4}]
     assert not blocking_comparison(victim, actor, late, [stage])["qualified"]
 
