@@ -8,6 +8,7 @@ This module provides the mapping engine for converting parameters
 to backend-specific configurations using YAML mapping files and Jinja2 templates.
 """
 
+import copy
 import logging
 import os
 import shlex
@@ -368,7 +369,9 @@ def render_backend_templates(
     # top-level ``ServiceConfig.model_path`` / ``*.system_name`` sections). This
     # keeps the two render paths' facts identical (see facts self-resolve below).
     _raw_param_values = param_values
-    param_values = apply_rule_plugins(dict(param_values), backend)
+
+    # Rules mutate nested scopes; keep failed and repeated renders independent.
+    param_values = apply_rule_plugins(copy.deepcopy(param_values), backend)
     context = prepare_template_context(param_values, backend)
     benchmark_dynamo_version = _parse_template_version(param_values.get("generator_dynamo_version"))
     # Dynamo 1.3 rejects the removed nvext.ignore_eos field; the root-level

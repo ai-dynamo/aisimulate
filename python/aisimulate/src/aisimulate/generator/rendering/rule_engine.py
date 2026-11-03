@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -177,7 +178,7 @@ _TOKEN_BUDGET_KEYS = ("max_num_tokens", "max_prefill_tokens")
 _TOKEN_BUDGET_ALIGN = 64
 
 
-def _align_token_budgets(param_values: dict[str, Any]) -> None:
+def _align_token_budgets(param_values: dict[str, Any], backend: str) -> None:
     """Round every token budget UP to a multiple of 64, on every backend, in
     every role — the ONE alignment rule (owner decision 2026-09-24). Engines
     size per-cache-group slot-mapping rows and scheduler chunks by these
@@ -188,7 +189,8 @@ def _align_token_budgets(param_values: dict[str, Any]) -> None:
     reach — gets it too; the mapping keeps the same rounding as a guard for
     values injected past the rule engine. Never rounds down. Reject unaligned
     evaluated limits (``preserve_engine_limits``, the Sweeper): rounding them
-    would deploy a configuration different from the one evaluated."""
+    would deploy a configuration different from the one evaluated. TRT-LLM's
+    total-token budget must also align to an explicitly configured KV block."""
     params = param_values.get("params")
     if not isinstance(params, dict):
         return
@@ -200,12 +202,17 @@ def _align_token_budgets(param_values: dict[str, Any]) -> None:
             v = role.get(key)
             if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
                 continue
-            aligned = ((v + _TOKEN_BUDGET_ALIGN - 1) // _TOKEN_BUDGET_ALIGN) * _TOKEN_BUDGET_ALIGN
+            alignment = _TOKEN_BUDGET_ALIGN
+            if backend == "trtllm" and key == "max_num_tokens":
+                block_size = role.get("tokens_per_block")
+                if isinstance(block_size, int) and block_size > 0:
+                    alignment = math.lcm(alignment, block_size)
+            aligned = ((v + alignment - 1) // alignment) * alignment
             if aligned != v:
                 if preserved:
                     raise ValueError(
                         f"Cannot preserve evaluated {role_name}.{key}={v}: deployment token budgets must be "
-                        f"multiples of {_TOKEN_BUDGET_ALIGN}. Re-evaluate the candidate with an aligned budget "
+                        f"multiples of {alignment}. Re-evaluate the candidate with an aligned budget "
                         f"(e.g. {aligned}) before generating deployment artifacts."
                     )
                 role[key] = aligned
@@ -220,7 +227,7 @@ def apply_rule_plugins(
     base = _resolve_rule_plugin_dir(rule_name, base_dir=dsl_dir)
     rule_path = _load_rule_path(base, backend)
     if not rule_path:
-        _align_token_budgets(param_values)
+        _align_token_budgets(param_values, backend)
         return param_values
     with open(rule_path, encoding="utf-8") as f:
         content = f.read().splitlines()
@@ -266,5 +273,5 @@ def apply_rule_plugins(
                 _apply_line(assign, backend, param_values, default_scope)
             except Exception:
                 logger.exception("rule apply failed at line %d", idx)
-    _align_token_budgets(param_values)
+    _align_token_budgets(param_values, backend)
     return param_values

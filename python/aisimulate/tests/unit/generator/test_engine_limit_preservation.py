@@ -90,6 +90,50 @@ def test_preserved_unaligned_budget_is_rejected(backend, key, budget):
     assert params["params"]["prefill"][key] == budget
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_render_retry_after_correcting_evaluated_budget_preserves_input(backend, rule):
+    params = _params(preserve=True, rule=rule)
+    params["DynConfig"] = {"mode": "agg"}
+    params["WorkerConfig"] = {"agg_workers": 1}
+    params["params"] = {"agg": params["params"]["prefill"]}
+    worker = params["params"]["agg"]
+    worker["max_num_tokens"] = 32
+    worker["max_prefill_tokens"] = 64
+    worker["context_parallel_size"] = 2 if backend == "sglang" else 1
+    original = copy.deepcopy(params)
+
+    with pytest.raises(ValueError, match=r"Cannot preserve evaluated agg\.max_num_tokens=32"):
+        render_backend_templates(params, backend)
+
+    assert params == original
+    worker["max_num_tokens"] = 64
+    corrected = copy.deepcopy(params)
+    expected = render_backend_templates(copy.deepcopy(corrected), backend)
+    retried = render_backend_templates(params, backend)
+
+    assert retried == expected
+    assert params == corrected
+    if backend == "sglang":
+        cli = shlex.split(retried["cli_args_agg"])
+        assert cli[cli.index("--tensor-parallel-size") + 1] == "2"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("budget, aligned", [(5000, 5120), (5056, 5120), (5120, None)])
+def test_preserved_trtllm_budget_respects_explicit_block_size(rule, budget, aligned):
+    params = _params(preserve=True, rule=rule)
+    params["params"]["prefill"].update(max_num_tokens=budget, tokens_per_block=128)
+
+    if aligned is not None:
+        with pytest.raises(ValueError, match=rf"multiples of 128.*e\.g\. {aligned}"):
+            render_backend_templates(params, "trtllm")
+    else:
+        artifacts = render_backend_templates(params, "trtllm")
+        engine = yaml.safe_load(artifacts["extra_engine_args_prefill.yaml"])
+        assert engine["max_num_tokens"] == budget
+
+
 def test_default_vllm_rules_still_resize_unpinned_requests():
     result = apply_rule_plugins(_params(preserve=False), "vllm")
 

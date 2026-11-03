@@ -135,6 +135,9 @@ is rejected: changing the budget would invalidate its prediction and ranking.
 Re-evaluate with an aligned budget before generating a deployment; for example,
 use 64 instead of 32, or 5056 instead of 5000. This applies to both total-token
 and prefill-token budgets on every backend.
+For TRT-LLM, the total-token budget must also be divisible by an explicitly
+configured `tokens_per_block`: with a block size of 128, use 5120 instead of
+5000 or 5056. An unset block size remains delegated to the runtime.
 
 A trace workload has no fixed request length, so the bridge lowers it without
 ISL/OSL. It rejects lengths supplied for a trace, whether on the workload or
