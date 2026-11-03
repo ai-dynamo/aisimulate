@@ -3,364 +3,292 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# GLM AgentX RSI campaign
+# GLM AgentX RSI campaign: per-request TTFT and TPOT MAPE
 
-## Objective and frozen protocol
+## Objective, protocol and current status
 
-Reduce pooled per-request TTFT and TPOT MAPE on six B300 TP8 GLM AgentX profiles.
-A win improves either metric without worsening the other beyond measured repeat
-variability. The aspirational target is both below 10%; point error and throughput
-are diagnostics, not substitutes. No outlier removal or timing calibration.
+**Running; neither below-10% target is achieved.** Reduce pooled per-request TTFT
+and TPOT MAPE across B300 TP8 GLM AgentX lanes 1/4/8/10/13/14. A win lowers
+either metric without worsening the other beyond observed repeat variability.
+Pool individual valid request errors, not concurrency MAPEs. Point error,
+throughput, curves and forward timing are diagnostics, not substitutes.
 
-Development lanes: 1/8/14. Validation lanes: 4/10/13, reserved from tuning during
-this campaign; their historical results are already known. Freeze each scoring
-cohort before experiments and report retained/lost/recovered identities separately.
-Do not call an improvement from a smaller scored cohort a win.
+Keep every measured request in accounting. Freeze metric-specific identities
+before experiments and report lost/recovered matches separately; a smaller scored
+cohort cannot establish a win. Preserve small positive references, undefined/zero
+values, failures and unmatched requests. No outlier removal, unexplained timing
+multipliers or score-driven calibration. Preparation is outside headline scoring.
 
-Historical dashboard wheel: `1c753e4668310705b6451ba1ebf3061b3d5b30de`;
-HF silicon revision: `da115d648f0be20a1c4e0408d552a4a1e8bebf9d`.
-Research baseline: AISim main `9f4819e2b77afb4798bc8133c42ccc1d1b045e5c`
-plus PR #665 `64ac539813677d15e58c8ba051a6b5fc95c5334b`, merged as
-`eddb21246e0a371fe542f7cab4034b58173bce63`. Wheel SHA256: `79ed539e44052aca60f9e62d6427654417e2ce1c514c881cfee0f0949581d046`;
-native SHA256: `07b39a7f2e76aba7e4092f58a133f574059da784d98ab3bec1cdef94aec0319d`.
-Frozen scoring tooling: `a01b4b45d4a58f65332e7fb7646cc5eab2ce1cbe`.
-Silicon is SGLang 0.5.20; historical predictions select op database 0.5.21.
-This is cross-version evidence, not same-version qualification.
+Develop on lanes **1/8/14**; reserve **4/10/13** from tuning during this campaign.
+Historical scores are already known: this is held-out-from-tuning validation,
+not previously unseen data. New GPU controls are diagnostics, not replacements
+for the frozen AgentX measurements.
 
-Raw inputs and the identity manifest remain private. `audit.py` refuses to replace
-frozen files, verifies source uniqueness/output lengths, and scores requests directly.
-Run `python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLAY_DIR --output NEW_PRIVATE_DIR`.
-Run tests with `python -m pytest -c /dev/null -p no:cacheprovider test_audit.py`.
+**Verified numerical improvement:** current main plus #665 improves both pooled
+MAPEs with every frozen metric observation retained. One-factor attribution to
+upstream #406 is confirmed on development points; no new campaign modeling fix
+has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
-## Resource and stopping rules
-
-Hard cap: 64 allocated B300 GPU-hours (eight TP8 node-hours), including startup,
-profiling and failed jobs. Reserve active allocations at their full wall limit;
-reconcile completed jobs against Slurm elapsed time and actual reserved GPUs.
-Budget: 2 node-hours baseline/timing, 2 controlled experiments, 1 op/forward,
-3 validation. Unused diagnostic time may move to validation. Qwen is separate.
-
-Stop on validated attainment of both targets, exhausted budget, three consecutive
-experiments without discriminating evidence or a verified improvement, or no
-actionable hypothesis. Retain failed experiments; do not claim target attainment
-when stopped with residual error. No automatic merge, HF promotion or dashboard
-replacement. Use signed/DCO commits and focused draft PRs.
-
-## Baseline reproduction — E000
-
-**Hypothesis.** Dashboard and PR #665 differ because their cohorts and predictor
-revisions differ; current data selection alone does not establish score equality.
-
-**Experiment.** Independently compute both metric errors from saved request pairs,
-freeze private source identities, preserve all small positive references, and verify
-published dashboard denominators and arithmetic. Reproduce both #665 variants on
-its original frozen cohort; no replay settings or observations changed.
-
-**Conclusion — confirmed arithmetic/provenance.**
+## Frozen baselines — E000/E003
 
 | Variant | TTFT MAPE | TTFT n | TPOT MAPE | TPOT n |
 |---|---:|---:|---:|---:|
 | Dashboard | 84.5587% | 8624 | 79.0844% | 8614 |
-| #665 main | 85.0249% | 8260 | 146.7501% | 8251 |
-| #665 plus data | 77.5517% | 8260 | 81.9830% | 8251 |
+| #665 original-main cohort | 85.0249% | 8260 | 146.7501% | 8251 |
+| #665 with new data, same fixed cohort | 77.5517% | 8260 | 81.9830% | 8251 |
+| Research main + #665, frozen dashboard cohort | 79.9935% | 8624 | 70.0050% | 8614 |
 
-Private frozen cohort SHA256: `26e3a6b64e9a7a640d64a8d8e057c5e383a23f7a458a1f0bd496423922a33c1b`.
-Baseline audit SHA256: `500b572212ffb25efdadcb1f0cc1bffb527e2ef18217dde4fc38ead617d12946`.
+No metric observations are lost from the dashboard cohort. Its denominators differ
+from #665's fixed cohort; the two comparisons remain separate.
 
-## H1 — Client measurement boundaries and denominator sensitivity
+| Lanes | Dashboard TTFT | Research TTFT | Dashboard TPOT | Research TPOT |
+|---:|---:|---:|---:|---:|
+| 1 | 73.6567% | 73.6567% | 18.8688% | 18.8688% |
+| 4 | 60.8372% | 60.8380% | 42.4000% | 42.4000% |
+| 8 | 63.4054% | 63.7743% | 54.4904% | 51.0948% |
+| 10 | 65.0622% | 64.9230% | 69.4362% | 73.8154% |
+| 13 | 93.1288% | 80.8748% | 81.6390% | 79.0883% |
+| 14 | 110.0450% | 104.7231% | 115.6302% | 84.8208% |
 
-**Hypothesis.** Buffered client receipt and/or speculative bursts compress recorded
-decode duration for a small subset; positive tiny denominators magnify MAPE.
+## H1 — Client timing boundaries and small positive denominators
 
-**Experiment — E001.** Independently stratify the frozen dashboard pairs at
-reference TPOT <0.1 ms; retain every request in headline scores. Compare raw
-stream, HTTP receive, and server generation boundaries in targeted GPU controls.
+**Hypothesis.** Buffered receipt, frontend work and/or speculative bursts compress
+some client-observed decode intervals. Positive tiny denominators magnify MAPE.
 
-**Conclusion — supported sensitivity; boundary mechanism unconfirmed.** At 14 lanes,
-9/2429 requests contribute 65.43 percentage points of 115.63% TPOT MAPE; median
-APE is 24.39%. This is not permission to exclude these requests or subtract their
-contribution. Historical client timestamps alone cannot establish server generation.
-Next: inspect raw examples, then compare server/client timing on matching controls.
+**Experiment E001.** Independently recompute the original request errors and
+stratify references below 0.1 ms without excluding them. Audit raw HTTP and metric
+boundaries; retain all requests in the headline metric.
 
-## H2 — Replay recipe, tokenization, snapshots and cache history
+**Conclusion — sensitivity confirmed; timing mechanism open.** At 14 lanes,
+9/2429 references contribute 65.43 percentage points to 115.63% TPOT MAPE; median
+APE is 24.39%. One raw example has 222.7242 ms HTTP receive time but 0.54664 ms
+recorded decode duration. These facts do not identify when the server generated
+its tokens and do not justify changing historical observations.
 
-**Hypothesis.** Effective settings or replay history differ from silicon.
+**Experiment E005, awaiting a qualified retry.** Compare uninstrumented MTP, instrumented MTP and
+instrumented plain decode with fresh servers. Synthetic controls use 8192/131072
+input tokens, 16/128 output tokens, lanes 1/8/14, repeats and explicit cache-flush
+requests. Also exercise the OpenAI chat frontend with reasoning/tool parsers.
+Capture host scheduler output-ready counts/timestamps by rank, client frame
+receipt, numerical usage/acceptance fields, and one-second server metrics.
+These are output-ready observations before detokenization/HTTP, not GPU kernel
+completion timestamps. Chat frames without per-chunk token counts must not be
+presented as exact per-token observations. Missing comparisons remain N/A.
 
-**Experiment — E002.** Parse retained runtime `server_args` receipts and compare
-with frozen replay configuration. Run one-variable settings controls on development
-points before examining validation-point changes.
+**Conclusion — startup failed; GPU timing evidence unavailable.** Job 1002848
+exceeded its 1200-second serving-readiness guard. A read-only Python stack sample
+places the scheduler in `do_load_weights`, waiting for asynchronous expert-weight
+copies (`expert_data.copy_`); the shard reader had finished. This establishes the
+startup location, not a deadlock cause. No request was attempted. A native stack
+sample failed to unwind and is retained as unavailable. Prepare the original
+SGLang 0.5.20 image by immutable digest on CPU before another GPU attempt.
 
-**Conclusion — supported configuration mismatch; performance impact pending.**
-The one-lane runtime capped running requests at 2, while the dashboard config
-allowed 256. The four-lane runtime used 8. High-lane settings remain separately
-verified. **E004 cap-only result:** setting the C1 cap from 256 to 2 preserves all 324
-scored requests and leaves TTFT/TPOT MAPE exactly unchanged (73.6567%/18.8688%).
-The setting mismatch is confirmed; it does not explain the C1 accuracy gap.
-Retain the correction as recipe alignment, not a claimed accuracy win.
+Require actual counts, clocks, rank identity,
+completion, output-length conservation and coverage before comparison. Server
+retained/processed-token counts and client-delivered counts are distinct; preserve
+any terminal over-generation rather than silently equating them.
 
-## H3 — Speculative acceptance and token-delivery bursts
+## H2 — Recipe, tokenization, snapshots and cache history
 
-**Hypothesis.** Fixed acceptance fails to represent per-request acceptance and
-burst delivery. Original runtime resolves NEXTN to EAGLE with steps=3/draft=4;
-replay uses nextn=3/nextn_accepted=1.99. Do not assume an off-by-one without tracing
-both definitions. The recipe's golden acceptance is explicitly inherited/provisional.
+**Hypothesis.** Effective serving settings or replay history differ from silicon.
 
-**Experiment.** Inspect runtime acceptance counters and implementation definitions;
-measure matching speculation-on/off controls with actual accepted-token counts.
+**Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
+cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
 
-**Conclusion — open.** Configuration is present; measured request-specific acceptance
-and its causal contribution are not yet established.
+**Conclusion — recipe mismatch confirmed, C1 accuracy impact disproven.** All 324
+scored requests remain; TTFT/TPOT MAPE are exactly unchanged at 73.6567%/18.8688%.
+Keep the setting alignment separate from a claimed accuracy improvement.
 
-## H4 — Prefill/decode interference and closed-loop overlap
+**Experiment E008.** Join unique successful, equal-output-length development pairs
+with recorded `usage_prompt_cache_read_tokens` and native first-admission reuse.
+Requests without this optional metric remain in headline accounting.
 
-**Hypothesis.** Replay overlap or scheduling causes stalls absent on silicon.
-
-**Experiment.** Reproduce the historical 25.7-second C14 decode-stall case on current
-main; reduce to two requests with controlled arrivals, lengths, and cache state.
-Compare admission, chunking, execution and token-delivery timestamps.
-
-**Conclusion — open.** The older trace documents overlap divergence, not proof of
-a current scheduler defect. No scheduler tuning before the discriminating control.
-
-## H5 — Op timing, graph mode and interpolation
-
-**Hypothesis.** Correct #665 selection leaves other kernels/shapes/timing boundaries
-inaccurate. Compare graph coverage, full/reuse identity, precision, selected rows
-and whole-forward critical path; collect only mismatching/uncovered shapes.
-
-**Experiment.** Trace exact query routing, then matched-shape op and forward checks.
-
-**Conclusion — open.** Data-file identity is verified; complete execution accuracy
-is not established.
-
-## H6 — Capacity, preemption and serving overhead
-
-**Hypothesis.** Rank-local capacity, memory pressure, admission or response overhead
-explains residual latency after the earlier controls.
-
-**Experiment.** Reconcile capacity and lifecycle receipts. Instrument only unexplained
-stalls, with unprofiled repeats to distinguish profiling overhead.
-
-**Conclusion — open.** Do not infer eviction or preemption from cache utilization.
-
-## Experiment ledger
-
-| ID | Change | Status | GPU-hours | Next |
-|---|---|---|---:|---|
-| E000 | Independent frozen-cohort arithmetic | Verified | 0 | Research baseline |
-| E001 | Positive tiny-denominator sensitivity | Verified diagnostic | 0 | Server/client control |
-| E002 | Effective recipe comparison | Supported mismatch | 0 | Cap-only ablation |
-| E003 | Current-main + #665 native baseline | Development complete | 0 | Full baseline accounting |
-| E004 | C1 max sequences 256 to runtime 2 | No score change; all requests retained | 0 | Other mechanisms |
-
-All evidence and commands are retained in the private campaign checkpoint.
-
-## E003 — Current-main baseline versus historical dashboard
-
-All frozen development requests are retained. On the identical C14 cohort, TTFT
-MAPE changes 110.0450% to 104.7231%, TPOT 115.6302% to 84.8208%; C1 is unchanged.
-C8 TPOT improves 54.4904% to 51.0948% but TTFT worsens 63.4054% to 63.7743%.
-These are upstream-baseline effects, not new campaign fixes or a verified pooled
-win. Current main includes #406's DSA reuse-accounting fix; attribution requires
-a one-factor control, not a commit-title inference. Full baseline accounting and
-validation-point results are recorded separately from development decisions.
-
-## GPU timing controls — E005
-
-CPU preparation job 1002174 failed before downloading because an interactive
-shell variable was unset; no GPU time was used. Retry 1002194 downloads the exact
-NVFP4 revision and retains weight/config checksums on a CPU data mover. Existing
-shared GLM-5.3 has different precision and is not substituted.
-
-The first diagnostic allocation is bounded at two TP8 node-hours, with fresh
-servers for uninstrumented MTP, instrumented MTP, and instrumented plain decode.
-`collect.sbatch` requires a reconciled remaining-GPU-seconds budget and freezes
-code per job. `probe.py` controls synthetic contexts 8192/131072, output lengths
-16/128 and lanes 1/8/14, with repeats and explicit cache flushes. These controls
-are not AgentX accuracy scores. Cold/warm and profiler effects remain separate.
-
-`instrument.py` adds one hook to the container's installed SGLang output streamer;
-it records the original/modified file hashes and package version. The hook observes
-host scheduler output readiness before detokenization/HTTP, not GPU kernel time.
-`rsi_timing.py` records only request IDs, times, counts and batch membership. All
-runtime source/log evidence remains private. Missing/incomplete requests stop the
-control rather than being dropped. Compare against the original unmodified server
-before interpreting instrumented timing.
-
-## E006 — Minimal overlap reduction
-
-**Hypothesis.** A new current-main C14 high-error request is stalled by overlapping
-prefill work, rather than an intrinsically 276 ms decode step.
-
-**Experiment.** Use three numerical Mooncake controls with the same wheel, op data,
-cache geometry and speculation. Warm a 287424-token prefix; the victim has 640
-input tokens and 23 output tokens. Add a 361344-token prefill sharing the warm
-prefix either 1 ms after the standalone first token or 1 ms after its last token.
-Only interferer presence/arrival changes. `reduce_stall.py` retains each config,
-trace, native report and result; this diagnostic is not a replacement benchmark.
-The first attempt failed on assuming Mooncake preserves a request_id in native
-telemetry; its evidence remains private. The corrected run selects the uniquely
-specified victim shape and completes all three controls.
-
-**Conclusion — confirmed simulated overlap mechanism; silicon fidelity open.**
-Victim TPOT is 2.4626 ms standalone, 273.4086 ms with overlap, and 2.4626 ms when
-separated; TTFT stays 58.6586 ms. The prior historical 25.7-second stall no longer
-appears at that source request on current main (now 4.1313 ms TPOT). A different
-current request produces 276.0665 ms TPOT versus silicon 3.7934 ms. This proves
-sensitivity to overlap in replay, not that its scheduler is wrong: the measured
-profile may have different arrivals and cache state. Next: verify the same
-controlled interference on the GPU; do not tune scheduling to suppress the score.
-
-## Full research baseline accounting
-
-All 8624 frozen TTFT requests and 8614 frozen TPOT requests are retained across
-all six points. Current-main pooled MAPE is 79.9935% TTFT and 70.0050% TPOT
-(the exact sums and independent comparison are in private evidence). Both improve
-against the historical dashboard; this is an upstream-baseline improvement, not
-attribution to a campaign fix. C10 TPOT worsens 69.4362% to 73.8154%; C8 TTFT also
-worsens slightly. Keep these regressions visible. The 10% targets remain unmet.
-
-The next CPU ablation reverts only upstream #406's DSA reuse correction while
-holding the new main baseline, #665 op table and frozen requests constant. Do not
-attribute the upstream-baseline improvement from commit titles alone.
-
-## Collection qualification update
-
-All 50 weight shards and both configuration files match the immutable HF revision's
-published checksums. Weight-manifest SHA256:
-`a9a20139694f8d94eb4fc1fd1da8083da5de0fec3226555123ab4896c41cae50`.
-The CPU preparation finished successfully. An overlapping CPU preflight step was
-terminated when its enclosing preparation allocation ended; independent preflight
-job 1002543 now checks the container interface. These attempts used no GPU time.
-
-The timing probe also exercises the OpenAI chat frontend with the original
-reasoning/tool parsers. It records content/reasoning character counts and usage,
-never text, so first scheduler output, first visible reasoning/content, and final
-client receipt can be distinguished. Native streaming, chat projection, frozen
-scoring and resource accounting have seven passing focused tests. For stream
-projection tests, run `uv run --no-project --with 'transformers>=4.57,<5' --with pytest
-python -m pytest -c /dev/null -p no:cacheprovider test_probe.py`.
-
-## E008 — Recorded cache-read alignment
-
-**Hypothesis.** A broad cache-reuse mismatch explains most TTFT error.
-
-**Experiment.** On development lanes only, join source-unique successful profile
-records with equal output lengths to current-main telemetry and compare recorded
-`usage_prompt_cache_read_tokens` with native first-admission reuse. Preserve
-requests lacking this optional metric in headline accounting; they are unavailable
-only for this cache diagnostic. All compared cache counts are within input lengths.
-
-**Conclusion — broad mismatch not supported by averages; individual cases remain open.**
-
-| Lanes | Diagnostic pairs | Mean silicon uncached tokens | Mean replay uncached tokens |
+| Lanes | Cache diagnostic pairs | Mean silicon uncached tokens | Mean replay uncached tokens |
 |---:|---:|---:|---:|
 | 1 | 314 | 4163 | 4090 |
 | 8 | 1388 | 3261 | 2987 |
 | 14 | 2332 | 4253 | 3766 |
 
-These averages do not prove matching batch/cache histories; they do not independently
-explain the large TTFT gap. Keep frontend/tokenization and per-request tails in
-the queue. Private paired rows and source identities are retained.
+**Conclusion — broad mismatch not supported by averages; individual cases open.**
+All compared cache counts are within input lengths. The averages do not establish
+matching histories, arrival overlap or a causal explanation of TTFT error.
 
-The runtime probe records distributed rank when available, keeping unknown ranks
-explicit. Completed derived corpus copies are removed only after their checksums
-are recorded; frozen source corpora, observed-output substitutions and numerical
-results remain retained and reproduce them exactly.
+## H3 — Speculative acceptance and output-delivery bursts
 
-## E007 — One-factor attribution of the upstream baseline improvement
+**Hypothesis.** Fixed acceptance misses request-dependent acceptance and bursts.
 
-**Hypothesis.** Upstream #406, rather than the other intervening main changes,
-accounts for the observed development-point difference from the dashboard.
+**Experiment.** Verify the original NEXTN-to-EAGLE resolution (steps 3, draft tokens
+4). Replay uses `nextn=3`, `nextn_accepted=1.99`, meaning 2.99 accepted output
+tokens per round before request-tail truncation. The recipe's golden acceptance
+is explicitly inherited/provisional; do not treat it as measured per-request truth.
+E005 collects actual acceptance and output counters with speculation on/off.
 
-**Experiment.** Revert only commit `2be6a124f8310d35f0fa46c585b8c79ef56b01eb`
-from the research baseline, rebuild its own wheel, and rerun lanes 1/8/14 with
-identical #665 data and frozen inputs. Retain every baseline metric observation.
+**Experiment E012.** Independently inspect retained profiling-phase server metric
+receipts on development lanes. The mean `sglang:spec_accept_length`, explicitly
+defined as accepted drafts plus bonus token per forward, is **2.9898103 at 8 lanes**
+and **2.9867272 at 14 lanes**. The retained metric JSON is unavailable at 1 lane.
+The 8/14-lane series contain 3600/3584 one-second intervals respectively.
 
-**Conclusion — confirmed commit-level effect on development cohorts.** The reverted
-wheel exactly reproduces the historical dashboard TTFT/TPOT scores on all three
-development points, retaining 4169 TTFT and 4166 TPOT observations. #406 therefore
-explains the observed development-point change. Its lookup-slice and extrapolation
-subchanges were not separately ablated, and this does not establish same-version
-silicon accuracy or universal regression freedom.
+**Conclusion — large mean-acceptance mismatch unsupported; request effects open.**
+These runtime means closely match 2.99. They are gauge summaries, not per-request
+or verify-count-weighted acceptance; do not infer individual acceptance, missing
+intervals or verify counts from them. No new prediction setting or score change
+is justified by this experiment. Request-level bursts remain an E005 question.
 
-## E009 — Deterministic replay repeat
+## H4 — Prefill/decode interference and closed-loop overlap
 
-**Hypothesis.** The C14 improvement is larger than native replay variability.
+**Hypothesis.** Wrong overlap or scheduling creates decode stalls absent in silicon.
 
-**Experiment.** Rerun the same current-main wheel, data, configuration and seed in
-a fresh process. Compare all scored request pairs, not just aggregate averages.
+**Experiment E006.** The historical 25.7-second stall no longer occurs at that
+source request on current main (now 4.1313 ms TPOT). A different current request
+predicts 276.0665 ms versus silicon 3.7934 ms. Reduce it to numerical Mooncake
+controls: warm a 287424-token prefix; victim input/output lengths are 640/23;
+interfering input length is 361344 with that warm prefix. Add the interferer 1 ms
+after the standalone first token, or 1 ms after its last token.
 
-**Conclusion — verified for this repeat.** Every scored C14 pair and both MAPEs
-are exactly identical. This establishes zero observed replay variation for this
-control; it does not measure GPU repeat variability.
+| Control | Victim TPOT | Victim TTFT |
+|---|---:|---:|
+| Standalone | 2.4626 ms | 58.6586 ms |
+| Overlapping prefill | 273.4086 ms | 58.6586 ms |
+| Separated prefill | 2.4626 ms | 58.6586 ms |
 
-## Preflight failures retained
+**Conclusion — simulated overlap mechanism confirmed; silicon fidelity open.**
+Only interferer presence/arrival changes. This proves sensitivity to overlap, not
+an incorrect silicon scheduler. E005 tests controlled GPU interference. Its
+client-first-output trigger requires scheduler receipts to establish actual overlap.
+The initial reduction attempt assumed Mooncake preserves request IDs; its failed
+evidence is retained. The corrected control selects the uniquely specified victim.
 
-CPU job 1002543 failed before any GPU allocation because this pinned image uses
-`SchedulerOutputProcessorMixin`, not the newer output-streamer file layout. GPU
-reservation 1002644 was canceled by its failed dependency with zero elapsed time.
-The hook now checks both known module layouts and requires exactly one matching
-`stream_output(reqs, ...)` interface; duplicate/instrumented/unknown interfaces
-fail explicitly. Independent preflight retry: 1002662. Six audit/hook tests and
-two native/chat projection tests pass. The CPU failures consume no GPU budget.
+## H5 — Op timing, graph mode, variant lookup and interpolation
 
-## Preflight interpretation correction
+**Hypothesis.** Data selection or execution timing differs despite including #665.
 
-The earlier inference that the image necessarily uses the older mixin layout was
-premature and is superseded. Retry 1002662 showed that distribution-relative paths
-are invalid for this editable SGLang installation. The probe now resolves the actual
-package origin without importing the GPU runtime and tests editable installations
-explicitly. Retry 1002721 checks that corrected path discovery before GPU use.
-These are probe setup failures, not evidence that SGLang or the model is unsupported.
+**Experiment E007.** Revert only upstream #406 commit
+`2be6a124f8310d35f0fa46c585b8c79ef56b01eb` from the research baseline, rebuild its
+own wheel, and rerun development lanes with identical #665 data and frozen inputs.
 
-## E010 — Qwen CPU compatibility smokes
+**Conclusion — commit-level effect confirmed on development points.** The reversion
+exactly reproduces the old dashboard TTFT/TPOT scores on all three development
+cohorts, retaining 4169 TTFT and 4166 TPOT observations. The lookup-slice and
+extrapolation subchanges were not separately ablated. Do not extrapolate that
+attribution to all six points or claim universal regression freedom.
 
-The GLM-only wheel intentionally lacks PR #666's vLLM 0.31.0 context table; the
-first three smokes correctly returned database-unavailable rather than borrowing
-another version. Retain those outcomes. Reuse the same installed native binary
-with an isolated data root that adds only the previously qualified #666 parquet
-`d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700`.
+**Experiment E011.** Inspect current #665 generation and primary context tables at
+GLM geometry: 8 local heads, BF16 MLA/projection and FP8 KV. Both full and skip
+variants exist (2469 context rows and 404 generation rows per matching variant).
 
-All three 4K/cold/repeat-0 smokes at 1/4/16 lanes then complete: 8/32/128 requests
-match with identical output lengths and all cache receipts agree, including
-preparation. These are compatibility smokes, not a new Qwen accuracy campaign;
-no Qwen GPU collection or active dataset changes belong to this campaign.
+**Conclusion — matching geometry/precision coverage confirmed, timing fidelity open.**
+A filename or row count does not establish actual runtime kernel selection,
+interpolation weights or whole-forward accuracy. Collect exact discriminating
+shapes only after runtime/selected-row reconciliation.
 
-The reusable gap catalog records commit-level DSA reuse attribution as GLM-RSI-01,
-with the residual hypotheses and regression limits preserved.
+## H6 — Capacity, preemption, frontend and serving overhead
 
-## Qualified CPU preflight
+**Hypothesis.** Admission, memory pressure or frontend work explains residual error.
 
-Retry 1002721 passes. Actual SGLang package version is 0.5.21; its implementation
-is the newer `scheduler_components/output_streamer.py`. The older-layout hypothesis
-is disproven: editable-install path discovery caused the prior failures. Original
-streamer source SHA256 is `8bfe917edc87ae89f387c718944310e8f9002e1740ecae87b6fd7194f1669855`;
-the tested hook SHA256 is `9d2ec980b62603532fa29443f86eb0183a2951037405f4187afc3e20eef06e1d`.
-Launch help and client imports complete on CPU. The next GPU allocation remains
-bounded at two node-hours and must retain its own actual source hashes and runtime
-receipts; successful CPU preflight is not a claim of successful GPU serving.
+**Experiment.** Reconcile fixed replay capacity with actual runtime receipts;
+inspect admission, preemption and response timing. E005 distinguishes native
+input-ID requests from chat frontend observations. Use uninstrumented repeats
+before interpreting profiler effects.
 
-## First GPU allocation correction
+**Conclusion — open.** Do not infer eviction/preemption from utilization, or infer
+which operation uses FP8 merely from a model-level loader message. The pinned
+checkpoint is mixed precision; match component-level settings and evidence.
 
-Job 1002810 was stopped during container startup before serving or measurements.
-The launch did not explicitly scope compile/tokenizer caches to campaign storage;
-that launch configuration is corrected and covered by a cache-location test.
-Charge 96 seconds through cleanup at eight reserved GPUs (768 GPU-seconds),
-conservatively including the longest Slurm cleanup record; parent elapsed was
-87 seconds. Remaining budget before the next reservation: 229632 GPU-seconds.
-No measured accuracy result is attributed to this canceled allocation.
+## Repeat and compatibility controls
 
-## Active timing controls and accounting guard
+**E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
+using the same wheel, data, seed and settings. **Conclusion:** every scored pair
+and both MAPEs are exactly identical. This measures replay repeatability, not GPU
+repeat variability.
 
-Corrected GPU job 1002848 uses frozen collector commit
-`c7bcd50b0dc7eeefea78754aaa00462c2332584c`; CPU preflight and checkpoint
-checksums qualified before submission. It has a two-node-hour allocation limit.
-Keep its own runtime hashes immutable while it runs.
+**E010 hypothesis/experiment.** Run existing Qwen CPU smokes at 4K/cold/repeat 0,
+lanes 1/4/16. The GLM-only wheel lacks #666's vLLM 0.31 context table and initially
+returns database-unavailable; retain these outcomes. With the same native binary
+and an isolated root adding only the qualified #666 parquet, all 8/32/128 measured
+requests match and every cache receipt agrees, including preparation. **Conclusion:**
+compatibility smoke passes with its required data, not a new Qwen accuracy result.
+Qwen recollection and its GPU allocations remain separate.
 
-A later client-retention guard records every concurrent attempted request before
-stopping a failed case. Its regression test forces fourteen simultaneous HTTP
-failures and verifies all fourteen are retained without error-body or prompt
-content. This source update does not alter job 1002848. If that frozen run has a
-client-case failure, reconstruct explicit missing-attempt accounting from the
-case protocol and reject incomplete comparisons; do not infer missing timings.
+## GPU budget, qualification and failed attempts
+
+Hard cap: **64 allocated B300 GPU-hours / eight TP8 node-hours**. Include startup,
+failed jobs and profiling. Reserve active allocations at their full wall limit;
+reconcile terminal jobs against Slurm reserved GPUs and elapsed time. Intended
+split: 2 node-hours baseline/timing, 2 controlled experiments, 1 op/forward,
+3 validation; unused diagnostic time can move to validation.
+
+- CPU preparation 1002174 failed on a shell variable; 1002194 then downloads and
+  checksums the exact checkpoint. All 50 shards and two configuration files match
+  immutable HF checksums. No substitute shared model is used.
+- CPU preflights 1002543/1002662 expose a probe package-path error. The initial
+  older-layout explanation is superseded: the image uses the newer streamer
+  under an editable install. Actual package origin resolution and its regression
+  test fix discovery. Preflight 1002721 passes with SGLang 0.5.21, Torch
+  2.13.0+cu130 and Transformers 5.12.1. Earlier overlapping CPU steps and failures
+  remain in private logs; they cost no GPU time.
+- GPU reservation 1002644 never allocates after its dependency fails: charge zero.
+- GPU 1002810 is stopped during startup to scope compile/tokenizer caches to
+  campaign storage. Charge 96 seconds through cleanup at eight GPUs: 768 GPU-seconds
+  (parent elapsed 87 seconds). No serving measurements are claimed.
+- GPU **1002848**, frozen collector
+  `c7bcd50b0dc7eeefea78754aaa00462c2332584c`, fails the startup guard. Slurm parent
+  and cleanup elapsed 1236 seconds at eight GPUs: charge 9888 GPU-seconds.
+  Total charged: **10656 GPU-seconds / 2.96 GPU-hours / 0.37 TP8 node-hours**.
+  Remaining: **219744 GPU-seconds / 61.04 GPU-hours / 7.63 TP8 node-hours**.
+- CPU historical-image preparation 1003104 rejects Enroot's architecture spelling
+  `amd64`; corrected to its documented `x86_64` option in retry 1003117. Neither
+  reserves GPUs. Runtime identity and hook compatibility must pass before use.
+
+A later concurrent-retention guard writes every attempted request before stopping
+a failed case; a test forces fourteen simultaneous failures and retains all of
+them without prompt/error-body content. It does not modify frozen job 1002848.
+If that run fails a case, retain explicit missing-attempt counts and disqualify
+incomplete comparisons rather than inventing timings.
+
+Stop when both targets validate, budget is exhausted, three consecutive completed
+hypothesis experiments produce no discriminating evidence or verified improvement,
+or no actionable hypothesis remains. Setup failures/regression tests are recorded
+separately. Report residual error honestly. No automatic merge, HF promotion or
+dashboard replacement; publication requires complete qualification/privacy checks.
+
+## Provenance and reproduction
+
+- Historical dashboard source: `1c753e4668310705b6451ba1ebf3061b3d5b30de`;
+  HF silicon: `da115d648f0be20a1c4e0408d552a4a1e8bebf9d`.
+- Research baseline `eddb21246e0a371fe542f7cab4034b58173bce63`: main
+  `9f4819e2b77afb4798bc8133c42ccc1d1b045e5c` plus #665
+  `64ac539813677d15e58c8ba051a6b5fc95c5334b`.
+- Research wheel SHA256:
+  `79ed539e44052aca60f9e62d6427654417e2ce1c514c881cfee0f0949581d046`;
+  native SHA256 `07b39a7f2e76aba7e4092f58a133f574059da784d98ab3bec1cdef94aec0319d`.
+- Frozen scoring tooling: `a01b4b45d4a58f65332e7fb7646cc5eab2ce1cbe`.
+- #665 parquet SHA256:
+  `287367dcd1b321a7b5ee15422b5b36b75268e76663c7f814a53d7151ee8d9c88`.
+- #666 smoke-only parquet SHA256:
+  `d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700`.
+- GPU checkpoint: `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf`;
+  weight-manifest SHA256 `a9a20139694f8d94eb4fc1fd1da8083da5de0fec3226555123ab4896c41cae50`.
+- Actual SGLang streamer source SHA256:
+  `8bfe917edc87ae89f387c718944310e8f9002e1740ecae87b6fd7194f1669855`.
+
+Raw data, private identity cohorts, execution commands, failure evidence and the
+machine-readable checkpoint remain in the private campaign output directory.
+Completed derived trace copies are removed only after checksums are saved; frozen
+source corpora and observed-output substitutions remain available to reproduce them.
+The reusable gap catalog records scoped attribution as **GLM-RSI-01**.
+
+From this directory:
+
+```bash
+python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLAY_DIR --output NEW_PRIVATE_DIR
+python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
+python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
+python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py
+uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py
+```
+
+The GPU scripts require an immutable model receipt, successful CPU preflight,
+explicit remaining GPU-seconds and campaign-root paths. Their synthetic controls
+never change the frozen benchmark headline scores. Update this record and the
+checkpoint after each meaningful experiment; preserve disproven conclusions.
