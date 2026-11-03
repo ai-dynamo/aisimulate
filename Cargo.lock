@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core"
+name = "aisim-core"
 version = "0.13.0"
 dependencies = [
  "anyhow",

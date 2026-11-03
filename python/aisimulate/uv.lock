@@ -23,7 +23,7 @@ wheels = [
 ]
 
 [[package]]
-name = "aisimulate"
+name = "aisim"
 version = "0.13.0"
 source = { editable = "." }
 dependencies = [
