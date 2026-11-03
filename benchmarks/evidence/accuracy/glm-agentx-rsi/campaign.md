@@ -1200,7 +1200,48 @@ accepted-generated/emitted/discarded counts, CPU enclosure and the actor's
 submission after victim generation. It does not import the timing analyzer.
 Generated counts are accepted output IDs, not physically processed draft tokens.
 
-**Conclusion:** pending independent audit.
+**Conclusion — supported in ordinary coding chat; historical contribution open.**
+Both audits retain all 34 new observations, four unscored warmups and 18/18
+qualified profile victims; there are no duplicate or unexpected IDs. The
+independent auditor verifies the measured source and model, both qualified coding
+input hashes, actual reporting enabled, API PIDs, source-controlled phase
+separation and explicit generated/emitted/discarded counters. In all three long
+cases, every victim output is ready inside the CPU stage and client delivery
+starts afterward. Actor GPU submission occurs only after all victim outputs are
+ready, excluding its later GPU prefill as the cause of this buffering.
+
+| Long coding repeat | CPU render/encode ms | Server-ready TPOT ms | Client TPOT ms |
+|---|---:|---:|---:|
+| 0 | 609.1428 | 2.615474 | 0.057021 |
+| 1 | 651.9270 | 2.615066 | 0.060472 |
+| 2 | 572.7944 | 2.617906 | 0.053552 |
+
+API thread CPU time is at least 99.8% of wall time in these stages. Short coding
+stages finish before the victim's first ready output and do not meet the
+buffering predicate. Their client intervals and the no-actor controls remain
+in the complete audit. The dispatch-only arm independently shows compression:
+long-coding client TPOT 0.103560/0.071186/0.066411 ms. Thus the effect does not
+require output/frontend instrumentation. The arms share a persistent compiler
+cache, and the first short control differs; do not interpret their differences
+as a fixed instrumentation correction or discard first-use samples.
+
+Minimal-arm long actor client-to-API-submission intervals are 724.862/702.384/
+740.843 ms. These include transport and queueing and are not isolated CPU service.
+The active-server CPU stages above also differ from the earlier isolated CPU
+primitives. Keep both measurement contexts and all repeats; do not fit a service
+multiplier to historical TTFT/TPOT errors.
+
+No historical headline correction, six-point accuracy win or new default model
+setting follows. Existing frozen request identities remain unchanged. Next
+quantify response blocking with the already-frozen E034 CPU bookings, preserving
+its five lost observations and explicitly excluding closed-loop feedback from
+that diagnostic, before attempting a broader replay-engine change.
+
+Evidence: `E037-independent-audit.json`, SHA256
+`c8fa6c60db617d6d45811d457d415ae90328c01cd5d542b2eec4ba407a2b854b`; complete numerical audit, 34-request source manifest, qualified
+serializer/tokenizer receipt, Slurm allocation/cleanup receipt and all failed
+attempts. The source script is pinned separately from measured runtime receipts.
+
  No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
