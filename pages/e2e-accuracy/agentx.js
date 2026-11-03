@@ -94,6 +94,8 @@ window.AgentX = (() => {
   }
   function pointUrl(run, branch) {
     const params = new URLSearchParams({branch,category:run.category,model:run.model,lanes:run.lanes});
+    const campaign=new URL(location.href).searchParams.get("campaign");
+    if(campaign) params.set("campaign",campaign);
     return `./agentx/point.html?${params}#view=point&stage=profile&variant=observed`;
   }
   async function json(path) {
@@ -102,6 +104,9 @@ window.AgentX = (() => {
     return response.json();
   }
   async function summary(branch, prefix) {
+    const campaign=new URL(location.href).searchParams.get("campaign");
+    if(campaign && !["finite-v1","weka-v1"].includes(campaign)) throw new Error("Unknown benchmark campaign.");
+    if(campaign==="finite-v1") prefix+="archive/finite-v1/";
     const catalog = await json(prefix + "branches.json");
     const entry = catalog.branches.find(e => e.branch === branch);
     if (!entry || entry.status !== "evaluated") return null;
@@ -121,7 +126,10 @@ window.AgentX = (() => {
       if (request !== generation) return;
       if (!loaded) { target.innerHTML = '<p role="status">No AgentX evaluation is available for this branch.</p>'; return; }
       const {data,entry} = loaded;
+      const archived=new URL(location.href).searchParams.get("campaign")==="finite-v1";
+      const activeUrl=new URL(location.href);activeUrl.searchParams.delete("campaign");
       target.innerHTML = `<p class="evidence-brief">${esc(branch)} · evaluated ${esc(data.snapshot.commit_sha.slice(0,12))} · ${esc(data.snapshot.completed_at)}${entry.last_update?.status === "failed" ? " · Update failed; showing previous results" : ""}${data.snapshot.preview ? " · Preview" : ""}</p>` +
+        (archived?`<p class="agentx-beta">Archived finite campaign. <a href="${esc(activeUrl)}">View current campaign ↗</a></p>`:"")+
         `<div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody>${[...new Set(data.runs.map(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])))].map((key,index) => {
           const points=data.runs.filter(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])===key), first=points[0], id=`ax-model-${index}`;
           return `<tr class="agentx-model"><th><button type="button" data-agentx-expand="${id}" aria-expanded="true">▾ ${esc(first.model)}</button><small class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</small></th><td>${esc(first.hardware)} · ${esc(first.backend)}<small>${esc(first.precision)} · TP${first.tensor_parallel}</small></td>${cells(aggregate(points))}</tr>` +
@@ -152,6 +160,11 @@ window.AgentX = (() => {
   function provenance(snapshot,runs) {
     return `<ul class="agentx-notes provenance"><li>${githubIcon} <strong>AISim repository commit:</strong> <a href="https://github.com/ai-dynamo/aisimulate/commit/${esc(snapshot.commit_sha)}" target="_blank" rel="noopener"><code>${esc(snapshot.commit_sha)}</code></a></li><li><span role="img" aria-label="Hugging Face">🤗</span> <strong>Silicon dataset revision:</strong> <code>${esc(snapshot.dataset_revision)}</code></li><li><strong>Measured framework:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.measured_backend_version}`))].map(esc).join("; ")}</li><li><strong>Prediction database:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.prediction_backend_version||"unavailable"}`))].map(esc).join("; ")}</li><li><strong>Evaluated:</strong> ${esc(snapshot.completed_at)}${snapshot.preview?" · Preview":""}</li><li><strong>Wheel SHA256:</strong> <code>${esc(snapshot.wheel_sha256)}</code></li>${[...new Map(runs.flatMap(r=>(r.op_data||[]).map(d=>[d.file,d]))).values()].map(d=>`<li>${githubIcon} <strong>Op data:</strong> <a href="https://github.com/ai-dynamo/aisimulate/blob/${esc(snapshot.commit_sha)}/python/aisimulate/src/aisimulate_core/systems/data/${esc(d.file)}">${esc(d.file)}</a><br><code>${esc(d.sha256)}</code></li>`).join("")}</ul>`;
   }
+  function featureEvidence(point) {
+    const record=point.feature_metadata;
+    if(!record) return '<h2>Silicon features</h2><p>Feature record unavailable for this historical measurement.</p>';
+    return `<h2>Silicon features · HF dataset record</h2><p>Measured settings are saved with the silicon dataset. Enabled does not imply exercised. <a href="../../feature-support-matrix/#agentx">Feature support matrix ↗</a></p><p>Feature taxonomy · <code>${esc(record.taxonomy.revision)}</code></p><div class="table-scroll"><table><thead><tr><th>Feature</th><th>Measured state</th><th>Parameters</th><th>Observed use</th></tr></thead><tbody>${record.features.map(f=>`<tr><th>${esc(f.id.replaceAll("."," · ").replaceAll("_"," "))}</th><td>${esc(f.state.replaceAll("_"," "))}</td><td>${f.parameters.map(p=>`${esc(p.name)}: ${esc(p.value??"unknown")}`).join("; ")||"—"}</td><td>${esc(f.observed.state.replaceAll("_"," "))}${f.observed.count===null?"":` · ${f.observed.count}`}</td></tr>`).join("")}</tbody></table></div>`;
+  }
   async function detail() {
     const root=document.getElementById("agentx-point"), params=new URL(location.href).searchParams, branch=params.get("branch")||"main";
     let renderer;
@@ -160,17 +173,24 @@ window.AgentX = (() => {
       branchSelect.innerHTML=catalog.branches.map(e=>`<option value="${esc(e.branch)}">${esc(e.branch)}</option>`).join("");
       branchSelect.value=branch;branchSelect.disabled=false;
       branchSelect.addEventListener("change",()=>{const url=new URL(location.href);url.searchParams.set("branch",branchSelect.value);location.href=url;});
-      document.getElementById("back").href=`../?${new URLSearchParams({tab:"agentx",branch})}`;
+      const backParams=new URLSearchParams({tab:"agentx",branch});
+      if(params.get("campaign"))backParams.set("campaign",params.get("campaign"));
+      document.getElementById("back").href=`../?${backParams}`;
       const loaded=await summary(branch,"./");
       if(!loaded) throw new Error("No AgentX evidence is available for this branch.");
+      if(!params.has("campaign") && params.get("category")==="self_collected" && ["length","cache","repeat"].some(k=>params.has(k)) && loaded.data.runs.some(r=>r.category==="self_collected"&&r.boundary==="successful_profile_span")) {
+        const archived=new URL(location.href);archived.searchParams.set("campaign","finite-v1");location.replace(archived);return;
+      }
       const runs=loaded.data.runs.filter(r=>r.category===params.get("category") && r.model===params.get("model") && r.lanes===Number(params.get("lanes")));
       if(!runs.length) throw new Error("This concurrency was not evaluated.");
       const first=runs[0];
       document.getElementById("point-title").textContent=`${first.model} · ${first.lanes} lane${first.lanes===1?"":"s"}`;
       root.innerHTML=`<p class="agentx-identity"><span class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</span> ${esc(first.hardware)} · ${esc(first.backend)} · ${esc(first.precision)} · TP${first.tensor_parallel} · ${source(first)}</p><div id="variant-controls" class="filter-toolbar"></div><p id="selected-run-label" class="evidence-brief"></p><div id="selected-run"></div>`;
       const controls=document.getElementById("variant-controls");
-      controls.hidden=first.category!=="self_collected";
-      if(first.category==="self_collected") {
+      if(params.get("campaign")==="finite-v1")root.insertAdjacentHTML("afterbegin",'<p class="evidence-brief">Archived finite campaign · historical measurements and predictions.</p>');
+      const finite=first.boundary==="complete_finite_cohort";
+      controls.hidden=!finite;
+      if(finite) {
         controls.innerHTML=`<label>Initial prompt<select id="length"><option value="4096">4K</option><option value="32768">32K</option></select></label><label>Initial cache<select id="cache"><option value="cold">Cold</option><option value="warm">Warm</option></select></label><label>Repeat<select id="repeat"><option>0</option><option>1</option><option>2</option></select></label>`;
         for(const [key,fallback] of [["length","4096"],["cache","cold"],["repeat","0"]]) {
           const select=document.getElementById(key),value=params.get(key)||fallback;select.value=[...select.options].some(o=>o.value===value)?value:fallback;
@@ -189,15 +209,15 @@ window.AgentX = (() => {
       const group=aggregate(points);
       async function select() {
         const length=document.getElementById("length")?.value,cache=document.getElementById("cache")?.value,repeat=document.getElementById("repeat")?.value;
-        const run=first.category==="agentx"?first:runs.find(r=>r.initial_input_tokens===Number(length)&&r.cache_state===cache&&r.repeat===Number(repeat));
+        const run=!finite?first:runs.find(r=>r.initial_input_tokens===Number(length)&&r.cache_state===cache&&r.repeat===Number(repeat));
         if(!run)throw new Error("Selected workload is unavailable.");
         const url=new URL(location.href);if(length)for(const [key,value] of Object.entries({length,cache,repeat}))url.searchParams.set(key,value);history.replaceState(null,"",url);
         const target=document.getElementById("selected-run");renderer?.destroy();target.innerHTML='<p role="status">Loading selected run…</p>';
         const point=points.find(p=>p.id===run.id);
-        document.getElementById("selected-run-label").textContent=`Selected run · ${first.category==="agentx"?"Observed outputs":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
+        document.getElementById("selected-run-label").textContent=`Selected run · ${!finite?"Observed outputs · Weka profile":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
         const lanes=`${first.lanes} lane${first.lanes===1?"":"s"}`;
         const accuracy=`<div class="agentx-summary-layout"><section class="agentx-summary-main"><h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p></section>${featureChecklist(point)}</div>`;
-        const evidence=`<h2>Metrics and provenance</h2>${methodology()}${provenance(point.snapshot,[point])}<h2>Measured configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
+        const evidence=`<h2>Metrics and provenance</h2>${methodology()}${provenance(point.snapshot,[point])}${featureEvidence(point)}<h2>AISim replay configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
         target.innerHTML=`<div class="replay-dashboard embedded ${document.documentElement.dataset.theme==="light"?"light":""}">${fragment}</div>`;
         const state=new URLSearchParams(location.hash.slice(1)),view=state.get("view"),stage=state.get("stage")==="preparation"?"preparation":"profile";
         const report=point.report||{metadata:{},prediction:{},telemetry:{completion_status:point.outcome},phases:{profile:{}},requests:[],samples:[],lifecycle:[]};

@@ -112,6 +112,7 @@ areas:
       - tests/test_e2e_accuracy_nightly.py
       - tests/test_agentx_accuracy.py
       - tests/test_agentx_curves.py
+      - tests/test_benchmark_features.py
       - tests/test_e2e_hf_measurements.py
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
@@ -186,6 +187,8 @@ shared:
   - glob: tests/test_agentx_accuracy.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_agentx_curves.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_benchmark_features.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_hf_measurements.py
     owners: [forward-pass-engine, replay, infra, maintainers]

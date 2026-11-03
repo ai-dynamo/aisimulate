@@ -450,12 +450,18 @@ def test_public_comparison_rejects_invalid_pairing_and_preparation_scores(malfor
         validate(value)
 
 
-def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays():
+@pytest.mark.parametrize("clock", ["ms", "ns"])
+def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays(clock):
     dataset, silicon = fixture()
     dataset["reference"][0]["chunks"] = [
         {"at_ms": EPOCH / 1e6 + 500, "count": 1},
         {"at_ms": EPOCH / 1e6 + 1000, "count": 2},
     ]
+    if clock == "ns":
+        dataset["reference"][0]["chunks"] = [
+            {"at_ns": str(EPOCH + 500_000_000), "count": 1},
+            {"at_ns": str(EPOCH + 1_000_000_000), "count": 2},
+        ]
     charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]
     score = charts["throughput_delivered"]["scores"][0]
     assert score["reason"] is None and score["count"] > 0

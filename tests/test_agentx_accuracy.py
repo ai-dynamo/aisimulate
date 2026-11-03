@@ -255,8 +255,13 @@ def test_units_finite_cohort_delays_and_profile_boundary():
     assert x["silicon"]["ttft_ms"] == 100
     assert all(v is None for v in x["point_errors"].values())
     assert x["request_errors"]["ttft_ms"]["count"] == 0
-    with pytest.raises(ValueError, match="Duplicate"):
-        score([observation(), observation()], [], "successful_profile_span")
+    ambiguous = score([observation(), observation()], [observation()], "successful_profile_span")
+    assert ambiguous["coverage"]["ambiguous_measurement"] == 2
+    assert ambiguous["coverage"]["measured"] == len(ambiguous["pairs"]) == 2
+    assert ambiguous["request_errors"]["ttft_ms"]["count"] == 0
+    unknown = score([observation(identity_valid=False)], [observation()], "successful_profile_span")
+    assert unknown["coverage"]["missing_measurement_identity"] == 1
+    assert unknown["request_errors"]["ttft_ms"]["count"] == 0
 
 
 def test_qwen_preparation_relabel_and_native_milliseconds():

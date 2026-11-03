@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_agentx_accuracy import bundle, result
+from test_benchmark_features import metadata as feature_fixture
 
 from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import canonical
@@ -32,9 +33,9 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def fixtures(site):
+def fixtures(site, weka=False):
     destination = site / "e2e-accuracy"
-    shutil.copytree(ROOT / "pages/e2e-accuracy", destination)
+    shutil.copytree(ROOT / "pages/e2e-accuracy", destination, dirs_exist_ok=True)
     source = destination / "agentx"
     write_assets(ROOT, source)
     runs = []
@@ -57,6 +58,28 @@ def fixtures(site):
                             boundary="complete_finite_cohort",
                         )
                     )
+    if weka:
+        archive = source / "archive/finite-v1"
+        shutil.copytree(source / "branches", archive / "branches")
+        shutil.copyfile(source / "branches.json", archive / "branches.json")
+        runs = [run for run in runs if run["category"] == "agentx"]
+        for lanes in (1, 4, 8, 10, 13, 14):
+            feature = feature_fixture()
+            feature["benchmark_id"] = f"qwen-weka-l{lanes}"
+            runs.append(
+                result(
+                    id=feature["benchmark_id"],
+                    category="self_collected",
+                    model="Qwen/Qwen3.5-397B-A17B",
+                    backend="vllm",
+                    lanes=lanes,
+                    initial_input_tokens=None,
+                    cache_state="recorded",
+                    repeat=0,
+                    boundary="successful_profile_span",
+                    feature_metadata=feature,
+                )
+            )
     report = {
         "schema": "aisimulate.replay.dashboard.v1",
         "metadata": {"title": "Replay", "model": "Test model"},
@@ -391,6 +414,28 @@ async def check():
                 await page.locator("#branch-select").select_option("main")
                 await expect(page.locator(".agentx-table")).to_have_count(1)
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                fixtures(site, weka=True)
+                await page.goto(f"http://127.0.0.1:{server.server_port}/e2e-accuracy/?tab=agentx&branch=main")
+                await expect(page.locator(".agentx-table tr[data-agentx-parent]")).to_have_count(12)
+                qwen = page.locator(".agentx-model").filter(has_text="Qwen/")
+                await expect(qwen.locator("button")).to_have_attribute("aria-expanded", "true")
+                await page.goto(
+                    f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=14"
+                )
+                await expect(page.locator("#selected-run-label")).to_contain_text("Weka profile")
+                await expect(page.locator("#variant-controls")).to_be_hidden()
+                await expect(page.locator("#length")).to_have_count(0)
+                await page.locator('[data-view="evidence"]').click()
+                await expect(page.locator("#view-evidence")).to_contain_text("HF dataset record")
+                await expect(page.locator("#view-evidence")).to_contain_text("Enabled does not imply exercised")
+                await page.goto(
+                    f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=16&length=32768&cache=warm&repeat=2"
+                )
+                await expect(page).to_have_url(re.compile("campaign=finite-v1"))
+                await expect(page.locator("#selected-run-label")).to_contain_text("warm · repeat 2")
+                await expect(page.locator("#repeat")).to_have_value("2")
+                await page.locator("#back").click()
+                await expect(page.locator("#agentx-content")).to_contain_text("Archived finite campaign")
                 assert not errors, errors
                 await browser.close()
         finally:

@@ -326,13 +326,20 @@ def reference_key(row):
 def match_rows(dataset, native, reference, namespace_map):
     if dataset.get("reference") and all("key" in r for r in dataset["reference"]):
         candidates = defaultdict(list)
+        measured = defaultdict(list)
+        for row in reference:
+            measured[row["key"]].append(row)
         for row in native:
             candidates[row.get("request_id")].append(row)
         return [
             (
                 r,
-                candidates[r["key"]][0] if len(candidates[r["key"]]) == 1 else None,
-                None if len(candidates[r["key"]]) == 1 else "missing_or_ambiguous_prediction",
+                candidates[r["key"]][0] if len(candidates[r["key"]]) == len(measured[r["key"]]) == 1 else None,
+                "ambiguous_reference_source"
+                if len(measured[r["key"]]) > 1
+                else None
+                if len(candidates[r["key"]]) == 1
+                else "missing_or_ambiguous_prediction",
             )
             for r in reference
         ]
@@ -818,7 +825,12 @@ def build_phase(dataset, silicon, namespace_map, selected):
         delivered = [0.0] * len(rt)
         for request in streamed:
             for chunk in request["chunks"]:
-                index = bisect.bisect_left(rt, (chunk["at_ms"] - integer(measured["start_ns"]) / 1e6) / 1000)
+                elapsed = (
+                    (integer(chunk["at_ns"]) - integer(measured["start_ns"])) / 1e9
+                    if "at_ns" in chunk
+                    else (chunk["at_ms"] - integer(measured["start_ns"]) / 1e6) / 1000
+                )
+                index = bisect.bisect_left(rt, elapsed)
                 if index < len(delivered):
                     delivered[index] += chunk["count"]
     chart(

@@ -133,7 +133,7 @@ def prepare(repo, output):
             text=True,
         ).splitlines(),
     }
-    selected, updates = {}, {}
+    selected, updates, finite_archive = {}, {}, {}
     try:
         runs = api("actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100")["workflow_runs"]
     except urllib.error.HTTPError as exc:
@@ -209,6 +209,10 @@ def prepare(repo, output):
                 continue
             if not ancestor(repo, snapshot["commit_sha"], "origin/" + branch):
                 continue
+            qwen = [row for row in summary["runs"] if row["category"] == "self_collected"]
+            if qwen and all(row["boundary"] == "complete_finite_cohort" for row in qwen):
+                validate_bundle(files)
+                finite_archive.setdefault(branch, files)
             prior = selected.get(branch)
             if prior:
                 previous = strict_json(prior["summary.json"])["snapshot"]
@@ -228,6 +232,11 @@ def prepare(repo, output):
             path = output / artifact_key(branch) / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
+    for branch, files in finite_archive.items():
+        for name, content in files.items():
+            path = output / "archive/finite-v1" / artifact_key(branch) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
     output.mkdir(parents=True, exist_ok=True)
     (output / "updates.json").write_bytes(canonical(updates))
 
@@ -242,8 +251,10 @@ def write_assets(repo, destination):
     (destination / "PLOTLY-LICENSE.txt").write_text((source / "plotly-js-LICENSE.txt").read_text())
 
 
-def package(repo, destination, branches, artifacts=None, *, preview=False):
-    write_assets(repo, destination)
+def package(repo, destination, branches, artifacts=None, *, preview=False, _archive=False):
+    if not _archive:
+        write_assets(repo, destination)
+    destination.mkdir(parents=True, exist_ok=True)
     entries = []
     updates = (
         strict_json((artifacts / "updates.json").read_bytes())
@@ -271,6 +282,9 @@ def package(repo, destination, branches, artifacts=None, *, preview=False):
             entry.update(status="evaluated", summary_path=f"branches/{key}/summary.json")
         entries.append(entry)
     (destination / "branches.json").write_bytes(canonical({"schema_version": 1, "branches": entries}))
+    archive = artifacts / "archive/finite-v1" if artifacts and not _archive else None
+    if archive is not None and archive.exists():
+        package(repo, destination / "archive/finite-v1", branches, archive, preview=preview, _archive=True)
 
 
 if __name__ == "__main__":

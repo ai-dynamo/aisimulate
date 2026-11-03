@@ -662,6 +662,17 @@ as well as the selected filter.
 
 ## AgentX beta
 
+The [Qwen Weka collection protocol](../../benchmarks/evidence/accuracy/qwen-weka/README.md)
+defines the replacement six-profile campaign. It remains unpublished until all
+six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
+Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
+silicon records in HF. Evidence displays that saved record separately from
+AISim replay settings; historical missing evidence remains unknown. Public
+projection rejects unrecognized feature fields and private values.
+`?campaign=finite-v1` selects the retained finite archive. After Weka activation,
+legacy Qwen URLs containing length/cache/repeat selectors route there, including
+the old 16-lane point. Weka profiles have no finite-workload selectors.
+
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
 to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
