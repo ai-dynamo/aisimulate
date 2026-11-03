@@ -49,7 +49,12 @@ def qualify_rows(rows, device):
             phase = stage
         else:
             raise ValueError("Unknown numerical forward phase")
-        if context is None or lengths[0] < context or lengths[0] > context + 132:
+        # Finished-request counters omit an already-launched overlap round.
+        # Completion can exceed the output budget by width-1; draft extension
+        # materializes another full width. Do not trim the executed tail.
+        width, output_budget = 4, 128
+        extra = 2 * width - 1 if phase == "draft_extend" else width - 1
+        if context is None or lengths[0] < context or lengths[0] > context + output_budget + extra:
             raise ValueError("Decode KV geometry exceeds the controlled output cohort")
         expected = {"target_verify": 4, "draft": 1, "draft_extend": 4}.get(phase)
         width = row["num_tokens_per_req"]
@@ -78,6 +83,22 @@ def qualify_rows(rows, device):
         if (counts["target_prefill"] != 1 or counts["draft_prefill"] != 1
                 or any(counts[phase] < 10 for phase in ("target_verify", "draft", "draft_extend"))):
             raise ValueError("Incomplete phase geometry; do not select or discard executions")
+        decode = [row for row in values if row["phase"] not in ("target_prefill", "draft_prefill")]
+        if len(decode) % 3:
+            raise ValueError("Incomplete executed draft/verify/extend round")
+        previous_base = None
+        for offset in range(0, len(decode), 3):
+            draft, verify, extend = decode[offset:offset + 3]
+            if [row["phase"] for row in (draft, verify, extend)] != ["draft", "target_verify", "draft_extend"]:
+                raise ValueError("Native phase execution order changed")
+            base = draft["seq_lens"][0]
+            if (draft["positions"] != [base] or verify["seq_lens"] != [base]
+                    or verify["positions"] != list(range(base, base + 4))
+                    or extend["seq_lens"] != [base + 4] or extend["positions"] != verify["positions"]
+                    or (previous_base is None and base != context)
+                    or (previous_base is not None and not 1 <= base - previous_base <= 4)):
+                raise ValueError("Native accepted progress/query materialization is not conserved")
+            previous_base = base
         result[str(context)] = {"counts": dict(counts), "forwards": values}
     return result
 

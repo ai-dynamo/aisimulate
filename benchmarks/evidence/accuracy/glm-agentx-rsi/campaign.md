@@ -2493,3 +2493,28 @@ cleanup: **7680 GPU-seconds**, collector deadline840seconds, same8 B300/64 CPUs/
 1TiB, unchanged native controls/image/settings. Recheck live jobs and source
 checksums before reserving/submitting once. Keep the validation pool untouched;
 no automatic retry after this allowance. Geometry remains diagnostic only.
+
+E046 retry **1016710 completes in434 allocated seconds**, charge3472 GPU-seconds.
+All ten native requests qualify and all eight ranks retain268 numerical records;
+no unattempted request remains. Parent/batch/extern elapsed values agree, so the
+parent is charged once. Total spend is **129830 GPU-seconds /36.0639 hours**;
+remaining **100570 /27.9361 hours**. Op/forward remainder is550 node-seconds;
+validation reserve remains untouched. No GPU job remains active.
+
+The first independent geometry audit rejects the final draft-extension KV extent:
+its original absolute bound `context+132` ignores both accepted-token overshoot
+and an already-launched overlap round. Preserve the failed audit log and its
+signed source. This repeats E040's population distinction, not a bad request or
+an excuse to remove a round. Source-derived correction allows completion to
+exceed output128 by at most width4 minus1, with draft extension materializing
+another full width. Its conservative upper bounds are context+131 for incoming
+round state and context+135 for extension. Actual final incoming/extension
+extents are context+129/+133 in both controls; all44 rounds remain.
+
+The corrected checker additionally reconciles every draft/verify/extend triple:
+phase order; common incoming KV; consecutive width4 positions; extension KV
+increases by4; next-round accepted progress stays1..4. Tests preserve44 executed
+rounds with a +133 extension and reject excessive tails or invalid positions.
+These are numerical forward-batch metadata, not proof of final attention-kernel
+argument extents, unperturbed cadence or request-level round alignment. No error
+metric or eligibility rule changes. Independent corrected audit remains pending.

@@ -7,20 +7,22 @@ import pytest
 from audit_geometry import qualify_rows
 
 
-def records():
+def records(rounds=11):
     result = []
     for context in (8192, 393216):
         prefill = 8192 if context == 8192 else 64
-        for phase, tokens, graph in [("step[EXTEND bs=1]", prefill, False),
-                                      ("step[DRAFT bs=1]", prefill, False)] + [
-                                          item for _ in range(11) for item in [
-                                              ("draft", 1, True), ("step[VERIFY bs=1]", 4, False),
-                                              ("draft_extend", 4, True)]]:
+        phases = [("step[EXTEND bs=1]", prefill, False, context, context - prefill),
+                  ("step[DRAFT bs=1]", prefill, False, context, context - prefill)]
+        for index in range(rounds):
+            base = context + index * 3
+            phases += [("draft", 1, True, base, base), ("step[VERIFY bs=1]", 4, False, base, base),
+                       ("draft_extend", 4, True, base + 4, base)]
+        for phase, tokens, graph, length, position in phases:
             result.append({"schema": "aisimulate.glm-rsi.forward-geometry.v1", "ordinal": len(result),
                            "device": 0, "batch_size": 1, "begin_ns": "1", "end_ns": "2",
-                           "seq_lens": [context], "input_token_count": tokens, "stage": phase,
+                           "seq_lens": [length], "input_token_count": tokens, "stage": phase,
                            "num_tokens_per_req": tokens, "graph_entry": graph,
-                           "positions_bounded": list(range(context - tokens, context)) if tokens <= 64 else None,
+                           "positions_bounded": list(range(position, position + tokens)) if tokens <= 64 else None,
                            "dsa_topk_seed_present": False})
     return result
 
@@ -50,3 +52,9 @@ def test_geometry_keeps_all_executions_and_rejects_incomplete_or_wrong_width():
     changed[2]["status"] = "unavailable"
     with pytest.raises(ValueError, match="Unavailable numerical"):
         qualify_rows(changed, 0)
+    # Preserve the completed request's already-launched full-width overlap tail.
+    tail = qualify_rows(records(rounds=44), 0)
+    assert tail["8192"]["counts"]["target_verify"] == 44
+    assert tail["8192"]["forwards"][-1]["seq_lens"] == [8192 + 133]
+    with pytest.raises(ValueError, match="Decode KV geometry"):
+        qualify_rows(records(rounds=46), 0)
