@@ -238,15 +238,25 @@ async def check():
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator("#profile-accuracy h2")).to_have_text("Concurrency summary")
                 await expect(frame.locator("#profile-accuracy table")).to_have_count(1)
-                await expect(frame.locator(".agentx-summary-table thead th")).to_have_count(8)
+                await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(
+                    ["Metric", "Silicon", "AISim", "Error", "Samples"]
+                )
+                await expect(frame.locator(".agentx-summary-table tbody tr")).to_have_count(5)
                 await expect(frame.locator("#profile-accuracy")).not_to_contain_text("Selected run accuracy")
-                values = frame.locator(".agentx-point-values")
-                await expect(values).to_have_count(3)
-                await expect(values.nth(0)).to_have_text("Silicon10 ms/tokenAISim15 ms/token")
-                await expect(values.nth(1)).to_have_text("Silicon100 msAISim120 ms")
-                await expect(values.nth(2)).to_contain_text("output tokens/s")
-                await expect(frame.locator(".comparison-source-dot.silicon")).to_have_count(3)
-                await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(3)
+                for metric, silicon, prediction in [
+                    ("point-tpot_ms", "10", "15"),
+                    ("point-ttft_ms", "100", "120"),
+                    ("request-ttft_ms", "100", "120"),
+                    ("request-tpot_ms", "10", "15"),
+                ]:
+                    row = frame.locator(f'tr[data-metric="{metric}"]')
+                    await expect(row.locator("td").nth(0)).to_have_text(silicon)
+                    await expect(row.locator("td").nth(1)).to_have_text(prediction)
+                await expect(frame.locator('tr[data-metric="request-ttft_ms"] .agentx-samples')).to_have_text(
+                    "12 requests"
+                )
+                await expect(frame.locator(".comparison-source-dot.silicon")).to_have_count(1)
+                await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(1)
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator("#profile-accuracy ul")).to_have_count(0)
                 await expect(frame).not_to_contain_text("Request accounting")
@@ -360,6 +370,12 @@ async def check():
                 await expect(frame.locator("#view-evidence")).to_contain_text("Silicon dataset revision")
                 await page.set_viewport_size({"width": 390, "height": 844})
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                await frame.locator('[data-view="dashboard"]').click()
+                await expect(frame.locator(".agentx-summary-table .agentx-samples:visible")).to_have_count(0)
+                await expect(frame.locator(".agentx-inline-count:visible")).to_have_count(5)
+                assert await frame.locator("#profile-accuracy .table-scroll").evaluate(
+                    "node => node.scrollWidth <= node.clientWidth + 1"
+                )
                 await page.locator("#back").click()
                 await expect(page.locator("#agentx-view")).to_be_visible()
                 await page.locator("#branch-select").select_option("release/empty")

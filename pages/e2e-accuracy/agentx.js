@@ -16,20 +16,37 @@ window.AgentX = (() => {
     for (const metric of ["ttft_ms","tpot_ms"]) {
       const count = runs.reduce((n,r) => n+r.request_errors[metric].count,0);
       const sum = runs.reduce((n,r) => n+r.request_errors[metric].sum_ape,0);
-      request_errors[metric] = {count, sum_ape:sum, mape:count ? sum/count : null};
+      let silicon=null,prediction=null;
+      if(runs.every(r=>Array.isArray(r.pairs))) {
+        const pairs=runs.flatMap(r=>r.pairs).filter(p=>finite(p[metric+"_ape"]));
+        if(pairs.length!==count || pairs.some(p=>!finite(p["silicon_"+metric]) || !finite(p["predicted_"+metric]))) throw new Error("Request measurements do not reconcile with scored counts.");
+        silicon=avg(pairs.map(p=>p["silicon_"+metric]));
+        prediction=avg(pairs.map(p=>p["predicted_"+metric]));
+      }
+      request_errors[metric] = {count, sum_ape:sum, mape:count ? sum/count : null,silicon,prediction};
     }
     const values=Object.fromEntries(["silicon","prediction"].map(source=>[source,Object.fromEntries(metrics.map(m=>[m,avg(runs.filter(r=>finite(r.point_errors[m])).map(r=>r[source]?.[m]))]))]));
     return {...values,point_errors:Object.fromEntries(metrics.map(m => [m,avg(runs.map(r => r.point_errors[m]))])),point_counts:Object.fromEntries(metrics.map(m=>[m,runs.filter(r=>finite(r.point_errors[m])).length])),request_errors,coverage};
   }
 
-  function cells(result, withValues=false) {
-    return metrics.map(m => {
-      const unit={tpot_ms:"ms/token",ttft_ms:"ms",output_tokens_s:"output tokens/s"}[m];
-      const values=withValues?`<div class="agentx-point-values">${[["silicon","Silicon","silicon"],["prediction","AISim","aisim"]].map(([source,label,color])=>`<span class="agentx-source-value"><span><span class="comparison-source-dot ${color}" aria-hidden="true"></span>${label}</span><strong>${fmt(result[source][m],"")} <span class="agentx-value-unit">${unit}</span></strong></span>`).join("")}</div>`:"";
-      return `<td>${values}<span class="agentx-point-error">${fmt(result.point_errors[m])}</span><small>n=${result.point_counts[m]} run${result.point_counts[m]===1?"":"s"}</small></td>`;
-    }).join("") +
+  function cells(result) {
+    return metrics.map(m => `<td>${fmt(result.point_errors[m])}<small>n=${result.point_counts[m]} run${result.point_counts[m]===1?"":"s"}</small></td>`).join("") +
       ["ttft_ms","tpot_ms"].map(m => `<td title="${result.request_errors[m].count} scored requests">${fmt(result.request_errors[m].mape)}<small>n=${result.request_errors[m].count.toLocaleString()}</small></td>`).join("") +
       `<td>${(result.coverage.matched || 0).toLocaleString()} / ${(result.coverage.measured || 0).toLocaleString()}</td>`;
+  }
+  function comparisonRows(result) {
+    return [
+      ["point","tpot_ms","TPOT","ms/token"],
+      ["point","ttft_ms","TTFT","ms"],
+      ["point","output_tokens_s","Output throughput","output tokens/s"],
+      ["request","ttft_ms","TTFT","ms"],
+      ["request","tpot_ms","TPOT","ms/token"],
+    ].map(([scope,metric,label,unit])=>{
+      const request=scope==="request",values=request?result.request_errors[metric]:null;
+      const count=request?values.count:result.point_counts[metric];
+      const samples=`${count.toLocaleString()} ${request?"request":"run"}${count===1?"":"s"}`;
+      return `<tr data-metric="${scope}-${metric}"${request&&metric==="ttft_ms"?' class="agentx-request-start"':""}><th scope="row">${request?"Request":"Point"} ${label}<small>${unit}</small></th><td>${fmt(request?values.silicon:result.silicon[metric],"")}</td><td>${fmt(request?values.prediction:result.prediction[metric],"")}</td><td class="agentx-error"><strong>${fmt(request?values.mape:result.point_errors[metric])}</strong><small>${request?"MAPE":"Mean point error"}</small><small class="agentx-inline-count">${samples}</small></td><td class="agentx-samples">${samples}</td></tr>`;
+    }).join("");
   }
   const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TTFT MAPE</th><th scope="col">Request TPOT MAPE</th><th scope="col">Matched / measured</th></tr>`;
   function source(run) {
@@ -109,7 +126,7 @@ window.AgentX = (() => {
       if(!loaded) throw new Error("No AgentX evidence is available for this branch.");
       const runs=loaded.data.runs.filter(r=>r.category===params.get("category") && r.model===params.get("model") && r.lanes===Number(params.get("lanes")));
       if(!runs.length) throw new Error("This concurrency was not evaluated.");
-      const group=aggregate(runs),first=runs[0];
+      const first=runs[0];
       document.getElementById("point-title").textContent=`${first.model} · ${first.lanes} lane${first.lanes===1?"":"s"}`;
       root.innerHTML=`<p class="agentx-identity"><span class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</span> ${esc(first.hardware)} · ${esc(first.backend)} · ${esc(first.precision)} · TP${first.tensor_parallel} · ${source(first)}</p><div id="variant-controls" class="filter-toolbar"></div><p id="selected-run-label" class="evidence-brief"></p><div id="selected-run"></div>`;
       const controls=document.getElementById("variant-controls");
@@ -120,20 +137,27 @@ window.AgentX = (() => {
           const select=document.getElementById(key),value=params.get(key)||fallback;select.value=[...select.options].some(o=>o.value===value)?value:fallback;
         }
       }
-      const fragment=await fetch("./dashboard-body.html").then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();});
-      let generation=0;
+      document.getElementById("selected-run").textContent="Loading concurrency measurements…";
+      const [fragment,points]=await Promise.all([
+        fetch("./dashboard-body.html").then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();}),
+        Promise.all(runs.map(async run=>{
+          if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path))throw new Error("Invalid detail path.");
+          const point=await json(loaded.base+run.detail_path);
+          if(point.id!==run.id||JSON.stringify(point.snapshot)!==JSON.stringify(loaded.data.snapshot)||JSON.stringify(point.request_errors)!==JSON.stringify(run.request_errors))throw new Error("Point provenance or request summary mismatch.");
+          return point;
+        })),
+      ]);
+      const group=aggregate(points);
       async function select() {
-        const version=++generation,length=document.getElementById("length")?.value,cache=document.getElementById("cache")?.value,repeat=document.getElementById("repeat")?.value;
+        const length=document.getElementById("length")?.value,cache=document.getElementById("cache")?.value,repeat=document.getElementById("repeat")?.value;
         const run=first.category==="agentx"?first:runs.find(r=>r.initial_input_tokens===Number(length)&&r.cache_state===cache&&r.repeat===Number(repeat));
         if(!run)throw new Error("Selected workload is unavailable.");
         const url=new URL(location.href);if(length)for(const [key,value] of Object.entries({length,cache,repeat}))url.searchParams.set(key,value);history.replaceState(null,"",url);
         const target=document.getElementById("selected-run");renderer?.destroy();target.innerHTML='<p role="status">Loading selected run…</p>';
-        if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path))throw new Error("Invalid detail path.");
-        const point=await json(loaded.base+run.detail_path);if(version!==generation)return;
-        if(point.id!==run.id||JSON.stringify(point.snapshot)!==JSON.stringify(loaded.data.snapshot))throw new Error("Point provenance mismatch.");
+        const point=points.find(p=>p.id===run.id);
         document.getElementById("selected-run-label").textContent=`Selected run · ${first.category==="agentx"?"Observed outputs":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
         const lanes=`${first.lanes} lane${first.lanes===1?"":"s"}`;
-        const accuracy=`<h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes}. Values and point errors average scored runs equally; request MAPE gives each scored request equal weight.</p><div class="table-scroll"><table class="agentx-table agentx-summary-table"><thead>${headings}</thead><tbody><tr><th scope="row">${lanes}</th><td>${esc(first.hardware)} · ${esc(first.backend)}</td>${cells(group,true)}</tr></tbody></table></div>`;
+        const accuracy=`<h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p>`;
         const evidence=`<h2>Metrics and provenance</h2>${methodology()}${provenance(point.snapshot,[point])}<h2>Measured configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
         target.innerHTML=`<div class="replay-dashboard embedded ${document.documentElement.dataset.theme==="light"?"light":""}">${fragment}</div>`;
         const state=new URLSearchParams(location.hash.slice(1)),view=state.get("view"),stage=state.get("stage")==="preparation"?"preparation":"profile";

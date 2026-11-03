@@ -1123,9 +1123,33 @@ test("AgentX pools requests directly and averages run errors equally", () => {
   }
   assert.equal(result.request_errors.ttft_ms.mape,25);
   assert.equal(result.request_errors.ttft_ms.count,4);
+  assert.equal(result.request_errors.ttft_ms.silicon,null);
+  const pair = (silicon, prediction, error) => ({
+    silicon_ttft_ms:silicon, predicted_ttft_ms:prediction, ttft_ms_ape:error,
+    silicon_tpot_ms:silicon, predicted_tpot_ms:prediction, tpot_ms_ape:error,
+  });
+  context.input[0].pairs=[pair(100,200,100)];
+  context.input[1].pairs=[pair(900,900,0),pair(900,900,0),pair(900,900,0)];
+  context.input[2].pairs=[pair(0,42,null)];
+  const pooled = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(pooled.request_errors.ttft_ms.silicon,700);
+  assert.equal(pooled.request_errors.ttft_ms.prediction,725);
+  assert.equal(pooled.request_errors.ttft_ms.mape,25);
+  context.input[1].pairs[0].tpot_ms_ape=null;
+  context.input[1].request_errors.tpot_ms.count=2;
+  const perMetric = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
+  assert.equal(perMetric.request_errors.tpot_ms.count,3);
+  assert.equal(perMetric.request_errors.tpot_ms.silicon,1900/3);
+  assert.equal(perMetric.request_errors.tpot_ms.prediction,2000/3);
+  assert.equal(perMetric.request_errors.ttft_ms.silicon,700);
+  context.input[1].request_errors.tpot_ms.count=3;
+  assert.throws(()=>vm.runInContext("window.AgentX.aggregate(input)",context),/do not reconcile/);
   context.input = [run(null,0,0,0,null)];
+  context.input[0].pairs=[pair(0,42,null)];
   const unavailable = JSON.parse(vm.runInContext("JSON.stringify(window.AgentX.aggregate(input))",context));
   assert.equal(unavailable.silicon.ttft_ms,null);
   assert.equal(unavailable.prediction.ttft_ms,null);
   assert.equal(unavailable.point_errors.ttft_ms,null);
+  assert.equal(unavailable.request_errors.ttft_ms.silicon,null);
+  assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
 });

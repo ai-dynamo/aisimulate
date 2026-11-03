@@ -752,12 +752,16 @@ The comparison timeline fits the full phase into the panel, with a compact
 hash and request ID on one line, with silicon and AISim intervals on separate
 lines. Full identifiers and pairing status remain in the row tooltip and request
 inspection; untimed and unmatched requests retain their rows.
-Taller point-metric cells show blue Silicon and yellow AISim values above each
-point error, with ms/token, ms, and output tokens/s units. Both source values use
-equal-run averages over the metric's scored runs; point errors still average each
-run's error, not the error between those displayed averages. Request MAPE columns
-retain pooled-request scores and counts. The separate selected-run accuracy table
-is omitted; changing the selected workload does not change the concurrency summary.
+The compact concurrency summary has one row per metric and columns for Silicon,
+AISim, error, and samples. All five metrics include both source values. Point rows
+average the metric's scored runs equally; request rows pool the individual pairs
+with a valid APE for that metric, using the same denominator as request MAPE.
+Errors still average individual errors, not the error between displayed means.
+The detail page loads and checks the qualified payloads for its concurrency once,
+then reuses them for workload selection. No other concurrency's details are fetched.
+On mobile, sample counts move below the error to keep the table within the screen.
+The separate selected-run accuracy table is omitted; changing the selected
+workload does not change the concurrency summary.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 
