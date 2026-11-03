@@ -2577,3 +2577,47 @@ independent GPU/request audit
   a qualifying development result warrants unchanged4/10/13 validation. No
   selection of a smaller cohort or fitted cost can establish a win.
 - **Conclusion:** pending source implementation, lower-layer checks and replay.
+
+E047 implementation is signed/DCO source
+`60598a30a0020aa61af9b30f34c0f36e2167dc2f`, with parity-registry/pin-only children
+`07fd47e9573116cfbb9bbe89e59ed2540f87b9c3` and
+`2794ee90cb6182282d485e0590392251a707ff46`. The model has55 passing native-op
+composition tests. Both complete engine-step/compile-engine parity suites pass
+**390 tests**. The new golden adds one direct mixed-step record, leaving every
+existing record unchanged. Initial smoke-case placement is rejected during
+review because CLI helpers omit `nextn`; its four uncommitted new records are
+restored before a dedicated native mixed-step MTP case is pinned. The earlier
+partial parity run is stopped and retained, then the corrected full suites pass.
+The synthetic all-dense test initially assumes one precision group; its corrected
+assertion preserves the total across all checkpoint-declared groups. Both setup
+issues remain distinct from model performance results.
+
+The exact signed60598 model wheel SHA256 is
+`55e478dee36a92f5f03421423971f55ad08d9e16633374dd71ab4e3ed8c7e5bd`,
+installed native SHA256
+`e1eb83e32cde183153e36f3cde65a1c1bd8aca8fbb73433e2697d3ee25c0f693`.
+Every one of2351 packaged op-data files is byte-identical to E042/the frozen
+baseline; their manifest SHA256 remains
+`589e9e7c8ed44cff5fceac0c1199c3783df1d76de729c8e49ee8bfdc24cf276c`.
+No Rust production source differs from EDDB; packaged Python model bytes match
+the signed source. Use a separate dependency-pinned runtime. Qwen8/32/128
+request controls all pass with the original approved0.31.0 overlay.
+
+Canonical before/after probes use the same metrics, identity, op data and
+per-attention-DP-rank list. Only dense/MoE/shared/router operations change;
+other operations remain numerically identical and no fallback is reported.
+At incoming KV8192, packed four-token verification changes7.239814→7.193873ms;
+131072 changes7.618652→7.572711ms;393216 changes8.171010→8.125068ms.
+The three fixed8K-prefill probes each decrease1.502171ms. These are model
+composition deltas, not matched GPU timing or request-MAPE wins. Audit SHA256
+`16d5516abd109f8f3f24bbb479909baf3c6ccc67459106ea28ec3ce4203e7ad9`.
+Original configuration fixes capacity at59124 blocks; preserve it rather than
+letting corrected resident-weight accounting change the experiment's capacity.
+
+**Validation scope clarified before opening replay scores:** E047 is an
+implemented/source-qualified target-composition repair. The user's required
+all-six regression check applies even if development accuracy is negative.
+First execute/audit1/8/14, then run unchanged4/10/13 once, with no tuning or
+source change from their results. This supersedes E047's earlier conditional
+held-out sentence; it does not relax frozen-cohort, win or publication rules.
+No replay result has been opened at this clarification. GPU cost remains zero.
