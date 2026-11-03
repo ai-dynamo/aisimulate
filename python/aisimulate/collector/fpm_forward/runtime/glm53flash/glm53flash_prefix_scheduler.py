@@ -524,8 +524,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 # step holds every request. vLLM v0.31.0 schedules at most max_num_batched_tokens tokens in one step
                 # (scheduler.py:585, :1073, :1313-1314). The suffixes of two or more requests above that budget spread
                 # over several steps, so every repetition is rejected: the cached prefix cannot grow beyond the seed.
-                # One request may prefill its suffix over several steps (scheduler.py:468-480), because no other request
-                # can decode before it.
+                # One request may prefill its suffix over several steps (scheduler.py:468-480): no other request can
+                # decode before it, and _bench_should_record_scheduled records no step with a prefill request.
                 budget = self.scheduler_config.max_num_batched_tokens
                 prompts = [self._glm_decode_prompt(context) for context in contexts]
                 total = sum(prompt - self._glm_decode_seed(prompt, unit) for prompt in prompts)

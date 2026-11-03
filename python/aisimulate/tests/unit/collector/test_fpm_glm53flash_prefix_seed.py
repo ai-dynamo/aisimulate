@@ -242,6 +242,83 @@ class Engine:
         return True
 
 
+class BudgetEngine(Engine):
+    """Schedules like vLLM v0.31.0 with a token budget per step, on hash blocks of ``unit`` tokens.
+
+    Running requests go first, then waiting requests in order (scheduler.py:630, :1073). A prefill chunk that ends
+    before the prompt end is cut to a block boundary when the block fits the budget. A chunk that the cut empties waits:
+    a running request is skipped, and a waiting one ends the admissions of the step (scheduler.py:473-480, :724-742,
+    :1134-1135). vLLM discards the token sampled after a partial prefill (gpu_model_runner.py:2089-2091, :3719-3722),
+    so a request has no output token until its prompt is complete. Until then Dynamo counts it as a prefill request
+    (output.py:189-191, instrumented_scheduler.py:2078-2085 at ai-dynamo/dynamo@395f0240).
+    """
+
+    def __init__(self, scheduler, *, budget, unit):
+        super().__init__(scheduler, unit=unit)
+        self.budget = budget
+
+    def chunk(self, request, tokens):
+        end = request.computed + tokens
+        if end < len(request.prompt) and self.unit <= self.budget:
+            end = end // self.unit * self.unit
+        return max(end - request.computed, 0)
+
+    def step(self):
+        s = self.s
+        active = [r for r in s.requests.values() if r.outputs < r.max_tokens]
+        if not active:
+            return False
+        budget, stepped, new_reqs = self.budget, [], []
+        cached = types.SimpleNamespace(req_ids=[], num_computed_tokens=[])
+        for r in [r for r in active if r not in s.waiting]:
+            tokens = min(1, budget) if r.outputs else self.chunk(r, min(len(r.prompt) - r.computed, budget))
+            if tokens:
+                cached.req_ids.append(r.request_id)
+                cached.num_computed_tokens.append(r.computed)
+                stepped.append((r, tokens))
+                budget -= tokens
+        for r in [r for r in s.waiting if r in active]:
+            r.computed = self.hit(r)
+            tokens = self.chunk(r, min(len(r.prompt) - r.computed, budget))
+            if not tokens:
+                break
+            s.waiting.remove(r)
+            new_reqs.append(types.SimpleNamespace(req_id=r.request_id, num_computed_tokens=r.computed))
+            stepped.append((r, tokens))
+            budget -= tokens
+        metrics, scheduled = Metrics(), {}
+        for r, tokens in stepped:
+            scheduled[r.request_id] = tokens
+            if r.outputs:
+                metrics.num_decode_requests += 1
+                metrics.sum_decode_kv_tokens += r.computed
+            else:
+                metrics.num_prefill_requests += 1
+                metrics.sum_prefill_tokens += tokens
+                metrics.sum_prefill_kv_tokens += r.computed
+        for r, tokens in stepped:
+            r.computed += tokens
+            if r.outputs:
+                r.outputs += 1
+            elif r.computed == len(r.prompt):
+                r.outputs = 1
+                for length in range(self.unit, len(r.prompt) + 1, self.unit):
+                    self.cache[r.salt].add(tuple(r.prompt[:length]))
+        total = sum(scheduled.values())
+        out = types.SimpleNamespace(
+            total_num_scheduled_tokens=total,
+            metrics=metrics,
+            scheduled_new_reqs=new_reqs,
+            scheduled_cached_reqs=cached,
+            num_scheduled_tokens=scheduled,
+        )
+        s._update_from_output(out, types.SimpleNamespace(cudagraph_stats=Stats(total, total, 0, "FULL")))
+        for r, _ in stepped:
+            if r.outputs >= r.max_tokens:
+                s.requests.pop(r.request_id, None)
+        return True
+
+
 def make_scheduler(module, tmp_path, points):
     s = module.Glm53FlashPrefixSeedScheduler.__new__(module.Glm53FlashPrefixSeedScheduler)
     s.requests, s.waiting, s.saved, s.clock = {}, [], [], 0
@@ -531,6 +608,64 @@ def test_explicit_decode_points_prefill_their_suffixes_in_one_step(monkeypatch, 
     )
     # One request may prefill its suffix over several steps, because no other request can decode before it.
     assert [point.batch_size for point in build(1, budget=1024)._bench_grid] == [1]
+
+
+def chunked_decode(module, tmp_path, batch_size, budget):
+    """A decode point at context 250 on 64-token hash blocks, scheduled with a token budget.
+
+    Each request has a 249-token prompt and a 192-token seed, so it prefills a suffix of 57 tokens before it decodes.
+    """
+    points = [Point("decode", 1, batch_size, 0, batch_size * 250)]
+    s = make_scheduler(module, tmp_path, points)
+    s._glm_serving = {"hash_block_size": 64}
+    s.scheduler_config.max_num_batched_tokens = budget
+    return s, BudgetEngine(s, budget=budget, unit=64)
+
+
+def test_one_request_records_only_its_decode_steps_after_a_chunked_suffix(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+    # The 16-token budget is below the 64-token block, so vLLM prefills the 57-token suffix in four chunks.
+    s, engine = chunked_decode(module, tmp_path, 1, 16)
+    run(s, engine, "decode")
+
+    ((point, fpms),) = s.saved
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"] and len(record["repetitions"]) == 15
+    for repetition in record["repetitions"]:
+        assert repetition["prefill_chunks"] == [[[192, 16]], [[208, 16]], [[224, 16]], [[240, 9]]]
+        # The producer records no step with a prefill request, so the first recorded step is the first decode step,
+        # at the full prompt, and the second one is the measured step.
+        recorded = [
+            (step["num_prefill_requests"], step["num_decode_requests"], step["sum_decode_kv_tokens"])
+            for step in (fpm["scheduled_requests"] for fpm in repetition["fpms"])
+        ]
+        assert recorded == [(0, 1, 249), (0, 1, 250)]
+    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 250
+
+
+def test_two_requests_whose_suffixes_exceed_the_budget_are_never_in_lockstep(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+    # Two suffixes of 57 tokens need 114 tokens. A budget of 116 prefills both in one step, so they decode together.
+    s, engine = chunked_decode(module, tmp_path, 2, 116)
+    run(s, engine, "decode")
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert not record["rejected_repetitions"]
+    for repetition in record["repetitions"]:
+        assert repetition["prefill_chunks"] == [[[192, 57], [192, 57]]]
+        assert repetition["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 498
+
+    # A budget of 112 admits the second suffix one step later. The first request then decodes while the second one
+    # prefills, so the first recorded step holds the two requests at contexts 250 and 249, and every repetition is
+    # rejected: the cached prefix cannot grow beyond the seed.
+    (tmp_path / "split").mkdir()
+    s, engine = chunked_decode(module, tmp_path / "split", 2, 112)
+    with pytest.raises(RuntimeError, match="too many rejected repetitions"):
+        run(s, engine, "decode")
+    assert not s.saved
+    first_steps = [record["fpms"][0]["scheduled_requests"] for record in s._glm_rejected]
+    assert [(step["num_decode_requests"], step["sum_decode_kv_tokens"]) for step in first_steps] == [(2, 499)] * 11
 
 
 def hub_stand_in(monkeypatch, cached):

@@ -90,8 +90,8 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   suffixes together exceed `--max-num-batched-tokens`. If they exceed it, vLLM
   prefills them over several steps. The first decode step then does not hold
   every request, and the producer rejects every repetition. One request can
-  prefill its suffix over several steps, because no other request decodes
-  before it.
+  prefill its suffix over several steps. No other request decodes before it,
+  and the producer records no step with a prefill request.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
@@ -210,11 +210,12 @@ the two points of that phase. The smoke takes no point of the other phase. The
 smoke runs under the plan hash of formal collection and keeps its own campaign
 directory. The prefill points are one request with 64 new tokens, once without
 a prefix and once after one hash block of prefix. The decode points are one
-request and two requests, each at the smallest context of the list above one
-hash block. When the list has no decode point of two requests above one hash
-block, the decode points are one request at each of the two smallest contexts of
-the list above one hash block. That happens when `max_batch_size` is 1, or when
-the cache capacity leaves room for one request only.
+request and two requests at the smallest context above one hash block where the
+list holds both. The token budget can leave a smaller context with one request
+only. If no context above one hash block holds two requests, the smoke takes one
+request at each of the two smallest contexts above the block. A `max_batch_size`
+of 1 or a cache with room for one request causes this. So does a budget too
+small for two suffixes at each context above the block.
 A direct `collector --fpm` call can pass its own manifest with
 `--fpm-benchmark-points-file`. The collector refuses that file together with
 `--smoke`.

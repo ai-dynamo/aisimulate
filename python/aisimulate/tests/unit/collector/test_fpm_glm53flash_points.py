@@ -225,10 +225,60 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
     # The live smoke of an aggregated TP4 request stages these bytes, so their digest stays pinned.
     assert digest == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
     assert digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    # Without the point of two requests at 4,096, the pair comes from 8,192, the next context that holds both.
     without = {**payload, "decode": [point for point in payload["decode"] if point != subset["decode"][1]]}
+    assert glm_smoke_subset(without, 2176)[0]["decode"] == [
+        {"batch_size": 1, "total_kv_read_tokens": 8192},
+        {"batch_size": 2, "total_kv_read_tokens": 16384},
+    ]
+    # The generator puts one request on the batch axis of every context, so a list whose points of two requests above
+    # one hash block have no point of one request at their context is incomplete.
+    unmatched = {
+        **payload,
+        "decode": [
+            point for point in payload["decode"] if point["batch_size"] != 1 or point["total_kv_read_tokens"] <= 2176
+        ],
+    }
     with pytest.raises(ValueError) as error:
-        glm_smoke_subset(without, 2176)
+        glm_smoke_subset(unmatched, 2176)
     assert str(error.value) == "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
+@pytest.mark.parametrize(
+    ("token_budget", "decode", "digest"),
+    [
+        # Two suffixes of 1,919 tokens at 4,096 fit the default budget in one step, so the pair stays at 4,096.
+        (
+            8192,
+            [{"batch_size": 1, "total_kv_read_tokens": 4096}, {"batch_size": 2, "total_kv_read_tokens": 8192}],
+            "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce",
+        ),
+        # 3,836 tokens hold one suffix of 1,919 tokens at 4,096 but not two, so 4,096 holds one request only. Two
+        # suffixes of 1,663 tokens at 8,192 fit, so the pair comes from 8,192.
+        (
+            3836,
+            [{"batch_size": 1, "total_kv_read_tokens": 8192}, {"batch_size": 2, "total_kv_read_tokens": 16384}],
+            "b817a7f76c7aea73992af154bee98fed24a0bd1e417e714e8654b62a8d075a70",
+        ),
+    ],
+    ids=["default-budget", "budget-3836"],
+)
+def test_smoke_decode_pair_is_at_the_smallest_context_that_holds_both(token_budget, decode, digest):
+    payload, _, _ = glm_point_manifest(**{**_TP4, "token_budget": token_budget})
+    subset, canonical, subset_digest = glm_smoke_subset(payload, 2176)
+
+    assert subset == {"schema_version": 3, "prefill": _PREFILL_PAIR, "decode": decode}
+    assert all(point in payload[phase] for phase in ("prefill", "decode") for point in subset[phase])
+    assert subset_digest == digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_smoke_subset_serves_every_tp4_token_budget():
+    # 256 sequences need a budget of at least 256 tokens. Every budget up to 8,192 gives four smoke points of its list.
+    for token_budget in range(256, 8193, 4):
+        payload, _, _ = glm_point_manifest(**{**_TP4, "token_budget": token_budget})
+        subset, _, _ = glm_smoke_subset(payload, 2176)
+        assert [len(subset[phase]) for phase in ("prefill", "decode")] == [2, 2], token_budget
+        assert all(point in payload[phase] for phase in ("prefill", "decode") for point in subset[phase])
 
 
 _PREFILL_PAIR = [
@@ -295,8 +345,14 @@ def test_smoke_subset_of_a_decode_role_needs_no_prefill_points():
 @pytest.mark.parametrize("phase", ["prefill", "decode"])
 def test_smoke_subset_of_one_phase_refuses_a_list_without_its_points(phase):
     payload, _, _ = glm_point_manifest(**_TP4)
-    smoke = glm_smoke_subset(payload, 2176)[0][phase]
-    without = {**payload, phase: [point for point in payload[phase] if point not in smoke]}
+    smoke = glm_smoke_subset(payload, 2176)[0]["prefill"]
+    # The prefill smoke takes these two points only. The decode smoke can take any context above one hash block, so
+    # only a list without a decode point above the block lacks its points.
+    keep = {
+        "prefill": lambda point: point not in smoke,
+        "decode": lambda point: point["total_kv_read_tokens"] // point["batch_size"] <= 2176,
+    }[phase]
+    without = {**payload, phase: [point for point in payload[phase] if keep(point)]}
 
     with pytest.raises(ValueError) as error:
         glm_smoke_subset(without, 2176, (phase,))

@@ -110,8 +110,8 @@ def glm_point_manifest(
     contexts = {measured, *(value for value in _powers_of_two_up_to(measured) if value >= MIN_CONTEXT)}
     # The producer accepts a decode repetition only if its first decode step holds every request. vLLM prefills the
     # suffixes of two or more requests in one step only if they fit the token budget together, so the budget bounds the
-    # batch at each context. One request may prefill its suffix over several steps, because no other request can decode
-    # before it.
+    # batch at each context. One request may prefill its suffix over several steps: no other request can decode before
+    # it, and the producer records no step with a prefill request.
     decode_batches = {
         context: batch_sizes(min(MAX_BATCH, decode_batch_limit, max(1, budget // decode_suffix(context))))
         for context in sorted(contexts)
@@ -180,12 +180,14 @@ def glm_smoke_subset(
     takes two. The other phase of a role keeps an empty list, because the cells of the plan never measure it.
 
     The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block
-    of prefix. The context of a decode point is its total KV read tokens divided by its batch size. If a decode point
-    of more than one request has a context above one hash block, the decode points are the points of one request and
-    of two requests at the smallest context above one hash block. Otherwise, as in the list of a request limited to
-    one sequence, they are the points of one request at the two smallest contexts above one hash block. A point is
-    taken at a context only if its total KV read tokens equal its batch size times that context. A list that does
-    not give two points for each collected phase is refused.
+    of prefix. The context of a decode point is its total KV read tokens divided by its batch size. The decode points
+    are the points of one request and of two requests at the smallest context above one hash block where the list
+    holds both. A small token budget can leave a smaller context with one request only. If no context above one hash
+    block holds a point of two requests, as in the list of a request limited to one sequence, the decode points are
+    the points of one request at the two smallest contexts above one hash block. A point is taken at a context only if
+    its total KV read tokens equal its batch size times that context. A list that does not give two points for each
+    collected phase is refused. So is a list whose points of two requests above one hash block have no point of one
+    request at the same context, because the generator puts one request on the batch axis of every context.
     """
     prefill = [
         point
@@ -198,12 +200,23 @@ def glm_smoke_subset(
     def context(point: dict[str, Any]) -> int:
         return point["total_kv_read_tokens"] // point["batch_size"]
 
+    def contexts_of(batch_size: int) -> set[int]:
+        return {
+            context(point)
+            for point in payload["decode"]
+            if point["batch_size"] == batch_size
+            and point["total_kv_read_tokens"] == batch_size * context(point)
+            and context(point) > hash_block_size
+        }
+
     above = sorted({context(point) for point in payload["decode"] if context(point) > hash_block_size})
-    # A list with a decode point of more than one request above one hash block must also hold the pair at its smallest
-    # context there, or it is incomplete and refused below. Only a list without such a point, where the batch limit or
-    # the cache capacity leaves one request, takes one request at each of its two smallest contexts instead.
-    if any(point["batch_size"] > 1 and context(point) > hash_block_size for point in payload["decode"]):
-        batch_sizes, contexts = (1, 2), above[:1]
+    pairs = sorted(contexts_of(1) & contexts_of(2))
+    # The token budget bounds the batch of each context separately, so the pair can sit above the smallest context.
+    # Points of two requests without a pair leave no context to take and are refused below. Only a list without such
+    # a point, where the batch limit, the cache capacity or the token budget leaves one request, takes one request at
+    # each of its two smallest contexts instead.
+    if contexts_of(2):
+        batch_sizes, contexts = (1, 2), pairs[:1]
     else:
         batch_sizes, contexts = (1,), above[:2]
     decode = [
