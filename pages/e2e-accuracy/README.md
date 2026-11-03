@@ -775,8 +775,11 @@ then reuses them for workload selection. No other concurrency's details are fetc
 On mobile, sample counts move below the error to keep the table within the screen.
 The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
-A benchmark feature checklist sits beside the concurrency summary on desktop and
-below it on smaller screens. It follows the selected run, using its saved
+A benchmark feature checklist sits to the left of the concurrency summary in
+one bordered row. Both panels stretch to the same height; the summary table fills
+its panel. On smaller screens, they stack with the checklist first. Additional
+features scroll within the expanded list. The checklist follows the selected run,
+using its saved
 `aisimulate.benchmark.features.v1` silicon record. Enabled, Off, N/A, and Not recorded
 remain distinct. Enabled does not imply exercised; observed counts appear only
 when recorded. Missing historical records stay Not recorded, with

@@ -287,6 +287,13 @@ async def check():
                 await expect(frame.locator(".agentx-features a")).to_have_attribute(
                     "href", "../../feature-support-matrix/#agentx"
                 )
+                panels = await frame.locator(".agentx-summary-layout > *").evaluate_all(
+                    "nodes => nodes.map(n => ({tag:n.tagName, ...n.getBoundingClientRect().toJSON()}))"
+                )
+                assert [p["tag"] for p in panels] == ["ASIDE", "SECTION"]
+                assert panels[0]["right"] <= panels[1]["left"] + 1
+                assert abs(panels[0]["top"] - panels[1]["top"]) <= 1
+                assert abs(panels[0]["height"] - panels[1]["height"]) <= 1
                 await expect(frame).not_to_contain_text("Request accounting")
                 await expect(frame).not_to_contain_text("All measured request comparisons")
                 assert await frame.evaluate(
