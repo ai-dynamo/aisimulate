@@ -1141,7 +1141,17 @@ the uint32-le hash for frontend-stage matching, with an explicit encoding label.
 A regression test loads a checksum-pinned miniature primitive and verifies both
 distinct hashes. Require a fresh source archive and CPU receipt before GPU use.
 
-**Conclusion:** pending repaired CPU qualification and bounded GPU collection. No new
+Repaired CPU preflight **1013188** completes in 246 seconds with zero GPUs.
+Versioned receipt SHA256
+`96b44e65d73ed1e0c489792b170e063b250f858f055629f9455e467a13221a4c`
+qualifies both exact token sequences, both checksum encodings, both dispatch
+prefixes and ten source hashes against collector
+`c250a9a98d1022b5723105ff7133adafa15ff423`. GPU job **1013236** uses that immutable
+archive, a 39-minute wall limit, no requeue and the full 19200 GPU-second
+reservation. Charged cost remains 93734 GPU-seconds; 117466 remain unreserved
+until actual allocation replaces this reservation. Preserve both CPU attempts.
+
+**Conclusion:** pending bounded GPU collection and independent audit. No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
 ## Repeat and compatibility controls
