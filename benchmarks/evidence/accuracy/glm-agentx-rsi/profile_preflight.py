@@ -42,6 +42,11 @@ def main():
     root = Path(importlib.util.find_spec("sglang").origin).parent
     if args.sources_dir:
         args.sources_dir.mkdir(parents=True, exist_ok=False)
+        (args.sources_dir / "export-context.json").write_text(json.dumps({
+            "package_origin": str(root), "python": sys.version,
+            "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "status": "source export not yet qualified",
+        }, indent=2) + "\n")
     names = (
         "srt/managers/io_struct.py", "srt/managers/scheduler_components/profiler_manager.py",
         "srt/entrypoints/http_server.py",
@@ -79,15 +84,22 @@ def main():
     if args.sources_dir:
         required = (
             "srt/model_executor/model_runner.py", "srt/model_executor/step_span_utils.py",
-            "srt/utils/profile_utils.py", "srt/model_executor/cuda_graph_runner.py",
+            "srt/utils/profile_utils.py", "srt/model_executor/runner/decode_cuda_graph_runner.py",
+            "srt/model_executor/model_runner_components/cuda_graph_setup.py",
+            "srt/model_executor/forward_batch_info.py", "srt/utils/nvtx_utils.py",
         )
         optional = (
             "srt/models/glm4_moe.py", "srt/models/glm4_moe_nextn.py", "srt/models/glm4_moe_mtp.py",
+            "srt/models/glm_moe_dsa.py", "srt/models/glm_moe_dsa_nextn.py",
             "srt/models/deepseek_nextn.py", "srt/speculative/eagle_worker.py",
             "srt/speculative/eagle_worker_v2.py",
         )
         for name in (*names, *required, *optional):
             path = root / name
+            if not path.is_file() and name.endswith(".py"):
+                package_init = path.with_suffix("") / "__init__.py"
+                if package_init.is_file():
+                    path = package_init
             if not path.is_file():
                 if name in required or name in names:
                     raise ValueError(f"Required runtime trace source missing: {name}")
@@ -96,10 +108,11 @@ def main():
             data = path.read_bytes()
             if len(data) > 2_000_000:
                 raise ValueError("Unexpected runtime source size")
-            target = args.sources_dir / name
+            actual_name = str(path.relative_to(root))
+            target = args.sources_dir / actual_name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-            extra.append({"relative_path": name, "available": True,
+            extra.append({"relative_path": actual_name, "requested_relative_path": name, "available": True,
                           "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
         distribution = importlib.metadata.distribution("sglang")
         for entry in distribution.files or ():

@@ -1804,3 +1804,22 @@ CPU source-export job **1014580** uses signed source
 It has the same zero-GPU resource contract as the first profiler preflight.
 Do not reserve or charge GPU time until its actual runtime annotations and
 Nsight capture flags are reconciled.
+
+CPU export **1014580 fails** after 225 allocated CPU seconds, **zero GPUs**.
+The profiler/tool/source protocol passes, and retained partial sources show
+that CUDA graph code moved to
+`model_executor.runner.decode_cuda_graph_runner` and
+`model_runner_components.cuda_graph_setup`. The preflight's assumed legacy
+`model_executor/cuda_graph_runner.py` path is absent. Retain the failed job,
+partial unmodified sources and tool help; require the actual imported paths
+for the retry. Write an explicitly unqualified export-context receipt early
+so a later path failure retains package/Python identity.
+
+The retained Nsight help confirms `repeat:2:sync` exports each capture before
+returning, and `node:host-only:nvtx-precapture` retains node projection for
+graphs constructed before capture starts. Both controls need actual GPU smoke
+qualification before model startup. Avoid tracing before a fork's exec by
+default; that option explicitly documents crash/deadlock risk. Require all
+eight rank/device traces and live step identities rather than assuming them.
+No GPU reservation, model/data change or headline score follows from this
+source-layout failure.
