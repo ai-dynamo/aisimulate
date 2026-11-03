@@ -50,6 +50,21 @@ from #665's fixed cohort; the two comparisons remain separate.
 | 13 | 93.1288% | 80.8748% | 81.6390% | 79.0883% |
 | 14 | 110.0450% | 104.7231% | 115.6302% | 84.8208% |
 
+Frozen-cohort diagnostics (inclusive linear percentiles; no trimming):
+
+| Diagnostic | Dashboard TTFT | Research TTFT | Dashboard TPOT | Research TPOT |
+|---|---:|---:|---:|---:|
+| Median APE | 63.8256% | 63.7551% | 18.6451% | 18.4494% |
+| P95 APE | 94.1059% | 93.9970% | 96.8281% | 94.3497% |
+| P99 APE | 635.2183% | 611.6515% | 400.8936% | 357.7478% |
+| Mean signed error | -31.1508% | -35.6382% | +59.1729% | +50.2411% |
+| Mean absolute error | 598.6003 ms | 576.6278 ms | 1.6855 ms | 1.6889 ms |
+
+The TPOT MAE increases slightly despite lower MAPE. Its 37 positive references
+below 0.1 ms contribute 41.9348/31.9538 percentage points before/after, and remain
+in the headline. Median errors also exceed 10%; tiny denominators are not the
+only remaining problem. Per-concurrency diagnostics stay in the private manifest.
+
 ## H1 — Client timing boundaries and small positive denominators
 
 **Hypothesis.** Buffered receipt, frontend work and/or speculative bursts compress
@@ -66,6 +81,16 @@ boundaries; retain all requests in the headline metric.
 APE is 24.39%. One raw example has 222.7242 ms HTTP receive time but 0.54664 ms
 recorded decode duration. These facts do not identify when the server generated
 its tokens and do not justify changing historical observations.
+
+**Experiment E015 — client boundary audit.** Pin the AgentX harness 1.0.12 wheel
+and inspect its TTFT, request-latency, ITL and SSE-reader sources. All 2453
+available TPOT values among 2462 raw profile records reconcile with
+`decode_duration / (output_length - 1)`; this raw audit includes requests excluded
+from the frozen eligible cohort. The reader assigns one receipt timestamp to SSE
+messages parsed from the same transport chunk. **Conclusion:** the import formula
+is correct and coalescing can compress the observed interval. Historical
+coalescing remains unproven without server-ready/receipt observations; no baseline
+correction is accepted. Keep the original last-content response boundary.
 
 **Experiment E005, awaiting a qualified retry.** Compare uninstrumented MTP, instrumented MTP and
 instrumented plain decode with fresh servers. Synthetic controls use 8192/131072
@@ -291,6 +316,17 @@ split: 2 node-hours baseline/timing, 2 controlled experiments, 1 op/forward,
 - CPU historical-image preparation 1003104 rejects Enroot's architecture spelling
   `amd64`; corrected to its documented `x86_64` option in retry 1003117. Neither
   reserves GPUs. Runtime identity and hook compatibility must pass before use.
+- CPU 1003117 qualifies the exact historical SGLang 0.5.20 image in 748 seconds.
+  Squashfs SHA256: `7365b3e0ef2a45e2924540add0720f415b3e7c5c18b3fe02e779ea47105da079`.
+- GPU **1003379**, source `389b183f7981d1be2cf50d864a22370a62ebb697`, runs the
+  historical timing controls with a 90-minute cap. The short queue was full;
+  changing this pending job to the authorized normal queue keeps its resource
+  limits. An initial launch on pool0-0203 fails before the batch script with
+  `user_env_retrieval_failed_requeued_held`; charge six seconds through batch
+  cleanup (48 GPU-seconds), retain that scheduler receipt, and release this held
+  job once. Its next attempt runs on pool0-0095. Total completed charge is now
+  **10704 GPU-seconds**; remaining **219696**, or **176496** after reserving this
+  active attempt's full 43200 GPU-seconds. Reconcile terminal time before reuse.
 
 The historical retry also restores the recorded multithread/prefetch loading and
 keep-alive settings. This is a qualification repair, not an isolated experiment

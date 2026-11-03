@@ -41,11 +41,15 @@ def metrics(rows):
         signed = [100 * (p - a) / a for a, p in pairs]
         ape = [abs(v) for v in signed]
         tiny = [100 * abs(p - a) / a for a, p in pairs if a < 0.1]
+        percentiles = statistics.quantiles(ape, n=100, method="inclusive") if len(ape) > 1 else None
         result[metric] = {
             "count": len(pairs),
             "sum_ape": sum(ape),
             "mape_percent": statistics.mean(ape) if ape else None,
             "median_ape_percent": statistics.median(ape) if ape else None,
+            "p95_ape_percent": percentiles[94] if percentiles else ape[0] if ape else None,
+            "p99_ape_percent": percentiles[98] if percentiles else ape[0] if ape else None,
+            "max_ape_percent": max(ape) if ape else None,
             "signed_error_percent": statistics.mean(signed) if signed else None,
             "mae_ms": statistics.mean(abs(p - a) for a, p in pairs) if pairs else None,
             "reference_below_0_1_ms_count": len(tiny),
