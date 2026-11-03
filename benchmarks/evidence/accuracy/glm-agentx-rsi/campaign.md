@@ -2356,3 +2356,24 @@ C1 `2f72d89811b90a7a3af4eaf5188233692f2e742f03a0f093fcd6160f703d7483`,
 C8 `6e71ea4ef74c7ab43c0fd591cb89b6c0ec8d2bbddea637b56b23421f18c899e7`,
 independent cross-check
 `f88e312b11b6c4038981b0f3c11c8e0a364c030abc87503662968404532812c7`.
+
+## H5 — E045 BF16 draft lookup-coverage gate (predeclared)
+
+- **Hypothesis:** the pinned B300 SGLang0.5.21 database may lack usable BF16 MoE
+  coverage for the measured unquantized draft. A missing or incompatible lookup
+  blocks a source-faithful explicit draft model; a successful lookup establishes
+  neither actual runtime-kernel agreement nor draft phase/shape correctness.
+- **Experiment:** CPU-only `query_draft_coverage.py`, exact frozen EDDB wheel,
+  all original op-data bytes, canonical best-available op-level/SILICON/deny
+  constructor and per-attention-DP-rank metrics. Use the pinned E040 canonical
+  receipt. Change only `moe_quant_mode` from resolved target default to BF16;
+  preserve all other identity and correction settings. Probe 1/8/14 query
+  batches at 8192 and393216 KV, packed verification width4: twelve planned
+  queries, with failures and unattempted queries retained.
+- This is explicitly a **whole-target coverage proxy**, not the real draft
+  architecture/phase geometry. Do not divide its aggregate latency into a fitted
+  draft overhead, relabel it a matched silicon query, or change any E2E prediction.
+  A later explicit draft implementation needs the native loaded geometry,
+  kernel/precision agreement and matched forward validation. Historical0.5.20
+  versus prediction-data0.5.21 remains cross-version. GPU cost zero.
+- **Conclusion:** pending coverage gate and independent row/source inspection.
