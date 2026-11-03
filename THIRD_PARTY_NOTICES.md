@@ -1656,3 +1656,15 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## RSI diagnostic: SGLang forced acceptance batch correlation
+
+Modified behavior and synthetic tests in
+`crates/core/src/engine/scheduler/sglang/{decode,tests}.rs` adapt the forced
+`match-expected` batch-shared acceptance behavior from
+`python/sglang/srt/speculative/spec_utils.py` at SGLang v0.5.20 immutable commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/speculative/spec_utils.py .
+Copyright 2023-2024 SGLang Team and contributors. Apache-2.0; license included
+as `LICENSE`. Modified for the seeded Rust sampler; diagnostic only, without
+copying Torch's RNG implementation or changing the acceptance mean.

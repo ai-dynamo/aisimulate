@@ -702,6 +702,23 @@ fn simulate_step(
     let cache_commits = Vec::new();
     let mut decode_acceptance = DecodeAcceptance::default();
 
+    // RSI diagnostic only: SGLang's forced match-expected policy samples once
+    // for the entire verification batch. This ablation tests correlation while
+    // retaining the existing marginal acceptance rates and seed. It is not a
+    // replacement for ordinary per-request speculative acceptance.
+    let shared_accepted = if config.worker_type
+        != crate::engine::common::protocols::WorkerType::Prefill
+        && running
+            .iter()
+            .any(|req| !req.pending_terminal && req.remaining_output_tokens() > 0)
+    {
+        sampler
+            .as_deref_mut()
+            .map(|sampler| sampler.sample_accepted_tokens())
+    } else {
+        None
+    };
+
     for (idx, req) in running.iter_mut().enumerate() {
         if req.pending_terminal {
             allocate_ghost_slot(req, kv_manager, &mut reservation, config.block_size);
@@ -713,8 +730,8 @@ fn simulate_step(
                 remaining.min(1)
             } else if remaining == 0 {
                 0
-            } else if let Some(sampler) = sampler.as_deref_mut() {
-                sampler.sample_accepted_tokens()
+            } else if let Some(accepted) = shared_accepted {
+                accepted
             } else {
                 remaining.min(1)
             };

@@ -384,6 +384,37 @@ fn zero_output_request_completes_after_prefill() {
 }
 
 #[test]
+fn rsi_forced_acceptance_shares_one_draw_per_batch() {
+    let mut args = test_args(1024, 4, 16);
+    args.aic_nextn = Some(2);
+    args.aic_nextn_accept_rates = Some("1,0.5".to_string());
+    let mut core = SglangCore::new(args);
+    let ids = [1, 2, 3].map(Uuid::from_u128);
+    for (index, uuid) in ids.iter().enumerate() {
+        core.receive(DirectRequest {
+            uuid: Some(*uuid),
+            ..direct_request((index as u32 * 4..index as u32 * 4 + 4).collect(), 1000)
+        });
+    }
+    let mut now = core.execute_pass_internal(None, 0.0).end_ms;
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        let pass = core.execute_pass_internal(None, now);
+        now = pass.end_ms;
+        let counts = ids.map(|uuid| {
+            pass.output_signals
+                .iter()
+                .filter(|signal| signal.uuid == uuid && signal.token_id.is_some())
+                .count()
+        });
+        assert!(counts[0] == 2 || counts[0] == 3);
+        assert_eq!(counts, [counts[0]; 3]);
+        seen.insert(counts[0]);
+    }
+    assert_eq!(seen, std::collections::BTreeSet::from([2, 3]));
+}
+
+#[test]
 fn speculative_decode_commits_each_request_once_in_uuid_order() {
     let mut args = test_args(32, 4, 16);
     args.aic_nextn = Some(2);
