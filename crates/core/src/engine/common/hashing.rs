@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified EAGLE key adaptation: SGLang v0.5.20 radix_cache.py,
+// https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Engine-local KV block hashing.
 //!
@@ -88,6 +91,26 @@ pub(crate) fn compute_block_hash_for_seq(
     }
     block_hashes(tokens, block_size)
         .map(LocalBlockHash)
+        .collect()
+}
+
+/// EAGLE indexes adjacent token pairs. A page therefore needs one raw token
+/// of lookahead; hashing the contiguous page plus that token preserves the
+/// pair sequence identity without allocating an expanded bigram array.
+/// Raw block hashes used by router events remain unchanged.
+pub(crate) fn cache_key_hashes(
+    tokens: &[Token],
+    block_size: usize,
+    bigram: bool,
+) -> Vec<LocalBlockHash> {
+    if !bigram {
+        return compute_block_hash_for_seq(tokens, block_size);
+    }
+    assert!(block_size > 0);
+    tokens
+        .windows(block_size + 1)
+        .step_by(block_size)
+        .map(|page| LocalBlockHash(compute_block_hash_for_tokens(page, XXH3_SEED)))
         .collect()
 }
 

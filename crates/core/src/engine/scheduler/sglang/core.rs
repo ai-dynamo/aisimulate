@@ -659,7 +659,12 @@ impl SglangCore {
             max_output_tokens,
             request.output_token_ids.is_some(),
         );
-        let mut request = SglangRequest::new(request, self.config.block_size, output_storage_hint);
+        let mut request = SglangRequest::new(
+            request,
+            self.config.block_size,
+            output_storage_hint,
+            self.speculative_sampler.is_some(),
+        );
         // Admission, retraction and speculative decode all consume this budget.
         request.max_output_tokens = max_output_tokens;
         request

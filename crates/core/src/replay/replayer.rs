@@ -9,8 +9,10 @@ use std::time::Instant;
 use anyhow::Result as AnyResult;
 use uuid::Uuid;
 
-use crate::engine::KvEvictionPolicy;
-use crate::engine::belady::{BeladyOracle, input_sequence_hashes};
+#[cfg(test)]
+use crate::engine::belady::input_sequence_hashes;
+use crate::engine::belady::{BeladyOracle, input_sequence_hashes_with_bigram};
+use crate::engine::{Backend, KvEvictionPolicy};
 use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::artifact::{
@@ -518,6 +520,8 @@ impl<C: ReplayComposition> Replayer<C> {
             Some(prepare_belady_oracle(
                 &mut runtime_input,
                 engine_config.rank.block_size,
+                engine_config.rank.backend == Backend::Sglang
+                    && engine_config.rank.aic_nextn.is_some(),
             )?)
         } else {
             None
@@ -738,6 +742,7 @@ impl<C: ReplayComposition> Replayer<C> {
 fn prepare_belady_oracle(
     input: &mut ReplayRuntimeInput,
     engine_block_size: usize,
+    bigram: bool,
 ) -> ReplayResult<BeladyOracle> {
     let block_size = u32::try_from(engine_block_size)
         .ok()
@@ -773,16 +778,14 @@ fn prepare_belady_oracle(
                 let request_id = *request.uuid.get_or_insert_with(Uuid::new_v4);
                 forecast.push((
                     request_id,
-                    input_sequence_hashes(&request.tokens, block_size as usize),
+                    input_sequence_hashes_with_bigram(&request.tokens, block_size as usize, bigram),
                 ));
             }
             forecast
         }
-        ReplayRuntimeInput::Workload(driver) => {
-            driver
-                .prepare_belady_requests(engine_block_size)
-                .map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))?
-        }
+        ReplayRuntimeInput::Workload(driver) => driver
+            .prepare_belady_requests(engine_block_size, bigram)
+            .map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))?,
         ReplayRuntimeInput::GeneratedRequests(_) => {
             return Err(ReplayError::InvalidSpec(
                 "belady requires a complete open-loop input trace; generated requests are unsupported"
@@ -997,7 +1000,7 @@ mod tests {
                 ..Default::default()
             },
         ]));
-        let oracle = prepare_belady_oracle(&mut input, 2).unwrap();
+        let oracle = prepare_belady_oracle(&mut input, 2, false).unwrap();
         let ReplayRuntimeInput::Requests(requests) = &mut input else {
             unreachable!()
         };
@@ -1013,7 +1016,7 @@ mod tests {
         assert_eq!(oracle.next_use(shared_hash), usize::MAX);
 
         requests[1].arrival_timestamp_ms = Some(0.0);
-        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        assert!(prepare_belady_oracle(&mut input, 2, false).is_err());
         let ReplayRuntimeInput::Requests(requests) = &input else {
             unreachable!()
         };
@@ -1029,7 +1032,7 @@ mod tests {
                 arrival_timestamp_ms: arrival,
                 ..Default::default()
             }]));
-            assert!(prepare_belady_oracle(&mut input, 2).is_err());
+            assert!(prepare_belady_oracle(&mut input, 2, false).is_err());
         }
         let request = DirectRequest {
             tokens: vec![1, 2],
@@ -1038,7 +1041,7 @@ mod tests {
             ..Default::default()
         };
         let mut input = ReplayRuntimeInput::Requests(VecDeque::from([request.clone(), request]));
-        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        assert!(prepare_belady_oracle(&mut input, 2, false).is_err());
     }
 
     #[test]

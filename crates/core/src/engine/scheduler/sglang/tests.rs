@@ -2725,6 +2725,25 @@ mod forward_pass_metrics {
     }
 
     #[test]
+    fn eagle_admission_uses_bigram_boundary_once() {
+        for eagle in [false, true] {
+            let mut args = fpm_args();
+            args.block_size = 4;
+            args.aic_nextn = eagle.then_some(2);
+            let mut core = SglangCore::new(args);
+            core.receive(direct_request((0..8).collect(), 1));
+            let mut collector = crate::engine::trace::TraceCollector::default();
+            let first = core.execute_pass(&mut collector, 0.0);
+            core.receive(direct_request((0..12).collect(), 1));
+            let second = core.execute_pass(&mut collector, first.end_ms);
+            assert_eq!(
+                second.mocker_metrics.sglang_cache_hit_tokens,
+                if eagle { 4 } else { 8 }
+            );
+        }
+    }
+
+    #[test]
     fn test_mocker_metrics_reports_prefix_cache_reuse() {
         let mut core = SglangCore::new(fpm_args());
 
