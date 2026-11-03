@@ -250,7 +250,6 @@ def test_layer_count_override_truncates_the_dense_prefix():
         ("sglang", {"pp_size": 2}),
         ("sglang", {"tp_size": 1, "cp_size": 2, "moe_tp_size": 1, "moe_ep_size": 2}),
         ("sglang", {"attention_dp_size": 2, "moe_ep_size": 2}),
-        ("sglang", {"nextn": 2}),
         (
             "sglang",
             {
@@ -266,7 +265,51 @@ def test_other_regimes_preserve_existing_approximation(backend, cfg_updates):
     for phase in ("context", "generation"):
         native = _flatten(_native_ops(model, phase))
         assert not any("dense" in name for name in native)
-        # No new claim about CP/ADP/PP/large-EP or draft-layer precision: retain
-        # the original approximation. MTP still adds two all-MoE draft layers.
-        expected = 80 if phase == "generation" and cfg_updates.get("nextn") else 78
-        assert native[f"{phase}_moe"][1]["scale_factor"] == expected
+        # No new claim about CP/ADP/PP/large-EP: retain the original approximation.
+        assert native[f"{phase}_moe"][1]["scale_factor"] == 78
+
+
+@pytest.mark.parametrize("depth", [1, 3])
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_glm53_mtp_preserves_measured_target_prefix_and_legacy_draft_tail(depth, phase):
+    model = get_model(
+        "nvidia/GLM-5.3-NVFP4",
+        config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, nextn=depth),
+        "sglang",
+    )
+    native = _flatten(_native_ops(model, phase))
+    # Eight-rank native receipts show layers 0..2 have FP8 dense gate/up/down
+    # and the other 75 target layers have NVFP4 routed experts. Keep the legacy
+    # all-MoE draft tail separate: no fractional target dense layers are added.
+    tail = depth if phase == "generation" else 0
+    assert native[f"{phase}_attention"][1]["scale_factor"] == 78 + tail
+    assert native[f"{phase}_moe"][1]["scale_factor"] == 75 + tail
+    assert native[f"{phase}_moe"][1]["quant_mode"] == "nvfp4"
+    for suffix in ("shared_gate_up_gemm", "shared_act_gate", "shared_ffn2_gemm", "router_gemm"):
+        assert native[f"{phase}_{suffix}"][1]["scale_factor"] == 75 + tail
+    gate, down = (native[f"{phase}_dense_{suffix}"][1] for suffix in ("gate_up_gemm", "down_gemm"))
+    assert (gate["scale_factor"], gate["n"], gate["k"], gate["quant_mode"]) == (3, 3072, 6144, "fp8_static")
+    assert (down["scale_factor"], down["n"], down["k"], down["quant_mode"]) == (3, 6144, 1536, "fp8_static")
+    for suffix in ("attn_ar", "ffn_ar"):
+        assert native[f"{phase}_dense_{suffix}"][1]["scale_factor"] == 3
+
+
+def test_mtp_without_target_dense_prefix_preserves_all_moe_tail():
+    model = _from_checkpoint({"first_k_dense_replace": 0}, nextn=3)
+    native = _flatten(_native_ops(model, "generation"))
+    assert not any("dense" in name for name in native)
+    assert native["generation_moe"][1]["scale_factor"] == 81
+
+
+def test_all_dense_target_keeps_legacy_moe_draft_tail_only_in_generation():
+    model = _from_checkpoint({"first_k_dense_replace": 78}, nextn=2)
+    context = _flatten(_native_ops(model, "context"))
+    generation = _flatten(_native_ops(model, "generation"))
+    assert "context_moe" not in context
+    assert generation["generation_moe"][1]["scale_factor"] == 2
+    dense_layers = sum(
+        fields["scale_factor"]
+        for name, (_, fields) in generation.items()
+        if "dense" in name and name.endswith("gate_up_gemm")
+    )
+    assert dense_layers == 78

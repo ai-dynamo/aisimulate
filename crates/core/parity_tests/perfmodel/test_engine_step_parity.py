@@ -217,6 +217,21 @@ SMOKE_CASES = [
         ),
         id="glm52-b200-sglang-isl1024-osl2",
     ),
+    # Native target receipts: three FP8 dense layers and 75 NVFP4 MoE layers.
+    # MTP retains that target prefix plus its legacy three-MoE draft tail.
+    pytest.param(
+        EngineStepParityCase(
+            model_path="nvidia/GLM-5.3-NVFP4",
+            system_name="b300_sxm",
+            backend_name="sglang",
+            backend_version="0.5.21",
+            moe_tp_size=8,
+            moe_ep_size=1,
+            isl=8192,
+            nextn=3,
+        ),
+        id="glm53-b300-sglang-0521-mtp3-dense-prefix",
+    ),
     # Phase 4 D7-F: backend coverage for newly-ported families. The
     # builders are backend-independent (the per-backend conditional
     # `_attn_dp` / `_tp_allreduce` branches are handled inside each
