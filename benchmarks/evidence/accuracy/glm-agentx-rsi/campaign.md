@@ -1600,3 +1600,6 @@ Qwen compatibility checks pass with exact numerical request/cache parity at
 1/4/16 lanes (8/32/128 requests), explicit 0.31.0 and the unchanged approved
 #666 data root. The existing missing collection-sidecar warning remains; this
 is CPU compatibility evidence, not a new measured accuracy claim.
+
+The same audit reconciles client output-token totals and output tokens/s over
+the native observation duration; server processed-token counters remain separate.

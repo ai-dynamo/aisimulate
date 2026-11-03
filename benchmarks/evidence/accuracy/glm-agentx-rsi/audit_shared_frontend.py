@@ -82,6 +82,10 @@ def main():
         observations = [r for r in read(observation_path) if r["phase"] == "profile"]
         rows = native["telemetry"]["requests"]
         predicted = [r for r in rows if r["phase"] == "profile"]
+        if any(r["terminal_status"] != "completed" for r in predicted):
+            raise ValueError("Incomplete predicted request")
+        close(native["total_output_tokens"], sum(r["output_length"] for r in predicted))
+        close(native["output_throughput_tok_s"], native["total_output_tokens"] * 1000 / native["duration_ms"])
         profile = native["agentic_profile"]
         close(profile["admission_cutoff_ms"] - profile["profile_start_ms"], 3_600_000.0)
         close(profile["response_grace_deadline_ms"] - profile["admission_cutoff_ms"], 30_000.0)
