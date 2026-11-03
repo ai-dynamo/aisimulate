@@ -25,6 +25,13 @@ adaptation and correction requirements are documented in
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
 Explicit invalid configuration is not converted into a fallback estimator.
 
+For learned-model cold start and native mixed fallback, see the
+[online GBDT tutorial](fpm-self-service/online-gbdt.md). The application owns
+initial fitting and observation admission. Native Replay consumes a prepared
+model; an application fallback wrapper does not run inside it. Complete portable
+state snapshots do not support `temporary_mixed_composition`; see the
+[persistence options](fpm-self-service/online-gbdt.md#6-save-resume-and-hand-the-model-to-replay).
+
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
 use the NemotronH text model. AISimulate reads the nested `llm_config` and
 accepts `linear_attention` and `full_attention` layer names. Inferred
