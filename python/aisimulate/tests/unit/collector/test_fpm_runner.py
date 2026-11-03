@@ -1048,6 +1048,164 @@ def test_decode_render_rejects_policy_prefix_caching_conflict(strategy, argument
         _cell_generator_overrides(_plan(cell), cell, {})
 
 
+def _glm53flash_probe_and_collection(root: Path, tp: int):
+    """The guided GLM-5.3-Flash collection plan of a pure-TP deployment and the runtime probe of its launch."""
+    from collector.fpm_forward.runtime_probe import build_runtime_probe_plan
+
+    from .test_fpm_runtime_memory import _probe_backed_glm_plan
+
+    root.mkdir()
+    plan, _overrides = _probe_backed_glm_plan(root, tp=tp)
+    return plan, build_runtime_probe_plan(f"gb300-tp{tp}", plan.runtime_launch, plan.runtime_instrumentation)
+
+
+def test_single_gpu_decode_keeps_prefix_caching_only_for_glm53flash(tmp_path):
+    # A dense model and a MoE model other than GLM-5.3-Flash keep their single-GPU decode launch: each point admits
+    # synthetic full-context requests, so prefix caching stays off.
+    for architecture in ("Qwen3ForCausalLM", "Qwen3MoeForCausalLM"):
+        cell = _cell(phase="decode", strategy="single")
+        plan = _plan(cell)
+        plan.capability.architecture = architecture
+        assert _cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"] == [
+            "--distributed-executor-backend",
+            "mp",
+            "--distributed-timeout-seconds",
+            "1800",
+            "--no-enable-log-requests",
+            "--no-enable-prefix-caching",
+            "--benchmark-timeout",
+            "10800",
+            "--benchmark-mode",
+            "decode",
+            "--benchmark-warmup-iterations",
+            "3",
+            "--max-model-len",
+            "-1",
+        ]
+        assert _configured_sampling_metadata(plan, cell, smoke=False) == {"decode_prefix_caching": "disabled"}
+
+    # GLM-5.3-Flash at TP 1 runs on one GPU too. Its producer seeds real KV through prefix caching, and the runtime
+    # probe of the deployment keeps the same setting, so the decode evidence of probe and collection can match.
+    collection, probe = _glm53flash_probe_and_collection(tmp_path / "tp1", 1)
+    for plan, smokes in ((collection, (False, True)), (probe, (False,))):
+        [cell] = [cell for cell in plan.cells if cell.workload_kind == "decode"]
+        assert cell.parallel_strategy == "single"
+        for smoke in smokes:
+            args = _cell_generator_overrides(plan, cell, {}, smoke=smoke)["params"]["agg"]["extra_cli_args"]
+            assert "--no-enable-prefix-caching" not in args
+            assert _configured_sampling_metadata(plan, cell, smoke=smoke)["decode_prefix_caching"] == "enabled"
+
+
+def test_glm53flash_tp1_renders_the_unchanged_tp4_launch(tmp_path):
+    from .test_fpm_glm53flash_prefix_seed import LOADED_REVISION
+
+    def launches(tp):
+        rendered = {}
+        collection, probe = _glm53flash_probe_and_collection(tmp_path / f"tp{tp}", tp)
+        for name, plan, smokes in (("collection", collection, (False, True)), ("probe", probe, (False,))):
+            for cell in plan.cells:
+                for smoke in smokes:
+                    args = _cell_generator_overrides(plan, cell, {}, smoke=smoke)["params"]["agg"]["extra_cli_args"]
+                    metadata = _configured_sampling_metadata(plan, cell, smoke=smoke)
+                    rendered[name, cell.workload_kind, smoke] = (args, metadata)
+        return rendered
+
+    # The engine arguments of the TP 4 probe and collection cells, as before.
+    runtime = [
+        "--distributed-executor-backend",
+        "mp",
+        "--distributed-timeout-seconds",
+        "1800",
+        "--no-enable-log-requests",
+    ]
+    observed = [
+        "--worker-cls",
+        "fpm_runtime_instrumentation.ObservedWorker",
+        "--scheduler-cls",
+        "fpm_runtime_instrumentation.ObservedInstrumentedScheduler",
+    ]
+    prefill = [*runtime, "--no-async-scheduling", "--language-model-only", "--revision", LOADED_REVISION, *observed]
+    decode = [*runtime, "--language-model-only", "--revision", LOADED_REVISION, "--no-async-scheduling", *observed]
+    points = ["--benchmark-points-file", "/tmp/fpm-bench/benchmark-points.json"]
+    limits = ["--max-num-batched-tokens", "8192", "--max-num-seqs", "256"]
+
+    def timing(phase):
+        return [
+            "--benchmark-timeout",
+            "10800",
+            "--benchmark-mode",
+            phase,
+            "--benchmark-warmup-iterations",
+            "0",
+            "--max-model-len",
+            "1048576",
+        ]
+
+    smoke_prefill = ["--prefill-max-new-token-samples", "2", "--prefill-max-kv-read-token-samples", "2"]
+    smoke_decode = ["--decode-max-kv-read-token-samples", "2", "--decode-max-batch-size-samples", "2"]
+    expected = {
+        ("collection", "prefill", False): [
+            *prefill,
+            "--cudagraph-metrics",
+            *timing("prefill"),
+            *points,
+            "--prefill-max-kv-read-token-samples",
+            "24",
+            *limits,
+        ],
+        ("collection", "prefill", True): [
+            *prefill,
+            "--cudagraph-metrics",
+            *timing("prefill"),
+            *points,
+            *smoke_prefill,
+            "--prefix-max-batch-size-samples",
+            "1",
+            *limits,
+        ],
+        ("collection", "decode", False): [*decode, "--cudagraph-metrics", *timing("decode"), *points, *limits],
+        ("collection", "decode", True): [
+            *decode,
+            "--cudagraph-metrics",
+            *timing("decode"),
+            *points,
+            *smoke_decode,
+            *limits,
+        ],
+        ("probe", "prefill", False): [
+            *prefill,
+            *timing("prefill"),
+            "--prefill-max-kv-read-token-samples",
+            "2",
+            "--prefill-max-new-token-samples",
+            "2",
+            "--prefix-max-batch-size-samples",
+            "2",
+            *limits,
+        ],
+        ("probe", "decode", False): [*decode, *timing("decode"), *smoke_decode, *limits],
+    }
+    tp4 = launches(4)
+    assert {key: args for key, (args, _metadata) in tp4.items()} == expected
+    # A TP 1 deployment renders the same engine arguments and checkpoint metadata, so its decode keeps prefix caching.
+    assert launches(1) == tp4
+
+
+def test_glm53flash_decode_refuses_a_policy_without_prefix_caching(tmp_path):
+    policy = BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": ["--no-enable-prefix-caching"]}}}, {})
+    refusals = {
+        1: "GLM-5.3-Flash decode requires prefix caching in every strategy. The producer seeds real KV through it",
+        # A KV warm-up strategy keeps its own reason.
+        4: "FPM decode strategy 'pure_tp' requires prefix caching for KV warm-up",
+    }
+    for tp, refusal in refusals.items():
+        for plan in _glm53flash_probe_and_collection(tmp_path / f"tp{tp}", tp):
+            [cell] = [cell for cell in plan.cells if cell.workload_kind == "decode"]
+            with pytest.raises(ValueError) as error:
+                _cell_generator_overrides(plan, dataclasses.replace(cell, backend_policy=policy), {})
+            assert str(error.value) == refusal
+
+
 def test_formal_prefill_metadata_records_candidate_axis_counts():
     cell = _cell()
 

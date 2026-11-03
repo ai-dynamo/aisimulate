@@ -1766,14 +1766,15 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
         assert set(producer_env).isdisjoint(env)
 
 
-def _probe_backed_glm_plan(tmp_path):
+def _probe_backed_glm_plan(tmp_path, *, tp=4):
     """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
 
     The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
     configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.31.0
-    instrumentation bundle, the TP 4 probe launch on GB300 with a stand-in Kubernetes deployment, and the profile that
-    the probe import accepts, with the cache resources that the probe measured. Return the plan and the deployment
-    inputs that it was planned with.
+    instrumentation bundle, the pure-TP probe launch on GB300 (TP 4 unless ``tp`` says otherwise) with a stand-in
+    Kubernetes deployment, and the profile that the probe import accepts, with the cache resources that the probe
+    measured at TP 4. Another ``tp`` keeps those resources. Return the plan and the deployment inputs that it was
+    planned with.
     """
     from collector.model_cases import build_collection_case_plan
 
@@ -1787,7 +1788,7 @@ def _probe_backed_glm_plan(tmp_path):
     manifest.write_text(json.dumps(declaration))
     config = tmp_path / "config.json"
     config.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
-    topology = {"tp": 4, "pp": 1, "dp": 1, "moe_tp": 4, "moe_ep": 1, "cp": 1}
+    topology = {"tp": tp, "pp": 1, "dp": 1, "moe_tp": tp, "moe_ep": 1, "cp": 1}
     precision = {
         "gemm_quant_mode": "fp8_block",
         "moe_quant_mode": "fp8_block",
@@ -1860,9 +1861,9 @@ def _probe_backed_glm_plan(tmp_path):
         "--gpu",
         system,
         "--fpm-max-gpus",
-        "4",
+        str(tp),
         "--fpm-gpu-counts",
-        "4",
+        str(tp),
         "--fpm-parallel-presets",
         "pure_tp",
         "--fpm-max-model-len",
@@ -1901,7 +1902,7 @@ def _probe_backed_glm_plan(tmp_path):
         generator_overrides=overrides,
         runtime_instrumentation=str(manifest),
         runtime_launch=launch,
-        runtime_configuration="gb300-tp4",
+        runtime_configuration=f"gb300-tp{tp}",
     )
     return plan, overrides
 
@@ -1977,10 +1978,13 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
         # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
         for phase in ("prefill", "decode"):
             assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        # A decode cell also records the prefix caching that the producer requires.
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
         assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
             "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
             "requested_point_count": 2,
             "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
         }
         full = staged(f"formal-{cell.workload_kind}", cell, False)
         assert full.decode() == plan.options.benchmark_points_json
@@ -1989,6 +1993,7 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
             "benchmark_points_sha256": plan.options.benchmark_points_sha256,
             "requested_point_count": {"prefill": 496, "decode": 96}[cell.workload_kind],
             "benchmark_points_origin": "glm53flash_grid_v1",
+            **policy,
         }
 
 

@@ -123,6 +123,11 @@ _FPM_VLLM_PREFILL_ARGS = ("--no-async-scheduling",)
 #     step (26.5 ms -> 121 ms at (batch 256, 2.1M KV) on M2.7 tp4+EP), while
 #     production steady-state decode has no such per-step hash (requests stay
 #     resident). Disabling is the serving-faithful choice here.
+#   * Exception: GLM-5.3-Flash (every strategy, single included) -- prefix
+#     caching stays ON, in its runtime probes too: the GLM producer seeds real
+#     KV through prefix caching in every strategy, and readiness and
+#     finalization compare each phase's prefix-caching evidence with the
+#     accepted probe.
 _FPM_VLLM_DECODE_FAKE_KV_ARGS = ("--no-enable-prefix-caching",)
 # Must stay in sync with the engine's _kvwarm_warm_eligible strategy set.
 # pure_tp added 2026-08-20: the "moe_tp balanced by construction" immunity
@@ -1604,7 +1609,7 @@ def _cell_generator_overrides(
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
-        prefix_caching = _decode_prefix_caching_mode(cell)
+        prefix_caching = _decode_prefix_caching_mode(cell, plan)
         policy_disables = any(
             str(argument) == "--no-enable-prefix-caching" or str(argument).startswith("--no-enable-prefix-caching=")
             for argument in policy_args
@@ -1614,7 +1619,14 @@ def _cell_generator_overrides(
             for argument in policy_args
         )
         if prefix_caching == "enabled" and policy_disables:
-            raise ValueError(f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching for KV warm-up")
+            if cell.parallel_strategy in KVWARM_STRATEGIES:
+                raise ValueError(
+                    f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching for KV warm-up"
+                )
+            # Outside the KV warm-up strategies, only the GLM-5.3-Flash rule keeps prefix caching.
+            raise ValueError(
+                "GLM-5.3-Flash decode requires prefix caching in every strategy. The producer seeds real KV through it"
+            )
         if prefix_caching == "disabled" and policy_enables:
             raise ValueError(
                 f"FPM decode strategy {cell.parallel_strategy!r} requires prefix caching disabled for fake-KV"
@@ -1643,10 +1655,17 @@ def _cell_generator_overrides(
     return merged
 
 
-def _decode_prefix_caching_mode(cell: FPMCell) -> str:
-    """Return the rendering/checkpoint policy for one decode strategy."""
+def _decode_prefix_caching_mode(cell: FPMCell, plan: FPMCollectionPlan | None = None) -> str:
+    """Return the rendering/checkpoint policy for one decode cell of a probe or collection plan.
 
-    return "enabled" if cell.parallel_strategy in KVWARM_STRATEGIES else "disabled"
+    A GLM-5.3-Flash plan keeps prefix caching in every strategy, because its producer seeds real KV through it. Other
+    models follow the strategy rule, which is also the result without a plan.
+    """
+
+    architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == GLM_ARCHITECTURE or cell.parallel_strategy in KVWARM_STRATEGIES:
+        return "enabled"
+    return "disabled"
 
 
 def _configured_sampling_metadata(
@@ -1667,12 +1686,16 @@ def _configured_sampling_metadata(
                 metadata["smoke_manifest"] = GLM_SMOKE_MANIFEST
             else:
                 metadata["benchmark_points_origin"] = GLM_POINTS_ORIGIN
+        # Every GLM-5.3-Flash collection cell measures a frozen list, so its decode cells record their prefix-caching
+        # policy here. The cells of other lists keep the metadata that they have always had.
+        if cell.workload_kind == "decode" and _glm_collection(plan):
+            metadata["decode_prefix_caching"] = _decode_prefix_caching_mode(cell, plan)
         return metadata
     if cell.workload_kind != "prefill":
-        # Derive checkpoint evidence from the same strategy predicate used to
+        # Derive checkpoint evidence from the same predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
         # arguments that conflict with this resolved protocol.
-        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell)}
+        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell, plan)}
     if smoke:
         payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
         if plan.options.prefill_sampling.cudagraph_policy == "runtime":
