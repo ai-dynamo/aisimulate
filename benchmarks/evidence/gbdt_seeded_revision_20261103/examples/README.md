@@ -1,5 +1,13 @@
 # Seeded example generation and verification
 
+Final structured receipts, reproduction commands, the packaging helper and
+installed-wheel verification remain in this review. Duplicate rendered output
+and preparation-run details are preserved in the
+[immutable example evidence](https://github.com/ai-dynamo/aisimulate/tree/6fe7a3f5304c8fa707ed76571a4d51caec7d236a/benchmarks/evidence/gbdt_seeded_revision_20261103/examples).
+Executed JSON receipts are unchanged: their historical log paths and hashes
+refer to files in that checkout. Use it to reproduce the recorded runs with
+their original sources and native build; this cleanup reruns no measurements.
+
 The final packaged source was regenerated through the public example using
 producer PR3 `3e6e82c1b67e4448da01d60ae9d06893d1f8489f` and native
 `6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42`.
@@ -11,7 +19,7 @@ source digest. No artifact embeds its own future commit hash.
 | --- | --- | --- |
 | Public B→C→B+C lifecycle | All ten checks pass; complete decode readiness and 40 accepted C observations | [Receipt](final-receipt.json) |
 | Packaged verification | Seven checks pass, including source lineage and explicit/installed/discovered prediction equality | [Verification](final-verification.json) |
-| Base runtime verification | Passes with every sklearn import rejected | [Trainer-free log](final-trainer-free.log) |
+| Base runtime verification | Passes with every sklearn import rejected | [Trainer-free log](https://github.com/ai-dynamo/aisimulate/blob/6fe7a3f5304c8fa707ed76571a4d51caec7d236a/benchmarks/evidence/gbdt_seeded_revision_20261103/examples/final-trainer-free.log) |
 | Tamper rejection under `python -O` | Altered evaluation lineage is rejected | [Tamper log](final-tamper.log) |
 | Deterministic source bytes | Bundle, seed and inputs exactly match preparation; build-info now records final provenance | [Byte comparison](final-artifact-determinism.json) |
 | Installed application wheel | End-to-end workflow passes outside the checkout, including seeded source/snapshot APIs, public example, trainer-free verification and tamper rejection | [Installed wheel](installed-wheel.json), [log](installed-wheel.log) |
