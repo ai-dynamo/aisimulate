@@ -1908,3 +1908,11 @@ receipts, first-positive/first-final stream boundaries and the two capture API
 windows. Undefined one-token preparation TPOT remains unavailable; a valid
 zero delivered interval remains zero. The request audit does not substitute
 for all-rank GPU-projected trace qualification or establish historical MAPE.
+
+Retry 1015148's pre-model smoke qualifies **eight device kernels and eight
+GPU-projected graph markers**; report SHA256
+`b1f7f320d1710ee3859720c1f0f405495468f89e6b728afc755c8098789f80c1`.
+Only then does GLM startup begin. This repairs the diagnostic probe, not model
+accuracy. The independent auditor also rejects overlapping/out-of-order C1
+attempts and malformed capture windows; a complete synthetic 17-request fixture
+passes before its stop boundary is deliberately corrupted and rejected.

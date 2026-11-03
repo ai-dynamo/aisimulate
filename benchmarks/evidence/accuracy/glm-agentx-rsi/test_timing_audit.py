@@ -196,3 +196,47 @@ def test_forward_audit_empty_campaign_retains_both_missing_matrices(tmp_path):
     assert result["modes"]["instrumented-mtp"]["planned"] == 10
     for mode in result["modes"].values():
         assert not mode["qualified"] and len(mode["missing"]) == mode["planned"]
+
+
+def test_forward_capture_boundary_and_sequential_accounting(tmp_path):
+    for mode, arms in (("unprofiled-mtp", ("before", "after")),
+                       ("instrumented-mtp", ("before", "profiled", "after"))):
+        directory = tmp_path / mode
+        client = directory / "client"
+        client.mkdir(parents=True)
+        matrix = [("rsi-profile-warmup", 512, "preparation", "warmup")]
+        for context in (8192, 393216):
+            for arm in arms:
+                if context == 393216:
+                    matrix.append((f"rsi-profile-seed-{arm}", context, "preparation", arm))
+                matrix.append((f"rsi-profile-c{context}-{arm}", context, "profile", arm))
+        rows, captures = [], []
+        for i, (rid, context, role, arm) in enumerate(matrix):
+            start = (i * 10 + 3) * 1000000
+            length = 128 if role == "profile" else (16 if context == 512 else 1)
+            meta = {"prompt_tokens": context,
+                    "cached_tokens": 393152 if context == 393216 and role == "profile" else 0}
+            rows.append({"rid": rid, "context": context, "role": role, "arm": arm, "status": "completed",
+                         "input_tokens": context, "requested_output_tokens": length,
+                         "start_ns": str(start), "end_ns": str(start + 3000000),
+                         "events": [{"at_ns": str(start + 1000000), "output_tokens": 1, "meta": meta},
+                                    {"at_ns": str(start + 2000000), "output_tokens": length, "meta": meta}]})
+            if arm == "profiled" and role == "profile":
+                captures.extend([{"start": True, "begin_ns": str(start - 2000000),
+                                  "end_ns": str(start - 1000000)},
+                                 {"start": False, "begin_ns": str(start + 4000000),
+                                  "end_ns": str(start + 5000000)}])
+        (client / "requests.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        (client / "manifest.json").write_text(json.dumps({"status": "completed", "planned_requests": len(rows),
+            "attempted_requests": len(rows), "qualified_requests": len(rows), "unattempted_requests": 0,
+            "capture_ranges": captures}))
+        (directory / "completion.json").write_text('{}')
+    result = analyze_forward(tmp_path)
+    assert all(mode["qualified"] for mode in result["modes"].values())
+    manifest_path = tmp_path / "instrumented-mtp/client/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["capture_ranges"][1]["begin_ns"] = "0"
+    manifest_path.write_text(json.dumps(manifest))
+    bad = analyze_forward(tmp_path)["modes"]["instrumented-mtp"]
+    assert not bad["qualified"]
+    assert "capture API boundary does not enclose measured request" in bad["reasons"]

@@ -6,6 +6,7 @@
 import argparse
 import json
 from collections import Counter, defaultdict
+from itertools import pairwise
 from pathlib import Path
 
 MODES = ("unprofiled-mtp", "instrumented-mtp", "instrumented-plain")
@@ -430,6 +431,8 @@ def analyze_forward(root):
         reasons = []
         if any(expected.get(row["rid"]) != (row["context"], row["role"], row["arm"]) for row in rows):
             reasons.append("request identity/role/context does not match finite matrix")
+        if any(int(a["end_ns"]) > int(b["start_ns"]) for a, b in pairwise(rows)):
+            reasons.append("single-lane requests overlap or are recorded out of order")
         caches = {case["cached_tokens"] for case in cases
                   if case["context"] == 393216 and case["role"] == "profile"}
         if len(caches) != 1:
