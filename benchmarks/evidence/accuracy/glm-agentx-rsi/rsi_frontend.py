@@ -28,13 +28,19 @@ def measure_template(function):
         if not root:
             return function(*args, **kwargs)
         start = time.monotonic_ns()
+        cpu_start = time.process_time_ns()
+        thread_start = time.thread_time_ns()
         result = function(*args, **kwargs)
+        thread_stop = time.thread_time_ns()
+        cpu_stop = time.process_time_ns()
         stop = time.monotonic_ns()
         ids = result[1]
         row = {
             "start_ns": str(start),
             "end_ns": str(stop),
             "service_ms": (stop - start) / 1e6,
+            "process_cpu_ms": (cpu_stop - cpu_start) / 1e6,
+            "thread_cpu_ms": (thread_stop - thread_start) / 1e6,
             "input_tokens": len(ids),
             "input_sha256": token_digest(ids),
             "template_cache_requested": kwargs.get("use_cache"),

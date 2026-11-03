@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -221,6 +222,24 @@ def main():
         args.output / "runtime.json",
         {
             "sglang": importlib.metadata.version("sglang"),
+            "packages": {key: importlib.metadata.version(key) for key in ("torch", "transformers", "tokenizers")},
+            "cpu": {
+                "architecture": platform.machine(),
+                "logical_count": os.cpu_count(),
+                "affinity": sorted(os.sched_getaffinity(0)),
+                "model": next(
+                    (
+                        line.split(":", 1)[1].strip()
+                        for line in Path("/proc/cpuinfo").read_text().splitlines()
+                        if line.startswith("model name")
+                    ),
+                    "unknown",
+                ),
+                "thread_environment": {
+                    key: os.environ.get(key)
+                    for key in ("TOKENIZERS_PARALLELISM", "RAYON_NUM_THREADS", "OMP_NUM_THREADS")
+                },
+            },
             "acceptance_policy": args.acceptance_policy,
             "suite": args.suite,
             "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),

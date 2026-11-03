@@ -178,6 +178,17 @@ eight-case run completes with exact lengths and zero prefix reuse. MTP TTFT is
 ms and TPOT spans 5.978–6.134 ms. Silicon 0.5.20 versus database 0.5.21 remains
 cross-version. No synthetic result replaces either headline objective.
 
+The matching-policy uninstrumented mode completes all 221 requests. For repeat 1
+and 128 output tokens, 8K/131K cold C1 silicon TPOT is 2.6879/2.8277 ms versus
+2.4516/2.5796 ms predicted (8.79%/8.77% error). TTFT is 446.002/5694.958 ms
+versus 243.863/5064.213 ms predicted (45.32%/11.08% error). Short outputs retain
+larger finite-acceptance variability: the 8K/16-token repeats measure 2.6632 and
+3.1879 ms TPOT. These are untrimmed synthetic diagnostics, not a cohort win or
+same-version op qualification. The independent private audit and complete
+`E017-cold-unprofiled-comparison.json` preserve both repeats, cold cache receipts,
+acceptance counters and all numerical comparisons. Remaining instrumented and
+plain modes must finish before accepting an E017 conclusion.
+
 ## H2 — Recipe, tokenization, snapshots and cache history
 
 **Hypothesis.** Effective serving settings or replay history differ from silicon.
@@ -207,6 +218,9 @@ then encodes the full text without a thread offload. Its source SHA256 is
 `047e4391dc87816a62da34392eea9379fcb1f93025e70c3b327de8b596f59b09`.
 An optional timer retains stage duration, input count and a little-endian u32
 token digest; it records projection cost separately and retains no text/arrays.
+Retain wall, process-CPU and calling-thread CPU time separately, plus the serving
+host CPU model/affinity, tokenizer package versions and thread settings. Host
+measurements require these identities; B300 GPU identity alone is insufficient.
 The local template explicitly requests `return_dict=False`, matching the server's
 list-of-token-IDs contract across Transformers releases.
 Join exactly one stage inside each chat request and require its digest to match
