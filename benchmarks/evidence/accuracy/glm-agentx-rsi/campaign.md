@@ -1048,6 +1048,54 @@ client starts for TTFT. A regression test verifies identical client TTFT under
 the shifted origin. Regenerate both comparisons in new directories; this is a
 coordinate correction, not timing calibration or a prediction-model change.
 
+**E036 conclusion — arrival ordering supported in finite native controls.** All
+48 measured requests and all 48 predictions per clock qualify with zero lost
+pairs. The independent auditor verifies 24 rank-zero output-ready identities,
+explicit generated/emitted/discarded-tail conservation, cold caches, exact input
+and output counts, prepared-body clocks, native completion and interval arithmetic.
+The frozen native binary remains SHA256 `07b39a7f…`; no wheel, op data, acceptance
+setting, request pairing or timing multiplier changes between conditions.
+
+| Recorded arrival clock | Client TTFT MAPE / n | Client TPOT MAPE / n | Server-ready TPOT MAPE / n |
+|---|---:|---:|---:|
+| Client start | 66.3826% / 48 | 145.3488% / 48 | 87.4279% / 24 |
+| API submission | 8.6952% / 48 | 7.3182% / 48 | 7.1682% / 24 |
+
+Median client TTFT/TPOT APE improves from 39.4660%/53.6638% to
+8.0907%/5.8454%; absolute errors improve from 11027.97/83.5809 ms to
+1994.39/8.8422 ms. Signed errors become −8.6952%/−1.8016%. All six batches
+have both request MAPEs below 10%, with all eight first-output positions matching
+under API arrivals. Client-start replay mismatches six or seven positions in each
+batch. Keep the matched request identities; no rank-based re-pairing occurs.
+
+| Arm / repeat | Client-clock TTFT / TPOT | Submission-clock TTFT / TPOT |
+|---|---:|---:|
+| Dispatch-only / 0 | 49.623% / 54.127% | 9.297% / 8.322% |
+| Dispatch-only / 1 | 46.094% / 280.541% | 8.624% / 6.865% |
+| Dispatch-only / 2 | 45.664% / 275.051% | 8.471% / 7.050% |
+| Output-instrumented / 0 | 66.541% / 74.199% | 8.804% / 7.439% |
+| Output-instrumented / 1 | 76.169% / 71.516% | 8.453% / 7.228% |
+| Output-instrumented / 2 | 114.205% / 116.658% | 8.522% / 7.006% |
+
+The instrumented and dispatch-only submission-clock results have similar ranges;
+retain their individual repeats rather than interpreting small differences as a
+profiling correction. Client-clock v2 reproduces all 48 original client-clock
+pairs exactly. The failed submission-origin replay remains separate evidence.
+
+This is a diagnostic arrival-boundary result, **not a six-point AgentX accuracy
+win** or a general model repair. Historical API-submission times are unavailable;
+E014's recorded client arrivals do not supply them. The actual measured 0.5.20
+versus database 0.5.21 comparison remains explicitly cross-version. Investigate
+ordinary coding-chat admission and shared API delivery next, using real resolved
+inputs and runtime observations rather than fitting historical errors.
+
+Evidence: `E036-independent-audit.json`, SHA256
+`983eb593f745a19cb85a11ad5ac5b6905270fbae79ec0ce63990a390911a7c13`; GPU manifest SHA256
+`072a50b0a894343f2d64abcf0a0ceefe7a5deba993904475936a99754fcabf1c`,
+original CPU qualification, Slurm accounting, both complete v2 replay bundles,
+first-arm order audit and retained failed attempts. No held-out lanes, HF dataset,
+public dashboard or default serving model changes.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
