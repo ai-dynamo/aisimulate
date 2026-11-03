@@ -340,6 +340,10 @@ tokens, 16/128 outputs, MTP with total acceptance 2.99 and plain decode. Compare
 both recorded repeats with the forced-policy controls; repeat 1 separately checks
 steady-state compilation. These are diagnostics, not the frozen headline cohort.
 The 0.5.20 silicon versus 0.5.21 database comparison remains explicitly cross-version.
+The initial cold-control helper incorrectly supplied `nextn_accepted=0` with
+disabled speculation; plain control validation rejects that field. Retain this
+failed attempt and its four completed MTP predictions, omit the field when off,
+and generate all eight controls afresh in a separate output directory.
 
 ## Repeat and compatibility controls
 

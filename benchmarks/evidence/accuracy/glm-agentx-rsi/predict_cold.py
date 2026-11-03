@@ -44,7 +44,10 @@ def main():
                 )
                 config = copy.deepcopy(template)
                 config["engine"]["nextn"] = 3 if speculation else 0
-                config["engine"]["nextn_accepted"] = 1.99 if speculation else 0
+                if speculation:
+                    config["engine"]["nextn_accepted"] = 1.99
+                else:
+                    config["engine"].pop("nextn_accepted", None)
                 config["traffic"] = {
                     "source": {
                         "type": "trace",
@@ -72,7 +75,7 @@ def main():
                         "input_tokens": context,
                         "output_tokens": length,
                         "nextn": config["engine"]["nextn"],
-                        "accepted_drafts": config["engine"]["nextn_accepted"],
+                        "accepted_drafts": config["engine"].get("nextn_accepted", 0),
                         "ttft_ms": row["ttft_ms"],
                         "tpot_ms": row["itl_ms"],
                         "reused_tokens": row["first_admission_reused_input_tokens"],
