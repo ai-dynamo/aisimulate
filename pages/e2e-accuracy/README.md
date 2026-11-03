@@ -747,6 +747,8 @@ for AISim. Only Cumulative prompt token sources uses dotted lines, for cache mis
 cache hits use solid lines. Failed timeline requests keep a red outline.
 Plots and expanded charts show compact MAPE badges without the comparison coverage
 and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
+AgentX omits the Speculative acceptance length and Prefix cache hit rate per interval
+subplots. Both remain available in ordinary standalone replay exports.
 The comparison timeline fits the full phase into the panel, with a compact
 600-pixel minimum width on small screens. Each 22-pixel row shows the conversation
 hash and request ID on one line, with silicon and AISim intervals on separate

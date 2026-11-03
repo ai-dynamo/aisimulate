@@ -238,7 +238,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         { id: "footprint", title: "Conversation input footprint proxy", control: "footprint" },
         { id: "acceptance", title: "Speculative acceptance length" },
         { id: "completion", title: "Request completion status" },
-      ];
+      ].filter(spec => options.accuracy === undefined || !["hits", "acceptance"].includes(spec.id));
       // Optional numerical references supplied by the qualified accuracy publisher.
       // Ordinary replay exports do not add comparison cards.
       if (report.reference?.pairs) specs.unshift(
