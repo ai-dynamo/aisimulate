@@ -1571,3 +1571,19 @@ the test initially compared it with the absolute preparation clock, then was
 corrected without changing runtime behavior. A Python source-only test attempt
 could not import the native extension; rerun against the exact isolated wheel.
 Release build and Python/configuration qualification are pending.
+
+E039 exact wheel qualification: source
+`aa4c2aeab0050ad453295b9dff7c70cc80c29dab`, wheel
+`3d374c21878e88144ac814947b4f7a83fdc95b314b39020f1d21750474ef059a`,
+native `6433d41834435d1b1b27d3d1baaa11d09ec0a424756d54de40fb9b4b8f304eeb`.
+All **2351** packaged op-data files are byte-identical to the research baseline.
+The installed wheel passes 37 focused Python tokenization/configuration tests.
+The independent `audit_shared_frontend.py` checks HF observation checksums,
+source-identity pairing, original eligibility, native client latency arithmetic,
+output-length conservation, microsecond-to-millisecond conversion, the single-CPU service
+queue and profile/preparation accounting without importing replay/scoring helpers.
+Its unit test retains zero TPOT as 100% APE against a positive reference.
+
+```bash
+python audit_shared_frontend.py --candidate NEW_DEV_REPLAY --inputs FROZEN_HF_INPUTS --frozen FROZEN_COHORTS --output NEW_INDEPENDENT_AUDIT
+```

@@ -5,6 +5,8 @@ import pytest
 from audit_coding import bounds as coding_bounds
 from audit_coding import validate_counts
 from audit_matrix import errors, interval
+from audit_shared_frontend import error as frontend_error
+from audit_shared_frontend import latencies as frontend_latencies
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 from response_gate_diagnostic import gate_time, summary
 
@@ -82,3 +84,16 @@ def test_delivery_gate_uses_only_work_known_when_output_becomes_ready():
     assert gate_time(7.0, arrivals, free_at) == 21.0
     assert gate_time(40.0, arrivals, free_at) == 40.0
     assert summary([(0.0, 2.0)])["mape"] == 100.0  # Defined zero prediction stays scored.
+
+
+def test_native_shared_frontend_audit_keeps_zero_delivery_intervals():
+    row = {"arrival_time_ms": 1, "first_token_ms": 11, "last_token_ms": 11,
+           "terminal_time_ms": 11, "ttft_ms": 10, "itl_ms": 0,
+           "output_length": 128, "requested_output_length": 128}
+    assert frontend_latencies(row) == {"ttft": 10, "tpot": 0}
+    assert frontend_error(0, 0.01) == 100
+    assert frontend_error(0, 0) is None
+    with pytest.raises(ValueError, match="causal"):
+        frontend_latencies({**row, "terminal_time_ms": 10})
+    with pytest.raises(ValueError, match="conserved"):
+        frontend_latencies({**row, "requested_output_length": 129})
