@@ -44,7 +44,16 @@ def sample(url, path, stop):
             stop.wait(1)
 
 
-def control(root, model, deadline, instrumented, speculation, acceptance_policy="agentx-golden", suite="timing"):
+def control(
+    root,
+    model,
+    deadline,
+    instrumented,
+    speculation,
+    acceptance_policy="agentx-golden",
+    suite="timing",
+    coding_inputs=None,
+):
     code = Path(__file__).parent
     name = ("instrumented" if instrumented else "unprofiled") + ("-mtp" if speculation else "-plain")
     output = root / name
@@ -142,7 +151,7 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
         environment["RSI_TIMING_ROOT"] = str(output)
     else:
         environment.pop("RSI_TIMING_ROOT", None)
-    if suite in ("blocking", "matrix"):
+    if suite in ("blocking", "matrix", "coding-blocking"):
         dispatch_root = output / "dispatch"
         dispatch_root.mkdir()
         environment["RSI_DISPATCH_ROOT"] = str(dispatch_root)
@@ -189,8 +198,16 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
             subprocess.run(
                 [
                     sys.executable,
-                    str(code / {"frontend": "frontend.py", "blocking": "blocking.py",
-                                "timing": "probe.py", "matrix": "matrix_dispatch.py"}[suite]),
+                    str(
+                        code
+                        / {
+                            "frontend": "frontend.py",
+                            "blocking": "blocking.py",
+                            "timing": "probe.py",
+                            "matrix": "matrix_dispatch.py",
+                            "coding-blocking": "blocking.py",
+                        }[suite]
+                    ),
                     "--url",
                     url,
                     "--model",
@@ -198,7 +215,12 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
                     "--output",
                     str(output / "client"),
                 ]
-                + (["--dispatch-root", str(output / "dispatch")] if suite in ("blocking", "matrix") else []),
+                + (
+                    ["--dispatch-root", str(output / "dispatch")]
+                    if suite in ("blocking", "matrix", "coding-blocking")
+                    else []
+                )
+                + (["--coding-inputs", str(coding_inputs)] if suite == "coding-blocking" else []),
                 check=True,
                 timeout=max(1, deadline - time.monotonic() - 90),
                 env=environment,
@@ -223,13 +245,16 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
-    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "matrix"), default="timing")
+    parser.add_argument(
+        "--suite", choices=("timing", "frontend", "blocking", "matrix", "coding-blocking"), default="timing"
+    )
     parser.add_argument("--dispatch-preflight", type=Path)
+    parser.add_argument("--coding-inputs", type=Path)
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
     config_sha = hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest()
-    if args.suite in ("frontend", "blocking", "matrix"):
+    if args.suite in ("frontend", "blocking", "matrix", "coding-blocking"):
         preflight = json.loads((args.output.parents[1] / "frontend-template-preflight.json").read_bytes())
         if preflight["model_config_sha256"] != config_sha or preflight["transformers"] != importlib.metadata.version(
             "transformers"
@@ -237,7 +262,7 @@ def main():
             raise ValueError("Frontend template preflight does not match model or tokenizer runtime")
         if [case["context_label"] for case in preflight["cases"]] != [8192, 131072, 393216]:
             raise ValueError("Incomplete frontend template preflight")
-    if args.suite in ("blocking", "matrix"):
+    if args.suite in ("blocking", "matrix", "coding-blocking"):
         name = "matrix-dispatch-preflight.json" if args.suite == "matrix" else "blocking-dispatch-preflight.json"
         preflight_path = args.dispatch_preflight or args.output.parents[1] / name
         preflight = json.loads(preflight_path.read_bytes())
@@ -245,8 +270,19 @@ def main():
             raise ValueError("Dispatch preflight does not match runtime")
         if args.suite == "matrix" and preflight.get("prepared_request", {}).get("status") != "passed":
             raise ValueError("Prepared request preflight is unavailable")
-        if args.suite == "matrix" and preflight.get("dispatch_names", {}).get("status") != "passed":
+        if (
+            args.suite in ("matrix", "coding-blocking")
+            and preflight.get("dispatch_names", {}).get("status") != "passed"
+        ):
             raise ValueError("Dispatch request-name preflight is unavailable")
+        if args.suite == "coding-blocking":
+            if args.coding_inputs is None or preflight.get("coding_inputs", {}).get("status") != "passed":
+                raise ValueError("Actual coding inputs require CPU qualification")
+            if set(preflight["coding_inputs"]["files"]) != {"turn-0.json", "turn-128.json"}:
+                raise ValueError("Incomplete coding input qualification")
+            for name, receipt in preflight["coding_inputs"]["files"].items():
+                if hashlib.sha256((args.coding_inputs / name).read_bytes()).hexdigest() != receipt["sha256"]:
+                    raise ValueError("Coding input changed after CPU qualification")
         for name in PREFLIGHT_SOURCE_FILES:
             actual = hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             if preflight["source_sha256"].get(name) != actual:
@@ -289,20 +325,20 @@ def main():
             },
         },
     )
-    if args.suite in ("blocking", "matrix"):
+    if args.suite in ("blocking", "matrix", "coding-blocking"):
         subprocess.run(
             [sys.executable, str(Path(__file__).with_name("instrument.py")), "--dispatch-only"],
             check=True,
             stdout=(args.output / "dispatch-instrumentation.json").open("x"),
         )
-    control(args.output, args.model, deadline, False, True, args.acceptance_policy, args.suite)
+    control(args.output, args.model, deadline, False, True, args.acceptance_policy, args.suite, args.coding_inputs)
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("instrument.py"))]
-        + (["--frontend"] if args.suite in ("frontend", "blocking") else []),
+        + (["--frontend"] if args.suite in ("frontend", "blocking", "coding-blocking") else []),
         check=True,
         stdout=(args.output / "instrumentation.json").open("x"),
     )
-    control(args.output, args.model, deadline, True, True, args.acceptance_policy, args.suite)
+    control(args.output, args.model, deadline, True, True, args.acceptance_policy, args.suite, args.coding_inputs)
     if args.suite == "timing":
         control(args.output, args.model, deadline, True, False, args.acceptance_policy)
     save(args.output / "completion.json", {"status": "completed"})

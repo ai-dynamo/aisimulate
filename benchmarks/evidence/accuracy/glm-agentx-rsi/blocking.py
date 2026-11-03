@@ -5,6 +5,7 @@
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import multiprocessing
 import os
@@ -49,7 +50,41 @@ def tokenize(url, rid, body, expected_count, expected_digest):
     return row
 
 
-def actor_worker(url, payloads, jobs, results):
+def load_coding_inputs(root, tokenizer):
+    expected = {
+        "short": (
+            "turn-0.json",
+            "c47e941367fcdc6707ecccecaf04022037677d258cca76bf6219adfd7f1488bc",
+            651,
+            "76526cd3d4047918cf3b331534e419cc0d3c3141eee47671c1542005f460d3bf",
+        ),
+        "long": (
+            "turn-128.json",
+            "0bcfd1a68b1de640cc21f734b1c3c1d01f85d12eafe074db08126ca92ebfdbbb",
+            393290,
+            "46288fd8ff999bd3bb563c41ac4735f8896e17a9f08aa47eaf666422104fd1c9",
+        ),
+    }
+    payloads, receipts = {}, {}
+    for kind, (name, checksum, count, token_sha) in expected.items():
+        raw = (root / name).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != checksum:
+            raise ValueError("Coding primitive checksum differs from E029")
+        value = json.loads(raw)
+        ids, messages = value["input_ids"], value["payload"]["messages"]
+        actual = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=False)
+        if ids != actual or len(ids) != count or token_digest(ids) != token_sha:
+            raise ValueError("Coding primitive token identity differs")
+        payloads[kind] = (ids, messages)
+        receipts[name] = {"sha256": checksum, "bytes": len(raw), "input_tokens": count, "token_sha256": token_sha}
+    return payloads, {
+        "status": "passed",
+        "files": receipts,
+        "scope": "Unmarked E029 coding primitives; not historical cache/controller replay",
+    }
+
+
+def actor_worker(url, payloads, jobs, results, endpoint="tokenize"):
     # Separate process: decoding the large token-array response cannot hold the
     # native stream reader's Python lock. Bodies are prepared before measurement.
     results.put({"ready": True, "pid": os.getpid()})
@@ -58,8 +93,17 @@ def actor_worker(url, payloads, jobs, results):
         if job is None:
             return
         rid, kind = job
-        body, count, digest = payloads[kind]
-        results.put(tokenize(url, rid, body, count, digest))
+        if endpoint == "chat":
+            ids, messages = payloads[kind]
+            row = measured(url, rid, ids, messages, "chat")
+            row.update(role="coding_chat_actor", pid=os.getpid(), expected_input_sha256=token_digest(ids),
+                       input_sha256=None, token_identity="Expected E029 input; server hash requires frontend receipt")
+            if row["cached_tokens"] != 0:
+                row["status"] = "failed"
+            results.put(row)
+        else:
+            body, count, digest = payloads[kind]
+            results.put(tokenize(url, rid, body, count, digest))
 
 
 def wait_dispatch(root, rid, timeout=15):
@@ -82,6 +126,7 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dispatch-root", type=Path, required=True)
+    parser.add_argument("--coding-inputs", type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     tokenizer = AutoTokenizer.from_pretrained(str(args.model), trust_remote_code=True, local_files_only=True)
@@ -99,9 +144,15 @@ def main():
             body = json.dumps({"model": "nvidia/GLM-5.3-NVFP4", "messages": messages}).encode()
             payloads[kind] = (body, len(ids), token_digest(ids))
 
+    if args.coding_inputs:
+        inputs = {8192: inputs[8192]}
+        payloads, qualification = load_coding_inputs(args.coding_inputs, tokenizer)
+        (args.output / "coding-input-qualification.json").write_text(json.dumps(qualification, indent=2) + "\n")
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
-    actor = context.Process(target=actor_worker, args=(args.url, payloads, jobs, results))
+    actor = context.Process(
+        target=actor_worker, args=(args.url, payloads, jobs, results, "chat" if args.coding_inputs else "tokenize")
+    )
     actor.start()
     try:
         ready = results.get(timeout=60)
@@ -109,12 +160,14 @@ def main():
             raise ValueError("Independent actor process failed to start")
         with (args.output / "requests.jsonl").open("x") as stream:
             for kind in ("short", "long"):
+                if args.coding_inputs:
+                    flush_cache(args.url)
                 jobs.put((f"rsi-block-preparation-{kind}", kind))
                 warm = results.get(timeout=180)
                 warm.update(phase="preparation", actor=kind)
                 retain_case([warm], stream)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                for size in (8192, 131072):
+                for size in ((8192,) if args.coding_inputs else (8192, 131072)):
                     for repeat in range(3):
                         order = ("none", "short", "long") if repeat % 2 == 0 else ("long", "short", "none")
                         for kind in order:

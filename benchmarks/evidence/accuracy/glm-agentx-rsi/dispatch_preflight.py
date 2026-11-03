@@ -17,9 +17,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import probe
-from blocking import actor_worker
+from blocking import actor_worker, load_coding_inputs
 from instrument import install_dispatch
 from rsi_dispatch import PREFLIGHT_SOURCE_FILES, receipt_path, record
+from transformers import AutoTokenizer
 
 EXPECTED_MANAGER = "952fdfcf54b13af6851993d4b7599d4b1efeb6aa630a7554584a1a047eda94f2"
 
@@ -60,6 +61,8 @@ def dispatch_name_check(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--coding-inputs", type=Path)
+    parser.add_argument("--model", type=Path)
     args = parser.parse_args()
     if importlib.metadata.version("sglang") != "0.5.20":
         raise ValueError("This controlled experiment requires the exact historical runtime")
@@ -68,6 +71,11 @@ def main():
         raise ValueError("Historical tokenizer-manager source differs from archived evidence")
     receipt["prepared_request"] = prepared_request_check()
     receipt["dispatch_names"] = dispatch_name_check(args.output.parent)
+    if args.coding_inputs:
+        if args.model is None:
+            raise ValueError("Coding qualification requires the actual model tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained(str(args.model), trust_remote_code=True, local_files_only=True)
+        _, receipt["coding_inputs"] = load_coding_inputs(args.coding_inputs, tokenizer)
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
     child = context.Process(target=actor_worker, args=("http://127.0.0.1:1", {}, jobs, results))

@@ -269,9 +269,9 @@ def blocking_comparison(victim, actor, server_events, stages):
         matches = [
             row
             for row in stages
-            if row["input_sha256"] == actor["input_sha256"]
+            if row["input_sha256"] == (actor.get("input_sha256") or actor["expected_input_sha256"])
             and int(actor["start_ns"]) <= int(row["start_ns"])
-            and int(row["end_ns"]) <= int(actor["body_received_ns"])
+            and int(row["end_ns"]) <= int(actor["body_received_ns"] if "body_received_ns" in actor else actor["end_ns"])
         ]
         if len(matches) != 1:
             result["reasons"].append("CPU stage absent or ambiguous")
@@ -289,11 +289,11 @@ def blocking_comparison(victim, actor, server_events, stages):
     return result
 
 
-def analyze_blocking(root):
+def analyze_blocking(root, coding=False):
     modes = {}
     expected = {
         f"rsi-block-c{size}-r{repeat}-{kind}"
-        for size in (8192, 131072)
+        for size in ((8192,) if coding else (8192, 131072))
         for repeat in range(3)
         for kind in ("none", "short", "long")
     }
@@ -338,9 +338,8 @@ def analyze_blocking(root):
             if victim["actor"] != "none":
                 if actor is None or actor["status"] != "completed":
                     reasons.append("CPU actor missing or failed")
-                elif (
-                    actor["input_tokens"] != actor["expected_input_tokens"]
-                    or actor["input_sha256"] != actor["expected_input_sha256"]
+                elif actor["input_tokens"] != actor["expected_input_tokens"] or (
+                    not coding and actor["input_sha256"] != actor["expected_input_sha256"]
                 ):
                     reasons.append("CPU tokenization identity differs")
                 elif actor["pid"] == victim["pid"]:
@@ -373,9 +372,13 @@ def analyze_blocking(root):
             "collector_completed": (directory / "completion.json").exists(),
         }
     return {
-        "schema": "aisimulate.glm-rsi.blocking-audit.v1",
+        "schema": "aisimulate.glm-rsi.coding-blocking-audit.v1" if coding else "aisimulate.glm-rsi.blocking-audit.v1",
         "modes": modes,
-        "scope": "synthetic CPU-only interference; no historical MAPE or timing coefficient",
+        "scope": (
+            "Unmarked coding-chat actor also executes GPU work; qualify buffering only inside its synchronous CPU stage"
+            if coding
+            else "synthetic CPU-only interference; no historical MAPE or timing coefficient"
+        ),
         "collector_completed": (root / "completion.json").exists(),
         "exposure_rule": "All ready outputs fall within CPU stage; first client receipt follows stage end.",
     }
@@ -385,9 +388,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--suite", choices=("timing", "frontend", "blocking"), default="timing")
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking", "coding-blocking"), default="timing")
     args = parser.parse_args()
-    result = {"frontend": analyze_frontend, "blocking": analyze_blocking, "timing": analyze}[args.suite](args.root)
+    result = {
+        "frontend": analyze_frontend,
+        "blocking": analyze_blocking,
+        "coding-blocking": lambda root: analyze_blocking(root, coding=True),
+        "timing": analyze,
+    }[args.suite](args.root)
     with args.output.open("x") as stream:
         stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
     print(

@@ -152,3 +152,12 @@ def test_blocking_startup_failure_retains_full_missing_accounting(tmp_path):
         assert len(mode["unrecorded_or_unattempted"]) == 32
         assert mode["qualified_victims"] == 0
         assert not mode["collector_completed"]
+
+
+def test_coding_control_manifest_preserves_all_unattempted_requests(tmp_path):
+    for mode in ("unprofiled-mtp", "instrumented-mtp"):
+        (tmp_path / mode).mkdir()
+    result = analyze_blocking(tmp_path, coding=True)
+    assert result["schema"] == "aisimulate.glm-rsi.coding-blocking-audit.v1"
+    assert all(mode["planned"] == 17 and mode["recorded"] == 0
+               and len(mode["unrecorded_or_unattempted"]) == 17 for mode in result["modes"].values())

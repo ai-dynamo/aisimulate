@@ -1096,6 +1096,46 @@ original CPU qualification, Slurm accounting, both complete v2 replay bundles,
 first-arm order audit and retained failed attempts. No held-out lanes, HF dataset,
 public dashboard or default serving model changes.
 
+## E037 — ordinary coding-chat admission and delivery (predeclared)
+
+**Hypothesis (H1/H6).** The API buffering demonstrated with `/tokenize` also
+occurs during ordinary coding-chat rendering, before the actor's own GPU work.
+Predict that a short native victim finishes all server-ready outputs inside a
+long coding-chat CPU stage, while client delivery begins after the stage ends.
+Confidence: moderate; competing causes include actor GPU prefill interference,
+response formatting and instrumentation. Only the strict enclosed-ready interval
+can isolate CPU delivery blocking from the actor's later GPU work.
+
+**Experiment.** Reuse E028's dispatch-triggered independent actor process and
+E036's generated/emitted/tail probe, pinned checkpoint/image/forced acceptance
+and unchanged server recipe. Replace the tokenize actor with real E029 coding
+chat inputs: 651 and 393290 tokens (1/219 messages), checksum-pinned and verified
+by the actual model tokenizer. These are **unmarked primitives**, not a replay
+of historical scenario/cache/controller histories. Both actor and native victim
+request 16 outputs; all requests start with reported cold cache.
+
+Three repeats alternate none/short/long interference on an 8K-class native victim.
+Two fresh arms: dispatch-only, then dispatch plus output-ready and frontend CPU
+receipts. Plan **34 requests**: 18 native victims, 12 profile chat actors and four
+unscored chat warmups. Flush cache before each warmup and case. Preserve all
+attempts, incomplete requests and unmatched/ambiguous stages. Chat counts alone
+do not prove token hashes; match actual instrumented frontend receipts to pinned
+expected hashes and the native submission's API PID. Record that the actor also
+executes GPU work. Do not assign `/tokenize` response-array cost to chat.
+
+Qualify source hashes, both dispatch prefixes and both exact coding token
+sequences in a fresh zero-GPU exact-image CPU preflight. Reserve at most
+**39 minutes plus 60 seconds cleanup = 19200 GPU-seconds**, using 64 CPUs and
+1 TiB memory on one eight-B300 node. The controlled pool has 4757.75/7200
+TP8-equivalent node-seconds charged; 2400 reserved fits its remaining 2442.25.
+Campaign remaining is 136666 GPU-seconds before reservation. Instrumented runs
+must retain actual phase/counter/CPU boundaries and be compared with the minimal
+arm. Native victim intervals are diagnostics; frozen six-point headline scores
+remain unchanged. Stop and retain evidence on qualification failure.
+
+**Conclusion:** pending CPU qualification and bounded GPU collection. No new
+modeling setting, fitted latency, HF promotion or dashboard replacement.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
@@ -1288,6 +1328,7 @@ python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDIC
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
 python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --output NEW_FRONTEND_AUDIT_JSON
 python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
+python analyze_timing.py --suite coding-blocking --root PRIVATE_CODING_CONTROLS --output NEW_CODING_AUDIT_JSON
 python prepare_weka_frontend.py --trace FROZEN_WEKA_TRACE --profile ORIGINAL_PROFILE_JSON --model-revision FULL_MODEL_SHA --output NEW_PRIVATE_PAYLOAD_DIR
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 python predict_matrix.py --controls PRIVATE_GPU_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_NATIVE_MATRIX

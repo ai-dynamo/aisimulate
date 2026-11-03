@@ -24,6 +24,11 @@ mkdir -p "$ENROOT_DATA_PATH"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 code="${RSI_CODE/#$storage_root/\/workspace}"
 receipt="${RSI_DISPATCH_PREFLIGHT/#$storage_root/\/workspace}"
+coding_arguments=()
+if test -n "${RSI_CODING_INPUTS:-}"; then
+    coding_inputs="${RSI_CODING_INPUTS/#$storage_root/\/workspace}"
+    coding_arguments=(--coding-inputs "$coding_inputs" --model /workspace/models/GLM-5.3-NVFP4-e3b8f9f2)
+fi
 srun --ntasks=1 --container-image="$image" --container-writable \
     --container-mounts="$storage_root:/workspace" \
-    python3 "$code/dispatch_preflight.py" --output "$receipt"
+    python3 "$code/dispatch_preflight.py" --output "$receipt" "${coding_arguments[@]}"

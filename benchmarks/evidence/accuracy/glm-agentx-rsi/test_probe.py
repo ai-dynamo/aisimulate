@@ -8,6 +8,7 @@ import threading
 import urllib.error
 from types import SimpleNamespace
 
+import blocking
 import dispatch_preflight
 import probe
 import pytest
@@ -85,3 +86,38 @@ def test_preflight_exercises_actual_dispatch_name_filters(tmp_path):
     receipt = dispatch_preflight.dispatch_name_check(tmp_path)
     assert receipt == {"status": "passed", "tested_prefixes": ["rsi-block-", "rsi-submit-"]}
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("cached", [0, 64])
+def test_coding_actor_uses_chat_counts_and_rejects_cache_reuse(monkeypatch, cached):
+    class Jobs:
+        def __init__(self):
+            self.items = iter([("rsi-block-coding", "long"), None])
+
+        def get(self):
+            return next(self.items)
+
+    class Results:
+        def __init__(self):
+            self.rows = []
+
+        def put(self, row):
+            self.rows.append(row)
+
+    def measured(url, rid, ids, messages, endpoint):
+        assert endpoint == "chat" and ids == [1, 2] and messages == [{"role": "user", "content": "test"}]
+        return {"status": "completed", "cached_tokens": cached, "rid": rid}
+
+    monkeypatch.setattr(blocking, "measured", measured)
+    result = Results()
+    blocking.actor_worker("http://test", {"long": ([1, 2], [{"role": "user", "content": "test"}])},
+                          Jobs(), result, "chat")
+    assert result.rows[0]["ready"]
+    assert result.rows[1]["status"] == ("failed" if cached else "completed")
+    assert result.rows[1]["role"] == "coding_chat_actor"
+
+
+def test_coding_inputs_reject_checksum_changes_before_tokenization(tmp_path):
+    (tmp_path / "turn-0.json").write_text("{}")
+    with pytest.raises(ValueError, match="checksum"):
+        blocking.load_coding_inputs(tmp_path, SimpleNamespace())

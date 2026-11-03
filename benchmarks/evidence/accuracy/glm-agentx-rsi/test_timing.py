@@ -21,7 +21,7 @@ from instrument import inject
 
 
 @pytest.mark.parametrize("invalid", ["model", "runtime", "cases"])
-@pytest.mark.parametrize("suite", ["frontend", "blocking", "matrix"])
+@pytest.mark.parametrize("suite", ["frontend", "blocking", "matrix", "coding-blocking"])
 def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeypatch, invalid, suite):
     model = tmp_path / "model"
     model.mkdir()

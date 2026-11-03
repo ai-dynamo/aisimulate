@@ -23,6 +23,12 @@ if test "${RSI_SUITE:-timing}" = matrix; then
     control_seconds=2640
     reservation_seconds=22080
 fi
+if test "${RSI_SUITE:-timing}" = coding-blocking; then
+    coding_wall_limit=$(scontrol show job "$SLURM_JOB_ID" -o | awk '{for(i=1;i<=NF;i++) if($i ~ /^TimeLimit=/) print substr($i,11)}')
+    test "$coding_wall_limit" = 00:39:00
+    control_seconds=2280
+    reservation_seconds=19200
+fi
 test "$REMAINING_GPU_SECONDS" -ge "$reservation_seconds"
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 cd "$storage_root"
@@ -47,13 +53,13 @@ case "${RSI_RUNTIME:-prediction}" in
     *) echo 'Unknown RSI runtime' >&2; exit 1 ;;
 esac
 test -s "$model/config.json"
-if test "${RSI_SUITE:-timing}" = frontend || test "${RSI_SUITE:-timing}" = blocking || test "${RSI_SUITE:-timing}" = matrix; then
+if test "${RSI_SUITE:-timing}" = frontend || test "${RSI_SUITE:-timing}" = blocking || test "${RSI_SUITE:-timing}" = matrix || test "${RSI_SUITE:-timing}" = coding-blocking; then
     test -s "$CAMPAIGN_ROOT/frontend-template-preflight.json"
 fi
 if test "${RSI_SUITE:-timing}" = blocking; then
     test -s "$CAMPAIGN_ROOT/blocking-dispatch-preflight.json"
 fi
-if test "${RSI_SUITE:-timing}" = matrix; then
+if test "${RSI_SUITE:-timing}" = matrix || test "${RSI_SUITE:-timing}" = coding-blocking; then
     test -s "${RSI_DISPATCH_PREFLIGHT:?Versioned CPU qualification receipt}"
 fi
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
@@ -66,13 +72,19 @@ nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv > "$CA
 awk -F, 'NR > 1 {if ($1 !~ /B300/) bad=1; count++} END {exit (bad || count != 8)}' "$CAMPAIGN_ROOT/gpu-$SLURM_JOB_ID/gpus.csv"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 dispatch_arguments=()
-if test "${RSI_SUITE:-timing}" = matrix; then
+if test "${RSI_SUITE:-timing}" = matrix || test "${RSI_SUITE:-timing}" = coding-blocking; then
     dispatch_receipt="${RSI_DISPATCH_PREFLIGHT/#$storage_root/\/workspace}"
     dispatch_arguments=(--dispatch-preflight "$dispatch_receipt")
+fi
+coding_arguments=()
+if test "${RSI_SUITE:-timing}" = coding-blocking; then
+    coding_inputs="${RSI_CODING_INPUTS:?Qualified private coding inputs}"
+    coding_inputs="${coding_inputs/#$storage_root/\/workspace}"
+    coding_arguments=(--coding-inputs "$coding_inputs")
 fi
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     env "RSI_CACHE_ROOT=$root/runtime-cache/$cache_key" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
     --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds "$control_seconds" --acceptance-policy agentx-golden \
-    --suite "${RSI_SUITE:-timing}" "${dispatch_arguments[@]}"
+    --suite "${RSI_SUITE:-timing}" "${dispatch_arguments[@]}" "${coding_arguments[@]}"
