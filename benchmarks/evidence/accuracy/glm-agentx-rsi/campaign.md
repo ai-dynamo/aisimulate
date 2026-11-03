@@ -29,6 +29,11 @@ MAPEs with every frozen metric observation retained. One-factor attribution to
 upstream #406 is confirmed on development points; no new campaign modeling fix
 has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
+Latest candidate E039 has retained development TTFT/TPOT **71.8576/66.3724%**
+with **seven lost frozen observations per metric**, so it is **not a win**. Its
+unchanged C4/C10/C13 validation is running. GPU spend remains **29.2861/64 hours**,
+with no active GPU allocation; current validation uses CPUs only.
+
 ## Frozen baselines — E000/E003
 
 | Variant | TTFT MAPE | TTFT n | TPOT MAPE | TPOT n |
