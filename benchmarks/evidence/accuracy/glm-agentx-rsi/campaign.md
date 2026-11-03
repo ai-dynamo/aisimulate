@@ -304,3 +304,39 @@ The hook now checks both known module layouts and requires exactly one matching
 `stream_output(reqs, ...)` interface; duplicate/instrumented/unknown interfaces
 fail explicitly. Independent preflight retry: 1002662. Six audit/hook tests and
 two native/chat projection tests pass. The CPU failures consume no GPU budget.
+
+## Preflight interpretation correction
+
+The earlier inference that the image necessarily uses the older mixin layout was
+premature and is superseded. Retry 1002662 showed that distribution-relative paths
+are invalid for this editable SGLang installation. The probe now resolves the actual
+package origin without importing the GPU runtime and tests editable installations
+explicitly. Retry 1002721 checks that corrected path discovery before GPU use.
+These are probe setup failures, not evidence that SGLang or the model is unsupported.
+
+## E010 — Qwen CPU compatibility smokes
+
+The GLM-only wheel intentionally lacks PR #666's vLLM 0.31.0 context table; the
+first three smokes correctly returned database-unavailable rather than borrowing
+another version. Retain those outcomes. Reuse the same installed native binary
+with an isolated data root that adds only the previously qualified #666 parquet
+`d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700`.
+
+All three 4K/cold/repeat-0 smokes at 1/4/16 lanes then complete: 8/32/128 requests
+match with identical output lengths and all cache receipts agree, including
+preparation. These are compatibility smokes, not a new Qwen accuracy campaign;
+no Qwen GPU collection or active dataset changes belong to this campaign.
+
+The reusable gap catalog records commit-level DSA reuse attribution as GLM-RSI-01,
+with the residual hypotheses and regression limits preserved.
+
+## Qualified CPU preflight
+
+Retry 1002721 passes. Actual SGLang package version is 0.5.21; its implementation
+is the newer `scheduler_components/output_streamer.py`. The older-layout hypothesis
+is disproven: editable-install path discovery caused the prior failures. Original
+streamer source SHA256 is `8bfe917edc87ae89f387c718944310e8f9002e1740ecae87b6fd7194f1669855`;
+the tested hook SHA256 is `9d2ec980b62603532fa29443f86eb0183a2951037405f4187afc3e20eef06e1d`.
+Launch help and client imports complete on CPU. The next GPU allocation remains
+bounded at two node-hours and must retain its own actual source hashes and runtime
+receipts; successful CPU preflight is not a claim of successful GPU serving.

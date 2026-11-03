@@ -5,9 +5,27 @@
 import json
 from types import SimpleNamespace
 
+import instrument
 import pytest
 import rsi_timing
 from instrument import inject
+
+
+def test_editable_install_uses_package_origin_not_distribution_location(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "srt/managers/scheduler_components/output_streamer.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "class SchedulerOutputStreamer:\n    def stream_output(self, reqs, return_logprob):\n        pass\n"
+    )
+    monkeypatch.setattr(instrument.importlib.metadata, "distribution", lambda _: SimpleNamespace(version="0.5.21"))
+    monkeypatch.setattr(
+        instrument.importlib.util, "find_spec", lambda _: SimpleNamespace(origin=str(tmp_path / "__init__.py"))
+    )
+    instrument.main()
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["sglang_version"] == "0.5.21"
+    assert receipt["original_sha256"] != receipt["instrumented_sha256"]
+    assert '__import__("rsi_timing").record(reqs)' in path.read_text()
 
 
 def test_both_output_layouts_require_one_known_interface():

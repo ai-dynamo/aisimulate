@@ -6,6 +6,7 @@
 import ast
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 from pathlib import Path
 
@@ -33,12 +34,18 @@ def inject(source):
 
 def main():
     package = importlib.metadata.distribution("sglang")
+    specification = importlib.util.find_spec("sglang")
+    if specification is None or specification.origin is None:
+        raise ValueError("SGLang package origin is unavailable")
+    root = Path(specification.origin).parent
     candidates = [
-        "sglang/srt/managers/scheduler_components/output_streamer.py",
-        "sglang/srt/managers/scheduler_output_processor_mixin.py",
+        "srt/managers/scheduler_components/output_streamer.py",
+        "srt/managers/scheduler_output_processor_mixin.py",
     ]
-    relative = next(name for name in candidates if Path(package.locate_file(name)).is_file())
-    path = Path(package.locate_file(relative))
+    relative = next((name for name in candidates if (root / name).is_file()), None)
+    if relative is None:
+        raise ValueError(f"Unknown scheduler output layout under {root}")
+    path = root / relative
     source = path.read_text()
     modified = inject(source)
     path.write_text(modified)
@@ -46,7 +53,7 @@ def main():
         json.dumps(
             {
                 "sglang_version": package.version,
-                "relative_path": relative,
+                "relative_path": "sglang/" + relative,
                 "original_sha256": hashlib.sha256(source.encode()).hexdigest(),
                 "instrumented_sha256": hashlib.sha256(modified.encode()).hexdigest(),
                 "boundary": "host scheduler output-ready, before detokenization/HTTP; not GPU kernel time",
