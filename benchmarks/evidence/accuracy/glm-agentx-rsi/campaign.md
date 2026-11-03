@@ -1696,3 +1696,44 @@ three-node-hour GPU validation reserve stays intact. CPU history audits can
 continue without spending it. E039 provides new discriminating feedback/coverage
 evidence, so the no-evidence streak is zero; neither target nor other campaign
 stop condition is reached.
+
+## H5 follow-up — E040 matched forward/kernel evidence (predeclared)
+
+- **Hypothesis:** selected kernel, graph boundary or MTP draft composition
+  differs from the operation graph, contributing to the residual non-buffered
+  latency error. In particular, the measured checkpoint excludes layer 78 from
+  quantization, while the modeled draft scales a target-layer mix. This remains
+  unverified; competing explanations are correct GPU timing with divergent
+  cache/arrival histories and CPU/client boundaries.
+- **First experiment:** reconcile canonical selected-query evidence and actual
+  pinned-runtime profiler support before allocating GPUs. Use the frozen EDDB
+  wheel/#665 data, no correction, and the canonical role-bound
+  `RustForwardPassPerfModel.best_available` detailed query; do not substitute
+  legacy static estimates or scale ordinary FPM data as op timing. Preserve
+  per-rank inputs and actual selected lookup weights.
+- If source qualification succeeds, reuse the historical SGLang 0.5.20 image,
+  verified exact model/quantization, TP8/EP1 and golden forced acceptance. Use
+  C1 native-token controls at cold 8192 context and seeded 393216 context,
+  128 observed output tokens. Require actual cache/output counts and record
+  the warmed long-context cached prefix rather than assuming it. Compare
+  unprofiled-before / profiled / unprofiled-after controls. Preparation and
+  profiler setup remain outside request scoring.
+- Capture enough decode rounds (at least ten usable rounds per selected trace),
+  selected prefill/verification/draft boundaries and all TP ranks. Prefer
+  GPU-projected NVTX/kernel windows with graph nodes; otherwise establish an
+  equivalent GPU correlation contract before per-op attribution. CPU launch
+  ranges, kernel sums and GPU critical paths are different quantities.
+  Inspect precision, TP/EP, fused work and graph coverage before assigning
+  kernels to model operations. Rank maxima retain waiting; never sum ranks.
+- Runtime 0.5.20 versus prediction data 0.5.21 stays explicitly cross-version.
+  No kernel/data/model correction is accepted from a filename or trace total.
+  Do not change timing, fit factors or touch the historical headline.
+- **Resource gate:** CPU preflight costs zero GPU-hours. A later TP8 trace job
+  must fit at most 45 minutes plus 60 seconds cleanup (22080 GPU-seconds),
+  within the untouched 28800-GPU-second op/forward pool and reconciled overall
+  remainder of 124970 GPU-seconds. Reserve only after source qualification;
+  the three-node-hour GPU validation reserve remains intact. Record actual
+  allocation including failures and cleanup.
+- **Conclusion:** pending source/query reconciliation. Missing trace boundaries
+  or counters make the corresponding comparison unavailable; preserve failures
+  and do not infer a six-point accuracy result from these finite diagnostics.
