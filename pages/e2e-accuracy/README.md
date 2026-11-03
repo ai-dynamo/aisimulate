@@ -682,6 +682,13 @@ explicit counts and unavailable timings. Evidence lists exclusions and metric
 denominators without a separate accounting section; incomplete failed/cancelled
 stream observations do not become zero-valued throughput comparisons.
 
+The resumed November 2–3 collection qualified the 1- and 4-lane profiles, but
+stopped when the 8-lane server exceeded its startup deadline while loading
+checkpoint weights. No 8-lane measurement started; 10/13/14 lanes remain
+unattempted. The two profiles and their feature records are retained privately
+as unscored incomplete-campaign evidence. They do not replace active coverage
+or satisfy the complete twelve-replay publication gate.
+
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
 to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).

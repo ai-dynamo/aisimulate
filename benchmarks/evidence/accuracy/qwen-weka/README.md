@@ -60,6 +60,34 @@ profiles and the complete twelve-run GLM/Qwen replay campaign qualify. Until
 then the existing preview remains active. The finite campaign is retained as
 `archive/finite-v1`; legacy prompt/cache/repeat URLs select that archive.
 
+## Full-profile attempt (November 2–3)
+
+The replacement campaign stopped before its 8-lane benchmark could start.
+vLLM was still loading weights at the 1800-second readiness deadline: 93 of 94
+checkpoint shards had loaded. The worker traceback appeared during forced
+shutdown; the cause of the slow loading is not established.
+
+| Lanes | Silicon outcome | Measured credits | Failed/cancelled credits |
+| --- | --- | ---: | ---: |
+| 1 | Qualified, job 1001739 | 484 | 1 cancellation |
+| 4 | Qualified, job 1002947 | 667 | 0 |
+| 8 | Server startup timed out, job 1002947 | 0 | No measurement started |
+| 10, 13, 14 | Not attempted | 0 | — |
+
+Both qualified profiles retain all 36 feature records. The cached loader had
+skipped its receipt hook; actual benchmark exports and dataset metadata establish
+the settings and all 220 eligible roots, with explicit derived-artifact provenance.
+A fresh CPU validation of the full 1-lane profile matched 483 requests; its five
+metrics, denominators and 499515 native output tokens passed an independent audit.
+This validation is not a daily prediction or a complete campaign publication.
+
+Aggregate GPU allocation use is 12798/28800 seconds (3.56 node-hours), leaving
+16002 seconds (4 hours 26 minutes 42 seconds). No further GPU job was submitted
+after the startup failure. Partial silicon evidence is archived privately as an
+incomplete, unscored campaign; the existing active catalog and public preview
+remain unchanged. The four remaining profiles and complete twelve fresh replays
+are still required for replacement publication.
+
 ## Protocol
 
 - One eight-B300 node, TP8, Qwen3.5-397B-A17B BF16, vLLM 0.31.0.
