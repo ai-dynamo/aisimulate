@@ -36,8 +36,12 @@ isolate_training_dependencies = training_support.isolate_training_dependencies
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("sidecar_repeats", [False, True])
-def test_complete_reconstructed_legacy_pair_reaches_native_validation(phase_roots, scenario_case, sidecar_repeats):
+@pytest.mark.parametrize(
+    "sidecar_repeats,recover",
+    [(False, False), (True, False), (False, True)],
+    ids=["legacy", "legacy-with-repeats", "recovered"],
+)
+def test_reconstructed_pair_reaches_native_validation(phase_roots, scenario_case, sidecar_repeats, recover):
     from aisimulate_core.sdk import RustForwardPassPerfModel
 
     config, make_root = phase_roots
@@ -48,7 +52,18 @@ def test_complete_reconstructed_legacy_pair_reaches_native_validation(phase_root
     metadata["metadata_provenance"] = "reconstructed_from_parquet"
     if sidecar_repeats:
         metadata.update(measurement_repeats=1, warmup_repeats=0)
+    if recover:
+        rows = pq.read_table(parquet).to_pylist()
+        for row in rows:
+            row.update(measurement_policy="dynamo_native_single_sample_v1", measurement_repeats=1, warmup_repeats=0)
+        pq.write_table(pa.Table.from_pylist(rows), parquet)
+        metadata["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+        metadata["configuration_selector"] = {
+            field: rows[0][field] for field in ("model_path", "system", "backend", "backend_version")
+        }
+        del metadata["coordinate_system"]
     sidecar.write_text(json.dumps(metadata))
+    original_parquet, original_metadata = parquet.read_bytes(), sidecar.read_bytes()
     artifact = replace(
         scenario_case.fpm_artifacts[0],
         local_path=parquet,
@@ -61,7 +76,18 @@ def test_complete_reconstructed_legacy_pair_reaches_native_validation(phase_root
         {"system_name": "h200_sxm", "backend": "vllm", "backend_version": "0.25.1"}, artifact
     )
     try:
-        assert "fpm_metadata_recovery" not in prepared.diagnostics
+        if recover:
+            recovery = prepared.diagnostics["fpm_metadata_recovery"]
+            assert recovery["recovered_fields"] == {
+                "coordinate_system": "iteration_totals_balanced_v1",
+                "measurement_repeats": 1,
+                "warmup_repeats": 0,
+            }
+            staged = prepared.systems_root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json"
+            assert not staged.is_symlink()
+            assert json.loads(staged.read_text()) == {**metadata, **recovery["recovered_fields"]}
+        else:
+            assert "fpm_metadata_recovery" not in prepared.diagnostics
         native = RustForwardPassPerfModel.best_available({**config, "systems_paths": [str(prepared.systems_root)]})
         try:
             assert (
@@ -80,6 +106,8 @@ def test_complete_reconstructed_legacy_pair_reaches_native_validation(phase_root
             native.close()
     finally:
         prepared.close()
+    assert parquet.read_bytes() == original_parquet
+    assert sidecar.read_bytes() == original_metadata
 
 
 @pytest.mark.parametrize("method", ["gbdt", "selector"])

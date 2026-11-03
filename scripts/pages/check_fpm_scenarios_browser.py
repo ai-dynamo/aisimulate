@@ -40,7 +40,7 @@ def artifact_key(branch):
     return hashlib.sha256(branch.encode()).hexdigest()[:16]
 
 
-def fixture(branch="main"):
+def fixture(branch="main", *, version=14):
     """Synthetic display evidence only; never written to deployable assets."""
     snapshot = {
         "branch": branch,
@@ -89,7 +89,12 @@ def fixture(branch="main"):
                 "update_count": calls,
             },
             "cold_start": {"unavailable_before_first_prediction": test_count - predicted if scenario == "c" else 0},
-            "artifact": {"id": "synthetic-self-benchmark", "path": "synthetic/table.parquet", "sha256": "3" * 64}
+            "artifact": {
+                "id": "synthetic-self-benchmark",
+                "path": "synthetic/table.parquet",
+                "sha256": "3" * 64,
+                "metadata_sha256": "6" * 64,
+            }
             if scenario in ("a", "ac")
             else None,
             "training_population_sha256": "4" * 64 if scenario in ("b", "bc") else None,
@@ -97,6 +102,19 @@ def fixture(branch="main"):
         }
         if status != "evaluated":
             value["reason"] = "Synthetic browser fixture: " + status
+        if version == 14 and scenario in ("a", "ac") and method not in ("warmup", "nowarmup") and status == "evaluated":
+            value["seed_target_normalization"] = {
+                "policies": ["same_cell_batch_real_kv_extrapolation_v1"],
+                "source_parquet_sha256": ["3" * 64],
+                "source_metadata_sha256": ["6" * 64],
+                "marked_source_rows": 2,
+                "replaced_source_rows": 1,
+                "kept_source_rows": 1,
+                "replicated_seed_rows": 4,
+                "replacement_enabled": True,
+                "effective_targets_sha256": "7" * 64,
+                "target_scope": "native_profile_seed_targets_not_additional_measurements",
+            }
         if online:
             value["online_schedule"] = {
                 "interval_ms": 5000,
@@ -154,8 +172,8 @@ def fixture(branch="main"):
         }
         rows.append(row)
     return {
-        "schema_version": 14,
-        "protocol_id": "fpm-scenarios-v14",
+        "schema_version": version,
+        "protocol_id": f"fpm-scenarios-v{version}",
         "snapshot": snapshot,
         "methods": list(METHODS),
         "scenarios": list(SCENARIOS),
@@ -234,6 +252,26 @@ async def main():
             await expect(page.locator("#evaluation-hf")).to_have_attribute("href", re.compile("2{40}$"))
             await expect(page.locator("#sc-protocol-version-note")).to_contain_text("including warmup")
             await expect(page.locator("#sc-cadence-note")).to_contain_text("five seconds after the first")
+            await page.locator('#sc-body [data-method="gbdt"]').first.click()
+            for label, value in (
+                ("Seed normalization policy", "same_cell_batch_real_kv_extrapolation_v1"),
+                ("Seed replacement enabled", "Yes"),
+                ("Marked source rows", "2"),
+                ("Replaced source rows", "1"),
+                ("Retained source rows", "1"),
+                ("Replicated seed rows", "4"),
+                ("Seed source Parquet SHA-256", "3" * 64),
+                ("Seed source metadata SHA-256", "6" * 64),
+                ("Effective seed targets SHA-256", "7" * 64),
+                ("Seed target scope", "native_profile_seed_targets_not_additional_measurements"),
+            ):
+                await field(label, value)
+            await expect(page.locator("#sc-evidence-count-note")).to_contain_text(
+                "not additional measured observations"
+            )
+            await page.locator('input[name="scenario"][value="ac"]').check()
+            await page.locator('#sc-body [data-method="selector"]').first.click()
+            await field("Effective seed targets SHA-256", "7" * 64)
             for scenario in SCENARIOS:
                 await page.locator(f'input[name="scenario"][value="{scenario}"]').check()
                 await expect(page.locator("#sc-detail-body tr")).to_have_count(5)
@@ -316,10 +354,25 @@ async def main():
             await page.set_viewport_size({"width": 1440, "height": 1000})
 
             # Historical strict-C results retain their original seed-policy label.
-            current = fixture()
-            current.update(schema_version=13, protocol_id="fpm-scenarios-v13")
+            current = fixture(version=13)
             await ready()
             await expect(page.locator("#sc-protocol-version-note")).to_contain_text("fpm-scenarios-v13")
+            await page.locator('#sc-body [data-method="gbdt"]').first.click()
+            await expect(page.locator("#sc-evidence-values dt", has_text="Seed normalization policy")).to_have_count(0)
+
+            # Raw-mode reports remain explicit; missing reports do not imply replacement.
+            current = fixture()
+            seed = current["rows"][0]["results"]["a"]["gbdt"]["seed_target_normalization"]
+            seed.update(replacement_enabled=False, replaced_source_rows=0, kept_source_rows=2)
+            await ready()
+            await page.locator('#sc-body [data-method="gbdt"]').first.click()
+            await field("Seed replacement enabled", "No")
+            await field("Replaced source rows", "0")
+            await field("Retained source rows", "2")
+            del current["rows"][0]["results"]["a"]["gbdt"]["seed_target_normalization"]
+            await ready()
+            await page.locator('#sc-body [data-method="gbdt"]').first.click()
+            await expect(page.locator("#sc-evidence-values dt", has_text="Seed normalization policy")).to_have_count(0)
 
             # Malformed split data is unavailable rather than replaced by the 50% score.
             current = fixture()
@@ -348,6 +401,47 @@ async def main():
             old = fixture()
             old.update(schema_version=12, protocol_id="fpm-scenarios-v12")
             invalid.append((old, "requires the strict five-second protocol"))
+            for field_name, value, message in (
+                ("policies", ["unknown"], "invalid seed normalization policy"),
+                ("source_parquet_sha256", ["8" * 64], "seed normalization source mismatch"),
+                ("source_metadata_sha256", ["8" * 64], "seed normalization source mismatch"),
+                ("marked_source_rows", 0, "seed normalization has no marked source rows"),
+                ("marked_source_rows", True, "invalid scenario count"),
+                ("kept_source_rows", 2, "seed normalization row count mismatch"),
+                ("replicated_seed_rows", 1, "seed normalization replication count mismatch"),
+                ("replicated_seed_rows", 51, "seed normalization replication count mismatch"),
+                ("replacement_enabled", "true", "invalid seed normalization flag"),
+                ("replacement_enabled", False, "disabled seed replacement changed targets"),
+                ("effective_targets_sha256", "invalid", "invalid SHA"),
+                ("target_scope", "additional_measurements", "invalid seed target scope"),
+                ("unexpected_field", 1, "unexpected or missing public fields"),
+            ):
+                broken = fixture()
+                broken["rows"][0]["results"]["a"]["gbdt"]["seed_target_normalization"][field_name] = value
+                invalid.append((broken, message))
+            broken = fixture()
+            broken["rows"][0]["results"]["a"]["gbdt"]["artifact"] = None
+            invalid.append((broken, "seed normalization requires an original artifact"))
+            for version, scenario, method in (
+                (13, "a", "gbdt"),
+                (14, "b", "gbdt"),
+                (14, "a", "warmup"),
+                (14, "a", "nowarmup"),
+                (14, "a", "hybrid"),
+                (14, "a", "selector"),
+            ):
+                broken = fixture(version=version)
+                seed = fixture()["rows"][0]["results"]["a"]["gbdt"]["seed_target_normalization"]
+                if broken["rows"][0]["results"][scenario][method] is None:
+                    broken["rows"][0]["results"][scenario][method] = copy.deepcopy(
+                        broken["rows"][0]["results"]["a"]["gbdt"]
+                    )
+                broken["rows"][0]["results"][scenario][method]["seed_target_normalization"] = seed
+                invalid.append((broken, "unexpected seed normalization"))
+            for scenario in ("a", "ac"):
+                broken = fixture()
+                broken["rows"][0]["results"][scenario]["gbdt"]["status"] = "not_applicable"
+                invalid.append((broken, "unexpected seed normalization"))
             for field_name, value in (
                 ("warmup_policy", "until_first_prediction_per_worker_workload"),
                 ("warmup_update_count", 1),
