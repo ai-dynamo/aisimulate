@@ -239,6 +239,37 @@ python3 collector/collect.py --backend <backend> --ops <op> \
   --checkpoint-dir "$COLLECTOR_CHECKPOINT_DIR/<backend>/<version>/<op>" --resume
 ```
 
+### Campaign mode (full plan, several GPUs) — use the checked-in launcher, do not hand-roll one
+
+Once an op's smoke/limited runs are clean, run the full retained plan through
+`tools/perf_database/collect_campaign.py`. It fixes the parameters that every
+hand-written launcher has drifted on (sm120 campaign 2026-09-30: `--keep-csv`
+skipped finalize for 13 shards; the official image lacked pyarrow):
+
+```bash
+# 1. image = the framework_manifest pin for (backend, op) + the finalize deps (pyarrow, pandas)
+python3 tools/perf_database/collect_campaign.py build-image --backend <backend> --op <op> [--build-arg http_proxy=...]
+# 2. declare the shards once (YAML: backend, sm, shards[{op, name, case_filter}]) — one shard = one
+#    output/checkpoint namespace <root>/<op>/<shard>/; case_filter is collect.py's substring filter
+# 3. run the GPU pool; re-run the same command after any interruption (DONE shards skip, others --resume)
+python3 tools/perf_database/collect_campaign.py run      --plan shards.yaml --root <ws>/collect --gpus 0,1,2,3
+python3 tools/perf_database/collect_campaign.py status   --plan shards.yaml --root <ws>/collect
+# 4. shards that were produced by hand with --keep-csv have no parquet: finalize them (resume-only re-entry)
+python3 tools/perf_database/collect_campaign.py finalize --plan shards.yaml --root <ws>/collect --gpus 0
+```
+
+Parameter rules the tool enforces (and that apply to any manual `collect.py` run too):
+
+- `--resume` always, `--keep-csv` never for data you intend to deliver: `--keep-csv` means
+  "keep CSV *instead of* finalizing" — no parquet, no `collection_meta.yaml`, no provenance.
+  Its only use is inspecting raw staging rows.
+- `--sm <sm>` explicit on every run (never rely on auto-detect inside a container).
+- Never point two concurrent runs at one cwd: staging files are named per table
+  (`gemm_perf.txt`) and would interleave. Shards of one op are merged at delivery
+  (playbook §8), not by sharing a directory.
+- The image is the manifest pin for the op (family pins can differ per op) — a
+  hand-typed tag is a review finding.
+
 Use a separate log directory per op when iterating:
 
 ```bash
@@ -305,17 +336,16 @@ Fix policy:
   2. Read the failing `collector/<backend>/collect_*.py`.
   3. Search the framework source checkout for the missing class, function, import path, or attribute.
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
-  5. Patch the collector with a minimal compatibility-preserving change.
-- For API changes, use version routing and `__compat__` where needed.
+  5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
+- For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
 - For GPU capability gaps, filter test cases before execution using `get_sm_version()`.
 - For Blackwell/SM100+ features, gate FP4/NVFP4/FP8 paths carefully.
 - For dimension constraints, filter on per-rank dimensions such as `inter_size // tp`.
 - For CUDA-fatal errors, prefer worker restart and skip only the exact invalid region.
 - Preserve data quality. Do not reduce benchmark repetitions or broad test dimensions just to pass.
-- Keep older backend versions working.
 - Keep shared test-case generators deterministic when unit tests depend on them. Put runtime availability probes in backend collector wrappers when the skip is caused by a partially installed framework package.
 - Guard `importlib.util.find_spec("a.b.c")` with `try/except ModuleNotFoundError`; partial packages can make `find_spec` raise instead of return `None`.
-- If a collector route only exists for future framework versions, use `VersionRoute` in `collector/<backend>/registry.py` and add a wrapper module with an explicit `__compat__`.
+- Do not add side-by-side version fork modules; prior-version code is `git log -- <file>` away.
 - If a collector helper silently returns `None` after a dry-run or subprocess failure, make it raise or record the skip explicitly so failed coverage is visible.
 - If a valid production-like case fails in the framework kernel, file or prepare an upstream bug for SGLang, vLLM, or TRT-LLM with exact image/version, SM, minimal repro, and traceback. Link it in the PR or failure ledger.
 - If the case is not production-like or the runtime explicitly does not support that SM/path, skip it in `collect_xx.py` before execution with a clear comment and a narrow predicate.

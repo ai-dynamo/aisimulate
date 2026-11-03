@@ -171,8 +171,13 @@ impl<'de> Deserialize<'de> for DeploymentLimit {
 /// requires its GPUs per replica to equal a known `num_gpus` and caps its
 /// scheduler domains at `max_num_batched_tokens` and `max_num_seqs`. Nothing
 /// reads `context_length`. An omitted field is unknown.
+///
+/// Limits may be added, so code outside this crate starts from
+/// `DeploymentLimits::default()` and sets fields instead of building it by
+/// literal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DeploymentLimits {
     /// GPUs of one worker: tp * pp * attention_dp (* cp_size).
     #[serde(default)]

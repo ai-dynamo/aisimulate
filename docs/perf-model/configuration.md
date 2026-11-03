@@ -489,7 +489,7 @@ serving its last fit when a refit cannot produce a usable one, for example when
 multi-rank traffic first activates more aggregates than it has retained rows.
 `sampling.axes` still selects
 retention coordinates, and `update_policy` and `non_negative` keep their
-meaning. `rebuild_interval` has no effect because every fit already uses the
+meaning. `rebuild_interval` must stay `null` because every fit already uses the
 exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).
 
 | Correction field | Default | Behavior |
@@ -622,8 +622,12 @@ non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result. Performance
 tables that another engine in the process parsed before then are not shared
 with the model, so it reads the fingerprinted data; restoration does the same
-after its check, unless this process already loaded the same data, whose
-tables were parsed after that load and stay shared.
+after its check. Only tables an earlier restoration in the process loaded from
+the same data stay shared, and only while no fingerprinted file or directory
+has been written since, even back to its original bytes, and no symbolic link
+followed on the way to the data, including links inside link targets, has been
+retargeted: tables parse on first query, so they could otherwise hold rows from
+data changed in between.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
@@ -923,7 +927,9 @@ pipeline, attention-data and MoE parallelism, its KV block size, the
 engine-wide quantization and model controls and the MTP depth (`nextn`) are
 taken from the snapshot; omit them, or give values that include the saved
 ones. A conflicting explicit value fails configuration validation and names
-the snapshot's value. Replicas, scheduler limits (`max_batched_tokens`,
+the snapshot's value; an explicit default such as `enable_eplb: false` or
+`moe_backend: default` conflicts with a snapshot saved with EPLB or another
+MoE backend. Replicas, scheduler limits (`max_batched_tokens`,
 `max_sequences`), KV memory, prefix caching and the other roles are still
 searched. Scheduler limits are not capped at the snapshot's correction grid:
 outside the observed region a fixed correction applies factor 1.0 and a

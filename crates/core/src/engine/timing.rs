@@ -1173,7 +1173,11 @@ pub struct MixedPassMs {
 }
 
 /// The prefill one attention-DP rank computes in a forward pass.
+///
+/// Providers read it; fields may be added, so it is not built by literal
+/// outside this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PrefillWork {
     /// Exact batch totals, as [`TimingModel::predict_prefill_totals_ms`]
     /// receives them.
@@ -1186,7 +1190,11 @@ pub struct PrefillWork {
 
 /// The decode batch one attention-DP rank computes in a forward pass, in the
 /// scheduler's terms. Lengths include each request's current input token.
+///
+/// Providers read it; fields may be added, so it is not built by literal
+/// outside this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DecodeWork {
     /// Real decode requests, before any speculative widening.
     pub batch_size: usize,
@@ -1206,7 +1214,11 @@ pub struct DecodeWork {
 
 /// One attention-DP rank's model work in a group forward pass. An idle rank,
 /// or one that runs no model work, has neither prefill nor decode.
+///
+/// Providers read it; fields may be added, so it is not built by literal
+/// outside this crate.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RankWork {
     pub dp_rank: u32,
     pub prefill: Option<PrefillWork>,
@@ -1230,11 +1242,20 @@ impl RankWork {
 }
 
 /// One group forward pass priced as a single iteration, in milliseconds,
-/// before any modeled speedup.
+/// before any modeled speedup. Providers build it with [`IterationMs::new`],
+/// so fields can be added later.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct IterationMs {
     /// Duration shared by every rank of the group.
     pub total_ms: f64,
+}
+
+impl IterationMs {
+    /// An iteration that takes `total_ms` on every rank of the group.
+    pub const fn new(total_ms: f64) -> Self {
+        Self { total_ms }
+    }
 }
 
 /// Price one attention-DP group pass with `timing`'s

@@ -51,8 +51,9 @@ use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot
 use super::state::DisaggRequestSnapshot;
 use super::state::{DisaggPhase, DisaggRequestState};
 use super::telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplayTelemetryObserver, ReplayTelemetryRuntime,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplaySchedulerIntervalMetrics, ReplayTelemetryCaptureSink, ReplayTelemetryHostCache,
+    ReplayTelemetryObserver, ReplayTelemetryRuntime, ReplayTelemetrySampleKind,
+    ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
 };
 use crate::replay::handoff::{
     HandoffAction, HandoffActionOutcome, HandoffCompletion, HandoffFact, HandoffId, HandoffOrder,
@@ -1121,6 +1122,7 @@ where
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
     telemetry: Option<ReplayTelemetryRuntime>,
+    telemetry_capture: Option<ReplayTelemetryCaptureSink>,
     /// Whether to retain the latest FPM snapshot per worker/rank in the buffers
     /// above. Only the planner consumes them, so the plain `run()` path leaves this
     /// `false`.
@@ -1274,6 +1276,7 @@ where
             awaiting_receipt: HashMap::new(),
             scaling_policy: None,
             telemetry: None,
+            telemetry_capture: None,
             collect_fpm: false,
             drive_started: false,
             drive_finalized: false,
@@ -1364,6 +1367,18 @@ where
         }
         self.scaling_policy = Some(policy);
         self
+    }
+
+    pub(crate) fn with_telemetry_capture(
+        self,
+        interval_ms: f64,
+        sink: ReplayTelemetryCaptureSink,
+    ) -> Self {
+        sink.set_preparing(self.admission.is_agentic_preparing());
+        let mut runtime = self.with_telemetry_observer(interval_ms, Box::new(sink.clone()));
+        runtime.telemetry_capture = Some(sink);
+        runtime.collector.set_capture_per_request(true);
+        runtime
     }
 
     pub(crate) fn with_telemetry_observer(
@@ -2464,6 +2479,9 @@ where
             } else {
                 self.collector.on_token(signal.uuid, received_ms);
             }
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_output_token(self.now_ms, received_ms);
+            }
         }
         if !signal.completed {
             return Ok(());
@@ -2618,6 +2636,9 @@ where
         if let Some(fpm) = &payload.fpm {
             self.collector
                 .on_completed_prefill_work(fpm.sum_prefill_tokens);
+            if let Some(telemetry) = &mut self.telemetry {
+                telemetry.on_prefill_work(fpm.sum_prefill_tokens);
+            }
         }
         match payload.stage {
             SimulationWorkerStage::Prefill => {
@@ -2847,6 +2868,16 @@ where
 
     fn record_prefill_admissions(&mut self, admissions: Vec<AdmissionEvent>) {
         for admission in admissions {
+            if let (Some(telemetry), Some(input)) = (
+                &mut self.telemetry,
+                self.collector.first_admission_input(admission.uuid),
+            ) {
+                telemetry.on_first_admission(
+                    input,
+                    admission.reused_input_tokens,
+                    admission.cache_tier_attribution,
+                );
+            }
             self.collector.on_prefill_admit(
                 admission.uuid,
                 self.now_ms,
@@ -3258,7 +3289,28 @@ where
                 )
             }
         };
+        let mut host_caches: Vec<_> = self
+            .prefill_engine
+            .host_cache_snapshots(true)
+            .into_iter()
+            .map(|metrics| ReplayTelemetryHostCache {
+                role: (metrics.scope != crate::engine::G2Scope::ClusterShared).then_some("prefill"),
+                metrics,
+            })
+            .collect();
+        let include_shared = !host_caches.iter().any(|row| row.role.is_none());
+        host_caches.extend(
+            self.decode_engine
+                .host_cache_snapshots(include_shared)
+                .into_iter()
+                .map(|metrics| ReplayTelemetryHostCache {
+                    role: (metrics.scope != crate::engine::G2Scope::ClusterShared)
+                        .then_some("decode"),
+                    metrics,
+                }),
+        );
         let snapshot = ReplayTelemetrySnapshot {
+            host_caches,
             sample_ordinal,
             kind,
             interval_start_ms,
@@ -3292,7 +3344,9 @@ where
 
     fn start_profile_observers(&mut self) -> Result<()> {
         if !self.profile_observers_started {
-            self.seed_first_telemetry_tick()?;
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
             self.seed_first_scaling_tick()?;
             self.profile_observers_started = true;
         }
@@ -3332,12 +3386,15 @@ where
         {
             return Ok(false);
         }
-        let Some(transition) =
-            self.admission
-                .finish_agentic_preparation(self.now_ms, &self.collector, || {
-                    self.prefill_engine.reset_timing_evidence()?;
-                    self.decode_engine.reset_timing_evidence()
-                })?
+        let Some(transition) = self.admission.finish_agentic_preparation(
+            self.now_ms,
+            &self.collector,
+            self.telemetry_capture.as_ref(),
+            || {
+                self.prefill_engine.reset_timing_evidence()?;
+                self.decode_engine.reset_timing_evidence()
+            },
+        )?
         else {
             return Ok(false);
         };
@@ -3348,7 +3405,25 @@ where
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
-        self.collector.take_report(self.now_ms);
+        if self.telemetry_capture.is_some() {
+            if !self.telemetry.as_ref().is_some_and(|t| t.started()) {
+                self.seed_first_telemetry_tick()?;
+            }
+            self.publish_telemetry_sample(ReplayTelemetrySampleKind::Final)?;
+        }
+        let preparation_report = self.collector.take_report(self.now_ms);
+        if let Some(sink) = &self.telemetry_capture {
+            sink.record_preparation(
+                preparation_report,
+                &self
+                    .admission
+                    .agentic_phase_evidence()
+                    .expect("preparation evidence"),
+            );
+        }
+        if let Some(telemetry) = &mut self.telemetry {
+            telemetry.reset_counters();
+        }
         self.collector.set_agentic_phases(
             self.admission
                 .agentic_phase_evidence()
@@ -3385,6 +3460,9 @@ where
                 );
             }
             self.start_profile_observers()?;
+            if self.telemetry_capture.is_some() {
+                self.publish_telemetry_sample(ReplayTelemetrySampleKind::Baseline)?;
+            }
         }
         Ok(true)
     }
@@ -3422,13 +3500,14 @@ where
     }
 
     fn publish_final_telemetry_sample(&mut self) -> Result<()> {
-        if !self.profile_observers_started {
+        if !self.profile_observers_started && self.telemetry_capture.is_none() {
             return Ok(());
         }
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
         if self.now_ms > telemetry.interval_start_ms()
+            || telemetry.has_observations()
             || self.traffic.telemetry_has_observations()
             || self.prefill_engine.telemetry_has_interval_observations()
             || self.decode_engine.telemetry_has_interval_observations()
@@ -3989,6 +4068,10 @@ where
         self.drain_current_timestamp()?;
         if self.admission.agentic_phase_evidence().is_none() {
             self.start_profile_observers()?;
+        } else if self.telemetry_capture.is_some()
+            && !self.telemetry.as_ref().is_some_and(|t| t.started())
+        {
+            self.seed_first_telemetry_tick()?;
         }
         // Keep the baseline before the first scaling decision, but settle any
         // tick seeded at this instant before exposing a settled step boundary.
@@ -4039,6 +4122,9 @@ where
                 && !self.admission.is_agentic_preparing()
                 && canonical_timestamp_ms > cap_ms
             {
+                if let Some(capture) = &self.telemetry_capture {
+                    capture.mark_time_limited();
+                }
                 return Ok(ReplayStepOutcome::TimeLimitReached {
                     now_ms: self.now_ms,
                 });

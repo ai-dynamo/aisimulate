@@ -523,7 +523,8 @@ pub(crate) fn generation_op_runtime(
 ///    context-attention ops, with `batch=1`, `isl=ctx_tokens+gen_tokens`,
 ///    `prefix=combined_prefix`.
 /// 2. Context attention contribution: re-run only context-attention ops with
-///    the prefill batch shape (`batch = ceil(ctx_tokens/isl)`).
+///    the prefill batch shape (`batch = prefill_batch` requests of
+///    `new_tokens_per_prefill_req` tokens).
 /// 3. Decode attention contribution: iterate `generation_ops`, only
 ///    generation-attention ops, with the decode batch shape.
 ///
@@ -539,6 +540,7 @@ pub(crate) fn get_mix_step_ops<'a>(
     ctx_tokens: u32,
     gen_tokens: u32,
     new_tokens_per_prefill_req: u32,
+    prefill_batch: u32,
     prefix_per_req: u32,
     combined_prefix: u32,
     kv_per_decode_req: u32,
@@ -597,11 +599,13 @@ pub(crate) fn get_mix_step_ops<'a>(
     // The FPM only carries this chunk's metrics. For the common
     // un-chunked path (chunk == one request's new tokens) we treat
     // `new_tokens_per_prefill_req` as the per-request ISL and the
-    // ceil/scale cancel to 1; chunked-prefill callers should encode
-    // their full ISL through the packing if they need exact parity
-    // with Python's chunked path.
+    // scale is 1; chunked-prefill callers should encode their full ISL
+    // through the packing if they need exact parity with Python's
+    // chunked path. The batch is the pass's own request count: with the
+    // integer mean as the ISL, `ceil(ctx_tokens / isl)` would add a request
+    // whenever the count does not divide `ctx_tokens`.
     let isl_eff_pass2 = new_tokens_per_prefill_req.max(1);
-    let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
+    let ctx_attn_batch = prefill_batch.max(1);
     let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
     for (index, op) in context_ops.iter().enumerate() {
         if !op.is_context_attention() {

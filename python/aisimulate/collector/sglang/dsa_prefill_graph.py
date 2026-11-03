@@ -9,6 +9,15 @@ model_executor/model_runner.py:2593-2766 and
 model_executor/runner/prefill_cuda_graph_runner.py:111-318,370-427,765-941.
 This adapter delegates compilation, capture, padding, metadata and replay to
 that runtime. It excludes batch preparation and the model's other layers.
+
+FIXME(port): the adapter (dsa_prefill_graph) still follows the 0.5.14
+tc_piecewise runner. At 0.5.21 the collector keeps prefill graphs off
+(collect_mla_module.load_model_runner), so graph_token_bucket returns None and
+the adapter is not entered; any other prefill backend fails closed there. A
+0.5.21 port needs the layer_boundary AttentionInputs import, the resolved
+config through get_exec().graph (override, not a server_args copy),
+mha_companion_layers on the runner and both context managers, and
+support_pp=False; serving's default for DSA is the "breakable" backend.
 """
 
 import copy
@@ -35,12 +44,20 @@ def _release_owned_compile_hooks(hooks, previous_keys, module):
 
 
 def graph_token_bucket(model_runner, tokens: int) -> int | None:
-    config = model_runner.server_args.cuda_graph_config.prefill
+    """The prefill-graph bucket for ``tokens``, or None when the runner's prefill graph is off.
+
+    0.5.21 runners read the resolved config through get_exec()
+    (prefill_cuda_graph_runner.py:310-326); ServerArgs.cuda_graph_config stays None.
+    """
+    from sglang.srt.runtime_context import get_exec
+
+    config = get_exec().graph.cuda_graph_config.prefill
     if config.backend == "disabled":
         return None
-    if config.backend != "tc_piecewise":
-        raise ValueError(f"Unsupported SGLang module prefill graph backend: {config.backend}")
-    return next((size for size in sorted(config.bs or []) if size >= tokens), None)
+    raise ValueError(
+        f"SGLang {config.backend} prefill graph: the attention-only adapter follows the 0.5.14 "
+        "tc_piecewise runner and is not ported to 0.5.21 (see the module docstring)"
+    )
 
 
 @contextmanager

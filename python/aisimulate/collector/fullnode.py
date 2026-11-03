@@ -75,6 +75,7 @@ def collect_sglang_fullnode_op(
     get_test_cases_for_model,
     resume_checkpoint_cls,
     logger,
+    replay=None,
 ) -> list[dict]:
     """Run one SGLang full-node op with normal V3 checkpoint evidence."""
     op = collection["type"]
@@ -107,6 +108,14 @@ def collect_sglang_fullnode_op(
         before_count = len(cases)
         cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
         logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+    if replay is not None:
+        # same selection, in the same order, as the pool ops (collect.py get_func_with_limit)
+        before_count = len(cases)
+        cases = replay.select(op, cases, random.Random(shuffle_seed))
+        logger.info(
+            f"{op}: replay selected {len(replay.matched[op])} requested + "
+            f"{replay.controls[op]} control of {before_count} cases"
+        )
     if shuffle:
         rng = random.Random(shuffle_seed)
         rng.shuffle(cases)

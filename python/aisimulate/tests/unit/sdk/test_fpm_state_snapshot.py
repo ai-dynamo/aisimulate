@@ -539,6 +539,90 @@ def test_native_models_never_adopt_tables_parsed_before_their_fingerprint(tmp_pa
 
 
 @pytest.mark.integration
+def test_restore_never_adopts_tables_parsed_from_a_later_data_generation(tmp_path):
+    from aisimulate_core.sdk.operations import clear_all_op_caches
+
+    queries = _queries()
+    root = _systems_copy(tmp_path / "systems", "h200_sxm")
+    original = {path: path.read_bytes() for path in root.rglob("*.parquet")}
+    model = RustForwardPassPerfModel.best_available(_op_level_config(root))
+    expected = _bits(model, queries)
+    model.save_state_snapshot(tmp_path / "snap")
+    del model
+    clear_all_op_caches()
+    # The same root now holds other data, and a live model shares its tables.
+    _scale_gemm_latency(root, 2.0)
+    later = RustForwardPassPerfModel.best_available(_op_level_config(root))
+    changed = _bits(later, queries)
+    assert changed != expected
+    # The saved data is back: restoring must read it, not the live later tables.
+    for path, data in original.items():
+        path.write_bytes(data)
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
+    assert _bits(restored, queries) == expected
+    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap"), queries) == expected
+    assert _bits(later, queries) == changed
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("change", ["rewrite", "retarget", "retarget-behind"])
+def test_restore_never_shares_tables_that_parsed_after_the_data_changed_back(tmp_path, change):
+    from aisimulate_core.sdk.operations import clear_all_op_caches
+
+    queries = _queries()
+    root = _systems_copy(tmp_path / "systems", "h200_sxm")
+    if change == "rewrite":
+        original = {path: path.read_bytes() for path in root.rglob("*.parquet")}
+
+        def change_data() -> None:
+            _scale_gemm_latency(root, 2.0)
+
+        def change_back() -> None:
+            for path, data in original.items():
+                path.write_bytes(data)
+
+    else:
+        # A link is retargeted as `ln -sfn` does; no tree is written. It is
+        # `systems/data` itself, or `current` behind an unchanged `systems/data`.
+        for tree in ("a", "b"):
+            shutil.copytree(root / "data", tmp_path / tree / "data")
+        shutil.rmtree(root / "data")
+        _scale_gemm_latency(tmp_path / "b", 2.0)
+        moving = root / "data" if change == "retarget" else tmp_path / "current"
+        if change == "retarget-behind":
+            (root / "data").symlink_to(moving, target_is_directory=True)
+
+        def point(tree: str) -> None:
+            staged = moving.with_name(f"{moving.name}.next")
+            staged.symlink_to(tmp_path / tree / "data", target_is_directory=True)
+            staged.replace(moving)
+
+        point("a")
+
+        def change_data() -> None:
+            point("b")
+
+        def change_back() -> None:
+            point("a")
+
+    model = RustForwardPassPerfModel.best_available(_op_level_config(root))
+    expected = _bits(model, queries)
+    model.save_state_snapshot(tmp_path / "snap")
+    del model
+    clear_all_op_caches()
+    # A restored model's tables parse on first query, here after the data changed.
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
+    change_data()
+    changed = _bits(restored, queries)
+    assert changed != expected
+    # The saved data is back: a later restore reads it, not the live restored tables.
+    change_back()
+    clear_all_op_caches()
+    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap"), queries) == expected
+    assert _bits(restored, queries) == changed
+
+
+@pytest.mark.integration
 def test_data_dir_with_parent_components_restores_by_reference_but_cannot_be_packed(tmp_path):
     root = _systems_copy(tmp_path / "systems", "h200_sxm")
     (root / "data" / "b200_sxm").mkdir()

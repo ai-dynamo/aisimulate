@@ -1443,6 +1443,14 @@ impl EstimatorConfig {
                     "cannot be combined with non-default fit.linear.feature_axes",
                 ));
             }
+            // Every fpm5 fit already uses the exact retained rows, so no
+            // rebuild clock exists to schedule.
+            if self.fpm_regression.fit.rebuild_interval.is_some() {
+                return Err(invalid_regression_config(
+                    "fit.rebuild_interval",
+                    "must be null for fit.linear.feature_set='fpm5'",
+                ));
+            }
             // Ratios such as mean_decode_kv duplicate their sums under a fixed
             // batch; only the ridge keeps those normal equations solvable.
             if self.fpm_regression.fit.singular_ridge_scale <= 0.0 {
@@ -2300,6 +2308,9 @@ mod tests {
         let message =
             error(&|config| config.fpm_regression.fit.singular_ridge_scale = 0.0).unwrap();
         assert!(message.contains("fit.singular_ridge_scale"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.rebuild_interval = Some(4096)).unwrap();
+        assert!(message.contains("fit.rebuild_interval"), "{message}");
         assert_eq!(
             error(&|config| config.fpm_regression.sampling.max_observations = 18),
             None

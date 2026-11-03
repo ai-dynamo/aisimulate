@@ -729,7 +729,7 @@ the retained rows, also keeps the previous serving fit, so a ready store stays
 ready. Predictions are floored at $`10^{-6}`$ ms.
 
 Retention still buckets rows by `sampling.axes`, and `update_policy` gates
-publication exactly as described above. `rebuild_interval` has no effect,
+publication exactly as described above. `rebuild_interval` must stay `null`,
 because every fit already uses the exact retained rows. `feature_set` requires
 the default `feature_axes` and the `standardized_nnls` fit kind. Each fit costs
 $`O(Mk^2)`$ to accumulate the normal equations plus a small $`k \times k`$

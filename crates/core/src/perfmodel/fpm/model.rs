@@ -2783,6 +2783,10 @@ impl IterationFeatures {
         Some(feature)
     }
 
+    // TODO: Weigh prefill and decode work by their cost. This score adds
+    // prefill tokens and decode KV tokens one for one, although computing a
+    // prefill token costs far more than reading a KV token, so the rank whose
+    // correction an iteration takes may not be the one that sets its time.
     fn load_score(&self) -> f64 {
         self.x.iter().sum()
     }

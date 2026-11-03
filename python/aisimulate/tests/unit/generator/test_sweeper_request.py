@@ -156,6 +156,76 @@ def test_agg_candidate_lowers_evaluated_engine_limits_and_deployment_overrides()
     assert params["preserve_engine_limits"] is True
 
 
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
+)
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("block_size", [None, "omitted", 16], ids=["null", "missing", "explicit"])
+def test_candidate_preserves_block_size_selection_in_artifacts(backend, backend_version, mode, block_size):
+    candidate = (_agg_candidate if mode == "agg" else _disagg_candidate)(
+        backend=backend, backend_version=backend_version, adapters={}
+    )
+    roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+    for role in roles:
+        if block_size == "omitted":
+            candidate["config"].pop(f"{role}_block_size")
+        else:
+            candidate["config"][f"{role}_block_size"] = block_size
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+    )
+
+    params = to_legacy_params(request)
+    artifacts = generate_from_request(request)
+    expected = 16 if block_size == 16 else None
+    for role in roles:
+        if expected is None:
+            assert "tokens_per_block" not in params["params"][role]
+        else:
+            assert params["params"][role]["tokens_per_block"] == expected
+        _assert_artifact_block_size(artifacts, backend, role, expected)
+    if expected is None:
+        for parameter in ("--block-size", "--page-size", "tokens_per_block:"):
+            assert parameter not in artifacts["k8s_deploy.yaml"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
+)
+def test_disagg_candidate_keeps_block_size_selection_role_local(backend, backend_version):
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            backend=backend,
+            backend_version=backend_version,
+            prefill_block_size=None,
+            decode_block_size=16,
+            adapters={},
+        ),
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+    )
+
+    artifacts = generate_from_request(request)
+
+    _assert_artifact_block_size(artifacts, backend, "prefill", None)
+    _assert_artifact_block_size(artifacts, backend, "decode", 16)
+
+
+@pytest.mark.parametrize("block_size", [0, -1, True, 32.5, "invalid"])
+def test_candidate_rejects_invalid_explicit_block_size(block_size):
+    with pytest.raises(SweeperCandidateError, match="agg_block_size must be a positive integer"):
+        from_sweeper_candidate(
+            _agg_candidate(agg_block_size=block_size),
+            workload={"isl": 4000, "osl": 1000},
+            model_facts=ModelFacts(is_moe=False),
+        )
+
+
 def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     request = from_sweeper_candidate(
         _disagg_candidate(prefill_context_length=64000, decode_context_length=128000),
@@ -348,12 +418,13 @@ def test_trace_workload_rejects_supplied_request_lengths(workload, overrides, su
     ids=["trace-unaligned", "trace-aligned", "synthetic-unaligned"],
 )
 def test_trtllm_trace_warns_when_max_seq_len_is_off_the_block_grid(caplog, workload, context_length, warned):
-    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.request.sweeper"):
-        from_sweeper_candidate(
-            _disagg_candidate(context_length=context_length),
-            workload=workload,
-            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
-        )
+    request = from_sweeper_candidate(
+        _disagg_candidate(context_length=context_length),
+        workload=workload,
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        generate_from_request(request)
 
     messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
     if warned:
@@ -398,13 +469,16 @@ def test_trace_candidate_benchmarks_only_with_explicit_benchmark_lengths():
 
 
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("block_size", [64, None])
 @pytest.mark.parametrize(
     ("backend", "backend_version"),
     [("vllm", "0.20.1"), ("sglang", "0.5.14"), ("trtllm", "1.3.0rc20"), ("trtllm", "1.3.0rc23")],
 )
-def test_trace_candidate_renders_like_a_synthetic_candidate(mode, backend, backend_version):
+def test_trace_candidate_renders_like_a_synthetic_candidate(mode, block_size, backend, backend_version):
     make_candidate = _agg_candidate if mode == "agg" else _disagg_candidate
     candidate = make_candidate(backend=backend, backend_version=backend_version, model_name="Qwen/Qwen3-32B-FP8")
+    for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
+        candidate["config"][f"{role}_block_size"] = block_size
     # SGLang has no KVBM integration.
     candidate["config"].get("adapters", {}).pop("dynamo.kvbm", None)
 
@@ -430,7 +504,7 @@ def test_trace_candidate_renders_like_a_synthetic_candidate(mode, backend, backe
     assert "name: benchmark" not in traced["sflow.yaml"]
     assert "aiperf profile" not in traced["sflow.yaml"]
     sized = _TRTLLM_TRANSFER_BUFFER_LINE.findall("".join(synthetic.values()))
-    assert bool(sized) == (backend == "trtllm" and mode == "disagg")
+    assert bool(sized) == (backend == "trtllm" and mode == "disagg" and block_size is not None)
     for name, text in traced.items():
         if name == "k8s_deploy.yaml":
             # The DGD carries each engine config as an inline YAML string.
@@ -593,19 +667,21 @@ def test_agg_candidate_materializes_backend_default_kv_capacity(backend, backend
 
 
 @pytest.mark.parametrize(
-    ("backend", "backend_version"),
+    ("backend", "backend_version", "block_size"),
     [
-        ("vllm", "0.24.0"),
-        ("sglang", "0.5.14"),
-        ("trtllm", "1.3.0rc20"),
-        ("trtllm", "1.3.0rc23"),
+        ("vllm", "0.24.0", 64),
+        ("vllm", "0.24.0", None),
+        ("sglang", "0.5.14", 64),
+        ("trtllm", "1.3.0rc20", 64),
+        ("trtllm", "1.3.0rc23", 64),
     ],
 )
-def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version):
+def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version, block_size):
     request = from_sweeper_candidate(
         _agg_candidate(
             backend=backend,
             backend_version=backend_version,
+            agg_block_size=block_size,
             agg_gpu_memory_utilization=None,
             agg_num_gpu_blocks=256,
         ),
@@ -619,17 +695,19 @@ def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backen
     assert "kv_cache_free_gpu_memory_fraction" not in extra
 
     artifacts = generate_from_request(request)
+    _assert_artifact_block_size(artifacts, backend, "agg", block_size)
+    expected_max_tokens = 16384
     if backend == "vllm":
         assert _cli_flag_value(artifacts["cli_args_agg"], "--num-gpu-blocks-override") == "256"
         assert "--gpu-memory-utilization" not in shlex.split(artifacts["cli_args_agg"])
     elif backend == "sglang":
-        assert extra["kv_cache_max_tokens"] == 16384
-        assert _cli_flag_value(artifacts["cli_args_agg"], "--max-total-tokens") == "16384"
+        assert extra["kv_cache_max_tokens"] == expected_max_tokens
+        assert _cli_flag_value(artifacts["cli_args_agg"], "--max-total-tokens") == str(expected_max_tokens)
         assert "--mem-fraction-static" not in shlex.split(artifacts["cli_args_agg"])
     else:
-        assert extra["kv_cache_max_tokens"] == 16384
+        assert extra["kv_cache_max_tokens"] == expected_max_tokens
         engine_args = yaml.safe_load(artifacts["extra_engine_args_agg.yaml"])
-        assert engine_args["kv_cache_config"]["max_tokens"] == 16384
+        assert engine_args["kv_cache_config"]["max_tokens"] == expected_max_tokens
         assert "free_gpu_memory_fraction" not in engine_args["kv_cache_config"]
 
 
@@ -667,6 +745,99 @@ def test_candidate_rejects_conflicting_fixed_and_fractional_kv_capacity():
         )
 
 
+@pytest.mark.parametrize("backend", ["sglang", "trtllm"])
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+@pytest.mark.parametrize("omit_field", [False, True], ids=["null", "missing"])
+def test_fixed_block_capacity_requires_explicit_geometry(backend, role, omit_field):
+    candidate = (_agg_candidate if role == "agg" else _disagg_candidate)(backend=backend)
+    candidate["config"].update(
+        {f"{role}_gpu_memory_utilization": None, f"{role}_num_gpu_blocks": 256, f"{role}_block_size": None}
+    )
+    if omit_field:
+        candidate["config"].pop(f"{role}_block_size")
+
+    with pytest.raises(SweeperCandidateError, match=rf"{role}_block_size is required to convert .*num_gpu_blocks"):
+        from_sweeper_candidate(
+            candidate,
+            workload={"isl": 128, "osl": 1},
+            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        )
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_unset_block_size_delegates_flashmla_buffer_alignment(rule, caplog):
+    # FlashMLA selects 64-token blocks at runtime. Rounding ISL + OSL + 1500
+    # to the simulation's 32-token default would emit the invalid size 1632.
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            backend_version="1.3.0rc23",
+            prefill_block_size=None,
+            decode_block_size=None,
+            context_length=10000,
+            adapters={},
+        ),
+        workload={"isl": 128, "osl": 1},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+    request.overrides.raw["rule"] = rule
+
+    artifacts = generate_from_request(request)
+
+    for role in ("prefill", "decode"):
+        engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        assert "tokens_per_block" not in engine["kv_cache_config"]
+        assert engine["cache_transceiver_config"] == {"backend": "DEFAULT"}
+        assert f"TRT-LLM {role} tokens_per_block is unset" in caplog.text
+    assert "max_tokens_in_buffer" not in artifacts["k8s_deploy.yaml"]
+
+
 def _cli_flag_value(cli_args: str, flag: str) -> str:
     tokens = shlex.split(cli_args)
     return tokens[tokens.index(flag) + 1]
+
+
+def _assert_artifact_block_size(artifacts, backend, role, expected):
+    if backend == "trtllm":
+        engine_args = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        if expected is None:
+            assert "tokens_per_block" not in engine_args["kv_cache_config"]
+        else:
+            assert engine_args["kv_cache_config"]["tokens_per_block"] == expected
+        if role in {"prefill", "decode"}:
+            assert engine_args["cache_transceiver_config"]["backend"] == "DEFAULT"
+            if expected is None:
+                assert "max_tokens_in_buffer" not in engine_args["cache_transceiver_config"]
+            else:
+                assert engine_args["cache_transceiver_config"]["max_tokens_in_buffer"] > 0
+    else:
+        flag = "--block-size" if backend == "vllm" else "--page-size"
+        if expected is None:
+            assert flag not in shlex.split(artifacts[f"cli_args_{role}"])
+        else:
+            assert _cli_flag_value(artifacts[f"cli_args_{role}"], flag) == str(expected)
+
+
+@pytest.mark.parametrize(("hardware_sku", "implementation"), [("h200_sxm", None), ("b200_sxm", "msa")])
+def test_minimax_m3_trtllm_candidate_renders_its_sparse_attention_keys(hardware_sku, implementation):
+    """The Sweeper lowers through rule=benchmark; rc29 cannot build the M3 KV-cache manager
+    without sparse_attention_config.algorithm, on every SM."""
+    candidate = _agg_candidate(
+        model_name="MiniMaxAI/MiniMax-M3",
+        backend="trtllm",
+        backend_version="1.3.0rc29",
+        hardware_sku=hardware_sku,
+        moe_ep=2,
+        adapters={},
+    )
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=True, architecture="MiniMaxM3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": "example/trtllm:1.3.0rc29"}},
+    )
+    artifacts = generate_from_request(request)
+    name = next(name for name in artifacts if "extra_engine_args" in name and "agg" in name)
+    expected = {"algorithm": "minimax_m3"}
+    if implementation:
+        expected["implementation"] = implementation
+    assert yaml.safe_load(artifacts[name]).get("sparse_attention_config") == expected

@@ -13,6 +13,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
+      # The Feature Support Matrix links into docs/; renamed pages or anchors fail its build.
+      - "docs/**"
       - "scripts/pyproject.toml"
       - "scripts/notifications/**"
       - "scripts/pages/**"
@@ -41,12 +43,15 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
+      - "pages/feature-support-matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
   push:
     branches: [main]
     paths:
       - ".github/workflows/pages.yml"
+      # Refresh the Feature Support Matrix's commit-pinned docs links.
+      - "docs/**"
       - "scripts/pyproject.toml"
       - "scripts/notifications/**"
       - "scripts/e2e_accuracy/**"
@@ -69,6 +74,7 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
+      - "pages/feature-support-matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
 

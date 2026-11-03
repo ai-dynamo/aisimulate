@@ -119,6 +119,177 @@ Agentic virtual-time limits are soft scheduling cutoffs; see the
 [trace contract](../replay/workloads.md#applied-compute-agentic-jsonl). A cutoff is not a
 measurement warmup period or proof that the requested load was sustainable.
 
+## Replay telemetry
+
+Offline vLLM/SGLang engine replay supports optional native telemetry for both
+aggregated and separate prefill/decode workers, including attention DP ranks.
+Encoder pools are not supported by this capture path. It uses ordinary replay,
+not the DP1-only detailed-artifact path.
+
+```bash
+aisimulate predict --stack engine --config examples/cli/agentic-profile.yaml \
+  --capture-telemetry --telemetry-sample-interval-ms 1000 \
+  --output-dir ./agentic-telemetry
+```
+
+The sampling interval is positive, finite, and measured in simulated
+milliseconds. The default is 1,000 ms. Capture is disabled by default and does
+not change scheduling, cache state, scaling clocks, or summary measurement.
+It enables internal request capture without requiring `--capture-per-request`.
+
+| Artifact | Contents |
+| --- | --- |
+| `telemetry-requests.jsonl` | Terminal requests from all phases: identity, lineage, lane, routing/admission history, lengths, timing, cache attribution, and status |
+| `telemetry-samples.jsonl` | Settled scheduler/cache gauges and interval traffic counters, with worker/rank identity |
+| `telemetry-lifecycle.jsonl` | Agentic request/play dispatch, terminal, quiescence, and skipped events |
+| `prediction.json` → `telemetry` | Version, units, sample interval, clock and phase boundaries, artifact names, and record counts |
+
+New telemetry uses one absolute virtual millisecond clock. Request/lifecycle
+records distinguish `primer`, `warmup`, and `profile`. Scheduler samples use
+`preparation` or `profile`: different lanes can prime and warm up concurrently.
+Preparation intervals are closed at the profiling barrier. Existing
+`requests.jsonl` remains profiling-only and barrier-relative, and existing
+summary metrics still exclude preparation. Use the recorded profiling origin
+to align the two clocks.
+
+The manifest records whether replay completed, preparation aborted, the server
+remained unsettled, or a simulation-time limit stopped it. As with existing
+request output, requests still in flight at that limit have no terminal record;
+their delivered tokens and executed prefill work remain in interval counters,
+and pending work remains visible in scheduler gauges and lifecycle events.
+Continuous-profile grace cancellation does produce terminal request records.
+
+The exports provide the following inputs for warmup and profiling views:
+
+| View | Native evidence and interpretation |
+| --- | --- |
+| Request/conversation/lane timeline | Absolute request timestamps, lineage, lane, and lifecycle events; retain canceled/failed requests |
+| ISL/OSL, TTFT, E2E, interactivity | Request lengths and timing; `itl_ms` is per-request average token gap and is null with fewer than two delivered tokens |
+| Queue depth | `prefill_scheduler_metrics` / `decode_scheduler_metrics`: `running_requests`, `waiting_requests`, worker/rank; plus `router_pending_*_requests` |
+| KV use | Scheduler `active_blocks`, `inactive_blocks`, `total_blocks`, `active_cache_usage`, `physical_cache_usage`; grouped caches use `kv_cache_used_bytes` / `kv_cache_capacity_bytes` |
+| Prefill/decode throughput | `traffic.committed_prefill_tokens` / `traffic.delivered_output_tokens`, divided by `traffic.duration_s` |
+| Prefix lookup reuse | Role interval `g1_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
+| Prompt token sources | `traffic.first_admission`: `hbm_reused_tokens`, `host_reused_tokens`, `uncached_tokens`; distinct from executed work and readmission recomputation |
+| Host KV use | `host_caches`: resident, used, and capacity counters in blocks and bytes; `dp_rank_local` caches are sampled per attention-DP rank, while shared pools appear once per ownership domain |
+| Speculative acceptance | `traffic.avg_accept_length`, weighted by `accept_length_forward_count`; measured before output-limit truncation |
+
+For host caches, `resident_blocks` and `resident_bytes` count data already
+resident in host memory. `used_blocks` and `used_bytes` include both resident
+data and reserved transfer destinations. Use the resident fields to report
+physical residency during transfers. `capacity_blocks` and `capacity_bytes`
+report the pool's configured capacity.
+
+G1 denotes the device cache. Its lookup counters are summed across workers and
+ranks within each role and sampling interval.
+SGLang's pass-local cache-hit/total counters and G1 prefix-cache lookup counters
+describe different populations. Router overlap and averages of per-request hit ratios
+are not substitutes for either. Missing metrics remain unavailable, and a zero
+query denominator is not a measured zero-percent hit rate. An absent host tier
+is not evidence that an unmodeled host metric was measured as zero.
+The exported pass-local cache counters are null when no such observation was
+made in that interval. A measured cold miss has zero hits and a positive token
+denominator. Grouped-cache `total_blocks` is null; use its byte capacity.
+
+Delivered-token counters include tokens delivered before cancellation; headline
+output throughput still uses the existing completed-request cohort. When
+detokenization is configured, tokens enter the interval in which the client
+receives them. Executed prefill counters include recomputation but exclude
+unfinished passes at cutoff.
+Both counters work with fixed timing and without FPM artifact capture.
+
+Capture adds memory proportional to requests, lifecycle events, and samples
+times live ranks, plus output tokens awaiting detokenization receipt. The CLI
+retains host-memory supervision; low-level API callers
+own their resource budgets. Capture adds no separate per-token trace files,
+server logs, or power series. These are native AISim files, not AIPerf/infX export files, and
+they do not establish timing accuracy or exact benchmark-input parity.
+
+## Replay dashboard
+
+Use `--export-html` to write an interactive, simulation-only `report.html` next
+to the normal prediction output:
+
+```bash
+aisimulate predict --config examples/cli/agentic-profile.yaml \
+  --export-html --output-dir ./agentic-dashboard
+```
+
+This flag enables telemetry capture internally, including request details;
+neither `--capture-telemetry` nor `--capture-per-request` is required.
+The output flags can be used as follows:
+
+| Flags | Additional outputs |
+| --- | --- |
+| `--capture-telemetry` | Telemetry JSONL files and the manifest in `prediction.json`; no HTML |
+| `--export-html` | The same telemetry outputs plus `report.html` |
+| Both flags | The same outputs as `--export-html` alone |
+
+`--capture-per-request` separately adds the profiling-only `requests.jsonl`.
+`--telemetry-sample-interval-ms` controls sampling with either output flag.
+The same offline vLLM/SGLang engine paths listed above are supported.
+Rendering runs after replay
+under the existing CLI resource supervisor and does not change native summary
+metrics. Completed telemetry remains available even if HTML rendering fails.
+Rendering failures report the saved output directory and return exit code 1.
+Aborted preparation also produces a dashboard when native telemetry is available;
+its diagnostic remains visible even if rendering fails.
+
+Open `report.html` directly in a browser. Data, JavaScript, and the Plotly
+license are embedded; no server or network access is needed. The report is
+published atomically with normal file permissions under the process umask,
+matching the other output files. The dashboard
+has Dashboard and Request timeline tabs. It contains:
+
+- Profiling and optional warmup views with request lengths, TTFT, E2E, and interactivity.
+- Resident KV occupancy, host-cache pools, running/waiting queues, completed
+  requests, preemptions, prefix reuse, G1 prefix-cache lookups, and prompt sources.
+- Executed-prefill and delivered-output throughput, with a separate
+  successful-completion-accounted output view, plus speculative acceptance.
+- Conversation-level input footprint, completion status, lifecycle records,
+  and a searchable conversation/worker timeline with request details.
+
+The timeline uses thin interval lines and horizontal scrolling without zoom.
+Profiling spans the native admission window; intervals crossing its end are
+clipped in the view. Complete terminal records, including grace tails, remain
+available in request details and the telemetry JSONL files. The Warmup stage
+appears only when warmup was enabled and native preparation telemetry exists,
+including empty or aborted preparation. It includes primer and warmup requests
+and retains their phase labels.
+
+Request percentile curves use the selected percentile on a trailing 50-request
+window and on the cumulative cohort. Interactivity inverts the selected TPOT
+percentile; fewer than two output tokens leaves it unavailable. Device-cache
+and queue gauges and throughput rates use trailing 50-second smoothing. Rate
+windows apportion counters by overlap, assuming uniform activity within each
+native sample interval. Other counters retain their interval or cumulative
+labels. Missing observations stay unavailable; grouped
+caches retain byte capacity and shared host pools are shown once per ownership
+domain. Conversation-level input footprint is the sum of the maximum active
+input length per play and conversation, not a measurement of physical token
+uniqueness. Footprint and in-flight request means include arrivals at the sample
+time and exclude requests ending at that time. A single event sweep per phase
+computes these series; redraws reuse them instead of scanning all requests per sample.
+Completion-accounted output throughput also indexes successful request terminal
+times once per phase and reuses interval totals on redraw. It counts completions
+strictly after each interval's start and through its end, inclusive.
+G1 prefix-cache lookup reuse measures device-cache matches and remains separate
+from scheduler pass reuse.
+
+This report presents simulated measurements only. It does not produce silicon
+accuracy scores, server logs, or power curves. `--overwrite` replaces the HTML
+along with known AISim outputs; omitting `--export-html` on the next run removes
+any stale report. Unrelated files in the output directory remain untouched.
+
+To render previously captured telemetry without another replay, use the Python
+helper described in the [replay API](../replay/api/python.md#html-dashboard).
+Large captures add rendering memory proportional to requests and samples;
+keep the native JSONL files as the lossless record.
+
+Request-derived charts use the recorded terminal cohort. When a simulation-time
+limit leaves requests unfinished, native telemetry does not yet contain their
+terminal details. The report shows the capture status and scheduler gauges;
+missing terminal records do not imply that no work was admitted.
+
 ## Goodput and strict SLA answer different questions
 
 With `evaluation.sla: {ttft_ms: 500, itl_ms: 50}`:

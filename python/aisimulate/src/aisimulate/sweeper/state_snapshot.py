@@ -686,8 +686,11 @@ def _pin_engine_identity(value: dict[str, Any], snapshots: list[SnapshotRole]) -
         )
         if saved == UNKNOWN:
             continue
+        # An omitted control takes the snapshot's. An explicit one must agree
+        # with it, including an inactive spelling such as enable_eplb=false
+        # or moe_backend=default.
         current = value.get(name)
-        if is_active_engine_model_control(name, current) and current != saved:
+        if current is not None and (current if is_active_engine_model_control(name, current) else None) != saved:
             raise _conflict(owner, f"engine.{name}", current, saved)
         if saved is not None:
             value[name] = saved
