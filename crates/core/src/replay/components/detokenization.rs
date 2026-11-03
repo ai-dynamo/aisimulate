@@ -93,6 +93,7 @@ impl PassReceipt {
 /// not received yet.
 pub(crate) struct DetokenizationStage {
     detokenization: DetokenizationLatency,
+    shared_frontend: bool,
     /// Time each `(worker, server)` finishes the jobs it has taken. Only
     /// servers that have taken a job are tracked.
     server_free_at_ms: FxHashMap<(usize, usize), f64>,
@@ -104,10 +105,31 @@ impl DetokenizationStage {
     pub(crate) fn new(detokenization: DetokenizationLatency) -> Self {
         Self {
             detokenization,
+            shared_frontend: false,
             server_free_at_ms: FxHashMap::default(),
             terminals: BinaryHeap::new(),
             next_entry: 0,
         }
+    }
+
+    /// Zero-service output delivery behind the shared input-processing queue.
+    pub(crate) fn shared_frontend() -> Self {
+        let mut stage = Self::new(DetokenizationLatency {
+            workers: 1,
+            base_ms: 0.0,
+            per_output_ms: 0.0,
+        });
+        stage.shared_frontend = true;
+        stage
+    }
+
+    pub(crate) fn shares_frontend(&self) -> bool {
+        self.shared_frontend
+    }
+
+    /// Includes partial responses, not just terminal receipts.
+    pub(crate) fn delivery_pending_after(&self, now_ms: f64) -> bool {
+        self.server_free_at_ms.values().any(|end| *end > now_ms)
     }
 
     /// Hand the outputs of a pass that ended at `pass_end_ms` on `worker` to

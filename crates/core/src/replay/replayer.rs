@@ -311,6 +311,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
     telemetry_capture_interval_ms: Option<f64>,
     tokenization: Option<TokenizationLatency>,
+    shared_frontend: bool,
     detokenization: Option<DetokenizationLatency>,
 }
 
@@ -362,6 +363,7 @@ impl<C: ReplayComposition> Replayer<C> {
             telemetry: None,
             telemetry_capture_interval_ms: None,
             tokenization: None,
+            shared_frontend: false,
             detokenization: None,
         })
     }
@@ -473,6 +475,13 @@ impl<C: ReplayComposition> Replayer<C> {
         Ok(self)
     }
 
+    /// Share one input tokenizer with zero-cost client output delivery.
+    /// Requires active single-worker tokenization and aggregated serving.
+    pub fn with_shared_frontend(mut self) -> Self {
+        self.shared_frontend = true;
+        self
+    }
+
     pub fn run(self) -> ReplayResult<ReplayReport> {
         self.run_inner(None)
     }
@@ -554,7 +563,21 @@ impl<C: ReplayComposition> Replayer<C> {
                 "tokenization does not support worker scaling".to_string(),
             ));
         }
-        let detokenization = self.detokenization.map(DetokenizationStage::new);
+        if self.shared_frontend
+            && (tokenization.is_none_or(|latency| latency.workers() != 1)
+                || self.detokenization.is_some()
+                || encoder.is_some()
+                || !matches!(self.spec.topology, ReplayTopology::Aggregated { .. }))
+        {
+            return Err(ReplayError::InvalidSpec(
+                "shared frontend requires active single-worker tokenization, aggregated topology and no separate detokenization or encoder".into(),
+            ));
+        }
+        let detokenization = if self.shared_frontend {
+            Some(DetokenizationStage::shared_frontend())
+        } else {
+            self.detokenization.map(DetokenizationStage::new)
+        };
         if detokenization.is_some()
             && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
         {
