@@ -10,11 +10,11 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=1024G
-#SBATCH --time=02:00:00
+#SBATCH --time=01:30:00
 set -euo pipefail
 : "${CAMPAIGN_ROOT:?}"
 : "${REMAINING_GPU_SECONDS:?Set from reconciled campaign ledger}"
-test "$REMAINING_GPU_SECONDS" -ge 57600
+test "$REMAINING_GPU_SECONDS" -ge 43200
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 cd "$storage_root"
 model="$storage_root/models/GLM-5.3-NVFP4-e3b8f9f2"
@@ -46,4 +46,4 @@ root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
-    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 6900
+    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 5100

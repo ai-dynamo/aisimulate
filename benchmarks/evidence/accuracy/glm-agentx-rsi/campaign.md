@@ -54,6 +54,8 @@ from #665's fixed cohort; the two comparisons remain separate.
 
 **Hypothesis.** Buffered receipt, frontend work and/or speculative bursts compress
 some client-observed decode intervals. Positive tiny denominators magnify MAPE.
+Confidence: high in denominator sensitivity, moderate in the boundary mechanism.
+Competing explanations: real short speculative bursts and scheduling differences.
 
 **Experiment E001.** Independently recompute the original request errors and
 stratify references below 0.1 ms without excluding them. Audit raw HTTP and metric
@@ -91,6 +93,8 @@ any terminal over-generation rather than silently equating them.
 ## H2 — Recipe, tokenization, snapshots and cache history
 
 **Hypothesis.** Effective serving settings or replay history differ from silicon.
+Confidence: high in the recorded cap mismatch, low in a broad cache-history cause.
+Competing explanations: correct inputs with incorrect execution or client timing.
 
 **Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
 cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
@@ -113,9 +117,34 @@ Requests without this optional metric remain in headline accounting.
 All compared cache counts are within input lengths. The averages do not establish
 matching histories, arrival overlap or a causal explanation of TTFT error.
 
+**Experiment E014.** Use the existing native Weka qualifier to retain
+source prompt-hash relationships. Replace the closed-loop controller with recorded
+arrivals and observed output lengths on development lanes; retain preparation.
+Predeclare the original frozen metric-specific cohorts. Preserve failed attempts
+in accounting; missing observed lengths prevent simulating their GPU work. Compare
+this diagnostic against E003, with no timing correction or input-length change.
+It cannot establish an accuracy win or fully isolate historical cache behavior.
+
+| Lanes | Closed-loop TTFT | Recorded-arrival TTFT | Closed-loop TPOT | Recorded-arrival TPOT |
+|---:|---:|---:|---:|---:|
+| 1 | 73.6567% | 65.3474% | 18.8688% | 18.1127% |
+| 8 | 63.7743% | 85.8425% | 51.0948% | 65.3959% |
+| 14 | 104.7231% | 68.4612% | 84.8208% | 116.0949% |
+
+**Conclusion — controller/arrival sensitivity supported; no general improvement.**
+All frozen TTFT 4169 / TPOT 4166 observations remain scored. Independently audit
+331/1492/2578 native completions at lanes 1/8/14 and exact requested output lengths.
+Failed measured attempts (6/25/39 including preparation) remain in accounting
+but have no qualified lengths to simulate. The static replay retains source
+prompt hashes/lengths, not HTTP-template tokens or verified historical cache
+instances. Neither its extra recovered matches nor its lower C14 TTFT makes it a
+candidate win. Next discriminate actual overlap and client timing on GPU.
+
 ## H3 — Speculative acceptance and output-delivery bursts
 
 **Hypothesis.** Fixed acceptance misses request-dependent acceptance and bursts.
+Confidence: low for a large mean mismatch after E012; request-level effects open.
+Competing explanations: client receipt coalescing and prefill/decode interference.
 
 **Experiment.** Verify the original NEXTN-to-EAGLE resolution (steps 3, draft tokens
 4). Replay uses `nextn=3`, `nextn_accepted=1.99`, meaning 2.99 accepted output
@@ -138,6 +167,8 @@ is justified by this experiment. Request-level bursts remain an E005 question.
 ## H4 — Prefill/decode interference and closed-loop overlap
 
 **Hypothesis.** Wrong overlap or scheduling creates decode stalls absent in silicon.
+Confidence: high in simulated interference, unknown in silicon scheduler error.
+Competing explanation: different controller arrivals create different valid overlap.
 
 **Experiment E006.** The historical 25.7-second stall no longer occurs at that
 source request on current main (now 4.1313 ms TPOT). A different current request
@@ -162,6 +193,9 @@ evidence is retained. The corrected control selects the uniquely specified victi
 ## H5 — Op timing, graph mode, variant lookup and interpolation
 
 **Hypothesis.** Data selection or execution timing differs despite including #665.
+Confidence: high in the scoped upstream commit effect; remaining timing fidelity
+unknown. Competing explanations: correct forward timing with wrong overlap or
+client measurement boundaries.
 
 **Experiment E007.** Revert only upstream #406 commit
 `2be6a124f8310d35f0fa46c585b8c79ef56b01eb` from the research baseline, rebuild its
@@ -185,9 +219,17 @@ shapes only after runtime/selected-row reconciliation.
 ## H6 — Capacity, preemption, frontend and serving overhead
 
 **Hypothesis.** Admission, memory pressure or frontend work explains residual error.
+Confidence: token capacity agrees; runtime overhead and lifecycle causes unknown.
+Competing explanations: incorrect op timing and client buffering.
 
-**Experiment.** Reconcile fixed replay capacity with actual runtime receipts;
-inspect admission, preemption and response timing. E005 distinguishes native
+**Experiment E013.** Reconcile fixed replay capacity with actual runtime receipts.
+All eight TP ranks on development lanes report 3783936 cache tokens for each of
+the main/MTP allocations. Replay's 59124 blocks × 64 tokens equals 3783936.
+
+**Conclusion — token-capacity mismatch disproven on development points.** Equal
+capacity does not establish equal eviction, preemption or admission behavior.
+
+**Next experiment.** Inspect admission, preemption and response timing. E005 distinguishes native
 input-ID requests from chat frontend observations. Use uninstrumented repeats
 before interpreting profiler effects.
 
@@ -245,6 +287,8 @@ keep-alive settings. This is a qualification repair, not an isolated experiment
 attributing a change to the framework version. The GPU runner accepts only the
 two named runtime choices and requires the historical image's CPU receipt and
 checksum before allocation. The failed 0.5.21 run remains separate evidence.
+Future timing allocations are capped at 90 minutes, with an 85-minute collector
+deadline and five minutes reserved for container startup/cleanup.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of
@@ -290,6 +334,8 @@ From this directory:
 python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLAY_DIR --output NEW_PRIVATE_DIR
 python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
+qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
+PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
 python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py
 uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py
 ```
