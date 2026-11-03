@@ -1488,6 +1488,13 @@
           "items": {
             "$ref": "#/$defs/fpmQuery"
           }
+        },
+        "operations": {
+          "description": "Operation-graph ranks only: per-operation latency and energy whose latencies sum to latency_ms. Omitted for whole-forward ranks.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rankOperation"
+          }
         }
       },
       "required": [
@@ -1498,6 +1505,36 @@
         "decode_baseline_ms",
         "marginal_decode_ms",
         "queries"
+      ],
+      "additionalProperties": false
+    },
+    "rankOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "energy_wms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "energy_wms",
+        "source",
+        "details"
       ],
       "additionalProperties": false
     },

@@ -812,6 +812,17 @@ impl PerfDatabase {
         self.provenance.fetch_max(tier as u8, Ordering::Relaxed);
     }
 
+    /// Clear the accumulator back to `Silicon`, returning the tier it held.
+    /// Noting that tier again afterwards leaves the accumulator as if it had
+    /// never been cleared, so a caller can observe the tiers one computation
+    /// fires.
+    pub(crate) fn take_provenance(&self) -> ProvenanceTier {
+        ProvenanceTier::from_rank(
+            self.provenance
+                .swap(ProvenanceTier::Silicon as u8, Ordering::Relaxed),
+        )
+    }
+
     /// Clear the accumulator back to `Silicon` (start of a run).
     pub fn reset_provenance(&self) {
         self.provenance

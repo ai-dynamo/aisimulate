@@ -514,7 +514,6 @@ fn zero_output_completion_survives_decode_reservation_failure() {
         &config,
         None,
         0.0,
-        false,
     )
     .unwrap();
 
@@ -4316,7 +4315,6 @@ mod host_loop_passes {
             &config,
             None,
             0.0,
-            false,
         )
         .unwrap();
         assert!(

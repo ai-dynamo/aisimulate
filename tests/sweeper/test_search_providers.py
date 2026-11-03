@@ -590,6 +590,108 @@ def test_sweep_submits_only_router_aic_hooks_matching_prefill_hardware(monkeypat
         assert result.candidates[0].reason_category is ReasonCategory.ADAPTER_CONSTRAINT
 
 
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_min_gpus_selects_smallest_router_candidate_meeting_sla(monkeypatch, mode):
+    def role(replicas):
+        return ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=replicas)
+
+    if mode == "agg":
+        parallels = (role(4), role(1), role(2))
+    else:
+        parallels = tuple(DisaggParallelConfig(prefill=role(p), decode=role(d)) for p, d in ((2, 2), (1, 1), (1, 2)))
+    largest, middle = parallels[0].total_gpus, parallels[2].total_gpus
+    engine_roles = ("prefill", "decode") if mode == "disagg" else ("agg",)
+    branch = BranchSpace(
+        deployment_mode=mode,
+        parallel_configs=parallels,
+        supported_backends={parallel: frozenset({"vllm"}) for parallel in parallels},
+        knob_choices={
+            "backend": ["vllm"],
+            **{f"{engine_role}_max_num_batched_tokens": [8192] for engine_role in engine_roles},
+            **{f"{engine_role}_max_num_seqs": [256] for engine_role in engine_roles},
+        },
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+
+    class RouterAdapter:
+        name = "dynamo.router"
+        api_version = 1
+
+        def generate_search_space(self, search_spec, context):
+            return AdapterSearchPlan(
+                fragment=SearchSpaceFragment(choices_by_branch={mode: {"policy": ["round_robin", "kv_router"]}}),
+                potential_runtime_hooks=(RuntimeHookSpec("dynamo.router", "placement_policy", 1),),
+            )
+
+        def materialize_replay(self, plan, selection, context):
+            config = {"router_mode": selection["policy"]}
+            return AdapterReplaySpec(
+                config=config,
+                runtime_hooks=(RuntimeHookSpec("dynamo.router", "placement_policy", 1, config),),
+            )
+
+    class Runner(_Runner):
+        def run(self, spec):
+            self.specs.append(spec)
+            deployment = spec.backend_deployment
+            gpus = (
+                deployment.num_workers
+                if mode == "agg"
+                else deployment.num_prefill_workers + deployment.num_decode_workers
+            )
+            (hook,) = spec.runtime_hooks
+            # The smallest pool misses the SLA; the middle one meets it only with KV routing.
+            meets_sla = gpus == largest or (gpus == middle and hook.config["router_mode"] == "kv_router")
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 20.0,
+                    "num_e2e_latency_samples": 20.0,
+                    "mean_e2e_latency_ms": 50.0 if meets_sla else 150.0,
+                    "goodput_request_throughput_rps": 10.0 if meets_sla else 2.0,
+                    "goodput_output_throughput_tok_s": 1000.0 if meets_sla else 200.0,
+                }
+            )
+
+    class RouterRunnerFactory(_RunnerFactory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("*", "*"),),
+                supported_hooks=(HookCapability("dynamo.router", "placement_policy", 1),),
+            )
+
+    factory = RouterRunnerFactory()
+    factory.runner = Runner()
+    config = SmartSearchConfig(
+        search_space={
+            "model_name": "model",
+            "hardware_sku": "h200_sxm",
+            "backend": ["vllm"],
+            "deployment_mode": [mode],
+            "backend_version": "0.24.0",
+        },
+        adapters={"dynamo.router": {"search_space": {}}},
+        workload={"isl": 1024, "osl": 128, "request_rate": 10, "num_request_ratio": 2},
+        sweep={"max_trials": 6, "algorithm": "random", "parallel_evals": 1, "max_eval_seconds": None},
+        goal={"target": "min_gpus", "sla": {"e2e_ms": 100}, "min_goodput_rps": 5},
+    )
+
+    result = search_module.Sweeper(
+        runner_factory=factory,
+        providers={"dynamo.router": RouterAdapter()},
+        show_progress=False,
+    ).run(config, top_n=None)
+
+    # Six trials exhaust three static pools times two router policies.
+    assert len(factory.runner.specs) == 6
+    assert result.counts.feasible == 3
+    assert result.counts.infeasible == 3
+    assert [
+        (candidate.used_gpus, candidate.config["adapters"]["dynamo.router"]["router_mode"])
+        for candidate in result.selected_candidates
+    ][0] == (middle, "kv_router")
+    assert [candidate.used_gpus for candidate in result.selected_candidates] == [middle, largest, largest]
+
+
 def test_core_branch_preflight_runs_before_adapter_preparation(monkeypatch) -> None:
     adapter = _Adapter()
 
