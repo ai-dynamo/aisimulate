@@ -31,7 +31,7 @@ window.AgentX = (() => {
 
   function cells(result) {
     return metrics.map(m => `<td>${fmt(result.point_errors[m])}<small>n=${result.point_counts[m]} run${result.point_counts[m]===1?"":"s"}</small></td>`).join("") +
-      ["ttft_ms","tpot_ms"].map(m => `<td title="${result.request_errors[m].count} scored requests">${fmt(result.request_errors[m].mape)}<small>n=${result.request_errors[m].count.toLocaleString()}</small></td>`).join("") +
+      ["tpot_ms","ttft_ms"].map(m => `<td title="${result.request_errors[m].count} scored requests">${fmt(result.request_errors[m].mape)}<small>n=${result.request_errors[m].count.toLocaleString()}</small></td>`).join("") +
       `<td>${(result.coverage.matched || 0).toLocaleString()} / ${(result.coverage.measured || 0).toLocaleString()}</td>`;
   }
   function comparisonRows(result) {
@@ -87,7 +87,7 @@ window.AgentX = (() => {
     const more=[...features.keys()].filter(id=>!core.includes(id));
     return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">${point.feature_dataset_revision?`<span class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></span>`:""}Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
   }
-  const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TTFT MAPE</th><th scope="col">Request TPOT MAPE</th><th scope="col">Matched / measured</th></tr>`;
+  const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TPOT MAPE</th><th scope="col">Request TTFT MAPE</th><th scope="col">Matched / measured</th></tr>`;
   function source(run) {
     return run.category === "agentx" ? `<a href="${esc(run.benchmark_url)}" target="_blank" rel="noopener">AgentX benchmark ↗</a> · <a href="${esc(run.source_run_url)}" target="_blank" rel="noopener">Source run ↗</a>` :
       "AISim self-collected dataset: coming soon"; // TODO: link the public self-collected E2E HF dataset after migration.

@@ -879,3 +879,6 @@ cache checks. Two complete imports produced identical catalog checksum
 `02b2b26ff3dbaa1d83ee868903cce64c81dad655f6276d831b9337b8d14c96ec`.
 This validates provenance and arithmetic; accuracy remains advisory. Daily CI must
 generate new predictions. This preview is not a production snapshot.
+
+The AgentX overview displays Request TPOT MAPE before Request TTFT MAPE;
+column values and request denominators follow that order.
