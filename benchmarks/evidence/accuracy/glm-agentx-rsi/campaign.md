@@ -2790,3 +2790,74 @@ change this source gate. GPU1018958 is submitted with one B300, eight CPUs,
 97810 remain unreserved. Live association/partition/user-job checks pass;
 select/cons_tres allows partial-node allocation. Actual allocation and source
 checks precede work; numerical qualification precedes each arm's timing.
+
+**E049 conclusion — paged-indexer grouping and physical KV reuse causally
+affect kernel cost; whole-model attribution and request-MAPE fix remain open.**
+GPU1018958 completes27/27 arms and81/81 graph trials, zero failed/unattempted.
+Every valid output is bit-equal across native-width4, flat/shared and flat/copied
+KV layouts. Query values, weights and context columns are unchanged; only
+grouping and physical KV placement differ. The exact source/import gates and
+B300SM103 identity pass. Context populations are randomized by the pinned
+seed42 generator and retained, not claimed to be uniform fixed-KV serving.
+
+| Logical requests | Context label | Native width4 (µs) | Flat/shared (µs) | Flat/copied (µs) |
+|---:|---:|---:|---:|---:|
+| 1 | 8192 | 3.489 | 3.610 | 3.580 |
+| 1 | 131072 | 5.131 | 7.999 | 8.052 |
+| 1 | 393216 | 7.992 | 14.878 | 32.358 |
+| 8 | 8192 | 4.471 | 5.833 | 5.863 |
+| 8 | 131072 | 27.320 | 68.462 | 90.724 |
+| 8 | 393216 | 73.154 | 225.205 | 261.823 |
+| 14 | 8192 | 5.456 | 7.736 | 7.788 |
+| 14 | 131072 | 45.062 | 131.667 | 161.286 |
+| 14 | 393216 | 134.882 | 451.400 | 463.733 |
+
+All values are medians of three graph trials; raw trials remain retained.
+The effect grows with context and batch, supporting the width/reuse mechanism
+behind E048's trend. This isolates the indexer only: it does not establish
+full-attention cost, exact runtime graph padding, all forward critical paths,
+or historical request accuracy. Fixed arm order and observed unlocked clocks
+remain qualifications; no global multiplier or fitted subtraction follows.
+Collect full/skip DSA modules at the exact evaluated runtime with a real
+query-width axis before using these costs in a production lookup.
+
+Slurm parent/batch/extern all finish in89seconds with exactlyone B300; charge
+89GPU-seconds including startup/cleanup. Total129919/230400GPU-seconds
+(36.088611/64GPU-hours), remaining100481 (27.911389GPU-hours). Targeted-op
+pool has4311GPU-seconds left; validation's three-node-hour reserve remains
+untouched. Reservation clears, no active GPU job. CPU preflight/imports cost0
+GPU-seconds. No baseline, HF record or dashboard is replaced.
+- E049-independent-audit.json: SHA256 `18a9e7be4976e9cf763587f36a8c8aa7254afa033119a6d5cc8d477c25e4f9de`.
+- E049-result-manifest.json: SHA256 `f280e513dc704a5652074cd8e2b12a528bf8243460f778e1d352bdeb35d0b5c8`.
+- E049-cpu-preflight-1018600.json: SHA256 `fba409023cc013e53307613568252f6498b73f786917a83f4f807f582b8f8a50`.
+
+### Proposed coordinated query-width change — approval boundary
+
+The collector policy `.claude/rules/collector/layer_permissions.md` says
+**“Changing the data contract requires explicit human approval.”**
+The campaign authorizes diagnostics and modeling work but has not named this
+new producer/consumer dimension. Do not silently mutate the contract.
+The concrete proposed scope is:
+
+- Add an explicit integer `query_len` key to SGLang DSA generation full/skip
+  module records. Historical records default to1; collect width4 in a pinned
+  0.5.21 runtime before using it with0.5.21 predictions. Retain0.5.20 diagnostic
+  identities separately. Use exact width buckets, not fitted interpolation
+  across unsupported widths or borrowing main data for older branches.
+- Carry verification width from the model's actual MTP setting through Python
+  serialization and the Rust DSA operator/query. Separate request count from
+  query-token count; preserve all projection/FFN/communication token work.
+  Preserve old serialized payloads and ordinary width1 behavior with defaults.
+- Price the78 physical target attention layers using real width4 module data.
+  Keep the legacy3-layer draft approximation separate and unchanged until its
+  own BF16/width/seeded-indexer ledger qualifies; do not hide an extra draft
+  correction in this change. Context queries remain unchanged.
+- Update collector/schema, Python/Rust lookup/model code, typed-wire version,
+  documentation and semantic regression tests together on an isolated research
+  branch. Keep existing op files/rows readable and missing width4 explicit.
+  Validate lower-layer shapes, Qwen compatibility and all six frozen E2E
+  points before any accuracy claim; no merge or HF/dashboard promotion.
+
+The measured primitive benefit makes this proposal evidence-backed, not an
+accepted modeling fix. Implementation waits for explicit contract approval;
+independent diagnostics that do not alter the contract can continue.
