@@ -2188,3 +2188,26 @@ common-eligible E039 comparison
 - **Conclusion:** pending source composition and qualification. This consumes
   zero GPU budget, changes no default or public result, and is not a license to
   replace op timing with fitted factors or historical arrival-clock oracles.
+
+E042 composition source is signed/DCO merge
+`61375425aa1931c9e5525574112b43bea0a6b06d`, preserving both exact source parents.
+Automatic merge is clean; packaged legal notices match. Core validation passes
+**2543 Rust unit tests** (one existing ignore), plus **17 tokenization and 11
+detokenization integration tests**. Maturin 1.16.0 builds the exact wheel SHA256
+`d636cacb77ef1298688940f13945b854852825a542945e268f4ced2b6eacafbc`,
+native SHA256 `ea329c744559c2e39146a688e24075f3fc0e63ac94437cd77e8d18e87c33570e`.
+All **2351** packaged op-data files are byte-identical to E039 and the frozen
+baseline. Install into a separate runtime with 92 pinned dependencies, preserving
+the original research and E039 runtimes.
+
+The first Qwen smoke attempt uses the wrong entry point: the frozen CI runner
+replaces `engine.backend_version=0.31.0` with branch-bundled latest **0.30.0**.
+Its large numerical difference is therefore not evidence of a model regression.
+Preserve its native result, resolved configuration and failed comparison; GLM
+runs have not started. The archived reference uses the direct SDK path with the
+approved #666 systems overlay. Add `qwen_smoke.py` to reproduce exactly that
+path with explicit version/configuration, request identity/count/completion,
+numerical request/telemetry/aggregate fields and complete cache accounting.
+Only actual execution wall time is excluded from physical numerical parity.
+Track all three planned cases and retain failures/unattempted cases. CI's branch
+version selection remains a separate publication contract.
