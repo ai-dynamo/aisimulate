@@ -117,6 +117,16 @@ reviewed checksum. The batch wrapper passes these as `--qualified-pilot` and
 records the checksum, and skips repeating the pilot. Subtract every prior GPU
 allocation from the original eight-node-hour budget before submission. Keep
 the earlier failed qualification and corrected receipt as separate evidence.
+`COLLECTION_LANES="4 8 10 13 14"` selects only the remaining lanes when an earlier
+profile is already qualified. The execution receipt records this subset; final
+intake still requires all six profiles and their own source-job provenance.
+
+Dataset cache hits can bypass the loader's configuration-recording hook. When
+that receipt is absent, normalization uses the benchmark's actual exported
+`input_config` and the recorded dataset metadata's sampling strategy. It checks
+all 220 eligible root identities and their order against the pinned corpus and
+retains both source checksums in `harness-receipt-origin.json`. No command-line
+settings or model-name assumptions replace missing measurement evidence.
 
 ## Normalization and HF
 

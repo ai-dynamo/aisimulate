@@ -220,8 +220,11 @@ def main():
     parser.add_argument("--pilot-only", action="store_true")
     parser.add_argument("--qualified-pilot", type=Path)
     parser.add_argument("--qualified-pilot-sha256")
+    parser.add_argument("--lanes", type=int, nargs="+", choices=LANES, default=list(LANES))
     parser.add_argument("--budget-seconds", type=int, default=8 * 3600)
     args = parser.parse_args()
+    if args.lanes != sorted(set(args.lanes)) or (args.lanes != list(LANES) and not args.qualified_pilot):
+        parser.error("A partial campaign requires qualified pilot evidence and unique ordered lanes")
     if bool(args.qualified_pilot) != bool(args.qualified_pilot_sha256) or (args.pilot_only and args.qualified_pilot):
         parser.error("Resume requires both pilot receipt and checksum, without --pilot-only")
     prior = qualified_pilot(args.qualified_pilot, args.qualified_pilot_sha256) if args.qualified_pilot else None
@@ -260,6 +263,7 @@ def main():
             "gpu_budget_seconds": args.budget_seconds,
             "job_id": os.getenv("SLURM_JOB_ID"),
             "qualified_pilot_sha256": args.qualified_pilot_sha256,
+            "planned_lanes": args.lanes,
             "code": {
                 p.relative_to(code).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in code.rglob("*")
@@ -277,17 +281,17 @@ def main():
         if args.pilot_only:
             return
     while not gate.exists():
-        if time.monotonic() > deadline - 6 * 3600 - 300:
+        if time.monotonic() > deadline - len(args.lanes) * 3600 - 300:
             raise TimeoutError("Pilot qualification did not leave room for six full profiles")
         time.sleep(5)
     qualification = json.loads(gate.read_text())
     if qualification.get("status") != "qualified":
         raise ValueError("Pilot did not qualify")
-    for lanes in LANES:
+    for lanes in args.lanes:
         if deadline - time.monotonic() < 3600 + 180:
             raise TimeoutError("Insufficient GPU budget to start a complete profile")
         run(args.root, code, client, args.model, lanes, 3600, deadline)
-    write(args.root / "campaign-complete.json", {"status": "complete", "lanes": list(LANES)})
+    write(args.root / "campaign-complete.json", {"status": "complete", "lanes": args.lanes})
 
 
 if __name__ == "__main__":
