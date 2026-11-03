@@ -1153,3 +1153,42 @@ test("AgentX pools requests directly and averages run errors equally", () => {
   assert.equal(unavailable.request_errors.ttft_ms.silicon,null);
   assert.equal(unavailable.request_errors.ttft_ms.prediction,null);
 });
+
+test("AgentX checklist uses the selected silicon record without inferring feature use", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
+  const missing = checklist(point);
+  assert.equal((missing.match(/class="agentx-feature unknown"/g)||[]).length,11);
+  assert.match(missing,/Feature settings were not recorded/);
+  const feature = (id,state,observed={state:"unknown",count:null}) => ({id,state,observed,parameters:[]});
+  point.feature_metadata = {
+    schema:"aisimulate.benchmark.features.v1", benchmark_id:"example",
+    features:[
+      feature("cache.g1_prefix","enabled"),
+      feature("speculation","disabled"),
+      feature("cache.g2","not_applicable"),
+      feature("agentx.weka","enabled",{state:"not_observed",count:0}),
+      feature("events.cache_reuse","unknown",{state:"exercised",count:7}),
+      {...feature("topology.tensor_parallel","enabled"),parameters:[{name:"size",value:"<unsafe>"}]},
+      feature("unrecognized","enabled"),
+    ],
+  };
+  const saved = checklist(point);
+  assert.match(saved,/class="agentx-feature on" data-feature="cache.g1_prefix"/);
+  assert.match(saved,/class="agentx-feature off" data-feature="speculation"/);
+  assert.match(saved,/class="agentx-feature na" data-feature="cache.g2"/);
+  assert.match(saved,/Not observed · 0/);
+  assert.match(saved,/Observed · 7/);
+  assert.match(saved,/More features \(2\)/);
+  assert.match(saved,/size: &lt;unsafe&gt;/);
+  assert.doesNotMatch(saved,/<unsafe>|unrecognized/);
+  assert.match(saved,/Enabled does not imply exercised/);
+  assert.equal((saved.match(/class="agentx-feature unknown"/g)||[]).length,8);
+  point.feature_metadata.benchmark_id="another-run";
+  assert.equal(checklist(point),missing);
+  point.feature_metadata.benchmark_id="example";
+  point.feature_metadata.schema="future-schema";
+  assert.equal(checklist(point),missing);
+});

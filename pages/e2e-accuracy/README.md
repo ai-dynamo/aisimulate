@@ -764,6 +764,14 @@ then reuses them for workload selection. No other concurrency's details are fetc
 On mobile, sample counts move below the error to keep the table within the screen.
 The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
+A benchmark feature checklist sits beside the concurrency summary on desktop and
+below it on smaller screens. It follows the selected run, using its saved
+`aisimulate.benchmark.features.v1` silicon record. Enabled, Off, N/A, and Not recorded
+remain distinct. Enabled does not imply exercised; observed counts appear only
+when recorded. Missing historical records stay Not recorded, with
+no inference from model names, replay settings, or the support matrix. Core AgentX
+features appear first; additional recorded features expand under More features.
+The checklist links to the AgentX support matrix and exposes no raw evidence.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 

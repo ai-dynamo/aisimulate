@@ -48,6 +48,45 @@ window.AgentX = (() => {
       return `<tr data-metric="${scope}-${metric}"${request&&metric==="ttft_ms"?' class="agentx-request-start"':""}><th scope="row">${request?"Request":"Point"} ${label}<small>${unit}</small></th><td>${fmt(request?values.silicon:result.silicon[metric],"")}</td><td>${fmt(request?values.prediction:result.prediction[metric],"")}</td><td class="agentx-error"><strong>${fmt(request?values.mape:result.point_errors[metric])}</strong><small>${request?"MAPE":"Mean point error"}</small><small class="agentx-inline-count">${samples}</small></td><td class="agentx-samples">${samples}</td></tr>`;
     }).join("");
   }
+  function featureChecklist(point) {
+    const primary = {
+      "agentx.weka":"Weka dependency graph", "agentx.seeded_snapshots":"Seeded snapshots",
+      "agentx.live_warmup":"Live-trajectory warmup", "agentx.continuous_profile":"Continuous profile",
+      "agentx.sequential_recycling":"Sequential lane recycling", "cache.g1_prefix":"GPU prefix caching",
+      "speculation":"Speculative decoding", "cache.g2":"Host offload (G2)",
+      "cache.g3":"Storage offload (G3)", "cache.kvcr":"Peer KV fetch (KVCR)",
+      "routing.planner":"KV-aware routing / Planner",
+    };
+    const labels = {
+      ...primary,
+      "agentx.cache_bust":"Cache bust", "agentx.shuffle":"Random / shuffled recycling",
+      "scheduling.continuous_batching":"Continuous batching", "scheduling.chunked_prefill":"Chunked prefill",
+      "scheduling.async":"Asynchronous scheduling", "cache.hybrid_state":"Hybrid KV / recurrent state",
+      "topology.aggregated":"Aggregated serving", "topology.tensor_parallel":"Tensor parallelism",
+      "topology.expert_parallel":"Expert parallelism", "topology.attention_dp":"Attention data parallelism",
+      "topology.pipeline_parallel":"Pipeline parallelism", "topology.context_parallel":"Context parallelism",
+      "topology.multi_node":"Multi-node serving", "topology.pd":"Prefill/decode disaggregation",
+      "precision.quantized_weights":"Quantized weights", "precision.quantized_kv":"Quantized KV",
+      "workload.multimodal":"Multimodal input", "events.subagent_spawn":"Subagent spawning",
+      "events.join":"Dependency joins", "events.tool_wait":"Tool waits", "events.cache_reuse":"Cache reuse",
+      "events.eviction":"Cache eviction", "events.preemption":"Request preemption",
+      "events.recompute":"Recomputation", "events.state_restore":"Recurrent-state restoration",
+    };
+    const core=Object.keys(primary), record=point.feature_metadata;
+    const valid=record?.schema==="aisimulate.benchmark.features.v1" && record.benchmark_id===point.id && Array.isArray(record.features);
+    const features=new Map((valid?record.features:[]).filter(f=>Object.hasOwn(labels,f.id)).map(f=>[f.id,f]));
+    const statuses={enabled:["on","✓","Enabled"],disabled:["off","×","Off"],not_applicable:["na","–","N/A"]};
+    const rows=ids=>ids.map(id=>{
+      const feature=features.get(id), state=feature?.state;
+      const [status,icon,label]=Object.hasOwn(statuses,state)?statuses[state]:["unknown","?","Not recorded"];
+      const observed=feature?.observed;
+      const usage=observed?.state==="exercised" && Number.isInteger(observed.count) && observed.count>0 ? `Observed · ${observed.count.toLocaleString()}` : observed?.state==="not_observed" && observed.count===0 ? "Not observed · 0" : "";
+      const parameters=(feature?.parameters||[]).map(p=>`${p.name.replaceAll("_"," ")}: ${p.value??"not recorded"}`).join(" · ");
+      return `<li class="agentx-feature ${status}" data-feature="${id}"><span class="agentx-feature-icon" aria-hidden="true">${icon}</span><span class="agentx-feature-name">${labels[id]}${parameters?`<small>${esc(parameters)}</small>`:""}${usage?`<small>${usage}</small>`:""}</span><span class="agentx-feature-status">${label}</span></li>`;
+    }).join("");
+    const more=[...features.keys()].filter(id=>!core.includes(id));
+    return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run · silicon settings</p>${valid?"":'<p class="agentx-feature-missing">Feature settings were not recorded for this historical run.</p>'}<ul class="agentx-feature-list">${rows(core)}</ul>${more.length?`<details class="agentx-more-features"><summary>More features (${more.length})</summary><ul class="agentx-feature-list">${rows(more)}</ul></details>`:""}<p class="agentx-feature-note">Enabled does not imply exercised. Observed counts appear only when recorded.</p></aside>`;
+  }
   const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TTFT MAPE</th><th scope="col">Request TPOT MAPE</th><th scope="col">Matched / measured</th></tr>`;
   function source(run) {
     return run.category === "agentx" ? `<a href="${esc(run.benchmark_url)}" target="_blank" rel="noopener">AgentX benchmark ↗</a> · <a href="${esc(run.source_run_url)}" target="_blank" rel="noopener">Source run ↗</a>` :
@@ -157,7 +196,7 @@ window.AgentX = (() => {
         const point=points.find(p=>p.id===run.id);
         document.getElementById("selected-run-label").textContent=`Selected run · ${first.category==="agentx"?"Observed outputs":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
         const lanes=`${first.lanes} lane${first.lanes===1?"":"s"}`;
-        const accuracy=`<h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p>`;
+        const accuracy=`<div class="agentx-summary-layout"><section class="agentx-summary-main"><h2>Concurrency summary</h2><p>${runs.length>1?"All ":""}${runs.length} run${runs.length===1?"":"s"} · ${lanes} · ${group.coverage.matched.toLocaleString()} / ${group.coverage.measured.toLocaleString()} requests matched</p><div class="table-scroll"><table class="agentx-summary-table"><thead><tr><th scope="col">Metric</th><th scope="col"><span class="comparison-source-dot silicon" aria-hidden="true"></span>Silicon</th><th scope="col"><span class="comparison-source-dot aisim" aria-hidden="true"></span>AISim</th><th scope="col">Error</th><th scope="col" class="agentx-samples">Samples</th></tr></thead><tbody>${comparisonRows(group)}</tbody></table></div><p class="agentx-summary-note">Point rows average scored runs equally. Request rows average the individual requests scored for that metric.</p></section>${featureChecklist(point)}</div>`;
         const evidence=`<h2>Metrics and provenance</h2>${methodology()}${provenance(point.snapshot,[point])}<h2>Measured configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
         target.innerHTML=`<div class="replay-dashboard embedded ${document.documentElement.dataset.theme==="light"?"light":""}">${fragment}</div>`;
         const state=new URLSearchParams(location.hash.slice(1)),view=state.get("view"),stage=state.get("stage")==="preparation"?"preparation":"profile";
@@ -172,5 +211,5 @@ window.AgentX = (() => {
       await select();
     }catch(error){root.innerHTML=`<p role="alert">${esc(error.message)}</p>`;}
   }
-  return {load,detail,aggregate};
+  return {load,detail,aggregate,featureChecklist};
 })();

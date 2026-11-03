@@ -236,7 +236,7 @@ async def check():
                     ["Dashboard", "Request timeline", "Evidence"]
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
-                await expect(frame.locator("#profile-accuracy h2")).to_have_text("Concurrency summary")
+                await expect(frame.locator(".agentx-summary-main h2")).to_have_text("Concurrency summary")
                 await expect(frame.locator("#profile-accuracy table")).to_have_count(1)
                 await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(
                     ["Metric", "Silicon", "AISim", "Error", "Samples"]
@@ -258,7 +258,12 @@ async def check():
                 await expect(frame.locator(".comparison-source-dot.silicon")).to_have_count(1)
                 await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(1)
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
-                await expect(frame.locator("#profile-accuracy ul")).to_have_count(0)
+                await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
+                await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
+                await expect(frame.locator(".agentx-feature.unknown")).to_have_count(11)
+                await expect(frame.locator(".agentx-features a")).to_have_attribute(
+                    "href", "../../feature-support-matrix/#agentx"
+                )
                 await expect(frame).not_to_contain_text("Request accounting")
                 await expect(frame).not_to_contain_text("All measured request comparisons")
                 assert await frame.evaluate(
