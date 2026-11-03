@@ -6,6 +6,7 @@
 import argparse
 import hashlib
 import json
+import math
 import time
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from aisimulate.compiler import prediction_to_replay_spec
 
 CASES = {"self-p4096-l1-cold-r0": 8, "self-p4096-l4-cold-r0": 32, "self-p4096-l16-cold-r0": 128}
 OMIT = object()
+# The native canonical replay contract excludes these execution-performance fields.
+WALL_FIELDS = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
 
 
 def numeric(value):
@@ -35,8 +38,15 @@ def verify(reference, candidate, count):
         raise ValueError("Numerical telemetry fields changed")
     if candidate["state_cache"] != reference["state_cache"]:
         raise ValueError("Cache accounting changed")
+    for report in (reference, candidate):
+        for rate, counter in (("processed_tokens_per_s", "processed_tokens"),
+                              ("processed_output_tokens_per_s", "total_output_tokens")):
+            if rate in report:
+                expected = report[counter] * 1000 / report["wall_time_ms"] if report["wall_time_ms"] > 0 else 0
+                if not math.isclose(report[rate], expected, rel_tol=1e-12, abs_tol=1e-9):
+                    raise ValueError("Simulator wall-time rate is inconsistent with its counter")
     for key, value in reference.items():
-        if ((value is None or type(value) in (int, float, bool)) and key != "wall_time_ms"
+        if ((value is None or type(value) in (int, float, bool)) and key not in WALL_FIELDS
                 and candidate[key] != value):
             raise ValueError(f"Numerical aggregate changed: {key}")
     for before, after in zip(reference["telemetry"]["requests"], candidate["telemetry"]["requests"], strict=True):
@@ -87,6 +97,7 @@ def main():
                       "exact_numerical_request_parity": True, "exact_numerical_telemetry_parity": True,
                       "exact_cache_parity": True, "identity_and_completion_parity": True,
                       "wall_clock_execution_time_excluded": True,
+                      "canonical_nonsemantic_fields_excluded": sorted(WALL_FIELDS),
                       "method": "CorePredictionConfig -> prediction_to_replay_spec -> EngineReplayRunnerFactory",
                       "config_sha256": hashlib.sha256(data).hexdigest(),
                       "native_sha256": hashlib.sha256(native_path.read_bytes()).hexdigest(),

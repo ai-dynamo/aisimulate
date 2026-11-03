@@ -2211,3 +2211,15 @@ numerical request/telemetry/aggregate fields and complete cache accounting.
 Only actual execution wall time is excluded from physical numerical parity.
 Track all three planned cases and retain failures/unattempted cases. CI's branch
 version selection remains a separate publication contract.
+
+The direct-SDK Qwen attempt matches all request/telemetry numbers and cache
+state, but its first checker rejects `processed_output_tokens_per_s`.
+Source `replay/report.rs` defines that rate from actual execution wall time;
+`replay/canonical.rs::CANONICAL_RESULT_EXCLUSIONS` already excludes it,
+`processed_tokens_per_s` and `wall_time_ms`. The reference and candidate both
+predict **197.2131502745 output tokens/s**, while execution wall time differs
+810.756/830.342ms, giving different simulator-processing rates. Preserve this
+second checker failure. Apply the existing canonical three-field exclusion and
+independently verify the two wall-rate formulas; every physical aggregate,
+request timestamp, token count, phase, identity and cache field stays compared.
+A regression test still rejects a changed predicted serving throughput.
