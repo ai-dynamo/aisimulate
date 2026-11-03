@@ -1281,7 +1281,44 @@ schema, not a standard prediction/publication artifact or a qualified accuracy
 win, even if a retained-subset metric improves. Use the result to decide whether
 a replay-engine change is warranted; do not bypass profile-cancellation guards.
 
-**Conclusion:** pending checksum-pinned CPU execution and independent arithmetic.
+**Conclusion — arithmetic verified; not a physical-model validation or win.**
+Input manifest SHA256 `90dfce382fa4f6d52762cdaec98c76c423d299b52975504f8708ee1d5d7f51c8`
+pins 18 inputs before execution from source
+`b446d2462778983110fb824b458249a38212366d`. All source CPU bookings have
+consistent service units and do not overlap; original matched native timings
+reconcile with E034 scores. Independent arithmetic reproduces these retained
+cohort results, without recovering or dropping any additional observation:
+
+| Metric | E034 admission only | Delivery-only diagnostic | Retained n / original frozen n |
+|---|---:|---:|---:|
+| TTFT MAPE | 56.6126% | 58.6335% | 4164 / 4169 |
+| TPOT MAPE | 71.7450% | 69.7286% | 4161 / 4166 |
+
+TPOT at 1/8/14 lanes changes 18.9029→21.0019%, 55.3671→56.8199% and
+88.3007→83.7219%. TTFT changes 25.0093→24.9666%, 28.8601→30.8820% and
+76.9495→79.2451%. Keep these regressions visible. Twenty-five zero predictions
+remain scored; the 15 positive TPOT references below 0.1 ms remain included, with
+contribution 32.0316→28.5335 percentage points. No delayed matched response crosses
+the original grace boundary, which does not establish feedback-complete validity.
+
+Source event-order audit finds 23/11/61 output-completion/input-dispatch ties at
+8/1/14 lanes, including 4/2/14 same-conversation candidate successor ties. The
+native loop processes worker completions and received terminals before agentic
+feedback and new ready arrivals. A fixed-booking input-first postprocessor can
+therefore queue a response behind an input that its receipt releases. These
+counts identify potential causal ties, not proof that every tied input depends
+on that completion. Preserve the predeclared diagnostic and its assumptions;
+do not select a tie policy or service rate for a lower score.
+
+The small retained TPOT reduction neither repairs the five pre-existing losses
+nor validates a shared-API implementation. A proper test must schedule delivery
+inside the replay and let the original controller react to actual receipt times,
+with preparation and profile cancellation still qualified. That is the next
+discriminating implementation experiment. No wheel/default/HF/dashboard changes.
+
+Evidence: `E038-delivery-only-diagnostic.json`, independent arithmetic audit
+SHA256 `dc1fafc7cc37fae2a7f23d30cedc118f1aa1e29392fa070b04e57c848fa25717`, causal-tie source audit and all pinned E034 inputs. GPU cost 0.
+
 
 ## Repeat and compatibility controls
 
