@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::perfmodel::engine::runtime::{RankDetail, RankPricing};
 use crate::perfmodel::engine::spec::EncoderImageShape;
 use crate::perfmodel::engine::{Engine, PerOpValue};
 use crate::{AicError, ForwardPassMetrics};
@@ -42,6 +43,18 @@ use super::options::{
 };
 use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
+
+/// A native iteration estimate with each rank's pricing shared; see
+/// [`ForwardPassPerfModel::estimate_native_iteration`].
+#[derive(Debug)]
+pub(crate) struct NativeIterationEstimate {
+    /// The rank maximum under the iteration's correction.
+    pub(crate) latency_ms: f64,
+    /// The heaviest rank's workload correction.
+    pub(crate) correction_factor: f64,
+    /// Every rank's native pricing, in rank order, idle ranks included.
+    pub(crate) ranks: Vec<Arc<RankPricing>>,
+}
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -494,6 +507,15 @@ enum ForwardPassPerfMode {
 
 impl ForwardPassPerfModel {
     fn validate_speculative_reference(&self) -> Result<(), AicError> {
+        // Path 2: measured complete SD rounds price speculation themselves.
+        if matches!(&self.mode,
+            ForwardPassPerfMode::Native { engine, .. } if engine.is_measured_speculative_round())
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "a measured speculative-round profile already includes speculative decoding; omit draft_length".into(),
+            ));
+        }
+        // Path 1: only an ordinary STP FPM supplies the reference to scale.
         let already_speculative = self.provenance.as_ref().is_some_and(|provenance| {
             provenance.config.nextn != 0 || provenance.config.speculation.is_some()
         });
@@ -516,9 +538,13 @@ impl ForwardPassPerfModel {
     /// logical request count is widened, its total past KV is preserved, and
     /// the multiplier is applied once after STP estimation/correction and rank
     /// reduction. All FPM estimator kinds use the same rule; it does not build
-    /// a draft graph or assume accepted-token progress. Pure decode only.
+    /// a draft graph or assume accepted-token progress. Pure decode only: a rank
+    /// is prefill when it schedules fresh prefill tokens, so a fully
+    /// prefix-cached prefill record is decode-only and keeps its metadata.
     /// Missing baseline data/readiness remain errors/None. The empirical fit
-    /// was measured at d=1..4; larger depths are extrapolation.
+    /// was measured at d=1..4; larger depths are extrapolation. A measured
+    /// speculative-round profile already includes speculative decoding and
+    /// rejects `draft_length`; query it without one.
     pub fn estimate_speculative_forward_pass_time_ms(
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
@@ -1217,6 +1243,50 @@ impl ForwardPassPerfModel {
                 self.estimate_ordinary_time_ms(metrics_by_rank)?,
             ))
         }
+    }
+
+    /// [`Self::estimate_forward_pass_detailed`] of a native estimator with
+    /// each rank's native pricing shared instead of copied: the same
+    /// corrected iteration latency and correction, and an operation graph's
+    /// executed operations in `detail`, either their values under shared
+    /// names or the diagnostics the detailed estimate reports. `None` for
+    /// estimators without a native rank dispatch (regression, learned and
+    /// mixed composition), whose detailed estimate reports no ranks.
+    pub(crate) fn estimate_native_iteration(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        detail: RankDetail,
+    ) -> Result<Option<NativeIterationEstimate>, AicError> {
+        let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+            ..
+        } = &self.mode
+        else {
+            return Ok(None);
+        };
+        if self.mixed_composition.is_some() {
+            return Ok(None);
+        }
+        let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+            return Ok(Some(NativeIterationEstimate {
+                latency_ms: 0.0,
+                correction_factor: 1.0,
+                ranks: Vec::new(),
+            }));
+        };
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        let native = engine.forward_pass_ranks(metrics_by_rank, detail, coverage.as_deref_mut())?;
+        let factor = self.correction_factor(corrections, &feature);
+        Ok(Some(NativeIterationEstimate {
+            latency_ms: native.latency_ms * factor,
+            correction_factor: factor,
+            ranks: native.ranks,
+        }))
     }
 
     fn learned_estimate_details(latency_ms: Option<f64>) -> crate::ForwardPassEstimate {
@@ -2548,7 +2618,8 @@ fn prepare_learned_iteration(
         return Err(AicError::InvalidForwardPassMetrics(
             "learned artifact uses per-request features but the iteration carries no aligned, \
              consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
-             per-request FPM hooks (aisimulate_core.fpm_hooks) or train with --features v1"
+             per-request FPM hooks (aisimulate_core.fpm_hooks) or retrain with the default \
+             aggregate --features fpm5 (or v1)"
                 .to_string(),
         ));
     }
@@ -2659,6 +2730,10 @@ impl IterationFeatures {
         Some(feature)
     }
 
+    // TODO: Weigh prefill and decode work by their cost. This score adds
+    // prefill tokens and decode KV tokens one for one, although computing a
+    // prefill token costs far more than reading a KV token, so the rank whose
+    // correction an iteration takes may not be the one that sets its time.
     fn load_score(&self) -> f64 {
         self.x.iter().sum()
     }

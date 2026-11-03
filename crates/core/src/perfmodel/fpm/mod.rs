@@ -64,6 +64,8 @@ pub use learned::LEARNED_SCHEMA_VERSION;
 pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
+#[cfg(feature = "python")]
+pub(crate) use model::NativeIterationEstimate;
 pub use model::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
     ForwardPassDeploymentTopology, ForwardPassPerfDiagnostics, ForwardPassPerfModel,

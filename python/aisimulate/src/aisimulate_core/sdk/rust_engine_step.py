@@ -114,7 +114,10 @@ class ForwardPassPerfModelConfig:
     ``sampling.axes`` selects 1 to 6 retention coordinates; its length must
     match ``sampling.bins_per_axis``. The defaults remain attention/MoE,
     ``[4, 4]`` bins, and 64 retained observations per store. Independent
-    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates. Omitted
+    ``fit.linear.feature_axes`` selects 1 to 6 fitted coordinates; alternatively,
+    ``fit.linear.feature_set="fpm5"`` fits the 17 cross-rank aggregates of the
+    learned ``fpm5`` preset from scalar counters (it needs
+    ``sampling.max_observations >= 18`` and default ``feature_axes``). Omitted
     ``fit.linear`` retains the existing attention/MoE fit, nonnegative slopes,
     and eager updates. ``fit.linear.non_negative=False`` permits signed slopes.
     ``fit.linear.update_policy`` accepts ``{"kind": "always"}`` or an explicit
@@ -754,9 +757,13 @@ class RustForwardPassPerfModel:
         decode request count; its total past KV is preserved. This works with
         interpolation, regression and learned FPMs, without a draft checkpoint
         or algorithm selection. Missing STP support/readiness still fails or
-        returns ``None``. Prefill/mixed work and already-speculative estimators
-        are rejected. Omit the argument for STP. Calibration covered d=1..4;
-        other depths are extrapolation. Tuning continues to consume STP data.
+        returns ``None``. Ranks that schedule fresh prefill tokens and
+        already-speculative estimators are rejected; a fully prefix-cached
+        prefill record is decode-only. A measured speculative-round profile
+        already includes speculative decoding, so query it without
+        ``draft_length``. Omit the argument for STP. Calibration covered
+        d=1..4; other depths are extrapolation. Tuning continues to consume
+        STP data.
         """
         if draft_length is not None:
             return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics), draft_length=draft_length)
@@ -769,7 +776,10 @@ class RustForwardPassPerfModel:
 
         Measurement weights explain raw lookups. ``ranks`` records mixed-pass
         subtraction and ``max_rank`` identifies the native rank maximum, before
-        ``correction_factor``. Other estimators have no direct lookup evidence.
+        ``correction_factor``. Operation graphs record each rank's name-folded
+        ``operations`` (the ``static_phase_diagnostics`` fields), which sum to
+        the rank's uncorrected latency. Learned and regression estimators have
+        no rank evidence.
 
         With ``draft_length``, return the estimated SD ``latency_ms``, the
         ``draft_length`` and ``scaling_factor``, and the original detailed

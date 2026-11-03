@@ -44,7 +44,10 @@ CODEOWNERS integrity, lint, syntax compilation, whitespace, and Rust formatting.
 Full CI contains the expensive multi-architecture dependency, Rust, Python,
 public-API, feature-mode, engine-golden, platform-wheel, collector-data,
 prediction-regression, build, and release-artifact tests. The FPE support
-matrix remains a scheduled/manual product-support audit rather than a PR gate.
+matrix remains a scheduled/manual product-support audit. Full CI's support-matrix
+shard also exercises the required nightly FPE sentinels against its prebuilt wheel,
+including all four phases and the release qualifier, to catch stale baselines and
+native probe regressions before merge.
 `Full CI Success` is required for every admitted PR, but trusted
 `pull-request/*` copies select only the components affected by the pull
 request's complete changed-file set. Renames classify both the old and new

@@ -10,14 +10,16 @@ import json
 import math
 import re
 from collections.abc import Mapping
+from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from uuid import uuid4
 
 import plotly
 from plotly.offline import get_plotlyjs
 
 _STREAMS = ("requests", "samples", "lifecycle")
+_REQUEST_CHUNK = 1024
 _UNITS = {
     "timestamps": "ms",
     "durations": "ms",
@@ -223,6 +225,18 @@ def build_replay_dashboard_data(
     config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Adapt native observations without inventing missing metrics or durations."""
+    data = _dashboard_data(prediction, telemetry, config=config)
+    data["requests"] = list(data["requests"])
+    return data
+
+
+def _dashboard_data(
+    prediction: Mapping[str, Any],
+    telemetry: Mapping[str, Any],
+    *,
+    config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    # Requests are compacted lazily, so the writer never holds every compact row.
     prediction = _mapping(prediction, "prediction")
     prediction = {**prediction, **_mapping(prediction.get("summary", {}), "prediction.summary")}
     telemetry = _mapping(telemetry, "telemetry")
@@ -258,11 +272,15 @@ def build_replay_dashboard_data(
             raise ValueError("agentic_profile.admission_cutoff_ms precedes profile start")
         phases["profile"]["admission_cutoff_ms"] = cutoff
     engine = _mapping(_mapping(config or {}, "config").get("engine", {}), "config.engine")
-    requests = [_request(row) for row in streams["requests"]]
-    pools = {item.get("pool") for row in requests for item in row["routing_history"]}
     topology = engine.get("mode", prediction.get("deployment_mode"))
-    if topology is None and pools:
-        topology = "aggregated" if pools == {"agg"} else "disaggregated" if pools <= {"prefill", "decode"} else None
+    if topology is None:
+        pools = {
+            item.get("pool")
+            for row in streams["requests"]
+            for item in _rows(row.get("routing_history", []), "request.routing_history")
+        }
+        if pools:
+            topology = "aggregated" if pools == {"agg"} else "disaggregated" if pools <= {"prefill", "decode"} else None
     lifecycle = []
     for row in streams["lifecycle"]:
         _number(row.get("at_ms"), "lifecycle.at_ms", required=True)
@@ -302,7 +320,7 @@ def build_replay_dashboard_data(
         "prediction": summary,
         "telemetry": manifest,
         "phases": phases,
-        "requests": requests,
+        "requests": map(_request, streams["requests"]),
         "samples": [_sample(row, aggregated=topology in {"agg", "aggregated"}) for row in streams["samples"]],
         "lifecycle": lifecycle,
     }
@@ -317,6 +335,26 @@ def _script_json(value: Any) -> str:
     )
 
 
+def _write_script_json(out: TextIO, data: Mapping[str, Any]) -> None:
+    """Write _script_json(data), encoding the requests a chunk at a time."""
+    out.write("{")
+    for index, key in enumerate(sorted(data)):
+        out.write(f"{',' if index else ''}{_script_json(key)}:")
+        if key != "requests":
+            out.write(_script_json(data[key]))
+            continue
+        out.write("[")
+        rows = iter(data[key])
+        separator = ""
+        while chunk := list(islice(rows, _REQUEST_CHUNK)):
+            # Each chunk encodes as a JSON array; drop its brackets to join the chunks.
+            out.write(separator)
+            out.write(_script_json(chunk)[1:-1])
+            separator = ","
+        out.write("]")
+    out.write("}")
+
+
 def write_replay_dashboard(
     root: Path,
     prediction: Mapping[str, Any],
@@ -325,21 +363,19 @@ def write_replay_dashboard(
     config: Mapping[str, Any] | None = None,
 ) -> Path:
     """Write report.html atomically; no network or additional data files are needed."""
-    payload = _script_json(build_replay_dashboard_data(prediction, telemetry, config=config))
+    data = _dashboard_data(prediction, telemetry, config=config)
     assets = Path(__file__).parent
     template = (assets / "dashboard.html").read_text(encoding="utf-8")
     replacements = {
-        "__REPORT_DATA_JSON__": payload,
         "__PLOTLY_JS__": get_plotlyjs(),
         "__PLOTLY_LICENSE__": html.escape((assets / "plotly-js-LICENSE.txt").read_text(encoding="utf-8")),
     }
-    for token in replacements:
+    tokens = ("__REPORT_DATA_JSON__", *replacements)
+    for token in tokens:
         if template.count(token) != 1:
             raise ValueError(f"Expected exactly one {token} in dashboard template")
-    # Replace template tokens in one pass, never tokens inside request text.
-    document = re.sub(
-        "|".join(re.escape(token) for token in replacements), lambda match: replacements[match[0]], template
-    )
+    # Split at template tokens once, never tokens inside request text.
+    pieces = re.split(f"({'|'.join(re.escape(token) for token in tokens)})", template)
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -348,7 +384,11 @@ def write_replay_dashboard(
         # Exclusive creation honors the caller's umask, as other replay outputs do.
         with candidate.open("x", encoding="utf-8") as out:
             temporary = candidate
-            out.write(document)
+            for piece in pieces:
+                if piece == "__REPORT_DATA_JSON__":
+                    _write_script_json(out, data)
+                else:
+                    out.write(replacements.get(piece, piece))
         target = root / "report.html"
         temporary.replace(target)
         return target

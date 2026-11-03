@@ -46,6 +46,35 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Per-iteration queries
+
+`estimate_forward_pass_time_ms(metrics_by_rank)` prices one iteration from its
+per-attention-DP-rank `ForwardPassMetrics` list. Every estimator handles that
+list itself: native models price each rank and take the maximum, correction
+uses the heaviest rank, and regression and learned models use joint cross-rank
+features. A rank is prefill work only when it schedules fresh prefill tokens
+(`sum_prefill_tokens > 0`) and decode work when it schedules decode requests.
+
+`estimate_forward_pass_detailed(metrics_by_rank)` returns the same latency with
+its composition. Native estimators record one `ranks` entry per input rank, with
+its uncorrected `latency_ms` (an iteration that schedules no work on any rank
+returns no entries); `max_rank`, `native_latency_ms` and
+`correction_factor` explain the reduction. Whole-model FPM ranks carry their
+direct lookups in `queries` (see [Direct FPM query evidence](api/python.md#direct-fpm-query-evidence)).
+Operation-graph ranks (op-level models and DeepSeek-V4.1 stage graphs) carry
+`operations` instead: name-folded entries with `name`, `latency_ms`,
+`energy_wms`, `source` and `details` (SOL comparison or its unavailable reason,
+and executed measurement substitutions), the same type as
+[static phase diagnostics](api/python.md#static-phase-diagnostics). A
+prefill-only or decode-only rank reports the operations of that phase at the
+rank's shape. A mixed rank folds every operation that its composition prices:
+the combined non-attention pass, context attention at the prefill shape and
+decode attention at the decode shape. A stage-graph rank reports the stage
+children that it prices. Each rank's entries sum to its latency, before online
+correction; reporting them does not change any estimate. The field is additive,
+omitted when empty, and absent for whole-model FPM. Learned and regression
+estimators have no rank entries.
+
 ### Engine identity controls
 
 Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
@@ -197,8 +226,11 @@ KV length `s`, use `num_decode_requests = B*v` and
 `sum_decode_kv_tokens = B*v*s`. Their ratio remains `s`; the query does not apply
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
-configured verification width internally. This OP telemetry convention is
-distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+configured verification width internally. Here `s` is the attention length
+including the current token: static decode evaluates one step at
+`input_tokens + 1`, so `static_phase_latency(batch_size=B, input_tokens=s-1,
+output_tokens=2, prefill=False)` prices the same step as the packed counters.
+This OP telemetry convention is distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
 that per-query `draft_length` option takes logical decode request counts and
 total past KV, widens the former and preserves the latter.
 
@@ -212,6 +244,20 @@ STP FPM can estimate pure speculative decode via the query-only `draft_length`
 option without setting `speculation` or `nextn`. Explicit measured
 [speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
 have their own identity contract.
+
+The two FPM speculative paths keep separate query rules:
+
+- **Path 1** scales an ordinary STP FPM estimate by the empirical
+  `draft_length` formula and accepts decode-only ranks. As in every rank
+  dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+  (`sum_prefill_tokens > 0`). A fully prefix-cached prefill record is therefore
+  decode-only.
+- **Path 2**, a measured end-to-end SD-round profile, rejects `draft_length`
+  because its measurements already include speculative decoding: "a measured
+  speculative-round profile already includes speculative decoding; omit
+  draft_length". Without the option it prices one attention-DP rank. A mixed
+  rank costs its measured prefill plus a full measured decode round, not a
+  marginal decode share, because the measured rounds have no pass baseline.
 
 The legacy hybrid route, `forward_model="fpm"` with materialized OP draft
 operations, is deprecated and emits a construction warning. Existing hybrid
@@ -251,10 +297,12 @@ fields report their nested paths. The supported namespaces are:
   The default fit kind is `standardized_nnls` (also accepted as `linear`),
   with a free intercept and nonnegative slopes. `spline` selects an additive
   piecewise-linear fit with learned knots and nonnegative segment slopes.
-  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates;
+  Optional `fit.linear` controls fitted axes, signed slopes, and lazy updates,
+  or opts into the `fpm5` aggregate feature set described below;
   omission preserves the existing linear behavior and serialized defaults.
   `singular_ridge_scale` defaults to `1e-9` and applies to the shared linear
-  fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
+  fit only when retrying a singular equation; the `fpm5` fit always applies it
+  to its slopes. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
   rebuilding after that many retained-sample mutations.
 - `fpm_learned`: explicit forest or checkpoint source, adaptation mode, and
@@ -390,6 +438,32 @@ dynamic `log1p` retention coordinates and fits standardized feature values. Corr
 one-dimensional prefill grid uses the product of the two axis counts. Its coordinate
 transform and bounds depend on the policy below. Balanced retention evicts the oldest
 sample from the most populated cell when the store exceeds its budget.
+
+| Regression linear fit field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.fpm_regression.fit.linear` | Absent | Absent keeps the existing attention/MoE fit with nonnegative slopes and eager updates. Rejected with `fit.kind: spline`. |
+| `estimator_config.fpm_regression.fit.linear.feature_axes` | `[attention, moe]` | One to six distinct fitted coordinates, independent of `sampling.axes`. |
+| `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
+| `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
+| `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
+
+`feature_set: fpm5` fits the same named aggregates as the learned
+`--features fpm5` preset: active-rank, request and token counts and sums,
+per-rank maxima, means, the balanced-partition prefill attention proxy, and
+their `log1p` forms. It needs only the scalar scheduled counters, not request
+lists. Each fit refits the retained rows of its store with nonnegative least
+squares (or signed least squares) on standardized features, always adding
+`singular_ridge_scale` to the slopes. Constant features and exact duplicates,
+such as `max_rank_*` with one attention-DP rank, are inactive. A store becomes
+ready only with at least `max(min_observations, active features + 1)` retained
+observations; until then the readiness report gives `insufficient_data` below
+`min_observations` and `no_usable_fit` above it. Once ready, a store keeps
+serving its last fit when a refit cannot produce a usable one, for example when
+multi-rank traffic first activates more aggregates than it has retained rows.
+`sampling.axes` still selects
+retention coordinates, and `update_policy` and `non_negative` keep their
+meaning. `rebuild_interval` has no effect because every fit already uses the
+exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).
 
 | Correction field | Default | Behavior |
 | --- | --- | --- |
@@ -563,16 +637,10 @@ placeholder identity `model: from_learned`, `system: from_learned`,
 `deployment_topology()` returns `None`.
 
 Engine replay restores a snapshot named by its AIC timing configuration like
-any other `best_available` call. It prices prefill and decode phases with the
-native engine and applies the saved online correction, the same with and
-without `capture_performance_diagnostics`. A pass that computes only prefill
-or only decode takes that phase's correction. With whole-model FPM
-interpolation, a vLLM or TensorRT-LLM pass that computes both runs as one
-forward and takes the correction of that mixed iteration. Where replay prices
-the phases of a pass separately, as for MTP drafts or operation-level timing,
-each takes its pure correction. Replay times each rank alone, so cross-rank
-corrections never apply. Operation evidence and its energy scale with the
-correction, so reported power is unchanged.
+any other `best_available` call. Its saved online correction applies through
+[engine replay timing](#engine-replay-timing) as in any other estimate, the
+same with and without `capture_performance_diagnostics`. Operation evidence
+and its energy scale with the correction, so reported power is unchanged.
 
 Gates for replaying a saved model read the snapshot without loading it.
 `RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
@@ -597,6 +665,91 @@ empty list means the launch accepts the combination. Launch arguments that are
 invalid on their own, such as `dp_size: 0` or `gpu_memory_utilization: 2.0`,
 raise with the launch's own message instead. The Rust equivalent is
 `EngineLaunchConfig::timing_config_mismatches`.
+
+### Engine replay timing
+
+Engine replay prices each forward pass of a worker with one
+`estimate_forward_pass_time_ms()` query, or `estimate_forward_pass_detailed()`
+when it needs rank evidence, holding one `ForwardPassMetrics` per attention-DP
+rank, idle ranks included. Every rank of the worker ends at the shared time
+from its own compute start. An online correction applies as in any other
+estimate: the correction of the heaviest rank's workload multiplies the
+slowest rank's native time. A one-rank pass that computes only prefill or only
+decode takes that phase's correction; a vLLM or TensorRT-LLM rank that computes
+both runs as one forward and takes the correction of that mixed iteration.
+
+Replay prices a pass this way only while `decode_speedup_ratio` is 1, its
+default and the only value MTP (`nextn > 0`) accepts: the shared time then
+takes `speedup_ratio` whatever work it holds. With another decode speedup,
+each rank prices its own phases, prefill at `speedup_ratio` and decode at
+`speedup_ratio * decode_speedup_ratio`, and the pass ends with the slowest
+rank, exactly as before the canonical query. A pass on which no rank computes
+model work is never sent to the model and its forward takes no time, so a
+scheduler round without model work, such as an SGLang prefill-decode interval
+round, keeps its zero duration.
+
+Replay fills each rank's metrics in the selected estimator's convention.
+Prefill always passes the scheduled totals. Whole-model FPM reads decode past
+KV, excluding each request's current token and clamped to the scheduler's KV
+bound. Operation-level timing reads packed decode counters: `B*v` requests at
+`s` tokens each, where `s` is the mean context including the current token and
+`v` the configured verification width. A tuned operation-level model therefore
+looks up a decode pass's online correction at `(B*v, B*v*s)`, where per-rank
+phase timing looked it up at `B` requests and their past KV tokens.
+
+Against the former per-rank phase timing, the canonical query changes these
+results: an operation-level vLLM or TensorRT-LLM pass that computes prefill and
+decode is the model's mix step instead of a prefill pass followed by a separate
+decode pass; operation-level prefill reads the per-request means `new / B` and
+`prefix / B` instead of `(new + prefix) / B - prefix / B`; a tuned
+operation-level model corrects decode at the packed coordinates above; with
+attention DP, the correction comes from the heaviest rank and applies to the
+slowest rank's time; and a worker's pass ends at the latest rank compute start
+plus the shared time. A one-rank pure prefill or pure decode pass whose prefix
+tokens divide evenly across its requests keeps its previous latency and
+evidence on whole-model FPM, and on an operation-level model without online
+corrections.
+
+A measured SD-round profile prices exactly one rank. A rank that computes
+prefill and decode costs the measured prefill plus a full decode round. Without
+online corrections that is the total of the former separate prefill and decode
+passes; a tuned model applies the correction of that mixed iteration to the
+whole forward, where the separate passes each took their own phase's
+correction.
+
+Operation-level power evidence comes from the same detailed estimate: the
+`operations` of every rank with work, stretched by the pass's correction like
+its latency, so a pass's energy sums over its ranks as it did when each rank
+priced its own phases. A rank's evidence is the work that the query priced, so
+a mixed rank reports its mix step's operations rather than separate static
+prefill and decode phases. A rank with one kind of work is recorded with that
+phase. A mixed rank is attributed by mix-step pass: context-attention
+operations are prefill, decode-attention operations decode, and each operation
+of the shared non-attention pass splits by the rank's token share,
+`ctx_tokens / (ctx_tokens + gen_tokens)` prefill, with `ctx_tokens` the
+scheduled prefill tokens and `gen_tokens` the packed decode requests. When name
+folding would merge operations of different passes, as for GLM-5.3 attention,
+or the graph composes a mixed rank otherwise, as DeepSeek-V4.1 stages do, the
+whole rank splits by that token share. A split scales an operation's latency,
+energy and SOL alike, so its power and the rank's totals are unchanged.
+Operation details such as SOL are kept only while
+`capture_performance_diagnostics` is set, as for phase evidence.
+
+Captured whole-model FPM evidence records the estimate of every rank with
+work, at its own queries and native latency under the pass's correction, as
+each rank recorded its own estimate under per-rank phase timing; a rank that
+computes prefill and decode is reported with decode.
+
+Replay keeps per-rank phase timing, each rank pricing its own phases and the
+pass ending with the slowest rank, for a `decode_speedup_ratio` other than 1,
+bounded decoder replay, v1 execution profiles, hybrid speculative FPM
+(operation-level draft tails, or `nextn > 0` without a measured SD-round
+profile), a measured SD-round profile with attention DP above one, a scheduler
+whose speculative depth differs from the model's, an operation graph whose
+measured scopes cannot compose a mix step when a rank computes prefill and
+decode, and totals beyond the query's 32-bit counters. Lookup coverage
+collection counts every pass, so replay does not reuse a priced iteration while
+it is enabled.
 
 ## Unified CLI timing fields
 

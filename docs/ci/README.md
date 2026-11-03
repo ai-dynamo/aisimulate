@@ -335,6 +335,16 @@ table are relative to `python/aisimulate/` unless marked repository-root.
 | `support-matrix` | Build-marked `tests/e2e/support_matrix/` | One job, pytest automatic worker count |
 | `tools-build` | Build-marked `tests/e2e/tools/`; installed FPM verification reuses the wheel | One job, pytest automatic worker count |
 
+The `support-matrix` shard includes the required native FPE probes from
+`.github/fpe-required-probes.json`. Resolved identities must be unique under the
+nightly qualifier's identity fields. Each identity must exist in the live matrix
+inventory and have a topology passing prefill, decode start, decode end, and
+mixed probes through the same qualifier used by nightly. These tests reuse the
+application wheel and keep all topologies for the small sentinel set; the full
+model/system/backend matrix remains in nightly. The tests resolve each selector
+through the installed wheel's current version policy using nightly's discovery
+helper, so version-policy changes are exercised before release.
+
 Unit and CLI groups use pytest-split's `least_duration` partitioning. Every
 group is scheduled when application tests are selected. Integration coverage
 includes configuration-adapter estimates, memory estimation, configuration
