@@ -326,8 +326,8 @@ async def check():
                     "aggregate result across the benchmark\u2019s conversation requests"
                 )
                 await expect(tooltip).to_contain_text("compare requests individually, then average their errors")
-                await expect(tooltip).to_contain_text("Tool-call waits contribute to workload duration and throughput")
-                await expect(tooltip).to_contain_text("current TTFT/TPOT averages use request timings")
+                await expect(tooltip).to_contain_text("Tool-call waits are excluded from TTFT/TPOT calculations")
+                await expect(tooltip).to_contain_text("over- and under-predictions cancel when averaged")
                 await tooltip.hover()
                 await expect(tooltip).to_be_visible()
                 await page.mouse.move(5, 5)
