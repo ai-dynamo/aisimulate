@@ -312,56 +312,33 @@ def pred_executor_smoked(p):
     return True, f"{len(ops)} planned ops finalized through collect.py; {n_out} registry ops recorded not_in_plan"
 
 
-def _case_inventory_module():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("case_inventory_wc", HERE / "case_inventory.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def pred_case_set_no_regression(p):
-    """The collector's test-case inventory for (fw, version, sm) exists
-    (components/case_inventory.py, CPU in the framework image) and, against
-    the newest older-version inventory of the same (fw, sm), loses no op, no
-    plan membership, no case count and no categorical value — unless an
-    owner-signed waiver next to it names the loss. The first inventory of a
-    (fw, sm) is the baseline and passes. Case-set regressions are derivable
-    before any collection: job 469988017 lost paged_mqa (op out of plan), the
-    V4-Pro topk calibration (getter default drop) and the sglang
-    mla_context_module table (no producer) — all visible here."""
+    """The collector's case plan for (fw, sm) was recorded and diffed against a
+    base revision (components/case_inventory.py, CPU only): no op left the plan
+    and no case or categorical value left it without a collector/skips.py entry
+    accounting for it. Case-set regressions are derivable before any
+    collection: job 469988017 lost paged_mqa (op out of plan), the V4-Pro topk
+    calibration (a getter's drop) and the sglang mla_context_module table (no
+    producer) — all visible in a plan diff."""
     sm = p.get("sm", "sm90")
-    ci = _case_inventory_module()
-    inv = ci.inventory_path(sm, p["fw"], p["version"])
-    inv = HARNESS / inv.relative_to(ci.HARNESS) if ci.HARNESS != HARNESS else inv
+    inv = HARNESS / "results" / sm / "cases" / f"{p['fw']}-{p['version']}.yaml"
     if not inv.exists():
-        return False, f"no case inventory ({inv.relative_to(HARNESS)}) — run components/case_inventory.py in the image"
-    new = yaml.safe_load(inv.read_text()) or {}
-    meta = new.get("_meta") or {}
+        return False, f"no case plan ({inv.relative_to(HARNESS)}) — run components/case_inventory.py --base <rev>"
+    doc = yaml.safe_load(inv.read_text()) or {}
+    meta = doc.get("_meta") or {}
     if meta.get("framework") != p["fw"] or str(meta.get("version")) != str(p["version"]):
-        return False, "case inventory is for another framework/version"
-    errors = sorted(op for op, r in (new.get("ops") or {}).items() if r.get("error"))
-    if errors:
-        return False, f"{len(errors)} getters failed to enumerate (e.g. {errors[0]})"
-    cands = []
-    for q in inv.parent.glob(f"{p['fw']}-*.yaml"):
-        if q.name.endswith(".waivers.yaml") or q == inv:
-            continue
-        v = q.stem[len(p["fw"]) + 1 :]
-        if ci._version_key(v) < ci._version_key(str(p["version"])):
-            cands.append((ci._version_key(v), q))
-    if not cands:
-        return True, f"first case inventory for {p['fw']} on {sm} ({meta.get('cases_total')} cases) — baseline"
-    prev_path = max(cands)[1]
-    wv = inv.with_name(inv.stem + ".waivers.yaml")
-    d = ci.diff_inventories(
-        yaml.safe_load(prev_path.read_text()) or {}, new, yaml.safe_load(wv.read_text()) if wv.exists() else None
-    )
-    if d["regressions"]:
-        return False, f"{len(d['regressions'])} case-set regressions vs {prev_path.name} — {d['regressions'][0]}"
+        return False, "case plan is for another framework/version"
+    if meta.get("dirty"):
+        return False, f"case plan was recorded from an uncommitted collector at {meta.get('revision')}"
+    if "diff" not in doc:
+        return False, "case plan has no diff against a base revision (recorded with --base none)"
+    d = doc["diff"]
+    base = (meta.get("base") or {}).get("rev")
+    if d.get("regressions"):
+        return False, f"{len(d['regressions'])} case-set regressions vs {base} — {d['regressions'][0]}"
     return True, (
-        f"no case-set regression vs {prev_path.name} ({len(d['additions'])} additions, {len(d['waived'])} waived)"
+        f"no case-set regression vs {base} ({len(d.get('additions') or [])} additions, "
+        f"{len(d.get('explained') or [])} losses under skips.py)"
     )
 
 
@@ -441,7 +418,7 @@ def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
 # against the registry, not against whatever the script happens to declare.
 _OP_GATE_FAMILIES = {
     "gemm": [r"^gemm_"],
-    "compute_scale": None,  # governed approximation (collector/evidence_exceptions.yaml), no serving instance to gate
+    "compute_scale": None,  # deviation note in collector/vllm/collect_computescale.py; no serving instance to gate
     "attention_context": [r"^attn\w*_ctx"],
     "attention_generation": [r"^attn\w*_gen"],
     "encoder_attention": [r"^encoder_attn"],

@@ -1,39 +1,45 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Single-cell capture: sglang DSA context, fp8-KV, seq_len 512 (batch 1).
+"""sglang DSA module capture, FP8 KV, CONTEXT, short-isl regime (batch 1, seq 512, prefix 0):
+the dense path below the sparse threshold. Not graded until an isl-512 FP8-KV serving probe
+exists on the pinned release (verdicts_sgl_0521.sh)."""
 
-A whole-sweep capture is a UNION of length-conditional paths (short cells run
-dense FA3, long cells the indexer + sparse kernels) and can only be compared
-with a serving record that also unions them — none does. Capture ONE cell at
-the probe's isl instead (same lesson as trtllm attention decode, 2026-09-24).
-The sweep spec is a frozen dataclass; replace it on both import sites."""
-
-import dataclasses
 import sys
+from pathlib import Path
 
 sys.argv = ["x"]
-import collector.case_generator as cg
-import collector.sglang.collect_mla_module as m
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # components/: op_smoke.planned_row
+from collector.helper import get_sm_version
+from collector.sglang.collect_mla_module import run_mla_module
+from op_smoke import planned_row
 
-SEQ = 512
-_orig = cg.get_mla_module_sweep_spec
-
-
-def _one_cell(backend=None):
-    return dataclasses.replace(_orig(backend), context_sequence_lengths=[SEQ])
-
-
-cg.get_mla_module_sweep_spec = _one_cell
-m.get_mla_module_sweep_spec = _one_cell
-m.run_mla_module(
-    "dsa",
-    128,
-    "deepseek-ai/DeepSeek-V3.2",
-    "fp8",
-    "bfloat16",
-    "fp8_block",
+# The plan row run_mla_module_worker receives, for this one cell on this SM (the FP8-KV
+# backend the plan pins differs between Hopper and Blackwell).
+_seq, _batch, heads, kv, compute, gemm, model, attn_type, backend, tp, prefill_backend, points = planned_row(
+    "sglang",
+    "dsa_context_module",
+    get_sm_version(),
+    model_path="deepseek-ai/DeepSeek-V3.2",
+    compute_dtype="bfloat16",
+    gemm_type="fp8_block",
+    num_heads=128,
+    batch_size=1,
+    kv_cache_dtype="fp8",
+    seq_len=512,
+    prefix_len=0,
+)
+run_mla_module(
+    attn_type,
+    heads,
+    model,
+    kv,
+    compute,
+    gemm,
     is_prefill=True,
     gpu_id=0,
     output_path="/tmp",
-    batch_size_filter=1,
+    attention_backend=backend,
+    target_tp_size=tp,
+    dsa_prefill_backend=prefill_backend,
+    points=points,
 )

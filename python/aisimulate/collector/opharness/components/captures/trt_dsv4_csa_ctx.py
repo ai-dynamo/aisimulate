@@ -1,24 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+"""trtllm DSV4 CSA context capture: one planned cell at the serving record's isl (DeepSeek-V4-Flash,
+FP8 checkpoint -> fp8_block projection GEMMs, TP1, batch 1, 4096 tokens, prefix 0). The TRT-LLM DSV4
+collector runs in-process; the plan's row carries the FP8 KV cache, which collect_dsv4_attn serves as the
+packed fp8_ds_mla pool on SM90 and as the plain FP8 pool elsewhere, as serving does."""
+
+import runpy
 import sys
+from pathlib import Path
 
-sys.argv = ["x"]
-# trtllm DSV4 module collector: one shape = one row, in-process; mode comes from the perf filename
-# (collect_dsv4_attn.run_dsv4_attn_worker). Serving record cell: isl 4096, kv auto (Hopper DSV4 = fp8_ds_mla pool; on
-# SM100 rc29 cannot serve fp8_ds_mla and kv auto resolves to the bf16 DeepseekV4CacheManager pool -> the sm100 lane is
-# 'bf16', B200 2026-10-04), FP8 checkpoint -> fp8_block projection GEMMs, prefix 0.
-from collector.trtllm.collect_dsv4_attn import _serving_kv_cache_dtype, run_dsv4_attn_worker
-
-run_dsv4_attn_worker(
-    4096,
-    1,
-    1,
-    _serving_kv_cache_dtype(),
-    "bfloat16",
-    "fp8_block",
-    "sgl-project/DeepSeek-V4-Flash-FP8",
-    "csa",
-    0,
-    perf_filename="/tmp/dsv4_csa_context_perf.txt",
-    device="cuda:0",
-)
+sys.argv = [
+    "op_smoke.py",
+    "--backend",
+    "trtllm",
+    "--op",
+    "dsv4_csa_context_module",
+    "--select",
+    "model_path=sgl-project/DeepSeek-V4-Flash-FP8,seq_len=4096,batch_size=1,tp_size=1,gemm_type=fp8_block,prefix_len=0",
+    "--out-dir",
+    "/tmp/smk",
+]
+runpy.run_path(str(Path(__file__).resolve().parents[1] / "op_smoke.py"), run_name="__main__")

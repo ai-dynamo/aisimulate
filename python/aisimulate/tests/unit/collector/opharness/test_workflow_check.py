@@ -302,31 +302,25 @@ def test_lane_guards_predicate_uses_the_committed_rules_against_scratch_results(
     assert ok is True and "no lane guards declared" in reason
 
 
-def test_case_set_no_regression_baseline_then_regression_then_waiver(wc):
+def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):
     p = {"fw": "sglang", "version": "0.5.21", "sm": "sm100"}
     ok, reason = wc.pred_case_set_no_regression(p)
-    assert ok is False and "no case inventory" in reason
+    assert ok is False and "no case plan" in reason
     d = wc.HARNESS / "results" / "sm100" / "cases"
     d.mkdir(parents=True)
-    new = {
-        "_meta": {"framework": "sglang", "version": "0.5.21", "cases_total": 10},
-        "ops": {"gemm": {"in_plan": True, "cases": 10, "fields": {}}},
-    }
-    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(new))
+    doc = {"_meta": {"framework": "sglang", "version": "0.5.21", "revision": "abc", "dirty": False}, "ops": {}}
+    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     ok, reason = wc.pred_case_set_no_regression(p)
-    assert ok is True and "baseline" in reason
-    prev = {
-        "_meta": {"framework": "sglang", "version": "0.5.17"},
-        "ops": {
-            "gemm": {"in_plan": True, "cases": 10, "fields": {}},
-            "dsv4_paged_mqa_logits_module": {"in_plan": True, "cases": 22, "fields": {}},
-        },
-    }
-    (d / "sglang-0.5.17.yaml").write_text(yaml.safe_dump(prev))
+    assert ok is False and "no diff" in reason
+    doc["_meta"]["base"] = {"rev": "upstream/main"}
+    doc["diff"] = {"regressions": ["dsv4_paged_mqa_logits_module: op left the plan"], "explained": [], "additions": []}
+    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     ok, reason = wc.pred_case_set_no_regression(p)
     assert ok is False and "paged_mqa" in reason
-    (d / "sglang-0.5.21.waivers.yaml").write_text(
-        yaml.safe_dump({"ops": {"dsv4_paged_mqa_logits_module": "owner: moved to a targeted shard"}})
-    )
+    doc["diff"] = {"regressions": [], "explained": ["moe: cases 10 -> 8, skips.py ['dtype=nvfp4']"], "additions": []}
+    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     ok, reason = wc.pred_case_set_no_regression(p)
-    assert ok is True and "1 waived" in reason
+    assert ok is True and "1 losses under skips.py" in reason
+    doc["_meta"]["dirty"] = True
+    (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
+    assert wc.pred_case_set_no_regression(p)[0] is False

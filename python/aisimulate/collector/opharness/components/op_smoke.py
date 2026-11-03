@@ -29,6 +29,13 @@ Runs INSIDE the framework container (same interpreter as the collector):
   PYTHONPATH=/ws python3 op_smoke.py --backend vllm --op compute_scale
   PYTHONPATH=/ws python3 op_smoke.py --backend vllm --op mla_bmm_gen_pre \
       --module collector.vllm.collect_mla_bmm_029 --cases 2
+  PYTHONPATH=/ws python3 op_smoke.py --backend trtllm --op dsv4_hca_context_module \
+      --select model_path=sgl-project/DeepSeek-V4-Flash-FP8,seq_len=4096,batch_size=1,tp_size=1,\
+gemm_type=fp8_block,prefix_len=0
+
+--select names one case of the op plan (collector/op_plans.py) by its fields and
+runs the row the collector queues for it on this SM, so a capture's cell is a
+planned case by construction (planned_row()).
 
 The one law applies: a case runs or the component raises — no skip, no
 substitute, no catch-and-continue.
@@ -41,6 +48,45 @@ import importlib
 import sys
 from inspect import signature
 from pathlib import Path
+
+
+def planned_row(backend: str, op: str, sm_version: int | None, **select):
+    """The run arguments the collector queues for the ONE planned case whose fields equal ``select``.
+
+    The case comes from the op plan (collector/op_plans.plan: the shared cases minus
+    collector/skips.py for this backend and SM) and its row from the plan's own rows /
+    batch_rows, restricted to that case: a batch row then times exactly that point, and
+    everything the plan decides per SM (a pinned dispatch, a KV pool) is what a
+    collection would run. A select that matches no planned case, or several, raises:
+    a capture must name a cell the collector actually measures.
+    """
+    import dataclasses
+
+    from collector.op_plans import plan
+
+    op_plan = plan(op, backend, sm_version)
+    picked = [
+        i
+        for i, case in enumerate(op_plan.cases)
+        if all(str(getattr(case, field)) == str(value) for field, value in select.items())
+    ]
+    if len(picked) != 1:
+        raise SystemExit(f"{backend} {op} sm{sm_version}: select {select} matches {len(picked)} planned cases, want 1")
+    i = picked[0]
+    one = dataclasses.replace(
+        op_plan, cases=[op_plan.cases[i]], dispatches=op_plan.dispatches[i : i + 1] if op_plan.dispatches else []
+    )
+    rows = one.rows
+    if len(rows) != 1:
+        raise SystemExit(f"{backend} {op}: the planned case {op_plan.cases[i]} runs as {len(rows)} rows, want 1")
+    return rows[0]
+
+
+def _parse_select(text: str) -> dict:
+    pairs = [item.split("=", 1) for item in text.split(",") if item.strip()]
+    if any(len(pair) != 2 for pair in pairs):
+        raise SystemExit(f"--select takes field=value pairs, got {text!r}")
+    return {field.strip(): value.strip() for field, value in pairs}
 
 
 def _get_cases(get_func, model_path: str | None):
@@ -78,6 +124,12 @@ def main() -> int:
         help="literal prefix of str(case) (commas allowed, no splitting): pins the leading "
         'shape fields exactly, e.g. "[1, 4096, 32, 8, 128, 0, False, False, True"',
     )
+    ap.add_argument(
+        "--select",
+        default=None,
+        help="field=value pairs naming ONE planned case of the op (its op-plan case fields); runs the row "
+        "the collector queues for it on this SM (AIS_SM overrides the device)",
+    )
     ap.add_argument("--model-path", default=None, help="forwarded to get_func when it accepts model_path")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--out-dir", default=".", help="directory for the perf file (registry filename)")
@@ -102,7 +154,12 @@ def main() -> int:
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     perf_path = str(Path(args.out_dir) / str(entry.perf_filename))
 
-    cases = _get_cases(get_func, args.model_path)
+    if args.select:
+        from collector.helper import get_sm_version
+
+        cases = [planned_row(args.backend, args.op, get_sm_version(), **_parse_select(args.select))]
+    else:
+        cases = _get_cases(get_func, args.model_path)
     if not cases:
         raise SystemExit(
             f"{entry.get_func} returned 0 cases — nothing to smoke "

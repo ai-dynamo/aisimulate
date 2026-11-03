@@ -37,7 +37,7 @@ run gemm_bf16          gemm_bf16_Llama-3.1-8B           meta-llama/Meta-Llama-3.
 # gemm_fp8 (dynamic per-token activation row) vs a ModelOpt STATIC per-tensor checkpoint: on CC>=100 vLLM routes
 # the static scheme to FlashInferFP8ScaledMMLinearKernel and the dynamic one to Cutlass, so the SDK's derived
 # fp8_static rests on a different GEMM kernel there. Owner decision 2026-09-30 (tianhaox): governed approximation,
-# not a collected row — see collector/evidence_exceptions.yaml (fp8_static on SM100+/SM120) -> explained deviation.
+# not a collected row — the deviation note at the fp8 branch of collector/vllm/collect_gemm.py -> explained deviation.
 OUT=$OUT_EXPLAINED run gemm_fp8 gemm_fp8_Llama-3.1-70B-FP8 nvidia/Llama-3.1-70B-Instruct-FP8 auto "$GEMM"
 FLOOR_SM=sm89 FLOOR_NOTE="Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist" run moe_fp8block_dsv3  moe_fp8block_DeepSeek-V3.2       deepseek-ai/DeepSeek-V3.2 fp8  "$MOE"
 run moe_bf16_gemma4    moe_bf16_gemma4-26B-A4B          google/gemma-4-26B-A4B auto    "$MOE"

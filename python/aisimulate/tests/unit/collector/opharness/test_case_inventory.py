@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""case_inventory: the collector's case set is derived without collecting and
-diffed version-to-version — the test-case regression check (job 469988017:
+"""case_inventory: the collector's case plan is recorded on a CPU and diffed
+against a base revision — the test-case regression check (job 469988017:
 paged_mqa out of plan, V4-Pro calib dropped by the getter, mla_context_module
-without a producer were all visible in the case inventory)."""
+without a producer were all visible in the case set). Cases leave the plan on
+purpose only under a collector/skips.py entry."""
 
+import csv
 import importlib.util
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -25,101 +25,98 @@ def ci():
     return mod
 
 
-def test_summarize_cases_separates_categorical_from_shape_fields(ci):
-    cases = [(n, "bf16" if n % 2 else "fp8", "sgl-project/DeepSeek-V4-Pro-FP8", True) for n in range(200)]
-    f = ci.summarize_cases(cases)
-    assert f["0"]["kind"] == "numeric" and f["0"]["min"] == 0 and f["0"]["max"] == 199
-    assert f["1"] == {"kind": "categorical", "values": ["bf16", "fp8"]}
-    assert f["2"]["values"] == ["sgl-project/DeepSeek-V4-Pro-FP8"]
-    assert f["3"]["values"] == ["True"]
-    assert ci.summarize_cases([{"id": "x", "params": {"dtype": "fp8", "n": 1}}])["dtype"]["values"] == ["fp8"]
+def test_summarize_cases_separates_categorical_from_shape_columns(ci):
+    rows = [{"seq_len": str(n), "dtype": "bf16" if n % 2 else "fp8", "model_path": "m"} for n in range(200)]
+    f = ci.summarize_cases(rows)
+    assert f["seq_len"] == {"kind": "numeric", "min": 0, "max": 199, "distinct": ">64"}
+    assert f["dtype"] == {"kind": "categorical", "values": ["bf16", "fp8"]}
+    assert f["model_path"]["values"] == ["m"]
+
+
+def test_build_inventory_reads_the_plan_report_and_its_table(ci, tmp_path):
+    table = tmp_path / "vllm_sm90_moe.csv"
+    with table.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["moe_type", "num_tokens"])
+        writer.writerows([["fp8", 1], ["bfloat16", 2]])
+    report = {
+        "ops": ["moe", "moe_a2a"],
+        "plans": {
+            "moe": {
+                "cases": 2,
+                "by_dtype": {"fp8": 1, "bfloat16": 1},
+                "removed": [{"region": "dtype=nvfp4", "cases": 5, "reason": "{'sm': [90]}"}],
+                "plan_hash": "sha256:x",
+                "table": str(table),
+            }
+        },
+    }
+    ops = ci.build_inventory(report)
+    assert ops["moe"]["removed"] == {"dtype=nvfp4": 5} and ops["moe"]["plan_hash"] == "sha256:x"
+    assert ops["moe"]["fields"]["moe_type"]["values"] == ["bfloat16", "fp8"]
+    assert ops["moe_a2a"]["cases"] is None and "no op plan" in ops["moe_a2a"]["note"]
 
 
 def _inv(ops):
     return {"_meta": {"framework": "sglang", "version": "x"}, "ops": ops}
 
 
-def test_diff_reports_op_loss_plan_loss_count_loss_and_value_loss(ci):
+def test_diff_fails_losses_no_skips_entry_accounts_for(ci):
+    cat = {"kind": "categorical"}
     prev = _inv(
         {
-            "dsv4_paged_mqa_logits_module": {"in_plan": True, "cases": 22, "fields": {}},
+            "dsv4_paged_mqa_logits_module": {"cases": 22, "removed": {}, "fields": {}},
             "dsv4_csa_topk_calib": {
-                "in_plan": True,
                 "cases": 22,
-                "fields": {"2": {"kind": "categorical", "values": ["Flash", "Pro"]}},
+                "removed": {},
+                "fields": {"model_path": {**cat, "values": ["Flash", "Pro"]}},
             },
-            "mla_context_module": {"in_plan": True, "cases": 10, "fields": {}},
-            "gemm": {"in_plan": True, "cases": 100, "fields": {"0": {"kind": "numeric", "min": 1, "max": 9}}},
+            "gemm": {"cases": 100, "removed": {}, "fields": {"n": {"kind": "numeric", "min": 1, "max": 9}}},
         }
     )
     new = _inv(
         {
-            "dsv4_paged_mqa_logits_module": {"in_plan": False, "cases": 22, "fields": {}},
-            "dsv4_csa_topk_calib": {
-                "in_plan": True,
-                "cases": 11,
-                "fields": {"2": {"kind": "categorical", "values": ["Flash"]}},
-            },
-            "gemm": {"in_plan": True, "cases": 120, "fields": {"0": {"kind": "numeric", "min": 1, "max": 12}}},
-            "new_op": {"in_plan": True, "cases": 5, "fields": {}},
+            "dsv4_csa_topk_calib": {"cases": 11, "removed": {}, "fields": {"model_path": {**cat, "values": ["Flash"]}}},
+            "gemm": {"cases": 120, "removed": {}, "fields": {"n": {"kind": "numeric", "min": 1, "max": 12}}},
+            "new_op": {"cases": 5, "removed": {}, "fields": {}},
         }
     )
     d = ci.diff_inventories(prev, new)
-    assert any("paged_mqa" in r and "registry-only" in r for r in d["regressions"])
-    assert any("topk_calib: cases 22 -> 11" in r for r in d["regressions"])
-    assert any("topk_calib[2] lost values ['Pro']" in r for r in d["regressions"])
-    assert any("mla_context_module: op gone" in r for r in d["regressions"])
+    assert "dsv4_paged_mqa_logits_module: op left the plan" in d["regressions"]
+    assert any("topk_calib: cases 22 -> 11 (0 under skips.py)" in r for r in d["regressions"])
+    assert any("topk_calib[model_path] lost values ['Pro']" in r for r in d["regressions"])
     assert d["additions"] == ["gemm: cases 100 -> 120", "new_op: new op (5 cases)"]
     # numeric range changes are never regressions (shape grids move; the SDK interpolates)
     assert not any("gemm" in r for r in d["regressions"])
 
 
-def test_waivers_turn_signed_losses_into_waived(ci):
+def test_diff_explains_losses_under_a_new_skips_entry(ci):
     prev = _inv(
+        {"moe": {"cases": 10, "removed": {}, "fields": {"dtype": {"kind": "categorical", "values": ["fp8", "nvfp4"]}}}}
+    )
+    new = _inv(
         {
-            "a": {"in_plan": True, "cases": 2, "fields": {"1": {"kind": "categorical", "values": ["x", "y"]}}},
-            "b": {"in_plan": True, "cases": 3, "fields": {}},
+            "moe": {
+                "cases": 6,
+                "removed": {"dtype=nvfp4": 4},
+                "fields": {"dtype": {"kind": "categorical", "values": ["fp8"]}},
+            }
         }
     )
-    new = _inv({"a": {"in_plan": True, "cases": 2, "fields": {"1": {"kind": "categorical", "values": ["x"]}}}})
-    d = ci.diff_inventories(
-        prev, new, {"ops": {"b": "retired (owner 2026-10-06)"}, "fields": {"a": {1: "y lane removed from serving"}}}
-    )
-    assert d["regressions"] == [] and len(d["waived"]) == 2
+    d = ci.diff_inventories(prev, new)
+    assert d["regressions"] == []
+    assert d["explained"] == [
+        "moe: cases 10 -> 6, skips.py ['dtype=nvfp4']",
+        "moe[dtype] lost ['nvfp4'] under skips.py",
+    ]
 
 
-def test_getter_error_is_a_regression(ci):
-    d = ci.diff_inventories(
-        _inv({"a": {"in_plan": True, "cases": 2, "fields": {}}}),
-        _inv({"a": {"in_plan": True, "cases": None, "error": "ImportError: boom"}}),
-    )
-    assert d["regressions"] == ["a: getter fails to enumerate (ImportError: boom)"]
+def test_ops_without_an_op_plan_are_not_diffed(ci):
+    d = ci.diff_inventories(_inv({"moe_a2a": {"cases": None}}), _inv({"moe_a2a": {"cases": None}}))
+    assert d == {"regressions": [], "explained": [], "additions": []}
 
 
-def test_previous_inventory_picks_the_newest_older_version(ci, tmp_path, monkeypatch):
-    monkeypatch.setattr(ci, "HARNESS", tmp_path)
-    d = tmp_path / "results" / "sm100" / "cases"
-    d.mkdir(parents=True)
-    for v in ("0.5.14", "0.5.17", "0.5.21", "0.5.9"):
-        (d / f"sglang-{v}.yaml").write_text("{}")
-    (d / "sglang-0.5.21.waivers.yaml").write_text("{}")
-    assert ci.previous_inventory("sm100", "sglang", "0.5.21").name == "sglang-0.5.17.yaml"
-    assert ci.previous_inventory("sm100", "sglang", "0.5.9") is None
-    assert ci.inventory_path("sm100", "sglang", "0.5.21") == d / "sglang-0.5.21.yaml"
-
-
-def test_enumerate_op_uses_the_executor_contract_under_ais_sm(ci, monkeypatch):
-    """get_func + capabilities filter, SM taken from AIS_SM (no GPU)."""
-    seen = {}
-
-    def get_cases():
-        from collector.helper import get_sm_version
-
-        seen["sm"] = get_sm_version()
-        return [(1, "bf16"), (2, "fp8")]
-
-    sys.modules["fake_collector_mod"] = types.SimpleNamespace(get_cases=get_cases)
-    entry = types.SimpleNamespace(op="gemm", module="fake_collector_mod", get_func="get_cases", unverified_sms=())
-    monkeypatch.setenv("AIS_SM", "sm100")
-    kept, dropped = ci.enumerate_op("sglang", entry, 100)
-    assert seen["sm"] == 100 and len(kept) == 2 and dropped == []
+def test_the_base_extract_carries_every_plan_input(ci):
+    """op_plans reads packaged checkpoint configs outside collector/ (max_position, checkpoint
+    quant); a base plan computed without them silently differs."""
+    assert ci.PLAN_INPUTS == ("collector", "src/aisimulate_core/model_configs")
