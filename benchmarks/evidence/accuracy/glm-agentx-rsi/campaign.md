@@ -188,6 +188,14 @@ same-version op qualification. The independent private audit and complete
 `E017-cold-unprofiled-comparison.json` preserve both repeats, cold cache receipts,
 acceptance counters and all numerical comparisons. Remaining instrumented and
 plain modes must finish before accepting an E017 conclusion.
+The instrumented MTP mode also completes 221/221 with rank-0 coverage for every
+request and no counter/clock/coverage qualification failures. Its repeat-1
+128-token cold C1 TPOT is 2.6861/2.8256 ms at 8K/131K, close to the uninstrumented
+2.6879/2.8277 ms. This does not establish instrumentation neutrality for every
+schedule: the overlap victim is 23.7345 ms versus 2.6929 ms uninstrumented, while
+standalone is 2.7341 versus 2.7258 ms. Preserve this behavioral difference and
+require actual scheduling/forward boundaries; do not assign it to profiler cost
+or a silicon scheduler bug from one control. Plain mode remains pending.
 
 ## H2 — Recipe, tokenization, snapshots and cache history
 
@@ -311,6 +319,21 @@ The prediction lowering already samples integer acceptance from conditional rate
 `1,0.99,0`; it does not advance requests by a fractional 2.99 or silently use the
 scheduler's generic fallback distribution. A deterministic fractional-rounding
 explanation is therefore unsupported by the current source.
+
+**E022 — acceptance correlation audit, supported source/runtime difference.**
+The exact historical `sglang/srt/speculative/spec_utils.py` (SHA256
+`f7b6db9995357dd99a221b763a642fda1a26b5ec21bc33cb7e350f2a5bcd6343`)
+samples one floor/ceil total acceptance value per verify batch, then fills every
+request with that value. Current AISim samples the same marginal distribution
+independently per running request. In E017's instrumented MTP counters, 394
+multi-request output-ready groups comprise 390 uniformly three-token groups and
+four uniformly two-token groups; no mixed increment group is observed. Terminal
+over-generation remains counted. Both means are correct at 2.99; correlation
+differs. **Conclusion:** batch-shared forced acceptance is confirmed for this
+measurement policy; its contribution to MAPE is unmeasured. Queue a one-factor,
+explicitly scoped batch-shared research ablation after the frontend experiment.
+Natural acceptance must retain ordinary per-request behavior. Do not change the
+general sampler default or claim that the historical mean was wrong.
 
 **Protocol deviation.** E005 omitted these environment overrides. Its first
 synthetic requests report natural acceptance 4.0 with rate 1.0; a live process
