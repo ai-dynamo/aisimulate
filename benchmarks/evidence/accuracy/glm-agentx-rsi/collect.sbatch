@@ -50,4 +50,4 @@ srun --ntasks=1 --container-image="$image" \
     --container-writable --container-mounts="$storage_root:/workspace,$model:/model:ro" \
     env "RSI_CACHE_ROOT=$root/runtime-cache/$cache_key" \
     python3 "$root/code-$SLURM_JOB_ID/collect.py" --model /model \
-    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 4200
+    --output "$root/gpu-$SLURM_JOB_ID/controls" --seconds 4200 --acceptance-policy agentx-golden

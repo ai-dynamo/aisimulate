@@ -16,6 +16,12 @@ import time
 import urllib.request
 from pathlib import Path
 
+GOLDEN_ACCEPTANCE = {
+    "SGLANG_SIMULATE_ACC_LEN": "2.99",
+    "SGLANG_SIMULATE_ACC_METHOD": "match-expected",
+    "SGLANG_SIMULATE_ACC_TOKEN_MODE": "real-draft-token",
+}
+
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
@@ -34,7 +40,7 @@ def sample(url, path, stop):
             stop.wait(1)
 
 
-def control(root, model, deadline, instrumented, speculation):
+def control(root, model, deadline, instrumented, speculation, acceptance_policy="agentx-golden"):
     code = Path(__file__).parent
     name = ("instrumented" if instrumented else "unprofiled") + ("-mtp" if speculation else "-plain")
     output = root / name
@@ -104,6 +110,12 @@ def control(root, model, deadline, instrumented, speculation):
         SGLANG_TIMEOUT_KEEP_ALIVE="900",
         PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
     )
+    if acceptance_policy not in ("agentx-golden", "natural"):
+        raise ValueError("Unknown acceptance policy")
+    for variable in GOLDEN_ACCEPTANCE:
+        environment.pop(variable, None)
+    if speculation and acceptance_policy == "agentx-golden":
+        environment.update(GOLDEN_ACCEPTANCE)
     cache_root = Path(os.environ.get("RSI_CACHE_ROOT", root / "cache"))
     for variable, directory in {
         "HF_HOME": "hf",
@@ -132,6 +144,8 @@ def control(root, model, deadline, instrumented, speculation):
             "command": command,
             "instrumented": instrumented,
             "speculation": speculation,
+            "acceptance_policy": acceptance_policy if speculation else "disabled",
+            "acceptance_environment": {key: environment.get(key) for key in GOLDEN_ACCEPTANCE},
             "purpose": "synthetic timing diagnostics; not AgentX accuracy scoring",
         },
     )
@@ -195,6 +209,7 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, required=True)
+    parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
@@ -204,6 +219,7 @@ def main():
         args.output / "runtime.json",
         {
             "sglang": importlib.metadata.version("sglang"),
+            "acceptance_policy": args.acceptance_policy,
             "cache_root": os.environ.get("RSI_CACHE_ROOT", str(args.output / "cache")),
             "model_revision": "e3b8f9f2fad29727dfa95e766c5cac18ea1414bf",
             "config_sha256": hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest(),
@@ -212,14 +228,14 @@ def main():
             },
         },
     )
-    control(args.output, args.model, deadline, False, True)
+    control(args.output, args.model, deadline, False, True, args.acceptance_policy)
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("instrument.py"))],
         check=True,
         stdout=(args.output / "instrumentation.json").open("x"),
     )
-    control(args.output, args.model, deadline, True, True)
-    control(args.output, args.model, deadline, True, False)
+    control(args.output, args.model, deadline, True, True, args.acceptance_policy)
+    control(args.output, args.model, deadline, True, False, args.acceptance_policy)
     save(args.output / "completion.json", {"status": "completed"})
 
 

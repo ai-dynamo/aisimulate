@@ -14,6 +14,23 @@ import rsi_timing
 from instrument import inject
 
 
+@pytest.mark.parametrize("speculation,policy", [(True, "agentx-golden"), (True, "natural"), (False, "agentx-golden")])
+def test_original_acceptance_overrides_are_explicit_and_never_leak_to_plain(tmp_path, monkeypatch, speculation, policy):
+    captured = {}
+    for variable in collect.GOLDEN_ACCEPTANCE:
+        monkeypatch.setenv(variable, "inherited-wrong-value")
+
+    def failed_process(*args, **kwargs):
+        captured.update(kwargs["env"])
+        return SimpleNamespace(poll=lambda: 1)
+
+    monkeypatch.setattr(collect.subprocess, "Popen", failed_process)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        collect.control(tmp_path, tmp_path / "model", float("inf"), False, speculation, policy)
+    actual = {key: captured[key] for key in collect.GOLDEN_ACCEPTANCE if key in captured}
+    assert actual == (collect.GOLDEN_ACCEPTANCE if speculation and policy == "agentx-golden" else {})
+
+
 def test_client_waits_for_ready_and_generation_before_reading_server_info(tmp_path, monkeypatch):
     events = []
 

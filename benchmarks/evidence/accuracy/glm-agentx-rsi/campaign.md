@@ -101,6 +101,10 @@ receipt, numerical usage/acceptance fields, and one-second server metrics.
 These are output-ready observations before detokenization/HTTP, not GPU kernel
 completion timestamps. Chat frames without per-chunk token counts must not be
 presented as exact per-token observations. Missing comparisons remain N/A.
+For instrumentation effects, compare matching native matrix cases at repeat 1;
+retain repeat 0 separately because first-use compilation may differ between fresh
+servers sharing a compiler cache. Output-ready timestamps alone cannot establish
+prefill-kernel overlap; that requires a qualified forward/profiler window.
 
 **Conclusion — startup failed; GPU timing evidence unavailable.** Job 1002848
 exceeded its 1200-second serving-readiness guard. A read-only Python stack sample
@@ -198,6 +202,36 @@ tokens per round before request-tail truncation. The recipe's golden acceptance
 is explicitly inherited/provisional; do not treat it as measured per-request truth.
 E005 collects actual acceptance and output counters with speculation on/off.
 
+**Experiment E016 — launcher policy audit, confirmed.** Inspect the original
+InferenceX commit `c093d2052d2e4f6aeaa8162e9e81219f31556fe4` and C14 job
+`119061192112` in run `39551262792`. The actual job log sets
+`SGLANG_SIMULATE_ACC_LEN=2.99`, `SGLANG_SIMULATE_ACC_METHOD=match-expected` and
+`SGLANG_SIMULATE_ACC_TOKEN_MODE=real-draft-token`. The launcher's
+[synthetic acceptance policy](https://github.com/SemiAnalysisAI/InferenceX/blob/c093d2052d2e4f6aeaa8162e9e81219f31556fe4/inferencex-e2e/infx/srt_slurm/synthetic_acceptance.py)
+selects this golden value for speculative AgentX throughput runs; it is not
+unconstrained natural acceptance. The inherited golden value is provisional as
+a real-workload estimate, but it is the original benchmark's prescribed policy.
+Actual job-log receipts at all six concurrencies confirm the same three values.
+The private evidence artifact retains each job ID, URL and selected receipts.
+The prediction lowering already samples integer acceptance from conditional rates
+`1,0.99,0`; it does not advance requests by a fractional 2.99 or silently use the
+scheduler's generic fallback distribution. A deterministic fractional-rounding
+explanation is therefore unsupported by the current source.
+
+**Protocol deviation.** E005 omitted these environment overrides. Its first
+synthetic requests report natural acceptance 4.0 with rate 1.0; a live process
+environment check confirms the three override variables are absent. E005 fails
+original-policy qualification. Retain it only as a natural-acceptance diagnostic,
+with no historical accuracy claim. Finish its instrumented natural control to
+retain a server/client comparison, then stop before duplicating the plain control.
+Next collect the original forced-acceptance controls, preserving both variants.
+Do not change the frozen prediction setting: its 1.99 accepted drafts plus bonus
+already targets the prescribed total 2.99. This is a collection repair, not a win.
+The corrected collector records an explicit policy and the three environment
+values, clears inherited overrides for natural/plain controls, and tests all
+three cases. E017 will repeat the forced-policy controls with fresh servers;
+natural data cannot substitute for them.
+
 **Experiment E012.** Independently inspect retained profiling-phase server metric
 receipts on development lanes. The mean `sglang:spec_accept_length`, explicitly
 defined as accepted drafts plus bonus token per forward, is **2.9898103 at 8 lanes**
@@ -272,6 +306,14 @@ A filename or row count does not establish actual runtime kernel selection,
 interpolation weights or whole-forward accuracy. Collect exact discriminating
 shapes only after runtime/selected-row reconciliation.
 
+**Candidate question — separate MTP draft composition.** The pinned checkpoint
+excludes layer 78 from quantization, and MTP startup exercises BF16 MoE tuning.
+The current generation graph instead applies `mtp_scale_factor` to the target
+layer mix. Quantify target verification and draft-forward shapes, precision,
+indexer use and costs separately before proposing a change. This is an unverified
+modeling hypothesis; an average-layer substitution is not enough evidence for a
+new correction factor or an accepted fix.
+
 ## H6 — Capacity, preemption, frontend and serving overhead
 
 **Hypothesis.** Admission, memory pressure or frontend work explains residual error.
@@ -292,6 +334,12 @@ before interpreting profiler effects.
 **Conclusion — open.** Do not infer eviction/preemption from utilization, or infer
 which operation uses FP8 merely from a model-level loader message. The pinned
 checkpoint is mixed precision; match component-level settings and evidence.
+
+`predict_cold.py` generates eight fresh cold C1 predictions at 8192/131072 input
+tokens, 16/128 outputs, MTP with total acceptance 2.99 and plain decode. Compare
+both recorded repeats with the forced-policy controls; repeat 1 separately checks
+steady-state compilation. These are diagnostics, not the frozen headline cohort.
+The 0.5.20 silicon versus 0.5.21 database comparison remains explicitly cross-version.
 
 ## Repeat and compatibility controls
 
@@ -415,6 +463,7 @@ python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLA
 python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
+python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
 python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py
