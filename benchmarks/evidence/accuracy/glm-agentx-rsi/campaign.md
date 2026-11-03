@@ -1017,6 +1017,15 @@ GPU-second reservation fits the controlled-workload pool: 3876.75 used + 2760
 reserved < 7200 TP8-equivalent node-seconds. Failed attempt evidence remains
 separate from the new immutable source and receipt.
 
+E036 retry CPU preflight **1012161** completes in 244 seconds with zero GPUs.
+Receipt SHA256 `60ddf190be6f87a4bb8e655a4abb700365458d7a5ebd43f17b867d34fa97e07f`
+qualifies both actual dispatch name prefixes, the prepared-byte transport and ten
+source hashes against signed collector `a8a3363120b85d24ddae853ad24ec82fc433f87d`.
+The versioned receipt is supplied explicitly to GPU job **1012931**, with requeue
+disabled and a 45-minute limit. Hold 22080 GPU-seconds including cleanup, leaving
+121634 unreserved; reconcile actual allocation when terminal. All 51 focused
+collector/auditor/clock/counter tests pass. No accuracy result is accepted yet.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
@@ -1211,10 +1220,14 @@ python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --out
 python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
 python prepare_weka_frontend.py --trace FROZEN_WEKA_TRACE --profile ORIGINAL_PROFILE_JSON --model-revision FULL_MODEL_SHA --output NEW_PRIVATE_PAYLOAD_DIR
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
+python predict_matrix.py --controls PRIVATE_GPU_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_NATIVE_MATRIX
+# E036 requires the new submission receipts and keeps client TTFT boundaries.
+python predict_matrix.py --dispatch-matrix --arrival-clock client_start --controls PRIVATE_SUBMISSION_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_CLIENT_CLOCK_MATRIX
+python predict_matrix.py --dispatch-matrix --arrival-clock server_submission --controls PRIVATE_SUBMISSION_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_SUBMISSION_CLOCK_MATRIX
 # Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
-python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py test_timing_audit.py
+python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py test_timing_audit.py test_matrix.py
 uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py test_frontend.py
 ```
 
