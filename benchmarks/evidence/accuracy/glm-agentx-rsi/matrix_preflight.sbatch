@@ -13,7 +13,12 @@
 set -euo pipefail
 : "${CAMPAIGN_ROOT:?}"
 : "${RSI_CODE:?Immutable collector directory}"
-: "${RSI_DISPATCH_PREFLIGHT:?Versioned output receipt}"
+if test "${RSI_PREFLIGHT_KIND:-dispatch}" = profile; then
+    : "${RSI_PROFILE_PREFLIGHT:?Versioned profiler output receipt}"
+else
+    test "${RSI_PREFLIGHT_KIND:-dispatch}" = dispatch
+    : "${RSI_DISPATCH_PREFLIGHT:?Versioned output receipt}"
+fi
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec
 image="$storage_root/images/sglang-0520-b27fce60.sqsh"
 sha256sum --check "$CAMPAIGN_ROOT/historical-preparation/image.sha256"
@@ -23,6 +28,13 @@ export ENROOT_DATA_PATH="$CAMPAIGN_ROOT/enroot-matrix-preflight-$SLURM_JOB_ID"
 mkdir -p "$ENROOT_DATA_PATH"
 root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 code="${RSI_CODE/#$storage_root/\/workspace}"
+if test "${RSI_PREFLIGHT_KIND:-dispatch}" = profile; then
+    receipt="${RSI_PROFILE_PREFLIGHT/#$storage_root/\/workspace}"
+    srun --ntasks=1 --container-image="$image" --container-writable \
+        --container-mounts="$storage_root:/workspace" \
+        python3 "$code/profile_preflight.py" --output "$receipt"
+    exit 0
+fi
 receipt="${RSI_DISPATCH_PREFLIGHT/#$storage_root/\/workspace}"
 coding_arguments=()
 if test -n "${RSI_CODING_INPUTS:-}"; then

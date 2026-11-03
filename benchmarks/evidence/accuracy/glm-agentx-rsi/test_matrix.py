@@ -8,6 +8,7 @@ from audit_matrix import errors, interval
 from audit_shared_frontend import error as frontend_error
 from audit_shared_frontend import latencies as frontend_latencies
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
+from profile_preflight import fields as profile_fields
 from response_gate_diagnostic import gate_time, summary
 
 
@@ -97,3 +98,12 @@ def test_native_shared_frontend_audit_keeps_zero_delivery_intervals():
         frontend_latencies({**row, "terminal_time_ms": 10})
     with pytest.raises(ValueError, match="conserved"):
         frontend_latencies({**row, "requested_output_length": 129})
+
+
+def test_profiler_cpu_preflight_requires_one_named_protocol():
+    source = "class ProfileReq:\n    output_dir: str\n    record_shapes: bool = False\n"
+    assert profile_fields(source, "ProfileReq") == {"output_dir", "record_shapes"}
+    with pytest.raises(ValueError, match="Unknown runtime class"):
+        profile_fields(source + source, "ProfileReq")
+    with pytest.raises(ValueError, match="Unknown runtime class"):
+        profile_fields(source, "Missing")

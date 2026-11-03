@@ -1737,3 +1737,11 @@ stop condition is reached.
 - **Conclusion:** pending source/query reconciliation. Missing trace boundaries
   or counters make the corresponding comparison unavailable; preserve failures
   and do not infer a six-point accuracy result from these finite diagnostics.
+
+E040 tooling: `profile_preflight.py --output PRIVATE_NEW_RECEIPT` inspects the
+actual installed profiler protocol/source hashes and trace tools without
+initializing a GPU. The existing CPU wrapper selects it with
+`RSI_PREFLIGHT_KIND=profile` and `RSI_PROFILE_PREFLIGHT`; its default dispatch
+qualification stays unchanged. Resources remain eight CPUs, 64GiB and ten
+minutes with no GPUs. Source checks do not establish CUPTI visibility or
+GPU-projected kernel boundaries; those remain explicit GPU-probe gates.
