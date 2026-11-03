@@ -159,11 +159,13 @@ def glm_plan_manifest(options: FPMCollectionOptions, deployments: Sequence[FpmDe
 def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dict[str, Any], str, str]:
     """Return the four smoke points of a generated list, with their canonical JSON and its SHA-256.
 
-    They are the 64-token prefill of one request without a prefix and after one hash block of prefix, and the decode
-    of one and of two requests at the smallest context of the list above one hash block. A list with no decode point
-    of two or more requests above one hash block, such as the list of a request limited to one sequence, has no
-    two-request point to take. Its decode points are one request at each of its two smallest contexts above one hash
-    block. A list that cannot give the four points is refused.
+    The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block
+    of prefix. The context of a decode point is its total KV read tokens divided by its batch size. If a decode point
+    of more than one request has a context above one hash block, the decode points are the points of one request and
+    of two requests at the smallest context above one hash block. Otherwise, as in the list of a request limited to
+    one sequence, they are the points of one request at the two smallest contexts above one hash block. A point is
+    taken at a context only if its total KV read tokens equal its batch size times that context. A list that does
+    not give two prefill points and two decode points is refused.
     """
     prefill = [
         point
@@ -177,9 +179,9 @@ def glm_smoke_subset(payload: dict[str, Any], hash_block_size: int) -> tuple[dic
         return point["total_kv_read_tokens"] // point["batch_size"]
 
     above = sorted({context(point) for point in payload["decode"] if context(point) > hash_block_size})
-    # A list with two-request points above one hash block must also hold the pair at its smallest context there, or it
-    # is incomplete and refused below. Only a list without such points, where the batch limit or the cache capacity
-    # leaves one request, takes one request at each of its two smallest contexts instead.
+    # A list with a decode point of more than one request above one hash block must also hold the pair at its smallest
+    # context there, or it is incomplete and refused below. Only a list without such a point, where the batch limit or
+    # the cache capacity leaves one request, takes one request at each of its two smallest contexts instead.
     if any(point["batch_size"] > 1 and context(point) > hash_block_size for point in payload["decode"]):
         batch_sizes, contexts = (1, 2), above[:1]
     else:
