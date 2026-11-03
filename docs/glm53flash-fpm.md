@@ -195,13 +195,17 @@ prefix and decode context. These are the axes:
   always holds a batch of one request. If its suffix exceeds the budget, vLLM
   prefills it over several steps, and no other request decodes before it.
 
-The planner drops a point that does not fit the accepted cache capacity, and
-it logs the number of dropped points of each phase. It refuses a plan with no
-prefill point or no decode point. At TP4 with 2,176-token
+The planner drops a point that does not fit its estimate of the accepted cache
+capacity, and it logs the number of dropped points of each phase. It refuses a
+plan with no prefill point or no decode point. The estimate counts the attention
+blocks of each request and one block in each state group. A request with a
+prefix hit can hold more than one block in a recurrent-state group, for example
+the cached block of its prefix and the block of its running state. So a point
+near the capacity limit can still fail when it runs. At TP4 with 2,176-token
 hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
-list has 496 prefill points and 81 decode points. That needs an accepted cache
-of at least 2,113 pool blocks (the profile's `kv_cache_bytes` divided by its
-largest `page_size_bytes`).
+list has 496 prefill points and 81 decode points. By the estimate, that list
+needs an accepted cache of at least 2,113 pool blocks (the profile's
+`kv_cache_bytes` divided by its largest `page_size_bytes`).
 
 The smoke measures two points of this list for each phase that the plan
 collects. An aggregated request collects both phases, so its smoke measures

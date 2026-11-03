@@ -80,8 +80,10 @@ def glm_point_manifest(
     usable = kv_cache_bytes // page_size_bytes - 1
 
     def fits(batch_size: int, tokens: int) -> bool:
-        # A conservative stand-in for the producer's check through the native cache managers: ceil((tokens + 1) / unit)
-        # blocks of the request's attention, and one block in each state group.
+        # An estimate of the blocks that the native cache managers give a request: ceil((tokens + 1) / unit) blocks of
+        # its attention, and one block in each state group. A request with a prefix hit can hold more than one block in
+        # a recurrent-state group, for example the cached block of its prefix and the block of its running state, so a
+        # point near the capacity limit can still fail when it runs.
         return batch_size * (-(-(tokens + 1) // unit) + state_groups) <= usable
 
     def batch_sizes(limit: int) -> list[int]:
