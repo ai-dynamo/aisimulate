@@ -1,0 +1,51 @@
+{
+  "label": "baseline",
+  "python": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline/python/aisimulate/.venv/bin/python",
+  "argv": [
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/gbdt-gym-compat-runner.py",
+    "baseline",
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/real-native",
+    "-c",
+    "/dev/null",
+    "-p",
+    "no:timeout",
+    "-p",
+    "no:cacheprovider",
+    "--rootdir=/private/tmp/gbdt-baseline-gym-a8b30ca6",
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/test_unchanged_gym_real_native.py",
+    "-v",
+    "-ra"
+  ],
+  "cwd": "/private/tmp/gbdt-baseline-gym-a8b30ca6",
+  "modules": {
+    "scripts.fpm_accuracy.models.learned_scenario": {
+      "path": "/private/tmp/gbdt-baseline-gym-a8b30ca6/scripts/fpm_accuracy/models/learned_scenario.py",
+      "sha256": "b1b42d588564d54fa0a502762f891fb1912a849dce47945c3b188d61cb99d83d"
+    },
+    "scripts.fpm_accuracy.scenario_contract": {
+      "path": "/private/tmp/gbdt-baseline-gym-a8b30ca6/scripts/fpm_accuracy/scenario_contract.py",
+      "sha256": "d32a4d248bcf73b5fbc9da84c480e5d75aff8fd309d659a0723f24746c8af288"
+    },
+    "aisimulate_core.sdk.rust_engine_step": {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py",
+      "sha256": "25efc25dae7088d1dbacb6c5a3a28dd6c66a22a13d39452375b0bea2a98e2fef"
+    },
+    "aisimulate_core.sdk.fpm_learned": {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline/python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py",
+      "sha256": "050464b2879f92e6fd4ea71fd4fd62f97b5c146b42a85cfada86f399178ac53c"
+    },
+    "aisimulate._runtime": {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+      "sha256": "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4"
+    },
+    "sklearn": {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline/python/aisimulate/.venv/lib/python3.12/site-packages/sklearn/__init__.py",
+      "sha256": "66a78bb27706626c4cc8ef424a5479f6301204baacd85986e8002c16b751fef1"
+    }
+  },
+  "threads": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  }
+}

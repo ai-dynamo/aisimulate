@@ -1,0 +1,7 @@
+{
+  "candidate_head": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957",
+  "candidate_tracked_diff_sha256": "8431410dac8ad65245d29d668f46335bc1e4d93a3f743cb3b98f3ab26ce85ca7",
+  "candidate_native": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+  "candidate_native_sha256": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+  "baseline_test_sources_sha256": "a677cb1e01d412f2fdb1b3689c1dfd83d616648f99270102d085825cb94518b3"
+}

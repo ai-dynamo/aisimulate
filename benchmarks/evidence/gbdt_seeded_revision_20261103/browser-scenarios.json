@@ -1,0 +1,21 @@
+{
+  "command": [
+    "python/aisimulate/.venv/bin/python",
+    "scripts/pages/check_fpm_scenarios_browser.py"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "started_utc": "2026-11-03T07:57:21.824403+00:00",
+  "environment": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": null,
+    "MKL_NUM_THREADS": null,
+    "PYTHONPATH": "/private/tmp/gbdt-pr1-gym-deps:python/aisimulate/src:python/aisimulate",
+    "CARGO_TARGET_DIR": null,
+    "GIT_CONFIG_COUNT": null,
+    "GIT_CONFIG_KEY_0": null,
+    "GIT_CONFIG_VALUE_0": null
+  },
+  "exit_code": 0,
+  "seconds": 8.402052041026764,
+  "log_sha256": "3c56f8d45cbe10dc9a431555197c064950c97cb9f263ba4cdf8369bfc7c26a84"
+}

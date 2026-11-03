@@ -1,0 +1,24 @@
+   Compiling aisimulate-core v0.13.0 (/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/crates/core)
+error[E0599]: no method named `is_finite` found for enum `std::option::Option<T>` in the current scope
+   --> crates/core/src/perfmodel/fpm/mixed_fallback_tests.rs:342:14
+    |
+339 | /         model
+340 | |             .estimate_forward_pass_time_ms(&group(Kind::CrossRankAggregated))
+341 | |             .unwrap()
+342 | |             .is_finite()
+    | |_____________-^^^^^^^^^
+    |
+note: the method `is_finite` exists on the type `f64`
+   --> /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/num/f64.rs:706:4
+help: consider using `Option::expect` to unwrap the `f64` value, panicking if the value is an `Option::None`
+    |
+341 |             .unwrap().expect("REASON")
+    |                      +++++++++++++++++
+help: there is a method `is_none` with a similar name
+    |
+342 -             .is_finite()
+342 +             .is_none()
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `aisimulate-core` (lib test) due to 1 previous error

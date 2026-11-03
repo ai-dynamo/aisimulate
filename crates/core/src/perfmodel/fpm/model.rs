@@ -37,6 +37,7 @@ use super::estimator::{RegressionFitConfig, RegressionSamplingConfig, StateSnaps
 use super::learned::{IterationFeatureVector, LearnedForwardPassModel, load_learned};
 use super::learned_online::{
     OnlineLearner, canonical_learned_identity, checkpoint_model_for_config,
+    checkpoint_model_for_config_with_receipt,
 };
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{
@@ -285,6 +286,17 @@ pub(crate) struct ReadinessRecord {
     pub corrections: Vec<ForwardPassCorrectionReadiness>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ForwardPassExecutionReadiness>,
+}
+
+impl ReadinessRecord {
+    pub(super) fn report(self) -> ForwardPassReadinessReport {
+        ForwardPassReadinessReport {
+            worker_type: self.worker_type,
+            ready: self.ready,
+            stores: self.stores,
+            corrections: self.corrections,
+        }
+    }
 }
 
 impl ForwardPassReadinessReport {
@@ -556,7 +568,10 @@ pub struct ForwardPassPerfModel {
     pub(super) query_coverage: Option<FpmCoverageState>,
     /// Feedback policy of a model restored from a state snapshot.
     snapshot_tuning: Option<StateSnapshotTuning>,
-    /// Private source closure keeps historical public config re-authoring compatible.
+    /// Verified immutable inputs of a restored complete snapshot; no query I/O.
+    snapshot_dependencies: Option<serde_json::Value>,
+    /// Private immutable source closure. Legacy public configurations retain
+    /// their original shape while dependency reporting and snapshots stay pinned.
     pinned_learned_config: Option<ForwardPassPerfModelConfig>,
 }
 
@@ -679,6 +694,7 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            snapshot_dependencies: None,
             pinned_learned_config: None,
             mixed_composition: None,
         }
@@ -717,17 +733,39 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            snapshot_dependencies: None,
             pinned_learned_config: None,
             mixed_composition: None,
         })
     }
 
+    #[cfg(test)]
     fn from_learned_config(config: &ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        Self::from_learned_state(config, None, false)
+    }
+
+    /// Internal snapshot construction uses already verified current payloads;
+    /// ordinary source resolution and archived seed validation remain separate.
+    #[cfg(test)]
+    fn from_learned_state(
+        config: &ForwardPassPerfModelConfig,
+        stable_override: Option<LearnedForwardPassModel>,
+        snapshot_runtime: bool,
+    ) -> Result<Self, AicError> {
+        Self::from_learned_state_with_receipt(config, stable_override, snapshot_runtime)
+            .map(|(model, _)| model)
+    }
+
+    fn from_learned_state_with_receipt(
+        config: &ForwardPassPerfModelConfig,
+        stable_override: Option<LearnedForwardPassModel>,
+        snapshot_runtime: bool,
+    ) -> Result<(Self, super::source::VerifiedLearnedSource), AicError> {
         // Bundle identity remains in provenance. The loader consumes the exact
         // verified seed and its own digest, rather than the bundle's digest.
         let settings = config.estimator_config.fpm_learned.runtime_source_config();
-        let mut learned = if let Some(path) = &settings.checkpoint_path {
-            checkpoint_model_for_config(path, config)?
+        let (mut learned, mut receipt) = if let Some(path) = &settings.checkpoint_path {
+            checkpoint_model_for_config_with_receipt(path, config)?
         } else {
             use sha2::{Digest, Sha256};
             let path = settings.artifact_path.as_ref().ok_or_else(|| {
@@ -750,7 +788,19 @@ impl ForwardPassPerfModel {
             let text = std::str::from_utf8(&bytes).map_err(|error| {
                 AicError::InvalidEngineConfig(format!("learned artifact is not UTF-8: {error}"))
             })?;
-            LearnedForwardPassModel::from_json(text)?
+            let model = LearnedForwardPassModel::from_json(text)?;
+            let receipt = super::source::VerifiedLearnedSource::from_files(
+                super::LearnedSourceKind::Artifact,
+                path,
+                super::LearnedSeedKind::Artifact,
+                vec![super::LearnedDependency {
+                    path: path.clone(),
+                    byte_length: bytes.len() as u64,
+                    sha256: digest,
+                    purpose: "learned_artifact".into(),
+                }],
+            )?;
+            (model, receipt)
         };
         if learned.worker_type() != config.worker_type {
             return Err(AicError::InvalidEngineConfig(
@@ -782,28 +832,65 @@ impl ForwardPassPerfModel {
                 }
             }
         }
-        let stable = (settings.adaptation == super::LearnedAdaptation::CausalSelector)
-            .then(|| learned.clone());
-        let mut online = if settings.adaptation != super::LearnedAdaptation::Frozen {
-            Some(OnlineLearner::load(
-                settings
-                    .checkpoint_path
-                    .as_ref()
-                    .expect("validated online checkpoint"),
-                &mut learned,
-                &settings,
-                config,
-            )?)
+        let stable = if settings.adaptation == super::LearnedAdaptation::CausalSelector {
+            let stable = stable_override.unwrap_or_else(|| learned.clone());
+            if stable.worker_type() != learned.worker_type()
+                || stable.feature_names() != learned.feature_names()
+                || stable
+                    .store_kinds()
+                    .iter()
+                    .any(|kind| !learned.has_store(*kind))
+                || stable.target() != learned.target()
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "frozen and adaptive experts do not share one worker role, feature ABI and frozen stores".into(),
+                ));
+            }
+            Some(stable)
         } else {
             None
         };
-        let mut mixed_composition = MixedComposition::construct(config, &learned)?;
+        let mut online = if settings.adaptation != super::LearnedAdaptation::Frozen {
+            let path = settings.checkpoint_path.as_ref().ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "online learned model requires a checkpoint seed".into(),
+                )
+            })?;
+            let (online, verified) = OnlineLearner::load_with_receipt(
+                path,
+                &mut learned,
+                &settings,
+                config,
+                snapshot_runtime && settings.adaptation == super::LearnedAdaptation::CausalSelector,
+            )?;
+            receipt = verified;
+            Some(online)
+        } else {
+            None
+        };
+        let mut mixed_composition =
+            MixedComposition::construct(config, stable.as_ref().unwrap_or(&learned))?;
+        if let Some(stable) = &stable {
+            for kind in learned.store_kinds() {
+                if !stable.has_store(kind)
+                    && !(snapshot_runtime
+                        && mixed_composition
+                            .as_ref()
+                            .is_some_and(|mixed| mixed.is_fallback_eligible(kind)))
+                {
+                    return Err(AicError::InvalidEngineConfig(
+                        "adaptive-only selector store is not a qualified original-A-missing mixed store".into(),
+                    ));
+                }
+            }
+        }
         if let (Some(mixed), Some(online)) = (&mixed_composition, &online) {
             mixed.verify_online_anchor(online.anchor_manifest_sha256())?;
         }
-        if let Some(saved) = online
-            .as_ref()
-            .and_then(OnlineLearner::restored_correction_json)
+        if !snapshot_runtime
+            && let Some(saved) = online
+                .as_ref()
+                .and_then(OnlineLearner::restored_correction_json)
         {
             let state: serde_json::Value = serde_json::from_str(saved).map_err(|e| {
                 AicError::InvalidEngineConfig(format!("invalid saved correction state: {e}"))
@@ -838,17 +925,21 @@ impl ForwardPassPerfModel {
                 corrections: WorkloadStores::with_options(&options),
             }
         };
-        Ok(Self {
-            mode,
-            options,
-            last_warning: None,
-            provenance: None,
-            is_correction_enabled: config.estimator_config.correction.enabled,
-            query_coverage: None,
-            snapshot_tuning: None,
-            pinned_learned_config: None,
-            mixed_composition,
-        })
+        Ok((
+            Self {
+                mode,
+                options,
+                last_warning: None,
+                provenance: None,
+                is_correction_enabled: config.estimator_config.correction.enabled,
+                query_coverage: None,
+                snapshot_tuning: None,
+                snapshot_dependencies: None,
+                pinned_learned_config: None,
+                mixed_composition,
+            },
+            receipt,
+        ))
     }
 
     /// Create a regression-only forward-pass model after resolving configuration.
@@ -897,6 +988,7 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            snapshot_dependencies: None,
             pinned_learned_config: None,
             mixed_composition: None,
         })
@@ -911,7 +1003,8 @@ impl ForwardPassPerfModel {
     /// identity, the estimator is rebuilt without fallback, and the saved
     /// tuning state is validated and installed. Any mismatch is an error.
     pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
-        let (mut config, registered) = config.resolve_with_registration()?;
+        let (mut config, registered, source_receipt) =
+            config.resolve_with_registration_and_receipt()?;
         if let Some(path) = config
             .estimator_config
             .fpm_interpolation
@@ -923,7 +1016,12 @@ impl ForwardPassPerfModel {
             })?;
         }
         if config.estimator_config.state_snapshot.is_some() {
-            return persist::restore(config, registered, &Self::select);
+            return persist::restore_with_receipt(
+                config,
+                registered,
+                &Self::select,
+                source_receipt,
+            );
         }
         Self::select(config, registered)
     }
@@ -991,7 +1089,8 @@ impl ForwardPassPerfModel {
             }
             if mode == EstimationMode::FpmLearned {
                 // Invalid source bytes and identity never trigger fallback.
-                let mut model = Self::from_learned_config(&config)?;
+                let (mut model, receipt) =
+                    Self::from_learned_state_with_receipt(&config, None, false)?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
@@ -1017,7 +1116,7 @@ impl ForwardPassPerfModel {
                     .is_none()
                 {
                     let mut pinned = resolved.clone();
-                    super::source::pin_legacy_source(&mut pinned)?;
+                    super::source::pin_legacy_source_with_receipt(&mut pinned, receipt)?;
                     if let (Some(fallback), Some(mixed)) = (
                         pinned
                             .estimator_config
@@ -2679,13 +2778,16 @@ impl ForwardPassPerfModel {
     /// selected dependencies rather than infer data use from an estimator name.
     /// This only reports construction-time pins; it performs no filesystem I/O.
     pub fn dependency_info(&self) -> serde_json::Value {
+        if let Some(dependencies) = &self.snapshot_dependencies {
+            return dependencies.clone();
+        }
         let mut systems_paths = Vec::new();
         let mut files = serde_json::json!([]);
         if let Some(provenance) = &self.provenance {
             if let Some(root) = &provenance.selected_systems_root {
                 systems_paths.push(root.clone());
             }
-            if let Some(source) = &self
+            if let Some(source) = self
                 .pinned_learned_config
                 .as_ref()
                 .unwrap_or(&provenance.config)
@@ -2693,6 +2795,7 @@ impl ForwardPassPerfModel {
                 .fpm_learned
                 .source
                 .resolved_source
+                .as_ref()
             {
                 files =
                     serde_json::to_value(&source.dependencies).expect("dependency serialization");
@@ -2712,6 +2815,102 @@ impl ForwardPassPerfModel {
         }
         serde_json::json!({"systems_paths": systems_paths, "files": files, "fallback": fallback,
             "owned_systems_paths": [], "external_systems_paths": systems_paths})
+    }
+
+    /// Recheck immutable timing inputs against this model's captured pins.
+    ///
+    /// Call explicitly at preparation or assessment boundaries. This streams
+    /// file hashes and freshly fingerprints native data (including directory
+    /// inventory); it does not rediscover sources, fit, tune, or change state.
+    /// Snapshot-owned inputs are checked at their relocated paths. Independent
+    /// architecture/hardware resource validation remains the caller's task.
+    pub fn verify_dependencies(&self) -> Result<(), AicError> {
+        let invalid = |message: &str| AicError::InvalidEngineConfig(message.into());
+        let verify_file = |path: &std::path::Path, sha256: &str, byte_length: u64| {
+            let parent = path
+                .parent()
+                .ok_or_else(|| invalid("timing dependency has no parent directory"))?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| invalid("timing dependency must name a UTF-8 file"))?;
+            super::snapshot::verify_recorded(
+                parent,
+                &super::snapshot::FileRecord {
+                    path: name.into(),
+                    sha256: sha256.to_ascii_lowercase(),
+                    size_bytes: byte_length,
+                },
+            )
+        };
+        let dependencies: Vec<super::LearnedDependency> =
+            serde_json::from_value(self.dependency_info()["files"].clone())
+                .map_err(|_| invalid("model has malformed captured timing dependencies"))?;
+        for dependency in dependencies {
+            verify_file(&dependency.path, &dependency.sha256, dependency.byte_length)?;
+        }
+        let verify_native =
+            |provenance: &ForwardPassPerfProvenance,
+             expected: &super::snapshot::perf_db::PerfDbFingerprint| {
+                let root = provenance
+                    .selected_systems_root
+                    .as_deref()
+                    .ok_or_else(|| invalid("native timing has no captured systems root"))?;
+                let current = super::snapshot::perf_db::fingerprint(
+                    root,
+                    &provenance.config.system,
+                    provenance
+                        .config
+                        .estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_deref(),
+                )?;
+                if &current != expected {
+                    return Err(invalid("native timing dependency fingerprint changed"));
+                }
+                if let Some(profile) = &provenance
+                    .config
+                    .estimator_config
+                    .op_level
+                    .execution_profile
+                {
+                    let size = std::fs::metadata(&profile.path)
+                        .map_err(|source| AicError::Io {
+                            path: profile.path.clone(),
+                            source,
+                        })?
+                        .len();
+                    verify_file(&profile.path, &profile.sha256, size)?;
+                }
+                Ok(())
+            };
+        if matches!(self.mode, ForwardPassPerfMode::Native { .. }) {
+            let provenance = self.provenance.as_ref().ok_or_else(|| {
+                invalid("native dependency verification requires canonical construction provenance")
+            })?;
+            let expected = self
+                .data_fingerprint()
+                .ok_or_else(|| invalid("native timing has no captured data fingerprint"))?
+                .as_ref()
+                .as_ref()
+                .map_err(|_| {
+                    invalid("native timing data could not be fingerprinted at construction")
+                })?;
+            verify_native(provenance, expected)?;
+        }
+        if let Some(mixed) = &self.mixed_composition
+            && mixed.native_engine().is_some()
+        {
+            let native = mixed.dependency_provenance();
+            let provenance: ForwardPassPerfProvenance =
+                serde_json::from_value(native["provenance"].clone())
+                    .map_err(|_| invalid("mixed timing has malformed captured provenance"))?;
+            let fingerprint = serde_json::from_value(native["fingerprint"].clone())
+                .map_err(|_| invalid("mixed timing has no captured data fingerprint"))?;
+            verify_native(&provenance, &fingerprint)?;
+        }
+        Ok(())
     }
 
     /// Whether some native estimate differs from the engine's: correction is

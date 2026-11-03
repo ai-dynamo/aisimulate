@@ -1,0 +1,24 @@
+{
+  "command": [
+    ".venv/bin/maturin",
+    "develop",
+    "--release",
+    "--locked",
+    "--skip-install"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate",
+  "started_utc": "2026-11-03T10:51:25.372635+00:00",
+  "environment": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": null,
+    "MKL_NUM_THREADS": null,
+    "PYTHONPATH": null,
+    "CARGO_TARGET_DIR": null,
+    "GIT_CONFIG_COUNT": null,
+    "GIT_CONFIG_KEY_0": null,
+    "GIT_CONFIG_VALUE_0": null
+  },
+  "exit_code": 0,
+  "seconds": 209.74391929100966,
+  "log_sha256": "e48040e4e5f5d93774dc5c6396947755e40c38e8fc6b6442329b79c6d0694a55"
+}

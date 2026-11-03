@@ -1,0 +1,57 @@
+{
+  "bootstrap_observations": 20,
+  "feedback_observations": 20,
+  "initial_prediction": 4.0,
+  "initial_route": {
+    "temporary_mixed_composition": {
+      "calibration_admissions": 0,
+      "calibration_enabled": true,
+      "fallback_eligible": true,
+      "online_available": false,
+      "online_ready": false,
+      "owned": true,
+      "paired_comparisons": 0,
+      "preferred_expert": "stable",
+      "query_type": "mixed",
+      "route": "interpolation",
+      "selected_expert": "stable",
+      "stable_available": true,
+      "stable_source": "interpolation",
+      "streak": 0,
+      "switches": 0,
+      "version": "original_a_mixed_experts_attention_moe_v3",
+      "warmup": 5,
+      "warmup_complete": false,
+      "workload_kind": "contains_locally_mixed"
+    }
+  },
+  "later_prediction": 8.0,
+  "predictions_before_admission": [
+    4.0,
+    4.0,
+    4.0,
+    4.0,
+    4.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0,
+    8.0
+  ],
+  "store_additions": 1,
+  "stores": [
+    "contains_locally_mixed",
+    "pure_decode",
+    "pure_prefill"
+  ]
+}

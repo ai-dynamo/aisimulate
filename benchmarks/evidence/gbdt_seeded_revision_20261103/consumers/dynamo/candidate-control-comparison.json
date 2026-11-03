@@ -1,0 +1,108 @@
+{
+  "excluded_success_detail_keys": [
+    "history_grouping_ms",
+    "native_execution_readiness"
+  ],
+  "reason": "Grouping duration is timing metadata; additive execution diagnostics are inspected separately. All remaining success details, prediction values and lifecycle counters must equal.",
+  "cases": [
+    {
+      "case": "regression_live_prefill",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_delayed_capabilities_prefill",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_attention_dp2_lifecycle_prefill",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_live_decode",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_delayed_capabilities_decode",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_attention_dp2_lifecycle_decode",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_live_aggregated",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_delayed_capabilities_aggregated",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_attention_dp2_lifecycle_aggregated",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "regression_attention_dp2_capacity_decode",
+      "status_matches": true,
+      "candidate_status": "failed",
+      "error_type_matches": true
+    },
+    {
+      "case": "regression_attention_dp2_capacity_aggregated",
+      "status_matches": true,
+      "candidate_status": "failed",
+      "error_type_matches": true
+    },
+    {
+      "case": "learned_required_store_guard",
+      "status_matches": true,
+      "candidate_status": "failed",
+      "error_type_matches": true
+    },
+    {
+      "case": "legacy_checkpoint_frozen_passthrough",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "legacy_checkpoint_online_tune_and_rebuild",
+      "status_matches": true,
+      "candidate_status": "passed",
+      "predictions_and_lifecycle_equal": true
+    },
+    {
+      "case": "seeded_frozen_passthrough",
+      "candidate_only_new_api": true,
+      "candidate_status": "passed"
+    },
+    {
+      "case": "seeded_online_tune_and_rebuild",
+      "candidate_only_new_api": true,
+      "candidate_status": "passed"
+    },
+    {
+      "case": "learned_snapshot_transport",
+      "candidate_only_new_api": true,
+      "candidate_status": "passed"
+    }
+  ]
+}

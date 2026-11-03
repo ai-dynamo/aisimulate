@@ -539,6 +539,10 @@ impl MixedComposition {
         self.policy.scenario == TemporaryMixedCompositionScenario::AC
     }
 
+    pub(super) fn native_engine(&self) -> Option<&Engine> {
+        self.engine.as_deref()
+    }
+
     pub(super) fn dependency_provenance(&self) -> &serde_json::Value {
         &self.native_dependency
     }

@@ -1,0 +1,30 @@
+{
+  "command": [
+    "python/aisimulate/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:timeout",
+    "-c",
+    "pytest.ini",
+    "crates/core/parity_tests/perfmodel/test_compile_engine_parity.py",
+    "crates/core/parity_tests/perfmodel/test_engine_step_parity.py",
+    "-q",
+    "--color=no"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "started_utc": "2026-11-03T07:51:11.198666+00:00",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "PYTHONPATH": null,
+    "CARGO_TARGET_DIR": null,
+    "GIT_CONFIG_COUNT": null,
+    "GIT_CONFIG_KEY_0": null,
+    "GIT_CONFIG_VALUE_0": null
+  },
+  "exit_code": 0,
+  "seconds": 282.3814953339752,
+  "log_sha256": "a72cd6882ad6a7ef792cfba18aa831b2f18701f0e33e815e3c4c8b3c1bdd86cd"
+}

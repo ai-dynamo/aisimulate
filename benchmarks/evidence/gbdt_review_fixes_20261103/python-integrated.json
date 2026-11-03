@@ -1,0 +1,40 @@
+{
+  "command": [
+    "python/aisimulate/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:timeout",
+    "-c",
+    "python/aisimulate/pytest.ini",
+    "python/aisimulate/tests/unit/test_support_learned_validation.py",
+    "python/aisimulate/tests/unit/test_support_validation.py",
+    "python/aisimulate/tests/unit/test_support_validation_workflow.py",
+    "python/aisimulate/tests/unit/test_support_serving_validation.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_bundle.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_bundle_transport.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_mixed_composition_integration.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_mixed_quality_gate.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_mixed_selector_integration.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_mixed_snapshot_process.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_snapshot_process.py",
+    "python/aisimulate/tests/unit/sdk/test_fpm_state_snapshot.py",
+    "-q",
+    "--color=no"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "started_utc": "2026-11-03T10:55:31.443208+00:00",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "PYTHONPATH": null,
+    "CARGO_TARGET_DIR": null,
+    "GIT_CONFIG_COUNT": null,
+    "GIT_CONFIG_KEY_0": null,
+    "GIT_CONFIG_VALUE_0": null
+  },
+  "exit_code": 0,
+  "seconds": 304.0460431660176,
+  "log_sha256": "7f3580e5d8c3b2a2db8bb6b761616f8b41a7f1e592671f232c1fcc613418af93"
+}

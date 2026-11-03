@@ -1,0 +1,38 @@
+{
+  "source_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957",
+  "source_directory": "python/aisimulate/src/aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1",
+  "source_bundle_sha256": "ab475300f9e517523254db57dc3dca127739da949fbac52b76c6bf7ca2cf9250",
+  "bundle_sha256": "805d952b35d36114934042e0ba1145edc87d50bdbd60c96ae032ea5789147e73",
+  "seed_identity_and_provenance_unchanged": true,
+  "dependencies": [
+    {
+      "byte_length": 5096,
+      "path": "seed/manifest.json",
+      "purpose": "training_checkpoint_manifest",
+      "sha256": "bed92062585efd3d1655fbc232bc785ee4e85916a6b489042a33b329d29d9164",
+      "git_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+    },
+    {
+      "byte_length": 15311,
+      "path": "seed/model.json",
+      "purpose": "learned_forest",
+      "sha256": "8801b7ba08134f1c63cfe8115b8b82aef82eff20de94c45c5ca24c45dbeefebe",
+      "git_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+    },
+    {
+      "byte_length": 8216,
+      "path": "seed/pure_decode.rows.parquet",
+      "purpose": "training_rows",
+      "sha256": "383479cad71a4e0e3ae734867a8c9c5d6cec49a8a88fae107ad58eda39f36783",
+      "git_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+    },
+    {
+      "byte_length": 8776,
+      "path": "seed/pure_prefill.rows.parquet",
+      "purpose": "training_rows",
+      "sha256": "3ddca02ca6c56fe0af172ac9eeae456e27f27da352a5ee9e88da802146649f7a",
+      "git_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+    }
+  ],
+  "scope": "Self-authored synthetic functional inputs; no hardware accuracy qualification."
+}

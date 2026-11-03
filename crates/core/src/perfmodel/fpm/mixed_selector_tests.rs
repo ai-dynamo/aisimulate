@@ -63,7 +63,7 @@ fn mixed_selector_rejects_incomplete_portable_snapshot_before_writing() {
     assert!(
         error
             .to_string()
-            .contains("not supported by portable state snapshots")
+            .contains("no canonical construction policy")
     );
     assert!(!destination.exists());
     assert_eq!(model.mixed_composition_state().unwrap(), before);
@@ -392,4 +392,74 @@ fn mixed_selector_invalid_and_duplicate_append_are_atomic() {
         ),
         before
     );
+}
+
+#[test]
+fn mixed_selector_snapshot_state_preserves_adaptive_only_stores_and_append_history() {
+    let (_fixture, _a, _table, mut model) = selector();
+    let c = seed(Kind::ContainsLocallyMixed, 20);
+    model.append_mixed_learned_checkpoint(c.path()).unwrap();
+    let mut rows = group(Kind::ContainsLocallyMixed);
+    rows[0].wall_time = 0.040;
+    for _ in 0..5 {
+        model.tune_with_fpms(&[rows.clone()]).unwrap();
+    }
+    let mut restored = model.clone();
+    let ForwardPassPerfMode::CausalSelector(original) = &model.mode else {
+        panic!()
+    };
+    let mut combined = CalibratedOnlineModel::new(
+        (*original.stable).clone(),
+        original.learned.clone(),
+        original.online.clone(),
+        original.identity_verified,
+        &model.options,
+        &model
+            .provenance
+            .as_ref()
+            .unwrap()
+            .config
+            .estimator_config
+            .selector,
+    )
+    .unwrap();
+    assert!(!combined.stable.has_store(Kind::ContainsLocallyMixed));
+    assert!(combined.learned.has_store(Kind::ContainsLocallyMixed));
+    let corrections = original.correction_stores().to_vec();
+    let evidence = original.selector_states();
+    combined.validate_snapshot(&corrections, &evidence).unwrap();
+    let sources = original.appended_sources().clone();
+    assert!(
+        combined
+            .restore_appended_sources(Default::default())
+            .is_err()
+    );
+    let mut bad = sources.clone();
+    bad.get_mut(&Kind::ContainsLocallyMixed).unwrap()["training_rows"] = 21.into();
+    assert!(combined.restore_appended_sources(bad).is_err());
+    combined.restore_appended_sources(sources).unwrap();
+    combined.install_snapshot(corrections, evidence);
+    assert_eq!(combined.diagnostics(), original.diagnostics());
+    restored.mode = ForwardPassPerfMode::CausalSelector(Box::new(combined));
+    for wall_ms in [35.0, 42.0, 23.0] {
+        assert_eq!(
+            restored.estimate_forward_pass_with_route(&rows).unwrap(),
+            model.estimate_forward_pass_with_route(&rows).unwrap()
+        );
+        rows[0].wall_time = wall_ms / 1000.0;
+        restored.tune_with_fpms(&[rows.clone()]).unwrap();
+        model.tune_with_fpms(&[rows.clone()]).unwrap();
+        assert_eq!(
+            restored.learned_expert_artifacts().unwrap(),
+            model.learned_expert_artifacts().unwrap()
+        );
+        assert_eq!(
+            restored.learned_selector_diagnostics(),
+            model.learned_selector_diagnostics()
+        );
+        assert_eq!(
+            restored.mixed_composition_state().unwrap(),
+            model.mixed_composition_state().unwrap()
+        );
+    }
 }

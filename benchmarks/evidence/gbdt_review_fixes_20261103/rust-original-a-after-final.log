@@ -1,0 +1,31 @@
+   Compiling aisimulate-core v0.13.0 (/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/crates/core)
+warning: method `slot_layouts` is never used
+   --> crates/core/src/engine/timing.rs:673:19
+    |
+671 | impl TimingEvidenceAccumulator {
+    | ------------------------------ method in this implementation
+672 |     /// How many slot-name lists the prefill and decode phases update in place.
+673 |     pub(crate) fn slot_layouts(&self) -> (usize, usize) {
+    |                   ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `aisimulate-core` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.28s
+     Running unittests src/lib.rs (/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target/debug/deps/aisimulate_core-5f28ff2095ef8c7e)
+
+running 11 tests
+test engine::scheduler::vllm::tests::forward_pass_metrics::test_preempted_request_keeps_original_admission_cache_truth ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::large_original_a_legacy_construction_and_portable_references ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::mixed_original_a_rejects_corrupt_inconsistent_and_missing_sources ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::mixed_original_a_routes_cover_absent_partial_and_complete_support ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::mixed_original_a_stream_preserves_decoded_groups_and_checks_every_byte ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::mixed_original_a_verifies_frozen_stores_and_online_checkpoint_anchor ... ok
+test perfmodel::fpm::source::original_a::tests::original_a_parse_failure_still_checks_unread_tail_and_required_references ... ok
+test perfmodel::fpm::source::original_a::tests::original_a_projection_rejects_duplicates_in_kept_and_discarded_fields ... ok
+test perfmodel::fpm::source::original_a::tests::original_a_projection_retains_only_exact_references_and_hashes_all_bytes ... ok
+test perfmodel::fpm::source::original_a::tests::original_a_streaming_does_not_relax_small_metadata_limit ... ok
+test perfmodel::fpm::model::mixed_fallback::tests::large_original_a_complete_snapshot_relocation ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 2561 filtered out; finished in 22.77s
+

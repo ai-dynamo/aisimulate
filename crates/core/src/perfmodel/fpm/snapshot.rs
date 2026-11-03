@@ -13,26 +13,29 @@
 //!   state.bin              tunable state, bincode 1 fixint (see STATE_LAYOUT_VERSION)
 //!   learned/artifact.json  frozen forest (fpm_learned frozen, from_learned)
 //!   learned/stable.json    frozen expert forest (causal selector)
-//!   learned/online/        online learner checkpoint, runtime format v5
+//!   learned/online/        current online checkpoint, runtime format v5
+//!   source/                byte-exact original seed and evidence closure
+//!   mixed/state.json       calibrated mixed fallback state and binding
+//!   mixed/perf_db/         mandatory packed native learned prior, when present
 //!   execution_profile.json pinned op-level execution profile, when configured
-//!   perf_db/               packed performance data (include_perf_db only)
+//!   perf_db/               top-level native data, with include_perf_db
 //! ```
 //!
-//! `config.json` pins `estimator_config.state_snapshot.sha256` to the
-//! manifest bytes, and the manifest pins every other file except the packed
-//! performance-data tree, which is pinned by its tree digest. This module owns
-//! the encoding, version checks, digests and atomic publication; the model
-//! owns state extraction and restoration.
+//! `config.json` is a convenience output derived from the manifest and pins
+//! `estimator_config.state_snapshot.sha256` to its bytes. The manifest pins
+//! every payload file; native trees also carry semantic data fingerprints.
+//! This module owns encoding, version checks, digests and atomic publication;
+//! the model owns state extraction and restoration.
 //!
-//! A snapshot is relocatable (schema version 2): the manifest identity names
-//! the inputs the snapshot owns (packed performance data, an execution
-//! profile, learned artifacts and checkpoints) by their fixed paths relative
-//! to the snapshot directory, and restoration resolves them against the
-//! directory it reads. `config.json` records the absolute configuration at
-//! the save location. Version 1 manifests recorded owned inputs as absolute
-//! paths below the save location; readers recover that location from the
-//! fixed relative suffixes.
+//! Schema and state layout 3 preserve archived original learned source pins
+//! separately from the current runtime payload. Typed owned paths are relative
+//! to the snapshot, so moving it preserves source identity, training recipe
+//! and calibrated fallback state. Version 2 retained the same state enum
+//! encoding with a layout discriminator of 2; its explicit reader remains.
+//! Version 1 recorded owned paths below the absolute save location; readers
+//! recover that location from their fixed relative suffixes.
 
+pub(crate) mod closure;
 pub(crate) mod codec;
 pub(crate) mod perf_db;
 
@@ -43,23 +46,26 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::model::{ForwardPassPerfSource, ForwardPassReadinessReport, ForwardPassWorkerType};
+use super::model::{ForwardPassPerfSource, ForwardPassWorkerType};
 use super::{EstimationMode, ForwardPassPerfModelConfig, ForwardPassPerfOptions};
 use crate::AicError;
 
 pub(crate) const SCHEMA: &str = "aisimulate_fpm_state_snapshot";
-pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 3;
+pub(crate) const LEGACY_SCHEMA_VERSION: u32 = 2;
 /// Manifests whose owned inputs are absolute paths below the save location.
 pub(crate) const PATH_PINNED_SCHEMA_VERSION: u32 = 1;
 /// Positional layout of `state.bin`. Bump it with any change to an encoded
 /// state type (fields, order, types or enum variants); the layout golden test
 /// fails until it is updated.
-pub const STATE_SNAPSHOT_LAYOUT_VERSION: u32 = 2;
+pub const STATE_SNAPSHOT_LAYOUT_VERSION: u32 = 3;
+pub(crate) const LEGACY_STATE_LAYOUT_VERSION: u32 = 2;
 pub(crate) const STATE_ENCODING: &str = "bincode1_fixint";
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const CONFIG_FILE: &str = "config.json";
 pub(crate) const STATE_FILE: &str = "state.bin";
 pub(crate) const LEARNED_ARTIFACT_FILE: &str = "learned/artifact.json";
+pub(crate) const MIXED_STATE_FILE: &str = "mixed/state.json";
 pub(crate) const STABLE_ARTIFACT_FILE: &str = "learned/stable.json";
 pub(crate) const ONLINE_CHECKPOINT_DIR: &str = "learned/online";
 pub(crate) const EXECUTION_PROFILE_FILE: &str = "execution_profile.json";
@@ -136,9 +142,35 @@ pub(crate) struct NativeRecord {
 #[serde(deny_unknown_fields)]
 pub(crate) struct LearnedRecord {
     pub identity_verified: bool,
+    /// Appended mixed seeds have no live external paths: their complete anchors
+    /// and forests are owned by the current runtime checkpoint.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub appended_mixed_sources:
+        std::collections::BTreeMap<super::ForwardPassRegressionWorkloadKind, serde_json::Value>,
+    /// Current runtime payload is separate from the archived original source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<LearnedRuntimeRecord>,
     /// Constructor options of a `from_learned` model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<ForwardPassPerfOptions>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LearnedRuntimeRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MixedRecord {
+    pub state: String,
+    /// A learned fallback always owns its complete native prior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeRecord>,
 }
 
 /// State-derived summary compared after restoration. Not-ready subtypes and
@@ -170,8 +202,10 @@ pub(crate) struct Manifest {
     pub native: Option<NativeRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learned: Option<LearnedRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mixed: Option<MixedRecord>,
     pub diagnostics: DiagnosticsRecord,
-    pub readiness: ForwardPassReadinessReport,
+    pub readiness: super::model::ReadinessRecord,
     pub files: Vec<FileRecord>,
 }
 
@@ -206,22 +240,27 @@ impl ManifestHeader {
                 schema_version,
                 Some(version) if version == u64::from(SCHEMA_VERSION)
                     || version == u64::from(PATH_PINNED_SCHEMA_VERSION)
+                    || version == u64::from(LEGACY_SCHEMA_VERSION)
             )
         {
             return Err(invalid(format!(
-                "unsupported manifest schema {} version {}; this binary reads {SCHEMA} versions {PATH_PINNED_SCHEMA_VERSION} and {SCHEMA_VERSION}",
+                "unsupported manifest schema {} version {}; this binary reads {SCHEMA} versions {PATH_PINNED_SCHEMA_VERSION}, {LEGACY_SCHEMA_VERSION}, and {SCHEMA_VERSION}",
                 text(&header.schema),
                 text(&header.schema_version)
             )));
         }
-        if header
+        let layout = header
             .state_layout_version
             .as_ref()
-            .and_then(serde_json::Value::as_u64)
-            != Some(u64::from(STATE_SNAPSHOT_LAYOUT_VERSION))
-        {
+            .and_then(serde_json::Value::as_u64);
+        let expected_layout = if schema_version == Some(u64::from(SCHEMA_VERSION)) {
+            STATE_SNAPSHOT_LAYOUT_VERSION
+        } else {
+            LEGACY_STATE_LAYOUT_VERSION
+        };
+        if layout != Some(u64::from(expected_layout)) {
             return Err(invalid(format!(
-                "state layout version {} is not supported by this binary (expected {STATE_SNAPSHOT_LAYOUT_VERSION})",
+                "state layout version {} is not supported for this manifest (expected {expected_layout})",
                 text(&header.state_layout_version)
             )));
         }
@@ -269,6 +308,111 @@ impl Manifest {
             relative_path(&file.path)?;
             if !is_digest(&file.sha256) || !paths.insert(file.path.as_str()) {
                 return Err(invalid("manifest file records are malformed"));
+            }
+        }
+        if manifest
+            .learned
+            .as_ref()
+            .is_some_and(|record| !record.appended_mixed_sources.is_empty())
+            && (manifest.schema_version < SCHEMA_VERSION
+                || manifest.kind != StateSnapshotKind::CausalSelector
+                || manifest.mixed.is_none())
+        {
+            return Err(invalid(
+                "appended selector sources require schema 3 mixed selector state",
+            ));
+        }
+        if manifest.schema_version < SCHEMA_VERSION
+            && (manifest.mixed.is_some()
+                || manifest
+                    .learned
+                    .as_ref()
+                    .is_some_and(|v| v.runtime.is_some()))
+        {
+            return Err(invalid(
+                "legacy manifest cannot contain schema 3 state records",
+            ));
+        }
+        if manifest.schema_version >= SCHEMA_VERSION {
+            let needs_runtime = matches!(
+                manifest.kind,
+                StateSnapshotKind::LearnedFrozen
+                    | StateSnapshotKind::LearnedOnline
+                    | StateSnapshotKind::CausalSelector
+            );
+            if needs_runtime
+                && manifest
+                    .learned
+                    .as_ref()
+                    .and_then(|record| record.runtime.as_ref())
+                    .is_none()
+            {
+                return Err(invalid(
+                    "schema 3 learned snapshot lacks current runtime payload",
+                ));
+            }
+            if manifest.kind == StateSnapshotKind::CausalSelector
+                && !paths.contains(STABLE_ARTIFACT_FILE)
+            {
+                return Err(invalid("manifest does not list the frozen expert"));
+            }
+            let has_mixed_policy = manifest.identity.as_ref().is_some_and(|identity| {
+                identity
+                    .estimator_config
+                    .effective_mixed_composition()
+                    .is_some()
+            });
+            if has_mixed_policy != manifest.mixed.is_some() {
+                return Err(invalid("snapshot mixed policy/state ownership differs"));
+            }
+        }
+        if let Some(mixed) = &manifest.mixed {
+            if mixed.state != MIXED_STATE_FILE
+                || !paths.contains(MIXED_STATE_FILE)
+                || !matches!(
+                    manifest.kind,
+                    StateSnapshotKind::LearnedFrozen
+                        | StateSnapshotKind::LearnedOnline
+                        | StateSnapshotKind::CausalSelector
+                )
+                || mixed.native.as_ref().is_some_and(|native| !native.packed)
+            {
+                return Err(invalid("invalid mixed snapshot ownership record"));
+            }
+        }
+        if let Some(runtime) = manifest.learned.as_ref().and_then(|v| v.runtime.as_ref()) {
+            let online = matches!(
+                manifest.kind,
+                StateSnapshotKind::LearnedOnline | StateSnapshotKind::CausalSelector
+            );
+            if online != runtime.checkpoint.is_some()
+                || online == runtime.artifact.is_some()
+                || runtime
+                    .checkpoint
+                    .as_deref()
+                    .is_some_and(|path| path != ONLINE_CHECKPOINT_DIR)
+                || runtime
+                    .artifact
+                    .as_deref()
+                    .is_some_and(|path| path != LEARNED_ARTIFACT_FILE)
+            {
+                return Err(invalid("invalid learned runtime payload record"));
+            }
+            let required: &[&str] = if online {
+                &[
+                    "learned/online/manifest.json",
+                    "learned/online/model.json",
+                    "learned/online/state.bin",
+                ]
+            } else {
+                &[LEARNED_ARTIFACT_FILE]
+            };
+            for path in required {
+                if !paths.contains(path) {
+                    return Err(invalid(format!(
+                        "manifest does not list current learned runtime member {path}"
+                    )));
+                }
             }
         }
         Ok(manifest)
@@ -353,7 +497,83 @@ pub(crate) fn read_manifest_bytes(root: &Path) -> Result<Vec<u8>, AicError> {
     read_limited(&root.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)
 }
 
+/// Hash a file stream with memory independent of the declared file length.
+fn stream_digest(mut input: impl Read, path: &Path) -> Result<(String, u64), AicError> {
+    let mut digest = Sha256::new();
+    let mut byte_length = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|error| io_error(path, error))?;
+        if count == 0 {
+            break;
+        }
+        byte_length = byte_length
+            .checked_add(count as u64)
+            .ok_or_else(|| invalid("snapshot file length overflow"))?;
+        digest.update(&buffer[..count]);
+    }
+    Ok((format!("{:x}", digest.finalize()), byte_length))
+}
+
+/// Verify an owned file without retaining its bytes. Source evidence and
+/// performance tables can be large; their consumers enforce their own decoding
+/// limits. Only the fixed buffer is allocated here, regardless of file size.
+pub(crate) fn verify_recorded(root: &Path, record: &FileRecord) -> Result<(), AicError> {
+    let path = root.join(relative_path(&record.path)?);
+    let file = File::open(&path).map_err(|error| io_error(&path, error))?;
+    if file
+        .metadata()
+        .map_err(|error| io_error(&path, error))?
+        .len()
+        != record.size_bytes
+    {
+        return Err(invalid(format!(
+            "{} does not match its manifest size or SHA-256",
+            record.path
+        )));
+    }
+    // A writer may grow the already opened file after the metadata check. One
+    // extra byte detects that without reading unbounded concurrent appends.
+    let (digest, byte_length) =
+        stream_digest(file.take(record.size_bytes.saturating_add(1)), &path)?;
+    if byte_length != record.size_bytes || digest != record.sha256 {
+        return Err(invalid(format!(
+            "{} does not match its manifest size or SHA-256",
+            record.path
+        )));
+    }
+    Ok(())
+}
+
+/// Match an outer snapshot pin to bytes authenticated by the actual native
+/// decoder during this restore. The receipt is private, cannot be deserialized
+/// from a config, and must not be retained across construction boundaries.
+pub(crate) fn verify_consumed(
+    root: &Path,
+    record: &FileRecord,
+    receipt: &super::source::VerifiedLearnedSource,
+) -> Result<(), AicError> {
+    let path = root.join(relative_path(&record.path)?);
+    let consumed = receipt
+        .source
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.path == path)
+        .ok_or_else(|| invalid(format!("decoder did not verify {}", record.path)))?;
+    if consumed.byte_length != record.size_bytes || consumed.sha256 != record.sha256 {
+        return Err(invalid(format!(
+            "{} does not match its manifest size or SHA-256",
+            record.path
+        )));
+    }
+    Ok(())
+}
+
 /// Read a manifest-listed file and verify its recorded size and digest.
+/// Decoded payloads retain the hard allocation ceiling; use verify_recorded
+/// when only the digest is needed.
 pub(crate) fn read_recorded(root: &Path, record: &FileRecord) -> Result<Vec<u8>, AicError> {
     let path = root.join(relative_path(&record.path)?);
     if record.size_bytes > MAX_STATE_BYTES {
@@ -467,15 +687,73 @@ impl Stage {
         Ok(())
     }
 
+    pub(crate) fn copy_recorded(
+        &mut self,
+        source: &Path,
+        relative: &str,
+        expected_hash: &str,
+        expected_size: u64,
+    ) -> Result<(), AicError> {
+        if self.files.iter().any(|file| file.path == relative) {
+            return Err(invalid("duplicate archived dependency destination"));
+        }
+        let target = self.staging().join(relative_path(relative)?);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        }
+        let mut input = File::open(source)
+            .map_err(|e| io_error(source, e))?
+            .take(expected_size.saturating_add(1));
+        let mut output = File::create(&target).map_err(|e| io_error(&target, e))?;
+        let mut digest = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let count = input.read(&mut buffer).map_err(|e| io_error(source, e))?;
+            if count == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|e| io_error(&target, e))?;
+            digest.update(&buffer[..count]);
+            bytes += count as u64;
+        }
+        let sha256 = format!("{:x}", digest.finalize());
+        if bytes != expected_size || !sha256.eq_ignore_ascii_case(expected_hash) {
+            return Err(invalid(format!(
+                "source changed while archiving {}",
+                source.display()
+            )));
+        }
+        self.files.push(FileRecord {
+            path: relative.into(),
+            sha256,
+            size_bytes: bytes,
+        });
+        Ok(())
+    }
+
     /// Record a file written by delegated machinery, such as a checkpoint
     /// manifest that pins its own payload.
     pub(crate) fn record_existing(&mut self, relative: &str) -> Result<FileRecord, AicError> {
         let path = self.dir.path().join(relative_path(relative)?);
-        let bytes = std::fs::read(&path).map_err(|error| io_error(&path, error))?;
+        let file = File::open(&path).map_err(|error| io_error(&path, error))?;
+        let expected_size = file
+            .metadata()
+            .map_err(|error| io_error(&path, error))?
+            .len();
+        let (sha256, size_bytes) =
+            stream_digest(file.take(expected_size.saturating_add(1)), &path)?;
+        if size_bytes != expected_size {
+            return Err(invalid(
+                "staged file size changed while recording its digest",
+            ));
+        }
         let record = FileRecord {
             path: relative.into(),
-            sha256: sha256_hex(&bytes),
-            size_bytes: bytes.len() as u64,
+            sha256,
+            size_bytes,
         };
         self.files.push(record.clone());
         Ok(record)

@@ -1,0 +1,149 @@
+[
+  {
+    "name": "gym-unchanged",
+    "label": "candidate",
+    "argv": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/gbdt-gym-compat-runner.py",
+      "candidate",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/unchanged-suite",
+      "-c",
+      "/dev/null",
+      "-p",
+      "no:timeout",
+      "-p",
+      "no:cacheprovider",
+      "--rootdir=/private/tmp/gbdt-baseline-gym-a8b30ca6",
+      "/private/tmp/gbdt-baseline-gym-a8b30ca6/tests/fpm_accuracy",
+      "-ra"
+    ],
+    "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "FPM_COMPAT_EXPECTED_SDK_ROOT": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/",
+      "FPM_COMPAT_EXPECTED_NATIVE_SHA": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "commit.gpgsign",
+      "GIT_CONFIG_VALUE_0": "false"
+    },
+    "exit_code": 0,
+    "log": "gym-unchanged-candidate.log"
+  },
+  {
+    "name": "gym-real-native",
+    "label": "candidate",
+    "argv": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/gbdt-gym-compat-runner.py",
+      "candidate",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/real-native",
+      "-c",
+      "/dev/null",
+      "-p",
+      "no:timeout",
+      "-p",
+      "no:cacheprovider",
+      "--rootdir=/private/tmp/gbdt-baseline-gym-a8b30ca6",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/test_unchanged_gym_real_native.py",
+      "-v",
+      "-ra"
+    ],
+    "cwd": "/private/tmp/gbdt-baseline-gym-a8b30ca6",
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "FPM_COMPAT_EXPECTED_SDK_ROOT": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/",
+      "FPM_COMPAT_EXPECTED_NATIVE_SHA": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "commit.gpgsign",
+      "GIT_CONFIG_VALUE_0": "false",
+      "GYM_COMPAT_RECEIPTS": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/gym/real-native/candidate"
+    },
+    "exit_code": 0,
+    "log": "gym-real-native-candidate.log"
+  },
+  {
+    "name": "dynamo-upstream",
+    "label": "candidate",
+    "argv": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "-m",
+      "pytest",
+      "-c",
+      "/dev/null",
+      "-p",
+      "no:timeout",
+      "-p",
+      "no:cacheprovider",
+      "--rootdir=/private/tmp/gbdt-dynamo-318ab",
+      "/private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py",
+      "/private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_engine_query.py",
+      "-q"
+    ],
+    "cwd": "/private/tmp/gbdt-dynamo-318ab",
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "FPM_COMPAT_EXPECTED_SDK_ROOT": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/",
+      "FPM_COMPAT_EXPECTED_NATIVE_SHA": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "commit.gpgsign",
+      "GIT_CONFIG_VALUE_0": "false",
+      "PYTHONPATH": "/private/tmp/gbdt-dynamo-318ab/components/src:/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src"
+    },
+    "exit_code": 0,
+    "log": "dynamo-upstream-candidate.log"
+  },
+  {
+    "name": "dynamo-real-native",
+    "label": "candidate",
+    "argv": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py"
+    ],
+    "cwd": "/private/tmp/gbdt-dynamo-318ab",
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "FPM_COMPAT_EXPECTED_SDK_ROOT": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/",
+      "FPM_COMPAT_EXPECTED_NATIVE_SHA": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "commit.gpgsign",
+      "GIT_CONFIG_VALUE_0": "false",
+      "PYTHONPATH": "/private/tmp/gbdt-dynamo-318ab/components/src:/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src",
+      "DYNAMO_COMPAT_EVIDENCE": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/candidate"
+    },
+    "exit_code": 1,
+    "log": "dynamo/stale-curated-bundle-attempt/real-native.log",
+    "superseded_by_command_index": 4
+  },
+  {
+    "name": "dynamo-real-native",
+    "label": "candidate",
+    "argv": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py"
+    ],
+    "cwd": "/private/tmp/gbdt-dynamo-318ab",
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "FPM_COMPAT_EXPECTED_SDK_ROOT": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/",
+      "FPM_COMPAT_EXPECTED_NATIVE_SHA": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+      "GIT_CONFIG_COUNT": "1",
+      "GIT_CONFIG_KEY_0": "commit.gpgsign",
+      "GIT_CONFIG_VALUE_0": "false",
+      "PYTHONPATH": "/private/tmp/gbdt-dynamo-318ab/components/src:/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src",
+      "DYNAMO_COMPAT_BUNDLE": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/aggregated-fixture/bundle.json",
+      "DYNAMO_COMPAT_EVIDENCE": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/candidate"
+    },
+    "exit_code": 1,
+    "log": "dynamo-real-native-candidate.log"
+  }
+]

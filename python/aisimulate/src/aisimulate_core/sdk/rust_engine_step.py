@@ -482,9 +482,15 @@ class RustForwardPassPerfModel:
         ``state_layout_version``, ``worker_type``, ``selected_estimation_mode``,
         the pinned ``identity`` configuration with owned inputs resolved
         against ``path`` (``None`` for ``from_learned`` snapshots), its
-        deployment ``topology``, and the ``readiness`` report recorded at save
-        time, which restoration verifies. Requires the same format versions as
-        restoration; the state file is not read.
+        deployment ``topology``, complete pinned ``resolved_config``, the
+        ``dependencies`` record, and the ``readiness`` report recorded at save
+        time. Dependencies contain ``systems_paths``, ``owned_systems_paths``,
+        ``external_systems_paths``, ``files`` (path, byte length and SHA-256),
+        and fallback provenance. These are manifest-pinned declarations;
+        construction verifies payloads and native data. Legacy manifests can
+        declare nested state without listing its files; the constructed model's
+        ``dependency_info()`` includes that verified inventory. Requires the same
+        format versions as restoration; inspection does not restore the model.
         """
         import aisimulate_core
 
@@ -609,9 +615,24 @@ class RustForwardPassPerfModel:
         """Describe the prepared model's verified dependencies without reading files.
 
         Consumers preserve this native record with exported configurations and
-        cache keys, including any internal learned fallback dependencies.
+        cache keys, including any internal learned fallback dependencies. The
+        record separates ``owned_systems_paths`` from ``external_systems_paths``
+        and lists pinned ``files``; a snapshot's owned paths follow its current
+        directory. Hardware/model resource inputs can remain external even
+        when every timing dependency is owned.
         """
         return json.loads(self._inner.dependency_info_json())
+
+    def verify_dependencies(self) -> None:
+        """Recheck captured timing inputs without changing the model.
+
+        Explicitly call at preparation or assessment boundaries. Rust streams
+        current file hashes and fingerprints native data, including directory
+        additions/removals and any nested prior. Snapshot inputs use relocated
+        owned paths. Prediction and diagnostics never perform these checks.
+        This does not validate independent model/hardware capacity resources.
+        """
+        self._inner.verify_dependencies()
 
     def learned_online_diagnostics(self) -> dict[str, Any] | None:
         """Return learned state diagnostics, or ``None`` for another estimator."""
@@ -711,7 +732,11 @@ class RustForwardPassPerfModel:
         fingerprint taken when this process first loaded it, unless
         ``include_perf_db=True`` packs a copy into the snapshot; saving fails
         with ``ValueError`` if that data changed since. Learned forests, online
-        checkpoints and causal-selector experts are always copied.
+        checkpoints and causal-selector experts are always copied. Learned
+        snapshots also copy required interpolation-prior data and source
+        evidence, even when ``include_perf_db=False``. Online history, fallback
+        calibration, quality-gate and selector state resume unchanged; saving
+        never fits pending rows or advances their clocks.
         ``from_learned`` models have no deployment identity, so their snapshot
         configuration carries placeholder identity fields and is restored
         without identity checks. I/O failures raise ``OSError`` subclasses.

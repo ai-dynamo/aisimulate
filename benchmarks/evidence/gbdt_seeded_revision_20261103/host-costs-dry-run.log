@@ -1,0 +1,8 @@
+{"case": "seeded2", "trial": 0, "build": "baseline", "path": "seeded2-baseline-0.json", "sha256": "ea75c60336ec5095aa55f705cec63486a7d80603cc168ced088d37585ec03b97"}
+{"case": "seeded2", "trial": 0, "build": "candidate", "path": "seeded2-candidate-0.json", "sha256": "e6c01949239f67a4214fc993c8f77eca921683ffc1d7ef13d3a7db70c5896bd1"}
+{"case": "seeded4", "trial": 0, "build": "baseline", "path": "seeded4-baseline-0.json", "sha256": "90ecd83ecc3c35f7b636b85afdfe97b9fce84d9d732b898c07349f9217efbc18"}
+{"case": "seeded4", "trial": 0, "build": "candidate", "path": "seeded4-candidate-0.json", "sha256": "22cff0618f5d9e8e98cedfc5fe5ff8e46d2dc8f56231270f5eac554d0dd8e3be"}
+{"case": "fallback", "trial": 0, "build": "baseline", "path": "fallback-baseline-0.json", "sha256": "91d2c3cfaa84867e8f2149050c00ffbadc83f2ac1138b050e4b8fb273d2ab993"}
+{"case": "fallback", "trial": 0, "build": "candidate", "path": "fallback-candidate-0.json", "sha256": "b3f332872d8c072085c7421e87f30be4e73023137d70046b8dc3a43044c9acdb"}
+{"build": "baseline", "trial": 0, "complete": true, "dry_run": true}
+{"build": "candidate", "trial": 0, "complete": true, "dry_run": true}

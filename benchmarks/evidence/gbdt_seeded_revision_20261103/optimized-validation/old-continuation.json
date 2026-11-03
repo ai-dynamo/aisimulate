@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/legacy/cross_version.py",
+    "verify",
+    "--fixture-repo",
+    "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e",
+    "--artifacts",
+    "/private/tmp/gbdt-optimized-legacy-rl9camqu/old-state",
+    "--report",
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/optimized-validation/old-continuation-results.json"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "started_utc": "2026-11-03T08:55:25.652154+00:00",
+  "native_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+  "native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PYTHONPATH": null
+  },
+  "exit_code": 0,
+  "seconds": 0.3290907919872552,
+  "log_sha256": "c0d5e3632ddd91ab297d26e6cdc61800576eb99a0f38167059ae72f09cd6fe6f"
+}

@@ -1,0 +1,62 @@
+{
+  "baseline_native_sha256": "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4",
+  "candidate_native_sha256": "73bc10ea8bbe3f2e7936d56d0e7ec25be77f792e34c32cf59386e0adcf5d491c",
+  "commands": {
+    "expanded": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host_costs_expanded_pairs.py",
+      "--baseline",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline",
+      "--baseline-native-sha256",
+      "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4",
+      "--candidate",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "--candidate-native-sha256",
+      "73bc10ea8bbe3f2e7936d56d0e7ec25be77f792e34c32cf59386e0adcf5d491c",
+      "--shared-harness",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host_costs.py",
+      "--worker-harness",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host_costs_expanded.py",
+      "--case",
+      "seeded2",
+      "--case",
+      "seeded4",
+      "--case",
+      "fallback",
+      "--trials",
+      "5",
+      "--warm-queries",
+      "1000",
+      "--output",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs/expanded"
+    ],
+    "small": [
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host_costs.py",
+      "--checkout",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-merged-baseline",
+      "--native-sha256",
+      "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4",
+      "--comparison-checkout",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "--comparison-native-sha256",
+      "73bc10ea8bbe3f2e7936d56d0e7ec25be77f792e34c32cf59386e0adcf5d491c",
+      "--trials",
+      "5",
+      "--warm-queries",
+      "1000",
+      "--output",
+      "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs/small"
+    ]
+  },
+  "environment": {
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONPATH": null
+  },
+  "requirements": "Wait for a quiet window with other qualification/build jobs finished; dry-run both first. No default caller/runtime changes.",
+  "status": "prepared_not_executed"
+}

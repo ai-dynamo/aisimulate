@@ -1,0 +1,262 @@
+{
+  "verification": "fresh_byte_hashes_no_downloads",
+  "evaluator_revision": "9f4819e2b77afb4798bc8133c42ccc1d1b045e5c",
+  "capture_specification": "/Users/yueqiz/Documents/ChatGPT/AISimulate/benchmarks/evidence/fpm_trace_gym_tick_bootstrap_20261028/cases.json",
+  "capture_specification_sha256": "de9c1a999e23432354d9a046f56b3976f2fae9eae66d13ff67fbf2382adce888",
+  "case_count": 36,
+  "case_ids": [
+    "deepseek-agentx",
+    "deepseek-sharegpt",
+    "deepseek-longbench-part0",
+    "deepseek-longbench-part1",
+    "deepseek-longbench-part2",
+    "deepseek-longbench-part3",
+    "deepseek-longbench-part4",
+    "deepseek-longbench-part5",
+    "deepseek-longbench-part6",
+    "deepseek-longbench-part7",
+    "deepseek-ragpulse-90m",
+    "deepseek-mooncake-conversation",
+    "deepseek-mooncake-toolagent",
+    "agentx-level1",
+    "agentx-level2",
+    "sharegpt-level1",
+    "sharegpt-level2",
+    "longbench-level1",
+    "longbench-level2",
+    "mooncake-toolagent-05rps-hour-sxm",
+    "mooncake-conversation-05rps-hour-sxm",
+    "ragpulse-day5-sxm",
+    "mooncake-conversation-05rps-15m-sxm",
+    "m3-nospec-agentx",
+    "m3-nospec-sharegpt",
+    "m3-nospec-longbench-part0",
+    "m3-nospec-longbench-part1",
+    "m3-nospec-longbench-part2",
+    "m3-nospec-longbench-part3",
+    "m3-nospec-longbench-part4",
+    "m3-nospec-longbench-part5",
+    "m3-nospec-longbench-part6",
+    "m3-nospec-longbench-part7",
+    "m3-nospec-ragpulse-90m",
+    "m3-nospec-mooncake-conversation",
+    "m3-nospec-mooncake-toolagent"
+  ],
+  "verified_files": [
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-coverage-ac-20261027/table-extended/fpm_forward_perf.metadata.json",
+      "sha256": "ed59e969bd1a79aa237669e35bfdf26e080c4452fab377fb968cf2168e5e96a1",
+      "byte_length": 1588
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-coverage-ac-20261027/table-extended/fpm_forward_perf.parquet",
+      "sha256": "2288c5a0d6649f28e08650a5e18c033970ac61a5bd040b09023dc8d943e374ff",
+      "byte_length": 23364
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/agentx.jsonl.gz",
+      "sha256": "0d0ca504a427dd5e924de36fe204fba02e3ecec3e3cdabd0c25106662733202c",
+      "byte_length": 27740366
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part0.jsonl.gz",
+      "sha256": "29ff861f4e16f1193777eafb9dbc6649113a16ae2532ef980f2fd3345a129497",
+      "byte_length": 1132617
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part1.jsonl.gz",
+      "sha256": "214eea432c62feae13ee68131126d9e138f7ee77e75fbdd1070795e071ef4a95",
+      "byte_length": 1211139
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part2.jsonl.gz",
+      "sha256": "e670e117435822ca632d2e9bcb7dd17bffa618cf381ba9ce37a9f0b78020f998",
+      "byte_length": 1074514
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part3.jsonl.gz",
+      "sha256": "b85579ec74fc0a300da07a0b6ef0f226d2f7f7b4027eeff7865badee19d85e84",
+      "byte_length": 1135978
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part4.jsonl.gz",
+      "sha256": "5d31b0b06ec9bce5e788dfd48944475c6e005b9ce1c9a39a85d4d7a6b6a80a7b",
+      "byte_length": 1147276
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part5.jsonl.gz",
+      "sha256": "bd03785cf6f157e024d0f089fbf8d18c580cb0bfd61ba67e6a45e4dc2f77459b",
+      "byte_length": 1074425
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part6.jsonl.gz",
+      "sha256": "375decc9427b150713825d74192ad1ceb302fa9643fa253000304c202b805d49",
+      "byte_length": 1122348
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/longbench-part7.jsonl.gz",
+      "sha256": "ef3c15a6290967768f3bee2a2e477222d6e579cf9776b13e7605d28a738cd402",
+      "byte_length": 1190553
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/mooncake-conversation.jsonl.gz",
+      "sha256": "eb0a2717eebc5a63ac45c28ecdb00fad6a0ff39171ae9cc0dd440608d560c40c",
+      "byte_length": 25554460
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/mooncake-toolagent.jsonl.gz",
+      "sha256": "835ee1829a918c6174b777e8228ddc815b20dbb3c059f5ab22361210fa2675b3",
+      "byte_length": 25248107
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-gym-mape-20261026/numeric/ragpulse-90m.jsonl.gz",
+      "sha256": "62b5dea4bac710cae26e5bda7e8b9e760d410ed598ac832f197e473feb1a5e12",
+      "byte_length": 4468382
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-deepseek-sharegpt-recollection-20261027/numeric/sharegpt-recollected.jsonl.gz",
+      "sha256": "b632afc6045625f05bddd3e4191a4b53a0b4efe857c76da1a8f175e64ec80cff",
+      "byte_length": 35221045
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-interpolation-refinement-20261026/evaluation-inputs/cases/mooncake-conversation-05rps-15m-sxm.jsonl.gz",
+      "sha256": "e388cbbf4bf9a0b31768a14ef0589a88d00e1b3e8ae1c644bd3fd7cd0a713270",
+      "byte_length": 4484123
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-interpolation-refinement-20261026/reductions/sxm-content-seed-5320761/systems/data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+      "sha256": "2539870e2ade6d41ba8841852341262c96ca557690d5277553349bb6088aa2d0",
+      "byte_length": 1028
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-interpolation-refinement-20261026/reductions/sxm-content-seed-5320761/systems/data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+      "sha256": "20fe132c6f1caec4c64364c5ff2e9879d5b2718802ccb00be0c4e926717e9686",
+      "byte_length": 22540
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/agentx-level1.jsonl.gz",
+      "sha256": "ad2718fb3eaf834af813aebb7376f628b1898f9726b38f04180b4f5288fca610",
+      "byte_length": 4677964
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/agentx-level2.jsonl.gz",
+      "sha256": "ee679e41577eb099f6be6e56ac025512fbd7ab4d5ec5acafabedc4387d9d5391",
+      "byte_length": 5633941
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/longbench-level1.jsonl.gz",
+      "sha256": "873d7233b7332ed186b649cbde3e3c5cac02a52b92d0ac3a5a2cceb9be764e28",
+      "byte_length": 5252682
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/longbench-level2.jsonl.gz",
+      "sha256": "abd12ef633edae58c537c96e9d4ee850966796d7b947dfb196ffffed7f1cbcd7",
+      "byte_length": 3467967
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/sharegpt-level1.jsonl.gz",
+      "sha256": "b40ec43d4297201ffd1e9bb9e7ea55901a54b246537d7c78e482fa09f9e3713a",
+      "byte_length": 8483826
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m27-gym-mape-20261025/cases/sharegpt-level2.jsonl.gz",
+      "sha256": "6bbadb6631bb2b4a1e62c5e80e986c6a7ee81e9c3705512bcf2749b4366f7bea",
+      "byte_length": 8107201
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/agentx.jsonl.gz",
+      "sha256": "e442a026fcaedfa54688d5ab61725abf76095cd777fc33d2de54c5d5da9122bc",
+      "byte_length": 23542393
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part0.jsonl.gz",
+      "sha256": "4efd83401d21452941ee58e4ecc23cacf5293a58e747f0a2a9dfb68a0d54430b",
+      "byte_length": 1432669
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part1.jsonl.gz",
+      "sha256": "8ce0f1cf771c597409ff672a8784761cb892454c60eaa46ee5a3d1a02c80f057",
+      "byte_length": 1476746
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part2.jsonl.gz",
+      "sha256": "2c48d56ffd795a32843659eea5a85ec1b3985a49fc096d681b12793e62b02cd2",
+      "byte_length": 1451868
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part3.jsonl.gz",
+      "sha256": "f846516fb7becf6904ca28b65f6a39d2bb95014cb480eccda9f95132e59a368e",
+      "byte_length": 1482482
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part4.jsonl.gz",
+      "sha256": "c7e7804ae36b8a1ba64b4a886b11550aa73469aad44b0d0c61afeb152e9e0ec0",
+      "byte_length": 1450143
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part5.jsonl.gz",
+      "sha256": "4967816dbb495194d0e1dc1b7cf18ddd581515b40342c099d8885814aea42c00",
+      "byte_length": 1443643
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part6.jsonl.gz",
+      "sha256": "993067a1e93a0bab1d4471452efbaba82623b1448c8b16a1c9bc37a2638325f1",
+      "byte_length": 1453976
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/longbench-part7.jsonl.gz",
+      "sha256": "7c0cc43e9692e70e13efe6cda60a63c5b0ddf3f95fb53a33cfe9bcdda2a6d2f8",
+      "byte_length": 1454613
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/mooncake-conversation.jsonl.gz",
+      "sha256": "a9063e9e1b45710d052f9e3da5d2d72ca9a6e9aad185dea2eed98b59fcab7c1c",
+      "byte_length": 10796755
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/mooncake-toolagent.jsonl.gz",
+      "sha256": "feb001a7d27e93158f273df79147fa898e7283262fb60eba2a4bf89ef4a78486",
+      "byte_length": 7675128
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/ragpulse-90m.jsonl.gz",
+      "sha256": "e5c3711e9c4ee51f88bbffe469df1246c905df5e8c29180a6bb4c96c9081661f",
+      "byte_length": 2137866
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/evaluation-inputs/numeric/sharegpt.jsonl.gz",
+      "sha256": "12dc6e0db49eb8b98419aaf7d48014f80c9a9d21bd25871a8f9f2dffe789331b",
+      "byte_length": 19241783
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/final/table/training/fpm_forward_perf.metadata.json",
+      "sha256": "2e3ebae82af96593810d099ea19c4185a0a4790129bbf8b8614860b9d1ce6584",
+      "byte_length": 5068
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-m3-nospec-selfbench-20261027/final/table/training/fpm_forward_perf.parquet",
+      "sha256": "79e3ab4421fb45e8a238450128ee658f636a0e7873cdfea2643ad135a6c2a9b8",
+      "byte_length": 82500
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-mooncake-a-only-mape-20261026/cases/mooncake-conversation-05rps-hour-sxm.jsonl.gz",
+      "sha256": "82faf3caef27ddfbee4df39bb506d695c23ee65722c544a044a7d9668e592406",
+      "byte_length": 17798025
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-mooncake-a-only-mape-20261026/cases/mooncake-toolagent-05rps-hour-sxm.jsonl.gz",
+      "sha256": "edc0df26b938e530883d91f6b3b3e48d62bda1333da4c332e4c272b12f451d4f",
+      "byte_length": 12609648
+    },
+    {
+      "path": "/Users/yueqiz/Documents/ChatGPT/AISim Benchmark/experiments/fpm-ragpulse-sxm-k8s-20261025/collected/job-9707436006659424947/gym-case/ragpulse-day5-sxm.jsonl.gz",
+      "sha256": "ed932da81dc8c9f392ad22b8ec415ef90528f6a43e024c18929afae3753b9dce",
+      "byte_length": 6136907
+    }
+  ],
+  "hf_catalog": "/Users/yueqiz/.cache/huggingface/hub/datasets--nvidia--aisimulate-fpm-dataset/snapshots/5487a4599a7fbc012c07bcd3699754bdf4a8bef7/catalog/index.json",
+  "hf_catalog_sha256": "3e4c06950606af4b84d624f85191e344f40e3a54de7ed926ddfa851243c956af",
+  "hf_selected_configuration": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8",
+  "hf_prefix_seconds": 180,
+  "scope": "full36 capture C/BC and selected HF smoke; not host-cost qualification"
+}

@@ -1,0 +1,6 @@
+{
+  "source_manifest": "../consumers/source-integrity.json",
+  "source_manifest_sha256": "8f5fc36b1c42cb395424dc91be97911ee32e070293f7426524860d8e7394edeb",
+  "unchanged_unique_consumer_files": 422,
+  "verified_after_optimized_tests": true
+}

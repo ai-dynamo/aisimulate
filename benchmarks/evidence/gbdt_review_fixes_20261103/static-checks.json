@@ -1,0 +1,49 @@
+{
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "python/aisimulate/.venv/bin/ruff",
+        "check",
+        "--config",
+        "python/aisimulate/pyproject.toml",
+        "python/aisimulate/src/aisimulate/support/timing.py",
+        "python/aisimulate/src/aisimulate/support/validation.py",
+        "python/aisimulate/src/aisimulate/support/serving_validation.py",
+        "python/aisimulate/tests/unit/test_support_learned_validation.py"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "python/aisimulate/.venv/bin/ruff",
+        "format",
+        "--check",
+        "--config",
+        "python/aisimulate/pyproject.toml",
+        "python/aisimulate/src/aisimulate/support/timing.py",
+        "python/aisimulate/src/aisimulate/support/validation.py",
+        "python/aisimulate/src/aisimulate/support/serving_validation.py",
+        "python/aisimulate/tests/unit/test_support_learned_validation.py"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/ci/check_packaged_legal_files.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "log_sha256": "0f6ec5643c94dc4e19e8e2b1e195af29ef658496d12092731780c0614f1e8893"
+}

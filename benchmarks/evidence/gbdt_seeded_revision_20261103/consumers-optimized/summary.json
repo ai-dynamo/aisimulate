@@ -1,0 +1,46 @@
+{
+  "native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+  "baseline_revision": "9f4819e2b77afb4798bc8133c42ccc1d1b045e5c",
+  "baseline_native_sha256": "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4",
+  "prior_candidate_native_sha256": "73bc10ea8bbe3f2e7936d56d0e7ec25be77f792e34c32cf59386e0adcf5d491c",
+  "gym": {
+    "unchanged_tests_passed": 691,
+    "real_native_passed": 13,
+    "byte_identical_receipts_to_baseline_7fe_and_73bc": 13
+  },
+  "dynamo": {
+    "upstream_tests_passed": 31,
+    "real_native_passed": 14,
+    "known_baseline_failures": 3,
+    "common_baseline_successes_equal": 11,
+    "prior_candidate_successes_equal_excluding_timing_only": 14,
+    "preserved_failures": [
+      "regression_attention_dp2_capacity_decode",
+      "regression_attention_dp2_capacity_aggregated",
+      "learned_required_store_guard"
+    ]
+  },
+  "consumer_source_files_verified": 422,
+  "harnesses": [
+    {
+      "path": "run_consumers.py",
+      "sha256": "83eb94d418cd9f731c46748a0387a41373fad17d07155f2d77b78497c2c7fc6d",
+      "identical_to_previous_run": true
+    },
+    {
+      "path": "gym/gbdt-gym-compat-runner.py",
+      "sha256": "1caeb21c767d79bb13f678ee0be5207eb30d3b41c18b7c2a5a7c330a7745c9ce",
+      "identical_to_previous_run": true
+    },
+    {
+      "path": "gym/test_unchanged_gym_real_native.py",
+      "sha256": "c6a092ab83e8c5de658fca1434e775b8c3846f73451ad91ac373b0776f626950",
+      "identical_to_previous_run": true
+    },
+    {
+      "path": "dynamo/real_native_harness.py",
+      "sha256": "a94a48200db439e4821a5b19886087a40278453f646776ad9f8d87f900b88f50",
+      "identical_to_previous_run": true
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "command": [
+    "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-c",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/pytest.ini",
+    "-p",
+    "no:timeout",
+    "--color=no",
+    "--junitxml=/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/optimized-validation/unchanged-sdk.xml",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_legacy_migration.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_learned.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_online_export.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_mixed_composition_integration.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_mixed_selector_integration.py",
+    "/private/tmp/gbdt-compat-legacy-ukp1rbpm/python/aisimulate/tests/unit/sdk/test_fpm_original_a_manifest.py"
+  ],
+  "cwd": "/private/tmp/gbdt-compat-legacy-ukp1rbpm",
+  "started_utc": "2026-11-03T08:55:07.528644+00:00",
+  "native_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+  "native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PYTHONPATH": null
+  },
+  "exit_code": 0,
+  "seconds": 13.275708958040923,
+  "log_sha256": "0f4f731395bfcd5a9618a422b43ac07d20155faee6e87467ebe8e7534946e5cd"
+}

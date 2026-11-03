@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "aisimulate-core",
+    "--lib",
+    "original_a",
+    "--",
+    "--test-threads=2"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "utc_started": "2026-11-03T10:50:19.612808+00:00",
+  "env": {
+    "CARGO_TARGET_DIR": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target",
+    "PYO3_PYTHON": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python"
+  },
+  "head": "497480757978d631433b26c5daa39b85e462a339",
+  "phase": "after streaming original-A projection; corrected test Option unwrap",
+  "exit_code": 0,
+  "wall_seconds": 42.165671541995835,
+  "log_sha256": "520422c8b2d07b07f9630a4effb0134a243b86939a2ebc15685ead0313fb29a9"
+}

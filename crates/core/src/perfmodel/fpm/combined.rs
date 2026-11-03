@@ -45,7 +45,12 @@ impl CalibratedOnlineModel {
         config: &super::super::SelectorConfig,
     ) -> Result<Self, AicError> {
         debug_assert_eq!(stable.feature_names(), learned.feature_names());
-        debug_assert_eq!(stable.store_kinds(), learned.store_kinds());
+        debug_assert!(
+            stable
+                .store_kinds()
+                .iter()
+                .all(|kind| learned.has_store(*kind))
+        );
         let corrections = stable
             .store_kinds()
             .into_iter()
@@ -222,7 +227,7 @@ impl CalibratedOnlineModel {
                 .map_err(|error| format!("{kind:?} calibration: {error}"))?;
         }
         self.selector
-            .validate_states(states, &self.stable.store_kinds())
+            .validate_states(states, &self.learned.store_kinds())
     }
 
     pub(super) fn install_snapshot(
@@ -235,6 +240,62 @@ impl CalibratedOnlineModel {
     ) {
         self.corrections = corrections;
         self.selector.set_states(states);
+    }
+
+    /// Path-free append provenance accompanies the runtime-owned anchors and
+    /// forest. Only adaptive stores absent from the frozen expert may own it.
+    pub(super) fn appended_sources(
+        &self,
+    ) -> &std::collections::BTreeMap<ForwardPassRegressionWorkloadKind, serde_json::Value> {
+        &self.appended_mixed_sources
+    }
+
+    pub(super) fn validate_appended_sources(
+        &self,
+        sources: &std::collections::BTreeMap<ForwardPassRegressionWorkloadKind, serde_json::Value>,
+    ) -> Result<(), AicError> {
+        let appended: Vec<_> = self
+            .learned
+            .store_kinds()
+            .into_iter()
+            .filter(|kind| !self.stable.has_store(*kind))
+            .collect();
+        if sources.keys().copied().collect::<Vec<_>>() != appended {
+            return Err(AicError::InvalidEngineConfig(
+                "selector appended source keys differ from its adaptive-only stores".into(),
+            ));
+        }
+        for (kind, source) in sources {
+            let name = serde_json::to_value(kind).expect("store serializes");
+            let rows = source["training_rows"].as_u64();
+            let valid_digest = |name: &str| {
+                source[name].as_str().is_some_and(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            };
+            if source.as_object().is_none_or(|value| value.len() != 5)
+                || !valid_digest("manifest_sha256")
+                || !valid_digest("artifact_sha256")
+                || rows.is_none_or(|rows| rows < 20)
+                || rows != self.learned.metadata()["train_rows"][name.as_str().unwrap()].as_u64()
+                || source["stable_source"] != "interpolation"
+                || source["online_only"] != true
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "selector appended source provenance differs from its runtime forest".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn restore_appended_sources(
+        &mut self,
+        sources: std::collections::BTreeMap<ForwardPassRegressionWorkloadKind, serde_json::Value>,
+    ) -> Result<(), AicError> {
+        self.validate_appended_sources(&sources)?;
+        self.appended_mixed_sources = sources;
+        Ok(())
     }
 
     pub(super) fn set_identity_verified(&mut self, verified: bool) {

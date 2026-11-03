@@ -1,0 +1,69 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate
+configfile: pytest.ini
+plugins: mock-3.15.1, cov-7.1.0, jaxtyping-0.3.11, xdist-3.8.0, split-0.11.0, md-report-0.8.0, asyncio-1.3.0, typeguard-2.13.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 922 items
+
+python/aisimulate/tests/unit/sdk/test_fpm_bundle.py .................    [  1%]
+python/aisimulate/tests/unit/sdk/test_fpm_bundle_transport.py .......... [  2%]
+....                                                                     [  3%]
+python/aisimulate/tests/unit/sdk/test_fpm_dataset.py ................... [  5%]
+............................                                             [  8%]
+python/aisimulate/tests/unit/sdk/test_fpm_execution_identity.py ........ [  9%]
+.................                                                        [ 11%]
+python/aisimulate/tests/unit/sdk/test_fpm_forward.py ................... [ 13%]
+........................................................................ [ 21%]
+........................................................................ [ 28%]
+............                                                             [ 30%]
+python/aisimulate/tests/unit/sdk/test_fpm_learned.py ................... [ 32%]
+.................                                                        [ 34%]
+python/aisimulate/tests/unit/sdk/test_fpm_legacy_migration.py .......... [ 35%]
+...........................................................              [ 41%]
+python/aisimulate/tests/unit/sdk/test_fpm_mixed_composition_integration.py . [ 41%]
+...............                                                          [ 43%]
+python/aisimulate/tests/unit/sdk/test_fpm_mixed_quality_gate.py ........ [ 44%]
+....                                                                     [ 44%]
+python/aisimulate/tests/unit/sdk/test_fpm_mixed_selector_integration.py . [ 44%]
+..........                                                               [ 45%]
+python/aisimulate/tests/unit/sdk/test_fpm_mixed_snapshot_process.py .... [ 46%]
+..........                                                               [ 47%]
+python/aisimulate/tests/unit/sdk/test_fpm_online_export.py ............. [ 48%]
+..........                                                               [ 49%]
+python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py ........ [ 50%]
+...                                                                      [ 50%]
+python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py . [ 51%]
+.                                                                        [ 51%]
+python/aisimulate/tests/unit/sdk/test_fpm_original_a_manifest.py ....... [ 51%]
+...........                                                              [ 53%]
+python/aisimulate/tests/unit/sdk/test_fpm_phase_readiness.py ........... [ 54%]
+.........                                                                [ 55%]
+python/aisimulate/tests/unit/sdk/test_fpm_profile.py ................... [ 57%]
+........................................................................ [ 65%]
+........................................................................ [ 72%]
+........................................................................ [ 80%]
+..............................                                           [ 84%]
+python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py ...... [ 84%]
+....                                                                     [ 85%]
+python/aisimulate/tests/unit/sdk/test_fpm_snapshot_process.py ....       [ 85%]
+python/aisimulate/tests/unit/sdk/test_fpm_speculative_execution_identity.py . [ 85%]
+.................................                                        [ 89%]
+python/aisimulate/tests/unit/sdk/test_fpm_spline.py .................    [ 91%]
+python/aisimulate/tests/unit/sdk/test_fpm_state_snapshot.py ............ [ 92%]
+..................                                                       [ 94%]
+python/aisimulate/tests/unit/sdk/test_forward_pass_speculation.py ...... [ 95%]
+..............................................                           [100%]
+
+============================= slowest 10 durations =============================
+14.33s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_native_snapshot_pins_engine_and_perf_data_across_processes
+10.74s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_native_models_never_adopt_tables_parsed_before_their_fingerprint
+5.22s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_restore_never_shares_tables_that_parsed_after_the_data_changed_back[retarget-behind]
+5.18s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_restore_never_shares_tables_that_parsed_after_the_data_changed_back[retarget]
+4.42s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_restore_never_shares_tables_that_parsed_after_the_data_changed_back[rewrite]
+4.20s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_restore_never_adopts_tables_parsed_from_a_later_data_generation
+3.75s call     tests/unit/sdk/test_fpm_state_snapshot.py::test_data_dir_with_parent_components_restores_by_reference_but_cannot_be_packed
+1.62s call     tests/unit/sdk/test_fpm_legacy_migration.py::test_correction_mode_survives_reload_and_controls_native_feedback[auto]
+1.14s call     tests/unit/sdk/test_fpm_profile.py::test_full_grid_medians_query_and_reload_without_campaign_files
+0.95s call     tests/unit/sdk/test_forward_pass_speculation.py::test_mtp_public_cost_matches_legacy_nextn[2-SILICON]
+================== 922 passed, 1 warning in 86.81s (0:01:26) ===================

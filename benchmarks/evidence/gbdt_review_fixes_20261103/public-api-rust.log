@@ -1,0 +1,41 @@
+   Compiling aisimulate-core v0.13.0 (/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/crates/core)
+   Compiling aisimulate-core-public-api v0.0.0 (/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/crates/tests/public-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.50s
+     Running unittests src/lib.rs (/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target/debug/deps/aisimulate_core_public_api-e901f235982f6949)
+
+running 26 tests
+test legacy_readiness_report_literal_remains_source_compatible ... ok
+test tests::ergonomic_builder_is_available_to_external_crates ... ok
+test tests::external_latency_only_provider_needs_no_energy_implementation ... ok
+test tests::invalid_spline_controls_fail_before_auto_or_allowed_fallback ... ok
+test tests::agentic_snapshot_preparation_and_execution_are_public ... ok
+test tests::legacy_ngram_json_and_nextn_keep_their_public_contract ... ok
+test tests::legacy_regression_options_keep_rust_owned_fit_defaults ... ok
+test tests::phase_only_provider_keeps_per_rank_group_pricing ... ok
+test tests::power_statistics_require_validated_public_construction ... ok
+test tests::public_config_aliases_keep_contextual_defaults ... ok
+test tests::public_config_deserializers_reject_duplicate_and_unknown_fields ... ok
+test tests::public_config_requires_strings_for_numeric_looking_identity ... ok
+test tests::rank_operation_evidence_is_an_additive_field ... ok
+test tests::regression_constructor_is_environment_independent ... ok
+test tests::regression_fpm5_feature_set_is_public_and_fits_multi_rank_iterations ... ok
+test tests::regression_rebuild_interval_is_public_and_preserved_by_canonical_reload ... ok
+test tests::regression_weight_fields_are_public ... ok
+test tests::schema_constants_and_metric_defaults_are_public ... ok
+test tests::speculative_identity_round_trips_through_public_configuration ... ok
+test tests::speculative_schema_defaults_params_and_excludes_acceptance ... ok
+test tests::spline_types_defaults_and_custom_policies_survive_canonical_reload ... ok
+test tests::learned_defaults_and_overrides_agree_across_public_deserializers ... ok
+test tests::timing_evidence_types_are_public ... ok
+test tests::unknown_identity_and_deployment_limits_are_public ... ok
+test tests::zero_regression_rebuild_interval_is_invalid_before_fallback ... ok
+test tests::state_snapshots_save_and_restore_through_the_canonical_constructor ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+   Doc-tests aisimulate_core_public_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1921,3 +1921,54 @@ fn research_v4_runtime_layout_is_rejected_before_reading_binary_state() {
             .contains("version 4 uses the research replay/configuration layout")
     );
 }
+
+#[test]
+fn decoded_checkpoint_receipt_matches_independent_closure_without_reopening_payloads() {
+    let (mut learner, mut learned) = fixture(
+        controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Eager),
+        &[&[0.0]],
+        &[1.0],
+        0.0,
+        vec![leaf(0.0)],
+        settings(1.0, 0.0),
+    );
+    learner.observe(KIND, vec![1.0], 3.0, &mut learned).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runtime");
+    learner.save(&path, &learned, "{}").unwrap();
+    let mut config = canonical();
+    config.estimator_config.fpm_learned = learner.config.clone();
+    config.estimator_config.fpm_learned.checkpoint_path = Some(path.clone());
+    let mut independently_pinned = config.clone();
+    super::super::source::pin_legacy_source(&mut independently_pinned).unwrap();
+    let (mut model, forest_receipt) =
+        checkpoint_model_for_config_with_receipt(&path, &config).unwrap();
+    assert_eq!(forest_receipt.source.dependencies.len(), 2);
+    let (_, receipt) = OnlineLearner::load_with_receipt(
+        &path,
+        &mut model,
+        &config.estimator_config.fpm_learned,
+        &config,
+        false,
+    )
+    .unwrap();
+    assert_eq!(receipt.source.dependencies.len(), 3);
+    assert_eq!(
+        Some(&receipt.source),
+        independently_pinned
+            .estimator_config
+            .fpm_learned
+            .source
+            .resolved_source
+            .as_ref()
+    );
+    // The source reader has consumed and authenticated these bytes. Private
+    // closure capture must use that proof instead of reopening their paths.
+    // Keep paths present for the original canonical containment guard, while
+    // replacing their contents proves capture does not reread/re-hash them.
+    for dependency in &receipt.source.dependencies {
+        std::fs::write(&dependency.path, b"changed after decoding").unwrap();
+    }
+    super::super::source::pin_legacy_source_with_receipt(&mut config, receipt).unwrap();
+    assert_eq!(config, independently_pinned);
+}

@@ -16,6 +16,7 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig
 from aisimulate.config.common import load_yaml
+from aisimulate.estimator_readiness import learned_unready_message
 from aisimulate.output import prepare_output_directory
 
 from .plan import check_plan, plan_lock, request_id
@@ -39,7 +40,7 @@ def add_validation_parser(actions: Any) -> None:
     parser.add_argument("--trace", required=True, help="Local Weka JSON/JSONL file; replay its full contents.")
     parser.add_argument(
         "--prediction-config",
-        help="Optional ordinary prediction config selecting seeded learned timing for the same reviewed deployment.",
+        help="Optional ordinary prediction config selecting learned timing for the same reviewed deployment.",
     )
     parser.add_argument(
         "--validation-output-dir", required=True, help="Separate directory for config, replay and coverage evidence."
@@ -209,6 +210,22 @@ def run_validation(args: argparse.Namespace) -> int:
         report["selected_prediction_config"] = _file_identity(selected)
         report["scope"]["estimation_mode"] = "fpm_learned"
     _write_report(report_path, report)
+    if learned and learned["readiness"].get("execution", {}).get("ready") is not True:
+        report["issues"] = [learned_unready_message(learned["readiness"])]
+        coverage = {
+            "kind": "learned_replay",
+            "status": "incomplete",
+            "accuracy": "not_assessed",
+            "readiness": learned["readiness"],
+            "issues": report["issues"],
+        }
+        coverage_path = Path(report["coverage_report"])
+        _write_report(coverage_path, coverage)
+        report["fpm_query_coverage"] = coverage
+        report["coverage_evidence"] = _file_identity(coverage_path)
+        _write_report(report_path, report)
+        print(f"FPM replay coverage: incomplete; {report['issues'][0]}. Saved {report_path}")
+        return 1
     # Use the existing supervised CLI: the same compiler, capacity checks,
     # timing provider, source importer and host limits apply to ordinary predict.
     from aisimulate.supervision import main as predict

@@ -924,7 +924,12 @@ fn packed_perf_db_is_self_contained_and_verified() {
     )
     .unwrap();
     let error = load(pinned).unwrap_err();
-    assert!(error.to_string().contains("fingerprint"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match its manifest size or SHA-256"),
+        "{error}"
+    );
 }
 
 /// FPM interpolation with an external parquet and no data directory: the
@@ -1066,8 +1071,13 @@ fn as_version_1(config: &ForwardPassPerfModelConfig) -> ForwardPassPerfModelConf
         .unwrap()
         .path
         .clone();
-    let legacy = repin(config, |manifest| {
+    let mut state: StateFile =
+        snapshot::decode_state(&std::fs::read(root.join(STATE_FILE)).unwrap()).unwrap();
+    state.layout_version = snapshot::LEGACY_STATE_LAYOUT_VERSION;
+    let legacy = replace_state(config, &snapshot::encode_state(&state).unwrap());
+    let legacy = repin(&legacy, |manifest| {
         manifest["schema_version"] = 1.into();
+        manifest["state_layout_version"] = snapshot::LEGACY_STATE_LAYOUT_VERSION.into();
         for pointer in [
             "/identity/systems_paths/0",
             "/identity/estimator_config/fpm_interpolation/fpm_parquet_path",
@@ -1127,7 +1137,7 @@ fn version_1_snapshots_relocate_from_their_recorded_save_location() {
             },
         )
         .unwrap();
-    // Version 2 names owned inputs relative to the snapshot; config.json
+    // Current snapshots name owned inputs relative to the snapshot; config.json
     // keeps the absolute configuration at the save location.
     let identity = read_json(&saved.join(MANIFEST_FILE))["identity"].clone();
     assert_eq!(
@@ -1240,6 +1250,16 @@ fn relocated_snapshots_verify_content_and_take_systems_roots_from_the_environmen
         restored.provenance().unwrap().config.systems_paths,
         vec![copy.clone()]
     );
+    assert_eq!(
+        restored.dependency_info()["external_systems_paths"],
+        serde_json::json!([copy])
+    );
+    assert!(
+        restored.dependency_info()["owned_systems_paths"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     std::fs::write(
         copy.join("data/b200_sxm/vllm/0.24.0/gemm_perf.parquet"),
         b"other rows",
@@ -1338,7 +1358,7 @@ fn relocated_snapshots_verify_content_and_take_systems_roots_from_the_environmen
     expect_load_error(
         &load,
         config.clone(),
-        "differs from the snapshot fingerprint",
+        "does not match its manifest size or SHA-256",
     );
     let mut state = std::fs::read(moved.join(STATE_FILE)).unwrap();
     state[0] ^= 1;
@@ -1450,7 +1470,7 @@ fn frozen_forest_corrections_round_trip_and_copy_the_artifact() {
         );
         // The snapshot holds the artifact's exact bytes, so the original may change.
         assert_eq!(
-            std::fs::read(saved.path().join("saved").join(LEARNED_ARTIFACT_FILE)).unwrap(),
+            std::fs::read(saved.path().join("saved/source/artifact.json")).unwrap(),
             std::fs::read(&artifact).unwrap()
         );
         let report = best(learned_frozen_config(AGG, &artifact, mode))
@@ -2092,7 +2112,7 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
     let pinned = saved_regression(dir.path());
     for (edit, needle) in [
         (
-            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 3.into())
+            Box::new(|m: &mut serde_json::Value| m["schema_version"] = 4.into())
                 as Box<dyn FnOnce(&mut serde_json::Value)>,
             "unsupported manifest schema",
         ),
@@ -2119,18 +2139,18 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
         // A newer release may add fields; its versions are reported first.
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["schema_version"] = 3.into();
+                m["schema_version"] = 4.into();
                 m["future_field"] = true.into();
                 m["kind"] = "future_kind".into();
             }),
-            "unsupported manifest schema aisimulate_fpm_state_snapshot version 3",
+            "unsupported manifest schema aisimulate_fpm_state_snapshot version 4",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["state_layout_version"] = 3.into();
+                m["state_layout_version"] = 4.into();
                 m["files"][0]["future_field"] = true.into();
             }),
-            "state layout version 3 is not supported",
+            "state layout version 4 is not supported",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -2704,7 +2724,7 @@ fn state_invariant_violations_are_rejected_before_they_can_panic() {
         ),
         (
             Box::new(|value| {
-                value["layout_version"] = 3.into();
+                value["layout_version"] = 4.into();
             }),
             "layout version differs",
         ),
@@ -2999,6 +3019,126 @@ fn learned_files_are_pinned_and_snapshot_destinations_are_never_replaced() {
 // ---------------------------------------------------------------------------
 // Readiness, topology and inspection
 // ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_readiness_native_and_regression_snapshots_preserve_state_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let native_load = native_load_with(fixture_engine());
+    for native in [false, true] {
+        let model = if native {
+            native_model(&root, CorrectionMode::Auto)
+        } else {
+            best(regression_config(AGG, |_| {})).unwrap()
+        };
+        let saved = model
+            .save_state_snapshot(
+                dir.path()
+                    .join(if native { "native" } else { "regression" }),
+                &StateSnapshotOptions::default(),
+            )
+            .unwrap();
+        let load: Loader<'_> = if native { &native_load } else { &best };
+        let legacy = repin(&saved, |manifest| {
+            manifest["readiness"]
+                .as_object_mut()
+                .unwrap()
+                .remove("execution");
+        });
+        let restored = load(legacy.clone()).unwrap();
+        assert_eq!(restored.readiness_report(), model.readiness_report());
+        assert_eq!(
+            predictions(&restored, &queries(AGG, false)),
+            predictions(&model, &queries(AGG, false))
+        );
+        let wrong_count = repin(&legacy, |manifest| {
+            manifest["readiness"]["stores"][0]["retained_observations"] = 99.into();
+        });
+        expect_load_error(load, wrong_count, "restored diagnostics differ");
+    }
+}
+
+#[test]
+fn partial_seed_snapshot_preserves_missing_store_readiness_and_legacy_checks() {
+    let (seed, config) = training_checkpoint(AGG, LearnedAdaptation::Online);
+    let artifact_path = seed.path().join("model.json");
+    let mut artifact = read_json(&artifact_path);
+    artifact["stores"]
+        .as_object_mut()
+        .unwrap()
+        .remove("contains_locally_mixed");
+    let bytes = serde_json::to_vec(&artifact).unwrap();
+    std::fs::write(&artifact_path, &bytes).unwrap();
+    let manifest_path = seed.path().join("manifest.json");
+    let mut manifest = read_json(&manifest_path);
+    manifest["stores"]
+        .as_object_mut()
+        .unwrap()
+        .remove("contains_locally_mixed");
+    manifest["artifact_sha256"] = snapshot::sha256_hex(&bytes).into();
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let mut model = best(config).unwrap();
+    let before = model.learned_online_diagnostics().unwrap();
+    let missing = vec![rank(64, 1, 64, 8.0, false)];
+    assert_eq!(model.estimate_forward_pass_time_ms(&missing).unwrap(), None);
+    // The caller owns first fitting. Missing-store feedback must not consume
+    // the seeded learner's admission clock, retain rows, or synthesize a forest.
+    model.tune_with_fpms(&vec![missing.clone(); 32]).unwrap();
+    model.flush_updates().unwrap();
+    assert_eq!(model.learned_online_diagnostics().unwrap(), before);
+    assert_eq!(model.estimate_forward_pass_time_ms(&missing).unwrap(), None);
+    let original = model.readiness_report();
+    assert!(original.stores.iter().any(|store| store.not_ready_reason
+        == Some(ForwardPassStoreNotReadyReason::UntrainedForestStore)));
+    let dir = tempfile::tempdir().unwrap();
+    let saved = model
+        .save_state_snapshot(dir.path().join("saved"), &StateSnapshotOptions::default())
+        .unwrap();
+    let runtime = read_json(
+        &dir.path()
+            .join("saved")
+            .join(ONLINE_CHECKPOINT_DIR)
+            .join("manifest.json"),
+    );
+    assert_eq!(runtime["schema_version"], 5);
+    drop(seed);
+    let mut resumed = best(continue_config(saved.clone())).unwrap();
+    let next = learned_stream(DECODE, 410, 7);
+    model.tune_with_fpms(&next).unwrap();
+    resumed.tune_with_fpms(&next).unwrap();
+    assert_eq!(
+        observables(&resumed, &queries(AGG, false)),
+        observables(&model, &queries(AGG, false))
+    );
+    assert_eq!(
+        resumed.estimate_forward_pass_time_ms(&missing).unwrap(),
+        None
+    );
+    let legacy = repin(&saved, |manifest| {
+        manifest["readiness"]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution");
+    });
+    assert_eq!(best(legacy.clone()).unwrap().readiness_report(), original);
+    let wrong_ready = repin(&legacy, |manifest| {
+        manifest["readiness"]["ready"] = false.into();
+    });
+    expect_error(wrong_ready, "restored diagnostics differ");
+}
+
+#[test]
+fn recorded_execution_readiness_remains_strictly_verified() {
+    let model = best(regression_config(AGG, |_| {})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let saved = model
+        .save_state_snapshot(dir.path().join("saved"), &StateSnapshotOptions::default())
+        .unwrap();
+    let changed = repin(&saved, |manifest| {
+        manifest["readiness"]["execution"]["ready"] = true.into();
+    });
+    expect_error(changed, "restored diagnostics differ");
+}
 
 #[test]
 fn readiness_reports_stores_reasons_and_corrections_for_every_kind() {
@@ -3374,9 +3514,9 @@ fn decode_v2(path: &Path) -> layout_v2::StateFile {
 }
 
 #[test]
-fn state_layout_v2_matches_an_independent_decoder() {
+fn state_layout_v3_keeps_the_independent_v2_state_enum_encoding() {
     assert_eq!(
-        STATE_SNAPSHOT_LAYOUT_VERSION, 2,
+        STATE_SNAPSHOT_LAYOUT_VERSION, 3,
         "update the layout_v2 mirror and this golden with the version"
     );
     let dir = tempfile::tempdir().unwrap();
@@ -3394,7 +3534,7 @@ fn state_layout_v2_matches_an_independent_decoder() {
         )
         .unwrap();
     let state = decode_v2(&dir.path().join("regression").join(STATE_FILE));
-    assert_eq!(state.layout_version, 2);
+    assert_eq!(state.layout_version, 3);
     let layout_v2::State::Regression { stores } = state.state else {
         panic!("regression variant index changed")
     };
@@ -3553,22 +3693,551 @@ fn state_layout_v2_matches_an_independent_decoder() {
             .collect()
     };
     assert_eq!(files("regression"), [STATE_FILE]);
-    assert_eq!(files("hybrid"), [LEARNED_ARTIFACT_FILE, STATE_FILE]);
+    assert_eq!(
+        files("hybrid"),
+        [LEARNED_ARTIFACT_FILE, "source/artifact.json", STATE_FILE]
+    );
     assert_eq!(
         files("selector"),
         [
             "learned/online/manifest.json",
+            "learned/online/model.json",
+            "learned/online/state.bin",
             STABLE_ARTIFACT_FILE,
+            "source/checkpoint/manifest.json",
+            "source/checkpoint/model.json",
+            "source/checkpoint/rows.parquet",
             STATE_FILE
         ]
     );
     let manifest = read_json(&dir.path().join("regression").join(MANIFEST_FILE));
     assert_eq!(manifest["schema"], "aisimulate_fpm_state_snapshot");
-    assert_eq!(manifest["schema_version"], 2);
+    assert_eq!(manifest["schema_version"], 3);
     assert_eq!(manifest["producer"]["state_encoding"], "bincode1_fixint");
     assert_eq!(
         manifest["producer"]["aisimulate_core_version"],
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(manifest["kind"], "regression");
+}
+
+#[test]
+fn schema_two_regression_reader_keeps_legacy_state_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let pinned = saved_regression(dir.path());
+    let expected = observables(&best(pinned.clone()).unwrap(), &queries(AGG, false));
+    let root = &pinned
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .path;
+    let mut state: StateFile =
+        snapshot::decode_state(&std::fs::read(root.join(STATE_FILE)).unwrap()).unwrap();
+    state.layout_version = 2;
+    let pinned = replace_state(&pinned, &snapshot::encode_state(&state).unwrap());
+    let pinned = repin(&pinned, |manifest| {
+        manifest["schema_version"] = 2.into();
+        manifest["state_layout_version"] = 2.into();
+    });
+    assert_eq!(
+        observables(&best(pinned).unwrap(), &queries(AGG, false)),
+        expected
+    );
+}
+
+#[test]
+fn bundle_snapshot_archives_original_seed_and_restores_current_runtime() {
+    let (seed, mut request) = training_checkpoint(DECODE, LearnedAdaptation::Online);
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_root = dir.path().join("bundle");
+    copy_dir(seed.path(), &bundle_root.join("seed"));
+    // This hand-authored functional seed names its own producer; no native
+    // or sklearn training capability is inferred from the feature ABI.
+    let artifact_path = bundle_root.join("seed/model.json");
+    let mut artifact = read_json(&artifact_path);
+    artifact["metadata"]["model"] = "synthetic_constant_fixture".into();
+    artifact["metadata"]["hyperparameters"] = serde_json::json!({"test":true});
+    let bytes = serde_json::to_vec(&artifact).unwrap();
+    std::fs::write(&artifact_path, &bytes).unwrap();
+    let seed_manifest_path = bundle_root.join("seed/manifest.json");
+    let mut seed_manifest = read_json(&seed_manifest_path);
+    seed_manifest["artifact_sha256"] = snapshot::sha256_hex(&bytes).into();
+    seed_manifest["sklearn_version"] = "fixture-v1".into();
+    std::fs::write(
+        &seed_manifest_path,
+        serde_json::to_vec(&seed_manifest).unwrap(),
+    )
+    .unwrap();
+    let mut dependencies = Vec::new();
+    for file in ["manifest.json", "model.json", "rows.parquet"] {
+        let path = bundle_root.join("seed").join(file);
+        let bytes = std::fs::read(&path).unwrap();
+        dependencies.push(serde_json::json!({"path":format!("seed/{file}"),
+            "sha256":snapshot::sha256_hex(&bytes), "byte_length":bytes.len(), "purpose":"seed"}));
+    }
+    let manifest = serde_json::json!({
+        "kind":"aisimulate_learned_bundle", "schema_version":1,
+        "producer_version":"snapshot-test", "recipe_version":"test-v1",
+        "identity":seed_manifest["identity"],
+        "seed":{"kind":"training_checkpoint", "path":"seed",
+            "sha256":dependencies[0]["sha256"], "adaptations":["online"], "covered_stores":["pure_decode"]},
+        "training_recipe":{"name":"synthetic_constant_fixture", "features":["num_decode_requests"],
+            "target":"ms", "trainer_version":"fixture-v1", "hyperparameters":{"test":true}},
+        "provenance":{"anchor_kind":"b", "accepted_rows":{"pure_decode":2},
+            "sources":[{"reference":"immutable-observations", "sha256":dependencies[2]["sha256"]}],
+            "evaluation_sources":[], "c_admission_lineage":null},
+        "dependencies":dependencies
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+    std::fs::write(bundle_root.join("bundle.json"), &manifest_bytes).unwrap();
+    request.estimator_config.fpm_learned.checkpoint_path = None;
+    request.estimator_config.fpm_learned.source.bundle_path = Some(bundle_root.join("bundle.json"));
+    let mut original = best(request).unwrap();
+    let before_source = original
+        .provenance()
+        .unwrap()
+        .config
+        .estimator_config
+        .fpm_learned
+        .source
+        .resolved_source
+        .clone()
+        .unwrap();
+    original
+        .tune_with_fpms(&learned_stream(DECODE, 404, 11))
+        .unwrap();
+    let expected = observables(&original, &queries(DECODE, false));
+    let saved = dir.path().join("saved");
+    original
+        .save_state_snapshot(&saved, &Default::default())
+        .unwrap();
+    assert_eq!(
+        std::fs::read(saved.join("source/bundle/bundle.json")).unwrap(),
+        manifest_bytes
+    );
+    let moved = dir.path().join("moved");
+    copy_dir(&saved, &moved);
+    std::fs::remove_dir_all(&saved).unwrap();
+    std::fs::remove_dir_all(&bundle_root).unwrap();
+    drop(seed);
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
+    let after_source = summary
+        .resolved_config
+        .estimator_config
+        .fpm_learned
+        .source
+        .resolved_source
+        .as_ref()
+        .unwrap();
+    assert_eq!(after_source.kind, crate::LearnedSourceKind::Bundle);
+    assert_eq!(after_source.sha256, before_source.sha256);
+    assert_eq!(after_source.recipe, before_source.recipe);
+    assert_eq!(after_source.provenance, before_source.provenance);
+    assert_eq!(
+        after_source.seed_path,
+        Some(moved.join("source/bundle/seed"))
+    );
+    let mut resumed = best(continue_config(summary.resolved_config)).unwrap();
+    assert_eq!(observables(&resumed, &queries(DECODE, false)), expected);
+    let next = learned_stream(DECODE, 405, 9);
+    original.tune_with_fpms(&next).unwrap();
+    resumed.tune_with_fpms(&next).unwrap();
+    assert_eq!(
+        observables(&resumed, &queries(DECODE, false)),
+        observables(&original, &queries(DECODE, false))
+    );
+    // Every archived seed member remains authenticated, even though inference
+    // and continued fitting use the separate current runtime checkpoint.
+    std::fs::write(moved.join("source/bundle/seed/rows.parquet"), b"changed").unwrap();
+    assert!(best(config_at(&moved)).is_err());
+}
+
+#[test]
+fn schema_two_learned_snapshots_without_source_pins_restore_each_adaptation() {
+    for adaptation in [
+        LearnedAdaptation::Frozen,
+        LearnedAdaptation::Online,
+        LearnedAdaptation::CausalSelector,
+    ] {
+        let (_seed, request) = training_checkpoint(DECODE, adaptation);
+        let mut original = best(request).unwrap();
+        original
+            .tune_with_fpms(&learned_stream(DECODE, 406, 11))
+            .unwrap();
+        let expected = observables(&original, &queries(DECODE, false));
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("legacy");
+        let pinned = original
+            .save_state_snapshot(&root, &Default::default())
+            .unwrap();
+        let mut state: StateFile =
+            snapshot::decode_state(&std::fs::read(root.join(STATE_FILE)).unwrap()).unwrap();
+        state.layout_version = 2;
+        let pinned = replace_state(&pinned, &snapshot::encode_state(&state).unwrap());
+        repin(&pinned, |manifest| {
+            manifest["schema_version"] = 2.into();
+            manifest["state_layout_version"] = 2.into();
+            manifest["learned"]
+                .as_object_mut()
+                .unwrap()
+                .remove("runtime");
+            let learned = manifest["identity"]["estimator_config"]["fpm_learned"]
+                .as_object_mut()
+                .unwrap();
+            for key in [
+                "bundle_path",
+                "source_policy",
+                "fallback",
+                "resolved_source",
+                "resolved_fallback",
+            ] {
+                learned.remove(key);
+            }
+            if adaptation == LearnedAdaptation::Frozen {
+                learned.insert("artifact_path".into(), LEARNED_ARTIFACT_FILE.into());
+                learned.insert("checkpoint_path".into(), serde_json::Value::Null);
+                learned.insert(
+                    "source_sha256".into(),
+                    snapshot::sha256_hex(&std::fs::read(root.join(LEARNED_ARTIFACT_FILE)).unwrap())
+                        .into(),
+                );
+            } else {
+                learned.insert("artifact_path".into(), serde_json::Value::Null);
+                learned.insert("checkpoint_path".into(), ONLINE_CHECKPOINT_DIR.into());
+                learned.insert(
+                    "source_sha256".into(),
+                    snapshot::sha256_hex(
+                        &std::fs::read(root.join(ONLINE_CHECKPOINT_DIR).join("manifest.json"))
+                            .unwrap(),
+                    )
+                    .into(),
+                );
+            }
+            manifest["files"].as_array_mut().unwrap().retain(|file| {
+                let path = file["path"].as_str().unwrap();
+                matches!(
+                    path,
+                    STATE_FILE
+                        | LEARNED_ARTIFACT_FILE
+                        | STABLE_ARTIFACT_FILE
+                        | "learned/online/manifest.json"
+                )
+            });
+        });
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&root).unwrap();
+        let mut restored = best(continue_config(summary.resolved_config)).unwrap();
+        assert_eq!(observables(&restored, &queries(DECODE, false)), expected);
+        let next = learned_stream(DECODE, 407, 5);
+        original.tune_with_fpms(&next).unwrap();
+        restored.tune_with_fpms(&next).unwrap();
+        assert_eq!(
+            observables(&restored, &queries(DECODE, false)),
+            observables(&original, &queries(DECODE, false))
+        );
+        if adaptation != LearnedAdaptation::Frozen {
+            let dependencies = restored.dependency_info();
+            for file in ["model.json", "state.bin"] {
+                let path = root.join(ONLINE_CHECKPOINT_DIR).join(file);
+                let record = dependencies["files"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|record| record["path"] == serde_json::to_value(&path).unwrap())
+                    .expect("constructed legacy closure includes nested runtime payloads");
+                let original = std::fs::read(&path).unwrap();
+                assert_eq!(record["sha256"], snapshot::sha256_hex(&original));
+                assert_eq!(record["byte_length"], original.len());
+                std::fs::write(&path, b"tampered nested runtime payload").unwrap();
+                let config = ForwardPassPerfModel::inspect_state_snapshot(&root)
+                    .unwrap()
+                    .resolved_config;
+                assert!(best(config).is_err());
+                std::fs::write(&path, original).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn streamed_owned_file_verification_rejects_tamper_truncation_growth_and_unsafe_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    // Cross several fixed-size read buffers with nonuniform content.
+    let bytes = (0..196_621)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let path = dir.path().join("evidence.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    let record = snapshot::FileRecord {
+        path: "evidence.bin".into(),
+        sha256: snapshot::sha256_hex(&bytes),
+        size_bytes: bytes.len() as u64,
+    };
+    snapshot::verify_recorded(dir.path(), &record).unwrap();
+    let mut tampered = bytes.clone();
+    tampered[65_537] ^= 1;
+    for content in [tampered.as_slice(), &bytes[..bytes.len() - 1]] {
+        std::fs::write(&path, content).unwrap();
+        assert!(
+            snapshot::verify_recorded(dir.path(), &record)
+                .unwrap_err()
+                .to_string()
+                .contains("size or SHA-256")
+        );
+    }
+    let mut grown = bytes.clone();
+    grown.push(0);
+    std::fs::write(&path, &grown).unwrap();
+    assert!(snapshot::verify_recorded(dir.path(), &record).is_err());
+    std::fs::write(&path, &bytes).unwrap();
+    for path in ["../evidence.bin", "/evidence.bin", "./evidence.bin"] {
+        let mut unsafe_record = record.clone();
+        unsafe_record.path = path.into();
+        assert!(
+            snapshot::verify_recorded(dir.path(), &unsafe_record)
+                .unwrap_err()
+                .to_string()
+                .contains("unsafe snapshot path")
+        );
+    }
+    // A forged enormous decoded state is rejected before allocation, even
+    // though raw evidence verification itself does not allocate by file size.
+    let mut oversized = record;
+    oversized.size_bytes = snapshot::MAX_STATE_BYTES + 1;
+    assert!(
+        snapshot::read_recorded(dir.path(), &oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("above the")
+    );
+}
+
+#[test]
+fn causal_selector_snapshot_requires_its_pinned_stable_expert() {
+    let (_seed, request) = training_checkpoint(DECODE, LearnedAdaptation::CausalSelector);
+    let mut model = best(request).unwrap();
+    model
+        .tune_with_fpms(&learned_stream(DECODE, 408, 11))
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("selector"), &Default::default())
+        .unwrap();
+    let omitted = repin(&pinned, |manifest| {
+        manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|file| file["path"] != STABLE_ARTIFACT_FILE);
+    });
+    let error = best(omitted).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("manifest does not list the frozen expert"),
+        "{error}"
+    );
+}
+
+#[test]
+fn schema_three_runtime_inventory_requires_every_nested_payload() {
+    for adaptation in [LearnedAdaptation::Frozen, LearnedAdaptation::Online] {
+        let (_seed, request) = training_checkpoint(DECODE, adaptation);
+        let model = best(request).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pinned = model
+            .save_state_snapshot(dir.path().join("snapshot"), &Default::default())
+            .unwrap();
+        let root = &pinned
+            .estimator_config
+            .state_snapshot
+            .as_ref()
+            .unwrap()
+            .path;
+        let complete_manifest = std::fs::read(root.join(MANIFEST_FILE)).unwrap();
+        let required: &[&str] = if adaptation == LearnedAdaptation::Frozen {
+            &[LEARNED_ARTIFACT_FILE]
+        } else {
+            &[
+                "learned/online/manifest.json",
+                "learned/online/model.json",
+                "learned/online/state.bin",
+            ]
+        };
+        for missing in required {
+            std::fs::write(root.join(MANIFEST_FILE), &complete_manifest).unwrap();
+            let omitted = repin(&pinned, |manifest| {
+                manifest["files"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|file| file["path"] != *missing);
+            });
+            let error = best(omitted).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("manifest does not list current learned runtime member"),
+                "{error}"
+            );
+            assert!(ForwardPassPerfModel::inspect_state_snapshot(root).is_err());
+        }
+    }
+}
+
+#[test]
+fn explicit_dependency_verification_rechecks_native_directory_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fake_systems_root(dir.path());
+    let model = native_model(&root, CorrectionMode::Fixed);
+    let before = model.readiness_report();
+    model.verify_dependencies().unwrap();
+    let addition = root.join("data/b200_sxm/new-empty-version");
+    std::fs::create_dir(&addition).unwrap();
+    // Ordinary cached metadata still describes what the model originally read.
+    assert_eq!(model.readiness_report(), before);
+    assert!(
+        model
+            .verify_dependencies()
+            .unwrap_err()
+            .to_string()
+            .contains("fingerprint changed")
+    );
+    std::fs::remove_dir(&addition).unwrap();
+    model.verify_dependencies().unwrap();
+    assert_eq!(model.readiness_report(), before);
+}
+
+#[test]
+fn explicit_dependency_verification_uses_relocated_snapshot_and_current_pins() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact = dir.path().join("forest.json");
+    std::fs::write(&artifact, forest_artifact(DECODE, None, None)).unwrap();
+    let model = best(learned_frozen_config(
+        DECODE,
+        &artifact,
+        CorrectionMode::Fixed,
+    ))
+    .unwrap();
+    model.verify_dependencies().unwrap();
+    let saved = dir.path().join("saved");
+    model
+        .save_state_snapshot(&saved, &StateSnapshotOptions::default())
+        .unwrap();
+    let moved = dir.path().join("moved");
+    std::fs::rename(&saved, &moved).unwrap();
+    std::fs::remove_file(&artifact).unwrap();
+    assert!(model.verify_dependencies().is_err());
+    let restored = best(config_at(&moved)).unwrap();
+    restored.verify_dependencies().unwrap();
+    let dependencies = restored.dependency_info();
+    std::fs::write(moved.join(STATE_FILE), b"changed after construction").unwrap();
+    assert!(
+        restored
+            .verify_dependencies()
+            .unwrap_err()
+            .to_string()
+            .contains("does not match")
+    );
+    // Verification never changes the captured inventory or rebuilds the model.
+    assert_eq!(restored.dependency_info(), dependencies);
+}
+
+#[test]
+fn decoder_receipts_preserve_outer_snapshot_pins_and_payload_integrity() {
+    for adaptation in [LearnedAdaptation::Frozen, LearnedAdaptation::Online] {
+        let (_seed, request) = training_checkpoint(DECODE, adaptation);
+        let model = best(request).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pinned = model
+            .save_state_snapshot(dir.path().join("snapshot"), &Default::default())
+            .unwrap();
+        let root = &pinned
+            .estimator_config
+            .state_snapshot
+            .as_ref()
+            .unwrap()
+            .path;
+        let original_manifest = std::fs::read(root.join(MANIFEST_FILE)).unwrap();
+        let manifest = read_json(&root.join(MANIFEST_FILE));
+        let members: Vec<String> = manifest["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|file| file["path"].as_str())
+            .filter(|path| {
+                path.starts_with("source/")
+                    || path.starts_with("learned/online/")
+                    || *path == LEARNED_ARTIFACT_FILE
+            })
+            .map(str::to_owned)
+            .collect();
+        assert!(!members.is_empty());
+        for member in members {
+            // A valid nested checkpoint/source must not override a conflicting
+            // outer digest or length, even when its bytes have been decoded.
+            for field in ["sha256", "size_bytes"] {
+                std::fs::write(root.join(MANIFEST_FILE), &original_manifest).unwrap();
+                let conflicting = repin(&pinned, |manifest| {
+                    let record = manifest["files"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|record| record["path"] == member)
+                        .unwrap();
+                    record[field] = if field == "sha256" {
+                        "0".repeat(64).into()
+                    } else {
+                        (record[field].as_u64().unwrap() + 1).into()
+                    };
+                });
+                assert!(
+                    best(conflicting).is_err(),
+                    "accepted conflicting {field} for {member}"
+                );
+            }
+            // The receipt must be newly produced from authenticated bytes on
+            // each construction, rather than replayed from saved config pins.
+            std::fs::write(root.join(MANIFEST_FILE), &original_manifest).unwrap();
+            let path = root.join(&member);
+            let bytes = std::fs::read(&path).unwrap();
+            let mut tampered = bytes.clone();
+            let last = tampered.last_mut().expect("nonempty fixture payload");
+            *last ^= 1;
+            std::fs::write(&path, tampered).unwrap();
+            assert!(best(pinned.clone()).is_err(), "accepted changed {member}");
+            std::fs::write(path, bytes).unwrap();
+        }
+        std::fs::write(root.join(MANIFEST_FILE), original_manifest).unwrap();
+        assert_eq!(
+            observables(&best(pinned).unwrap(), &queries(DECODE, false)),
+            observables(&model, &queries(DECODE, false)),
+        );
+    }
+}
+
+#[test]
+fn non_learned_snapshot_cannot_defer_foreign_runtime_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = best(regression_config(DECODE, |_| {})).unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snapshot"), &Default::default())
+        .unwrap();
+    let malformed = repin(&pinned, |manifest| {
+        manifest["learned"] = serde_json::json!({
+            "identity_verified": false, "appended_mixed_sources": {},
+            "options": null,
+            "runtime": {"checkpoint": null, "artifact": LEARNED_ARTIFACT_FILE}
+        });
+        manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "path": LEARNED_ARTIFACT_FILE, "sha256": "0".repeat(64), "size_bytes": 1
+            }));
+    });
+    // This file is deliberately absent. A runtime-looking record on another
+    // model kind must still be checked, never deferred to a decoder not called.
+    assert!(matches!(
+        best(malformed),
+        Err(AicError::StateSnapshotIo { .. })
+    ));
 }

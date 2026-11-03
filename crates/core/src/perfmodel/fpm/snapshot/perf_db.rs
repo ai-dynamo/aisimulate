@@ -594,6 +594,22 @@ pub(crate) fn pack(
     system: &str,
     fpm_parquet: Option<&Path>,
 ) -> Result<(PathBuf, Option<PathBuf>), AicError> {
+    pack_at(stage, root, system, fpm_parquet, "")
+}
+
+/// Pack one native dependency below a snapshot-owned namespace.
+pub(crate) fn pack_at(
+    stage: &Stage,
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+    namespace: &str,
+) -> Result<(PathBuf, Option<PathBuf>), AicError> {
+    if !namespace.is_empty() {
+        super::relative_path(namespace)?;
+    }
+    let systems_dir = Path::new(namespace).join(PACKED_SYSTEMS_DIR);
+    let fpm_dir = Path::new(namespace).join(PACKED_FPM_DIR);
     let inventory = inventory(root, system)?;
     // The packed hardware YAML is a byte-exact copy, and entries are packed
     // at their normalized paths. The copied data_dir therefore names the
@@ -610,7 +626,7 @@ pub(crate) fn pack(
             root.display()
         )));
     }
-    let packed = stage.staging().join(PACKED_SYSTEMS_DIR);
+    let packed = stage.staging().join(&systems_dir);
     std::fs::create_dir_all(&packed).map_err(|error| io_error(&packed, error))?;
     for entry in &inventory.entries {
         let target = packed.join(&entry.label);
@@ -651,7 +667,7 @@ pub(crate) fn pack(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| invalid("fpm_parquet_path must name a UTF-8 file"))?;
-            let directory = stage.staging().join(PACKED_FPM_DIR);
+            let directory = stage.staging().join(&fpm_dir);
             std::fs::create_dir_all(&directory).map_err(|error| io_error(&directory, error))?;
             // The sidecar keeps its name relative to the parquet's stem.
             let sidecar = path.with_extension("metadata.json");
@@ -663,11 +679,11 @@ pub(crate) fn pack(
                 let target = directory.join(source.file_name().expect("named file"));
                 std::fs::copy(&source, &target).map_err(|error| io_error(&target, error))?;
             }
-            Some(stage.destination().join(PACKED_FPM_DIR).join(name))
+            Some(stage.destination().join(&fpm_dir).join(name))
         }
         None => None,
     };
-    Ok((stage.destination().join(PACKED_SYSTEMS_DIR), packed_parquet))
+    Ok((stage.destination().join(&systems_dir), packed_parquet))
 }
 
 #[cfg(test)]

@@ -1,0 +1,65 @@
+{
+  "baseline_revision": "9f4819e2b77afb4798bc8133c42ccc1d1b045e5c",
+  "candidate_source_record": "../candidate-build.json",
+  "native_sha256": {
+    "candidate": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0",
+    "baseline": "d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4"
+  },
+  "gym": {
+    "unchanged_suite": {
+      "candidate_passed": 691,
+      "baseline_passed": 691
+    },
+    "real_native": {
+      "candidate_passed": 13,
+      "baseline_passed": 13,
+      "byte_identical_scenario_receipts": 13
+    }
+  },
+  "dynamo": {
+    "upstream_tests": {
+      "candidate_passed": 31,
+      "baseline_passed": 31
+    },
+    "real_native": {
+      "candidate": {
+        "passed": 14,
+        "failed": 3
+      },
+      "baseline": {
+        "passed": 11,
+        "failed": 3
+      },
+      "common_success_details_equal": 11,
+      "candidate_only_new_api_passed": 3,
+      "preserved_failures": [
+        "regression_attention_dp2_capacity_decode",
+        "regression_attention_dp2_capacity_aggregated",
+        "learned_required_store_guard"
+      ]
+    }
+  },
+  "consumer_source_files_verified": 422,
+  "harnesses": [
+    {
+      "path": "run_consumers.py",
+      "sha256": "06a72ad87911575872f36e0a85d279b1deb38dc35afd7e8698cc15ae14c9ea79"
+    },
+    {
+      "path": "gym/gbdt-gym-compat-runner.py",
+      "sha256": "1caeb21c767d79bb13f678ee0be5207eb30d3b41c18b7c2a5a7c330a7745c9ce"
+    },
+    {
+      "path": "gym/test_unchanged_gym_real_native.py",
+      "sha256": "c6a092ab83e8c5de658fca1434e775b8c3846f73451ad91ac373b0776f626950"
+    },
+    {
+      "path": "dynamo/real_native_harness.py",
+      "sha256": "a94a48200db439e4821a5b19886087a40278453f646776ad9f8d87f900b88f50"
+    },
+    {
+      "path": "dynamo/prepare_fixture.py",
+      "sha256": "fe5f29aa3daa648b10c1374538d44e5e437ee3c7b6689d006032d7ebde82fb1f"
+    }
+  ]
+}

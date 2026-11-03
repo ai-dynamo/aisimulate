@@ -1,0 +1,71 @@
+{
+  "consumer": {
+    "python": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+    "sdk": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py",
+    "native": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+    "native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42"
+  },
+  "producer": {
+    "python": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/python/aisimulate/.venv/bin/python",
+    "sdk": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py",
+    "native": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+    "native_sha256": "e49054fb97a544ce6a143d73ed9ad6c3be3bc4ff1b27e41822b11634ef8fd948"
+  },
+  "cases": [
+    {
+      "kind": "error_threshold",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    },
+    {
+      "kind": "selected",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    },
+    {
+      "kind": "fpm5",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    },
+    {
+      "kind": "learned_frozen",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    },
+    {
+      "kind": "online",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_runtime_checkpoint_continues_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    },
+    {
+      "kind": "causal_selector",
+      "checks": [
+        "old_resolved_config_and_seed_predict_identically",
+        "old_snapshot_relocates_without_original_seed_and_restores_fixed",
+        "old_snapshot_continuation_matches_uninterrupted_old_model_bits"
+      ],
+      "passed": true
+    }
+  ]
+}

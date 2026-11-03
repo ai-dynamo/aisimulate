@@ -662,6 +662,10 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
     if sorted((x["sha256"], x["size_bytes"]) for x in report["fpm_artifacts"]) != source_hashes:
         raise ValueError("replay formal data differs from the validated collection")
     if "prediction_evidence" not in report or "coverage_evidence" not in report:
+        if learned and learned.get("readiness", {}).get("execution", {}).get("ready") is False:
+            from aisimulate.estimator_readiness import learned_unready_message
+
+            raise KeyError(learned_unready_message(learned["readiness"]))
         raise KeyError("replay lacks bound prediction/coverage evidence; rerun onboard validate-fpm")
     prediction_path = _checked(report["prediction_evidence"])
     coverage_path = _checked(report["coverage_evidence"])
@@ -672,17 +676,9 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
     issues = _completion_issues(prediction)
     queries = coverage.get("queries", {})
     if learned:
-        from aisimulate_core.sdk import RustForwardPassPerfModel
-
         from .timing import canonical_timing_config, verify_timing_dependencies
 
-        verify_timing_dependencies(learned)
-        model = RustForwardPassPerfModel.best_available(canonical_timing_config(load_yaml(config_path)))
-        try:
-            if model.diagnostics()["provenance"]["config"] != learned["config"]:
-                raise ValueError("learned replay model differs from its recorded resolved configuration")
-        finally:
-            model.close()
+        verify_timing_dependencies(learned, config=canonical_timing_config(load_yaml(config_path)))
         if (
             coverage.get("kind") != "learned_replay"
             or coverage.get("prediction_evidence") != report["prediction_evidence"]

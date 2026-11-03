@@ -2454,7 +2454,13 @@ impl PyForwardPassPerfModel {
     fn inspect_state_snapshot(path: &str) -> PyResult<String> {
         let summary =
             crate::ForwardPassPerfModel::inspect_state_snapshot(path).map_err(aic_to_py)?;
-        serde_json::to_string(&summary).map_err(|error| PyValueError::new_err(error.to_string()))
+        let mut value = serde_json::to_value(&summary)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        if let Some(execution) = summary.execution_readiness() {
+            value["readiness"]["execution"] = serde_json::to_value(execution)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        }
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Launch rules that reject `config_json` as the timing model of the
@@ -2610,6 +2616,11 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("dependencies serialize: {e}")))?;
         serde_json::to_string(&diagnostics)
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
+    }
+
+    fn verify_dependencies(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.verify_dependencies())
+            .map_err(aic_to_py)
     }
 
     fn dependency_info_json(&self) -> PyResult<String> {
@@ -3166,10 +3177,11 @@ mod tests {
 
             check(
                 AicError::LearnedSourceUnavailable {
-                    reason: "no compatible bundle".to_owned(),
+                    reason: "no compatible bundle".to_string(),
                 },
                 "LearnedSourceUnavailableError",
             );
+
             // Non-typed variants stay ValueError regardless of the sdk.
             let other = aic_to_py(AicError::InvalidEngineConfig("bad".to_string()));
             assert_eq!(other.get_type(py).name().unwrap().to_string(), "ValueError");

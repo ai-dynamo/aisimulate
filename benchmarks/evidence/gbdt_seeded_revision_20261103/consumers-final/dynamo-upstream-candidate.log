@@ -1,0 +1,36 @@
+...............................                                          [100%]
+=============================== warnings summary ===============================
+components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:24
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:24: PytestUnknownMarkWarning: Unknown pytest.mark.gpu_0 - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.gpu_0,
+
+components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:25
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:25: PytestUnknownMarkWarning: Unknown pytest.mark.pre_merge - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.pre_merge,
+
+components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:26
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:26: PytestUnknownMarkWarning: Unknown pytest.mark.unit - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.unit,
+
+components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:27
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_ais_perf_adapter.py:27: PytestUnknownMarkWarning: Unknown pytest.mark.planner - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.planner,
+
+components/src/dynamo/planner/tests/unit/test_engine_query.py:25
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_engine_query.py:25: PytestUnknownMarkWarning: Unknown pytest.mark.gpu_0 - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.gpu_0,
+
+components/src/dynamo/planner/tests/unit/test_engine_query.py:26
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_engine_query.py:26: PytestUnknownMarkWarning: Unknown pytest.mark.pre_merge - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.pre_merge,
+
+components/src/dynamo/planner/tests/unit/test_engine_query.py:27
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_engine_query.py:27: PytestUnknownMarkWarning: Unknown pytest.mark.unit - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.unit,
+
+components/src/dynamo/planner/tests/unit/test_engine_query.py:28
+  /private/tmp/gbdt-dynamo-318ab/components/src/dynamo/planner/tests/unit/test_engine_query.py:28: PytestUnknownMarkWarning: Unknown pytest.mark.planner - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytest.mark.planner,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+31 passed, 8 warnings in 1.10s

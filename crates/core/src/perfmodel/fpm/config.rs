@@ -591,6 +591,22 @@ impl ForwardPassPerfModelConfig {
     /// Retain registry availability for native candidate selection without
     /// adding transient registry facts to the serialized request.
     pub(crate) fn resolve_with_registration(self) -> Result<(Self, Option<bool>), AicError> {
+        self.resolve_with_registration_and_receipt()
+            .map(|(config, registered, _)| (config, registered))
+    }
+
+    /// Preserve verification performed by this normalization for immediate
+    /// construction only. Serialized pins are never verification receipts.
+    pub(crate) fn resolve_with_registration_and_receipt(
+        self,
+    ) -> Result<
+        (
+            Self,
+            Option<bool>,
+            Option<super::source::VerifiedLearnedSource>,
+        ),
+        AicError,
+    > {
         // Normalization already reads snapshot members (learned artifacts and
         // checkpoints), so their I/O failures are snapshot I/O, never missing
         // performance data, exactly as during restoration.
@@ -601,7 +617,16 @@ impl ForwardPassPerfModelConfig {
         }
     }
 
-    fn normalize(mut self) -> Result<(Self, Option<bool>), AicError> {
+    fn normalize(
+        mut self,
+    ) -> Result<
+        (
+            Self,
+            Option<bool>,
+            Option<super::source::VerifiedLearnedSource>,
+        ),
+        AicError,
+    > {
         self.estimator_config.resolve_defaults();
         // Resolve the inputs a snapshot owns against its directory before
         // anything validates or reads them.
@@ -680,9 +705,11 @@ impl ForwardPassPerfModelConfig {
         } else {
             None
         };
-        if self.estimation_mode == EstimationMode::FpmLearned {
-            super::source::resolve(&mut self)?;
-        }
+        let source_receipt = if self.estimation_mode == EstimationMode::FpmLearned {
+            super::source::resolve_with_receipt(&mut self)?
+        } else {
+            None
+        };
         self.estimator_config.fpm_interpolation.method = self
             .estimator_config
             .fpm_interpolation
@@ -699,7 +726,7 @@ impl ForwardPassPerfModelConfig {
         if let Some(manifest) = manifest {
             super::model::verify_snapshot_identity(&self, &manifest)?;
         }
-        Ok((self, registered))
+        Ok((self, registered, source_receipt))
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
@@ -725,11 +752,6 @@ impl ForwardPassPerfModelConfig {
         }
 
         if let Some(mixed) = self.estimator_config.effective_mixed_composition() {
-            if self.estimator_config.state_snapshot.is_some() {
-                return Err(invalid_config(
-                    "temporary_mixed_composition does not support portable state_snapshot restoration; use an online checkpoint or explicit mixed state",
-                ));
-            }
             if mixed.quality_gate.is_some()
                 && learned.adaptation != super::LearnedAdaptation::Online
             {
@@ -1114,19 +1136,16 @@ mod tests {
     }
 
     #[test]
-    fn temporary_mixed_composition_rejects_portable_snapshot_restoration() {
+    fn temporary_mixed_composition_allows_portable_snapshot_controls() {
         let mut cfg = mixed_config("a_c", "compose_calibrated");
         cfg.estimator_config.state_snapshot = Some(super::super::StateSnapshotConfig {
             path: "unused-snapshot".into(),
             sha256: None,
             on_tune: super::super::StateSnapshotTuning::Continue,
         });
-        assert!(
-            cfg.validate()
-                .unwrap_err()
-                .to_string()
-                .contains("does not support portable")
-        );
+        // Format, dependency and state verification happen during resolution
+        // and restore; the supported combination itself is no longer rejected.
+        cfg.validate().unwrap();
     }
 
     #[test]

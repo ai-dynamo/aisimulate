@@ -1,0 +1,451 @@
+{
+  "environment": {
+    "python": "3.12.13 (main, Aug  7 2026, 02:15:23) [Clang 22.1.3 ]",
+    "platform": "macOS-26.7.1-arm64-arm-64bit",
+    "aisimulate_core_file": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/__init__.py",
+    "packages": {
+      "aisimulate": "0.13.0",
+      "numpy": "2.5.4",
+      "scipy": "1.18.1",
+      "pydantic": "2.13.5",
+      "msgspec": "0.21.1",
+      "scikit-learn": "1.9.1"
+    },
+    "native_files": [
+      {
+        "path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+        "sha256": "7fe75475aca65819a9174942ded464ff49060f082357753bcde5286a2028a0d0"
+      }
+    ],
+    "stubs": [],
+    "bundle_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1/bundle.json",
+    "bundle_sha256": "ab475300f9e517523254db57dc3dca127739da949fbac52b76c6bf7ca2cf9250"
+  },
+  "results": [
+    {
+      "name": "regression_live_prefill",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 2.5999999999999988,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.003739999999999998,
+        "capacity": {
+          "rps": 711.7437722419932,
+          "ttft_ms": 11.239999999999995,
+          "itl_ms": null,
+          "e2e_latency_ms": 11.239999999999995,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_delayed_capabilities_prefill",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 2.5999999999999988,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.003739999999999998,
+        "capacity": {
+          "rps": 711.7437722419932,
+          "ttft_ms": 11.239999999999995,
+          "itl_ms": null,
+          "e2e_latency_ms": 11.239999999999995,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_attention_dp2_lifecycle_prefill",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 2.5999999999999988,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.003739999999999998,
+        "capacity": {
+          "rps": 1307.1895424836607,
+          "ttft_ms": 6.1199999999999966,
+          "itl_ms": null,
+          "e2e_latency_ms": 6.1199999999999966,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_live_decode",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 3.5999999999999996,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "scheduled_decode_seconds": 0.004022,
+        "capacity": {
+          "rps": 208.8554720133667,
+          "ttft_ms": null,
+          "itl_ms": 9.576000000000002,
+          "e2e_latency_ms": null,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_delayed_capabilities_decode",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 3.5999999999999996,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "scheduled_decode_seconds": 0.004022,
+        "capacity": {
+          "rps": 208.8554720133667,
+          "ttft_ms": null,
+          "itl_ms": 9.576000000000002,
+          "e2e_latency_ms": null,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_attention_dp2_lifecycle_decode",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 3.5999999999999996,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "scheduled_decode_seconds": 0.004022,
+        "capacity": null,
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_live_aggregated",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 4.532826779322534,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.005890024081625905,
+        "scheduled_decode_seconds": 0.004276778237950153,
+        "capacity": {
+          "rps": 275.72910521938377,
+          "ttft_ms": 9.557732565986049,
+          "itl_ms": 5.440122103927061,
+          "e2e_latency_ms": 91.15956412489196,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_delayed_capabilities_aggregated",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 4.532826779322534,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.005890024081625905,
+        "scheduled_decode_seconds": 0.004276778237950153,
+        "capacity": {
+          "rps": 275.72910521938377,
+          "ttft_ms": 9.557732565986049,
+          "itl_ms": 5.440122103927061,
+          "e2e_latency_ms": 91.15956412489196,
+          "eligible": true
+        },
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_attention_dp2_lifecycle_aggregated",
+      "status": "passed",
+      "detail": {
+        "native_prediction_ms": 4.532826779322534,
+        "retained_observations": 79,
+        "actual_native_type": "<class 'builtins.RustForwardPassPerfModel'>",
+        "queued_prefill_seconds": 0.005890024081625905,
+        "scheduled_decode_seconds": 0.004276778237950153,
+        "capacity": null,
+        "rebuild_prediction_bits_equal": true,
+        "pending_iterations_after_rebuild": 0
+      }
+    },
+    {
+      "name": "regression_attention_dp2_capacity_decode",
+      "status": "failed",
+      "error_type": "AssertionError",
+      "error": "Capacity query was unavailable; live tune/query/rebuild succeeded",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 215, in <lambda>\n    case('regression_attention_dp2_capacity_'+role,lambda role=role:regression(role,dp=2))\n                                                                    ^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 125, in regression\n    check(capacity is not None, 'Capacity query was unavailable; live tune/query/rebuild succeeded')\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 35, in check\n    raise AssertionError(detail)\nAssertionError: Capacity query was unavailable; live tune/query/rebuild succeeded\n"
+    },
+    {
+      "name": "regression_attention_dp2_capacity_aggregated",
+      "status": "failed",
+      "error_type": "AssertionError",
+      "error": "Capacity query was unavailable; live tune/query/rebuild succeeded",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 215, in <lambda>\n    case('regression_attention_dp2_capacity_'+role,lambda role=role:regression(role,dp=2))\n                                                                    ^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 125, in regression\n    check(capacity is not None, 'Capacity query was unavailable; live tune/query/rebuild succeeded')\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 35, in check\n    raise AssertionError(detail)\nAssertionError: Capacity query was unavailable; live tune/query/rebuild succeeded\n"
+    },
+    {
+      "name": "learned_required_store_guard",
+      "status": "failed",
+      "error_type": "ValueError",
+      "error": "invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 180, in partial_coverage_guard\n    adapter=PlannerEnginePerfModel(worker_type='aggregated',config=config('aggregated',learned_request()),capabilities=caps())\n                                                                                       ^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 144, in learned_request\n    return fpm_learned.inspect_bundle(BUNDLE, adaptation=adaptation, config={\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py\", line 1085, in inspect_bundle\n    return inspect(bundle_path, config=config, adaptation=adaptation)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 151, in inspect_bundle\n    resolved = _normalize_bundle(path, config, adaptation)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 136, in _normalize_bundle\n    return RustForwardPassPerfModel.normalize_config(_request_config(bundle_path, config, adaptation))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py\", line 531, in normalize_config\n    return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`\n"
+    },
+    {
+      "name": "legacy_checkpoint_frozen_passthrough",
+      "status": "passed",
+      "detail": {
+        "adaptation": "frozen",
+        "native_ms": 1.3238720182257528,
+        "adapter_seconds": 0.0013238720182257527,
+        "source_kind": "legacy_checkpoint_path",
+        "adapter_has_sufficient_data": true,
+        "native_execution_readiness": {
+          "required_stores": [
+            "pure_prefill",
+            "pure_decode",
+            "contains_locally_mixed"
+          ],
+          "ready": false,
+          "unavailable": [
+            {
+              "workload_kind": "contains_locally_mixed",
+              "ready": false,
+              "not_ready_reason": "untrained_forest_store",
+              "retained_observations": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "legacy_checkpoint_online_tune_and_rebuild",
+      "status": "passed",
+      "detail": {
+        "adaptation": "online",
+        "native_ms": 1.3238720182257528,
+        "adapter_seconds": 0.0013238720182257527,
+        "source_kind": "legacy_checkpoint_path",
+        "adapter_has_sufficient_data": true,
+        "native_execution_readiness": {
+          "required_stores": [
+            "pure_prefill",
+            "pure_decode",
+            "contains_locally_mixed"
+          ],
+          "ready": false,
+          "unavailable": [
+            {
+              "workload_kind": "contains_locally_mixed",
+              "ready": false,
+              "not_ready_reason": "untrained_forest_store",
+              "retained_observations": 0
+            }
+          ]
+        },
+        "online_after_tune": {
+          "adaptation": "online",
+          "derivative_refresh": "lazy",
+          "identity_verified": true,
+          "model_version": 10,
+          "rejected_observations": 0,
+          "stores": {
+            "pure_decode": {
+              "accepted_observations": 10,
+              "anchor_rows": 48,
+              "batches_since_eager": 0,
+              "eager_updates": 10,
+              "evicted_observations": 0,
+              "historical_original_ids_sha256": "77fa0f00fa47df8e5c923d1835340d9fa95df291977b98e4d3d880142f105a63",
+              "historical_storage_rows": 48,
+              "history_bin_grouping": true,
+              "history_compression_ratio": 1.0,
+              "history_grouping_ms": 0.017166,
+              "history_row_weight": 0.7252604166666666,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "lazy_fallbacks": 10,
+              "lazy_updates": 0,
+              "mutable_tree_tail": null,
+              "pending_rows": 0,
+              "publications": 10,
+              "rebuilt_nodes": 821,
+              "recent_max_age_observations": null,
+              "recent_row_weight": 2.31875,
+              "recent_rows": 10,
+              "recent_sampling": "fifo",
+              "retained_row_ids": [
+                96,
+                97,
+                98,
+                99,
+                100,
+                101,
+                102,
+                103,
+                104,
+                105
+              ],
+              "retained_row_ids_sha256": "fa349041195a78906178fb739b72b731650678657ed3dcffd2db6afd9122d191",
+              "training_state_bytes": 391216,
+              "update_failures": 0,
+              "update_step": 1.0
+            },
+            "pure_prefill": {
+              "accepted_observations": 0,
+              "anchor_rows": 48,
+              "batches_since_eager": 0,
+              "eager_updates": 0,
+              "evicted_observations": 0,
+              "historical_original_ids_sha256": "7587d6a6bebf35bece8fb5b980c5a88a281b14933b3b5084dc45f4541c4186a6",
+              "historical_storage_rows": 48,
+              "history_bin_grouping": true,
+              "history_compression_ratio": 1.0,
+              "history_grouping_ms": 0.009792,
+              "history_row_weight": 1.0,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "lazy_fallbacks": 0,
+              "lazy_updates": 0,
+              "mutable_tree_tail": null,
+              "pending_rows": 0,
+              "publications": 0,
+              "rebuilt_nodes": 0,
+              "recent_max_age_observations": null,
+              "recent_row_weight": 1.0,
+              "recent_rows": 0,
+              "recent_sampling": "fifo",
+              "retained_row_ids": [],
+              "retained_row_ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "training_state_bytes": 608272,
+              "update_failures": 0,
+              "update_step": 1.0
+            }
+          },
+          "training_state_bytes": 999488,
+          "update_mode": "structural"
+        },
+        "online_after_rebuild": {
+          "adaptation": "online",
+          "derivative_refresh": "lazy",
+          "identity_verified": true,
+          "model_version": 10,
+          "rejected_observations": 0,
+          "stores": {
+            "pure_decode": {
+              "accepted_observations": 10,
+              "anchor_rows": 48,
+              "batches_since_eager": 0,
+              "eager_updates": 10,
+              "evicted_observations": 0,
+              "historical_original_ids_sha256": "77fa0f00fa47df8e5c923d1835340d9fa95df291977b98e4d3d880142f105a63",
+              "historical_storage_rows": 48,
+              "history_bin_grouping": true,
+              "history_compression_ratio": 1.0,
+              "history_grouping_ms": 0.017709,
+              "history_row_weight": 0.7252604166666666,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "lazy_fallbacks": 10,
+              "lazy_updates": 0,
+              "mutable_tree_tail": null,
+              "pending_rows": 0,
+              "publications": 10,
+              "rebuilt_nodes": 821,
+              "recent_max_age_observations": null,
+              "recent_row_weight": 2.31875,
+              "recent_rows": 10,
+              "recent_sampling": "fifo",
+              "retained_row_ids": [
+                96,
+                97,
+                98,
+                99,
+                100,
+                101,
+                102,
+                103,
+                104,
+                105
+              ],
+              "retained_row_ids_sha256": "fa349041195a78906178fb739b72b731650678657ed3dcffd2db6afd9122d191",
+              "training_state_bytes": 391216,
+              "update_failures": 0,
+              "update_step": 1.0
+            },
+            "pure_prefill": {
+              "accepted_observations": 0,
+              "anchor_rows": 48,
+              "batches_since_eager": 0,
+              "eager_updates": 0,
+              "evicted_observations": 0,
+              "historical_original_ids_sha256": "7587d6a6bebf35bece8fb5b980c5a88a281b14933b3b5084dc45f4541c4186a6",
+              "historical_storage_rows": 48,
+              "history_bin_grouping": true,
+              "history_compression_ratio": 1.0,
+              "history_grouping_ms": 0.014917,
+              "history_row_weight": 1.0,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "lazy_fallbacks": 0,
+              "lazy_updates": 0,
+              "mutable_tree_tail": null,
+              "pending_rows": 0,
+              "publications": 0,
+              "rebuilt_nodes": 0,
+              "recent_max_age_observations": null,
+              "recent_row_weight": 1.0,
+              "recent_rows": 0,
+              "recent_sampling": "fifo",
+              "retained_row_ids": [],
+              "retained_row_ids_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "training_state_bytes": 608272,
+              "update_failures": 0,
+              "update_step": 1.0
+            }
+          },
+          "training_state_bytes": 999488,
+          "update_mode": "structural"
+        },
+        "rebuilt_adapter_seconds": 0.00136624788687887
+      }
+    },
+    {
+      "name": "seeded_frozen_passthrough",
+      "status": "failed",
+      "error_type": "ValueError",
+      "error": "invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 220, in <lambda>\n    case('seeded_frozen_passthrough',lambda:seeded('frozen'))\n                                            ^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 156, in seeded\n    request = legacy_learned_request(adaptation) if legacy else learned_request(adaptation)\n                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 144, in learned_request\n    return fpm_learned.inspect_bundle(BUNDLE, adaptation=adaptation, config={\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py\", line 1085, in inspect_bundle\n    return inspect(bundle_path, config=config, adaptation=adaptation)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 151, in inspect_bundle\n    resolved = _normalize_bundle(path, config, adaptation)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 136, in _normalize_bundle\n    return RustForwardPassPerfModel.normalize_config(_request_config(bundle_path, config, adaptation))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py\", line 531, in normalize_config\n    return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`\n"
+    },
+    {
+      "name": "seeded_online_tune_and_rebuild",
+      "status": "failed",
+      "error_type": "ValueError",
+      "error": "invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 221, in <lambda>\n    case('seeded_online_tune_and_rebuild',lambda:seeded('online'))\n                                                 ^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 156, in seeded\n    request = legacy_learned_request(adaptation) if legacy else learned_request(adaptation)\n                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 144, in learned_request\n    return fpm_learned.inspect_bundle(BUNDLE, adaptation=adaptation, config={\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py\", line 1085, in inspect_bundle\n    return inspect(bundle_path, config=config, adaptation=adaptation)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 151, in inspect_bundle\n    resolved = _normalize_bundle(path, config, adaptation)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 136, in _normalize_bundle\n    return RustForwardPassPerfModel.normalize_config(_request_config(bundle_path, config, adaptation))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py\", line 531, in normalize_config\n    return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`\n"
+    },
+    {
+      "name": "learned_snapshot_transport",
+      "status": "failed",
+      "error_type": "ValueError",
+      "error": "invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`",
+      "traceback": "Traceback (most recent call last):\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 40, in case\n    detail = run()\n             ^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 195, in learned_snapshot_transport\n    request=learned_request('online')\n            ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/consumers/dynamo/real_native_harness.py\", line 144, in learned_request\n    return fpm_learned.inspect_bundle(BUNDLE, adaptation=adaptation, config={\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py\", line 1085, in inspect_bundle\n    return inspect(bundle_path, config=config, adaptation=adaptation)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 151, in inspect_bundle\n    resolved = _normalize_bundle(path, config, adaptation)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/fpm_bundle.py\", line 136, in _normalize_bundle\n    return RustForwardPassPerfModel.normalize_config(_request_config(bundle_path, config, adaptation))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py\", line 531, in normalize_config\n    return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: invalid engine config: estimator_config.fpm_learned: invalid bundle: unknown field `bootstrap_recipe`, expected one of `kind`, `schema_version`, `producer_version`, `recipe_version`, `identity`, `seed`, `training_recipe`, `provenance`, `prior`, `dependencies`\n"
+    }
+  ],
+  "passed": 11,
+  "failed": 6
+}

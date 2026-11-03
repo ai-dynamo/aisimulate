@@ -107,6 +107,44 @@ pub struct LearnedDependency {
     pub purpose: String,
 }
 
+/// Construction-local proof of the bytes a native source reader consumed.
+/// Never serialized or accepted from configuration; no path-only cache can
+/// stand in for this receipt. Readers record lengths from the verified bytes
+/// or the same opened file they decode.
+#[derive(Debug)]
+pub(crate) struct VerifiedLearnedSource {
+    pub(crate) source: ResolvedLearnedSource,
+}
+
+impl VerifiedLearnedSource {
+    pub(crate) fn from_files(
+        kind: LearnedSourceKind,
+        path: &Path,
+        seed_kind: LearnedSeedKind,
+        dependencies: Vec<LearnedDependency>,
+    ) -> Result<Self, AicError> {
+        let path = absolute(path)?;
+        let hash = dependencies
+            .first()
+            .ok_or_else(|| invalid("verified source has no root dependency"))?
+            .sha256
+            .clone();
+        Ok(Self {
+            source: ResolvedLearnedSource {
+                kind,
+                path: Some(path.clone()),
+                sha256: Some(hash.clone()),
+                seed_kind: Some(seed_kind),
+                seed_path: Some(path),
+                seed_sha256: Some(hash),
+                dependencies,
+                recipe: None,
+                provenance: None,
+            },
+        })
+    }
+}
+
 /// The seed's recorded offline trainer and parameters, not an instruction to
 /// collect observations or fit missing stores in the runtime.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -349,8 +387,13 @@ fn checkpoint_dependencies(
     include_training_state: bool,
 ) -> Result<(serde_json::Value, Vec<LearnedDependency>), AicError> {
     let manifest_path = path.join("manifest.json");
-    let (_, manifest) = read_json(&manifest_path)?;
-    let mut files = vec![dependency(&manifest_path, "checkpoint_manifest")?];
+    let (bytes, manifest) = read_json(&manifest_path)?;
+    let mut files = vec![LearnedDependency {
+        path: absolute(&manifest_path)?,
+        byte_length: bytes.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        purpose: "checkpoint_manifest".into(),
+    }];
     for (field, hash_field, purpose) in [
         ("artifact_file", "artifact_sha256", "learned_artifact"),
         ("state_file", "state_sha256", "runtime_state"),
@@ -559,7 +602,14 @@ fn validate_bundle(
             }
         }
     }
-    let (_, artifact) = read_json(&artifact_path)?;
+    let (artifact_bytes, artifact) = read_json(&artifact_path)?;
+    let parsed_digest = format!("{:x}", Sha256::digest(&artifact_bytes));
+    let parsed_record = required_dependency(&dependencies, &artifact_path, &parsed_digest)?;
+    if parsed_record.byte_length != artifact_bytes.len() as u64 {
+        return Err(invalid(
+            "parsed artifact length differs from verified dependency",
+        ));
+    }
     let model = super::learned::LearnedForwardPassModel::from_json(
         &serde_json::to_string(&artifact).map_err(|err| invalid(err.to_string()))?,
     )?;
@@ -896,16 +946,43 @@ impl super::EstimatorConfig {
 /// normalization. Historical explicit sources retain their path/hash contract;
 /// bundles and discovery additionally carry immutable selection records.
 pub(crate) fn resolve(config: &mut ForwardPassPerfModelConfig) -> Result<(), AicError> {
-    resolve_impl(config, false)
+    resolve_impl(config, false, None)
+}
+
+/// The returned proof belongs only to this normalization call, after source
+/// validation. Legacy public sources keep their historical shape and return
+/// no complete receipt until their native payload reader has consumed them.
+pub(crate) fn resolve_with_receipt(
+    config: &mut ForwardPassPerfModelConfig,
+) -> Result<Option<VerifiedLearnedSource>, AicError> {
+    resolve(config)?;
+    Ok(config
+        .estimator_config
+        .fpm_learned
+        .source
+        .resolved_source
+        .clone()
+        .map(|source| VerifiedLearnedSource { source }))
 }
 
 /// Capture a complete dependency closure for a legacy model's snapshot or
 /// construction-time diagnostics without changing its public configuration.
 pub(crate) fn pin_legacy_source(config: &mut ForwardPassPerfModelConfig) -> Result<(), AicError> {
-    resolve_impl(config, true)
+    resolve_impl(config, true, None)
 }
 
-fn resolve_impl(config: &mut ForwardPassPerfModelConfig, pin_legacy: bool) -> Result<(), AicError> {
+pub(crate) fn pin_legacy_source_with_receipt(
+    config: &mut ForwardPassPerfModelConfig,
+    receipt: VerifiedLearnedSource,
+) -> Result<(), AicError> {
+    resolve_impl(config, true, Some(receipt))
+}
+
+fn resolve_impl(
+    config: &mut ForwardPassPerfModelConfig,
+    pin_legacy: bool,
+    receipt: Option<VerifiedLearnedSource>,
+) -> Result<(), AicError> {
     let learned = &config.estimator_config.fpm_learned;
     let explicit_count = [
         learned.artifact_path.is_some(),
@@ -1031,41 +1108,63 @@ fn resolve_impl(config: &mut ForwardPassPerfModelConfig, pin_legacy: bool) -> Re
         }
         Some((kind @ (LearnedSourceKind::Artifact | LearnedSourceKind::Checkpoint), path)) => {
             let path = absolute(&path)?;
-            let (seed_kind, dependencies) = if kind == LearnedSourceKind::Artifact {
-                (
-                    LearnedSeedKind::Artifact,
-                    vec![dependency(&path, "learned_artifact")?],
-                )
+            if let Some(receipt) = receipt {
+                if receipt.source.kind != kind || receipt.source.path.as_ref() != Some(&path) {
+                    return Err(invalid(
+                        "verified source receipt differs from selected input",
+                    ));
+                }
+                if kind == LearnedSourceKind::Checkpoint {
+                    for dependency in receipt.source.dependencies.iter().skip(1) {
+                        let relative_path = dependency.path.strip_prefix(&path).map_err(|_| {
+                            invalid("verified checkpoint dependency is outside its source root")
+                        })?;
+                        // Preserve the source resolver's symlink/containment checks;
+                        // avoiding a second content scan does not relax path scope.
+                        relative(&path, relative_path)?;
+                    }
+                }
+                if let Some(expected) = expected.as_deref() {
+                    check_hash(expected, receipt.source.sha256.as_deref().unwrap_or(""))?;
+                }
+                (receipt.source, None)
             } else {
-                let (manifest, deps) = checkpoint_dependencies(
-                    &path,
-                    learned.adaptation != LearnedAdaptation::Frozen,
-                )?;
-                let kind = match string(&manifest, "schema")? {
-                    "aisimulate_fpm_training_checkpoint" => LearnedSeedKind::TrainingCheckpoint,
-                    "aisimulate_fpm_online_checkpoint" => LearnedSeedKind::RuntimeCheckpoint,
-                    _ => return Err(invalid("unsupported checkpoint schema")),
+                let (seed_kind, dependencies) = if kind == LearnedSourceKind::Artifact {
+                    (
+                        LearnedSeedKind::Artifact,
+                        vec![dependency(&path, "learned_artifact")?],
+                    )
+                } else {
+                    let (manifest, deps) = checkpoint_dependencies(
+                        &path,
+                        learned.adaptation != LearnedAdaptation::Frozen,
+                    )?;
+                    let kind = match string(&manifest, "schema")? {
+                        "aisimulate_fpm_training_checkpoint" => LearnedSeedKind::TrainingCheckpoint,
+                        "aisimulate_fpm_online_checkpoint" => LearnedSeedKind::RuntimeCheckpoint,
+                        _ => return Err(invalid("unsupported checkpoint schema")),
+                    };
+                    (kind, deps)
                 };
-                (kind, deps)
-            };
-            let hash = dependencies[0].sha256.clone();
-            if let Some(expected) = expected.as_deref() {
-                check_hash(expected, &hash)?;
+                let hash = dependencies[0].sha256.clone();
+                if let Some(expected) = expected.as_deref() {
+                    check_hash(expected, &hash)?;
+                }
+                (
+                    ResolvedLearnedSource {
+                        kind,
+                        path: Some(path.clone()),
+                        sha256: Some(hash.clone()),
+                        seed_kind: Some(seed_kind),
+                        seed_path: Some(path),
+                        seed_sha256: Some(hash),
+                        dependencies,
+                        recipe: None,
+                        provenance: None,
+                    },
+                    None,
+                )
             }
-            (
-                ResolvedLearnedSource {
-                    kind,
-                    path: Some(path.clone()),
-                    sha256: Some(hash.clone()),
-                    seed_kind: Some(seed_kind),
-                    seed_path: Some(path),
-                    seed_sha256: Some(hash),
-                    dependencies,
-                    recipe: None,
-                    provenance: None,
-                },
-                None,
-            )
         }
         Some((LearnedSourceKind::None, _)) => {
             return Err(invalid("absence source cannot have a path"));

@@ -1,0 +1,47 @@
+{
+  "commands": [
+    {
+      "command": [
+        "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/python/aisimulate/.venv/bin/python",
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/legacy/cross_version.py",
+        "produce",
+        "--fixture-repo",
+        "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e",
+        "--artifacts",
+        "/private/tmp/gbdt-seeded-legacy-reproduction-NEW/old-state",
+        "--report",
+        "/private/tmp/gbdt-seeded-legacy-reproduction-NEW/produced.json"
+      ],
+      "cwd": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e",
+      "environment": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "pythonpath_removed": true,
+      "source_execution_record": "old-artifacts-command.json"
+    },
+    {
+      "command": [
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python",
+        "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_seeded_revision_20261103/legacy/cross_version.py",
+        "verify",
+        "--fixture-repo",
+        "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e",
+        "--artifacts",
+        "/private/tmp/gbdt-seeded-legacy-reproduction-NEW/old-state",
+        "--report",
+        "/private/tmp/gbdt-seeded-legacy-reproduction-NEW/compared.json"
+      ],
+      "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+      "environment": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "pythonpath_removed": true,
+      "source_execution_record": "cross-version-command.json"
+    }
+  ],
+  "purpose": "Current reproduction commands only, not executed; uses verbatim relocated harness and fresh outputs. Requires the pinned old fixture checkout and separately identified consumer build."
+}

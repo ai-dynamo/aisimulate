@@ -261,9 +261,8 @@ mod tests {
         use aisimulate_core::TimingModel;
         use aisimulate_core::engine::{IterationMs, RankWork};
         let ranks = [RankWork::idle(0), RankWork::idle(1)];
-        let iteration: Option<IterationMs> = LatencyOnlyProvider
-            .predict_iteration_ms(&ranks)
-            .unwrap();
+        let iteration: Option<IterationMs> =
+            LatencyOnlyProvider.predict_iteration_ms(&ranks).unwrap();
         assert_eq!(iteration, None);
     }
 
@@ -290,10 +289,12 @@ mod tests {
         }))
         .unwrap();
         assert!(rank.operations.is_empty());
-        assert!(serde_json::to_value(&rank)
-            .unwrap()
-            .get("operations")
-            .is_none());
+        assert!(
+            serde_json::to_value(&rank)
+                .unwrap()
+                .get("operations")
+                .is_none()
+        );
         let _ = aisimulate_core::FpmRankEstimate {
             operations: Vec::new(),
             ..rank
@@ -571,7 +572,9 @@ mod tests {
                 r#"{{"model":"offline/model","system":"offline_system",
                 "backend":"vllm","worker_type":"decode",{json_fields}}}"#
             );
-            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{yaml_fields}\n");
+            let yaml = format!(
+                "model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{yaml_fields}\n"
+            );
             for (path, result) in parse_public_config_paths(&json, &yaml) {
                 let error = result.expect_err(path);
                 assert!(error.contains(error_kind), "{path}: {error}");
@@ -585,7 +588,9 @@ mod tests {
             "estimator_config: {fpm_learned: {history_weight: .nan}}",
             "estimator_config: {fpm_learned: {history_weight: .inf}}",
         ] {
-            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{fields}\n");
+            let yaml = format!(
+                "model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{fields}\n"
+            );
             for result in [
                 serde_yaml::from_str::<Config>(&yaml),
                 Config::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
@@ -1126,9 +1131,8 @@ mod tests {
     fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
         use aisimulate_core::engine::EngineLaunchConfig;
         use aisimulate_core::{
-            ForwardPassReadinessReport, ScheduledRequestMetrics, StateSnapshotConfig,
-            StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
-            STATE_SNAPSHOT_LAYOUT_VERSION,
+            ForwardPassReadinessReport, STATE_SNAPSHOT_LAYOUT_VERSION, ScheduledRequestMetrics,
+            StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
         };
         let fpm = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
             wall_time: wall_ms / 1000.0,
@@ -1176,7 +1180,12 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
         let mut config: aisimulate_core::ForwardPassPerfModelConfig =
             serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
-        config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
+        config
+            .estimator_config
+            .state_snapshot
+            .as_mut()
+            .unwrap()
+            .path = moved.clone();
         let relocated = ForwardPassPerfModel::best_available(config).unwrap();
         assert_eq!(
             relocated
@@ -1192,6 +1201,36 @@ mod tests {
         assert_eq!(summary.kind, StateSnapshotKind::Regression);
         assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
         assert_eq!(summary.topology, model.deployment_topology());
+        // Inspection exposes a pinned restore recipe and its immutable file
+        // declarations without requiring callers to guess snapshot subpaths.
+        assert_eq!(
+            summary.resolved_config,
+            relocated.provenance().unwrap().config
+        );
+        assert_eq!(
+            summary.dependencies["owned_systems_paths"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            summary.dependencies["external_systems_paths"],
+            serde_json::json!([])
+        );
+        let files = summary.dependencies["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|file| {
+            let path = std::path::Path::new(file["path"].as_str().unwrap());
+            path.starts_with(&moved) && path.is_file() && file["byte_length"].as_u64().unwrap() > 0
+        }));
+        assert!(files.iter().any(|file| {
+            file["purpose"] == "snapshot_manifest" && file["sha256"] == summary.manifest_sha256
+        }));
+        assert_eq!(relocated.dependency_info(), summary.dependencies);
+        relocated.verify_dependencies().unwrap();
+        let from_summary = ForwardPassPerfModel::best_available(summary.resolved_config).unwrap();
+        assert_eq!(
+            from_summary.readiness_report(),
+            relocated.readiness_report()
+        );
         let mismatches = EngineLaunchConfig::timing_config_mismatches(
             serde_json::json!({"dp_size": 2}),
             &pinned,
@@ -1201,6 +1240,8 @@ mod tests {
             mismatches,
             ["dp_size conflicts with canonical attention_dp"]
         );
+        std::fs::write(moved.join("state.bin"), b"changed after restoration").unwrap();
+        assert!(relocated.verify_dependencies().is_err());
     }
 
     #[test]

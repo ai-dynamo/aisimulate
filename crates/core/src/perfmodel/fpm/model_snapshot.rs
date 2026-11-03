@@ -25,9 +25,9 @@ use super::super::samples::integer_sqrt;
 use super::super::selector::{Evidence, KEY_COUNT};
 use super::super::snapshot::{
     self, CONFIG_FILE, DiagnosticsRecord, EXECUTION_PROFILE_FILE, LEARNED_ARTIFACT_FILE,
-    LearnedRecord, MANIFEST_FILE, Manifest, NativeRecord, ONLINE_CHECKPOINT_DIR, Producer,
-    STABLE_ARTIFACT_FILE, STATE_FILE, STATE_SNAPSHOT_LAYOUT_VERSION, Stage, StateSnapshotKind,
-    invalid, perf_db,
+    LearnedRecord, LearnedRuntimeRecord, MANIFEST_FILE, MIXED_STATE_FILE, Manifest, MixedRecord,
+    NativeRecord, ONLINE_CHECKPOINT_DIR, Producer, STABLE_ARTIFACT_FILE, STATE_FILE,
+    STATE_SNAPSHOT_LAYOUT_VERSION, Stage, StateSnapshotKind, invalid, perf_db,
 };
 use super::*;
 
@@ -58,6 +58,22 @@ pub struct ForwardPassStateSnapshotSummary {
     /// Readiness recorded when the snapshot was saved; restoration verifies
     /// that the restored model reports the same.
     pub readiness: ForwardPassReadinessReport,
+    /// Canonical pinned restore recipe, including state_snapshot selection.
+    pub resolved_config: ForwardPassPerfModelConfig,
+    /// Manifest-declared immutable inputs; full restoration verifies contents.
+    pub dependencies: serde_json::Value,
+}
+
+impl ForwardPassStateSnapshotSummary {
+    /// Execution requirements computed from the saved identity and store report.
+    pub fn execution_readiness(&self) -> Option<ForwardPassExecutionReadiness> {
+        let identity = self.identity.as_ref()?;
+        Some(self.readiness.for_execution(
+            identity.worker_type,
+            &identity.backend,
+            identity.attention_dp,
+        ))
+    }
 }
 
 /// Every mutable estimator field, in a fixed positional layout.
@@ -284,6 +300,17 @@ pub(super) fn rebased_identity(
     let Some(mut identity) = manifest.identity.clone() else {
         return Ok(None);
     };
+    if manifest.schema_version >= snapshot::SCHEMA_VERSION
+        && matches!(
+            manifest.kind,
+            StateSnapshotKind::LearnedFrozen
+                | StateSnapshotKind::LearnedOnline
+                | StateSnapshotKind::CausalSelector
+        )
+    {
+        snapshot::closure::absolute_owned(&mut identity, root)?;
+        return Ok(Some(identity));
+    }
     let packed = manifest.native.as_ref().is_some_and(|native| native.packed);
     let mut origin: Option<PathBuf> = None;
     for (path, relative) in owned_paths(&mut identity, manifest.kind, packed)? {
@@ -373,6 +400,7 @@ pub(crate) fn relocate_snapshot_inputs(
             let learned = &mut config.estimator_config.fpm_learned;
             learned.artifact_path = saved.fpm_learned.artifact_path;
             learned.checkpoint_path = saved.fpm_learned.checkpoint_path;
+            learned.source_sha256 = saved.fpm_learned.source_sha256;
             learned.source = saved.fpm_learned.source;
         }
         StateSnapshotKind::Regression | StateSnapshotKind::LearnedWithoutIdentity => {}
@@ -418,6 +446,20 @@ fn check_identity(
     let packed = manifest.native.as_ref().is_some_and(|native| native.packed);
     let expected = match rebased_identity(manifest, root)? {
         Some(mut identity) => {
+            // Versions 1 and 2 predate source/absence pins. Resolve only those
+            // absent additive fields against their already fixed owned paths;
+            // all historical identity and fitting controls remain exact.
+            if manifest.schema_version < snapshot::SCHEMA_VERSION
+                && identity.estimation_mode == EstimationMode::FpmLearned
+                && identity
+                    .estimator_config
+                    .fpm_learned
+                    .source
+                    .resolved_source
+                    .is_none()
+            {
+                super::super::source::resolve(&mut identity)?;
+            }
             if !packed {
                 identity.systems_paths = base.systems_paths.clone();
             }
@@ -524,10 +566,12 @@ impl ForwardPassPerfModel {
     /// renamed into place. Saving never fits pending online rows or changes
     /// the model. The returned configuration is the model's resolved
     /// provenance configuration with snapshot-owned files (learned artifacts,
-    /// online checkpoints, execution profiles and, with `include_perf_db`,
-    /// performance data) redirected into the snapshot, plus
+    /// online checkpoints, execution profiles and complete learned prior data)
+    /// redirected into the snapshot, plus
     /// `estimator_config.state_snapshot` pinned to the manifest digest with
-    /// `on_tune: reject`. Set `on_tune: continue` to resume tuning.
+    /// `on_tune: reject`. Set `on_tune: continue` to resume tuning. The
+    /// `include_perf_db` option controls top-level native data; a learned
+    /// fallback's native prior is always packed for complete continuation.
     ///
     /// Native estimators record the compiled engine-spec digest from
     /// construction and the fingerprint of their performance data taken when
@@ -551,18 +595,18 @@ impl ForwardPassPerfModel {
         path: &Path,
         options: &StateSnapshotOptions,
     ) -> Result<ForwardPassPerfModelConfig, AicError> {
-        if self.mixed_composition.is_some() {
-            return Err(invalid(
-                "temporary_mixed_composition is not supported by portable state snapshots; use save_online_checkpoint or mixed_composition_state",
-            ));
-        }
         let mut stage = Stage::new(path)?;
         let destination = stage.destination().to_path_buf();
         let kind = self.snapshot_kind();
         let mut native = None;
         let mut learned_record = None;
+        let mut mixed_record = None;
         let mut identity = match (&self.provenance, kind) {
-            (Some(provenance), _) => Some(unpinned(&provenance.config)),
+            (Some(provenance), _) => Some(unpinned(
+                self.pinned_learned_config
+                    .as_ref()
+                    .unwrap_or(&provenance.config),
+            )),
             (None, StateSnapshotKind::LearnedWithoutIdentity) => None,
             (None, _) => {
                 return Err(invalid(
@@ -570,6 +614,18 @@ impl ForwardPassPerfModel {
                 ));
             }
         };
+        if matches!(
+            kind,
+            StateSnapshotKind::LearnedFrozen
+                | StateSnapshotKind::LearnedOnline
+                | StateSnapshotKind::CausalSelector
+        ) {
+            let identity = identity.as_mut().expect("learned provenance");
+            snapshot::closure::archive_source(&mut stage, identity)?;
+            if let Some(mixed) = &self.mixed_composition {
+                mixed_record = Some(pack_mixed(&mut stage, identity, mixed)?);
+            }
+        }
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => {
                 let identity = identity.as_mut().expect("native provenance");
@@ -621,6 +677,7 @@ impl ForwardPassPerfModel {
                     if copied != loaded {
                         return Err(invalid("packed performance data differs from its source"));
                     }
+                    record_owned_tree(&mut stage, "perf_db")?;
                     identity.systems_paths = vec![packed_root];
                     if packed_parquet.is_some() {
                         identity.estimator_config.fpm_interpolation.fpm_parquet_path =
@@ -654,75 +711,39 @@ impl ForwardPassPerfModel {
                 identity_verified,
                 ..
             } => {
-                match identity.as_mut() {
-                    None => {
-                        stage
-                            .write_recorded(LEARNED_ARTIFACT_FILE, learned.to_json()?.as_bytes())?;
-                        learned_record = Some(LearnedRecord {
-                            identity_verified: *identity_verified,
-                            options: Some(self.options.clone()),
-                        });
-                    }
-                    Some(identity) => {
-                        let settings = &mut identity.estimator_config.fpm_learned;
-                        if let Some(online) = online {
-                            online.save_source_free(
-                                &stage.staging().join(ONLINE_CHECKPOINT_DIR),
-                                learned,
-                            )?;
-                            let record = stage.record_existing(&format!(
-                                "{ONLINE_CHECKPOINT_DIR}/manifest.json"
-                            ))?;
-                            settings.checkpoint_path =
-                                Some(destination.join(ONLINE_CHECKPOINT_DIR));
-                            settings.artifact_path = None;
-                            settings.source_sha256 = Some(record.sha256);
-                        } else {
-                            // Keep a supplied artifact's exact bytes; a forest
-                            // loaded from a checkpoint is exported unchanged.
-                            let bytes = match &settings.artifact_path {
-                                Some(path) => {
-                                    let bytes = std::fs::read(path)
-                                        .map_err(|error| snapshot::io_error(path, error))?;
-                                    if settings.source_sha256.as_deref().is_none_or(|digest| {
-                                        !digest.eq_ignore_ascii_case(&snapshot::sha256_hex(&bytes))
-                                    }) {
-                                        return Err(invalid(
-                                            "learned artifact changed after construction",
-                                        ));
-                                    }
-                                    bytes
-                                }
-                                None => learned.to_json()?.into_bytes(),
-                            };
-                            stage.write_recorded(LEARNED_ARTIFACT_FILE, &bytes)?;
-                            settings.artifact_path = Some(destination.join(LEARNED_ARTIFACT_FILE));
-                            settings.checkpoint_path = None;
-                            settings.source_sha256 = Some(snapshot::sha256_hex(&bytes));
-                        }
-                        learned_record = Some(LearnedRecord {
-                            identity_verified: *identity_verified,
-                            options: None,
-                        });
-                    }
+                if let Some(online) = online {
+                    online
+                        .save_source_free(&stage.staging().join(ONLINE_CHECKPOINT_DIR), learned)?;
+                    record_runtime_checkpoint(&mut stage)?;
+                } else {
+                    stage.write_recorded(LEARNED_ARTIFACT_FILE, learned.to_json()?.as_bytes())?;
                 }
+                learned_record = Some(LearnedRecord {
+                    identity_verified: *identity_verified,
+                    appended_mixed_sources: Default::default(),
+                    options: identity.is_none().then(|| self.options.clone()),
+                    runtime: identity.is_some().then(|| LearnedRuntimeRecord {
+                        checkpoint: online.is_some().then(|| ONLINE_CHECKPOINT_DIR.into()),
+                        artifact: online.is_none().then(|| LEARNED_ARTIFACT_FILE.into()),
+                    }),
+                });
             }
             ForwardPassPerfMode::CausalSelector(model) => {
-                let identity = identity.as_mut().expect("selector provenance");
+                model.validate_appended_sources(model.appended_sources())?;
                 stage.write_recorded(STABLE_ARTIFACT_FILE, model.stable.to_json()?.as_bytes())?;
                 model.online.save_source_free(
                     &stage.staging().join(ONLINE_CHECKPOINT_DIR),
                     &model.learned,
                 )?;
-                let record =
-                    stage.record_existing(&format!("{ONLINE_CHECKPOINT_DIR}/manifest.json"))?;
-                let settings = &mut identity.estimator_config.fpm_learned;
-                settings.checkpoint_path = Some(destination.join(ONLINE_CHECKPOINT_DIR));
-                settings.artifact_path = None;
-                settings.source_sha256 = Some(record.sha256);
+                record_runtime_checkpoint(&mut stage)?;
                 learned_record = Some(LearnedRecord {
                     identity_verified: model.identity_verified,
+                    appended_mixed_sources: model.appended_sources().clone(),
                     options: None,
+                    runtime: Some(LearnedRuntimeRecord {
+                        checkpoint: Some(ONLINE_CHECKPOINT_DIR.into()),
+                        artifact: None,
+                    }),
                 });
             }
         }
@@ -745,24 +766,9 @@ impl ForwardPassPerfModel {
                     | StateSnapshotKind::CausalSelector
             ) {
                 let mut staged = identity.clone();
-                let settings = &mut staged.estimator_config.fpm_learned;
-                settings.source.bundle_path = None;
-                settings.source.resolved_source = None;
-                settings.source.resolved_fallback = None;
-                for path in settings
-                    .artifact_path
-                    .iter_mut()
-                    .chain(settings.checkpoint_path.iter_mut())
-                {
-                    *path = stage.staging().join(
-                        path.strip_prefix(&destination)
-                            .map_err(|_| invalid("saved learned input is outside snapshot"))?,
-                    );
-                }
-                super::super::source::pin_legacy_source(&mut staged)?;
-                rebase_learned_source(&mut staged, stage.staging(), &destination)?;
-                identity.estimator_config.fpm_learned.source =
-                    staged.estimator_config.fpm_learned.source;
+                snapshot::closure::relative_owned(&mut staged, &destination)?;
+                snapshot::closure::absolute_owned(&mut staged, stage.staging())?;
+                super::super::source::resolve(&mut staged)?;
             }
         }
         let mut pinned = match identity.clone() {
@@ -785,15 +791,24 @@ impl ForwardPassPerfModel {
         // The manifest names owned inputs relative to the snapshot, so the
         // directory restores wherever it is copied or moved.
         if let Some(identity) = identity.as_mut() {
-            let packed = native.as_ref().is_some_and(|native| native.packed);
-            for (path, relative) in owned_paths(identity, kind, packed)? {
-                if *path != destination.join(&relative) {
-                    return Err(invalid(format!(
-                        "{} is not the snapshot's {relative}",
-                        path.display()
-                    )));
+            if matches!(
+                kind,
+                StateSnapshotKind::LearnedFrozen
+                    | StateSnapshotKind::LearnedOnline
+                    | StateSnapshotKind::CausalSelector
+            ) {
+                snapshot::closure::relative_owned(identity, &destination)?;
+            } else {
+                let packed = native.as_ref().is_some_and(|native| native.packed);
+                for (path, relative) in owned_paths(identity, kind, packed)? {
+                    if *path != destination.join(&relative) {
+                        return Err(invalid(format!(
+                            "{} is not the snapshot's {relative}",
+                            path.display()
+                        )));
+                    }
+                    *path = PathBuf::from(relative);
                 }
-                *path = PathBuf::from(relative);
             }
         }
         let diagnostics = self.diagnostics();
@@ -808,8 +823,9 @@ impl ForwardPassPerfModel {
             identity,
             native,
             learned: learned_record,
+            mixed: mixed_record,
             diagnostics: diagnostics_record(&diagnostics),
-            readiness: self.readiness_report(),
+            readiness: self.readiness_record(),
             files: stage.take_files(),
         };
         let mut manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -835,6 +851,10 @@ impl ForwardPassPerfModel {
     /// Description: read a snapshot manifest without constructing a model,
     /// for readiness and topology gates. Requires the same format versions
     /// as restoration; it does not verify the state file or performance data.
+    /// Dependency records are manifest-pinned declarations. Construct the
+    /// returned `resolved_config` to verify their bytes and restore semantics.
+    /// Legacy manifests may list only a nested checkpoint manifest; constructed
+    /// model dependency metadata also includes its verified nested payloads.
     pub fn inspect_state_snapshot(
         path: impl AsRef<Path>,
     ) -> Result<ForwardPassStateSnapshotSummary, AicError> {
@@ -842,6 +862,8 @@ impl ForwardPassPerfModel {
         let bytes = snapshot::read_manifest_bytes(&root)?;
         let manifest = Manifest::parse(&bytes)?;
         let identity = rebased_identity(&manifest, &root)?;
+        let resolved_config = summary_config(&manifest, &root, &snapshot::sha256_hex(&bytes))?;
+        let dependencies = snapshot_dependencies(&manifest, &root, &bytes, None)?;
         Ok(ForwardPassStateSnapshotSummary {
             manifest_sha256: snapshot::sha256_hex(&bytes),
             kind: manifest.kind,
@@ -853,7 +875,9 @@ impl ForwardPassPerfModel {
                 .as_ref()
                 .map(ForwardPassDeploymentTopology::from_config),
             identity,
-            readiness: manifest.readiness,
+            readiness: manifest.readiness.report(),
+            resolved_config,
+            dependencies,
         })
     }
 
@@ -993,6 +1017,366 @@ impl ForwardPassPerfModel {
     }
 }
 
+fn record_owned_tree(stage: &mut Stage, relative: &str) -> Result<(), AicError> {
+    fn paths(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), AicError> {
+        for entry in std::fs::read_dir(root).map_err(|e| snapshot::io_error(root, e))? {
+            let entry = entry.map_err(|e| snapshot::io_error(root, e))?;
+            let path = entry.path();
+            let kind = entry
+                .file_type()
+                .map_err(|e| snapshot::io_error(&path, e))?;
+            if kind.is_dir() {
+                paths(&path, out)?;
+            } else if kind.is_file() {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    paths(
+        &stage.staging().join(snapshot::relative_path(relative)?),
+        &mut files,
+    )?;
+    files.sort();
+    for path in files {
+        let relative = path
+            .strip_prefix(stage.staging())
+            .expect("owned tree path")
+            .to_string_lossy()
+            .into_owned();
+        stage.record_existing(&relative)?;
+    }
+    Ok(())
+}
+
+fn record_runtime_checkpoint(stage: &mut Stage) -> Result<(), AicError> {
+    record_owned_tree(stage, ONLINE_CHECKPOINT_DIR)
+}
+
+fn pack_mixed(
+    stage: &mut Stage,
+    identity: &mut ForwardPassPerfModelConfig,
+    mixed: &MixedComposition,
+) -> Result<MixedRecord, AicError> {
+    if identity
+        .estimator_config
+        .effective_mixed_composition()
+        .is_none()
+    {
+        return Err(invalid("mixed prior has no canonical construction policy"));
+    }
+    let native = if let Some(engine) = mixed.native_engine() {
+        let dependency = mixed.dependency_provenance();
+        let provenance: ForwardPassPerfProvenance =
+            serde_json::from_value(dependency["provenance"].clone()).map_err(invalid)?;
+        let root = provenance
+            .selected_systems_root
+            .as_deref()
+            .ok_or_else(|| invalid("prior has no selected root"))?;
+        let parquet = provenance
+            .config
+            .estimator_config
+            .fpm_interpolation
+            .fpm_parquet_path
+            .as_deref();
+        let loaded: perf_db::PerfDbFingerprint =
+            serde_json::from_value(dependency["fingerprint"].clone()).map_err(invalid)?;
+        if perf_db::fingerprint(root, &identity.system, parquet)? != loaded {
+            return Err(invalid("native prior data changed after construction"));
+        }
+        let (packed_root, packed_parquet) =
+            perf_db::pack_at(stage, root, &identity.system, parquet, "mixed")?;
+        let staged_root = stage
+            .staging()
+            .join(packed_root.strip_prefix(stage.destination()).unwrap());
+        let staged_parquet = packed_parquet.as_ref().map(|path| {
+            stage
+                .staging()
+                .join(path.strip_prefix(stage.destination()).unwrap())
+        });
+        if perf_db::fingerprint(&staged_root, &identity.system, staged_parquet.as_deref())?
+            != loaded
+        {
+            return Err(invalid("packed native prior differs from loaded data"));
+        }
+        let pin = identity
+            .estimator_config
+            .fpm_learned
+            .source
+            .resolved_fallback
+            .as_mut()
+            .and_then(|fallback| fallback.native.as_mut())
+            .ok_or_else(|| invalid("native prior has no resolved pin"))?;
+        snapshot::closure::map_native_pin(pin, &mut |path| {
+            if path == root {
+                return Ok(packed_root.clone());
+            }
+            if Some(path) == parquet {
+                return packed_parquet
+                    .clone()
+                    .ok_or_else(|| invalid("missing packed prior parquet"));
+            }
+            Err(invalid(format!(
+                "unowned native prior input {}",
+                path.display()
+            )))
+        })?;
+        record_owned_tree(stage, "mixed/perf_db")?;
+        Some(NativeRecord {
+            engine_spec_sha256: engine.spec_sha256().into(),
+            perf_db: loaded,
+            packed: true,
+        })
+    } else {
+        None
+    };
+    let mut state = mixed.snapshot()?;
+    state["binding"]["policy"] = serde_json::to_value(
+        identity
+            .estimator_config
+            .effective_mixed_composition()
+            .ok_or_else(|| invalid("missing mixed policy"))?,
+    )
+    .map_err(invalid)?;
+    if native.is_some() {
+        state["binding"]["prior"]["provenance"] = identity
+            .estimator_config
+            .fpm_learned
+            .source
+            .resolved_fallback
+            .as_ref()
+            .and_then(|fallback| fallback.native.as_ref())
+            .unwrap()["provenance"]
+            .clone();
+    }
+    snapshot::closure::map_mixed_binding(&mut state, &mut |path| {
+        let relative = path
+            .strip_prefix(stage.destination())
+            .map_err(|_| invalid("mixed binding contains an external path"))?;
+        Ok(snapshot::relative_path(
+            relative
+                .to_str()
+                .ok_or_else(|| invalid("mixed path is not UTF-8"))?,
+        )?
+        .to_owned())
+    })?;
+    stage.write_recorded(
+        MIXED_STATE_FILE,
+        &serde_json::to_vec(&state).map_err(invalid)?,
+    )?;
+    Ok(MixedRecord {
+        state: MIXED_STATE_FILE.into(),
+        native,
+    })
+}
+
+fn summary_config(
+    manifest: &Manifest,
+    root: &Path,
+    manifest_sha256: &str,
+) -> Result<ForwardPassPerfModelConfig, AicError> {
+    let mut config = match rebased_identity(manifest, root)? {
+        Some(identity) => identity,
+        None => {
+            let options = manifest
+                .learned
+                .as_ref()
+                .and_then(|record| record.options.as_ref())
+                .ok_or_else(|| invalid("from_learned snapshot has no options"))?;
+            let mut config = from_learned_config(
+                manifest.worker_type,
+                options,
+                root.join(LEARNED_ARTIFACT_FILE),
+            );
+            config.estimator_config.fpm_learned.source_sha256 = Some(
+                manifest
+                    .file(LEARNED_ARTIFACT_FILE)
+                    .ok_or_else(|| invalid("missing from_learned artifact record"))?
+                    .sha256
+                    .clone(),
+            );
+            config
+        }
+    };
+    config.estimator_config.state_snapshot = Some(StateSnapshotConfig {
+        path: root.into(),
+        sha256: Some(manifest_sha256.into()),
+        on_tune: StateSnapshotTuning::Reject,
+    });
+    Ok(config)
+}
+
+fn snapshot_dependencies(
+    manifest: &Manifest,
+    root: &Path,
+    bytes: &[u8],
+    resolved: Option<&ForwardPassPerfModelConfig>,
+) -> Result<serde_json::Value, AicError> {
+    let identity = match resolved {
+        Some(config) => Some(unpinned(config)),
+        None => rebased_identity(manifest, root)?,
+    };
+    let mut owned = Vec::<PathBuf>::new();
+    let mut external = Vec::<PathBuf>::new();
+    if let Some(native) = &manifest.native {
+        if let Some(identity) = &identity {
+            let roots = if native.packed {
+                &mut owned
+            } else {
+                &mut external
+            };
+            roots.extend(identity.systems_paths.iter().cloned());
+        }
+    }
+    let fallback = identity
+        .as_ref()
+        .and_then(|identity| {
+            identity
+                .estimator_config
+                .fpm_learned
+                .source
+                .resolved_fallback
+                .as_ref()
+        })
+        .and_then(|fallback| fallback.native.clone());
+    if let Some(path) = fallback
+        .as_ref()
+        .and_then(|pin| pin["provenance"]["selected_systems_root"].as_str())
+    {
+        if manifest
+            .mixed
+            .as_ref()
+            .and_then(|mixed| mixed.native.as_ref())
+            .is_some()
+        {
+            owned.push(path.into());
+        } else {
+            external.push(path.into());
+        }
+    }
+    owned.sort();
+    owned.dedup();
+    external.sort();
+    external.dedup();
+    let mut systems_paths = owned.clone();
+    systems_paths.extend(external.clone());
+    let mut files = manifest.files.iter().map(|file| serde_json::json!({
+        "path":root.join(&file.path), "sha256":file.sha256, "byte_length":file.size_bytes, "purpose":"snapshot_owned_input"
+    })).collect::<Vec<_>>();
+    // Old snapshot manifests list the runtime checkpoint manifest only.
+    // Construction has verified its nested model/state/rows, so flatten those
+    // resolved pins for consumers without adding inspection-time file reads.
+    if let Some(source) = resolved.and_then(|config| {
+        config
+            .estimator_config
+            .fpm_learned
+            .source
+            .resolved_source
+            .as_ref()
+    }) {
+        for dependency in &source.dependencies {
+            let path = serde_json::to_value(&dependency.path).map_err(invalid)?;
+            if let Some(existing) = files.iter().find(|file| file["path"] == path) {
+                if existing["sha256"] != dependency.sha256
+                    || existing["byte_length"] != dependency.byte_length
+                {
+                    return Err(invalid(
+                        "resolved dependency differs from snapshot file pin",
+                    ));
+                }
+            } else {
+                files.push(serde_json::to_value(dependency).map_err(invalid)?);
+            }
+        }
+    }
+    files.push(serde_json::json!({"path":root.join(MANIFEST_FILE), "sha256":snapshot::sha256_hex(bytes), "byte_length":bytes.len(), "purpose":"snapshot_manifest"}));
+    Ok(
+        serde_json::json!({"systems_paths":systems_paths, "owned_systems_paths":owned,
+        "external_systems_paths":external, "files":files, "fallback":fallback}),
+    )
+}
+
+/// Select current runtime payload only after the ordinary resolver verified
+/// the archived original source and the snapshot verified every payload byte.
+fn learned_runtime_base(
+    canonical: &ForwardPassPerfModelConfig,
+    manifest: &Manifest,
+    root: &Path,
+    stable_bytes: Option<&[u8]>,
+) -> Result<
+    (
+        ForwardPassPerfModel,
+        super::super::source::VerifiedLearnedSource,
+    ),
+    AicError,
+> {
+    let runtime = manifest
+        .learned
+        .as_ref()
+        .and_then(|record| record.runtime.as_ref())
+        .ok_or_else(|| invalid("schema 3 learned snapshot lacks current runtime payload"))?;
+    let mut config = canonical.clone();
+    let settings = &mut config.estimator_config.fpm_learned;
+    let fallback = settings.source.resolved_fallback.clone();
+    settings.source = Default::default();
+    settings.source.resolved_fallback = fallback;
+    settings.checkpoint_path = runtime.checkpoint.as_ref().map(|path| root.join(path));
+    settings.artifact_path = runtime.artifact.as_ref().map(|path| root.join(path));
+    let source_record = runtime
+        .checkpoint
+        .as_ref()
+        .map(|path| format!("{path}/manifest.json"))
+        .or_else(|| runtime.artifact.clone())
+        .ok_or_else(|| invalid("missing current learned payload"))?;
+    settings.source_sha256 = Some(
+        manifest
+            .file(&source_record)
+            .ok_or_else(|| invalid("runtime payload is not pinned"))?
+            .sha256
+            .clone(),
+    );
+    if manifest.kind == StateSnapshotKind::CausalSelector && stable_bytes.is_none() {
+        return Err(invalid("manifest does not list the frozen expert"));
+    }
+    let expected_identity = canonical_learned_identity(&config)?;
+    let stable = stable_bytes
+        .map(|bytes| {
+            let text = std::str::from_utf8(bytes).map_err(invalid)?;
+            let model = LearnedForwardPassModel::from_json(text)?;
+            if model.worker_type() != config.worker_type
+                || model
+                    .metadata()
+                    .get("identity")
+                    .is_some_and(|identity| identity != &expected_identity)
+            {
+                return Err(invalid("stable expert identity differs from snapshot"));
+            }
+            Ok(model)
+        })
+        .transpose()?;
+    let (mut model, receipt) =
+        ForwardPassPerfModel::from_learned_state_with_receipt(&config, stable, true)?;
+    if let ForwardPassPerfMode::CausalSelector(selector) = &mut model.mode {
+        selector.restore_appended_sources(
+            manifest
+                .learned
+                .as_ref()
+                .expect("learned record")
+                .appended_mixed_sources
+                .clone(),
+        )?;
+    }
+    model.provenance = Some(ForwardPassPerfProvenance {
+        config: canonical.clone(),
+        selected_systems_root: None,
+        requested_estimation_mode: canonical.estimation_mode,
+        selected_estimation_mode: canonical.estimation_mode,
+        selection_failures: Vec::new(),
+    });
+    Ok((model, receipt))
+}
+
 fn diagnostics_record(diagnostics: &ForwardPassPerfDiagnostics) -> DiagnosticsRecord {
     DiagnosticsRecord {
         source: diagnostics.source.clone(),
@@ -1045,6 +1429,19 @@ fn causal_selector_base(
         &options,
         &config.estimator_config.selector,
     )?;
+    // Legacy selector snapshots use this internal constructor so that the
+    // frozen expert is restored independently. Capture their verified nested
+    // checkpoint payloads just as the ordinary public constructor does.
+    let mut pinned = config.clone();
+    if pinned
+        .estimator_config
+        .fpm_learned
+        .source
+        .resolved_source
+        .is_none()
+    {
+        super::super::source::pin_legacy_source(&mut pinned)?;
+    }
     Ok(ForwardPassPerfModel {
         mode: ForwardPassPerfMode::CausalSelector(Box::new(combined)),
         options,
@@ -1053,11 +1450,8 @@ fn causal_selector_base(
         is_correction_enabled: config.estimator_config.correction.enabled,
         query_coverage: None,
         snapshot_tuning: None,
-        pinned_learned_config: {
-            let mut pinned = config.clone();
-            super::super::source::pin_legacy_source(&mut pinned)?;
-            Some(pinned)
-        },
+        snapshot_dependencies: None,
+        pinned_learned_config: Some(pinned),
         mixed_composition: None,
     })
 }
@@ -1068,18 +1462,29 @@ type Select<'a> =
 /// Restore the model pinned by `config.estimator_config.state_snapshot`.
 /// `select` builds the estimator for a resolved configuration without the
 /// snapshot (`ForwardPassPerfModel::select` outside tests).
+#[cfg(test)]
 pub(super) fn restore(
     config: ForwardPassPerfModelConfig,
     registered: Option<bool>,
     select: Select<'_>,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    restore_verified(config, registered, select).map_err(snapshot::as_snapshot_io)
+    restore_with_receipt(config, registered, select, None)
+}
+
+pub(super) fn restore_with_receipt(
+    config: ForwardPassPerfModelConfig,
+    registered: Option<bool>,
+    select: Select<'_>,
+    source_receipt: Option<super::super::source::VerifiedLearnedSource>,
+) -> Result<ForwardPassPerfModel, AicError> {
+    restore_verified(config, registered, select, source_receipt).map_err(snapshot::as_snapshot_io)
 }
 
 fn restore_verified(
     config: ForwardPassPerfModelConfig,
     registered: Option<bool>,
     select: Select<'_>,
+    source_receipt: Option<super::super::source::VerifiedLearnedSource>,
 ) -> Result<ForwardPassPerfModel, AicError> {
     let source = config
         .estimator_config
@@ -1108,22 +1513,74 @@ fn restore_verified(
     {
         return Err(invalid("snapshot kind contradicts its configuration"));
     }
-    // Verify every pinned file before any of it is used.
+    // Verify directly decoded members from the same bytes. Schema 3 runtime
+    // members are authenticated by the checkpoint/artifact decoder instead;
+    // compare its operation-local receipt to these outer pins before accepting
+    // the model, rather than reading and hashing the same payload twice.
+    let has_separate_runtime = manifest.schema_version >= snapshot::SCHEMA_VERSION
+        && matches!(
+            manifest.kind,
+            StateSnapshotKind::LearnedFrozen
+                | StateSnapshotKind::LearnedOnline
+                | StateSnapshotKind::CausalSelector
+        );
+    let runtime = manifest
+        .learned
+        .as_ref()
+        .and_then(|record| record.runtime.as_ref());
+    // The archived seed has already been checked by this construction's source
+    // resolver. Mixed priors reopen original-A members later, so keep their
+    // independent outer verification until those readers return receipts too.
+    let source_receipt = source_receipt.filter(|_| {
+        manifest.schema_version >= snapshot::SCHEMA_VERSION
+            && base
+                .estimator_config
+                .effective_mixed_composition()
+                .is_none()
+    });
+    let mut runtime_records = Vec::new();
     let mut stable_bytes = None;
     let mut state_bytes = None;
     let mut learned_bytes = None;
+    let mut mixed_bytes = None;
     for record in &manifest.files {
-        let bytes = snapshot::read_recorded(&root, record)?;
+        let decoded_runtime_member = has_separate_runtime
+            && runtime.is_some_and(|runtime| {
+                runtime.artifact.as_deref() == Some(record.path.as_str())
+                    || (runtime.checkpoint.is_some()
+                        && matches!(
+                            record.path.as_str(),
+                            "learned/online/manifest.json"
+                                | "learned/online/model.json"
+                                | "learned/online/state.bin"
+                        ))
+            });
+        if decoded_runtime_member {
+            runtime_records.push(record);
+            continue;
+        }
+        if record.path.starts_with("source/")
+            && let Some(receipt) = &source_receipt
+            && receipt
+                .source
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.path == root.join(&record.path))
+        {
+            snapshot::verify_consumed(&root, record, receipt)?;
+            continue;
+        }
         match record.path.as_str() {
-            STATE_FILE => state_bytes = Some(bytes),
-            STABLE_ARTIFACT_FILE => stable_bytes = Some(bytes),
-            LEARNED_ARTIFACT_FILE => learned_bytes = Some(bytes),
-            _ => {}
+            STATE_FILE => state_bytes = Some(snapshot::read_recorded(&root, record)?),
+            STABLE_ARTIFACT_FILE => stable_bytes = Some(snapshot::read_recorded(&root, record)?),
+            LEARNED_ARTIFACT_FILE => learned_bytes = Some(snapshot::read_recorded(&root, record)?),
+            MIXED_STATE_FILE => mixed_bytes = Some(snapshot::read_recorded(&root, record)?),
+            _ => snapshot::verify_recorded(&root, record)?,
         }
     }
     let state_bytes = state_bytes.ok_or_else(|| invalid("manifest does not list state.bin"))?;
     let state: StateFile = snapshot::decode_state(&state_bytes)?;
-    if state.layout_version != STATE_SNAPSHOT_LAYOUT_VERSION {
+    if state.layout_version != manifest.state_layout_version {
         return Err(invalid(
             "state.bin layout version differs from its manifest",
         ));
@@ -1157,32 +1614,41 @@ fn restore_verified(
         }
     };
 
-    let mut model = match manifest.kind {
-        StateSnapshotKind::LearnedWithoutIdentity => {
-            let options = manifest
-                .learned
-                .as_ref()
-                .and_then(|learned| learned.options.clone())
-                .expect("checked above");
-            // Build from the verified bytes; reopening the path would let a
-            // concurrent writer substitute an unverified artifact.
-            let artifact = learned_bytes
-                .as_deref()
-                .ok_or_else(|| invalid("manifest does not list the learned artifact"))?;
-            let artifact = std::str::from_utf8(artifact)
-                .map_err(|error| invalid(format!("learned artifact is not UTF-8: {error}")))?;
-            if !artifact.trim_start().starts_with('{') {
-                return Err(invalid("learned artifact is not a JSON object"));
-            }
-            ForwardPassPerfModel::from_learned(artifact, options)?
+    let mut model = if has_separate_runtime {
+        let (model, receipt) =
+            learned_runtime_base(&base, &manifest, &root, stable_bytes.as_deref())?;
+        for record in runtime_records {
+            snapshot::verify_consumed(&root, record, &receipt)?;
         }
-        StateSnapshotKind::CausalSelector => causal_selector_base(
-            &base,
-            stable_bytes
-                .as_deref()
-                .ok_or_else(|| invalid("manifest does not list the frozen expert"))?,
-        )?,
-        _ => select(base.clone(), registered)?,
+        model
+    } else {
+        match manifest.kind {
+            StateSnapshotKind::LearnedWithoutIdentity => {
+                let options = manifest
+                    .learned
+                    .as_ref()
+                    .and_then(|learned| learned.options.clone())
+                    .expect("checked above");
+                // Build from the verified bytes; reopening the path would let a
+                // concurrent writer substitute an unverified artifact.
+                let artifact = learned_bytes
+                    .as_deref()
+                    .ok_or_else(|| invalid("manifest does not list the learned artifact"))?;
+                let artifact = std::str::from_utf8(artifact)
+                    .map_err(|error| invalid(format!("learned artifact is not UTF-8: {error}")))?;
+                if !artifact.trim_start().starts_with('{') {
+                    return Err(invalid("learned artifact is not a JSON object"));
+                }
+                ForwardPassPerfModel::from_learned(artifact, options)?
+            }
+            StateSnapshotKind::CausalSelector => causal_selector_base(
+                &base,
+                stable_bytes
+                    .as_deref()
+                    .ok_or_else(|| invalid("manifest does not list the frozen expert"))?,
+            )?,
+            _ => select(base.clone(), registered)?,
+        }
     };
     if model.snapshot_kind() != manifest.kind
         && !(manifest.kind == StateSnapshotKind::CausalSelector
@@ -1227,6 +1693,40 @@ fn restore_verified(
             perf_db::verified(root, &base.system, parquet, engine.database(), stamp);
         }
     }
+    if let Some(mixed_record) = &manifest.mixed {
+        let mut state: serde_json::Value = serde_json::from_slice(
+            mixed_bytes
+                .as_deref()
+                .ok_or_else(|| invalid("missing mixed state payload"))?,
+        )
+        .map_err(invalid)?;
+        snapshot::closure::map_mixed_binding(&mut state, &mut |path| {
+            Ok(root.join(snapshot::relative_path(
+                path.to_str()
+                    .ok_or_else(|| invalid("mixed path is not UTF-8"))?,
+            )?))
+        })?;
+        let mixed = model
+            .mixed_composition
+            .as_mut()
+            .ok_or_else(|| invalid("mixed snapshot did not construct its prior"))?;
+        if let Some(native) = &mixed_record.native {
+            let engine = mixed
+                .native_engine()
+                .ok_or_else(|| invalid("mixed snapshot lost its native engine"))?;
+            if engine.spec_sha256() != native.engine_spec_sha256
+                || mixed.dependency_provenance()["fingerprint"]
+                    != serde_json::to_value(&native.perf_db).map_err(invalid)?
+            {
+                return Err(invalid("mixed native prior differs from snapshot"));
+            }
+        } else if mixed.native_engine().is_some() {
+            return Err(invalid("mixed snapshot unexpectedly gained a native prior"));
+        }
+        mixed.restore(state)?;
+    } else if model.mixed_composition.is_some() {
+        return Err(invalid("snapshot omitted mixed state"));
+    }
     model.install_state(state.state)?;
     if let Some(learned) = &manifest.learned {
         model.set_identity_verified(learned.identity_verified);
@@ -1245,14 +1745,27 @@ fn restore_verified(
         // A from_learned model keeps its original absence of provenance.
         None => {}
     }
+    let mut readiness = model.readiness_record();
+    if manifest.readiness.execution.is_none() {
+        // Older snapshots did not record the additive execution decision. Keep
+        // checking every state field they did record, including counts and
+        // readiness.
+        readiness.execution = None;
+    }
     if diagnostics_record(&model.diagnostics()) != manifest.diagnostics
-        || model.readiness_report() != manifest.readiness
+        || readiness != manifest.readiness
     {
         return Err(invalid(
             "restored diagnostics differ from those recorded when the snapshot was saved",
         ));
     }
     model.snapshot_tuning = Some(source.on_tune);
+    model.snapshot_dependencies = Some(snapshot_dependencies(
+        &manifest,
+        &root,
+        &manifest_bytes,
+        Some(model.pinned_learned_config.as_ref().unwrap_or(&config)),
+    )?);
     Ok(model)
 }
 

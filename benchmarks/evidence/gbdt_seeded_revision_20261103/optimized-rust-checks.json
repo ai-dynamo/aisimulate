@@ -1,0 +1,49 @@
+{
+  "source_proof": "construction-receipts-native-delta.json",
+  "files_sha256": {
+    "construction-receipts-native-delta.json": "79e2d1096446bac898ffd1c2e6a3bd4715e48f2179086339344a64caab7dab92",
+    "construction-receipts-native-delta.patch": "d17917cee05d9cff6cd28779059ec83dd754a5e736326ac5b6d54572e0061ff1",
+    "optimized-fpm-rust.log": "bbaa9614de0c6b3641b785f2a4ed06ca0cab6330a045e8254da12878392ece5a",
+    "optimized-public-api-rust.log": "f0d122df5950fd78027ef74afe68bf2d7fa3b8348fccb85089901ecc7d4c015e",
+    "optimized-fpm-attempt1-rust.log": "f9ebfa3b315712055f39720b2eb5311ad29073fe0afdda8daf425386405f1e49",
+    "optimized-fpm-attempt2-rust.log": "ff1b181de4ae02aef0ab2c4fa575512bc1fcfce9286e3f3eae84767ebdfa9a42"
+  },
+  "checks": [
+    {
+      "command": "PYO3_PYTHON=/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python CARGO_TARGET_DIR=/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target cargo test -p aisimulate-core --lib perfmodel::fpm -- --test-threads=2",
+      "exit_code": 0,
+      "passed": 429,
+      "failed": 0,
+      "test_seconds": 53.29,
+      "log": "optimized-fpm-rust.log"
+    },
+    {
+      "command": "PYO3_PYTHON=/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python CARGO_TARGET_DIR=/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target cargo test --manifest-path crates/tests/public-api/Cargo.toml -- --test-threads=2",
+      "exit_code": 0,
+      "passed": 26,
+      "failed": 0,
+      "test_seconds": 0.08,
+      "log": "optimized-public-api-rust.log"
+    }
+  ],
+  "prior_attempts": [
+    {
+      "log": "optimized-fpm-attempt1-rust.log",
+      "outcome": "Compilation failed due to new receipt test import scope; corrected before test execution."
+    },
+    {
+      "log": "optimized-fpm-attempt2-rust.log",
+      "outcome": "428 passed and one new receipt fixture failed after deleting its source directory. The containment guard remained correct; fixture changed to replace bytes while retaining paths. Production source unchanged between this attempt and the final429-pass run."
+    }
+  ],
+  "snapshot_optimization": {
+    "source": "Schema3 non-mixed archived source records may reuse exact current normalization receipt; mixed prior source members retain independent verification.",
+    "runtime": "Schema3 learned runtime members are compared against actual decoder file path, digest and length receipts before model publication; no serialized pins or process-global cache serve as receipts.",
+    "guards": "Matching schema/model-kind predicate gates deferral and decoding. Legacy schemas retain original path. All extra declared files remain verified.",
+    "tests": [
+      "decoder_receipts_preserve_outer_snapshot_pins_and_payload_integrity",
+      "non_learned_snapshot_cannot_defer_foreign_runtime_members",
+      "decoded_checkpoint_receipt_matches_independent_closure_without_reopening_payloads"
+    ]
+  }
+}

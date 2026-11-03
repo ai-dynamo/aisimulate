@@ -1,0 +1,821 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate
+configfile: pytest.ini
+plugins: mock-3.15.1, cov-7.1.0, jaxtyping-0.3.11, xdist-3.8.0, split-0.11.0, md-report-0.8.0, asyncio-1.3.0, typeguard-2.13.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1916 items
+
+python/aisimulate/tests/unit/test_onboard_checkpoint.py ................ [  0%]
+......................                                                   [  1%]
+python/aisimulate/tests/unit/test_onboard_collection_readiness.py ...... [  2%]
+.......................................................                  [  5%]
+python/aisimulate/tests/unit/test_onboard_finalization.py .............. [  5%]
+........................F..............                                  [  7%]
+python/aisimulate/tests/unit/test_onboard_finalization_quality.py ...... [  8%]
+....................                                                     [  9%]
+python/aisimulate/tests/unit/test_onboard_model_config.py .............. [ 10%]
+........................................................................ [ 13%]
+........................................................................ [ 17%]
+.....................................                                    [ 19%]
+python/aisimulate/tests/unit/test_onboard_runtime.py ................... [ 20%]
+............................................................F.........   [ 24%]
+python/aisimulate/tests/unit/test_onboard_runtime_bindings.py .......... [ 24%]
+........................................................................ [ 28%]
+........................................................................ [ 32%]
+.                                                                        [ 32%]
+python/aisimulate/tests/unit/test_onboard_topology.py .................. [ 33%]
+........................................................................ [ 36%]
+................................                                         [ 38%]
+python/aisimulate/tests/unit/test_onboard_version_identity.py .......... [ 39%]
+.....................................                                    [ 41%]
+python/aisimulate/tests/unit/test_support_cli.py ....................... [ 42%]
+........................................................................ [ 45%]
+....................FF...............                                    [ 47%]
+python/aisimulate/tests/unit/test_support_config_profile.py ............ [ 48%]
+........................................................................ [ 52%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 63%]
+........................................................................ [ 67%]
+..........................................................               [ 70%]
+python/aisimulate/tests/unit/test_support_execution_evidence_compatibility.py . [ 70%]
+.......                                                                  [ 70%]
+python/aisimulate/tests/unit/test_support_interpolation_validation.py .. [ 70%]
+.........................................                                [ 73%]
+python/aisimulate/tests/unit/test_support_learned_validation.py ........ [ 73%]
+...F....F.....                                                           [ 74%]
+python/aisimulate/tests/unit/test_support_modelopt_sidecar.py .......... [ 74%]
+....................................................................     [ 78%]
+python/aisimulate/tests/unit/test_support_plan.py ...................... [ 79%]
+..........FFFFFFFFFFFFFF................................................ [ 83%]
+................................................................         [ 86%]
+python/aisimulate/tests/unit/test_support_serving_validation.py ........ [ 86%]
+...................................................                      [ 89%]
+python/aisimulate/tests/unit/test_support_topology.py .................. [ 90%]
+.............................................                            [ 92%]
+python/aisimulate/tests/unit/test_support_validation.py ............     [ 93%]
+python/aisimulate/tests/unit/test_support_validation_workflow.py ....... [ 93%]
+........................................................................ [ 97%]
+..............................................                           [100%]
+
+=================================== FAILURES ===================================
+___ test_public_finalize_preserves_collection_and_resolves_ordinary_configs ____
+python/aisimulate/tests/unit/test_onboard_finalization.py:689: in test_public_finalize_preserves_collection_and_resolves_ordinary_configs
+    assert (
+E   AssertionError: assert 1 == 0
+E    +  where 1 = <function main at 0x10de2be20>(['recommend', '--config', '/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_p...zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/recommend-result', '--format', ...])
+E    +    where <function main at 0x10de2be20> = cli.main
+----------------------------- Captured stdout call -----------------------------
+Model config source: /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/config.json (SHA-256 32345a57d9efde25c20f76bd07df2435b700ce4c6ede6d872428cf2ac998216f).
+Config modeling_scope: Text decoder only. FPM excludes multimodal encoders, projectors, preprocessing and other non-text components from timing and config-derived planning estimates. Observed runtime cache capacity accounts for all components actually loaded by the worker; full multimodal latency is not modeled.
+Config hidden_size: config hidden_size=16
+Config intermediate_size: config intermediate_size=32
+Config num_hidden_layers: config num_hidden_layers=2
+Config num_attention_heads: config num_attention_heads=4
+Config num_key_value_heads: config num_key_value_heads=2
+Config head_dim: config head_dim=4
+Config vocab_size: config vocab_size=64
+Config context_length: config context_length=128
+Config model: config _name_or_path/name_or_path hint; explicit deployment identity takes precedence
+Config architecture: config declared architecture=LlamaForCausalLM
+Config num_experts: known dense architecture
+Config dtype: config tensor dtype=bfloat16; checkpoint storage still needs verification; does not declare runtime attention or KV-cache precision
+architecture: LlamaForCausalLM (source: config declared architecture=LlamaForCausalLM)
+context_length: 128 (source: config context_length=128)
+num_experts: 0 (source: known dense architecture)
+Profile inputs (resource bytes per rank; estimates require runtime verification):
+  architecture: LlamaForCausalLM (source: config declared architecture=LlamaForCausalLM)
+  context_length: 128 (source: config context_length=128)
+  num_experts: 0 (source: known dense architecture)
+  gemm_quant_mode: bfloat16 (source: assumption: bfloat16 tensor dtype with no inline or adjacent ModelOpt quantization metadata; verify deployed weight precision (checkpoint tensors are not inspected))
+  moe_quant_mode: bfloat16 (source: assumption: bfloat16 tensor dtype with no inline or adjacent ModelOpt quantization metadata; verify deployed weight precision (checkpoint tensors are not inspected))
+  comm_quant_mode: half (source: user override; caller-declared value, not an inferred measurement)
+  moe_backend: auto (source: existing FPM deployment schema default: automatic backend selection)
+  attention_backend: auto (source: existing FPM deployment schema default: automatic backend selection)
+  max_num_tokens: 64 (source: user override; caller-declared value, not an inferred measurement)
+  max_batch_size: 4 (source: user override; caller-declared value, not an inferred measurement)
+  fmha_quant_mode: bfloat16 (source: user override; caller-declared value, not an inferred measurement)
+  kv_cache_dtype: bfloat16 (source: user override; caller-declared value, not an inferred measurement)
+  cache_layout: linear (source: known full-attention GQA/MHA decoder layout; no sliding/recurrent state)
+  kv_bytes_per_token: 64 (source: exact linear tensor geometry: 2 K/V * 2 layers * 2 rank-local KV heads * 4 head_dim * 2 bytes; KV heads replicate when TP exceeds head count; attention DP does not divide a rank's cache)
+  runtime_overhead_bytes: 3758096384 (source: estimate: packaged systems/h200_sxm.yaml sha256=1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d misc.other_mem per rank; excludes CUDA graph reservation; not a measurement)
+  comm_overhead_bytes: 0 (source: estimate: packaged systems/h200_sxm.yaml sha256=1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d misc.nccl_mem[1] for pure TP; not a measurement)
+  weights_bytes: 13472 (source: estimate: vanilla LlamaForCausalLM bfloat16 tensors, TP=1, MoE TP=1, EP=1; sharded embedding/head (tied=False), Q/K/V/output and gated MLP, configured biases, replicated RMS norms/router; no quantization/padding/allocator extras)
+  activations_bytes: 73400320 (source: estimate: sdk/backends/base_backend.py + trtllm_backend.py vLLM policy; max(70 MiB, 2 * max_num_tokens=64 * attention_width=16 * coefficient=11); rank-local max_batch_size=4; no speculative decoding; not memory qualification)
+Scope: FPM simulation for /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/checkpoint (dense), vLLM 0.27.0, h200_sxm; nvswitch; tp {'replicas': 1, 'tensor': 1, 'pipeline': 1, 'attention_data': 1, 'moe_tensor': 1, 'moe_expert': 1}; runtime context 128 tokens.
+Collection settings: {"context_length": 128, "gpu_memory_utilization": 0.9, "max_batched_tokens": 64, "max_prefill_cudagraph_size": null, "max_sequences": 4, "prefill_cudagraph_policy": "runtime", "sources": {"context_length": "reviewed runtime limit; model/profile context capped at the 256000-token AgentX reference unless explicitly overridden", "gpu_memory_utilization": "reviewed fraction of total GPU memory; initial policy is 0.90; runtime fit remains unverified", "max_batched_tokens": "reviewed profile resource bound", "max_prefill_cudagraph_size": "deferred to the pinned runtime; onboarding does not prescribe CUDA graph sizes", "max_sequences": "reviewed profile resource bound", "prefill_cudagraph_policy": "reviewed runtime selection; CUDA graph sizes resolve in the initialized vLLM engine"}}
+Collection GPUs required: 1 for one selected worker; availability is unchecked.
+Request saved with FPM metadata; memory source: pending. Runtime compatibility and FPM data are unchecked; accuracy is not assessed. Setup has not launched GPU work.
+request_id: onboarding-b076ad1c45df524d260890396d6e14531aeb4e105013f16d85a885b7e6441f96
+request: /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/draft.yaml
+next: aisimulate onboard plan --config /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/draft.yaml
+request_id: onboarding-4c7fa04a6d0840b10f8050c0d02c5b10580608fd87ee529ad455c0ab65b124b5
+candidate_count: 1
+collection_gpus_required: 1
+plan: /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/collection/support-plan.json
+commands: /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/collection/commands.json
+prerequisites: runtime_and_fpm_data_unchecked
+resources: pending
+accuracy: not assessed
+next: aisimulate onboard collect-fpm --config /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/collection/request.yaml --output-dir /private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/collection
+{
+  "accuracy": "not_assessed",
+  "collection_quality": "not_assessed",
+  "request": "/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/resolved/request.yaml",
+  "resolved_directory": "/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/resolved",
+  "review_status": "requires_review"
+}
+Runtime memory resolved. Review the new profile before accepting it in the onboarding checkpoint.
+{"committed_prefill_tokens":16,"completed_requests":1,"decode_gpus_per_worker":1,"decode_worker_seconds":0.005125,"duration_ms":5.125,"first_admission_prefix_cache_reused_ratio":0.0,"goodput_completed_requests":1,"goodput_output_throughput_tok_s":780.4878048780488,"goodput_request_throughput_rps":195.1219512195122,"gpu_hours":1.4236111111111112e-06,"input_throughput_tok_s":3121.951219512195,"kv_cache_precision":{"aggregated":{"dtype":"bfloat16","source":"fpm_profile"}},"kv_eviction_policy":"lru","max_e2e_latency_ms":5.125,"max_itl_ms":1.4166670000000003,"max_output_token_throughput_per_user":750.0001875000471,"max_tpot_ms":1.375,"max_ttft_ms":1.0,"max_ttst_ms":1.3333329999999997,"mean_e2e_latency_ms":5.125,"mean_itl_ms":1.375,"mean_output_token_throughput_per_user":727.7183672080081,"mean_tpot_ms":1.375,"mean_ttft_ms":1.0,"mean_ttst_ms":1.3333329999999997,"median_e2e_latency_ms":5.125,"median_itl_ms":1.3757507833184515,"median_output_token_throughput_per_user":727.0546861249273,"median_tpot_ms":1.375,"median_ttft_ms":1.0,"median_ttst_ms":1.3333329999999997,"min_e2e_latency_ms":5.125,"min_itl_ms":1.3333329999999997,"min_output_token_throughput_per_user":705.88218685125,"min_tpot_ms":1.375,"min_ttft_ms":1.0,"min_ttst_ms":1.3333329999999997,"num_e2e_latency_samples":1,"num_requests":1,"num_tpot_samples":1,"num_ttft_samples":1,"output_throughput_tok_s":780.4878048780488,"p75_e2e_latency_ms":5.125,"p75_itl_ms":1.4176486464370954,"p75_output_token_throughput_per_user":750.6966987455426,"p75_tpot_ms":1.375,"p75_ttft_ms":1.0,"p75_ttst_ms":1.3333329999999997,"p90_e2e_latency_ms":5.125,"p90_itl_ms":1.4176486464370954,"p90_output_token_throughput_per_user":750.6966987455426,"p90_tpot_ms":1.375,"p90_ttft_ms":1.0,"p90_ttst_ms":1.3333329999999997,"p95_e2e_latency_ms":5.125,"p95_itl_ms":1.4176486464370954,"p95_output_token_throughput_per_user":750.6966987455426,"p95_tpot_ms":1.375,"p95_ttft_ms":1.0,"p95_ttst_ms":1.3333329999999997,"p99_e2e_latency_ms":5.125,"p99_itl_ms":1.4176486464370954,"p99_output_token_throughput_per_user":750.6966987455426,"p99_tpot_ms":1.375,"p99_ttft_ms":1.0,"p99_ttst_ms":1.3333329999999997,"power_coverage":null,"power_w":null,"prediction_provenance":{"aggregated":{"data_identity":{"model":"/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_public_finalize_preserves0/checkpoint","model_revision":"synthetic-immutable-revision"},"data_version":"synthetic-immutable-revision","data_version_unavailable_reason":null,"estimator":"fpm_interpolation","timing_source":"aic"}},"prefill_gpus_per_worker":0,"prefill_worker_seconds":0.0,"prefix_cache_reused_ratio":0.0,"processed_output_tokens_per_s":20464.649875421444,"processed_tokens":20,"processed_tokens_per_s":102323.24937710722,"request_throughput_rps":195.1219512195122,"std_e2e_latency_ms":0.0,"std_itl_ms":0.03402096303751584,"std_output_token_throughput_per_user":18.013854696237782,"std_tpot_ms":0.0,"std_ttft_ms":0.0,"std_ttst_ms":0.0,"total_input_tokens":16,"total_output_tokens":4,"total_throughput_tok_s":3902.439024390244,"wall_time_ms":0.195459}
+----------------------------- Captured stderr call -----------------------------
+aisimulate recommend failed: PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources _
+python/aisimulate/tests/unit/test_onboard_runtime.py:1825: in test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources
+    recommendation = json.loads((output / "recommendation.json").read_text())
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1027: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_large_runtime_provenance_0/recommendation/recommendation.json'
+_ test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection _
+python/aisimulate/tests/unit/test_support_cli.py:1246: in test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection
+    assert planned.returncode == 0, planned.stderr
+E   AssertionError: /Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python: Error while finding module specification for 'collector.fpm_forward' (ModuleNotFoundError: No module named 'collector')
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bi...r while finding module specification for 'collector.fpm_forward' (ModuleNotFoundError: No module named 'collector')\n").returncode
+_______ test_real_collector_artifact_symlink_rejected_before_first_write _______
+python/aisimulate/tests/unit/test_support_cli.py:1295: in test_real_collector_artifact_symlink_rejected_before_first_write
+    assert planned.returncode == 0, planned.stderr
+E   AssertionError: /Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bin/python: Error while finding module specification for 'collector.fpm_forward' (ModuleNotFoundError: No module named 'collector')
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/.venv/bi...r while finding module specification for 'collector.fpm_forward' (ModuleNotFoundError: No module named 'collector')\n").returncode
+___ test_missing_learned_source_validation_records_incomplete_without_replay ___
+python/aisimulate/src/aisimulate/main.py:437: in main
+    return run_support_command(args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/support/cli.py:1418: in run_support_command
+    return run_validation(args)
+           ^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/support/validation.py:171: in run_validation
+    learned = learned_timing_evidence(prediction, pin=True) if selected else None
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/support/timing.py:54: in learned_timing_evidence
+    model = RustForwardPassPerfModel.best_available(canonical_timing_config(prediction))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py:475: in best_available
+    return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: invalid engine config: invalid forward pass perf model config: fpm_learned accepts at most one artifact_path, checkpoint_path, or bundle_path; a source is required unless online catalogue discovery is enabled
+
+During handling of the above exception, another exception occurred:
+python/aisimulate/tests/unit/test_support_learned_validation.py:213: in test_missing_learned_source_validation_records_incomplete_without_replay
+    assert cli.main([*args, "--prediction-config", str(selected)]) == 1
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/main.py:439: in main
+    parser.error(str(exc))
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py:2650: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/argparse.py:2637: in exit
+    _sys.exit(status)
+E   SystemExit: 2
+----------------------------- Captured stderr call -----------------------------
+usage: aisimulate [-h] {predict,recommend,onboard} ...
+aisimulate: error: invalid engine config: invalid forward pass perf model config: fpm_learned accepts at most one artifact_path, checkpoint_path, or bundle_path; a source is required unless online catalogue discovery is enabled
+________ test_validation_rechecks_native_prior_closure[directory-added] ________
+python/aisimulate/tests/unit/test_support_learned_validation.py:455: in test_validation_rechecks_native_prior_closure
+    with pytest.raises(timing.LearnedTimingDependencyError, match="unavailable or changed"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE LearnedTimingDependencyError
+_ test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-0] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-7] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-42] _
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-0] ___
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-7] ___
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-42] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-0] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-7] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+_ test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-42] _
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-0] ___
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-7] ___
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+__ test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-42] __
+python/aisimulate/tests/unit/test_support_plan.py:405: in test_validation_recommendation_and_user_runtime_replica_budget
+    result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:90: in run_recommendation
+    return _run_recommendation(config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/recommend.py:180: in _run_recommendation
+    result = sweeper.run(
+python/aisimulate/src/aisimulate/sweeper/search.py:1959: in run
+    _run_branch_round(state)
+python/aisimulate/src/aisimulate/sweeper/search.py:1841: in _run_branch_round
+    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1186: in _in_suggestion_order
+    for suggestion, result in results:
+                              ^^^^^^^
+python/aisimulate/src/aisimulate/sweeper/search.py:1443: in _eval_batch
+    yield from _replay_batch(todo)
+python/aisimulate/src/aisimulate/sweeper/search.py:1479: in _replay_batch
+    for index, result in evaluate_waves(
+python/aisimulate/src/aisimulate/resource_scheduler.py:77: in evaluate_waves
+    plan = factory.admit_wave([specs[index] for index in wave])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1184: in admit_wave
+    budget["coordinator_memory_bytes"] += _child_memory_bytes()
+                                          ^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1098: in _child_memory_bytes
+    children = descendants_of(psutil.Process())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/src/aisimulate/resources.py:1072: in descendants_of
+    return process.children(recursive=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:978: in children
+    ppid_map = _ppid_map()
+               ^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:256: in _ppid_map
+    for pid in pids():
+               ^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/__init__.py:1485: in pids
+    ret = sorted(_psplatform.pids())
+                 ^^^^^^^^^^^^^^^^^^
+python/aisimulate/.venv/lib/python3.12/site-packages/psutil/_psosx.py:320: in pids
+    ls = cext.pids()
+         ^^^^^^^^^^^
+E   PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+______ test_documented_recommendation_command_evaluates_one_worker[False] ______
+python/aisimulate/tests/unit/test_support_plan.py:504: in test_documented_recommendation_command_evaluates_one_worker
+    assert result.returncode == (1 if missing_samples else 0), result.stderr
+E   AssertionError: aisimulate recommend failed: PermissionError: [Errno 1] Operation not permitted (originated from sysctl() malloc 1/3)
+E     Traceback (most recent call last):
+E       File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/resource_worker.py", line 66, in <module>
+E         raise SystemExit(main())
+E                          ^^^^^^
+E       File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/resource_worker.py", line 33, in main
+E         os.nice(5)
+E     PermissionError: [Errno 1] Operation not permitted
+E     
+E     During handling of the above exception, another exception occurred:
+E     
+E     Traceback (most recent call last):
+E       File "<frozen runpy>", line 198, in _run_module_as_main
+E       File "<frozen runpy>", line 88, in _run_code
+E       File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/resource_worker.py", line 68, in <module>
+E         mark_shutdown()
+E       File "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/python/aisimulate/src/aisimulate/supervision.py", line 81, in mark_shutdown
+E         Path(budget["ready_path"]).write_text("shutdown")
+E       File "/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1047, in write_text
+E         with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+E              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       File "/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1013, in open
+E         return io.open(self, mode, buffering, encoding, errors, newline)
+E                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E     FileNotFoundError: [Errno 2] No such file or directory: '/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/aisimulate-monitor-qmpl_1tl/ready'
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['aisimulate', 'recommend', '--config', './aisimulate-support/recommend/pilot.yaml', '--output-d...] No such file or directory: \'/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/aisimulate-monitor-qmpl_1tl/ready\'\n').returncode
+______ test_documented_recommendation_command_evaluates_one_worker[True] _______
+python/aisimulate/tests/unit/test_support_plan.py:505: in test_documented_recommendation_command_evaluates_one_worker
+    assert evaluated.read_text().splitlines() == ["1"]
+           ^^^^^^^^^^^^^^^^^^^^^
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1027: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/Users/yueqiz/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/5x/dfb6plvj5zz52zbfqwl13wh40000gn/T/pytest-of-yueqiz/pytest-144/test_documented_recommendation1/evaluated.txt'
+============================= slowest 10 durations =============================
+7.11s call     tests/unit/test_onboard_finalization_quality.py::test_saved_plan_rechecks_bound_quality_evidence[report]
+5.36s call     tests/unit/test_support_validation_workflow.py::test_serving_run_returns_producer_status_and_preserves_logs[0]
+4.07s call     tests/unit/test_onboard_checkpoint.py::test_empty_stage_one_and_research_resume_in_new_process_and_cwd
+3.67s call     tests/unit/test_support_validation_workflow.py::test_serving_rejects_nested_outputs_before_writing[reused_repeat-same-prepare]
+3.31s call     tests/unit/test_support_validation_workflow.py::test_public_four_steps_qualify_only_matched_synthetic_scope[dep]
+3.24s call     tests/unit/test_support_validation_workflow.py::test_serving_rejects_nested_outputs_before_writing[reused_repeat-same-assess]
+3.18s call     tests/unit/test_support_validation_workflow.py::test_serving_rejects_nested_outputs_before_writing[recipe-same-assess]
+3.15s call     tests/unit/test_onboard_finalization_quality.py::test_saved_plan_rechecks_bound_quality_evidence[policy]
+3.14s call     tests/unit/test_support_validation_workflow.py::test_serving_rejects_nested_outputs_before_writing[replay_report-ancestor-assess]
+3.12s call     tests/unit/test_support_validation_workflow.py::test_serving_rejects_nested_outputs_before_writing[replay_report-same-assess]
+=========================== short test summary info ============================
+FAILED python/aisimulate/tests/unit/test_onboard_finalization.py::test_public_finalize_preserves_collection_and_resolves_ordinary_configs
+FAILED python/aisimulate/tests/unit/test_onboard_runtime.py::test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources
+FAILED python/aisimulate/tests/unit/test_support_cli.py::test_malformed_resumed_checkpoint_fails_cleanly_without_launching_collection
+FAILED python/aisimulate/tests/unit/test_support_cli.py::test_real_collector_artifact_symlink_rejected_before_first_write
+FAILED python/aisimulate/tests/unit/test_support_learned_validation.py::test_missing_learned_source_validation_records_incomplete_without_replay
+FAILED python/aisimulate/tests/unit/test_support_learned_validation.py::test_validation_rechecks_native_prior_closure[directory-added]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-0]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-7]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-dense-1-42]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-0]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-7]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[1-moe-4-42]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-0]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-7]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-dense-1-42]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-0]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-7]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_validation_recommendation_and_user_runtime_replica_budget[3-moe-4-42]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_documented_recommendation_command_evaluates_one_worker[False]
+FAILED python/aisimulate/tests/unit/test_support_plan.py::test_documented_recommendation_command_evaluates_one_worker[True]
+============ 20 failed, 1896 passed, 1 warning in 495.49s (0:08:15) ============

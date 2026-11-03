@@ -1,0 +1,23 @@
+{
+  "bootstrap_observations": 0,
+  "feedback_observations": 0,
+  "initial_prediction": 4.0,
+  "initial_route": {
+    "temporary_mixed_composition": {
+      "calibration_admissions": 0,
+      "calibration_enabled": false,
+      "fallback_eligible": true,
+      "owned": true,
+      "route": "interpolation",
+      "version": "original_a_mixed_experts_attention_moe_v3",
+      "workload_kind": "contains_locally_mixed"
+    }
+  },
+  "later_prediction": 4.0,
+  "predictions_before_admission": [],
+  "store_additions": 0,
+  "stores": [
+    "pure_decode",
+    "pure_prefill"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "adapted_host_harnesses": {
+    "archive_ref": "codex/archive-gbdt-adoption-examples",
+    "current_paths": [
+      "host_costs.py",
+      "host_costs_expanded.py",
+      "host_costs_expanded_pairs.py"
+    ],
+    "expanded_archive_path": "benchmarks/evidence/gbdt_opt_in_20261102/host-costs-expanded/executed-harnesses.tar.gz",
+    "expanded_archive_sha256": "3b7e998100491805df24272d1ca1430ff3697c531db8c88f5df6a67186ccfcab",
+    "modifications": "Both builds use unchanged caller-managed initial fitting; raw seeded sources match; strict numerical comparisons added; candidate-only mixed snapshot costs separate from unsupported baseline; PYTHONPATH removed.",
+    "original_members_sha256": {
+      "gbdt-pr2-host-cost-expanded-pairs.py": "e6bd2f81a5198ffd6c3ff8ea896f96d9a2837072a319471245f864a1caf10f78",
+      "gbdt-pr2-host-cost-expanded.py": "3b5b0da8f01edbc934da245f7a603eadca04ba65da160fe79850b42a8f6b1060"
+    },
+    "shared_source_path": "benchmarks/evidence/gbdt_opt_in_20261102/host_costs.py",
+    "shared_source_sha256": "affc31ab372e5d83a9c659e96b40f977fad8577709f165d9027a3a55eadcc391",
+    "source_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+  },
+  "archived_stack": {
+    "codex/archive-gbdt-adoption-examples": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957",
+    "codex/archive-gbdt-complete-snapshots": "cc69ad6865b55efd519b01690ba439ee1d732951",
+    "codex/archive-gbdt-native-bootstrap": "1bae0620de5e8d6271fb9021fbea2d0fab024fc2",
+    "codex/archive-gbdt-source-bundles": "a85fa65868604840432a3d96287aa820196944a4"
+  },
+  "external_inputs": "Observed input bytes and pinned HF snapshot remain outside the repository; accuracy/input-verification.json lists their exact hashes and locations.",
+  "historical_preservation_directory": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-historical-evidence-20261103",
+  "purpose": "Keep the fresh qualification independently reproducible without carrying superseded result directories. Executed command paths and receipts remain unchanged.",
+  "schema_version": 1,
+  "verbatim_copies": [
+    {
+      "archive_ref": "codex/archive-gbdt-adoption-examples",
+      "byte_length": 22850,
+      "copied_verbatim": true,
+      "current_path": "accuracy/qualify_gym.py",
+      "original_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_opt_in_20261102/qualify_gym.py",
+      "sha256": "2c537d963880ab4596dea6e0e23933acab793164bb5affbf5637b65329f44597",
+      "source_note": "Verified byte-identical to the immutable archive commit.",
+      "source_revision": "3cb6679d065f1ccfe3d4bbdd0e321a5a78238957"
+    },
+    {
+      "archive_ref": null,
+      "byte_length": 7704,
+      "copied_verbatim": true,
+      "current_path": "legacy/cross_version.py",
+      "original_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation/benchmarks/evidence/gbdt_consumer_compatibility_20261102/legacy/cross_version.py",
+      "sha256": "e392b549c2c1fc0b34da27b05513153bc3ebe666ad32ef8d1c2f4a9a17ea2cf4",
+      "source_note": "Existing AISimulate-authored harness/specification. Uncommitted local artifacts are pinned by content hash, never assigned a fabricated Git revision.",
+      "source_revision": null
+    },
+    {
+      "archive_ref": null,
+      "byte_length": 201915,
+      "copied_verbatim": true,
+      "current_path": "accuracy/inputs/cases.json",
+      "original_path": "/Users/yueqiz/Documents/ChatGPT/AISimulate/benchmarks/evidence/fpm_trace_gym_tick_bootstrap_20261028/cases.json",
+      "sha256": "de9c1a999e23432354d9a046f56b3976f2fae9eae66d13ff67fbf2382adce888",
+      "source_note": "Existing AISimulate-authored harness/specification. Uncommitted local artifacts are pinned by content hash, never assigned a fabricated Git revision.",
+      "source_revision": null
+    }
+  ]
+}
