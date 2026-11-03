@@ -215,6 +215,29 @@ def test_phase_alignment_uses_actual_epoch_not_first_request_and_preserves_ns():
     assert phase["timeline"]["native_groups"]["1"] == row["canonical_conversation"]
 
 
+def test_unrecorded_cancellation_retains_unavailable_interval_and_unassigned_lineage():
+    dataset, silicon = fixture()
+    dataset["reference"].append(
+        reference(
+            2,
+            conversation_id=None,
+            source_trace_id=None,
+            start_ns=None,
+            end_ns=None,
+            input_tokens=None,
+            output_tokens=None,
+            error="measurement_cancelled",
+            chunks=[],
+        )
+    )
+    phase = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]
+    row = phase["timeline"]["reference_requests"][1]
+    assert row["canonical_conversation"] == "silicon:Unassigned"
+    assert row["arrival_time_ms"] is row["terminal_time_ms"] is None
+    assert row["matched_simulated_uuid"] is None
+    assert row["error"] == "measurement_cancelled"
+
+
 def test_preparation_folds_primer_and_warmup_but_excludes_failures_and_length_mismatch():
     dataset, silicon = fixture()
     dataset["requests"] = [
@@ -465,3 +488,17 @@ def test_qwen_stream_counts_enable_delivery_comparison_without_token_arrays(cloc
     charts = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"]
     score = charts["throughput_delivered"]["scores"][0]
     assert score["reason"] is None and score["count"] > 0
+
+
+def test_missing_cancelled_stream_does_not_become_zero_delivered_tokens():
+    dataset, silicon = fixture()
+    dataset["reference"][0]["chunks"] = [{"at_ns": str(EPOCH + 500_000_000), "count": 3}]
+    dataset["reference"].append(
+        reference(2, error="measurement_cancelled", start_ns=None, end_ns=None, output_tokens=None)
+    )
+    chart = build_comparisons(dataset, silicon, {"trace": NAMESPACE})["phases"]["profile"]["charts"][
+        "throughput_delivered"
+    ]
+    assert chart["scores"][0]["mape_percent"] is None
+    assert "cancelled" in chart["scores"][0]["reason"]
+    assert not any(row["origin"] == "silicon" for row in chart["series"])

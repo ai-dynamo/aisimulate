@@ -72,6 +72,60 @@ def ape(actual, predicted):
     return 100 * abs(predicted - actual) / actual if finite(actual) and actual > 0 and finite(predicted) else None
 
 
+def native_completion_qualified(native, boundary):
+    """Client cutoff completion may retain a canceled, already committed batch."""
+    telemetry = native.get("telemetry", {})
+    status = telemetry.get("completion_status")
+    if status == "completed":
+        return True
+    if status != "server_unsettled" or boundary != "successful_profile_span":
+        return False
+    profile = native.get("agentic_profile") or {}
+    if (
+        profile.get("admission_closed") is not True
+        or profile.get("cancel_drain_timed_out") is not False
+        or profile.get("client_in_flight_requests") != 0
+    ):
+        return False
+    times = [profile.get(key) for key in (
+        "profile_start_ms", "admission_cutoff_ms", "response_grace_deadline_ms",
+        "finished_at_ms", "cancel_drain_deadline_ms",
+    )]
+    if not all(finite(value) for value in times) or times != sorted(times) or times[0] == times[1]:
+        return False
+    _, cutoff, grace, finished, _ = times
+    boundaries = telemetry.get("phase_boundaries", [])
+    if not any(p.get("phase") == "profile" and p.get("end_ms") == finished for p in boundaries) or any(
+        p.get("phase") == "preparation" and p.get("completion_status") != "completed" for p in boundaries
+    ):
+        return False
+    requests = [r for r in telemetry.get("requests", []) if r.get("phase") == "profile"]
+    ids = {r.get("uuid") for r in requests}
+    if not requests or None in ids or len(ids) != len(requests):
+        return False
+    canceled = {r["uuid"] for r in requests if r.get("terminal_status") == "canceled"}
+    completed = [r for r in requests if r.get("terminal_status") == "completed"]
+    counts = {"issued_requests": len(requests), "successful_responses": len(completed), "canceled_requests": len(canceled)}
+    if not canceled or len(completed) + len(canceled) != len(requests) or any(
+        type(profile.get(key)) is not int or profile[key] != count for key, count in counts.items()
+    ):
+        return False
+    for row in requests:
+        arrival, terminal = row.get("dispatched_at_ms"), row.get("terminal_time_ms")
+        if not finite(arrival) or not finite(terminal) or not arrival < cutoff or not arrival <= terminal <= finished:
+            return False
+        if row["uuid"] in canceled and not grace <= terminal:
+            return False
+    events = [e for e in telemetry.get("lifecycle", []) if e.get("phase") == "profile"]
+    settled = {e.get("request_uuid") for e in events if e.get("event") == "quiescent"}
+    acknowledged = {e.get("request_uuid") for e in events if e.get("event") == "causal_terminal" and e.get("status") == "canceled"}
+    unsettled = ids - settled
+    return bool(unsettled) and unsettled <= canceled and canceled <= acknowledged and all(
+        type(profile.get(key)) is int and profile[key] == len(unsettled)
+        for key in ("server_unsettled_requests", "unsettled_server_requests")
+    )
+
+
 def validate_catalog(catalog):
     if set(catalog) != {"schema", "runs", "snapshot_id"} or catalog["schema"] != INPUT_SCHEMA:
         raise ValueError("Invalid AgentX input catalog")
@@ -157,7 +211,7 @@ def score(observations, native, boundary):
         predicted = candidates[0] if len(candidates) == 1 else None
         if actual["status"] != "completed":
             failure = actual.get("failure_reason")
-            reason = failure if failure in {"context_overflow", "measurement_metrics_unavailable"} else "measurement_failed"
+            reason = failure if failure in {"context_overflow", "measurement_metrics_unavailable", "measurement_cancelled"} else "measurement_failed"
         elif actual.get("identity_valid") is False:
             reason = "missing_measurement_identity"
         elif measured_keys[actual["key"]] > 1:
@@ -267,6 +321,7 @@ def validate_public(value):
         "missing_measurement_identity",
         "context_overflow",
         "measurement_metrics_unavailable",
+        "measurement_cancelled",
         "missing_prediction",
         "prediction_failed",
         "output_length_mismatch",
@@ -432,6 +487,7 @@ PAIR_STATUSES = {
     "missing_measurement_identity",
     "context_overflow",
     "measurement_metrics_unavailable",
+    "measurement_cancelled",
     "missing_prediction",
     "prediction_failed",
     "output_length_mismatch",

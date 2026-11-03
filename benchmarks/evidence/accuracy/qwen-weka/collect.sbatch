@@ -27,6 +27,11 @@ mkdir -p "$ENROOT_DATA_PATH"
 root_in_container="${run/#$storage_root/\/workspace}"
 cp -R "$CAMPAIGN_ROOT/code" "$CAMPAIGN_ROOT/code-$SLURM_JOB_ID"
 code_in_container="${CAMPAIGN_ROOT/#$storage_root/\/workspace}/code-$SLURM_JOB_ID"
+resume_args=()
+if [[ -n "${QUALIFIED_PILOT:-}" ]]; then
+    : "${QUALIFIED_PILOT_SHA256:?Pin the reviewed pilot qualification receipt}"
+    resume_args=(--qualified-pilot "${QUALIFIED_PILOT/#$storage_root/\/workspace}" --qualified-pilot-sha256 "$QUALIFIED_PILOT_SHA256")
+fi
 srun --ntasks=1 --container-image="$image" \
     --container-mounts="$storage_root:/workspace,$model:/model:ro" \
-    python3 "$code_in_container/collect.py" --root "$root_in_container" --model /model --budget-seconds "$REMAINING_GPU_SECONDS"
+    python3 "$code_in_container/collect.py" --root "$root_in_container" --model /model --budget-seconds "$REMAINING_GPU_SECONDS" "${resume_args[@]}"

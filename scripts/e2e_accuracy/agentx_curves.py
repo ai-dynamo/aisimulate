@@ -276,7 +276,7 @@ def conversation(row, silicon=False):
     if row.get("_conversation_proxy"):
         return row["_conversation_proxy"]
     return (
-        row.get("conversation_id", row.get("source_trace_id", "Unassigned"))
+        row.get("conversation_id") or row.get("source_trace_id") or "Unassigned"
         if silicon
         else (row.get("agentic") or {}).get("conversation_id") or row.get("session_id") or "Unassigned"
     )
@@ -818,8 +818,11 @@ def build_phase(dataset, silicon, namespace_map, selected):
         )
     delivered = [None] * len(rt)
     streamed = [r for r in raw_reference if successful(r, True) and (r.get("output_tokens") or 0) > 0]
-    streaming_available = bool(streamed) and all(
-        sum(c["count"] for c in r.get("chunks", [])) == r["output_tokens"] for r in streamed
+    incomplete_streams = sum(bool(r.get("error")) for r in raw_reference)
+    streaming_available = (
+        not incomplete_streams
+        and bool(streamed)
+        and all(sum(c["count"] for c in r.get("chunks", [])) == r["output_tokens"] for r in streamed)
     )
     if streaming_available:
         delivered = [0.0] * len(rt)
@@ -849,8 +852,14 @@ def build_phase(dataset, silicon, namespace_map, selected):
         time_note,
         "Client-received chunk counts versus native delivery; no token text is retained."
         if streaming_available
+        else f"Silicon stream observations are incomplete for {incomplete_streams} failed or cancelled requests."
+        if incomplete_streams
         else "Silicon has no complete client-delivered chunk timestamps.",
-        reason=None if streaming_available else "Client-delivered and server-processed output have different semantics",
+        reason=None
+        if streaming_available
+        else "Failed or cancelled silicon requests have incomplete stream observations"
+        if incomplete_streams
+        else "Client-delivered and server-processed output have different semantics",
     )
     source_metrics = []
     source_keys = ("miss", "hbm", "host", "admission_input")

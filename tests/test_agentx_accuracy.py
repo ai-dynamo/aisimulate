@@ -20,6 +20,7 @@ from scripts.e2e_accuracy.agentx_contract import (
     canonical,
     cohort,
     driver_digest,
+    native_completion_qualified,
     score,
     validate_result,
 )
@@ -205,6 +206,115 @@ def test_historical_driver_digest_preserves_the_original_file_closure():
         canonical({name: hashlib.sha256(name.encode()).hexdigest() for name in names})
     ).hexdigest()
     assert driver_digest(files.__getitem__) == expected
+
+
+def cutoff_native():
+    return {
+        "agentic_profile": {
+            "profile_start_ms": 0,
+            "admission_cutoff_ms": 600_000,
+            "response_grace_deadline_ms": 630_000,
+            "finished_at_ms": 630_000,
+            "cancel_drain_deadline_ms": 640_000,
+            "admission_closed": True,
+            "cancel_drain_timed_out": False,
+            "client_in_flight_requests": 0,
+            "issued_requests": 2,
+            "successful_responses": 1,
+            "canceled_requests": 1,
+            "server_unsettled_requests": 1,
+            "unsettled_server_requests": 1,
+        },
+        "telemetry": {
+            "completion_status": "server_unsettled",
+            "phase_boundaries": [{"phase": "profile", "end_ms": 630_000}],
+            "requests": [
+                {
+                    "phase": "profile",
+                    "uuid": "ok",
+                    "dispatched_at_ms": 1,
+                    "terminal_time_ms": 100,
+                    "terminal_status": "completed",
+                },
+                {
+                    "phase": "profile",
+                    "uuid": "cancel",
+                    "dispatched_at_ms": 590_000,
+                    "terminal_time_ms": 630_000,
+                    "terminal_status": "canceled",
+                },
+            ],
+            "lifecycle": [
+                {"phase": "profile", "request_uuid": "ok", "event": "quiescent"},
+                {"phase": "profile", "request_uuid": "cancel", "event": "causal_terminal", "status": "canceled"},
+            ],
+        },
+    }
+
+
+def test_profile_cutoff_accepts_accounted_client_cancellation_without_hiding_server_work():
+    native = cutoff_native()
+    assert native_completion_qualified(native, "successful_profile_span")
+    assert native["telemetry"]["completion_status"] == "server_unsettled"
+    assert native["agentic_profile"]["server_unsettled_requests"] == 1
+    assert not native_completion_qualified(native, "complete_finite_cohort")
+    assert native_completion_qualified({"telemetry": {"completion_status": "completed"}}, "complete_finite_cohort")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("admission_closed", False),
+        ("cancel_drain_timed_out", True),
+        ("client_in_flight_requests", 1),
+        ("issued_requests", 3),
+        ("canceled_requests", 0),
+        ("successful_responses", 2),
+        ("server_unsettled_requests", 2),
+        ("unsettled_server_requests", 0),
+        ("finished_at_ms", 629_999),
+        ("finished_at_ms", 640_001),
+    ],
+)
+def test_unsettled_profile_requires_complete_accounting_and_bounded_deadlines(field, value):
+    native = cutoff_native()
+    native["agentic_profile"][field] = value
+    assert not native_completion_qualified(native, "successful_profile_span")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_profile",
+        "unacknowledged",
+        "unsettled_completed",
+        "early_cancel",
+        "late_admission",
+        "failure",
+        "timeout",
+        "failed_preparation",
+    ],
+)
+def test_unsettled_profile_rejects_unexplained_work_and_incomplete_replays(case):
+    native = cutoff_native()
+    telemetry = native["telemetry"]
+    if case == "missing_profile":
+        native.pop("agentic_profile")
+    elif case == "unacknowledged":
+        telemetry["lifecycle"].pop()
+    elif case == "unsettled_completed":
+        telemetry["lifecycle"].pop(0)
+    elif case == "early_cancel":
+        telemetry["requests"][1]["terminal_time_ms"] = 629_999
+    elif case == "late_admission":
+        telemetry["requests"][1]["dispatched_at_ms"] = 600_000
+    elif case == "failure":
+        telemetry["requests"][1]["terminal_status"] = "failed"
+    elif case == "timeout":
+        telemetry["completion_status"] = "time_limited"
+    else:
+        telemetry["phase_boundaries"].append({"phase": "preparation", "completion_status": "aborted"})
+    assert not native_completion_qualified(native, "successful_profile_span")
 
 
 def test_every_measured_request_accounted_and_metric_denominators():

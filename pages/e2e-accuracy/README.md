@@ -672,6 +672,15 @@ projection rejects unrecognized feature fields and private values.
 `?campaign=finite-v1` selects the retained finite archive. After Weka activation,
 legacy Qwen URLs containing length/cache/repeat selectors route there, including
 the old 16-lane point. Weka profiles have no finite-workload selectors.
+The 2026-11-02 pilot stopped because qualification treated native
+`server_unsettled` as a failure. CPU investigation confirmed a normal grace-boundary
+cancellation; pilot and daily checks now accept it only with reconciled client
+terminals, deadlines and lifecycle cleanup. Native status and unsettled counts
+remain visible; active coverage remains the existing finite campaign until the
+full replacement campaign qualifies. Unrecorded cancellations retain
+explicit counts and unavailable timings. Evidence lists exclusions and metric
+denominators without a separate accounting section; incomplete failed/cancelled
+stream observations do not become zero-valued throughput comparisons.
 
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
@@ -760,11 +769,19 @@ Plots and expanded charts show compact MAPE badges without the comparison covera
 and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
 AgentX omits the Speculative acceptance length and Prefix cache hit rate per interval
 subplots. Both remain available in ordinary standalone replay exports.
-The comparison timeline fits the full phase into the panel, with a compact
-600-pixel minimum width on small screens. Each 22-pixel row shows the conversation
+The comparison timeline shows ten minutes per screen: a one-hour phase spans six
+windows. Use the previous/next buttons or scroll horizontally; the current time
+range and window number stay visible. Up to one minute of terminal drain stays in
+the final window, with its actual end time shown. Longer phases add windows without
+clipping requests; shorter phases keep the same ten-minute scale. Conversation labels stay
+pinned, and resizing preserves the selected time range. Each 22-pixel row shows the conversation
 hash and request ID on one line, with silicon and AISim intervals on separate
 lines. Full identifiers and pairing status remain in the row tooltip and request
-inspection; untimed and unmatched requests retain their rows.
+inspection. Only pairs with at least one interval overlapping the visible time
+window appear; paging and scrolling trim other rows, while crossing intervals
+are clipped at the screen edges. Failed and unmatched requests follow the same
+overlap rule. Untimed requests remain in full-phase counts, without invented
+positions. Window filtering never changes the request scores or their denominators.
 The compact concurrency summary has one row per metric and columns for Silicon,
 AISim, error, and samples. All five metrics include both source values. Point rows
 average the metric's scored runs equally; request rows pool the individual pairs
@@ -866,3 +883,6 @@ cache checks. Two complete imports produced identical catalog checksum
 `02b2b26ff3dbaa1d83ee868903cce64c81dad655f6276d831b9337b8d14c96ec`.
 This validates provenance and arithmetic; accuracy remains advisory. Daily CI must
 generate new predictions. This preview is not a production snapshot.
+
+The AgentX overview displays Request TPOT MAPE before Request TTFT MAPE;
+column values and request denominators follow that order.

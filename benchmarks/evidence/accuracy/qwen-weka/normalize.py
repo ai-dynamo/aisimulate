@@ -232,6 +232,97 @@ def counter_receipt(path, start, end):
     }
 
 
+def retain_cancelled_accounting(references, log, ranges):
+    """Account for credits cancelled without a request record; invent no timings or lineage."""
+    phases = {}
+    for match in re.finditer(r"Received CREDIT_PHASE_COMPLETE[^\n]*PhaseRecordsStats\(([^\n]*)\)", log):
+        text = match[1]
+        kind = re.search(r"phase_kind='(warmup|profiling)'", text)
+        if kind is None:
+            continue
+        raw_phase = kind[1]
+        phase = "profile" if raw_phase == "profiling" else "preparation"
+        stats = {}
+        for key in (
+            "start_ns",
+            "sent_end_ns",
+            "requests_end_ns",
+            "final_requests_completed",
+            "final_requests_cancelled",
+            "final_request_errors",
+        ):
+            value = re.search(r"\b" + key + r"=(\d+)(?:,|\))", text + ")")
+            if value is None:
+                raise ValueError("Missing final harness accounting: " + key)
+            stats[key] = int(value[1])
+        if stats["start_ns"] != int(ranges[raw_phase]["start_ns"]) or stats["requests_end_ns"] != int(
+            ranges[raw_phase]["end_ns"]
+        ):
+            raise ValueError("Harness credit and metrics phase boundaries differ")
+        if phase in phases and phases[phase] != stats:
+            raise ValueError("Conflicting final harness accounting")
+        phases[phase] = stats
+    if "profile" not in phases:
+        raise ValueError("Missing final structured profile accounting receipt")
+    for match in re.finditer(
+        r"Phase (warmup|profiling) \(\1\) complete \| completed=(\d+), cancelled=(\d+), errors=(\d+)", log
+    ):
+        raw_phase = match[1]
+        phase = "profile" if raw_phase == "profiling" else "preparation"
+        values = {
+            "final_requests_completed": int(match[2]),
+            "final_requests_cancelled": int(match[3]),
+            "final_request_errors": int(match[4]),
+        }
+        if phase in phases:
+            if any(phases[phase][key] != value for key, value in values.items()):
+                raise ValueError("Final phase summaries disagree")
+        else:
+            phases[phase] = {
+                **values,
+                "start_ns": int(ranges[raw_phase]["start_ns"]),
+                "requests_end_ns": int(ranges[raw_phase]["end_ns"]),
+                "sent_end_ns": None,
+            }
+    if set(phases) != {"profile", "preparation"}:
+        raise ValueError("Missing final warmup/profile accounting receipts")
+    for phase, stats in phases.items():
+        actual = sum(row["phase"] == phase for row in references)
+        expected = stats["final_requests_completed"] + stats["final_requests_cancelled"]
+        missing = expected - actual
+        if missing < 0 or missing > stats["final_requests_cancelled"]:
+            raise ValueError("Raw requests do not reconcile with final harness credit accounting")
+        stats["observed_request_records"] = actual
+        stats["cancelled_without_request_record"] = missing
+        for index in range(missing):
+            identity = f"unrecorded-cancellation-{phase}-{index + 1}"
+            references.append(
+                {
+                    "key": identity,
+                    "identity_valid": False,
+                    "request_id": identity,
+                    "phase": phase,
+                    "source_trace_id": None,
+                    "source_outer_idx": None,
+                    "source_inner_idx": None,
+                    "conversation_id": None,
+                    "session_id": None,
+                    "agent_depth": None,
+                    "start_ns": None,
+                    "end_ns": None,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "ttft_ms": None,
+                    "tpot_ms": None,
+                    "e2e_ms": None,
+                    "cached_tokens": None,
+                    "error": "measurement_cancelled",
+                    "chunks": [],
+                }
+            )
+    return phases
+
+
 def normalize(run, corpus, template, output, taxonomy_revision, duration, silicon=None):
     output.mkdir(parents=True, exist_ok=False)
     namespaces = read(corpus / "namespace-map.json")
@@ -243,13 +334,19 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
         raise ValueError("Measured profile is empty")
     export = read(run / "benchmark/server_metrics_export.json")
     ranges = export["summary"]["phase_time_ranges"]
+    log = (run / "client.log").read_text()
+    accounting = retain_cancelled_accounting(refs, log, ranges)
+    write(output / "client-log.json", {"source_sha256": digest(run / "client.log"), "text": log})
+    write(output / "phase-accounting.json", {"source_sha256": digest(output / "client-log.json"), "phases": accounting})
     start = int(ranges["profiling"]["start_ns"])
     end = int(ranges["profiling"]["end_ns"])
-    if abs((end - start) / 1e9 - duration) > 1:
-        raise ValueError("AgentX did not finish its full measured profile window")
+    harness = read(run / "client-record/resolved-dataset.json")
+    elapsed = (end - start) / 1e9
+    if harness["phases"][0]["duration"] != duration or not duration - 1 <= elapsed <= duration + 30 + 10 + 1:
+        raise ValueError("AgentX profile window or original grace/drain bounds differ")
     receipt = read(run / "cache-receipt.json")
     observations, overrides = [], []
-    origin = min(int(r["start_ns"]) for r in refs)
+    origin = min(int(r["start_ns"]) for r in refs if r["start_ns"] is not None)
     for row in refs:
         observations.append(
             {
@@ -258,7 +355,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
                 "phase": row["phase"],
                 "status": "failed" if row["error"] else "completed",
                 "failure_reason": row["error"],
-                "start_ms": (int(row["start_ns"]) - origin) / 1e6,
+                "start_ms": (int(row["start_ns"]) - origin) / 1e6 if row["start_ns"] is not None else None,
                 "end_ms": (int(row["end_ns"]) - origin) / 1e6 if row["end_ns"] else None,
                 "input_length": row["input_tokens"],
                 "output_length": row["output_tokens"],
@@ -296,6 +393,7 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
     if indices != sorted(set(indices)):
         raise ValueError("Recorded initial selections do not follow the sequential corpus order")
     config = read(template)
+    config["prediction_database_version"] = "0.31.0"
     config["engine"].update(estimation_mode="op_level", fallback_policy="deny", database_mode="SILICON")
     config["engine"]["workers"]["aggregated"]["timing"] = {"type": "default"}
     config["engine"].setdefault("estimator_config", {}).setdefault("correction", {})["enabled"] = False
@@ -400,6 +498,9 @@ def normalize(run, corpus, template, output, taxonomy_revision, duration, silico
         {
             "benchmark_id": identity,
             "profile_requested_seconds": duration,
+            "profile_observed_seconds": elapsed,
+            "response_grace_seconds": 30,
+            "cancel_drain_seconds": 10,
             "profile_start_ns": str(start),
             "profile_end_ns": str(end),
             "measured_requests": sum(r["phase"] == "profile" for r in refs),
@@ -427,7 +528,7 @@ def manifest(root, corpus):
         if (
             receipt["benchmark_id"] != identity
             or receipt["profile_requested_seconds"] != 3600
-            or abs(elapsed - 3600) > 1
+            or not 3599 <= elapsed <= 3641
         ):
             raise ValueError("Incomplete or wrong measured profile")
         files = {
@@ -447,6 +548,8 @@ def manifest(root, corpus):
             "server_scrapes": path / "server-scrapes.jsonl",
             "metric_event_receipt": path / "metric-event-receipt.json",
             "harness_results": path / "harness-results.json",
+            "phase_accounting": path / "phase-accounting.json",
+            "client_log": path / "client-log.json",
         }
         for name in (
             "server-metrics",

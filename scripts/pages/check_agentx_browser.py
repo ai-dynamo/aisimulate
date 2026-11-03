@@ -217,6 +217,80 @@ def fixtures(site, weka=False):
     )
 
 
+async def check_timeline_windows(page, site, port):
+    path = site / "e2e-accuracy/agentx/branches" / artifact_key("main") / "details/agentx-446063.json"
+    detail = json.loads(path.read_bytes())
+    phase = detail["report"]["comparison"]["phases"]["profile"]
+    template = phase["requests"][0]
+    phase["requests"] = []
+    identities = {}
+    for name, actual, predicted in [
+        ("early", (60, 90), (70, 100)),
+        ("crossing", (590, 610), (595, 615)),
+        ("boundary", (600, 620), (650, 670)),
+        ("split", (100, 110), (1250, 1260)),
+        ("failed", (700, 710), None),
+        ("untimed", (None, None), None),
+        ("instant", (600, 600), None),
+        ("spanning", (500, 1500), None),
+        ("late", (3050, 3060), None),
+    ]:
+        pair = []
+        for origin, bounds in (("silicon", actual), ("simulated", predicted)):
+            if bounds is None:
+                continue
+            identity = hashlib.sha256(f"{name}-{origin}".encode()).hexdigest()[:16]
+            pair.append(
+                {
+                    **template,
+                    "uuid": identity,
+                    "request_id": identity,
+                    "origin": origin,
+                    "counterpart": None,
+                    "terminal_status": "failed" if name == "failed" else "completed",
+                    "arrival_time_ms": None if bounds[0] is None else 1000 + bounds[0] * 1000,
+                    "terminal_time_ms": None if bounds[1] is None else 1000 + bounds[1] * 1000,
+                }
+            )
+        identities[name] = pair[0]["uuid"]
+        if len(pair) == 2:
+            pair[0]["counterpart"], pair[1]["counterpart"] = pair[1]["uuid"], pair[0]["uuid"]
+        phase["requests"].extend(pair)
+    path.write_bytes(canonical(detail))
+    await page.goto(
+        f"http://127.0.0.1:{port}/e2e-accuracy/agentx/point.html?branch=main&category=agentx&model=nvidia%2FGLM-5.3-NVFP4&lanes=1#view=timeline&stage=profile"
+    )
+    await expect(page.locator("#timeline-page-label")).to_contain_text("1 / 6")
+    scores = await page.locator("#timeline-summary .score-badges").text_content()
+    for expected in [
+        {"early", "crossing", "split", "spanning"},
+        {"crossing", "boundary", "failed", "instant", "spanning"},
+        {"split", "spanning"},
+        set(),
+        set(),
+        {"late"},
+    ]:
+        visible = page.locator(".comparison-row:visible .timeline-label button")
+        await expect(visible).to_have_count(len(expected))
+        assert set(await visible.evaluate_all("nodes => nodes.map(n => n.dataset.request)")) == {
+            identities[name] for name in expected
+        }
+        await expect(page.locator("#timeline-summary .score-badges")).to_have_text(scores)
+        await expect(page.locator("#timeline-visible-summary")).to_have_text(f"{len(expected)} / 9 rows in this window")
+        if expected != {"late"}:
+            await page.locator("#timeline-next").click()
+    # Scrolling between page boundaries applies the same overlap rule.
+    await page.locator("#timeline-plot").evaluate("""node => {
+        const label = node.querySelector('.timeline-label').getBoundingClientRect().width;
+        node.scrollLeft = (node.clientWidth - label) * 1.5;
+    }""")
+    await expect(page.locator(".comparison-row:visible .timeline-label button")).to_have_count(2)
+    await page.locator(f'.timeline-label [data-request="{identities["split"]}"]').click()
+    await expect(page.locator("#request-details")).to_contain_text("Source paired")
+    await page.locator('[aria-label="Close request details"]').click()
+    await expect(page.locator("#timeline-summary")).to_contain_text("1 untimed requests not placed in time")
+
+
 async def check():
     with tempfile.TemporaryDirectory() as directory:
         site = Path(directory)
@@ -345,14 +419,61 @@ async def check():
                 await frame.locator('[aria-label="Close expanded chart"]').click()
                 await frame.locator('[data-view="timeline"]').click()
                 await expect(page).to_have_url(re.compile("view=timeline"))
-                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("Full phase shown")
+                await expect(frame.locator(".timeline-panel > .hint")).to_contain_text("10 minutes per screen")
                 await expect(frame.locator("#view-timeline .legend")).to_have_text("SiliconAISimFailed · red outline")
                 await expect(frame.locator("#plot-reference_ttft .legend")).not_to_contain_text("Failed")
                 await expect(frame.locator('[data-origin="silicon"]')).to_have_count(1)
                 await expect(frame.locator('[data-origin="simulated"]')).to_have_count(1)
-                assert await frame.locator("#timeline-plot").evaluate(
-                    "node => node.scrollWidth <= node.clientWidth + 2"
+                pager = frame.locator("#timeline-page-label")
+                previous = frame.locator("#timeline-previous")
+                following = frame.locator("#timeline-next")
+                timeline = frame.locator("#timeline-plot")
+                await expect(pager).to_have_text("0\u201310 min · 1 / 6")
+                await expect(previous).to_be_disabled()
+                page_width = await timeline.evaluate(
+                    "node => node.clientWidth - node.querySelector('.timeline-label').getBoundingClientRect().width"
                 )
+                assert await timeline.evaluate(
+                    "(node, width) => Math.abs(node.scrollWidth - node.clientWidth - 5 * width) <= 2", page_width
+                )
+                label_x = (await frame.locator(".timeline-axis .timeline-label").bounding_box())["x"]
+                score_badges = await frame.locator("#timeline-summary .score-badges").text_content()
+                await following.focus()
+                await page.keyboard.press("Enter")
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                assert abs((await timeline.evaluate("node => node.scrollLeft")) - page_width) <= 1
+                assert abs((await frame.locator(".timeline-axis .timeline-label").bounding_box())["x"] - label_x) <= 1
+                await expect(frame.locator(".comparison-row:visible")).to_have_count(0)
+                await expect(frame.locator("#timeline-window-empty")).to_be_visible()
+                for _ in range(4):
+                    await following.click()
+                await expect(pager).to_have_text("50\u201360 min · 6 / 6")
+                await expect(following).to_be_disabled()
+                await expect(frame.locator(".comparison-row:visible")).to_have_count(0)
+                await expect(frame.locator("#timeline-summary .score-badges")).to_have_text(score_badges)
+                await timeline.evaluate("(node, width) => node.scrollLeft = width * 1.5", page_width)
+                await expect(pager).to_have_text("15\u201325 min · 2 / 6")
+                await following.click()
+                await expect(pager).to_have_text("20\u201330 min · 3 / 6")
+                await previous.click()
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                viewport = page.viewport_size
+                await page.set_viewport_size({"width": 390, "height": 844})
+                await expect(pager).to_have_text("10\u201320 min · 2 / 6")
+                await page.wait_for_function("document.documentElement.scrollWidth <= innerWidth + 1")
+                await page.wait_for_function("""() => {
+                    const node = document.querySelector('#timeline-plot');
+                    return Math.abs(node.scrollLeft - (node.clientWidth - 140)) <= 1;
+                }""")
+                await page.set_viewport_size(viewport)
+                await page.wait_for_function("""() => {
+                    const node = document.querySelector('#timeline-plot');
+                    return Math.abs(node.scrollLeft - (node.clientWidth - 230)) <= 1;
+                }""")
+                await previous.click()
+                await expect(pager).to_have_text("0\u201310 min · 1 / 6")
+                await expect(frame.locator(".comparison-row:visible")).to_have_count(1)
+                await expect(frame.locator("#timeline-window-empty")).to_be_hidden()
                 row = frame.locator(".comparison-row").first
                 assert (await row.bounding_box())["height"] == 22
                 await expect(row.locator(".timeline-label button")).to_have_text(
@@ -368,6 +489,9 @@ async def check():
                 await frame.locator('[aria-label="Close request details"]').click()
                 await frame.locator('[data-stage="preparation"]').click()
                 await expect(page).to_have_url(re.compile("stage=preparation"))
+                await expect(pager).to_have_text("0\u201310 min · 1 / 1")
+                await expect(previous).to_be_disabled()
+                await expect(following).to_be_disabled()
                 await frame.locator('[data-origin="silicon"]').click()
                 assert "%" not in await frame.locator("#request-details").inner_text()
                 await frame.locator('[aria-label="Close request details"]').click()
@@ -426,6 +550,7 @@ async def check():
                 await page.locator("#branch-select").select_option("main")
                 await expect(page.locator(".agentx-table")).to_have_count(1)
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                await check_timeline_windows(page, site, server.server_port)
                 fixtures(site, weka=True)
                 await page.goto(f"http://127.0.0.1:{server.server_port}/e2e-accuracy/?tab=agentx&branch=main")
                 await expect(page.locator(".agentx-table tr[data-agentx-parent]")).to_have_count(12)
