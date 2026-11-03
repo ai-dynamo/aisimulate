@@ -1674,3 +1674,14 @@ backend file remains inside an isolated writable diagnostic container, retains
 its upstream copyright/license header and is prominently marked modified. Its
 original and modified SHA256 values are retained. No upstream model-runner body
 or benchmark input is copied into this repository.
+
+The optional numerical-geometry diagnostic additionally wraps the existing
+draft and draft-extension CUDA-graph entry points in
+`python/sglang/srt/speculative/eagle_worker_v2.py` from that same immutable
+commit. Source:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/speculative/eagle_worker_v2.py .
+The generated file retains the upstream copyright/license and is marked modified;
+original and modified checksums are retained. The diagnostic reads bounded
+numerical geometry only during explicit profiler windows, preserves graph-call
+arguments, and changes no serving algorithm. Its synchronous metadata reads are
+declared measurement perturbations, not uninstrumented performance evidence.

@@ -2377,3 +2377,54 @@ independent cross-check
   kernel/precision agreement and matched forward validation. Historical0.5.20
   versus prediction-data0.5.21 remains cross-version. GPU cost zero.
 - **Conclusion:** pending coverage gate and independent row/source inspection.
+
+**E045 conclusion — BF16 MoE lookup absence disproven for the probed geometry.**
+All twelve planned queries price through the pinned canonical API, with no
+reported fallback and independently reconciled operation sums. Raw Parquet
+inspection finds **81** BF16 rows at hidden6144/inter2048/topk8/experts256/TP8/EP1,
+all `sglang_flashinfer_trtllm_moe`, covering tokens1–16384 and three distributions.
+The native draft trace contains BF16 FlashInfer/TRT-LLM routing/finalization
+kernels. This supports family-level availability, not exact tactic/timing or
+an explicit draft cost. Whole-target proxy outputs are retained privately and
+are not divided into or applied as a draft correction. Dataset0.5.21 versus
+runtime0.5.20 remains cross-version. Evidence SHA256: proxy
+`ecfb92f41355270ad9c06042fd2471ca6b8b3f77a9c92b689ac6322d8cf29525`,
+independent raw-row/query audit
+`a3dc1fe97b452e3ead17dc4799171d991a204c4f841681299ba9d3256473e61c`,
+MoE Parquet
+`623e7f62137a76001bbff11636f61b49fc9d2160174b91b9ebe674346beea6d3`.
+No E2E score, cohort, timing data or GPU ledger changes.
+
+## H5 — E046 native forward geometry (predeclared)
+
+- **Hypothesis:** the runtime's verification, two autoregressive draft forwards
+  and full-width draft extension have different token/KV geometry from the
+  legacy target-layer scale. E040 confirms loaded precision and execution
+  populations; E045 confirms BF16 MoE data availability. Exact live geometry
+  remains the smallest missing check before a source-faithful draft model.
+- **Experiment:** reuse the E040 native Torch collector, exact0.5.20 image,
+  verified GLM weights, TP8 and unchanged C1 cold8192/seeded393216 controls,
+  output128, golden acceptance and before/profiled/after arms. No new model
+  or scheduler setting. Extend the existing ModelRunner span to receive its
+  batch, and wrap the two pinned EAGLE CUDA-graph entry points without changing
+  their arguments or return values. Both source hashes must match the actual
+  image exports before startup. Preserve all sixteen loaded-model receipts.
+- Only during explicit detailed-profiler windows, record bounded numerical
+  sequence lengths, position samples, input token counts, draft width and
+  top-k-seed presence. Read no prompt/output token IDs. Synchronous metadata
+  transfers deliberately perturb these windows: use them to qualify geometry,
+  **not unperturbed CPU/GPU cadence**. Record begin/end times and keep unprofiled
+  controls untouched. Preserve all executed rounds, including native overshoot.
+- Require the existing eight-device GPU correlation smoke before model loading;
+  native completion/output/cache receipts for all ten requests; all-rank
+  numerical geometry and source/phase consistency before using it. Missing
+  fields remain unavailable. Independently audit geometry against stream output
+  progress, query width and pinned source, then choose any modeling change.
+- Resource gate: a fresh **20-minute** allocation, eight B300,64 CPUs,1TiB;
+  collector deadline1140s plus termination/cleanup. Reserve **10080 GPU-seconds**
+  including60s cleanup, within the remaining **10808** op/forward-pool seconds
+  and106978 global seconds. Validation reserve stays untouched. Reconcile live
+  jobs, account/capacity and all prior costs before submission; no retry without
+  a new budget check. Raw metadata, traces, logs and request records remain private.
+- **Conclusion:** pending local/source tests and bounded GPU collection. No
+  prediction correction, revised baseline or request-MAPE win is preapproved.

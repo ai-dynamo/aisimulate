@@ -290,6 +290,7 @@ def control(
             "acceptance_environment": {key: environment.get(key) for key in GOLDEN_ACCEPTANCE},
             "suite": suite,
             "profile_tool": profile_tool if suite == "forward-profile" else None,
+            "geometry_diagnostic": environment.get("RSI_FORWARD_GEOMETRY") == "1",
             "profile_v2_environment": environment.get("SGLANG_PROFILE_V2"),
             "precision_environment": {
                 "SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE": environment.get("SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE")

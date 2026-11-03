@@ -9,6 +9,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 
@@ -28,13 +29,41 @@ def inject_forward_nvtx(source):
     call = calls[0]
     # Apply the later edit first so a one-line span keeps its AST offsets.
     closing = call.end_lineno - 1
-    lines[closing] = (lines[closing][:call.end_col_offset - 1] + ", runner=self"
+    batch = calls[0].args[0].args[0]
+    if not isinstance(batch, ast.Name):
+        raise ValueError("Unknown forward batch expression")
+    lines[closing] = (lines[closing][:call.end_col_offset - 1] + f", runner=self, batch={batch.id}"
                       + lines[closing][call.end_col_offset - 1:])
     line = lines[function.lineno - 1]
     lines[function.lineno - 1] = (line[:function.col_offset]
                                 + '__import__("rsi_forward_nvtx").span' + line[function.end_col_offset:])
     result = ("# Modified for AISimulate RSI diagnostic NVTX spans; see THIRD_PARTY_NOTICES.md.\n"
               + "".join(lines))
+    ast.parse(result)
+    return result
+
+
+def inject_eagle_geometry(source):
+    if "rsi_forward_nvtx" in source:
+        raise ValueError("EAGLE geometry context is already installed")
+    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == "execute"
+             and isinstance(node.func.value, ast.Attribute)
+             and node.func.value.attr in {"cuda_graph_runner", "cuda_graph_runner_for_draft_extend"}]
+    if len(calls) != 2 or any(not node.args or not isinstance(node.args[0], ast.Name)
+                              or node.args[0].id != "forward_batch" for node in calls):
+        raise ValueError("Unknown EAGLE graph entry points")
+    lines = source.splitlines(keepends=True)
+    for call in sorted(calls, key=lambda node: (node.lineno, node.col_offset), reverse=True):
+        stage = "draft" if call.func.value.attr == "cuda_graph_runner" else "draft_extend"
+        end = call.end_lineno - 1
+        lines[end] = lines[end][:call.end_col_offset - 1] + f', stage="{stage}"' + lines[end][call.end_col_offset - 1:]
+        line = lines[call.func.lineno - 1]
+        original = line[call.func.col_offset:call.func.end_col_offset]
+        lines[call.func.lineno - 1] = (line[:call.func.col_offset]
+                                     + '__import__("rsi_forward_nvtx").graph_execute(' + original + ", "
+                                     + line[call.func.end_col_offset + 1:])
+    result = "# Modified for AISimulate RSI numerical graph geometry; see THIRD_PARTY_NOTICES.md.\n" + "".join(lines)
     ast.parse(result)
     return result
 
@@ -49,10 +78,22 @@ def install_forward_nvtx():
         raise ValueError("ModelRunner differs from the qualified upstream/image source")
     modified = inject_forward_nvtx(source.decode()).encode()
     path.write_bytes(modified)
-    print(json.dumps({"relative_path": "sglang/" + relative,
+    receipt = {"relative_path": "sglang/" + relative,
                       "upstream_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
                       "original_sha256": expected, "instrumented_sha256": hashlib.sha256(modified).hexdigest(),
-                      "boundary": "existing forward label emitted to NVTX; GPU projection still required"}))
+                      "boundary": "existing forward label emitted to NVTX; GPU projection still required"}
+    if os.environ.get("RSI_FORWARD_GEOMETRY") == "1":
+        relative = "srt/speculative/eagle_worker_v2.py"
+        path = root / relative
+        original = path.read_bytes()
+        expected = "8fc9285c458d746874c96da7b16bef2733509dea3d1170cbad9e787bcde67754"
+        if hashlib.sha256(original).hexdigest() != expected:
+            raise ValueError("EAGLE graph source differs from the qualified runtime")
+        modified = inject_eagle_geometry(original.decode()).encode()
+        path.write_bytes(modified)
+        receipt["geometry_patch"] = {"relative_path": "sglang/" + relative, "original_sha256": expected,
+                                     "instrumented_sha256": hashlib.sha256(modified).hexdigest()}
+    print(json.dumps(receipt))
 
 
 def inject_dispatch(source):

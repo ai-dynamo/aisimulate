@@ -15,7 +15,7 @@ from audit_matrix import errors, interval
 from audit_shared_frontend import error as frontend_error
 from audit_shared_frontend import latencies as frontend_latencies
 from collect import qualify_cuda_trace_tables, qualify_torch_graph_probe
-from instrument import inject_forward_nvtx
+from instrument import inject_eagle_geometry, inject_forward_nvtx
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 from profile_preflight import fields as profile_fields
 from response_gate_diagnostic import gate_time, summary
@@ -129,6 +129,33 @@ def test_forward_nvtx_patch_preserves_backend_label_and_rejects_reinstallation()
         inject_forward_nvtx("x = other_span()")
 
 
+def test_eagle_geometry_patch_preserves_both_graph_call_arguments(monkeypatch):
+    source = ("def run(self, forward_batch, index):\n"
+              "    a = self.cuda_graph_runner.execute(forward_batch)\n"
+              "    b = self.cuda_graph_runner_for_draft_extend.execute(\n"
+              "        forward_batch, index\n"
+              "    )\n"
+              "    return a, b\n")
+    calls = []
+
+    def wrap(function, batch, *args, stage):
+        calls.append((stage, batch, args))
+        return function(batch, *args)
+
+    monkeypatch.setitem(sys.modules, "rsi_forward_nvtx", SimpleNamespace(graph_execute=wrap))
+    namespace = {}
+    modified = inject_eagle_geometry(source)
+    exec(compile(modified, "test-eagle-geometry", "exec"), namespace)
+    runner = SimpleNamespace(cuda_graph_runner=SimpleNamespace(execute=lambda batch: batch + 1),
+                             cuda_graph_runner_for_draft_extend=SimpleNamespace(execute=lambda batch, i: batch + i))
+    assert namespace["run"](runner, 5, 9) == (6, 14)
+    assert calls == [("draft", 5, ()), ("draft_extend", 5, (9,))]
+    with pytest.raises(ValueError, match="already installed"):
+        inject_eagle_geometry(modified)
+    with pytest.raises(ValueError, match="Unknown EAGLE"):
+        inject_eagle_geometry(source.replace("cuda_graph_runner_for_draft_extend", "unknown"))
+
+
 def test_cuda_trace_probe_requires_gpu_activity_and_projected_markers(tmp_path):
     kernels = tmp_path / "kernels.csv"
     projected = tmp_path / "projected.csv"
@@ -153,6 +180,8 @@ def test_forward_nvtx_receipt_never_reads_weights_and_balances_failed_span(tmp_p
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     monkeypatch.setitem(
         sys.modules, "sglang.srt.utils.nvtx_utils", SimpleNamespace(profile_range=lambda _: nullcontext()))
+    monkeypatch.setitem(sys.modules, "sglang.srt.model_executor.step_span_utils",
+                        SimpleNamespace(detailed_annotations_enabled=lambda: False))
     monkeypatch.setenv("RSI_FORWARD_NVTX_ROOT", str(tmp_path))
     path = Path(__file__).with_name("rsi_forward_nvtx.py")
     spec = importlib.util.spec_from_file_location("isolated_nvtx_test", path)
@@ -169,6 +198,56 @@ def test_forward_nvtx_receipt_never_reads_weights_and_balances_failed_span(tmp_p
     receipt = json.loads(next(tmp_path.glob("*.json")).read_text())
     assert receipt["parameter_dtype_counts"] == {"torch.bfloat16": 1}
     assert receipt["draft_parameters"] == [{"name": "decoder.weight", "dtype": "torch.bfloat16", "shape": [4, 4]}]
+
+
+def test_geometry_reads_only_bounded_metadata_during_explicit_profile(tmp_path, monkeypatch):
+    reads = []
+
+    class Tensor:
+        def __init__(self, values):
+            self.values = values
+
+        def numel(self):
+            return len(self.values)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            reads.append("metadata_copy")
+            return self
+
+        def tolist(self):
+            return self.values
+
+    enabled = [False]
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        is_tensor=lambda value: isinstance(value, Tensor), cuda=SimpleNamespace(current_device=lambda: 0)))
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.nvtx_utils",
+                        SimpleNamespace(profile_range=lambda _: nullcontext()))
+    monkeypatch.setitem(sys.modules, "sglang.srt.model_executor.step_span_utils",
+                        SimpleNamespace(detailed_annotations_enabled=lambda: enabled[0]))
+    spec = importlib.util.spec_from_file_location("isolated_geometry", Path(__file__).with_name("rsi_forward_nvtx.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RSI_FORWARD_GEOMETRY", "1")
+    monkeypatch.setenv("RSI_FORWARD_NVTX_ROOT", str(tmp_path))
+    # No API can read input IDs: only their length is exposed.
+    batch = SimpleNamespace(batch_size=1, input_ids=SimpleNamespace(numel=lambda: 4), seq_lens=Tensor([8192]),
+                            seq_lens_sum=None, positions=Tensor([8192, 8193, 8194, 8195]), spec_info=None)
+    module.geometry(batch, "draft")
+    assert not reads and not list(tmp_path.iterdir())
+    enabled[0] = True
+    assert module.graph_execute(lambda b, i: i + b.batch_size, batch, 7, stage="draft") == 8
+    row = json.loads(next(tmp_path.glob("*.jsonl")).read_text())
+    assert row["seq_lens"] == [8192] and row["positions_bounded"] == [8192, 8193, 8194, 8195]
+    assert row["graph_entry"] and row["input_token_count"] == 4
+    assert len(reads) == 2
+    assert module.bounded_values(Tensor(list(range(65)))) is None
+    assert len(reads) == 2
+    monkeypatch.setenv("RSI_FORWARD_GEOMETRY", "0")
+    module.geometry(batch, "draft")
+    assert len(reads) == 2
 
 
 def test_torch_graph_probe_requires_explicit_gpu_correlations_on_all_devices(tmp_path):
