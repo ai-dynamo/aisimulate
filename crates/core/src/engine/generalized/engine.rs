@@ -242,8 +242,8 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
 
         let mut end_ms = now_ms;
         let mut same_timestamp_retry = SameTimestampRetry::NotApplicable;
-        let mut started = Vec::new();
-        let mut pending = Vec::new();
+        let mut started = Vec::with_capacity(self.ranks.len());
+        let mut pending = Vec::with_capacity(self.ranks.len());
         for rank in &mut self.ranks {
             rank.prepare_group_pass(wave_step, self.dp_size);
         }
