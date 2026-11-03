@@ -32,8 +32,8 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 Latest all-six candidate E039 has retained TTFT/TPOT **59.3595/67.7741%**
 with **13 lost frozen observations per metric**, so it is **not a win**. E041
 and E042 development compositions also fail qualification: both lose original
-observations and worsen TPOT. GPU spend is **34.2839/64 hours** through completed
-collection 1015620, with no active allocation. The three-node-hour validation
+observations and worsen TPOT. GPU spend is **36.0639/64 hours** through completed
+collection 1016710, with no active allocation. The three-node-hour validation
 reserve is untouched. E040 independently verifies GPU projections and loaded
 precision on all eight ranks, but exact decode geometry/request-round alignment
 remains unavailable. No newly developed six-point accuracy fix is accepted.
@@ -2518,3 +2518,62 @@ rounds with a +133 extension and reject excessive tails or invalid positions.
 These are numerical forward-batch metadata, not proof of final attention-kernel
 argument extents, unperturbed cadence or request-level round alignment. No error
 metric or eligibility rule changes. Independent corrected audit remains pending.
+
+**E046 conclusion — all-rank numerical geometry supported; synchronized timing
+is not production truth.** The corrected independent geometry audit passes all
+8 ranks/268 records per rank. Both contexts contain one target prefill, one
+MTP prefill,44 one-token draft graph entries,44 four-token target verifications,
+and44 four-token draft extensions. All eight ranks agree on numerical sequence
+and position state. Every draft graph receives a DSA top-k seed. The pinned
+source executes two autoregressive forwards inside each draft graph entry.
+
+Independent CUDA correlation/native-GPU-annotation audit also passes projections
+for all captured ranges on every rank. It retains44 executed versus43 reported
+verification rounds, so request-round timing alignment remains unqualified; the
+old annotation-based shape gate remains unavailable. Numerical ForwardBatch
+metadata is now qualified separately, not silently substituted for final kernel
+argument extents. All sixteen loaded-model receipts remain consistent.
+
+Observer effect is material: cold client TPOT before/profiled/after is
+**2.6692/10.5683/2.6895ms**; seeded long context is
+**2.9848/11.0915/2.9998ms**. Synchronized profile VERIFY means9.4945/9.7585ms
+and cadences32.0837/33.3988ms cannot be used to tune serving or op timings.
+Keep the original E040 non-synchronizing trace as separate evidence; do not
+subtract or fit away this observer effect. Historical request scores do not change.
+Geometry audit SHA256
+`88b27dfa16026895e59edf1d4e186c8fc07a76c48d61292fd0cd9fd0a1778e50`;
+independent GPU/request audit
+`cd3c0072077c2f60c6d65dd60e90288d6997cd67b3ddd4d75848c482cbd52d29`.
+
+## H5 — E047 preserve the target dense prefix under MTP (predeclared)
+
+- **Hypothesis:** enabling legacy MTP suppresses the source-confirmed target's
+  three dense layers and prices them as routed MoE. All eight native target
+  receipts identify FP8 gate/up/down projections in layers0/1/2 and75 NVFP4
+  MoE layers. The frozen canonical query has no dense operations in either
+  phase. This is a concrete target-composition discrepancy; its request-MAPE
+  effect is unknown. BF16 draft cost, cache/arrival histories and frontend
+  timing remain competing/residual causes.
+- **Experiment:** isolated `simonec/glm-agentx-mtp-dense-prefix` branch from
+  exact frozen EDDB research baseline. Enable the existing typed dense-prefix
+  graph for ordinary SGLang TP under MTP. Context retains3 dense/75 MoE;
+  generation retains3 dense/(75+depth) MoE and(78+depth) attention layers.
+  Keep the legacy all-MoE draft tail/precision approximation explicitly intact,
+  rather than spreading its virtual layers into fractional target dense layers.
+  Do not implement a BF16 draft approximation, change the acceptance policy,
+  scheduler, host loop, frontend, cache contract or performance data.
+- Validate checkpoint projection types, physical target counts and attention/FFN
+  reductions in native op serialization. Preserve other backend/topology
+  contracts and no-MTP results. Update the existing model documentation before
+  signed/DCO commits. Build one wheel, pin its installed native module and
+  all2351 op-data checksums, and reuse a separate dependency-pinned runtime.
+- Before E2E, compare canonical detailed forward operations with the same pinned
+  queries, retain all selected rows and preserve the cross-version qualifier.
+  Run relevant model/API tests and the archived Qwen8/32/128 controls. No GPU
+  allocation is required for this one-factor CPU experiment.
+- Replay development1/8/14 sequentially with unchanged HF inputs, output lengths,
+  snapshots, capacity and phase boundaries. Independently audit both pooled
+  MAPEs, per-lane changes, native accounting and all original identities. Only
+  a qualifying development result warrants unchanged4/10/13 validation. No
+  selection of a smaller cohort or fitted cost can establish a win.
+- **Conclusion:** pending source implementation, lower-layer checks and replay.
