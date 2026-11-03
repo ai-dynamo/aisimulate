@@ -30,9 +30,14 @@ root="${CAMPAIGN_ROOT/#$storage_root/\/workspace}"
 code="${RSI_CODE/#$storage_root/\/workspace}"
 if test "${RSI_PREFLIGHT_KIND:-dispatch}" = profile; then
     receipt="${RSI_PROFILE_PREFLIGHT/#$storage_root/\/workspace}"
+    source_arguments=()
+    if test -n "${RSI_PROFILE_SOURCE_DIR:-}"; then
+        source_dir="${RSI_PROFILE_SOURCE_DIR/#$storage_root/\/workspace}"
+        source_arguments=(--sources-dir "$source_dir")
+    fi
     srun --ntasks=1 --container-image="$image" --container-writable \
         --container-mounts="$storage_root:/workspace" \
-        python3 "$code/profile_preflight.py" --output "$receipt"
+        python3 "$code/profile_preflight.py" --output "$receipt" "${source_arguments[@]}"
     exit 0
 fi
 receipt="${RSI_DISPATCH_PREFLIGHT/#$storage_root/\/workspace}"

@@ -1772,3 +1772,14 @@ All 42 archived source/notice checksums verify before submission. Eight CPUs,
 64GiB, ten minutes and **zero GPUs**; no GPU reservation or charge is added.
 The live queue is empty before submission. Wait for the actual image's tool and
 source receipt before choosing the trace capture method.
+
+CPU profiler qualification **1014484** completes successfully in **226 allocated
+CPU seconds, zero GPUs**. The actual image provides Nsight Systems
+**2026.4.1.191-264138605071v0**, including `--cuda-graph-trace`. Runtime packages
+remain SGLang 0.5.20 / Torch 2.13.0+cu130 / Transformers 5.12.1 / tokenizers
+0.22.2. The package path was not retained in the first receipt; a bounded
+read-only check of three known image paths finds none and stops without scanning
+the image. This does not imply missing runtime source. Extend the same CPU
+preflight with `--sources-dir` to retain exact step/NVTX/capture sources, tool
+help, Python identity and unmodified package notices before GPU reservation.
+The raw upstream sources remain private references and are not added to this PR.
