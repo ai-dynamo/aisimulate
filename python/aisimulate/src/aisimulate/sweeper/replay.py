@@ -433,6 +433,7 @@ class RunnerCapabilities:
     supports_tokenization: bool = False
     supports_detokenization: bool = False
     supports_deferred_encoder_overlay: bool = False
+    supports_mtp_host_offload: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -564,6 +565,15 @@ class RunnerCapabilities:
                     raise ValueError("generic speculation is unsupported for AFD")
                 if not self.supports_generic_speculation:
                     raise ValueError("runner does not support generic speculation; use --stack engine")
+            if (
+                rank.get("native_host_offload") is not None
+                and any(
+                    isinstance(selection, Mapping) and selection.get("kind") == "mtp"
+                    for selection in (requested_speculation, identity.get("speculation"))
+                )
+                and not self.supports_mtp_host_offload
+            ):
+                raise ValueError("runner does not support MTP with host offload; use --stack engine")
             explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
             if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:

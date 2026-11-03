@@ -179,6 +179,41 @@ def test_generic_speculation_requires_explicit_runner_capability(location, neste
         replace(capabilities, supports_generic_speculation=False).require_compatible(spec)
 
 
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+def test_mtp_host_offload_requires_explicit_composition_capability(location, nested_rank):
+    args = _engine_args()
+    selection = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    if location == "rank":
+        args["speculation"] = selection
+    else:
+        args["timing_model"] = {"type": "external", "provider": "aic", "config": {"speculation": selection}}
+    args["native_host_offload"] = {"num_host_blocks": 16}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="vllm",
+            backend_version="test",
+            agg_engine_args={"rank": args} if nested_rank else args,
+            num_workers=1,
+        )
+    )
+    engine = EngineReplayRunnerFactory().capabilities()
+    engine.require_compatible(spec)
+    consumer = replace(engine, supports_mtp_host_offload=False)
+    with pytest.raises(ValueError, match="MTP with host offload; use --stack engine"):
+        consumer.require_compatible(spec)
+    # Support for either feature alone must not imply support for their composition.
+    offload = args.pop("native_host_offload")
+    consumer.require_compatible(spec)
+    args["native_host_offload"] = offload
+    if location == "rank":
+        args.pop("speculation")
+    else:
+        args["timing_model"]["config"].pop("speculation")
+    consumer.require_compatible(spec)
+
+
 def _canonical_speculation_deployment(speculation, *, backend="vllm"):
     version = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}[backend]
     timing = {
