@@ -206,8 +206,14 @@ def compare_campaign(frozen_path, baseline_root, candidate_root, lanes):
         original = frozen[identity]["dashboard"]
         baseline_path = baseline_root / identity / "score.json"
         candidate_path = candidate_root / identity / "score.json"
-        baseline = read(baseline_path)["pairs"]
-        candidate = read(candidate_path)["pairs"]
+        baseline_payload = read(baseline_path)
+        candidate_payload = read(candidate_path)
+        baseline = baseline_payload["pairs"]
+        candidate = candidate_payload["pairs"]
+        baseline_measured = baseline_payload.get("coverage", {}).get("measured")
+        candidate_measured = candidate_payload.get("coverage", {}).get("measured")
+        if baseline_measured is not None and candidate_measured != baseline_measured:
+            raise ValueError("Measured request accounting changed")
         qualified = compare_dashboard(original, baseline)
         if any(not row["coverage_qualified"] for row in qualified.values()):
             raise ValueError("Research baseline lost frozen observations")
@@ -247,6 +253,10 @@ def compare_campaign(frozen_path, baseline_root, candidate_root, lanes):
                 "lanes": lane,
                 "comparison": comparison,
                 "recovered_outside_frozen": recovered,
+                "accounting": {
+                    "baseline": baseline_payload.get("coverage", {}),
+                    "candidate": candidate_payload.get("coverage", {}),
+                },
                 "score_checksums": {"baseline": sha(baseline_path), "candidate": sha(candidate_path)},
             }
         )

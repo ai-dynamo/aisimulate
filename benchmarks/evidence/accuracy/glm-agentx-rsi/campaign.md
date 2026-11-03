@@ -342,9 +342,51 @@ win. Preserve the research baseline and the focused draft. Validate this frozen
 candidate on 4/10/13 and the Qwen CPU smoke cases before closing its regression
 record. Evidence: `E025-reduction-audit.json`, `E025-independent-dev-audit.json`,
 `E025-provenance.json`; all 2351 wheel op-data files are byte-identical to the
-baseline. No GPU time is charged. The next discriminating ablation is the
-source-confirmed batch-shared forced-acceptance rule (E022), independently of
-this cache change.
+baseline. No GPU time is charged.
+
+All-six validation is complete with the candidate unchanged. Four frozen TTFT
+and four frozen TPOT matches are lost at C10, so full-campaign coverage does
+**not qualify**. Retained-subset TTFT/TPOT are 77.0601/77.1057%, with 8620/8610
+observations; these cannot establish a win against 8624/8614. Per-lane TTFT/TPOT:
+C4 60.5839/42.5346%; C10 65.1852/79.6848% (four lost each); C13
+75.6161/92.6798%. C10, C13 and C14 TPOT regressions remain explicit. Evidence:
+`E025-independent-all-six-audit.json`, including complete measured accounting.
+Qwen finite-campaign smoke cases retain exact numerical request parity at
+1/4/16 lanes (8/32/128 requests), using the same approved #666 overlay and
+explicit 0.31.0 backend as their baseline. An initial smoke attempt accidentally
+let the frozen wrapper resolve latest packaged 0.30.0; its parity assertion
+caught the mismatched identity. Keep it as unqualified evidence. The corrected
+v2 uses the canonical replay factory and the unchanged explicit 0.31.0 config;
+no measured or baseline files are edited. Evidence: `E025-qwen-smokes-v2/audit.json`.
+
+**E026 — frontend corpus qualification.** All six original saved configurations
+select `semianalysis_cc_traces_weka_062126` with seed 42 and no corpus override.
+The exact pinned 1.0.12 plugin declares `default_prompt_corpus: coding`.
+Reconstruct with that generator rather than assuming Shakespeare or transferring
+the generic repeated-text CPU price. This is source qualification, not a latency
+coefficient or a request-MAPE result. Evidence: `E026-corpus-source-audit.json`.
+
+**E027 — batch-shared forced-acceptance ablation.** Hypothesis: a batch-shared
+floor/ceil draw, as implemented in the original forced policy, changes joint
+request timing despite matching the independent sampler's mean. Competing
+explanations include replay/cache history and frontend buffering. Confidence in
+the contract difference is high; its contribution to headline MAPE is unknown.
+Change only sampling scope on `eddb21246e0a371fe542f7cab4034b58173bce63`:
+acceptance rates `[1, 0.99]`, seed, op data, input corpus, and measurement settings
+stay fixed. Do not include E025. Develop on frozen 1/8/14 metric cohorts; lost
+matches disqualify wins and recovered matches remain separate. No held-out tuning.
+
+Diagnostic commit `e55917de8771e52da9ae1df38823d6bc12001ea7` is signed/DCO;
+wheel SHA256 `1c222fa2b044e328c9734d836ea23e443ce0ae3f8a7cef9e1ec3cddaad373aaa`,
+native SHA256 `5779326ab84457948d04a544c6b3a14f63eca94e9c08578cab09eda2b4a584d0`.
+All 2351 op-data files remain byte-identical. One test verifies common two/three
+outputs across 100 multi-request rounds at a discriminating 50% conditional
+acceptance; all 47 speculative tests pass. This matches correlation and marginal
+distribution, not Torch's exact RNG stream, and is not a proposed generic default.
+Use the existing `replay.py` command with this wheel on 1/8/14, followed by
+`audit.py --frozen ... --baseline E003-baseline --candidate E027-batch-acceptance-dev`.
+Resource cost is CPU only, zero allocated GPU-seconds. Results and conclusion
+are pending; retain negative outcomes before selecting another experiment.
 
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly

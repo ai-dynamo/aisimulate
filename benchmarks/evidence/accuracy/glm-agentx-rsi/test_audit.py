@@ -88,8 +88,13 @@ def test_campaign_keeps_metric_cohorts_and_separates_recovery(tmp_path, lose_mat
                 rows = [row(item["request_id"], 0) for item in rows]
                 if lose_match:
                     rows = rows[1:]
-            write(tmp_path / category / point / "score.json", {"pairs": rows})
+            write(
+                tmp_path / category / point / "score.json",
+                {"pairs": rows, "coverage": {"measured": 1 if point.endswith("63") else 3, "matched": len(rows)}},
+            )
     result = compare_campaign(frozen, tmp_path / "baseline", tmp_path / "candidate", [1, 8])
+    assert result["points"][1]["accounting"]["candidate"]["measured"] == 3
+    assert result["points"][1]["accounting"]["candidate"]["matched"] == 3 - int(lose_match)
     assert result["pooled"]["ttft"]["frozen_count"] == 3
     assert result["pooled"]["tpot"]["frozen_count"] == 2
     assert result["points"][1]["recovered_outside_frozen"]["tpot"] == {"baseline": 2, "candidate": 2}
