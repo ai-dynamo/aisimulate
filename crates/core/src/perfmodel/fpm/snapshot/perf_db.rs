@@ -33,9 +33,10 @@
 //! shared then, because the shared table memo is keyed by paths, not content.
 //! For the same reason a restore shares only tables an earlier restore loaded
 //! right after verifying the same data, and only while no fingerprinted entry
-//! has been written since ([`current`], [`verified`]): table families parse
-//! on first query, so equal content alone would admit files that changed and
-//! changed back after that restore.
+//! has been written and no link on the path to the data retargeted since
+//! ([`current`], [`verified`]): table families parse on first query, so equal
+//! content alone would admit files that changed and changed back after that
+//! restore.
 //! Packing copies exactly the fingerprinted entries, preserving relative
 //! paths, so a packed root resolves tables exactly like the original.
 
@@ -134,9 +135,33 @@ fn stamp(metadata: &std::fs::Metadata) -> String {
     format!("{} {:?}", metadata.len(), metadata.modified().ok())
 }
 
-/// The stamps of every input a fingerprint covers, taken before their
-/// contents were hashed. Matching stamps mean no entry was written, replaced,
-/// added or removed in between.
+/// [`stamp`]s of the symbolic links along `path` as written, outermost
+/// first, then of what `path` resolves to. Loaders read through that path,
+/// so retargeting one of these links changes what they read although no
+/// target is written; a retarget always creates a new link.
+fn path_stamp(path: &Path) -> Result<String, AicError> {
+    let mut prefix = PathBuf::new();
+    let mut stamped = String::new();
+    for component in path.components() {
+        prefix.push(component);
+        if let Ok(link) = std::fs::symlink_metadata(&prefix)
+            && link.file_type().is_symlink()
+        {
+            stamped.push_str(&format!("{} -> ", stamp(&link)));
+        }
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) => stamped.push_str(&stamp(&metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => stamped.push_str("absent"),
+        Err(error) => return Err(io_error(path, error)),
+    }
+    Ok(stamped)
+}
+
+/// The stamps of every input a fingerprint covers and of the links on the
+/// paths to them, taken before their contents were hashed. Matching stamps
+/// mean no entry was written, replaced, added or removed, and no such link
+/// retargeted, in between.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DataStamp(String);
 
@@ -296,9 +321,9 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     match std::fs::metadata(&data_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => entries.push(Entry {
             label,
+            stamp: path_stamp(&data_path)?,
             absolute: data_path,
             kind: EntryKind::Absent,
-            stamp: String::new(),
         }),
         Err(error) => return Err(io_error(&data_path, error)),
         Ok(metadata) if metadata.is_dir() => {
@@ -306,7 +331,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
                 label: label.clone(),
                 absolute: data_path.clone(),
                 kind: EntryKind::Dir,
-                stamp: stamp(&metadata),
+                stamp: path_stamp(&data_path)?,
             });
             walk(&data_path, &label, 0, &mut entries)?;
         }
@@ -326,16 +351,11 @@ fn external_fpm(path: Option<&Path>) -> Result<(Option<ExternalFpmData>, String)
     let Some(path) = path else {
         return Ok((None, String::new()));
     };
-    let stamp_of = |path: &Path| {
-        std::fs::metadata(path)
-            .map(|metadata| stamp(&metadata))
-            .map_err(|error| io_error(path, error))
-    };
-    let mut stamped = stamp_of(path)?;
+    let mut stamped = path_stamp(path)?;
     let sha256 = hash_file(path)?.1;
     let sidecar = path.with_extension("metadata.json");
     let sidecar_sha256 = if sidecar.is_file() {
-        stamped = format!("{stamped} {}", stamp_of(&sidecar)?);
+        stamped = format!("{stamped} {}", path_stamp(&sidecar)?);
         Some(hash_file(&sidecar)?.1)
     } else {
         None
@@ -395,6 +415,7 @@ fn observe(
         .iter()
         .map(|entry| format!("{} {}\n", entry.label, entry.stamp))
         .collect();
+    stamps.push_str(&format!("root {}\n", path_stamp(root)?));
     stamps.push_str(&format!("external {external_stamp}\n"));
     Ok((
         summarize(system, &inventory, external),
@@ -697,6 +718,36 @@ mod tests {
             assert_eq!(again, base);
             assert!(!touched.matches(&stamp));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stamps_change_when_a_link_on_the_data_path_points_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/h200_sxm/\n").unwrap();
+        for tree in ["a", "b"] {
+            let version = dir.path().join(tree).join("h200_sxm/vllm/1.0");
+            std::fs::create_dir_all(&version).unwrap();
+            std::fs::write(version.join("gemm_perf.parquet"), tree).unwrap();
+        }
+        // Retarget `systems/data` as `ln -sfn` does; neither tree is written.
+        let point = |tree: &str| {
+            let staged = root.join("data.next");
+            std::os::unix::fs::symlink(dir.path().join(tree), &staged).unwrap();
+            std::fs::rename(&staged, root.join("data")).unwrap();
+        };
+        point("a");
+        let (base, stamp) = observe(&root, "h200_sxm", None).unwrap();
+        // Coarse file clocks tick every few milliseconds.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        point("b");
+        assert_ne!(observe(&root, "h200_sxm", None).unwrap().0, base);
+        point("a");
+        let (again, pointed_back) = observe(&root, "h200_sxm", None).unwrap();
+        assert_eq!(again, base);
+        assert!(!pointed_back.matches(&stamp));
     }
 
     #[test]
