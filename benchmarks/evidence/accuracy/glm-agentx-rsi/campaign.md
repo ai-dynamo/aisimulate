@@ -1245,6 +1245,44 @@ attempts. The source script is pinned separately from measured runtime receipts.
  No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
+## H1/H6 — delivery-only CPU diagnostic (E038, predeclared)
+
+**Hypothesis.** Missing shared-API output blocking contributes to the request
+errors left by E034 admission-only modeling. Predict that retaining server work
+but delaying receipt behind existing CPU bookings changes TPOT error in the
+small-reference cohort. Competing causes are wrong arrivals/GPU ordering, op
+cost and closed-loop feedback; confidence is moderate for this diagnostic.
+
+**Experiment.** Use only frozen E034 development outputs at lanes 1/8/14 and the
+unchanged component profile SHA256 `741c9b07…` (one CPU worker, zero base cost,
+1.3222043548296005 us/input token). Pin an input manifest before execution,
+including native observations, original scores/execution/configuration, E003
+scores, frozen identities and the component profile. No GPU allocation or new
+prediction wheel. Verify CPU service units, nonoverlapping bookings, original
+request-to-score reconciliation and metric-specific eligibility.
+
+For server-ready time t, assume zero-cost response jobs join FCFS behind input
+jobs already queued at t: receipt=max(t, maximum booked completion among jobs
+with dispatch<=t). Inputs win exact ties. Include preparation CPU bookings; keep
+preparation outside accuracy. Translate first/last receipt into TTFT and TPOT
+with the original client-start boundary and N−1 output denominator. A defined
+zero predicted TPOT remains scored; undefined reference errors stay unavailable.
+Keep signed error, median APE, tails, absolute error and small-reference counts.
+
+Freeze the original 4169 TTFT/4166 TPOT development identities. E034 already loses
+five per metric, retaining 4164/4161; retain and report those losses unchanged.
+Report original baseline and common-retained baseline separately and pool
+requests directly. Any recovered eligibility stays outside this frozen cohort.
+
+This is **postprocessing only**: arrivals, cache histories, CPU bookings and
+server work do not receive client-completion feedback. Flag delivery beyond the
+original grace boundary without dropping it. The output is a separate diagnostic
+schema, not a standard prediction/publication artifact or a qualified accuracy
+win, even if a retained-subset metric improves. Use the result to decide whether
+a replay-engine change is warranted; do not bypass profile-cancellation guards.
+
+**Conclusion:** pending checksum-pinned CPU execution and independent arithmetic.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
@@ -1439,6 +1477,7 @@ python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --out
 python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
 python analyze_timing.py --suite coding-blocking --root PRIVATE_CODING_CONTROLS --output NEW_CODING_AUDIT_JSON
 python audit_coding.py --root PRIVATE_CODING_CONTROLS --preflight CODING_CPU_RECEIPT --output NEW_INDEPENDENT_CODING_AUDIT_JSON
+python response_gate_diagnostic.py --campaign PRIVATE_CAMPAIGN_ROOT --input-manifest FROZEN_E038_INPUT_MANIFEST --output NEW_DELIVERY_DIAGNOSTIC_JSON
 python prepare_weka_frontend.py --trace FROZEN_WEKA_TRACE --profile ORIGINAL_PROFILE_JSON --model-revision FULL_MODEL_SHA --output NEW_PRIVATE_PAYLOAD_DIR
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 python predict_matrix.py --controls PRIVATE_GPU_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_NATIVE_MATRIX

@@ -6,6 +6,7 @@ from audit_coding import bounds as coding_bounds
 from audit_coding import validate_counts
 from audit_matrix import errors, interval
 from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
+from response_gate_diagnostic import gate_time, summary
 
 
 def test_submission_replay_preserves_original_client_ttft_boundary():
@@ -71,3 +72,13 @@ def test_independent_coding_audit_preserves_tail_counts_and_units():
         {"at_ns": "1000000000", "output_tokens": 3},
         {"at_ns": "1030000000", "output_tokens": 16},
     ]) == (1000000000, 1030000000, 2.0)
+
+
+def test_delivery_gate_uses_only_work_known_when_output_becomes_ready():
+    arrivals, free_at = [1.0, 5.0, 15.0], [11.0, 21.0, 31.0]
+    assert gate_time(0.0, arrivals, free_at) == 0.0
+    assert gate_time(3.0, arrivals, free_at) == 11.0
+    assert gate_time(5.0, arrivals, free_at) == 21.0  # Explicit input-first tie.
+    assert gate_time(7.0, arrivals, free_at) == 21.0
+    assert gate_time(40.0, arrivals, free_at) == 40.0
+    assert summary([(0.0, 2.0)])["mape"] == 100.0  # Defined zero prediction stays scored.
