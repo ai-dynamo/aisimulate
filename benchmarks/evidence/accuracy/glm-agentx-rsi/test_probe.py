@@ -105,14 +105,15 @@ def test_coding_actor_uses_chat_counts_and_rejects_cache_reuse(monkeypatch, cach
         def put(self, row):
             self.rows.append(row)
 
-    def measured(url, rid, ids, messages, endpoint):
+    def measured(url, rid, ids, messages, endpoint, **kwargs):
         assert endpoint == "chat" and ids == [1, 2] and messages == [{"role": "user", "content": "test"}]
+        assert kwargs["cache_report_qualified"] is True
         return {"status": "completed", "cached_tokens": cached, "rid": rid}
 
     monkeypatch.setattr(blocking, "measured", measured)
     result = Results()
     blocking.actor_worker("http://test", {"long": ([1, 2], [{"role": "user", "content": "test"}])},
-                          Jobs(), result, "chat")
+                          Jobs(), result, "chat", True)
     assert result.rows[0]["ready"]
     assert result.rows[1]["status"] == ("failed" if cached else "completed")
     assert result.rows[1]["role"] == "coding_chat_actor"

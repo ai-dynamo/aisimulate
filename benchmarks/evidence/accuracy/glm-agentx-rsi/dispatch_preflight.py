@@ -5,6 +5,7 @@
 
 import argparse
 import hashlib
+import importlib
 import importlib.metadata
 import io
 import json
@@ -18,6 +19,7 @@ from unittest.mock import patch
 
 import probe
 from blocking import actor_worker, load_coding_inputs
+from frontend import cache_receipt
 from instrument import install_dispatch
 from rsi_dispatch import PREFLIGHT_SOURCE_FILES, receipt_path, record
 from transformers import AutoTokenizer
@@ -35,11 +37,13 @@ def prepared_request_check():
             raise ValueError("Prepared transport changed the encoded body")
         return io.BytesIO(wire)
 
-    with patch("probe.urllib.request.urlopen", response), patch(
-        "probe.json.dumps", side_effect=AssertionError("Serialization occurred inside request measurement")
+    with (
+        patch("probe.urllib.request.urlopen", response),
+        patch("probe.json.dumps", side_effect=AssertionError("Serialization occurred inside request measurement")),
     ):
-        row = probe.request("http://127.0.0.1:1", "rsi-preflight", [1, 2, 3, 4],
-                            3, threading.Barrier(1), encoded_body=body)
+        row = probe.request(
+            "http://127.0.0.1:1", "rsi-preflight", [1, 2, 3, 4], 3, threading.Barrier(1), encoded_body=body
+        )
     if row["status"] != "completed" or row["events"][-1]["output_tokens"] != 3:
         raise ValueError("Prepared transport projection failed")
     return {"status": "passed", "mock_transport": True, "body_sha256": hashlib.sha256(body).hexdigest()}
@@ -56,6 +60,35 @@ def dispatch_name_check(root):
             if result["rid"] != rid or result["input_tokens"] != 4 or result["pid"] != os.getpid():
                 raise ValueError("Dispatch names or scalar input identity changed")
     return {"status": "passed", "tested_prefixes": ["rsi-block-", "rsi-submit-"]}
+
+
+def qualify_openai_cache_usage():
+    # Probe the actual optional runtime module; it is unavailable in local unit-test environments.
+    module = importlib.import_module("sglang.srt.entrypoints.openai.usage_processor")
+    checksum = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+    if checksum != "883c4c3ba95eb52fa57d5bf732d128063bac0b032f484776331220f61b7498a5":
+        raise ValueError("OpenAI cache serializer differs from the pinned source")
+    for count in (0, 64):
+        usage = module.UsageProcessor.calculate_streaming_usage(
+            {0: 651},
+            {0: 0},
+            {0: 16},
+            {0: count},
+            n_choices=1,
+            enable_cache_report=True,
+        ).model_dump()
+        if cache_receipt(usage, True)[0] != count:
+            raise ValueError("Actual cache usage projection differs")
+        if count == 0 and (
+            usage.get("prompt_tokens_details") is not None or cache_receipt(usage, False)[0] is not None
+        ):
+            raise ValueError("Missing cache usage must remain unknown without qualification")
+    return {
+        "status": "passed",
+        "source_sha256": checksum,
+        "requires_resolved_enable_cache_report": True,
+        "tested_cached_tokens": [0, 64],
+    }
 
 
 def main():
@@ -76,6 +109,7 @@ def main():
             raise ValueError("Coding qualification requires the actual model tokenizer")
         tokenizer = AutoTokenizer.from_pretrained(str(args.model), trust_remote_code=True, local_files_only=True)
         _, receipt["coding_inputs"] = load_coding_inputs(args.coding_inputs, tokenizer)
+        receipt["openai_cache_usage"] = qualify_openai_cache_usage()
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
     child = context.Process(target=actor_worker, args=("http://127.0.0.1:1", {}, jobs, results))

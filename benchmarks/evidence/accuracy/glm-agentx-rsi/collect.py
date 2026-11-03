@@ -278,6 +278,13 @@ def main():
         if args.suite == "coding-blocking":
             if args.coding_inputs is None or preflight.get("coding_inputs", {}).get("status") != "passed":
                 raise ValueError("Actual coding inputs require CPU qualification")
+            usage = preflight.get("openai_cache_usage", {})
+            if usage.get("status") != "passed":
+                raise ValueError("OpenAI cache-zero protocol requires actual-runtime qualification")
+            usage_path = (Path(importlib.util.find_spec("sglang").origin).parent
+                          / "srt/entrypoints/openai/usage_processor.py")
+            if hashlib.sha256(usage_path.read_bytes()).hexdigest() != usage["source_sha256"]:
+                raise ValueError("OpenAI cache serializer changed after CPU qualification")
             if set(preflight["coding_inputs"]["files"]) != {"turn-0.json", "turn-128.json"}:
                 raise ValueError("Incomplete coding input qualification")
             for name, receipt in preflight["coding_inputs"]["files"].items():

@@ -94,7 +94,7 @@ def load_coding_inputs(root, tokenizer):
     }
 
 
-def actor_worker(url, payloads, jobs, results, endpoint="tokenize"):
+def actor_worker(url, payloads, jobs, results, endpoint="tokenize", cache_report_qualified=False):
     # Separate process: decoding the large token-array response cannot hold the
     # native stream reader's Python lock. Bodies are prepared before measurement.
     results.put({"ready": True, "pid": os.getpid()})
@@ -105,7 +105,7 @@ def actor_worker(url, payloads, jobs, results, endpoint="tokenize"):
         rid, kind = job
         if endpoint == "chat":
             ids, messages = payloads[kind]
-            row = measured(url, rid, ids, messages, "chat")
+            row = measured(url, rid, ids, messages, "chat", cache_report_qualified=cache_report_qualified)
             row.update(
                 role="coding_chat_actor",
                 pid=os.getpid(),
@@ -159,14 +159,21 @@ def main():
             body = json.dumps({"model": "nvidia/GLM-5.3-NVFP4", "messages": messages}).encode()
             payloads[kind] = (body, len(ids), token_digest(ids))
 
+    cache_report_qualified = False
     if args.coding_inputs:
+        with urllib.request.urlopen(args.url + "/get_server_info", timeout=10) as response:
+            server_info = json.loads(response.read())
+        if server_info.get("enable_cache_report") is not True:
+            raise ValueError("Coding cache-zero interpretation requires resolved cache reporting enabled")
+        cache_report_qualified = True
         inputs = {8192: inputs[8192]}
         payloads, qualification = load_coding_inputs(args.coding_inputs, tokenizer)
         (args.output / "coding-input-qualification.json").write_text(json.dumps(qualification, indent=2) + "\n")
     context = multiprocessing.get_context("spawn")
     jobs, results = context.Queue(), context.Queue()
     actor = context.Process(
-        target=actor_worker, args=(args.url, payloads, jobs, results, "chat" if args.coding_inputs else "tokenize")
+        target=actor_worker,
+        args=(args.url, payloads, jobs, results, "chat" if args.coding_inputs else "tokenize", cache_report_qualified),
     )
     actor.start()
     try:

@@ -1151,7 +1151,30 @@ archive, a 39-minute wall limit, no requeue and the full 19200 GPU-second
 reservation. Charged cost remains 93734 GPU-seconds; 117466 remain unreserved
 until actual allocation replaces this reservation. Preserve both CPU attempts.
 
-**Conclusion:** pending bounded GPU collection and independent audit. No new
+E037 GPU attempt 1013236 stops at its first warmup after 354 allocated seconds
+at eight B300 GPUs: charge 2832 GPU-seconds. The single attempted chat completes
+with 651 inputs and 16 outputs but fails the cold-cache gate because projected
+cache usage is unavailable. Preserve 1/34 attempted and 33 unattempted requests;
+no profile victim runs and no mechanism conclusion follows.
+
+Pinned `UsageProcessor` source SHA256
+`883c4c3ba95eb52fa57d5bf732d128063bac0b032f484776331220f61b7498a5`
+returns absent cache details for zero, including when reporting is enabled. The
+saved resolved server configuration has `enable_cache_report=true`. Do not
+rewrite the original failed gate. New collection may interpret this as zero
+only after CPU qualification exercises the actual serializer at zero/64 cached
+tokens, checks its source hash, and the live client verifies reporting enabled.
+All other missing cache usage stays explicitly unavailable. Preserve the exact
+interpretation as metadata; test explicit, omitted, missing and malformed cases.
+
+Total charge is 96566 GPU-seconds / 26.823889 GPU-hours; remaining 133834
+GPU-seconds / 37.176111 GPU-hours. No GPU reservation is active. Controlled
+workloads use 5111.75/7200 TP8-equivalent node-seconds. The retry reduces its wall
+limit to 33 minutes plus 60 seconds cleanup (16320 GPU-seconds), fitting the
+remaining 2088.25 node-seconds; require a fresh immutable source and CPU receipt.
+
+**Conclusion:** pending repaired protocol qualification and bounded GPU collection.
+ No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
 ## Repeat and compatibility controls

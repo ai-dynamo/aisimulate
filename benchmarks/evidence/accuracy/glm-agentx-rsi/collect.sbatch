@@ -25,9 +25,9 @@ if test "${RSI_SUITE:-timing}" = matrix; then
 fi
 if test "${RSI_SUITE:-timing}" = coding-blocking; then
     coding_wall_limit=$(scontrol show job "$SLURM_JOB_ID" -o | awk '{for(i=1;i<=NF;i++) if($i ~ /^TimeLimit=/) print substr($i,11)}')
-    test "$coding_wall_limit" = 00:39:00
-    control_seconds=2280
-    reservation_seconds=19200
+    test "$coding_wall_limit" = 00:33:00
+    control_seconds=1920
+    reservation_seconds=16320
 fi
 test "$REMAINING_GPU_SECONDS" -ge "$reservation_seconds"
 storage_root=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec

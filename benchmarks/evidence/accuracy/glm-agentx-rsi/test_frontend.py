@@ -65,3 +65,12 @@ def test_cpu_actor_retains_identity_failure_without_token_array(monkeypatch):
     assert row["status"] == "failed" and row["error"] == "ValueError"
     assert row["input_tokens"] == 2
     assert "tokens" not in row and "body" not in row
+
+
+@pytest.mark.parametrize("qualified", [False, True])
+def test_zero_cache_omission_requires_explicit_runtime_qualification(qualified):
+    usage = {"prompt_tokens": 651, "completion_tokens": 16, "prompt_tokens_details": None}
+    assert frontend.cache_receipt(usage, qualified)[0] == (0 if qualified else None)
+    assert frontend.cache_receipt({}, qualified)[0] is None
+    assert frontend.cache_receipt({**usage, "prompt_tokens_details": {"cached_tokens": None}}, qualified)[0] is None
+    assert frontend.cache_receipt({**usage, "prompt_tokens_details": {"cached_tokens": 64}}, qualified)[0] == 64

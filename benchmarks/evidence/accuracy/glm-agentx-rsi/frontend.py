@@ -28,7 +28,21 @@ def project(payload):
     }
 
 
-def measured(url, rid, ids, messages, endpoint):
+def cache_receipt(usage, qualified_zero_omission=False):
+    value = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if value is not None:
+        return value, "explicit OpenAI usage cache count"
+    if (
+        qualified_zero_omission
+        and usage.get("prompt_tokens_details") is None
+        and type(usage.get("prompt_tokens")) is int
+        and type(usage.get("completion_tokens")) is int
+    ):
+        return 0, "SGLang0.5.20 zero-omission protocol; requires resolved cache reporting enabled"
+    return None, "cache usage unavailable"
+
+
+def measured(url, rid, ids, messages, endpoint, *, cache_report_qualified=False):
     length = 16
     body = {"rid": rid, "stream": True}
     if endpoint == "native":
@@ -71,10 +85,10 @@ def measured(url, rid, ids, messages, endpoint):
         error = type(exc).__name__
     end = time.monotonic_ns()
     counts = meta if endpoint == "native" else usage
-    cached = (
-        counts.get("cached_tokens")
+    cached, cache_basis = (
+        (counts.get("cached_tokens"), "native meta_info cache count")
         if endpoint == "native"
-        else (counts.get("prompt_tokens_details") or {}).get("cached_tokens")
+        else cache_receipt(counts, cache_report_qualified)
     )
     n = counts.get("completion_tokens")
     actual_input = counts.get("prompt_tokens")
@@ -89,6 +103,7 @@ def measured(url, rid, ids, messages, endpoint):
         "output_tokens": n,
         "requested_output_tokens": length,
         "cached_tokens": cached,
+        "cache_receipt_basis": cache_basis,
         "events": events,
         "serialization_ms": serialization_ms,
         "serialized_bytes": len(encoded),

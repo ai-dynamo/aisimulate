@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=1024G
-#SBATCH --time=00:39:00
+#SBATCH --time=00:33:00
 set -euo pipefail
 : "${RSI_CODE:?Immutable collector source}"
 : "${RSI_CODING_INPUTS:?Qualified E029 private inputs}"
