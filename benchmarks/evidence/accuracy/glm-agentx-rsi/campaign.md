@@ -629,6 +629,48 @@ causal diagnostic, not an accepted full serving model or historical measurement
 correction. Run untuned lanes 4/10/13 only if the development result warrants
 validation, preserving the same frozen rate and profile provenance.
 
+**E034 conclusion — rejected as a sufficient remedy.** Native CPU service
+and completion checks pass. The fixed admission cost reduces TTFT error among
+retained development requests, but loses five frozen observations per metric
+(four at C8, one at C14) and worsens pooled TPOT. The retained-subset MAPEs are
+56.6126% TTFT and 71.7450% TPOT, versus the full frozen baseline 88.4103%/68.2526%.
+Different denominators prohibit treating the TTFT change as a qualified win.
+All 4169/4166 original identities remain in accounting; 4164/4161 retain scores.
+
+| Lanes | TTFT MAPE, retained | TPOT MAPE, retained | Lost TTFT/TPOT |
+|---:|---:|---:|---:|
+| 1 | 25.0093% | 18.9029% | 0/0 |
+| 8 | 28.8601% | 55.3671% | 4/4 |
+| 14 | 76.9495% | 88.3007% | 1/1 |
+
+Median TPOT APE decreases 18.9489→17.8600%, but the small-reference contribution
+rises 28.2550→32.0316 percentage points and tails worsen. Preserve them. No rate
+retuning, held-out replay, baseline replacement or accepted modeling fix follows.
+Evidence: `E034-independent-dev-audit.json`, source 31adb4822 and the unchanged
+research wheel/data. Source inspection of historical `serving_base.handle_request`
+also confirms synchronous conversion on its asynchronous path; the admission-only
+stage does not represent output callbacks sharing that API event loop.
+
+**E035 — retained native matrix (predeclared CPU experiment).** Hypotheses:
+GPU scheduling/forward gaps may remain after CPU input work is separated; competing
+explanations are arrival-boundary and instrumentation effects. Reuse GPU 1005806,
+not new collection. Replay cold native-input controls at 8/14 lanes, 8192/131072
+input tokens and 128 outputs, both repeats, in all three original arms: 24 finite
+cases / 264 request pairs. Preserve the plain/MTP factor, original forced mean 2.99
+(1.99 accepted drafts), cap 256, chunk 8192, TP8 and exact input/output accounting.
+Distinct first pages prevent prefix reuse across lanes as in the Task-i inputs.
+
+Use each retained client's start times relative to its batch origin, not invented
+simultaneous arrivals. These are client starts, not scheduler-submission clocks;
+JSON/transport latency remains a limitation. Compare CPU predictions with both
+client and rank-zero output-ready spans where recorded. The latter includes
+scheduling stalls, not pure kernel time. End spans at first attainment of the
+delivered 128-token cap and retain generated excess explicitly, consistent with
+the source-verified trimming contract. Do not rewrite the E028 original gate.
+Keep repeats/arms separate before assessing the instrumentation effect. This
+cross-version 0.5.20-silicon/0.5.21-data diagnostic does not score AgentX headlines
+or justify a global op multiplier. Retain failures and all planned pair identities.
+
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
 claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
