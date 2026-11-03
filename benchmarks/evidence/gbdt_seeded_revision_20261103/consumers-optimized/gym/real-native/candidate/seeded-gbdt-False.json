@@ -1,9 +1,0 @@
-{
-  "initial_predictions": {
-    "decode": 3.000000000000001,
-    "mixed": null,
-    "prefill": 2.0
-  },
-  "later_decode": 3.000000000000001,
-  "scope_count": 2
-}

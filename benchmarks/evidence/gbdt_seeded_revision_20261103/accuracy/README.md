@@ -1,5 +1,10 @@
 # Fresh paired seeded-runtime accuracy comparison
 
+Raw results and reproduction scripts are preserved in the
+[immutable qualification checkout](https://github.com/ai-dynamo/aisimulate/tree/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103).
+Run the recorded reproduction commands from that checkout with their pinned
+external inputs; this review copy retains the report and archive links.
+
 The candidate matches the merged PR #658 baseline for every prediction and
 admission in the pinned 36-case C/BC campaign and the pinned HF smoke case.
 All 36 cases were retained, including all thirteen M3 cases. This demonstrates

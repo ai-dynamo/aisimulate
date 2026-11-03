@@ -1,7 +1,12 @@
 # Final matched seeded GBDT host costs
 
+Raw results and reproduction scripts are preserved in the
+[immutable qualification checkout](https://github.com/ai-dynamo/aisimulate/tree/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103).
+Run the recorded reproduction commands from that checkout with their pinned
+external inputs; this review copy retains the report and archive links.
+
 The final runtime removes the redundant checkpoint/source scans identified in
-the [first campaign](../host-costs/README.md). Five fresh baseline/candidate pairs
+the [first campaign](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs/README.md). Five fresh baseline/candidate pairs
 for each of four cases passed every input, work, prediction-bit and forest-hash
 check. Raw construction is close to baseline. Complete snapshot restore adds
 0.41–0.87 ms median in the comparable cases; complete source capture adds save
@@ -11,7 +16,7 @@ than treated as exact performance equality.
 Baseline: merged prerequisite `9f4819e2b77afb4798bc8133c42ccc1d1b045e5c`,
 native `d88bc55746664e144057e57e17ee5357c08667ea52861627a7ad6a9949f74cd4`.
 Candidate: working-tree source recorded in
-[candidate-optimized-source.json](../candidate-optimized-source.json), native
+[candidate-optimized-source.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/candidate-optimized-source.json), native
 `6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42`.
 No baseline timing sample is reused from the first campaign. Its 73bc10ea results
 remain pre-optimization evidence.
@@ -85,7 +90,7 @@ not a paired comparison with a baseline operation that did not exist.
 
 ## Cause, required work and limits
 
-The [recorded source delta](../construction-receipts-native-delta.json) reuses
+The [recorded source delta](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/construction-receipts-native-delta.json) reuses
 construction-local receipts of the path, digest and byte length of bytes already
 read and checked by the native loader. New private dependency capture no longer
 rescans those same raw checkpoint payloads. Schema-3 snapshot restoration shares
@@ -141,19 +146,19 @@ complete model unsupported by the baseline. RSS is not isolated native memory.
 
 ## Reproducible evidence
 
-[small/summary.json](small/summary.json) and
-[expanded/summary.json](expanded/summary.json) retain unchanged full samples,
+[small/summary.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized/small/summary.json) and
+[expanded/summary.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized/expanded/summary.json) retain unchanged full samples,
 standard deviations, paired ratios and original worker path/hash references.
-[trial-metrics.json](trial-metrics.json) retains metrics and identity digests.
+[trial-metrics.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized/trial-metrics.json) retains metrics and identity digests.
 All 96 original dry/measured worker JSON/log members are preserved byte-identically
-in [raw-workers.tar.xz](raw-workers.tar.xz), with a separate private backup and
-complete hash/member ledger in [raw-archive.json](raw-archive.json). Extract the
+in [raw-workers.tar.xz](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized/raw-workers.tar.xz), with a separate private backup and
+complete hash/member ledger in [raw-archive.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized/raw-archive.json). Extract the
 archive here to restore the summaries' original relative worker paths.
 
-[host-costs-optimized-commands.json](../host-costs-optimized-commands.json) records
+[host-costs-optimized-commands.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/host-costs-optimized-commands.json) records
 actual commands, environments, quiet-window confirmation and completion. For a
 new run use new output destinations and the selected native hashes. The three
 standalone harnesses are unchanged from the first campaign; their origins are in
-[evidence-relocation.json](../evidence-relocation.json). The
-[compaction script](../compact_host_costs.py) verifies every backup/archive member
+[evidence-relocation.json](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/evidence-relocation.json). The
+[compaction script](https://github.com/ai-dynamo/aisimulate/blob/3630fed8e30ec24edee78f569b9d7276e60ddb4a/benchmarks/evidence/gbdt_seeded_revision_20261103/compact_host_costs.py) verifies every backup/archive member
 before removing redundant loose worker copies.
