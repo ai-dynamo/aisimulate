@@ -1609,7 +1609,7 @@ def _cell_generator_overrides(
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
-        prefix_caching = _decode_prefix_caching_mode(cell, plan)
+        prefix_caching = _decode_prefix_caching_mode(plan, cell)
         policy_disables = any(
             str(argument) == "--no-enable-prefix-caching" or str(argument).startswith("--no-enable-prefix-caching=")
             for argument in policy_args
@@ -1655,11 +1655,11 @@ def _cell_generator_overrides(
     return merged
 
 
-def _decode_prefix_caching_mode(cell: FPMCell, plan: FPMCollectionPlan | None = None) -> str:
+def _decode_prefix_caching_mode(plan: FPMCollectionPlan, cell: FPMCell) -> str:
     """Return the rendering/checkpoint policy for one decode cell of a probe or collection plan.
 
     A GLM-5.3-Flash plan keeps prefix caching in every strategy, because its producer seeds real KV through it. Other
-    models follow the strategy rule, which is also the result without a plan.
+    models follow the strategy rule.
     """
 
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
@@ -1689,13 +1689,13 @@ def _configured_sampling_metadata(
         # Every GLM-5.3-Flash collection cell measures a frozen list, so its decode cells record their prefix-caching
         # policy here. The cells of other lists keep the metadata that they have always had.
         if cell.workload_kind == "decode" and _glm_collection(plan):
-            metadata["decode_prefix_caching"] = _decode_prefix_caching_mode(cell, plan)
+            metadata["decode_prefix_caching"] = _decode_prefix_caching_mode(plan, cell)
         return metadata
     if cell.workload_kind != "prefill":
         # Derive checkpoint evidence from the same predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
         # arguments that conflict with this resolved protocol.
-        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell, plan)}
+        return {"decode_prefix_caching": _decode_prefix_caching_mode(plan, cell)}
     if smoke:
         payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
         if plan.options.prefill_sampling.cudagraph_policy == "runtime":
