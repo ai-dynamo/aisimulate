@@ -2781,3 +2781,12 @@ SDK-only environment fails collection because Transformers is intentionally
 absent; retain its log and rerun the two dependency groups without changing
 the frozen runtime. CPU-only source/import preflight1018600 has verified
 transferred hashes and the historical image; no GPU is allocated yet.
+
+CPU preflight1018600 completes in300 seconds (extern301), allocating zero
+GPUs. All four exact source hashes and real imports qualify, including the
+unmodified pinned upstream generator. CPU-only quantization warnings do not
+change this source gate. GPU1018958 is submitted with one B300, eight CPUs,
+64GiB and45minutes, no requeue, exact source4e268a812. Reserve2760GPU-seconds;
+97810 remain unreserved. Live association/partition/user-job checks pass;
+select/cons_tres allows partial-node allocation. Actual allocation and source
+checks precede work; numerical qualification precedes each arm's timing.
