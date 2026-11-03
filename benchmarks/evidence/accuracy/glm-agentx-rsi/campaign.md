@@ -437,6 +437,33 @@ receipt. The GPU batch also rejects anything other than eight B300 devices
 before loading weights. Collection source, results and actual allocation cost
 are pending; independent audit additionally requires a shared API process.
 
+**E029 — coding-chat primitive preparation (CPU only).** Hypothesis: the
+single-message generic controls do not establish the CPU cost of the measured
+coding workload. Reconstruct the first frozen Weka play with harness 1.0.12,
+seed 42, its full default coding pool, original saved configuration and pinned
+GLM tokenizer. Reuse the harness session accumulator and chat endpoint, including
+context resets; do not concatenate delta messages by hand. Select root turns
+nearest nominal 8K/131K/393K source lengths before any timing or scoring.
+
+Two clean reconstructions and the separate exploratory preparation produce
+identical private payload/token hashes. Actual selected chat lengths are
+**651 / 134720 / 393290**, with **1 / 38 / 219 messages**. The first play has no
+near-8K request; retain the actual 651-token case rather than relabeling it 8K.
+The default coding pool contains 261056 tokens with this exact tokenizer; the
+pool's scale constant is not a guarantee of its realized token count. The
+134720-token case agrees exactly with source length; the long case differs by
+202 tokens from its 393088-token source target. Keep these differences explicit.
+
+**Conclusion — preparation qualified, timing transfer still unqualified.** These
+are reproducible frontend primitives, not measured historical request histories:
+the original controller selections/cache trajectory and original CPU identity
+remain separate qualifications. No latency coefficient, MAPE improvement or
+historical measurement correction follows. Preparation uses no GPU time. Private
+receipts `E029-prepared-v1/receipt.json`, `E029-prepared-v2/receipt.json` and
+`E029-independent-audit.json` pin source/config/model assets and payload checksums;
+payload text and token arrays stay private. Next use these primitives for
+independently measured CPU-stage controls after E028 qualifies receipt blocking.
+
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
 claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
@@ -863,6 +890,7 @@ python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDIC
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
 python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --output NEW_FRONTEND_AUDIT_JSON
 python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
+python prepare_weka_frontend.py --trace FROZEN_WEKA_TRACE --profile ORIGINAL_PROFILE_JSON --model-revision FULL_MODEL_SHA --output NEW_PRIVATE_PAYLOAD_DIR
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 # Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
