@@ -2819,13 +2819,14 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
         ("refs/heads/release/0.12.0", "workflow_dispatch"),
     ],
 )
-def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event):
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event, package):
     (tmp_path / "scripts").symlink_to(REPOSITORY_ROOT / "scripts", target_is_directory=True)
     directory = tmp_path / "accuracy-wheel"
     directory.mkdir()
-    wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
+    wheel = directory / f"{package}-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
     wheel.write_bytes(b"fixture wheel")
-    (directory / "aisimulate-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
+    (directory / f"{package}-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
     manifest = tmp_path / "python/aisimulate/pyproject.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('[project]\nversion = "0.12.0.dev20260917"\n')

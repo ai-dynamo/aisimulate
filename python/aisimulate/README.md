@@ -17,14 +17,16 @@ generator SDK.
 
 ## Install
 
-Use Python 3.11–3.13:
+Use Python 3.11–3.13. This branch builds the renamed `aisim` distribution;
+these commands require its publication on your selected index. Until then, use
+a historical `aisimulate` release in a separate environment or build from source:
 
 ```bash
-python3 -m pip install aisimulate
-aisimulate --help
+python3 -m pip install aisim
+aisim --help
 ```
 
-Source builds also provide `aisim` as an alias for `aisimulate`; both commands
+The `aisim` wheel provides both `aisim` and `aisimulate`; both commands
 use the same entry point. Python imports remain `aisimulate` and `aisimulate_core`.
 
 The built-in engine runs without Dynamo. See the
@@ -33,6 +35,23 @@ for platform requirements, source builds, nightly artifacts, and compatible
 Dynamo installations. Documentation on `main` may describe features newer than
 the latest published wheel. The optional Dynamo Planner integration requires
 additional dependencies described in that guide.
+
+## Migrate from the `aisimulate` distribution
+
+The distributions share their Python files and CLI, so uninstall `aisimulate`
+**before** installing or upgrading to `aisim`:
+
+```bash
+python3 -m pip uninstall -y aisimulate
+python3 -m pip install --upgrade aisim
+python3 -m pip check
+```
+
+If both names are already installed, use a fresh environment or uninstall
+`aisimulate` and force-reinstall your selected `aisim` wheel to repair overlapping
+files. Keep a Dynamo environment on the old distribution until its Dynamo
+release requires `aisim`; otherwise dependency resolution can reinstall
+`aisimulate`. Import names remain `aisimulate` and `aisimulate_core`.
 
 ## Predict one deployment
 
@@ -144,6 +163,6 @@ When upgrading from standalone AIConfigurator, remove the old distributions firs
 so that AISimulate owns the installed files:
 
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
-python3 -m pip install --upgrade aisimulate
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
+python3 -m pip install --upgrade aisim
 ```

@@ -38,6 +38,20 @@ qualifies historical `aisimulate` / `aisimulate-core` sources by their committed
 manifest identities. Nightly GitLab triggers select the project from the built
 wheel identity; renamed builds require release-automation MR !84 before cutover.
 
+## Distribution migration
+
+The renamed `aisim` wheel owns the same Python packages and CLI files as the
+historical `aisimulate` wheel. Existing users must uninstall `aisimulate` before
+installing `aisim`, including upgrades; mixed installations must be repaired
+by removing the old distribution and force-reinstalling the selected new wheel,
+or by creating a fresh environment. See the [migration procedure](../getting-started/installation.md#migrate-to-the-renamed-distribution).
+
+Coordinate downstream dependency declarations, especially Dynamo, before the
+cutover. A consumer requiring `aisimulate` can reinstall the old distribution
+and recreate the overlap. New-name environments require compatible consumers
+that declare `aisim`, followed by `pip check`. Historical release qualification
+continues using its original distribution in a separate environment.
+
 ## Packaged license files
 
 The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository
@@ -145,14 +159,14 @@ as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
 
 The GitLab request contract was checked against release-automation revision
-`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
-`.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
+`cc63ecf80165209f630d4a5b3868983e980c6cc2` (release-automation MR !84), specifically
+the root `.gitlab-ci.yml` variable forwarding and `projects/aisim.yml` consumer.
 The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
 request selects `ref=main` and forwards these fields:
 
 | Variable | Nightly value |
 | --- | --- |
-| `PROJECT` | `aisimulate` |
+| `PROJECT` | Built wheel identity: `aisim`, or `aisimulate` for historical source |
 | `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
 | `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
 | `WHEEL_VERSION` | Exact stamped wheel version |

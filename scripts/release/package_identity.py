@@ -22,11 +22,20 @@ def single_wheel(directory: Path) -> Path:
 
 
 def installed_distribution() -> importlib.metadata.Distribution:
+    installed = []
     for name in PACKAGE_NAMES:
         try:
-            return importlib.metadata.distribution(name)
+            installed.append(importlib.metadata.distribution(name))
         except importlib.metadata.PackageNotFoundError:
             pass
+    if len(installed) > 1:
+        raise RuntimeError(
+            "aisim and aisimulate are both installed and own overlapping files. "
+            "Use a clean environment, or uninstall aisimulate then force-reinstall aisim. "
+            "Update dependencies that still require aisimulate before migrating."
+        )
+    if installed:
+        return installed[0]
     raise importlib.metadata.PackageNotFoundError("aisim (or historical aisimulate)")
 
 

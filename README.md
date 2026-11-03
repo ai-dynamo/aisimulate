@@ -62,14 +62,36 @@ on `main` can describe features newer than the latest published wheel.
 
 Install AISimulate by itself to use the built-in simulation engine without a
 Dynamo dependency. Use a fresh virtual environment for each installation profile.
-These commands install published releases; for the examples on `main`, use
-[Develop from source](#develop-from-source):
+This branch builds the renamed `aisim` distribution. The following commands
+require an `aisim` release on your selected index; until that publication is
+available, use a historical `aisimulate` release in its own environment or
+[develop from source](#develop-from-source).
 
 <!-- readme-check: release-install -->
 ```bash
-python3 -m pip install aisimulate
-aisimulate --help
+python3 -m pip install aisim
+aisim --help
 ```
+
+### Migrate an existing AISimulate environment
+
+`aisim` and `aisimulate` are different distribution names but install the same
+Python packages and `aisimulate` command. Uninstall `aisimulate` **before**
+installing `aisim`; installing both and then removing the old one can delete
+files needed by the new one. Use the same ordering for upgrades:
+
+Run `python3 -m pip uninstall -y aisimulate`, followed by
+`python3 -m pip install --upgrade aisim`, then `python3 -m pip check` and
+`aisim --help`. The [installation guide](docs/getting-started/installation.md#migrate-to-the-renamed-distribution)
+also shows migration using an exact downloaded wheel.
+
+If both are already installed, use a fresh environment or uninstall
+`aisimulate` and **force-reinstall** the selected `aisim` wheel to restore its
+files. For an environment containing Dynamo, first select a Dynamo release
+whose declared dependency is `aisim`; a release that still requires
+`aisimulate` can reinstall the old distribution. Keep the historical pair below
+in a separate environment until that downstream migration is available.
+Python imports remain `aisimulate` and `aisimulate_core`.
 
 ### With Dynamo
 
@@ -104,8 +126,8 @@ In an engine-only environment, remove the former distributions before upgrading:
 
 <!-- readme-check: release-upgrade -->
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
-python3 -m pip install --upgrade aisimulate
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
+python3 -m pip install --upgrade aisim
 python3 -m pip check
 ```
 
@@ -433,15 +455,15 @@ Collector, tests, documentation, and development tooling live under
 
 This repository produces exactly two release artifacts:
 
-1. `aisimulate` Python wheel — the application, console commands,
+1. `aisim` Python wheel — the application, console commands,
    estimator SDK, model/performance data, Replay, Sweeper, and unified native
    extension;
-2. `aisimulate-core` Rust crate — the native estimator and simulation core for
+2. `aisim-core` Rust crate — the native estimator and simulation core for
    Rust consumers.
 
 It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
-`aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
+`aisim` wheel exposes the `aisimulate` application and `aisimulate_core`
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
 [Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
 

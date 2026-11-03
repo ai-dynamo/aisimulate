@@ -5,9 +5,11 @@
 
 import copy
 import csv
+import importlib.metadata
 import importlib.util
 import io
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -423,3 +425,86 @@ def test_current_harness_keeps_selected_source_and_tooling_identities_distinct(t
             "source_sha": SHA,
             "tooling_sha": TOOLING,
         }
+
+
+@pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",), ("aisim", "aisimulate")])
+def test_distribution_identity_requires_exactly_one_installed_product(monkeypatch, installed):
+    from scripts.release.package_identity import installed_distribution
+
+    distributions = {name: SimpleNamespace(version="0.13.0", metadata={"Name": name}) for name in installed}
+
+    def lookup(name):
+        if name in distributions:
+            return distributions[name]
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lookup)
+    if len(installed) == 2:
+        with pytest.raises(RuntimeError, match="both installed.*overlapping"):
+            installed_distribution()
+    elif installed:
+        assert installed_distribution() is distributions[installed[0]]
+    else:
+        with pytest.raises(importlib.metadata.PackageNotFoundError):
+            installed_distribution()
+
+
+@pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",), ("aisim", "aisimulate")])
+def test_installed_package_verifier_rejects_old_application_overlap(monkeypatch, installed):
+    path = ROOT / "python/aisimulate/tools/verify_installed_package_layers.py"
+    spec = importlib.util.spec_from_file_location("verify_installed_layers", path)
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    monkeypatch.setattr(verifier, "_distribution_version", lambda name: "0.13.0" if name in installed else None)
+    requirements = Mock(return_value=[])
+    monkeypatch.setattr(importlib.metadata, "requires", requirements)
+    if installed == ("aisim",):
+        assert verifier._verify_metadata() == "0.13.0"
+        requirements.assert_called_once_with("aisim")
+    else:
+        expected = "both installed.*overlapping" if "aisim" in installed else "aisim distribution is not installed"
+        with pytest.raises(RuntimeError, match=expected):
+            verifier._verify_metadata()
+        requirements.assert_not_called()
+
+
+@pytest.mark.parametrize("case", ["new", "historical", "mixed", "source-only", "missing"])
+def test_copied_fpe_harness_resolves_the_installed_release_version(tmp_path, case):
+    source = tmp_path / "selected-release"
+    inventory = source / RELEASE.PROBES / "support_matrix.py"
+    inventory.parent.mkdir(parents=True)
+    inventory.write_text("# Selected release inventory fixture.\n")
+    harness = RELEASE.prepare_harness(source, tmp_path / "harness")
+    metadata = tmp_path / "installed-metadata"
+    metadata.mkdir()
+    names = {"new": ["aisim"], "historical": ["aisimulate"], "mixed": ["aisim", "aisimulate"]}.get(case, [])
+    for name in names:
+        dist = metadata / f"{name}-0.12.0.dist-info"
+        dist.mkdir()
+        (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 0.12.0\n")
+    if case == "source-only":
+        (harness / "pyproject.toml").write_text('[project]\nversion = "0.13.0"\n')
+    else:
+        assert not (harness / "pyproject.toml").exists()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "from tools.support_matrix.generate_fpe_support_matrix import _source_version; print(_source_version())",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join((str(harness), str(metadata)))},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if case == "mixed":
+        assert result.returncode != 0
+        assert "aisim and aisimulate are both installed" in result.stderr
+    elif case == "missing":
+        assert result.returncode != 0
+        assert "FileNotFoundError" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == ("0.13.0" if case == "source-only" else "0.12.0")

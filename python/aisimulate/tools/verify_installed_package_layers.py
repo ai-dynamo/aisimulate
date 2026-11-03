@@ -52,6 +52,12 @@ def _verify_metadata() -> str:
     wheel_version = _distribution_version("aisim")
     if wheel_version is None:
         raise RuntimeError("aisim distribution is not installed")
+    if _distribution_version("aisimulate") is not None:
+        raise RuntimeError(
+            "aisim and aisimulate are both installed and own overlapping files. "
+            "Use a clean environment, or uninstall aisimulate then force-reinstall aisim. "
+            "Update downstream dependencies (including Dynamo) that still require aisimulate before migrating."
+        )
     stale_distributions = [
         name
         for name in ("aisim-core", "aisimulate-core", "aiconfigurator-core")
@@ -64,7 +70,7 @@ def _verify_metadata() -> str:
     requirement_names = {Requirement(requirement).name for requirement in requirements}
     stale_requirements = requirement_names.intersection({"aisim-core", "aisimulate-core", "aiconfigurator-core"})
     if stale_requirements:
-        raise RuntimeError(f"aisimulate still declares split Python dependencies: {sorted(stale_requirements)}")
+        raise RuntimeError(f"aisim still declares split Python dependencies: {sorted(stale_requirements)}")
     return wheel_version
 
 
