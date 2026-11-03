@@ -280,6 +280,9 @@ def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path)
     for key in ("generator_version", "seed", "count"):
         if type(evidence.get(key)) is not int:
             raise lacks(f"input_provenance.{key}")
+    # The producer draws a nonempty token stream, so a count below 1 contradicts the input that it records.
+    if evidence["count"] < 1:
+        raise lacks("input_provenance.count")
     for key in ("tokenizer_json_sha256", "token_ids_sha256"):
         if not _is_hex(evidence.get(key), 64):
             raise lacks(f"input_provenance.{key}")
