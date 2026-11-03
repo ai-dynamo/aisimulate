@@ -1745,3 +1745,30 @@ initializing a GPU. The existing CPU wrapper selects it with
 qualification stays unchanged. Resources remain eight CPUs, 64GiB and ten
 minutes with no GPUs. Source checks do not establish CUPTI visibility or
 GPU-projected kernel boundaries; those remain explicit GPU-probe gates.
+
+E040 source/query checkpoint: canonical construction reuses the frozen compiled
+role identity (TP8, EP1, nextn 3, op-level/SILICON, correction disabled). The
+per-iteration detailed query consumes **already-packed** verification counts;
+its initial one-token decode query is not a matched four-token verification
+round. Packing width four and preserving per-rank entries gives
+7.239814/7.618652/8.171010ms at 8192/131072/393216 KV. Do not claim the lower
+unpacked results as a model defect. Query artifact SHA256s:
+`26616ce897aa9d1be6d3bb928468f9451c115961d7f6333f2a88e74d02a39b9b`
+and `92a11fcc1d9ee5c890bcd3c5f42bd45b7deb58ebe433de2c17525f7bca89f103`.
+
+A cold 8192/128 replay with performance diagnostics retains exact request
+numerical/configuration fields. The first whole-record parity assertion fails
+only because this generic trace creates a fresh UUID; retain that check and
+compare all remaining fields, not a changed timing subset. It executes 43 decode
+rounds, mean acceptance 3.0 in this finite sample, and unchanged first/last client
+timestamps 243.862889/555.210624ms. The 311.347735ms decode span is consistent
+with the correctly packed query and growing KV; actual GPU precision/critical
+path evidence remains pending.
+
+CPU job **1014484** uses immutable source
+`23c872abc14a44796c48e4fccf16108d8897c2d8`, archive SHA256
+`c2d4d3c1aeef09390467304b41c20269d2f9532c1fc52026ea28b8fb7a246c65`.
+All 42 archived source/notice checksums verify before submission. Eight CPUs,
+64GiB, ten minutes and **zero GPUs**; no GPU reservation or charge is added.
+The live queue is empty before submission. Wait for the actual image's tool and
+source receipt before choosing the trace capture method.
