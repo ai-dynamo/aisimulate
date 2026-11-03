@@ -103,7 +103,7 @@ jobs:
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                   ...context.repo, run_id: run.id, per_page: 100,
                 });
-                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64' && !artifact.expired)) {
+                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64-manifest' && !artifact.expired)) {
                   nightlyRun = String(run.id);
                   break;
                 }

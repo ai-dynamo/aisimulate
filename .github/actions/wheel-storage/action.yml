@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Artifactory wheel handoff
+description: Transfer wheels through Artifactory; retain only a small manifest in Actions
+inputs:
+  mode:
+    description: upload or download
+    required: true
+  name:
+    description: Unique handoff name within the producer run
+    required: true
+  path:
+    description: Upload file globs or download destination
+    required: true
+  url:
+    description: Artifactory service root
+    required: true
+  repo:
+    description: Artifactory repository key
+    required: true
+  token:
+    description: Artifactory credential (read only for consumers)
+    required: true
+  run-id:
+    description: Producer run for cross-run downloads
+    default: ${{ github.run_id }}
+  source-sha:
+    description: Exact product source revision (may differ from the workflow revision)
+    required: true
+  architecture:
+    description: Producer architecture, checked by every consumer
+    required: true
+  github-token:
+    description: GitHub token for cross-run manifest downloads
+    default: ${{ github.token }}
+  retention-days:
+    description: Manifest retention in Actions (configure payload retention in Artifactory)
+    default: '30'
+runs:
+  using: composite
+  steps:
+    - name: Allocate isolated manifest directory
+      id: directory
+      shell: bash
+      run: echo "path=$(mktemp -d "${RUNNER_TEMP}/wheel-manifest.XXXXXX")" >> "${GITHUB_OUTPUT}"
+    - name: Download wheel manifest
+      if: inputs.mode == 'download'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.name }}-manifest
+        path: ${{ steps.directory.outputs.path }}
+        run-id: ${{ inputs.run-id != github.run_id && inputs.run-id || '' }}
+        github-token: ${{ inputs.run-id != github.run_id && inputs.github-token || '' }}
+    - name: Transfer and verify Artifactory files
+      shell: bash
+      env:
+        STORAGE_MODE: ${{ inputs.mode }}
+        STORAGE_NAME: ${{ inputs.name }}
+        STORAGE_PATH: ${{ inputs.path }}
+        STORAGE_URL: ${{ inputs.url }}
+        STORAGE_REPO: ${{ inputs.repo }}
+        STORAGE_TOKEN: ${{ inputs.token }}
+        STORAGE_RUN_ID: ${{ inputs.run-id }}
+        STORAGE_SOURCE_SHA: ${{ inputs.source-sha }}
+        STORAGE_ARCHITECTURE: ${{ inputs.architecture }}
+        STORAGE_MANIFEST: ${{ steps.directory.outputs.path }}/wheel-manifest.json
+        STORAGE_SCRIPT: ${{ github.action_path }}/transfer.py
+      run: |
+        set -euo pipefail
+        # Python is available on the manylinux image before setup-python runs.
+        if [ -x /opt/python/cp312-cp312/bin/python ]; then
+          /opt/python/cp312-cp312/bin/python "${STORAGE_SCRIPT}"
+        else
+          python3 "${STORAGE_SCRIPT}"
+        fi
+    - name: Retain wheel manifest (no wheel payload)
+      if: inputs.mode == 'upload'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.name }}-manifest
+        path: ${{ steps.directory.outputs.path }}/wheel-manifest.json
+        overwrite: true
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

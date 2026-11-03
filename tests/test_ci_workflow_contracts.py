@@ -2179,7 +2179,11 @@ def test_release_artifact_handoffs_cannot_mix_versions():
         "fpe-release-probes.json",
     }
     for name in ("generate", "qualify"):
-        download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+        download = next(
+            s
+            for s in jobs[name]["steps"]
+            if s.get("uses", "").endswith("/wheel-storage") and s["with"]["mode"] == "download"
+        )
         assert download["with"]["name"] == wheel
     assert wheel == "fpe-release-wheel-${{ inputs.release }}"
     upload = jobs["generate"]["steps"][-1]["with"]["name"]
@@ -2801,13 +2805,17 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
     upload = steps[names.index("Upload verified nightly artifacts")]["with"]
     assert upload["name"] == "nightly-dist-${{ matrix.arch }}"
     assert upload["path"] == "${{ runner.temp }}/nightly-dist/*"
-    assert upload["overwrite"] == "true"
+    assert upload["mode"] == "upload"
     artifact = upload["name"].replace("${{ matrix.arch }}", "amd64")
     assert jobs["fpe-support-matrix"]["with"]["wheel_artifact"] == artifact
     resolver = _workflow("e2e-accuracy.yml")["jobs"]["resolve"]["steps"][0]["with"]["script"]
-    assert f"artifact.name === '{artifact}'" in resolver
+    assert f"artifact.name === '{artifact}-manifest'" in resolver
     consumer = _workflow("e2e-accuracy-branch.yml")["jobs"]["wheel"]["steps"]
-    download = next(step for step in consumer if "download-artifact@" in step.get("uses", ""))
+    download = next(
+        step
+        for step in consumer
+        if step.get("uses", "").endswith("/wheel-storage") and step["with"]["mode"] == "download"
+    )
     assert download["with"]["name"] == artifact
 
 
@@ -3145,7 +3153,9 @@ def test_simulation_performance_rollout_and_revision_contract():
     )
     assert '"${RUNNER_TEMP}/callback-venv/bin/python"' in build_commands
     downloads = [
-        step["with"]["name"] for step in comparison["steps"] if "actions/download-artifact@" in step.get("uses", "")
+        step["with"]["name"]
+        for step in comparison["steps"]
+        if step.get("uses", "").endswith("/wheel-storage") and step["with"]["mode"] == "download"
     ]
     assert downloads == [
         "simulation-wheel-base-${{ needs.select.outputs.base_sha }}",
