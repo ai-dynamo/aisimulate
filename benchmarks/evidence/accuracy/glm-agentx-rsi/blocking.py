@@ -50,33 +50,43 @@ def tokenize(url, rid, body, expected_count, expected_digest):
     return row
 
 
+CODING_INPUTS = {
+    "short": (
+        "turn-0.json",
+        "c47e941367fcdc6707ecccecaf04022037677d258cca76bf6219adfd7f1488bc",
+        651,
+        "76526cd3d4047918cf3b331534e419cc0d3c3141eee47671c1542005f460d3bf",
+    ),
+    "long": (
+        "turn-128.json",
+        "0bcfd1a68b1de640cc21f734b1c3c1d01f85d12eafe074db08126ca92ebfdbbb",
+        393290,
+        "46288fd8ff999bd3bb563c41ac4735f8896e17a9f08aa47eaf666422104fd1c9",
+    ),
+}
+
+
 def load_coding_inputs(root, tokenizer):
-    expected = {
-        "short": (
-            "turn-0.json",
-            "c47e941367fcdc6707ecccecaf04022037677d258cca76bf6219adfd7f1488bc",
-            651,
-            "76526cd3d4047918cf3b331534e419cc0d3c3141eee47671c1542005f460d3bf",
-        ),
-        "long": (
-            "turn-128.json",
-            "0bcfd1a68b1de640cc21f734b1c3c1d01f85d12eafe074db08126ca92ebfdbbb",
-            393290,
-            "46288fd8ff999bd3bb563c41ac4735f8896e17a9f08aa47eaf666422104fd1c9",
-        ),
-    }
     payloads, receipts = {}, {}
-    for kind, (name, checksum, count, token_sha) in expected.items():
+    for kind, (name, checksum, count, token_sha) in CODING_INPUTS.items():
         raw = (root / name).read_bytes()
         if hashlib.sha256(raw).hexdigest() != checksum:
             raise ValueError("Coding primitive checksum differs from E029")
         value = json.loads(raw)
         ids, messages = value["input_ids"], value["payload"]["messages"]
         actual = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_dict=False)
-        if ids != actual or len(ids) != count or token_digest(ids) != token_sha:
+        source_token_sha = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
+        if ids != actual or len(ids) != count or source_token_sha != token_sha:
             raise ValueError("Coding primitive token identity differs")
         payloads[kind] = (ids, messages)
-        receipts[name] = {"sha256": checksum, "bytes": len(raw), "input_tokens": count, "token_sha256": token_sha}
+        receipts[name] = {
+            "sha256": checksum,
+            "bytes": len(raw),
+            "input_tokens": count,
+            "source_tokens_json_sha256": token_sha,
+            "token_sha256": token_digest(ids),
+            "token_hash_encoding": "uint32-le",
+        }
     return payloads, {
         "status": "passed",
         "files": receipts,
@@ -96,8 +106,13 @@ def actor_worker(url, payloads, jobs, results, endpoint="tokenize"):
         if endpoint == "chat":
             ids, messages = payloads[kind]
             row = measured(url, rid, ids, messages, "chat")
-            row.update(role="coding_chat_actor", pid=os.getpid(), expected_input_sha256=token_digest(ids),
-                       input_sha256=None, token_identity="Expected E029 input; server hash requires frontend receipt")
+            row.update(
+                role="coding_chat_actor",
+                pid=os.getpid(),
+                expected_input_sha256=token_digest(ids),
+                input_sha256=None,
+                token_identity="Expected E029 input; server hash requires frontend receipt",
+            )
             if row["cached_tokens"] != 0:
                 row["status"] = "failed"
             results.put(row)
@@ -167,7 +182,7 @@ def main():
                 warm.update(phase="preparation", actor=kind)
                 retain_case([warm], stream)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                for size in ((8192,) if args.coding_inputs else (8192, 131072)):
+                for size in (8192,) if args.coding_inputs else (8192, 131072):
                     for repeat in range(3):
                         order = ("none", "short", "long") if repeat % 2 == 0 else ("long", "short", "none")
                         for kind in order:

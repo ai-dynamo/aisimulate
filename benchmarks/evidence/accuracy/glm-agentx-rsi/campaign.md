@@ -1133,7 +1133,15 @@ must retain actual phase/counter/CPU boundaries and be compared with the minimal
 arm. Native victim intervals are diagnostics; frozen six-point headline scores
 remain unchanged. Stop and retain evidence on qualification failure.
 
-**Conclusion:** pending CPU qualification and bounded GPU collection. No new
+CPU preflight 1013128 fails after 238 CPU-only seconds, allocating zero GPUs.
+The original E029 token checksum covers compact JSON; the new loader incorrectly
+compared it with the runtime's little-endian uint32 checksum. Preserve the failed
+preflight. The repair separately verifies the original JSON checksum and records
+the uint32-le hash for frontend-stage matching, with an explicit encoding label.
+A regression test loads a checksum-pinned miniature primitive and verifies both
+distinct hashes. Require a fresh source archive and CPU receipt before GPU use.
+
+**Conclusion:** pending repaired CPU qualification and bounded GPU collection. No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
 ## Repeat and compatibility controls

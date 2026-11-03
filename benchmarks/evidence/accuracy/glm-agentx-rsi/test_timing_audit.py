@@ -120,7 +120,8 @@ def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_pa
     assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
 
 
-def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks():
+@pytest.mark.parametrize("endpoint", ["tokenize", "chat"])
+def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks(endpoint):
     victim = {
         "output_tokens": 4,
         "dispatch": {"pid": 23},
@@ -128,6 +129,9 @@ def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks():
     }
     server = [{"at_ns": "1000000000", "output_tokens": 1}, {"at_ns": "1030000000", "output_tokens": 4}]
     actor = {"start_ns": "800000000", "body_received_ns": "1300000000", "input_sha256": "matched"}
+    if endpoint == "chat":
+        actor = {"start_ns": "800000000", "end_ns": "1300000000", "input_sha256": None,
+                 "expected_input_sha256": "matched"}
     stage = {"start_ns": "900000000", "end_ns": "1100000000", "input_sha256": "matched", "pid": 23}
     result = blocking_comparison(victim, actor, server, [stage])
     assert result["qualified"] and result["fully_buffered_during_cpu_stage"]

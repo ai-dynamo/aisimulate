@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise numerical projection of native/OpenAI streams without a server."""
 
+import hashlib
 import io
 import json
 import threading
@@ -121,3 +122,21 @@ def test_coding_inputs_reject_checksum_changes_before_tokenization(tmp_path):
     (tmp_path / "turn-0.json").write_text("{}")
     with pytest.raises(ValueError, match="checksum"):
         blocking.load_coding_inputs(tmp_path, SimpleNamespace())
+
+
+def test_coding_loader_distinguishes_source_json_and_runtime_binary_hashes(tmp_path, monkeypatch):
+    ids = [1, 2, 3]
+    messages = [{"role": "user", "content": "test"}]
+    raw = json.dumps({"input_ids": ids, "payload": {"messages": messages}}).encode()
+    (tmp_path / "test.json").write_bytes(raw)
+    source_hash = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
+    monkeypatch.setattr(blocking, "CODING_INPUTS", {
+        "short": ("test.json", hashlib.sha256(raw).hexdigest(), 3, source_hash),
+    })
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *_a, **_k: ids)
+    payloads, receipt = blocking.load_coding_inputs(tmp_path, tokenizer)
+    assert payloads["short"] == (ids, messages)
+    value = receipt["files"]["test.json"]
+    assert value["source_tokens_json_sha256"] == source_hash
+    assert value["token_sha256"] != source_hash
+    assert value["token_hash_encoding"] == "uint32-le"
