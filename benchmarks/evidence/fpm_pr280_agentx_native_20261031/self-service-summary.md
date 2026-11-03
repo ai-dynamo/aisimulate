@@ -102,16 +102,16 @@ extra rows. Export used the `fpm5` feature contract with `join-ranks none`.
 
 ## Archived evidence identity
 
-The following receipt paths identify the original campaign archive, not files
-required to run the portable guide. The full archive is not distributed with
-this summary. SHA256 values bind the reviewed evidence; hashes alone do not
-make those artifacts publicly retrievable.
+The aliases below identify the reviewed receipts. Original archive locations
+are retained privately and are not required to run the portable guide. The full
+archive is not distributed with this summary. SHA256 values bind the reviewed
+evidence; hashes alone do not make those artifacts publicly retrievable.
 
-| Archived receipt, relative to this campaign directory | SHA256 |
+| Receipt alias | SHA256 |
 | --- | --- |
-| `slurm/completed-campaign-verification.json` | `6e4021d8f8862297a4a4115b6c1a9f24159a8e310c0e1393ecb8bafd12c9f2f6` |
-| `analysis/vllm-5508775/fpm5-independent-verification.json` | `f93e7de21a0206e1788ba431f7d45e55361fc5655a2d3832bdc4c8e811c54712` |
-| `analysis/sglang-5520049/fpm5-independent-verification.json` | `64723482df11f4b011c8816e4173a222051e3cff9164c7ac21db91938eeb762e` |
-| `analysis/vllm-5508775/native-capture-quality.json` | `8c3d067f17a449589e8ddc65320c569a487d8fe9620d9c7add12cac82e95efc7` |
-| `slurm/sglang-5520049-native-verification.json` | `4d2af214da723b30d968ac943f5efdf419bb049798c00475322dbd5165a9d839` |
-| `preflight/native-label-review.md` | `7a4968e5ef193b479af05c5cef1aa981b8de2f9bda48e6221df3148aba6936a0` |
+| `campaign-verification.json` | `6e4021d8f8862297a4a4115b6c1a9f24159a8e310c0e1393ecb8bafd12c9f2f6` |
+| `vllm-fpm5-export-verification.json` | `f93e7de21a0206e1788ba431f7d45e55361fc5655a2d3832bdc4c8e811c54712` |
+| `sglang-fpm5-export-verification.json` | `64723482df11f4b011c8816e4173a222051e3cff9164c7ac21db91938eeb762e` |
+| `vllm-native-capture-quality.json` | `8c3d067f17a449589e8ddc65320c569a487d8fe9620d9c7add12cac82e95efc7` |
+| `sglang-native-capture-verification.json` | `4d2af214da723b30d968ac943f5efdf419bb049798c00475322dbd5165a9d839` |
+| `native-label-review.md` | `7a4968e5ef193b479af05c5cef1aa981b8de2f9bda48e6221df3148aba6936a0` |
