@@ -2428,3 +2428,26 @@ No E2E score, cohort, timing data or GPU ledger changes.
   a new budget check. Raw metadata, traces, logs and request records remain private.
 - **Conclusion:** pending local/source tests and bounded GPU collection. No
   prediction correction, revised baseline or request-MAPE win is preapproved.
+
+E046 source `0de346b9c5d81ccecfde6b0d0d5fbe4a7ca917e4` passes **90 focused tests**
+(72 standard,17 Transformers-dependent,one Qwen SDK checker), lint, shell syntax
+and matched legal notices. An initial combined test invocation uses the SDK-only
+runtime and cannot import Transformers; retain that environment failure and run
+the established separate environments without modifying any frozen runtime.
+The actual exported ModelRunner/EAGLE sources both pass AST patch qualification;
+graph-call tests preserve both arguments and return values. Numerical-reader
+tests reject out-of-window reads and expose only input length, never token IDs.
+
+Private archive SHA256
+`42068cc1395df37b54b368865facf58b268004c817fe75f2b296f5c6f433159c`
+contains58 checksum-verified source/notice files. The remote profiler receipt
+still matches `c53f98165e373a3fe32d4f7c102fb0a605b4f80f912bfe89790c273c80bb3b38`.
+Live account/QOS/capacity checks and an empty personal queue qualify submission.
+Job **1016586** is running on one TP8 B300 node with the declared20-minute cap.
+GPU spend before this allocation remains123422 seconds (34.2839 hours), plus
+10080 reserved seconds; no validation-reserve time is transferred. The ledger
+independently sums legacy node-second entries times their actual GPU counts and
+newer explicit GPU-second entries; do not mix their units or double-count steps.
+The first checkpoint reservation update uses the newer field on a legacy entry
+and fails; the reconciled total is unchanged, and the submitted allocation's
+reservation is then recorded. Collection/result audit remains pending.
