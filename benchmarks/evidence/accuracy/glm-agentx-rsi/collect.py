@@ -88,7 +88,8 @@ def cuda_trace_probe(root, nsys, code, deadline):
 def qualify_torch_graph_probe(path):
     events = json.loads(path.read_bytes())["traceEvents"]
     kernels = [event for event in events if event.get("cat") == "kernel" and event.get("dur", 0) > 0]
-    markers = [event for event in events if re.fullmatch(r"rsi-smoke-replay-gpu-\d+", event.get("name", ""))]
+    markers = [event for event in events if event.get("cat") == "user_annotation"
+               and re.fullmatch(r"rsi-smoke-replay-gpu-\d+", event.get("name", ""))]
     if len(markers) != 8:
         raise ValueError("Torch graph probe needs eight recorded CPU ranges")
     projections = []

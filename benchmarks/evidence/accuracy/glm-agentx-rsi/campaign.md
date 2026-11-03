@@ -31,7 +31,7 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
 Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
 with **13 lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is complete. GPU spend is **33.0928/64 hours**
+unchanged C4/C10/C13 validation is complete. GPU spend is **33.2528/64 hours**
 charged through failed Nsight startup 1015148. E039 used CPUs only. E040 has
 seven independently qualified unprofiled controls and no model-forward capture;
 a native Torch correlation fallback is being qualified. There is no active
@@ -1979,3 +1979,26 @@ post-capture requirement; filenames alone cannot qualify accuracy.
 GPU-seconds** including 60 seconds beyond the wall limit for cleanup. This fits
 the remaining op/forward pool and retains all 86,400 validation GPU-seconds.
 No prediction timing, op data, historical scores or scoring cohort changes.
+
+
+Native probe job **1015595 stops before model startup** after **72 allocated
+seconds on eight B300 GPUs: 576 GPU-seconds**. Source
+`385b9924686819d1c01bf36a2aed08fa0574c6b0`, archive SHA256
+`1826c016505bb789e3e33435f8d21be7c4cacdade9d368a2d8dd26d17ed5550c`.
+The trace contains eight `user_annotation` CPU ranges **and eight same-named
+`gpu_user_annotation` GPU ranges**, plus eight real graph-node kernels.
+The validator incorrectly counts both categories. Retain the failure and
+restrict CPU marker selection to `user_annotation`; add a regression fixture
+containing both categories. Offline qualification of the unmodified saved
+trace now confirms explicit CUDA API-to-kernel correlation on all eight
+devices. Trace SHA256:
+`eeab10bf2b3d4dc4ef4255e30c3583d64619f3a2d8b70227cfa5a95ce57fc854`.
+Native GPU annotations independently agree with the correlated GPU spans to
+trace timestamp rounding (about one nanosecond in the toy example). They are
+GPU spans, not the much longer CPU scope. This proves the collection method,
+not GLM forward accuracy. Re-run the same gate on the actual retry allocation.
+
+Charge and release the failed reservation: **119,710 GPU-seconds charged,
+110,690 remaining**; op/forward has **1,815 node-seconds** left, enough for the
+same 25-minute retry plus 60-second cleanup reserve. No new model request was
+attempted, and validation remains untouched.

@@ -176,7 +176,10 @@ def test_torch_graph_probe_requires_explicit_gpu_correlations_on_all_devices(tmp
     for device in range(8):
         begin = 1000 * device
         events.extend([
-            {"name": f"rsi-smoke-replay-gpu-{device}", "pid": 1, "tid": 2, "ts": begin, "dur": 100},
+            {"name": f"rsi-smoke-replay-gpu-{device}", "cat": "user_annotation",
+             "pid": 1, "tid": 2, "ts": begin, "dur": 100},
+            {"name": f"rsi-smoke-replay-gpu-{device}", "cat": "gpu_user_annotation",
+             "pid": device, "tid": 7, "ts": begin + 30, "dur": 4},
             {"name": "cudaGraphLaunch", "cat": "cuda_runtime", "pid": 1, "tid": 2,
              "ts": begin + 10, "dur": 5, "args": {"correlation": device + 1}},
             {"name": "real_kernel", "cat": "kernel", "ts": begin + 30, "dur": 4,
