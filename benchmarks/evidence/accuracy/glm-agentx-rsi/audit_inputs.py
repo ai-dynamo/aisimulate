@@ -13,6 +13,13 @@ from pathlib import Path
 POINTS = {1: "agentx-446063", 8: "agentx-446069", 14: "agentx-446062"}
 
 
+def longest_prefix(left, right):
+    for index, (a, b) in enumerate(zip(left, right, strict=False)):
+        if a != b:
+            return index
+    return min(len(left), len(right))
+
+
 def read(path):
     return json.loads(path.read_bytes())
 

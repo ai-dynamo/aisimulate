@@ -4,7 +4,16 @@
 import hashlib
 
 import pytest
-from audit_inputs import audit, counts
+from audit_inputs import audit, counts, longest_prefix
+
+
+def test_prefix_respects_partial_blocks_and_resets():
+    assert longest_prefix([], [1]) == 0
+    assert longest_prefix([1, 2], [1, 2, 3]) == 2
+    assert longest_prefix([1, 3], [1, 2]) == 1
+    assert longest_prefix([2], [1]) == 0
+    # A one-token shift can change all page hashes; do not round token counts first.
+    assert longest_prefix([1] * 63 + [2], [1] * 64) == 63
 
 
 def test_geometry_strata_preserve_missing_zero_and_frozen_accounting():

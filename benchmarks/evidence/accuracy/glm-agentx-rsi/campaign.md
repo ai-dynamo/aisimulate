@@ -2308,3 +2308,29 @@ E042 normalized configurations and all three derived-trace receipts exactly
 match E041: only compiled cache-contract source differs. Both E043 audit
 variants leave raw artifacts private; source and execution identities are in
 the checkpoint. GPU budget remains **34.2839/64 hours**, no active allocation.
+
+## H2 — E044 literal prompt-prefix geometry (predeclared)
+
+- **Hypothesis:** source Weka block hashes and actual harness-rendered chat
+  prefixes represent different reuse opportunities after reconstruction,
+  context resets and first-turn cache busting. Predicted observable: adjacent
+  reconstructed root prompts share a different number of complete 64-token
+  blocks from the source hash-prefix count. Confidence is moderate; token-count
+  offsets alone and unavailable historical tokenizer/payload identity compete.
+- **Experiment:** CPU-only `audit_prefixes.py`, pinned AgentX 1.0.12, seed42,
+  verified GLM revision, the same first corpus play and original C1/C8 benchmark
+  IDs/initial lane0/recycle0 markers as E033. Reuse the native loader, worker
+  marker injector, session advancement and chat endpoint/template. Audit every
+  available first-play root profile record, retaining unavailable usage and
+  count mismatches. Compare consecutive recorded root prompts; keep first
+  unpaired prompt explicit. Do not claim maximum resident cache or include
+  preparation in accuracy scoring. No latency or score changes.
+- Retain only token/payload-source checksums and numerical prefix/count receipts.
+  Hold only adjacent token arrays transiently; keep raw source artifacts private.
+  Validate common-prefix logic including partial pages and context resets;
+  verify E033's 71 available input counts independently before interpreting
+  any prefix difference. Record immutable code/source identities and commands.
+  A mismatch in reconstructed counts makes its geometry evidence unqualified.
+- **Conclusion:** pending. This tests deterministic input geometry, not cache
+  residency or eviction, and cannot establish a new headline MAPE win. GPU cost
+  zero, no reservations or changes to held-out points.
