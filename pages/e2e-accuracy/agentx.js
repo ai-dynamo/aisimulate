@@ -64,6 +64,9 @@ window.AgentX = (() => {
     const settings=Array.isArray(point.config_summary)?point.config_summary:[];
     const setting=name=>{const matches=settings.filter(item=>item.name===name);return matches.length===1?matches[0].value:undefined;};
     const draft=setting("Speculative tokens"), hasDraft=Number.isSafeInteger(draft) && draft>=0;
+    const methods={mtp:"MTP",dspark:"DSPARK",eagle3:"EAGLE3",dflash:"DFlash",dflash2:"DFlash2",ngram:"n-gram","n-gram":"n-gram",draft_model:"Other draft model","other draft model":"Other draft model"};
+    const method=setting("Speculative method");
+    const methodLabel=typeof method==="string" && Object.hasOwn(methods,method.toLowerCase())?methods[method.toLowerCase()]:"Unknown";
     const aisimState=id=>{
       const name=benchmarkFeatureLabels[id], value=setting(name);
       // An explicit feature result takes precedence over the legacy token count.
@@ -75,20 +78,21 @@ window.AgentX = (() => {
       return id==="speculation" && hasDraft?(draft>0?"enabled":"disabled"):"unknown";
     };
     const statuses={enabled:["on","On"],disabled:["off","Off"],not_applicable:["na","N/A"],unsupported:["unsupported","Unsupported"]};
-    const cell=(source,current,details)=>{
+    const cell=(source,current,details,badges=[])=>{
       const [status,label]=Object.hasOwn(statuses,current) && (source==="aisim" || current!=="unsupported")?statuses[current]:["unknown","Unknown"];
       const title=status==="unknown"?`${source==="silicon"?"Silicon":"AISim"} setting unavailable in this run's saved evidence.`:
         status==="unsupported"?"Explicitly recorded as unsupported for this AISim run.":`${source==="silicon"?"Silicon":"AISim"} setting: ${label}.`;
       const icon=["on","off","unknown"].includes(status)?`<span class="agentx-status-symbol" aria-hidden="true">${status==="unknown"?"?":""}</span>`:"";
-      return `<td data-source="${source}"><span class="agentx-feature-status ${status}" title="${esc(title)}">${icon}${label}</span>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}</td>`;
+      const labels=badges.length?`<div class="agentx-feature-badges">${badges.map(([key,value])=>`<span class="agentx-feature-badge" aria-label="${esc(key)}: ${esc(value)}"><span class="agentx-feature-badge-key">${esc(key)}</span> <span class="agentx-feature-badge-value">${esc(value)}</span></span>`).join("")}</div>`:"";
+      return `<td data-source="${source}"><span class="agentx-feature-status ${status}" title="${esc(title)}">${icon}${label}</span>${details.map(d=>`<small class="agentx-feature-detail">${esc(d)}</small>`).join("")}${labels}</td>`;
     };
     const rows=Object.entries(benchmarkFeatureLabels).map(([id,name])=>{
       const silicon=siliconState(id), aisim=aisimState(id), details=[];
       if(silicon==="enabled" && ["cache.g2","cache.g3"].includes(id)) details.push("Scope: Unknown");
       if(silicon==="enabled" && id==="cache.hybrid_state") details.push("State-cache type: Unknown");
-      if(silicon==="enabled" && id==="speculation") details.push("Method: Unknown", "Draft length: Unknown");
-      const predicted=id==="speculation" && aisim==="enabled" && hasDraft?[`Draft length: ${draft}`]:[];
-      return `<tr class="agentx-feature" data-feature="${id}"><th scope="row" class="agentx-feature-name">${name}</th>${cell("silicon",silicon,details)}${cell("aisim",aisim,predicted)}</tr>`;
+      const measured=id==="speculation" && silicon==="enabled"?[["Method","Unknown"],["Draft length","Unknown"]]:[];
+      const predicted=id==="speculation" && aisim==="enabled"?[["Method",methodLabel],["Draft length",hasDraft?draft:"Unknown"]]:[];
+      return `<tr class="agentx-feature" data-feature="${id}"><th scope="row" class="agentx-feature-name">${name}</th>${cell("silicon",silicon,details,measured)}${cell("aisim",aisim,[],predicted)}</tr>`;
     }).join("");
     return `<aside class="agentx-features" aria-labelledby="agentx-features-title"><div class="agentx-features-heading"><h2 id="agentx-features-title">Benchmark features</h2><a href="../../feature-support-matrix/#agentx">Support matrix ↗</a></div><p class="agentx-feature-scope">Selected run</p><table class="agentx-feature-table" aria-label="Selected run feature settings"><thead><tr><th scope="col">Feature</th><th scope="col">Silicon</th><th scope="col">AISim</th></tr></thead><tbody>${rows}</tbody></table>${point.feature_dataset_revision?`<p class="agentx-feature-revision">🤗 Feature evidence · <code title="${esc(point.feature_dataset_revision)}">${esc(point.feature_dataset_revision.slice(0,12))}</code></p>`:""}</aside>`;
   }

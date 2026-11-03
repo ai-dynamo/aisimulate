@@ -1209,7 +1209,11 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal((html.match(/Scope: Unknown/g)||[]).length,2);
   assert.match(html,/State-cache type: Unknown/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: Unknown.*Draft length: Unknown/);
-  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Draft length: 3/);
+  assert.match(featureCell(html,"speculation","aisim"),/class="agentx-feature-status on".*Method: Unknown.*Draft length: 3/);
+  for(const source of ["silicon","aisim"]) {
+    assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
+    assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
+  }
   assert.doesNotMatch(html,/Combination support|data-combination/);
   // Historical parameters do not define draft length, scope, or state-cache type.
   for(const feature of features) feature.parameters=[{name:"size",value:7},{name:"mode",value:"all_turns_prefix"}];
@@ -1254,6 +1258,29 @@ test("AgentX AISim column requires explicit per-feature settings and preserves d
   point.config_summary[1].value="unsupported";
   check("speculation","unsupported");
   assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/Draft length/);
+});
+
+test("AgentX speculation badges use only a recorded AISim method", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const checklist = context.window.AgentX.featureChecklist;
+  const point={id:"example",model:"GLM",config_summary:[{name:"Speculative tokens",value:3},{name:"Speculative method",value:"mtp"}]};
+  for(const method of ["MTP","DSPARK","EAGLE3","DFlash","DFlash2","n-gram","Other draft model"]) {
+    point.config_summary[1].value=method.toLowerCase();
+    assert.ok(featureCell(checklist(point),"speculation","aisim").includes(`aria-label="Method: ${method}"`));
+  }
+  for(const value of [null,3,"<unsafe>","eagle"]) {
+    point.config_summary[1].value=value;
+    assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unknown"/);
+    assert.doesNotMatch(checklist(point),/<unsafe>/);
+  }
+  point.config_summary[1].value="mtp";
+  point.config_summary.push({name:"Speculative method",value:"eagle3"});
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/aria-label="Method: Unknown"/);
+  point.config_summary=[{name:"Speculative decoding",value:true},{name:"Speculative method",value:"MTP"}];
+  assert.match(featureCell(checklist(point),"speculation","aisim"),/Method: MTP.*Draft length: Unknown/);
+  point.config_summary=[{name:"Speculative tokens",value:0},{name:"Speculative method",value:"MTP"}];
+  assert.doesNotMatch(featureCell(checklist(point),"speculation","aisim"),/agentx-feature-badge/);
 });
 
 test("AgentX supplemental features bind to the original dataset and complete benchmark inventory", () => {
