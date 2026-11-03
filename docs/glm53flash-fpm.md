@@ -194,9 +194,11 @@ The smoke measures four points of this list. It runs under the plan hash of
 formal collection and keeps its own campaign directory. The prefill points are
 one request with 64 new tokens, once without a prefix and once after one hash
 block of prefix. The decode points are one request and two requests, each at the
-smallest context of the list above one hash block. When `max_batch_size` is 1,
-the list has no decode point of two requests. The decode points are then one
-request at each of the two smallest contexts of the list above one hash block.
+smallest context of the list above one hash block. When the list has no decode
+point of two requests above one hash block, the decode points are one request
+at each of the two smallest contexts of the list above one hash block. That
+happens when `max_batch_size` is 1, or when the cache capacity leaves room for
+one request only.
 A direct `collector --fpm` call can pass its own manifest with
 `--fpm-benchmark-points-file`. The collector refuses that file together with
 `--smoke`.
