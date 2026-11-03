@@ -2688,7 +2688,8 @@ def test_agentic_profile_capability_is_explicit() -> None:
         )
 
 
-def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native():
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native(policy):
     workload = {
         "source_type": "trace",
         "load_type": "trace_timestamps",
@@ -2698,15 +2699,18 @@ def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_nat
         "agentic_snapshot": {"seed": 42},
         "agentic_warmup": True,
         "agentic_profile": {},
-        "agentic_warmup_policy": "live_trajectory_v1",
+        "agentic_warmup_policy": policy,
     }
     capabilities = EngineReplayRunnerFactory().capabilities()
     assert capabilities.supports_agentic_live_warmup
     with pytest.raises(ValueError, match="does not support live agentic warmup"):
         replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    if policy == "primers_only":
+        with pytest.raises(ValueError, match="primers_only requires agentic_warmup"):
+            capabilities.require_compatible(_spec(workload={**workload, "agentic_warmup": False}))
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
-    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
+    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == policy
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])

@@ -442,10 +442,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
             if (
                 config.traffic is not None
-                and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+                and config.traffic.load.agentic_warmup_policy != "repeated_prefixes"
                 and (args.stack != "engine" or (args.command == "predict" and args.online))
             ):
-                raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
+                raise ValueError(f"{config.traffic.load.agentic_warmup_policy} CLI requires offline --stack engine")
             encoder = config.engine.workers.encoder
             if encoder is not None:
                 if args.command == "predict" and (args.stack != "engine" or args.online or adapter_raw):
