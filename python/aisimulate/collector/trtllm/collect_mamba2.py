@@ -46,8 +46,6 @@ import torch
 from einops import repeat
 
 try:
-    from case_generator import get_common_mamba2_test_cases
-
     from helper import (
         EXIT_CODE_RESTART,
         benchmark_with_power,
@@ -58,7 +56,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_mamba2_test_cases
 
     from helper import (
         EXIT_CODE_RESTART,
@@ -67,6 +64,8 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_mamba2_debug", "0"))  # noqa: SIM112
 # Use cached inputs (same data each iteration) instead of randomized inputs
 # Set AIC_MAMBA2_CACHED_INPUTS=1 to enable cached mode (saves memory but may be overly optimistic)
@@ -74,55 +73,7 @@ aic_cached_inputs = int(os.getenv("AIC_MAMBA2_CACHED_INPUTS", "0"))
 
 
 def get_mamba2_test_cases():
-    """
-    Generate test cases for Mamba2 SSM benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-
-    Context phase uses static batching (batch_size x seq_len) for P/D disaggregated serving.
-    Generation phase uses batch_size only (1 token per request).
-    """
-    test_cases = []
-
-    # Get common test cases from centralized definition
-    for common_case in get_common_mamba2_test_cases():
-        if common_case.phase == "context":
-            # Context phase: sweep batch_size x seq_len
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_state,
-                    common_case.d_conv,
-                    common_case.nheads,
-                    common_case.head_dim,
-                    common_case.n_groups,
-                    common_case.chunk_size,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            # Generation phase: sweep batch_size only
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_state,
-                    common_case.d_conv,
-                    common_case.nheads,
-                    common_case.head_dim,
-                    common_case.n_groups,
-                    common_case.chunk_size,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("mamba2", "trtllm", get_sm_version())
 
 
 def _token_major_prefill_conv() -> bool:
@@ -133,7 +84,7 @@ def _token_major_prefill_conv() -> bool:
     separate token-major ``out`` (mamba2_mixer.py:541-569; causal_conv1d.py:26-60 picks
     causal_conv1d_channellast_fwd_kernel off x.stride(0) == 1). Older runtimes have no
     ``out`` parameter and run the channel-major kernel on (batch, dim, seq) inputs. The
-    H20 mamba2_ctx gate (2026-10-02) diverged on exactly this kernel pair.
+    H20 mamba2_ctx gate diverged on exactly this kernel pair.
     """
     import inspect
 
@@ -175,16 +126,16 @@ def _run_prefill_conv_token_major(
 
 # Both SSM kernels take the output buffer from the caller: serving hands them a
 # view of one preallocated per-forward buffer (mamba2_mixer.py:453-457 alloc,
-# :634 prefill `out=`, :906 decode `out=` @1.3.0rc29; rc20 :335/:403/:629) and
+# 634 prefill `out=`, :906 decode `out=`; rc20 :335/:403/:629) and
 # neither kernel allocates one when it is missing — ssd_chunk_scan.py:667
 # `assert out.shape == x.shape` and selective_state_update.py `out.dim()`
-# (rc20 :85, rc29 same) both fail on None. The collector omitted `out` until
-# 2026-10-12, so every scan/state-update cell raised and the per-cell except
-# dropped the lane: no shipped mamba2 table has those rows.
+# (rc20 :85, rc29 same) both fail on None. Older collectors omitted `out`,
+# so every scan/state-update cell raised and the per-cell except dropped the
+# lane: no shipped mamba2 table has those rows.
 
 # Decode SSM state update: serving picks FlashInfer's kernel or TRT-LLM's own
 # Triton kernel per layer geometry — Mamba2Mixer.__init__ (mamba2_mixer.py:
-# 284-293 gate, :322-328 selection @1.3.0rc29; rc20 mixer :14-23 had the ratio
+# 284-293 gate, :322-328 selection; rc20 mixer :14-23 had the ratio
 # list [1, 8, 16]). The collector measures the full (unsharded) layer, i.e. the
 # TP=1 geometry the gate sees as tp_nheads / tp_ngroups.
 # FIXME(re-verify): re-check the three lists on every TRT-LLM version bump.
@@ -211,7 +162,7 @@ def _decode_state_update_kernel(nheads: int, n_groups: int, head_dim: int, d_sta
     from flashinfer.mamba, or TRT-LLM's own Triton `selective_state_update`), the
     way the GDN tables record `chunk_gated_delta_rule_{flashinfer,triton}`. No
     fallback: if the FlashInfer import fails, serving fails identically at mixer
-    import (mamba2_mixer.py:23 @1.3.0rc29).
+    import (mamba2_mixer.py:23).
     """
     if _serving_selects_flashinfer_ssu(nheads, n_groups, head_dim, d_state):
         from flashinfer.mamba import selective_state_update as selective_state_update_flashinfer
@@ -224,10 +175,10 @@ def _decode_dt(batch_size: int, nheads: int, head_dim: int, device) -> torch.Ten
     """Decode dt laid out the way serving hands it to the state-update kernel.
 
     Serving casts the per-head dt to fp32 and broadcasts it over head_dim with
-    einops.repeat (mamba2_mixer.py:743-746 and :764 @1.3.0rc29): an expanded
+    einops.repeat (mamba2_mixer.py:743-746 and :764): an expanded
     VIEW with strides (nheads, 1, 0), like the A / D / dt_bias buffers. FlashInfer's
     binding checks exactly that layout (csrc/selective_state_update.cu:187-188
-    @v0.6.18: dt.stride(1) == 1, dt.stride(2) == 0 — the b200 diagnostic on
+    : dt.stride(1) == 1, dt.stride(2) == 0 — the b200 diagnostic on
     76ce215e failed every decode cell with "dt.stride(1) must be 1, got 64"), and
     TRT-LLM's Triton kernel keys its tie_hdim fast path off dt.stride(-1) == 0.
     A dense (batch, nheads, head_dim) tensor is rejected by the former and
@@ -259,7 +210,7 @@ def run_mamba2_context_benchmark(
     1. causal_conv1d_fn - Conv1D for context phase
     2. mamba_chunk_scan_combined - SSM scan (the one entry point serving calls;
        it routes to FlashInfer's SSD on SM100-family parts itself,
-       ssd_combined.py:469-497 @1.3.0rc29)
+       ssd_combined.py:469-497)
 
     Together these represent the core compute of a Mamba2 layer
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).
@@ -291,7 +242,7 @@ def run_mamba2_context_benchmark(
 
     # Every cell is timed under CUDA-graph replay; a failed capture raises
     # (benchmark_with_power default allow_graph_fail=False) and the cell is
-    # counted as failed below. Until 2026-10-12 allow_graph_fail=True timed the
+    # counted as failed below. Older collectors set allow_graph_fail=True, timed the
     # Python launch loop eagerly and shipped that floor as the kernel latency,
     # and the per-cell `except` dropped a failed kernel lane with no failure
     # record: every shipped mamba2 table (rc20, all eight systems) and the rc29
@@ -381,7 +332,7 @@ def run_mamba2_context_benchmark(
 
                     # --- Benchmark mamba_chunk_scan_combined ---
                     # Caller-owned output, as serving's preallocated buffer view
-                    # (mamba2_mixer.py:634 @1.3.0rc29); the kernel asserts on it.
+                    # (mamba2_mixer.py:634); the kernel asserts on it.
                     ssm_out = torch.empty_like(x)
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
@@ -512,7 +463,7 @@ def run_mamba2_context_benchmark(
 
                     # --- Benchmark mamba_chunk_scan_combined ---
                     # One caller-owned output buffer for every iteration, as
-                    # serving's preallocated view (mamba2_mixer.py:634 @1.3.0rc29).
+                    # serving's preallocated view (mamba2_mixer.py:634).
                     ssm_out = torch.empty_like(input_pool["x"][0])
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
@@ -672,7 +623,7 @@ def run_mamba2_generation_benchmark(
             ssm_state = torch.randn(batch_size, nheads, head_dim, d_state, dtype=dtype, device=device)
             # Serving addresses the state cache through slot indices and hands
             # the kernel a view of its preallocated output buffer
-            # (mamba2_mixer.py:901-907 @1.3.0rc29); the state here is dense, so
+            # (mamba2_mixer.py:901-907); the state here is dense, so
             # the slots are the identity.
             state_batch_indices = torch.arange(batch_size, dtype=torch.int32, device=device)
 

@@ -865,9 +865,9 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     via the shared layer (gb200: vllm module data), which the large-EP path can
     never hit.  Regression for the deepseek_wideep_trtllm.yaml e2e failure.
 
-    Large EP is coverage-driven now (nvfp4 is the MoE quant the gb200 EP tables
-    carry), and the task's ladders mix both regimes, so bfloat16 is picked as
-    the mode that serves the granular AND the module table.
+    TRT-LLM's MLA context runs FP8 FMHA on an FP8 KV cache, and both the granular
+    and the module tables label those rows fp8, so fp8 serves both and is kept
+    without a fallback.
     """
     import logging
 
@@ -882,8 +882,63 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
             gemm_quant_mode=common.GEMMQuantMode.nvfp4,
             moe_quant_mode=common.MoEQuantMode.nvfp4,
         )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert t.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    assert not any("context_mla_granular" in r.message for r in caplog.records)
+
+
+def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_fp8(monkeypatch, caplog):
+    """The negative case of the test above, through the real table selection: the granular
+    context_mla table carries only a bfloat16 fmha slice under the fp8 KV cache while the module
+    table keeps its fp8 slice. The inferred fp8 falls back to bfloat16, and the warning names the
+    granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
+    import logging
+
+    from aisimulate.sdk import common
+    from aisimulate.sdk.perf_database import get_database
+
+    class GranularWithoutFp8:
+        """The real gb200 TRT-LLM database with its granular context_mla table cut down to bfloat16 fmha."""
+
+        def __init__(self, database):
+            self._database = database
+
+        def __getattr__(self, name):
+            return getattr(self._database, name)
+
+        @property
+        def _context_mla_data(self):
+            real = self._database._context_mla_data
+            bf16 = next(k for k in real if getattr(k, "name", str(k)) == "bfloat16")
+            kv_bf16 = next(k for k in real[bf16] if getattr(k, "name", str(k)) == "bfloat16")
+            return {bf16: {common.KVCacheQuantMode.fp8: real[bf16][kv_bf16]}}
+
+    database = GranularWithoutFp8(get_database("gb200", "trtllm", "1.3.0rc29"))
+    monkeypatch.setattr(Task, "_try_load_role_database", lambda self, role: database)
+    with caplog.at_level(logging.WARNING):
+        t = Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="gb200",
+            backend_name="trtllm",
+            backend_version="1.3.0rc29",
+            gemm_quant_mode=common.GEMMQuantMode.nvfp4,
+            moe_quant_mode=common.MoEQuantMode.nvfp4,
+        )
+    assert t._context_fmha_supported_modes("agg", "context_mla_granular") == ["bfloat16"]
+    assert t._context_fmha_supported_modes("agg", "context_mla") == ["bfloat16", "fp8"]
     assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("context_mla_granular" in r.message for r in caplog.records)
+    fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
+    assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]
+    # The estimate path re-runs the TRT-LLM resolver on the built ModelConfig (inference_session):
+    # a bfloat16 the data fallback chose must survive it, or the fp8 lookup it would cause misses.
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    mc = t.build_model_config(role="agg")
+    assert mc._fmha_quant_mode_from_data is True
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("gb200"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_nextn_never_auto_enabled(caplog):
@@ -1401,8 +1456,10 @@ def test_large_ep_replica_size_is_bounded():
     assert max(kw["num_gpu_list"]) <= t.total_gpus
 
 
-def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
-    """Audited rc20 FP8 profiles retain inferred FP8 and both explicit overrides."""
+def test_explicit_fmha_precision_with_trtllm_fp8_profiles():
+    """Audited rc20 FP8 profiles retain inferred and explicit FP8. On an FP8 KV cache
+    TRT-LLM runs MLA attention in FP8, so an explicit bfloat16 resolves to FP8; on a
+    bfloat16 KV cache it stays bfloat16."""
     from aisimulate.sdk import common
 
     base = dict(
@@ -1413,8 +1470,14 @@ def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
         backend_version="1.3.0rc20",
     )
     assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8
-    for precision in (common.FMHAQuantMode.fp8, common.FMHAQuantMode.bfloat16):
-        assert Task(**base, fmha_quant_mode=precision).fmha_quant_mode == precision
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.bfloat16).fmha_quant_mode == common.FMHAQuantMode.fp8
+    bf16_kv = Task(
+        **base,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+    )
+    assert bf16_kv.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):

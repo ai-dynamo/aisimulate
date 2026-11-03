@@ -52,7 +52,7 @@ from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute, resolve_trtllm_mla_compute
 from aisimulate_core.sdk.utils import (
     _download_hf_config,
     _load_local_config,
@@ -387,6 +387,7 @@ class KVCacheEstimator:
             allow_missing_data=True,
         )
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
+        resolve_trtllm_mla_compute(model_config, model_path, backend, database.system_spec)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)
 

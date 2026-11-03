@@ -60,7 +60,7 @@ def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value
 
 class _Rotary:
     """Stand-in for vLLM's RotaryEmbeddingBase: a non-persistent cos/sin table built by a
-    device-free recipe in __init__ (rotary_embedding/base.py:60-63 @ v0.30.0)."""
+    device-free recipe in __init__ (rotary_embedding/base.py:60-63)."""
 
     def __new__(cls, torch, scale, dtype):
         class Rotary(torch.nn.Module):
@@ -78,7 +78,7 @@ class _Rotary:
 def _meta_attention_module(torch):
     # Serving-parity construction instantiates the model under torch.device("meta"): the
     # two rotary tables (rotary_emb, indexer_rope_emb) and the KV-quant scale buffers that
-    # MLAAttention registers (attention.py:129-135,184 @ v0.30.0) are all meta.
+    # MLAAttention registers (attention.py:129-135,184) are all meta.
     with torch.device("meta"):
         module = torch.nn.Module()
         module.projection = torch.nn.Linear(4, 4)
@@ -244,7 +244,7 @@ def test_fp8_block_constructs_the_native_block_config_and_per_tensor_fp8_is_gone
         "activation_scheme": "dynamic",
         "weight_block_size": [128, 128],
     }
-    # per-tensor fp8 MLA/DSA module combos were removed 2026-10-30
+    # per-tensor fp8 MLA/DSA module combos were removed
     with pytest.raises(ValueError, match="Unknown gemm_type"):
         create("fp8")
 

@@ -135,6 +135,7 @@ include = [
     "src/aisimulate/sdk/config_adapter/schemas/*.json",
     { path = "collector/__init__.py", format = "wheel" },
     { path = "collector/model_cases.py", format = "wheel" },
+    { path = "collector/skips.py", format = "wheel" },
     { path = "collector/glm53flash_attention_tokens.py", format = "wheel" },
     { path = "collector/glm53flash_runtime_identity.py", format = "wheel" },
     { path = "collector/cases/**/*.yaml", format = "wheel" },

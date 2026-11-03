@@ -94,9 +94,7 @@ remain valid observed outcomes. Never infer complete model coverage from a
 `complete` table status. A table without corresponding provenance is a coverage
 failure. Legacy provenance remains explicitly legacy, not newly measured.
 
-Changed-operation manifests identify which family/system evidence a collector or
-runtime change requires. CI checks that evidence separately from per-directory
-execution status. See [CI](../../ci/README.md) for the repository gates.
+See [CI](../../ci/README.md) for the repository gates.
 
 ## Reuse and source priority
 
@@ -113,6 +111,19 @@ version directory can contain both primary rows and a declaration. Reuse does
 not relabel the donor's runtime as a new measurement. Some operation loaders
 have pinned overwrite semantics; preserve their source order and parity tests
 instead of assuming every raw loader uses the same merge algorithm.
+
+## Deviations
+
+When a table measures a different path than serving runs, for example an
+unfused kernel where serving fuses, the collector code that measures it says
+so in a comment, the deviation note. The note gives what differs and on which
+systems, the effect on predicted latency (over, under or unknown), the
+framework source or evidence behind it, and, when known, how the deviation
+could be retired. Data comments and docs point to that code instead of
+restating it. Cases a collection leaves out are not deviations: they are
+entries in `python/aisimulate/collector/skips.py`, with the reason as a
+comment. Moving a pin means re-checking the notes of the bumped families,
+keeping each that still holds and deleting the rest.
 
 The authoritative implementations are
 [`collector`](../../../python/aisimulate/collector/),

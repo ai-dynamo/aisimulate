@@ -50,8 +50,7 @@ exactly like the DeepEP LL precedent (moe_comm.py:232-234) — the whole
 latency is recorded as ``transmit_us`` with ``notify_us = 0.0``; the loader
 reads only their sum.
 
-Provenance: this is a STANDALONE collector
-(``provenance.STANDALONE_COLLECTOR_MODULES``) — it owns its case plan, its
+Provenance: this is a STANDALONE collector — it owns its case plan, its
 classified failure log (``errors_trtllm_alltoall.rank<N>.json``), its parquet
 finalization and its ``collection_meta.yaml`` sidecar, written by rank 0
 post-finalize. The recorded runtime is the installed tensorrt_llm version,
@@ -692,8 +691,8 @@ def _agree_graph_capturable(func, label, device) -> None:
     every rank raises, the run loop records the classified failure and all
     ranks skip the case together — the agreement the loop already performs for
     measured cases. The moe_a2a row has no column that could record an
-    eager-timed measurement, so the eager fallback used until 2026-10-12 is
-    gone (layer_permissions.md: measurement-method degradation is allowed only
+    eager-timed measurement, so there is no eager fallback
+    (layer_permissions.md: measurement-method degradation is allowed only
     when recorded in the output row).
     """
     import torch
@@ -1424,7 +1423,6 @@ def run_benchmark(
             case_ids=case_ids,
             parquet_path=parquet_path,
             failure_count=failure_count,
-            module_name=MODULE_NAME,
         )
         print(f"\n{'=' * 70}")
         print(f"Benchmark completed. Wrote {parquet_path} and {meta_path} ({failure_count} classified failures)")

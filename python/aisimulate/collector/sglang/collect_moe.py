@@ -9,8 +9,7 @@ owns SGLang kernel compatibility, server-args mocking, routing-logit synthesis,
 rank-local workload construction, quantized weight setup, and perf logging.
 """
 
-# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones).
 # Compatible unchanged: is_hip; fused_moe() (triton path, byte-identical
 # signature); override_config; MoeRunnerBackend/RoutingMethodType enums
 # (RenormalizeNaive retained -- labeled "Qwen3" in-source); FusedMoE.__init__,
@@ -43,12 +42,12 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # fix: 0.5.14 keeps the exact original global read/write/restore, 0.5.17
 # goes through the new RuntimeContext/Flags singleton via its own sanctioned
 # override() primitive).
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
-# 0.5.20 audit (2026-09-30; source tag v0.5.20 == 94602c9c2b7c vs v0.5.17,
-# source-only). 0.5.18/0.5.19
-# were never verified and are carved out with != (same caveat as above).
+# One release per file; earlier code is `git log -- <this file>` away.
+# 0.5.20 audit (source tag v0.5.20 == 94602c9c2b7c vs v0.5.17, source-only).
+# 0.5.18/0.5.19 were never verified and are carved out with != (same caveat
+# as above).
 # Unchanged vs 0.5.17: ServerArgs/set_global_server_args_for_scheduler
 # (server_args.py:195,635; publish() now runs resolve_once(), which returns
 # early for model_path="dummy", arg_groups/pipeline.py:121); get_server_args
@@ -102,13 +101,13 @@ from unittest.mock import MagicMock
 import sglang.srt.server_args as _server_args_module
 import torch
 
-# Verified 2026-08-18 (first real-GPU 0.5.17 run crashed here: AttributeError:
+# The first real-GPU 0.5.17 run crashed here (AttributeError:
 # module 'sglang.srt.server_args' has no attribute '_global_server_args').
-# 0.5.14: a bare module global (server_args.py:7180 @0.5.14). 0.5.17: gone
+# 0.5.14: a bare module global (server_args.py:7180). 0.5.17: gone
 # from server_args.py entirely, moved into the RuntimeContext singleton
 # (sglang/srt/runtime_context.py). The legacy accessor/setter shims
 # (get_global_server_args/set_global_server_args_for_scheduler,
-# server_args.py:9294-9316 @0.5.17) still exist by the same names but now
+# server_args.py:9294-9316) still exist by the same names but now
 # read/write get_context().server_args -- a property that RAISES ValueError
 # when unset rather than returning None, so the "already set?" guard below
 # reaches into RuntimeContext's own _server_args slot directly instead
@@ -119,12 +118,12 @@ import torch
 # fields. At 0.5.14 every consumer reads these straight off the server_args
 # object. At 0.5.17, enable_deterministic_inference moved to
 # get_exec().deterministic.enable_deterministic_inference
-# (fused_moe_triton_config.py:72,190 @0.5.17; deep_gemm.py:1069);
+# (fused_moe_triton_config.py:72,190; deep_gemm.py:1069);
 # enable_fused_moe_sum_all_reduce moved to
 # get_exec().moe.enable_fused_moe_sum_all_reduce
-# (triton_utils/fused_moe.py:534 @0.5.17); flashinfer_mxfp4_moe_precision
+# (triton_utils/fused_moe.py:534); flashinfer_mxfp4_moe_precision
 # moved to get_exec().moe.flashinfer_mxfp4_moe_precision (mxfp4.py:344-345,
-# mxfp4_flashinfer_trtllm_moe.py:53-54 @0.5.17). That "config bag" tree is
+# mxfp4_flashinfer_trtllm_moe.py:53-54). That "config bag" tree is
 # projected by RuntimeContext.set_server_args() from the NS(...)-marked
 # dataclass fields of whatever object gets published
 # (runtime_context.py:788-821); a MagicMock has no such fields
@@ -134,7 +133,7 @@ import torch
 # the bag comes back empty and every get_exec() read above raises
 # ValueError("config namespace ... not published"). No attribute stuffed
 # onto a MagicMock can satisfy this at 0.5.17. (kt_weight_path is the one
-# exception: both its reads, kt_ep_wrapper.py:73,90 @0.5.17, are inside
+# exception: both its reads, kt_ep_wrapper.py:73,90, are inside
 # create_kt_config_from_server_args, which this module's own
 # _patch_framework_moe_parallel already replaces with a no-op lambda -- its
 # value is never actually consulted in this collector's benchmark path at
@@ -142,7 +141,7 @@ import torch
 #
 # Fix: at 0.5.17, publish a REAL sglang.srt.server_args.ServerArgs instance
 # instead of a MagicMock, using the exact bootstrap sglang's own test suite
-# uses for this (test/manual/test_moe_quant_once.py:222 @0.5.17:
+# uses for this (test/manual/test_moe_quant_once.py:222:
 # `set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))` --
 # model_path has no default and is otherwise unused here, so a dummy string
 # satisfies construction without a real checkpoint). The four fields below
@@ -150,14 +149,14 @@ import torch
 # declared defaults (enable_deterministic_inference=False,
 # enable_fused_moe_sum_all_reduce=False, flashinfer_mxfp4_moe_precision=
 # "default", kt_weight_path=None -- server_args.py:3247-3251, 1930-1932,
-# 2305-2309, 2927-2930 @0.5.17) -- defensive against a future default
+# 2305-2309, 2927-2930) -- defensive against a future default
 # change, matching this block's original intent of pinning these values
 # rather than inheriting whatever the framework currently defaults to.
 # NOTE: `sglang.srt.runtime_context.get_context` is NOT a safe version probe
 # here -- it exists at BOTH 0.5.14 and 0.5.17 (unlike get_flags/get_exec
 # below), but the RuntimeContext class it returns has a different shape per
 # version: 0.5.14's is `__slots__ = ("parallel",)` only (runtime_context.py:
-# 208-214 @0.5.14, no _server_args slot at all), so `get_context()._server_
+# 208-214, no _server_args slot at all), so `get_context._server_
 # args` would itself raise AttributeError on 0.5.14 -- a second bug this
 # fix must not introduce while fixing the first one. get_server_args (the
 # free function, not the property) IS a safe probe: absent at 0.5.14 (that
@@ -177,7 +176,7 @@ else:
     except ValueError:
         # RuntimeContext.server_args (the property get_server_args wraps)
         # raises exactly this -- "Global server args is not set yet!" --
-        # when unset (runtime_context.py:787-794 @0.5.17); its own docstring
+        # when unset (runtime_context.py:787-794); its own docstring
         # calls this the verbatim legacy message "tests and user scripts may
         # match on it", i.e. the sanctioned way to probe "is it set".
         _server_args_already_set = False
@@ -210,7 +209,7 @@ import sglang.srt.layers.moe.fused_moe_triton.layer as _moe_layer_mod
 
 # sglang 0.5.17 relocated this module to the new top-level sglang.kernels.ops
 # package; the only symbol used here, _B_DESC_CACHE, is byte-identical at
-# both pinned versions (verified 2026-08-18: same OrderedDict[tuple,
+# both pinned versions (verified same OrderedDict[tuple,
 # TensorDescriptor] cache, same eviction logic, same line numbers). Try the
 # new (>=0.5.17) location first since sglang's own fused_moe.py now imports
 # from there.
@@ -260,13 +259,7 @@ from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
 from sglang.srt.utils import is_hip
 
 try:
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
@@ -283,13 +276,7 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
@@ -302,6 +289,7 @@ except ModuleNotFoundError:
         power_law_logits_v3,
     )
 
+from collector.op_plans import plan_cases
 
 _is_hip = is_hip()
 
@@ -338,117 +326,7 @@ def _ensure_writable_flashinfer_cubin_dir() -> None:
 
 
 def get_moe_test_cases():
-    """One case per (quant mode, shape, tp, ep, distribution) carrying the whole token
-    sweep, like the vLLM and TRT-LLM MoE collectors: the framework layer (weights, quant
-    processing, backend pins) is built once per case and every token point is timed and
-    persisted inside it. The previous one-case-per-token layout rebuilt the layer for
-    each of the 27 token points, which made the SGLang nvfp4 tables ~2x the fixed cost of
-    the vLLM ones (2026-10-28 re-collection: 4.4-5.8 h per SGLang shard vs 1-1.4 h per
-    vLLM shard on the same shapes)."""
-    sm_version = get_sm_version()
-    moe_list = get_moe_quantization_modes("sglang", sm_version=sm_version)
-
-    common_cases = get_common_moe_test_cases()
-    test_cases = []
-    seen_physical_cases = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in common_cases:
-        model_name = common_moe_testcase.model_name
-        num_tokens_list = common_moe_testcase.num_tokens_list
-
-        for moe_type in moe_list:
-            if not moe_model_allows_quantization("sglang", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-            is_fp4_experts = common_moe_testcase.architecture == "DeepseekV4ForCausalLM" and moe_type in {
-                "w4a16_mxfp4",
-                "w4a8_mxfp4_mxfp8",
-            }
-            moe_backend = get_sglang_moe_backend(common_moe_testcase, moe_type, sm_version)
-            base_case = [
-                moe_type,
-                list(num_tokens_list),
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.model_name,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            ]
-            physical_key = (
-                moe_type,
-                tuple(num_tokens_list),
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-            )
-            execution_signature = (
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            )
-            previous_signature = seen_physical_cases.get(physical_key)
-            if previous_signature is not None and previous_signature != execution_signature:
-                raise ValueError(
-                    "SGLang MoE cases share one perf DB key but require different "
-                    f"execution semantics: key={physical_key}, first={previous_signature}, "
-                    f"current={execution_signature}, model={model_name}"
-                )
-            if previous_signature is None:
-                seen_physical_cases[physical_key] = execution_signature
-                test_cases.append(base_case)
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared sglang
-    # quant policy excluded all of its moe cases.
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared sglang "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    return test_cases
+    return plan_cases("moe", "sglang", get_sm_version())
 
 
 class BenchmarkConfig(TypedDict):
@@ -623,7 +501,7 @@ def benchmark_config(
 def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     """Patch the SGLang helpers cached by framework MoE backends.
 
-    Re-verified 2026-08-18 at v0.5.17: every patched name is still a plain
+    Re-verified at v0.5.17: every patched name is still a plain
     per-module ``from X import Y`` binding, and ``layer.py``/``standard.py``
     now read parallel sizes as ``get_parallel().moe_ep_size/.moe_ep_rank/
     .moe_tp_size/.moe_tp_rank`` attributes -- exactly this function's
@@ -657,7 +535,7 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
         # 0.5.21 flashinfer_cutlass runner reads get_parallel().tp_group /
         # is_allocation_symmetric() at module level (moe_runner/flashinfer_cutlass.py:21,
         # :27, :283, :510) — every Nemotron-3 BF16 flashinfer_cutlass case raised
-        # "parallel name 'tp_group' has not been written" in the 2026-10-02 H20 campaign.
+        # "parallel name 'tp_group' has not been written" in the H20 campaign.
         "sglang.srt.layers.moe.moe_runner.flashinfer_cutlass",
     ):
         try:
@@ -691,12 +569,11 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
 @contextmanager
 def _pin_moe_runner_backend(backend: MoeRunnerBackend):
     """Pin SGLang's fused-MoE runner-backend selection for the ``with``
-    block, across SGLang's two pinning mechanisms (traced 2026-08-18,
-    AIC-1762 Task 4d).
+    block, across SGLang's two pinning mechanisms.
 
     SGLang 0.5.14: a bare module global, ``sglang.srt.layers.moe.utils.
-    MOE_RUNNER_BACKEND`` (utils.py:249 @0.5.14), read by
-    ``get_moe_runner_backend()`` (utils.py:310-313 @0.5.14). Behavior on
+    MOE_RUNNER_BACKEND`` (utils.py:249), read by
+    ``get_moe_runner_backend`` (utils.py:310-313). Behavior on
     this version is byte-identical to before this helper existed -- the
     same read/write/restore, just factored out of
     ``_benchmark_framework_quantized_moe``.
@@ -705,8 +582,8 @@ def _pin_moe_runner_backend(backend: MoeRunnerBackend):
     refactored into a process-level ``RuntimeContext``/``Flags`` singleton
     (``sglang/srt/runtime_context.py``, module-level ``_PARALLEL =
     ParallelContext()`` / ``_CONTEXT = RuntimeContext(parallel=_PARALLEL)``,
-    :1062-1063 @0.5.17, constructed at import time -- not a contextvar, not
-    per-request). ``get_moe_runner_backend()`` (utils.py:333-337 @0.5.17,
+    :1062-1063, constructed at import time -- not a contextvar, not
+    per-request). ``get_moe_runner_backend`` (utils.py:333-337,
     same accessor name as 0.5.14) now reads ``get_flags().moe.runner_backend``
     instead. Confirmed this is genuinely load-bearing on the
     runner-construction chain, not vestigial: it gates
@@ -760,32 +637,32 @@ def _pin_moe_runner_backend(backend: MoeRunnerBackend):
 @contextmanager
 def _pin_flashinfer_mxfp4_moe_precision(value: str | None):
     """Pin ``flashinfer_mxfp4_moe_precision`` for the ``with`` block, across
-    SGLang's two server_args mechanisms (found 2026-08-18, first real-GPU
-    0.5.17 run: this line crashed identically to the ``_global_server_args``
-    setup-time access, same root cause -- see the module-level comment above
-    ``_server_args_module`` for the full 0.5.14/0.5.17 trace).
+     SGLang's two server_args mechanisms (the first real-GPU
+     0.5.17 run crashed on this line identically to the ``_global_server_args``
+     setup-time access, same root cause -- see the module-level comment above
+     ``_server_args_module`` for the full 0.5.14/0.5.17 trace).
 
-    ``value=None`` means "leave it alone" (the ``moe_backend != "flashinfer_
-    mxfp4"`` case in the caller) -- a true no-op, not a pin to ``None``.
+     ``value=None`` means "leave it alone" (the ``moe_backend != "flashinfer_
+     mxfp4"`` case in the caller) -- a true no-op, not a pin to ``None``.
 
-    SGLang 0.5.14: mutate the mocked/real ``ServerArgs`` object's attribute
-    directly, exactly as before this fix -- every 0.5.14 consumer reads this
-    field straight off that object.
+     SGLang 0.5.14: mutate the mocked/real ``ServerArgs`` object's attribute
+     directly, exactly as before this fix -- every 0.5.14 consumer reads this
+     field straight off that object.
 
-    SGLang 0.5.17: mutating the ``ServerArgs`` object's attribute after
-    publish does NOT propagate. ``get_exec().moe.flashinfer_mxfp4_moe_
-    precision`` is what ``Mxfp4MoEMethod``/``Mxfp4FlashinferTrtllmMoEMethod``
-    actually read (mxfp4.py:344-345, mxfp4_flashinfer_trtllm_moe.py:53-54
-    @0.5.17) -- a ``_ConfigBag`` leaf, and ``_ConfigBag`` (runtime_context.py:
-    577-596) explicitly documents itself as snapshotted-at-publish and
-    read-only by bare assignment thereafter (``__setattr__`` raises,
-    runtime_context.py:616-620): "the bag is the single source of truth for
-    its fields thereafter." Its own docstring names the sanctioned writers:
-    ``get_context().override(source, ...)`` (permanent) or the scoped
-    ``.override(**kw)`` context manager (runtime_context.py:637-653) -- the
-    same transactional/exception-safe/restore-on-exit shape as
-    ``MoeFlags.override()`` in ``_pin_moe_runner_backend`` above, used here
-    the same way.
+     SGLang 0.5.17: mutating the ``ServerArgs`` object's attribute after
+     publish does NOT propagate. ``get_exec().moe.flashinfer_mxfp4_moe_
+     precision`` is what ``Mxfp4MoEMethod``/``Mxfp4FlashinferTrtllmMoEMethod``
+     actually read (mxfp4.py:344-345, mxfp4_flashinfer_trtllm_moe.py:53-54)
+    -- a ``_ConfigBag`` leaf, and ``_ConfigBag`` (runtime_context.py:
+     577-596) explicitly documents itself as snapshotted-at-publish and
+     read-only by bare assignment thereafter (``__setattr__`` raises,
+     runtime_context.py:616-620): "the bag is the single source of truth for
+     its fields thereafter." Its own docstring names the sanctioned writers:
+     ``get_context().override(source, ...)`` (permanent) or the scoped
+     ``.override(**kw)`` context manager (runtime_context.py:637-653) -- the
+     same transactional/exception-safe/restore-on-exit shape as
+     ``MoeFlags.override()`` in ``_pin_moe_runner_backend`` above, used here
+     the same way.
     """
     if value is None:
         yield
@@ -982,7 +859,7 @@ def _benchmark_framework_quantized_moe(
                     )
                 kernel_source = source_by_backend[moe_backend]
             elif moe_type == "nvfp4":
-                # NOTE (code review, 2026-08-18): on SM100/103 this model's
+                # NOTE (code review): on SM100/103 this model's
                 # requested moe_backend is "flashinfer_trtllm", which is also
                 # what MoeRunnerBackend.AUTO resolves to here (Qwen3_5MoeFor
                 # CausalLM_cases.yaml:128-132). A silently-failed
@@ -1021,7 +898,7 @@ def _benchmark_framework_quantized_moe(
                         # Mxfp4MoEMethod dispatches flashinfer_mxfp4 to one of three leaves by GPU
                         # (mxfp4.py: SM90 cutlass_fused_moe w4-group-scaling, SM100 trtllm_fp4_block_scale_moe,
                         # SM120 cutlass MXFP8xMXFP4); name the kernel source after the leaf that actually ran
-                        # (B200 2026-10-05: the Hopper-only check rejected the 'trtllm_sm100' leaf gpt-oss
+                        # (B200 the Hopper-only check rejected the 'trtllm_sm100' leaf gpt-oss
                         # serves with on Blackwell — identity records: Mxfp4MoE -> trtllm_gen_moe).
                         _fi_leaf_sources = {
                             "cutlass_sm90": "sglang_flashinfer_cutlass_moe",
@@ -1065,7 +942,7 @@ def _benchmark_framework_quantized_moe(
                         )
                     kernel_source = source_by_backend[moe_backend]
                 else:
-                    # NOTE (code review, 2026-08-18): bfloat16/fp8_block for
+                    # NOTE (code review): bfloat16/fp8_block for
                     # this model request moe_backend="triton", which is also
                     # what MoeRunnerBackend.AUTO resolves to here (no
                     # sglang_moe_backends override declared,
@@ -1091,9 +968,8 @@ def _benchmark_framework_quantized_moe(
             if routing_method_type == "Llama4":
                 # Serving builds the Llama-4 router with a custom routing function
                 # (fast_topk on the raw logits, then sigmoid; renormalize=False) —
-                # models/llama4.py:78-92 (function) and :114-118 (TopK construction)
-                # @0.5.21, unchanged since 0.5.14. The generic sigmoid TopK the
-                # collector used before routes through moe_fused_gate on 0.5.21, which
+                # models/llama4.py:78-92 (function) and :114-118 (TopK construction).
+                # A generic sigmoid TopK would route through moe_fused_gate, which
                 # asserts "bias is required for non-softmax routing" (kernels/ops/moe/
                 # moe_fused_gate.py:384) — a kernel serving never runs for Llama-4.
                 from sglang.srt.models.llama4 import Llama4MoE
@@ -1344,7 +1220,7 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         for specifier in ("sglang>=0.5.14,<0.5.15", "sglang>=0.5.17,<0.5.18")
     )
     # 0.5.21 (tag commit e00930c5489053f26d86b179cee0d087f846acbb) re-verified
-    # for the Hopper/Ada lanes only (2026-10-04):
+    # for the Hopper/Ada lanes only:
     # * int4_wo: compressed_tensors.py:838-877 — CompressedTensorsMxInt4MoE
     #   only under an explicit flashinfer_trtllm runner, the Triton WNA16 MoE
     #   on SM100/103 auto or explicit triton, Marlin for every other CUDA
@@ -1362,8 +1238,8 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     # * w4a8_mxfp4_mxfp8 (DSV4 FP4 experts, SM100-only): not re-verified.
     if not verified and _check_compat("sglang>=0.5.21,<0.5.22", installed_version):
         verified = moe_type in ("int4_wo", "w4a16_mxfp4") and get_sm_version() in (89, 90)
-        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes (2026-10-04,
-        # benchmarks/evidence/collector/op-probe-2026-10/: results/sm100/sglang-0.5.21.yaml
+        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes
+        # (benchmarks/evidence/collector/op-probe-2026-10/: results/sm100/sglang-0.5.21.yaml
         # + results/retests/sm100/sglang-0.5.21.moe_auto.yaml):
         # openai/gpt-oss-120b and gpt-oss-20b serve with Mxfp4MoEMethod -> MoeRunnerBackend.FLASHINFER_MXFP4
         # (kernel family trtllm_gen_moe) under the default render AND under an explicit AUTO, i.e. the
@@ -1378,13 +1254,13 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         if not verified and moe_type == "w4a8_mxfp4_mxfp8" and get_sm_version() in (100, 103):
             verified = True
         # int4_wo on SM100/103: the source reading above ("SM100 auto moved to Triton") is contradicted
-        # by the B200 identity records of the same day, which the guard update (fd07bf6b, done on SM90)
+        # by the B200 identity records, which the guard update (fd07bf6b, done on SM90)
         # never consumed: moonshotai/Kimi-K2.5 (compressed-tensors W4A16) serves on B200 / 0.5.21 as
         # CompressedTensorsFusedMoE -> trtllm_gen_moe under the default render
         # (results/sm100/sglang-0.5.21.yaml) AND as moe_runner FLASHINFER_TRTLLM under an explicit AUTO
         # (results/retests/sm100/sglang-0.5.21.moe_auto.yaml), i.e. the flashinfer_trtllm declaration the
         # SM100/103 cases carry still matches serving. Hardware evidence outranks the source claim
-        # (harness rule: no claim from reading code). Re-opened 2026-10-06 after the b200_sxm shard run
+        # (harness rule: no claim from reading code). Re-opened after the b200_sxm shard run
         # (GitLab job 469988017) rejected all 3,078 int4_wo cases on this guard alone.
         if not verified and moe_type == "int4_wo" and get_sm_version() in (100, 103):
             verified = True
@@ -1502,7 +1378,7 @@ def run_moe_torch(
         # sgl-kernel JIT silu_and_mul / gelu_and_mul: activation.cuh:186
         # RuntimeCheck(hidden_size % kVecSize == 0, "hidden size must be divisible
         # by vector size"), kVecSize = kMaxVecBytes / sizeof(T) (16 bf16 on SM100+,
-        # 8 below). 2026-10-11: silu hit it on b200/gb300 (1,053 each) and rtxpro
+        # 8 below). silu hit it on b200/gb300 (1,053 each) and rtxpro
         # (1,377) at local_inter_size 168/84/40 (Nemotron-3-Super inter 2688 at TP16+).
         raise ValueError(
             "FIXME(kernel-limit): SGLang Triton gated BF16 GELU/SiLU (sgl-kernel act_and_mul, "
@@ -1537,7 +1413,7 @@ def run_moe_torch(
         # get_shuffle_matrix_sf_a_row_indices, which asserts M % 128 == 0
         # (flashinfer/utils.py), and the TRTLLM-gen batched GEMM has no config
         # for misaligned local widths (getValidConfigIndices). B200 probe
-        # 2026-07-05: local_inter 128/384/768/1536/3072 pass, 64/96/192 fail.
+        # local_inter 128/384/768/1536/3072 pass, 64/96/192 fail.
         # SM103 shares the exact flashinfer_mxfp4 code path but remains
         # hardware-unvalidated. v0.5.17's DeepSeek-V4-specific
         # Mxfp4FlashinferTrtllmMoEMethod retains the same unpadded weight
@@ -1553,14 +1429,14 @@ def run_moe_torch(
     # int4_wo runner truth remains SM-split in SGLang 0.5.14 and 0.5.17:
     # SM90 auto
     # resolves to Marlin (CompressedTensorsWNA16MoE), while SM100/103 force
-    # flashinfer_trtllm (server_args.py:3725-3737 @0.5.14;
-    # arg_groups/overrides.py:1697-1747 @0.5.17), whose
+    # flashinfer_trtllm (server_args.py:3725-3737;
+    # arg_groups/overrides.py:1697-1747), whose
     # scheme CompressedTensorsMxInt4MoE feeds BF16 activations straight into
     # trtllm_mxint4_block_scale_moe — the same W4A16 identity on a different
     # kernel (the FP8-activation variant arrived later, flashinfer PR#2912,
     # and is not used by 0.5.14).
     # FIXME(kernel-limit): the trtllm-gen MXINT4 grouped GEMM asserts
-    # "K must be divisible by blockK". B200 validation 2026-07-11 (pipeline
+    # "K must be divisible by blockK". B200 validation (pipeline
     # 57606364): Kimi-K2.5 local_inter 256 (moe_tp<=8) passes, 128/64
     # (moe_tp 16/32) fail — 707/3,078 cases, all with that one message.
     # The v0.5.17 scheme retains its group-size-32 and
@@ -1594,7 +1470,7 @@ def run_moe_torch(
         if moe_backend == "triton" and (hidden_size % 128 != 0 or local_inter_size % 128 != 0):
             # Both GEMM inputs are per-token-group quantized at block_k=128
             # (fused_moe_triton_kernels.py:866 -> fp8_kernel.py:577
-            # `assert x.shape[-1] % group_size == 0` @0.5.21): K = hidden_size for the
+            # `assert x.shape[-1] % group_size == 0`): K = hidden_size for the
             # first GEMM, local_inter_size for the second.
             raise ValueError(
                 "FIXME(kernel-limit): SGLang Triton fp8_block requires hidden_size and local_inter_size "

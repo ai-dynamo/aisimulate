@@ -13,8 +13,9 @@ import random
 import traceback
 from datetime import datetime
 
-from collector.capabilities import filter_cases
+from collector.case_generator import without_models
 from collector.helper import create_test_case_id
+from collector.skips import filter_cases, models
 from collector.version_resolver import _check_compat
 
 SGLANG_FULLNODE_OPS = {
@@ -102,8 +103,9 @@ def collect_sglang_fullnode_op(
     run_func = getattr(run_module, collection["run_func"])
     run_func_name = collection["run_func"]
 
-    cases = get_test_cases_for_model(get_func, model_path)
-    cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
+    with without_models(models(backend, op, sm_version)):
+        cases = get_test_cases_for_model(get_func, model_path)
+    cases, _skipped = filter_cases(cases, backend=backend, op=op, sm_version=sm_version)
     if case_filters:
         before_count = len(cases)
         cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]

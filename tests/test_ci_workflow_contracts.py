@@ -883,7 +883,6 @@ def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     platform_wheels = _workflow("validate-platform-wheels.yml")
 
     collector_commands = _run_commands(collector["jobs"]["check"])
-    assert '--no-tags origin "${BASE_SHA}"' in collector_commands
     assert "--depth=1" not in collector_commands
     assert "github.run_id" in collector["concurrency"]["group"]
     assert "cancel-in-progress" not in collector["concurrency"]
@@ -1129,9 +1128,8 @@ def _run_comparison_base(
 ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
     jobs = _workflow("ci.yml")["jobs"]
     assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
-    for name, argument in (("collector-data", "base_sha"), ("prediction-regression", "old-ref")):
-        assert "verify-target" in jobs[name]["needs"]
-        assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
+    assert "verify-target" in jobs["prediction-regression"]["needs"]
+    assert jobs["prediction-regression"]["with"]["old-ref"] == "${{ needs.verify-target.outputs.comparison-base }}"
     step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
     assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
@@ -1491,13 +1489,6 @@ def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tm
         assert result.returncode != 0
         assert "upload-pack: not our ref" in result.stderr
         assert "Invalid symmetric difference expression" not in result.stderr
-
-
-def test_collector_comparison_fetch_preserves_full_history() -> None:
-    commands = _run_commands(_workflow("collector-check.yml")["jobs"]["check"])
-
-    assert '--no-tags origin "${BASE_SHA}"' in commands
-    assert "--depth=1" not in commands
 
 
 def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:

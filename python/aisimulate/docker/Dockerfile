@@ -120,7 +120,7 @@ RUN uv pip install /wheelhouse/aisimulate-*.whl && \
 
 FROM runtime AS test
 
-# The perf-database tool tests shell out to git (changed_ops revision diffing,
+# The perf-database tool tests shell out to git (parquet_diff revision reads,
 # migrate_* execute paths use git mv/rm/add). Test stage only — the shipped
 # runtime image stays git-free.
 RUN apt-get update && \
