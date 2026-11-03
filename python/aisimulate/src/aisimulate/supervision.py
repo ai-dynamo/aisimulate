@@ -526,10 +526,18 @@ def supervised_recommendation(config, kwargs):
                 if main_path and not Path(main_path).is_file():
                     preparation.pop("init_main_from_path")
                 pickle.dump(preparation, target)
-                # Only the fields the caller set: the worker validates them
-                # again, and recommendation_to_sweeper tells omitted settings
-                # from explicit defaults by the fields set.
-                pickle.dump((config.model_dump(mode="json", exclude_unset=True), kwargs), target)
+                from .recommend import EXPLICIT_ENGINE_CONTROLS
+
+                # The worker validates the payload again. Every setting keeps
+                # its effective value, including edits to sections created by
+                # default; only the engine controls the caller left unset are
+                # dropped, because recommendation_to_sweeper tells them from
+                # explicit defaults by the fields set.
+                payload = config.model_dump(mode="json")
+                for name in (*EXPLICIT_ENGINE_CONTROLS, "backend"):
+                    if name not in config.engine.model_fields_set:
+                        payload["engine"].pop(name, None)
+                pickle.dump((payload, kwargs), target)
             except (TypeError, AttributeError, pickle.PicklingError) as exc:
                 raise ValueError("supervised recommendation requires pickleable factories and providers") from exc
         report = run_process(

@@ -839,7 +839,9 @@ def test_omitted_engine_controls_take_the_snapshot_and_explicit_defaults_must_ag
         assert getattr(_space(raw), name) == (SearchSpace.model_fields[name].default if value is None else value)
 
 
-def test_the_supervised_recommendation_sees_which_engine_controls_the_caller_set(planner_snapshots, monkeypatch):
+def test_the_supervised_recommendation_keeps_edits_and_which_engine_controls_the_caller_set(
+    planner_snapshots, monkeypatch
+):
     import pickle
 
     from aisimulate import supervision
@@ -850,19 +852,26 @@ def test_the_supervised_recommendation_sees_which_engine_controls_the_caller_set
         with (Path(command[-1]) / "input.pickle").open("rb") as source:
             pickle.load(source)
             raw, _ = pickle.load(source)
-        seen["space"] = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)).search_space
+        config = CoreRecommendationConfig.model_validate(raw)
+        seen["space"] = recommendation_to_sweeper(config).search_space
+        seen["max_trials"] = config.optimizer.max_trials
         return {"status": "failed", "reason": "converted"}
 
     monkeypatch.setattr(supervision, "run_process", worker)
     raw = _planner_request(planner_snapshots["moe-controls"])
     del raw["engine"]["backend"]
+    # The optimizer is omitted, then edited through the section its default created.
+    del raw["optimizer"]
+    config = CoreRecommendationConfig.model_validate(raw)
+    config.optimizer.max_trials = 1
     with pytest.raises(RuntimeError, match="converted"):
-        _planner_run(raw)
+        run_recommendation(config, stack="engine", runner_factory=EngineReplayRunnerFactory(), show_progress=False)
     assert (seen["space"].backend, seen["space"].enable_eplb, seen["space"].moe_backend) == (
         ["sglang"],
         True,
         "deepep_moe",
     )
+    assert seen["max_trials"] == 1
 
 
 def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(planner_snapshots):

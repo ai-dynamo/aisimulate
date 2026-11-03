@@ -36,6 +36,10 @@ from .sweeper.state_snapshot import packed_systems_root, state_snapshot_referenc
 
 # Estimators fitted to forward-pass telemetry, which read no performance data.
 _FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
+# Engine fields whose omission differs from an explicit default: a role timed
+# by a state snapshot takes an omitted one from the snapshot, while an explicit
+# one must agree with it. An omitted `backend` likewise yields to the snapshot.
+EXPLICIT_ENGINE_CONTROLS = (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
 
 
 def run_recommendation(
@@ -241,7 +245,7 @@ def recommendation_to_sweeper(
     search_space.update(
         {
             name: deepcopy(engine[name])
-            for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+            for name in EXPLICIT_ENGINE_CONTROLS
             if name in engine and name in config.engine.model_fields_set
         }
     )
@@ -986,7 +990,7 @@ def _candidate_prediction(
         engine["systems_paths"] = sample["systems_paths"]
     if sample.get("fpm_profile") is not None:
         engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
-    for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
+    for name in EXPLICIT_ENGINE_CONTROLS:
         if sample.get(name) is not None:
             engine[name] = sample[name]
     if sample.get("aic_nextn"):
