@@ -10,7 +10,8 @@
 use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
-    LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
+    LocalBlockHash, SequenceHash, cache_key_hashes, compute_block_hash_for_seq,
+    compute_next_seq_hash,
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
@@ -33,6 +34,7 @@ pub(crate) struct RadixRequestLease {
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
+    bigram_keys: bool,
     /// Resume point of this request's last admission match. A KV-blocked queue head repeats the
     /// same whole-prompt match on every pass.
     admission_match_hint: Option<PrefixMatchHint>,
@@ -41,6 +43,17 @@ pub(crate) struct RadixRequestLease {
 }
 
 impl RadixRequestLease {
+    pub(crate) fn with_bigram_keys(bigram_keys: bool) -> Self {
+        Self {
+            bigram_keys,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn cacheable_len(&self, raw_tokens: usize) -> usize {
+        raw_tokens.saturating_sub(usize::from(self.bigram_keys))
+    }
+
     #[cfg(test)]
     pub(crate) fn pages(&self) -> &[KvPageId] {
         &self.pages
@@ -79,24 +92,26 @@ impl RadixRequestLease {
     }
 
     pub(crate) fn ensure_page_hashes(&mut self, token_ids: &[u32], page_size: usize) {
-        let complete_pages = token_ids.len() / page_size;
+        let complete_pages = self.cacheable_len(token_ids.len()) / page_size;
         if self.page_hashes.len() >= complete_pages {
             return;
         }
         let first_new_token = self.page_hashes.len() * page_size;
-        self.page_hashes.extend(compute_block_hash_for_seq(
-            &token_ids[first_new_token..complete_pages * page_size],
+        self.page_hashes.extend(cache_key_hashes(
+            &token_ids[first_new_token..complete_pages * page_size + usize::from(self.bigram_keys)],
             page_size,
+            self.bigram_keys,
         ));
     }
 
     /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
-    pub(crate) fn truncate_page_hashes(&mut self, complete_pages: usize) {
-        self.page_hashes.truncate(complete_pages);
+    pub(crate) fn truncate_page_hashes(&mut self, raw_tokens: usize, page_size: usize) {
+        self.page_hashes
+            .truncate(self.cacheable_len(raw_tokens) / page_size);
     }
 
     fn page_hashes_through(&self, token_count: usize, page_size: usize) -> &[LocalBlockHash] {
-        &self.page_hashes[..token_count / page_size]
+        &self.page_hashes[..self.cacheable_len(token_count) / page_size]
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -121,6 +136,7 @@ impl RadixRequestLease {
             cached_tokens,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
+            bigram_keys: false,
             admission_match_hint: None,
             last_node: Some(last_node),
             session_id: None,
@@ -390,8 +406,10 @@ impl SglangKvManager {
         let page_size = self.cache.page_size();
         lease.ensure_page_hashes(token_ids, page_size);
         let materialized_hashes = lease.page_hashes_through(token_ids.len(), page_size);
+        // `max_prefix_tokens` is the already page-aligned admission result;
+        // apply the bigram lookahead only to the raw sequence, not twice to this cap.
         let matchable_hashes =
-            &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
+            &materialized_hashes[..(max_prefix_tokens / page_size).min(materialized_hashes.len())];
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
@@ -495,7 +513,8 @@ impl SglangKvManager {
             return;
         }
         lease.ensure_page_hashes(token_ids, self.cache.page_size());
-        let complete_len = token_ids.len() / self.cache.page_size() * self.cache.page_size();
+        let complete_len =
+            lease.cacheable_len(token_ids.len()) / self.cache.page_size() * self.cache.page_size();
         if complete_len <= lease.cached_tokens {
             return;
         }
@@ -549,8 +568,10 @@ impl SglangKvManager {
             self.cache.dec_lock_ref(last_node);
             return;
         }
-        let complete_len =
-            token_ids.len().min(lease.len()) / self.cache.page_size() * self.cache.page_size();
+        lease.ensure_page_hashes(token_ids, self.cache.page_size());
+        let complete_len = lease.cacheable_len(token_ids.len().min(lease.len()))
+            / self.cache.page_size()
+            * self.cache.page_size();
         assert!(
             lease.cached_tokens <= complete_len,
             "invalid SGLang KV lease finish: cached_tokens={}, complete_tokens={complete_len}, owned_tokens={}",
@@ -567,7 +588,7 @@ impl SglangKvManager {
             return;
         }
         self.cache_finished_hashes(
-            lease.page_hashes_through(complete_len, self.cache.page_size()),
+            &lease.page_hashes[..complete_pages],
             &lease.pages,
             last_node,
             lease.cached_tokens,
@@ -1039,7 +1060,11 @@ impl SglangKvManager {
             return 0;
         };
 
-        let local_hashes = &page_hashes[first_unpublished_page..complete_pages];
+        let wire_hashes = compute_block_hash_for_seq(
+            &token_ids[first_unpublished_page * block_size..complete_len],
+            block_size,
+        );
+        let local_hashes = &wire_hashes;
         let mut parent_hash = None;
         let mut blocks = Vec::new();
         let mut publishing = false;
@@ -1177,6 +1202,128 @@ mod tests {
         let mut lease = RadixRequestLease::default();
         lease.ensure_page_hashes(tokens, page_size);
         lease
+    }
+
+    #[test]
+    fn eagle_reuses_only_complete_bigram_pages_and_checks_lookahead() {
+        let mut mgr = SglangKvManager::new(32, 4, KvEventPublishers::default(), 0);
+        let tokens: Vec<u32> = (0..8).collect();
+        let mut warm = RadixRequestLease::with_bigram_keys(true);
+        assert_eq!(mgr.allocate_for_request_lease(&tokens, &mut warm), Some(0));
+        mgr.extend_cached_prefix(&tokens, &mut warm);
+        assert_eq!(warm.cached_tokens(), 4);
+        mgr.finish(&tokens, warm);
+        assert_eq!(mgr.cache.available_tokens(), 28);
+
+        // The shared first raw page is insufficient when the following token differs.
+        let mut different = tokens.clone();
+        different[4] = 99;
+        let mut miss = RadixRequestLease::with_bigram_keys(true);
+        assert_eq!(
+            mgr.allocate_for_request_lease(&different, &mut miss),
+            Some(0)
+        );
+        mgr.abort(miss);
+        let mut hit = RadixRequestLease::with_bigram_keys(true);
+        // A cap supplied by admission is already a logical token count.
+        assert_eq!(
+            mgr.allocate_for_request_lease_capped(&tokens, &mut hit, 4),
+            Some(4)
+        );
+        assert_eq!(hit.admission_reused_tokens(), 4);
+        mgr.abort(hit);
+        mgr.evict(32);
+        assert_eq!(mgr.cache.available_tokens(), 32);
+    }
+
+    #[test]
+    fn eagle_hash_rollback_replaces_changed_lookahead() {
+        let mut lease = RadixRequestLease::with_bigram_keys(true);
+        lease.ensure_page_hashes(&[1, 2, 3, 4, 5], 4);
+        let old = lease.page_hashes()[0];
+        lease.truncate_page_hashes(4, 4);
+        assert!(lease.page_hashes().is_empty());
+        lease.ensure_page_hashes(&[1, 2, 3, 4, 99], 4);
+        assert_ne!(lease.page_hashes()[0], old);
+        assert_eq!(
+            lease.page_hashes(),
+            cache_key_hashes(&[1, 2, 3, 4, 99], 4, true)
+        );
+    }
+
+    #[test]
+    fn eagle_finish_needs_materialized_lookahead_not_final_sample() {
+        for (materialized, expected) in [(4, 0), (5, 4), (8, 4), (9, 8)] {
+            let mut mgr = SglangKvManager::new(16, 4, KvEventPublishers::default(), 0);
+            let tokens: Vec<u32> = (0..materialized as u32).collect();
+            let mut lease = RadixRequestLease::with_bigram_keys(true);
+            mgr.allocate_for_request_lease(&tokens, &mut lease).unwrap();
+            let mut sampled = tokens.clone();
+            sampled.push(100);
+            mgr.finish(&sampled, lease);
+            assert_eq!(mgr.cache.available_tokens(), 16 - expected);
+            mgr.evict(16);
+            assert_eq!(mgr.cache.available_tokens(), 16);
+        }
+    }
+
+    #[test]
+    fn eagle_events_keep_raw_hashes_and_belady_tracks_bigram_identity() {
+        let tokens: Vec<u32> = (0..9).collect();
+        let sink = Arc::new(MockSink::new());
+        let mut mgr = SglangKvManager::new_with_prefix_caching(
+            16,
+            4,
+            KvEventPublishers::new(Some(sink.clone())),
+            0,
+            true,
+            true,
+        );
+        let hashes = crate::engine::belady::input_sequence_hashes_with_bigram(&tokens, 4, true);
+        let oracle = BeladyOracle::new(vec![(uuid::Uuid::from_u128(1), hashes)]).unwrap();
+        mgr.set_belady_oracle(oracle);
+        let mut lease = RadixRequestLease::with_bigram_keys(true);
+        mgr.allocate_for_request_lease(&tokens, &mut lease).unwrap();
+        mgr.finish(&tokens, lease);
+        mgr.flush_events();
+        let events = sink.clone_events();
+        let wire = compute_block_hash_for_seq(&tokens, 4);
+        let blocks: Vec<_> = events
+            .iter()
+            .flat_map(|event| match &event.data {
+                KvEventData::Stored(stored) => stored.blocks.iter().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].tokens_hash, wire[0].0);
+        assert_eq!(blocks[1].tokens_hash, wire[1].0);
+        assert_eq!(blocks[0].token_ids.as_deref(), Some(&tokens[..4]));
+        mgr.evict(16);
+        assert_eq!(mgr.cache.available_tokens(), 16);
+        assert_eq!(mgr.live_hashes.len(), 0);
+    }
+
+    #[test]
+    fn eagle_matches_measured_64_token_boundary_without_pressure() {
+        for bigram in [false, true] {
+            let mut mgr = SglangKvManager::new(400_000, 64, KvEventPublishers::default(), 0);
+            let tokens: Vec<u32> = (0..287_424).collect();
+            let mut lease = RadixRequestLease::with_bigram_keys(bigram);
+            mgr.allocate_for_request_lease(&tokens, &mut lease).unwrap();
+            mgr.finish(&tokens, lease);
+            let mut longer = tokens.clone();
+            longer.resize(361_344, 999_999);
+            let mut next = RadixRequestLease::with_bigram_keys(bigram);
+            let expected = if bigram { 287_360 } else { 287_424 };
+            assert_eq!(
+                mgr.allocate_for_request_lease(&longer, &mut next),
+                Some(expected)
+            );
+            mgr.abort(next);
+            mgr.evict(400_000);
+            assert_eq!(mgr.cache.available_tokens(), 400_000);
+        }
     }
 
     struct MockSink {

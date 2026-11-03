@@ -38,7 +38,9 @@ use super::{
     SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
 };
 use crate::engine::ImageSpec;
-use crate::engine::belady::{SequenceHash, input_sequence_hashes};
+#[cfg(test)]
+use crate::engine::belady::input_sequence_hashes;
+use crate::engine::belady::{SequenceHash, input_sequence_hashes_with_bigram};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::{
     AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
@@ -2674,6 +2676,7 @@ impl WorkloadDriver {
     pub(crate) fn prepare_belady_requests(
         &mut self,
         engine_block_size: usize,
+        bigram: bool,
     ) -> Result<Vec<(Uuid, Vec<SequenceHash>)>> {
         if !matches!(self.policy, SchedulingPolicy::Trace) || self.prompt_mode != PromptMode::Full {
             bail!(
@@ -2733,7 +2736,7 @@ impl WorkloadDriver {
                 synthesize_validated_trace_tokens(*input_length, hash_ids, self.trace_block_size);
             forecast.push((
                 request_id,
-                input_sequence_hashes(&tokens, engine_block_size),
+                input_sequence_hashes_with_bigram(&tokens, engine_block_size, bigram),
             ));
         }
         Ok(forecast)
@@ -3898,12 +3901,15 @@ mod tests {
             .unwrap()
             .with_deterministic_request_ids(1);
         let ready_before = prepared.ready_sessions.clone().into_sorted_vec();
-        let forecast = prepared.prepare_belady_requests(3).unwrap();
+        let forecast = prepared.prepare_belady_requests(3, false).unwrap();
         assert_eq!(
             forecast.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [2, 3, 1].map(Uuid::from_u128)
         );
-        assert_eq!(forecast, prepared.prepare_belady_requests(3).unwrap());
+        assert_eq!(
+            forecast,
+            prepared.prepare_belady_requests(3, false).unwrap()
+        );
         assert_eq!(
             ready_before,
             prepared.ready_sessions.clone().into_sorted_vec()
@@ -3950,8 +3956,8 @@ mod tests {
             .iter()
             .map(|session| session.turns[0].output_token_ids.clone())
             .collect::<Vec<_>>();
-        let forecast = driver.prepare_belady_requests(3).unwrap();
-        assert_eq!(forecast, driver.prepare_belady_requests(3).unwrap());
+        let forecast = driver.prepare_belady_requests(3, false).unwrap();
+        assert_eq!(forecast, driver.prepare_belady_requests(3, false).unwrap());
         assert_eq!(
             output_plans,
             driver
@@ -3972,22 +3978,22 @@ mod tests {
     #[test]
     fn belady_forecast_rejects_nonstatic_or_already_started_drivers() {
         let mut multi = WorkloadDriver::new_trace(two_session_trace(), 1).unwrap();
-        assert!(multi.prepare_belady_requests(1).is_err());
+        assert!(multi.prepare_belady_requests(1, false).is_err());
         let trace = belady_flat_trace();
         let mut delta = WorkloadDriver::new_trace_accumulating_deltas(trace.clone(), 3).unwrap();
-        assert!(delta.prepare_belady_requests(3).is_err());
+        assert!(delta.prepare_belady_requests(3, false).is_err());
         let mut closed = WorkloadDriver::new_concurrency(trace.clone(), 3, 1).unwrap();
-        assert!(closed.prepare_belady_requests(3).is_err());
+        assert!(closed.prepare_belady_requests(3, false).is_err());
         let mut driver = WorkloadDriver::new_trace(trace, 3).unwrap();
-        assert!(driver.prepare_belady_requests(4).is_err());
+        assert!(driver.prepare_belady_requests(4, false).is_err());
         assert_eq!(driver.pop_ready(1.0, 1).len(), 1);
-        assert!(driver.prepare_belady_requests(3).is_err());
+        assert!(driver.prepare_belady_requests(3, false).is_err());
         let mut agentic = WorkloadDriver::new_agentic_trace(
             agentic_trace(vec![agentic_node("a", "p", 0.0, Vec::new())]),
             1,
         )
         .unwrap();
-        assert!(agentic.prepare_belady_requests(1).is_err());
+        assert!(agentic.prepare_belady_requests(1, false).is_err());
     }
 
     /// A: 2 turns (turn-1 has a 5ms think-time). B, C: 1 turn each. Used for the cap>1

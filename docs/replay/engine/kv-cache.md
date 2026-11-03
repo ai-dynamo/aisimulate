@@ -85,6 +85,15 @@ on. Partial blocks are never reused. When G1 is full, each backend applies its
 own policy: requests wait or are preempted, and unused cached blocks are
 evicted least recently used first.
 
+With SGLang MTP/EAGLE (`engine.nextn > 0`), cache lookup identifies adjacent
+token pairs. A complete page needs one additional materialized token of
+lookahead. For example, a 287,424-token completed KV prefix at page size 64
+caches 287,360 reusable tokens; ordinary decoding caches all 287,424. Changing
+the lookahead token prevents reuse of the preceding page. This is a cache-key
+rule, not a fixed page penalty: partial pages and longer sequences follow the
+same alignment. Router KV events keep their existing raw-token block hashes;
+Belady input demand uses the same lookup identities as the native cache.
+
 For SGLang, complete prompt pages enter the radix cache after prefill; decoded
 pages enter when a request finishes or a running request is cancelled. In overlap
 mode, prefill reuse becomes visible when the forward result is observed. A

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub(crate) use super::common::hashing::SequenceHash;
-use super::common::hashing::{block_hashes, compute_next_sequence_hash};
+use super::common::hashing::{cache_key_hashes, compute_next_sequence_hash};
 
 /// Native eviction ranking for offline replay. LRU requires no forecast.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,11 +31,22 @@ pub enum KvEvictionPolicy {
 }
 
 /// Hash exactly the complete input pages the native cache can identify.
+#[cfg(test)]
 pub(crate) fn input_sequence_hashes(tokens: &[u32], block_size: usize) -> Vec<SequenceHash> {
+    input_sequence_hashes_with_bigram(tokens, block_size, false)
+}
+
+pub(crate) fn input_sequence_hashes_with_bigram(
+    tokens: &[u32],
+    block_size: usize,
+    bigram: bool,
+) -> Vec<SequenceHash> {
     assert!(block_size > 0, "Belady block size must be positive");
     let mut parent = None;
-    block_hashes(tokens, block_size)
+    cache_key_hashes(tokens, block_size, bigram)
+        .into_iter()
         .map(|local| {
+            let local = local.0;
             let hash = parent.map_or(local, |parent| compute_next_sequence_hash(parent, local));
             parent = Some(hash);
             hash

@@ -34,7 +34,12 @@ pub(super) struct SglangRequest {
 }
 
 impl SglangRequest {
-    pub(super) fn new(req: DirectRequest, block_size: usize, output_storage_hint: usize) -> Self {
+    pub(super) fn new(
+        req: DirectRequest,
+        block_size: usize,
+        output_storage_hint: usize,
+        bigram_keys: bool,
+    ) -> Self {
         let prompt_len = req.tokens.len();
         let max_output_tokens = req.effective_max_output_tokens();
         let output_capacity = output_storage_hint.min(max_output_tokens);
@@ -45,7 +50,7 @@ impl SglangRequest {
             .checked_add(output_capacity)
             .expect("SGLang request completion length overflow")
             / block_size;
-        let mut kv_lease = RadixRequestLease::default();
+        let mut kv_lease = RadixRequestLease::with_bigram_keys(bigram_keys);
         kv_lease.session_id = req.session_id;
         kv_lease.reserve_page_hashes(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
@@ -154,7 +159,7 @@ impl SglangRequest {
         debug_assert!(count <= self.output_len());
         let kept = self.sequence_tokens.len() - count;
         self.sequence_tokens.truncate(kept);
-        self.kv_lease.truncate_page_hashes(kept / block_size);
+        self.kv_lease.truncate_page_hashes(kept, block_size);
     }
 
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {

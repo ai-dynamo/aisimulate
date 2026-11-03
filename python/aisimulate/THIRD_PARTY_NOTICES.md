@@ -1656,3 +1656,20 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## SGLang EAGLE bigram cache keys
+
+The modified cache-key behavior and synthetic tests in
+`crates/core/src/engine/common/hashing.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`, and
+`crates/core/src/engine/scheduler/sglang/{request,core,prefill}.rs` adapt
+`RadixKey`, `page_aligned`, and finished/unfinished cache insertion from
+`python/sglang/srt/mem_cache/radix_cache.py` at immutable SGLang v0.5.20 commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Source: https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/mem_cache/radix_cache.py .
+Copyright 2023-2024 SGLang Team and contributors. Apache-2.0; the license is
+included as `LICENSE`. Modified for hashed lookup keys, request leases, physical
+page ownership, and unchanged raw-token router events. Belady forecasting in
+`crates/core/src/engine/belady.rs`, `crates/core/src/replay/replayer.rs`, and
+`crates/core/src/replay/loadgen/driver.rs` uses these adapted lookup identities.
+No upstream runtime dependency or private benchmark input is included.
