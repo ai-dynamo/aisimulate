@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The runtime probe preserves token-count transitions without retaining content."""
 
+import asyncio
 import hashlib
 import io
 import json
@@ -12,13 +13,15 @@ from types import SimpleNamespace
 import collect
 import instrument
 import pytest
+import rsi_dispatch
 import rsi_frontend
 import rsi_timing
 from instrument import inject
 
 
 @pytest.mark.parametrize("invalid", ["model", "runtime", "cases"])
-def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeypatch, invalid):
+@pytest.mark.parametrize("suite", ["frontend", "blocking"])
+def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeypatch, invalid, suite):
     model = tmp_path / "model"
     model.mkdir()
     (model / "config.json").write_text("{}")
@@ -38,7 +41,7 @@ def test_frontend_preflight_mismatch_stops_before_server_start(tmp_path, monkeyp
     monkeypatch.setattr(
         sys,
         "argv",
-        ["collect.py", "--model", str(model), "--output", str(output), "--seconds", "30", "--suite", "frontend"],
+        ["collect.py", "--model", str(model), "--output", str(output), "--seconds", "30", "--suite", suite],
     )
     monkeypatch.setattr(collect.importlib.metadata, "version", lambda _: "5.12.1")
     monkeypatch.setattr(collect.subprocess, "Popen", lambda *_a, **_k: pytest.fail("server must remain unstarted"))
@@ -185,3 +188,84 @@ def test_probe_records_numerical_transitions_and_ignores_other_requests(tmp_path
     finally:
         if rsi_timing._stream:
             rsi_timing._stream.close()
+
+
+def test_dispatch_receipt_follows_submission_and_rejects_unknown_source(monkeypatch):
+    source = """class Manager:
+    async def _send_one_request(self, tokenized_obj):
+        self._dispatch_to_scheduler(tokenized_obj)
+        self.finished()
+"""
+    events = []
+    monkeypatch.setattr(rsi_dispatch, "record", lambda _: events.append("receipt"))
+    namespace = {}
+    exec(instrument.inject_dispatch(source), namespace)
+    manager = namespace["Manager"]()
+    manager._dispatch_to_scheduler = lambda _: events.append("submission")
+    manager.finished = lambda: events.append("finished")
+    asyncio.run(manager._send_one_request(None))
+    assert events == ["submission", "receipt", "finished"]
+    with pytest.raises(ValueError, match="already instrumented"):
+        instrument.inject_dispatch(instrument.inject_dispatch(source))
+    with pytest.raises(ValueError, match="boundary"):
+        instrument.inject_dispatch(source.replace("self._dispatch_to_scheduler(tokenized_obj)", "pass"))
+    with pytest.raises(ValueError, match="boundary"):
+        instrument.inject_dispatch(source.replace("_dispatch_to_scheduler(tokenized_obj)", "_dispatch_to_scheduler()"))
+
+
+def test_dispatch_projection_cannot_publish_prompt_or_escape_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("RSI_DISPATCH_ROOT", str(tmp_path))
+    rid = "rsi-block-../../outside"
+    rsi_dispatch.record(SimpleNamespace(rid=rid, input_ids=[123456, 654321], text="private prompt"))
+    path = rsi_dispatch.receipt_path(tmp_path, rid)
+    assert path.parent == tmp_path
+    value = json.loads(path.read_text())
+    assert value["input_tokens"] == 2
+    assert set(value) == {"rid", "at_ns", "input_tokens", "pid", "boundary"}
+    assert "123456" not in path.read_text() and "private prompt" not in path.read_text()
+
+
+@pytest.mark.parametrize("invalid", ["runtime", "source"])
+def test_blocking_dispatch_preflight_rejects_identity_changes(tmp_path, monkeypatch, invalid):
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    (tmp_path / "frontend-template-preflight.json").write_text(
+        json.dumps(
+            {
+                "model_config_sha256": hashlib.sha256(b"{}").hexdigest(),
+                "transformers": "5.12.1",
+                "cases": [{"context_label": n} for n in (8192, 131072, 393216)],
+            }
+        )
+    )
+    (tmp_path / "blocking-dispatch-preflight.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "sglang": "wrong" if invalid == "runtime" else "0.5.20",
+                "source_sha256": {"instrument.py": "wrong"},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "collect.py",
+            "--model",
+            str(model),
+            "--output",
+            str(tmp_path / "gpu-1/controls"),
+            "--seconds",
+            "30",
+            "--suite",
+            "blocking",
+        ],
+    )
+    monkeypatch.setattr(
+        collect.importlib.metadata, "version", lambda name: {"sglang": "0.5.20", "transformers": "5.12.1"}[name]
+    )
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *_a, **_k: pytest.fail("GPU server must not start"))
+    with pytest.raises(ValueError, match="preflight"):
+        collect.main()

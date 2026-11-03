@@ -39,8 +39,11 @@ case "${RSI_RUNTIME:-prediction}" in
     *) echo 'Unknown RSI runtime' >&2; exit 1 ;;
 esac
 test -s "$model/config.json"
-if test "${RSI_SUITE:-timing}" = frontend; then
+if test "${RSI_SUITE:-timing}" = frontend || test "${RSI_SUITE:-timing}" = blocking; then
     test -s "$CAMPAIGN_ROOT/frontend-template-preflight.json"
+fi
+if test "${RSI_SUITE:-timing}" = blocking; then
+    test -s "$CAMPAIGN_ROOT/blocking-dispatch-preflight.json"
 fi
 export ENROOT_CACHE_PATH="$storage_root/.cache/enroot"
 export ENROOT_CONFIG_PATH="$storage_root/.config/enroot"

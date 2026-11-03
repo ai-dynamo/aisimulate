@@ -4,7 +4,8 @@
 
 import json
 
-from analyze_timing import analyze_frontend, planned_ids, request_metrics, span
+import pytest
+from analyze_timing import analyze_blocking, analyze_frontend, blocking_comparison, planned_ids, request_metrics, span
 
 
 def event(ms, tokens, rank=0):
@@ -117,3 +118,35 @@ def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_pa
     stages.write_text(json.dumps(stage) + "\n")
     runtime.unlink()
     assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
+
+
+def test_blocking_audit_requires_cpu_exposure_and_consistent_clocks():
+    victim = {
+        "output_tokens": 4,
+        "events": [{"at_ns": "1200000000", "output_tokens": 1}, {"at_ns": "1201000000", "output_tokens": 4}],
+    }
+    server = [{"at_ns": "1000000000", "output_tokens": 1}, {"at_ns": "1030000000", "output_tokens": 4}]
+    actor = {"start_ns": "800000000", "body_received_ns": "1300000000", "input_sha256": "matched"}
+    stage = {"start_ns": "900000000", "end_ns": "1100000000", "input_sha256": "matched"}
+    result = blocking_comparison(victim, actor, server, [stage])
+    assert result["qualified"] and result["fully_buffered_during_cpu_stage"]
+    assert result["server"]["mean_interval_ms"] == 10
+    assert result["client"]["mean_interval_ms"] == pytest.approx(1 / 3)
+    before = dict(stage, start_ns="850000000", end_ns="950000000")
+    result = blocking_comparison(victim, actor, server, [before])
+    assert result["qualified"] and result["cpu_finished_before_first_ready"]
+    assert not result["fully_buffered_during_cpu_stage"]
+    assert not blocking_comparison(victim, actor, server, [])["qualified"]
+    assert not blocking_comparison(victim, actor, server, [stage, stage])["qualified"]
+    late = [{"at_ns": "1400000000", "output_tokens": 4}]
+    assert not blocking_comparison(victim, actor, late, [stage])["qualified"]
+
+
+def test_blocking_startup_failure_retains_full_missing_accounting(tmp_path):
+    value = analyze_blocking(tmp_path)
+    assert not value["collector_completed"]
+    for mode in value["modes"].values():
+        assert mode["planned"] == 32 and mode["recorded"] == 0
+        assert len(mode["unrecorded_or_unattempted"]) == 32
+        assert mode["qualified_victims"] == 0
+        assert not mode["collector_completed"]

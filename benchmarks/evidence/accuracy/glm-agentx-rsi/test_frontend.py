@@ -5,6 +5,7 @@
 import io
 import json
 
+import blocking
 import frontend
 import pytest
 
@@ -52,3 +53,15 @@ def test_equal_inputs_and_exact_output_lengths_are_required(monkeypatch, endpoin
     assert row["status"] == "completed" and row["cached_tokens"] == 0
     assert "private" not in json.dumps(row)
     assert frontend.measured("http://test", "rsi-test", [1, 2], [], endpoint)["status"] == "failed"
+
+
+def test_cpu_actor_retains_identity_failure_without_token_array(monkeypatch):
+    monkeypatch.setattr(
+        blocking.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: io.BytesIO(json.dumps({"tokens": [123, 456], "count": 2}).encode()),
+    )
+    row = blocking.tokenize("http://localhost", "case", b"{}", 3, "wrong")
+    assert row["status"] == "failed" and row["error"] == "ValueError"
+    assert row["input_tokens"] == 2
+    assert "tokens" not in row and "body" not in row

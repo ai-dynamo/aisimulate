@@ -253,13 +253,137 @@ def analyze_frontend(root):
     }
 
 
+def blocking_comparison(victim, actor, server_events, stages):
+    client = span(victim["events"], victim["output_tokens"])
+    server = span(server_events, victim["output_tokens"])
+    result = {"client": client, "server": server, "reasons": []}
+    if "unavailable" not in server and max(row["output_tokens"] for row in server_events) > victim["output_tokens"]:
+        result["reasons"].append("rank-zero counter exceeds delivered output length")
+    if "unavailable" in client or "unavailable" in server:
+        result["reasons"].append("incomplete client or rank-zero output counters")
+    else:
+        if server["first_ns"] > client["first_ns"] or server["final_ns"] > client["final_ns"]:
+            result["reasons"].append("output receipt precedes output-ready clock")
+        result["client_minus_ready_first_ms"] = (client["first_ns"] - server["first_ns"]) / 1e6
+    if actor is not None:
+        matches = [
+            row
+            for row in stages
+            if row["input_sha256"] == actor["input_sha256"]
+            and int(actor["start_ns"]) <= int(row["start_ns"])
+            and int(row["end_ns"]) <= int(actor["body_received_ns"])
+        ]
+        if len(matches) != 1:
+            result["reasons"].append("CPU stage absent or ambiguous")
+        elif "unavailable" not in client and "unavailable" not in server:
+            stage = matches[0]
+            result["cpu_stage"] = stage
+            begin, end = int(stage["start_ns"]), int(stage["end_ns"])
+            result["fully_buffered_during_cpu_stage"] = (
+                begin <= server["first_ns"] <= server["final_ns"] <= end <= client["first_ns"]
+            )
+            result["cpu_finished_before_first_ready"] = end < server["first_ns"]
+    result["qualified"] = not result["reasons"]
+    return result
+
+
+def analyze_blocking(root):
+    modes = {}
+    expected = {
+        f"rsi-block-c{size}-r{repeat}-{kind}"
+        for size in (8192, 131072)
+        for repeat in range(3)
+        for kind in ("none", "short", "long")
+    }
+    expected |= {rid + "-actor" for rid in expected if not rid.endswith("-none")}
+    expected |= {"rsi-block-preparation-short", "rsi-block-preparation-long"}
+    for mode in ("unprofiled-mtp", "instrumented-mtp"):
+        directory = root / mode
+        path = directory / "client/requests.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        counts = Counter(row["rid"] for row in rows)
+        index = {row["rid"]: row for row in rows}
+        ready = defaultdict(list)
+        for path in directory.glob("scheduler-*.jsonl"):
+            for line in path.read_text().splitlines():
+                event = json.loads(line)
+                if event["rank"] == 0:
+                    ready[event["rid"]].append(event)
+        stages = [
+            json.loads(line) for path in directory.glob("frontend-*.jsonl") for line in path.read_text().splitlines()
+        ]
+        cases = []
+        for victim in rows:
+            if victim["role"] != "gpu_victim":
+                continue
+            rid = victim["rid"]
+            actor = index.get(rid + "-actor")
+            reasons = []
+            if victim["status"] != "completed" or victim["input_tokens"] != victim["expected_input_tokens"]:
+                reasons.append("native request incomplete or input length differs")
+            if victim["cached_tokens"] != 0:
+                reasons.append("cold cache receipt missing or nonzero")
+            dispatch = victim.get("dispatch")
+            client = span(victim["events"], victim["output_tokens"])
+            if not dispatch or "unavailable" in client:
+                reasons.append("submission or client counters unavailable")
+            elif not (int(victim["start_ns"]) <= int(dispatch["at_ns"]) <= client["first_ns"]):
+                reasons.append("submission clock outside native request")
+            elif dispatch["input_tokens"] != victim["input_tokens"]:
+                reasons.append("submission input length differs")
+            if victim["actor"] != "none":
+                if actor is None or actor["status"] != "completed":
+                    reasons.append("CPU actor missing or failed")
+                elif (
+                    actor["input_tokens"] != actor["expected_input_tokens"]
+                    or actor["input_sha256"] != actor["expected_input_sha256"]
+                ):
+                    reasons.append("CPU tokenization identity differs")
+                elif actor["pid"] == victim["pid"]:
+                    reasons.append("CPU actor shares native client process")
+                elif dispatch and int(actor["start_ns"]) < int(dispatch["at_ns"]):
+                    reasons.append("CPU actor precedes scheduler submission")
+            case = {
+                "rid": rid,
+                "context_label": victim["context_label"],
+                "actor": victim["actor"],
+                "repeat": victim["repeat"],
+                "client": client,
+                "reasons": reasons,
+            }
+            if mode == "instrumented-mtp" and not reasons:
+                comparison = blocking_comparison(victim, actor, ready[rid], stages)
+                case["comparison"] = comparison
+                reasons.extend(comparison["reasons"])
+            case["qualified"] = not reasons
+            cases.append(case)
+        modes[mode] = {
+            "planned": len(expected),
+            "recorded": len(rows),
+            "unrecorded_or_unattempted": sorted(expected - set(counts)),
+            "unexpected": sorted(set(counts) - expected),
+            "duplicates": sorted(rid for rid, n in counts.items() if n != 1),
+            "status_counts": dict(Counter(row["status"] for row in rows)),
+            "qualified_victims": sum(case["qualified"] for case in cases),
+            "cases": cases,
+            "collector_completed": (directory / "completion.json").exists(),
+        }
+    return {
+        "schema": "aisimulate.glm-rsi.blocking-audit.v1",
+        "modes": modes,
+        "scope": "synthetic CPU-only interference; no historical MAPE or timing coefficient",
+        "collector_completed": (root / "completion.json").exists(),
+        "exposure_rule": "All ready outputs fall within CPU stage; first client receipt follows stage end.",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--suite", choices=("timing", "frontend"), default="timing")
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking"), default="timing")
     args = parser.parse_args()
-    result = analyze_frontend(args.root) if args.suite == "frontend" else analyze(args.root)
+    result = {"frontend": analyze_frontend, "blocking": analyze_blocking, "timing": analyze}[args.suite](args.root)
     with args.output.open("x") as stream:
         stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
     print(

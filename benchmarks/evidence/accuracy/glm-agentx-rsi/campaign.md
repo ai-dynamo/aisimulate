@@ -385,8 +385,50 @@ acceptance; all 47 speculative tests pass. This matches correlation and marginal
 distribution, not Torch's exact RNG stream, and is not a proposed generic default.
 Use the existing `replay.py` command with this wheel on 1/8/14, followed by
 `audit.py --frozen ... --baseline E003-baseline --candidate E027-batch-acceptance-dev`.
-Resource cost is CPU only, zero allocated GPU-seconds. Results and conclusion
-are pending; retain negative outcomes before selecting another experiment.
+Resource cost is CPU only, zero allocated GPU-seconds. Independent audit retains
+all 4169/4166 original TTFT/TPOT observations, with no lost matches. Development
+pooled TTFT worsens 88.4103→91.8322% and TPOT worsens 68.2526→104.8737%.
+Per-lane TTFT/TPOT: C1 73.6772/18.8789%, C8 64.9665/53.3170%, C14
+109.8970/146.3360%. **Not a win; disprove this correction as a sufficient
+remedy.** It changes joint timing materially but does not establish that
+independent acceptance caused the headline gap. Keep the ordinary default and
+research baseline. No held-out tuning or validation is needed for this rejected
+diagnostic. Evidence: `E027-independent-dev-audit.json`, `E027-provenance.json`.
+
+**E028 — isolate frontend blocking from GPU prefill.** Hypothesis: synchronous
+chat rendering/tokenization prevents the API process from forwarding already-ready
+GPU outputs, producing long TTFT and short client TPOT. Competing explanations
+include GPU contention, transport buffering independent of API CPU work, and
+client-side parsing. Evidence for synchronous CPU work is strong (E018), but
+historical request attribution is unproven.
+
+Use identical cold native requests (nominal 8K or 131K, output 16) with no, short
+8K, or long 393K CPU-only `/v1/tokenize` work. Trigger the actor after a retained
+scheduler-submission receipt, not the victim's first client output. Three repeats
+per condition, alternating actor order. Run the tokenization client in a separate
+process so response JSON parsing cannot hold the native client's Python lock.
+Retain dispatch, CPU-stage, rank-zero output-ready and client-receipt timestamps;
+no prompt/token arrays enter numerical evidence. Long GPU prefill and short CPU
+work provide timing controls. Compare dispatch-only and detailed-instrumentation
+arms on fresh servers with the original model/image/forced acceptance policy.
+
+Predeclare 18 GPU victims plus 12 CPU-only actors and two unscored CPU warmups
+per arm, with all attempts retained. Cache reuse must be zero; request lengths,
+output counters, source hashes, clocks and separate client processes must qualify.
+An exposed request must become ready while the CPU stage is active and reach the
+client after it ends before attributing delay to frontend blocking. Missing
+exposure is inconclusive. No historical MAPE claim or cost coefficient follows
+from this synthetic control. Reuse the existing collector and stop on incomplete
+qualification. Maximum reservation remains 4500 allocation seconds plus 60 for
+cleanup (36480 GPU-seconds), admitted only against the reconciled ledger.
+The exact-image CPU preflight checks the archived tokenizer-manager SHA256,
+patch syntax, and separate actor startup/shutdown without GPU access. GPU
+admission checks that receipt against runtime version and all five relevant
+source files; changed hooks or clients require a fresh CPU preflight. Forty-one
+focused tests pass, including exposure clocks, missing/ambiguous observations,
+identity failures and startup-failure accounting. Numerical audits predeclare
+all 64 attempted-request identities across both arms and never score preparation.
+Results, exact source identity and actual allocation cost are pending.
 
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
@@ -793,6 +835,7 @@ python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
 python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --output NEW_FRONTEND_AUDIT_JSON
+python analyze_timing.py --suite blocking --root PRIVATE_BLOCKING_CONTROLS --output NEW_BLOCKING_AUDIT_JSON
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 # Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL

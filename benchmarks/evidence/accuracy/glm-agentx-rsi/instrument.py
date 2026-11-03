@@ -12,6 +12,54 @@ import json
 from pathlib import Path
 
 
+def inject_dispatch(source):
+    tree = ast.parse(source)
+    methods = [
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "_send_one_request"
+    ]
+    if len(methods) != 1 or "rsi_dispatch" in source:
+        raise ValueError("Unexpected or already instrumented scheduler submission interface")
+    calls = [
+        node
+        for node in ast.walk(methods[0])
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_dispatch_to_scheduler"
+    ]
+    if (
+        len(calls) != 1
+        or len(calls[0].value.args) != 1
+        or not isinstance(calls[0].value.args[0], ast.Name)
+        or calls[0].value.args[0].id != "tokenized_obj"
+    ):
+        raise ValueError("Unknown scheduler submission boundary")
+    call = calls[0]
+    lines = source.splitlines(keepends=True)
+    lines.insert(call.end_lineno, " " * call.col_offset + '__import__("rsi_dispatch").record(tokenized_obj)\n')
+    modified = "".join(lines)
+    ast.parse(modified)
+    return modified
+
+
+def install_dispatch():
+    specification = importlib.util.find_spec("sglang")
+    if specification is None or specification.origin is None:
+        raise ValueError("SGLang package origin is unavailable")
+    path = Path(specification.origin).parent / "srt/managers/tokenizer_manager.py"
+    source = path.read_text()
+    modified = inject_dispatch(source)
+    path.write_text(modified)
+    receipt = {
+        "relative_path": "sglang/srt/managers/tokenizer_manager.py",
+        "original_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "instrumented_sha256": hashlib.sha256(modified.encode()).hexdigest(),
+        "boundary": "API scheduler submission returned; not GPU start",
+    }
+    print(json.dumps(receipt))
+    return receipt
+
+
 def inject_frontend(source):
     tree = ast.parse(source)
     methods = [
@@ -100,4 +148,9 @@ def main(frontend=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frontend", action="store_true")
-    main(parser.parse_args().frontend)
+    parser.add_argument("--dispatch-only", action="store_true")
+    args = parser.parse_args()
+    if args.dispatch_only:
+        install_dispatch()
+    else:
+        main(args.frontend)

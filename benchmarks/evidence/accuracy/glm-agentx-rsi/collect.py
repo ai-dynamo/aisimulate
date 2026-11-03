@@ -6,6 +6,7 @@
 import argparse
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 import platform
@@ -139,6 +140,12 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
         environment["RSI_TIMING_ROOT"] = str(output)
     else:
         environment.pop("RSI_TIMING_ROOT", None)
+    if suite == "blocking":
+        dispatch_root = output / "dispatch"
+        dispatch_root.mkdir()
+        environment["RSI_DISPATCH_ROOT"] = str(dispatch_root)
+    else:
+        environment.pop("RSI_DISPATCH_ROOT", None)
     save(
         output / "command.json",
         {
@@ -180,14 +187,15 @@ def control(root, model, deadline, instrumented, speculation, acceptance_policy=
             subprocess.run(
                 [
                     sys.executable,
-                    str(code / ("frontend.py" if suite == "frontend" else "probe.py")),
+                    str(code / {"frontend": "frontend.py", "blocking": "blocking.py", "timing": "probe.py"}[suite]),
                     "--url",
                     url,
                     "--model",
                     str(model),
                     "--output",
                     str(output / "client"),
-                ],
+                ]
+                + (["--dispatch-root", str(output / "dispatch")] if suite == "blocking" else []),
                 check=True,
                 timeout=max(1, deadline - time.monotonic() - 90),
                 env=environment,
@@ -212,12 +220,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--acceptance-policy", choices=("agentx-golden", "natural"), default="agentx-golden")
-    parser.add_argument("--suite", choices=("timing", "frontend"), default="timing")
+    parser.add_argument("--suite", choices=("timing", "frontend", "blocking"), default="timing")
     args = parser.parse_args()
     if not 0 < args.seconds <= 7200:
         raise ValueError("Diagnostic phase cannot exceed two node-hours")
     config_sha = hashlib.sha256((args.model / "config.json").read_bytes()).hexdigest()
-    if args.suite == "frontend":
+    if args.suite in ("frontend", "blocking"):
         preflight = json.loads((args.output.parents[1] / "frontend-template-preflight.json").read_bytes())
         if preflight["model_config_sha256"] != config_sha or preflight["transformers"] != importlib.metadata.version(
             "transformers"
@@ -225,6 +233,18 @@ def main():
             raise ValueError("Frontend template preflight does not match model or tokenizer runtime")
         if [case["context_label"] for case in preflight["cases"]] != [8192, 131072, 393216]:
             raise ValueError("Incomplete frontend template preflight")
+    if args.suite == "blocking":
+        preflight = json.loads((args.output.parents[1] / "blocking-dispatch-preflight.json").read_bytes())
+        if preflight["status"] != "passed" or preflight["sglang"] != importlib.metadata.version("sglang"):
+            raise ValueError("Blocking dispatch preflight does not match runtime")
+        for name in ("instrument.py", "rsi_dispatch.py", "blocking.py", "frontend.py", "probe.py"):
+            actual = hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+            if preflight["source_sha256"][name] != actual:
+                raise ValueError("Blocking dispatch source changed after CPU preflight")
+        origin = importlib.util.find_spec("sglang").origin
+        manager = Path(origin).parent / "srt/managers/tokenizer_manager.py"
+        if hashlib.sha256(manager.read_bytes()).hexdigest() != preflight["original_sha256"]:
+            raise ValueError("Blocking dispatch runtime source differs from CPU preflight")
     deadline = time.monotonic() + args.seconds
     args.output.mkdir(parents=True, exist_ok=False)
     save(
@@ -259,10 +279,16 @@ def main():
             },
         },
     )
+    if args.suite == "blocking":
+        subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("instrument.py")), "--dispatch-only"],
+            check=True,
+            stdout=(args.output / "dispatch-instrumentation.json").open("x"),
+        )
     control(args.output, args.model, deadline, False, True, args.acceptance_policy, args.suite)
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("instrument.py"))]
-        + (["--frontend"] if args.suite == "frontend" else []),
+        + (["--frontend"] if args.suite in ("frontend", "blocking") else []),
         check=True,
         stdout=(args.output / "instrumentation.json").open("x"),
     )
