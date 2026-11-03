@@ -250,11 +250,13 @@ def test_host_offload_rejects_legacy_depth_during_capability_preflight(
 
 @pytest.mark.parametrize("name", ["aic_nextn", "nextn"])
 @pytest.mark.parametrize("nested_rank", [False, True])
-@pytest.mark.parametrize("with_g2", [False, True])
-def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, with_g2):
+@pytest.mark.parametrize("cache_mode", ["g1", "g2", "state"])
+def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, cache_mode):
     args = _engine_args()
-    if with_g2:
+    if cache_mode == "g2":
         args.update(kv_cache_bytes_per_token=1024, native_host_offload={"num_host_blocks": 16})
+    elif cache_mode == "state":
+        args.update(kv_cache_bytes_per_token=1024, state_cache={"bytes_per_request": 1500}, prefix_match_unit=1)
     if nested_rank:
         materialized = _materialize_engine_role("vllm", "test", {}, args, "aggregated")
         args = {key: materialized[key] for key in ("rank", "dp_size", "tensor_parallel_size")}
@@ -268,14 +270,18 @@ def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, with_g
     baseline = runner.run(spec)
     rank[name] = 0
     disabled = runner.run(spec)
+    assert rank[name] == 0  # Materialization must not rewrite the caller's spec.
     assert disabled.metrics["completed_requests"] == 1
     assert disabled.metrics["total_output_tokens"] == 2
     for metric in ("mean_e2e_latency_ms", "mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
         assert disabled.metrics[metric] == baseline.metrics[metric]
-    # Positive legacy depth remains forbidden with G2 and valid without it.
+    # Positive legacy depth remains forbidden with G2 or sub-block state cache.
     rank[name] = 2
-    if with_g2:
+    if cache_mode == "g2":
         with pytest.raises(ValueError, match="requires canonical mtp speculation"):
+            runner.run(spec)
+    elif cache_mode == "state":
+        with pytest.raises(ValueError, match="sub-block prefix_match_unit does not support speculative decoding"):
             runner.run(spec)
     else:
         rank["aic_nextn_accept_rates"] = "1,0.5"
@@ -289,6 +295,28 @@ def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, with_g
         ({"aic_nextn": 0, "nextn": 2}, "duplicates aic_nextn"),
         ({"aic_nextn": False}, "aic_nextn must be a positive integer"),
         ({"nextn": 0.0}, "aic_nextn must be a positive integer"),
+        (
+            {"nextn": 0, "speculation": {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1}},
+            "speculation cannot be combined with legacy",
+        ),
+        (
+            {
+                "nextn": 0,
+                "timing_model": {"type": "external", "provider": "aic", "config": {"nextn": 2}},
+            },
+            "aic_nextn=0 conflicts with timing_model.config.nextn",
+        ),
+        (
+            {
+                "nextn": 0,
+                "timing_model": {
+                    "type": "external",
+                    "provider": "aic",
+                    "config": {"speculation": {"kind": "mtp", "params": {"depth": 2}}},
+                },
+            },
+            "aic_nextn must be a positive integer",
+        ),
     ],
 )
 def test_runner_disabled_depth_normalization_preserves_input_validation(controls, message):

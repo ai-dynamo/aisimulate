@@ -1564,6 +1564,11 @@ def _materialize_engine_role(
     requested_rank = role_config.get("rank", role_config)
     _reject_role_pipeline_parallelism(parallel_config, role_config, role)
     if isinstance(requested_rank, Mapping):
+        requested_rank = dict(requested_rank)
+        if "rank" in role_config:
+            role_config["rank"] = requested_rank
+        else:
+            role_config = requested_rank
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
         if (
@@ -1583,6 +1588,21 @@ def _materialize_engine_role(
                 raise ValueError("speculation must be a mapping")
             if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
                 raise ValueError("speculation params must be a mapping")
+        # Normalize disabled depth before either state-cache/capacity path.
+        # Zero cannot override another authored speculation input. Resolve
+        # aliases first, preserving duplicate and bool/float validation.
+        legacy_nextn = _pop_alias(requested_rank, "aic_nextn", ("aic_nextn", "nextn"))
+        canonical_kind = canonical.get("kind") if isinstance(canonical, Mapping) else None
+        if (
+            type(legacy_nextn) is int
+            and legacy_nextn == 0
+            and requested_rank.get("speculation") is None
+            and canonical_kind in (None, "none")
+        ):
+            if isinstance(timing_config, Mapping) and timing_config.get("nextn") not in (None, 0):
+                raise ValueError(f"engine provider {role} aic_nextn=0 conflicts with timing_model.config.nextn")
+        elif legacy_nextn is not None:
+            requested_rank["aic_nextn"] = legacy_nextn
         if requested_rank.get("num_gpu_blocks") is None:
             for spec in selections:
                 if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
@@ -1882,12 +1902,6 @@ def _materialize_engine_role(
         aic_timing_overrides.clear()
         if capacity_materialized:
             memory_fraction_overrides.clear()
-
-    # Zero is the documented disabled value. Resolve aliases before dropping it
-    # so duplicate inputs still fail, and keep bool/float inputs for validation.
-    legacy_nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
-    if legacy_nextn is not None and not (type(legacy_nextn) is int and legacy_nextn == 0):
-        rank["aic_nextn"] = legacy_nextn
 
     speculation_raw = rank.pop("speculation", None)
     timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
