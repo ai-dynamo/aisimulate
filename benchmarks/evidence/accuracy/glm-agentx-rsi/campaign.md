@@ -527,6 +527,36 @@ historical hardware or fit a coefficient to MAPE. The bounded ten-minute CPU job
 and original source/configuration checksums accompany the results. Qualification
 failure retains its observations and blocks cost-model use.
 
+**E030 conclusion — component qualified; historical applicability incomplete.**
+Job 1009935 finishes in 74 seconds at three reserved GPUs: charge 222 GPU-seconds,
+including startup/cleanup, although CUDA remains hidden. All 21 measurements
+qualify with exact input identities and independent arithmetic checks. Repeat
+medians (six repeats following the retained first-use sample) are 1.1115 ms at 651
+tokens, 168.3717 ms at 134720, and 539.0198 ms at 393290. Long-case thread CPU/wall
+ratios are about 0.999; no multi-core throughput factor is assumed. Keep all seven
+samples per case, including the 34.843 ms first use of the small case. These
+coding-content costs are lower than generic prose controls; neither corpus
+supplies a calibrated historical latency multiplier. Evidence:
+`E030-independent-audit.json` and checksum-pinned component observations.
+
+**E031 — original host provenance.** Original C14 job 119061192112 records Xeon
+8559C/192 logical CPUs and launcher affinity 192 [0–191]. Thus CPU model agrees
+with our controls, but the recorded launcher affinity differs from 64. A server
+process affinity receipt is not separately available. Retain original job-log
+checksum and exact resource-summary lines in `E031-historical-host-audit.json`;
+verify all six source jobs before generalizing the host identity.
+
+**E032 — affinity sensitivity (predeclared).** Run the same three primitives,
+exact image/model assets and component method in fresh processes on one host:
+192 CPUs, then a 64-CPU subset, then 192 again. Each arm retains seven samples per
+case, 63 observations total. Require actual affinity, source and every input hash
+to match its predeclared arm. Use CUDA-hidden processes with a policy-required
+TP8/192-CPU reservation, capped at 600 seconds plus 60 seconds cleanup: at most
+5280 GPU-seconds. Do not sum child processes as separate allocations. First-use
+and repeat measurements remain separate; inspect the before/after 192 arms for
+drift before attributing a difference to affinity. No historical MAPE claim or
+HTTP cost follows from component qualification alone.
+
 **E002/E004 — prior cap conclusion superseded after identity audit.** Runtime
 receipts establish caps 2/8/256 at lanes 1/4/higher. The earlier record incorrectly
 claimed replay used 256 at C1 and a cap-only correction had no effect. Both E003
@@ -912,6 +942,12 @@ including cleanup, charging **6328 GPU-seconds**. Total completed allocation is
 reservation; no GPU job is active. Controlled workloads use 3339 of 7200
 node-seconds. Preserve the first failed startup and the single unqualified
 counter comparison in this successful collection's complete accounting.
+
+E030 job 1009935 completes with exit 0 after 74 allocated seconds at three GPUs:
+charge 222 GPU-seconds. Total charge is **82606 GPU-seconds / 22.9461 GPU-hours**,
+leaving **147794 GPU-seconds / 41.0539 GPU-hours**. Release its reservation. The
+controlled-workload pool now uses 3366.75 TP8-equivalent node-seconds, accounting
+for the partial three-GPU allocation. No GPU job remains active at this checkpoint.
 
 A later concurrent-retention guard writes every attempted request before stopping
 a failed case; a test forces fourteen simultaneous failures and retains all of

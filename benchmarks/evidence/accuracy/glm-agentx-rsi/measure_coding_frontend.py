@@ -9,6 +9,8 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import subprocess
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -30,6 +32,8 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-affinity", type=int, choices=(64, 192), default=64)
+    parser.add_argument("--affinity-control", action="store_true")
     args = parser.parse_args()
     cpuinfo = Path("/proc/cpuinfo").read_text()
     cpu_model = next(line.split(":", 1)[1].strip() for line in cpuinfo.splitlines() if line.startswith("model name"))
@@ -37,8 +41,23 @@ def main():
         raise ValueError("Requires the qualified CPU model and historical image")
     if os.environ.get("CUDA_VISIBLE_DEVICES") != "":
         raise ValueError("This experiment must not expose GPUs")
-    if len(os.sched_getaffinity(0)) != 64:
-        raise ValueError("Requires the recorded 64-CPU process affinity")
+    if len(os.sched_getaffinity(0)) != args.expected_affinity:
+        raise ValueError("Process affinity differs from the predeclared arm")
+    if args.affinity_control:
+        if args.expected_affinity != 192:
+            raise ValueError("Affinity control requires the full 192-CPU parent")
+        args.output.mkdir(parents=True, exist_ok=False)
+        available = sorted(os.sched_getaffinity(0))
+        for name, count in (("full192-before", 192), ("subset64", 64), ("full192-after", 192)):
+            command = [
+                "taskset", "-c", ",".join(map(str, available[:count])), sys.executable, str(Path(__file__).resolve()),
+                "--inputs", str(args.inputs), "--assets", str(args.assets), "--model", str(args.model),
+                "--source", str(args.source), "--output", str(args.output / name),
+                "--expected-affinity", str(count),
+            ]
+            subprocess.run(command, check=True)
+        (args.output / "completion.json").write_text(json.dumps({"completed": 63, "fresh_process_arms": 3}) + "\n")
+        return
     for name, expected in json.loads(args.assets.read_text())["model_assets"].items():
         if Path(name).name != name or digest((args.model / name).read_bytes()) != expected:
             raise ValueError("Model/tokenizer asset mismatch")
