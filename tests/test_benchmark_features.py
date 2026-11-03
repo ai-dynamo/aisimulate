@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Measured feature provenance must survive publication without guessed states."""
 
@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from test_agentx_accuracy import bundle, result
 
 from scripts.e2e_accuracy.benchmark_features import (
     FEATURES,
@@ -18,10 +19,9 @@ from scripts.e2e_accuracy.benchmark_features import (
     validate_qwen_baseline,
 )
 from scripts.e2e_accuracy.run_agentx_accuracy import normalize_native
-from scripts.pages.agentx_pages import validate_bundle
 from scripts.pages import agentx_pages
+from scripts.pages.agentx_pages import validate_bundle
 from scripts.pages.prepare_e2e_accuracy_pages import artifact_key
-from test_agentx_accuracy import bundle, result
 
 
 def test_feature_identifiers_are_registered_in_the_pinned_support_matrix():
