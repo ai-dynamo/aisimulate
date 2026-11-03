@@ -2730,3 +2730,46 @@ multiplier or sequence-basis substitution is justified yet. GPU cost0.
 - E048-cadence-audit.json: SHA256 `e44af046a0c895533e6751f86e59a276e898a3c3887fcdfdc9d2d8b3d3f82b56`.
 - E048-independent-cadence-audit.json: SHA256 `188a81d61070a0b080fcce908c0ea4107c166c5f634b0c991b27a52843b880a1`.
 - E048-dsa-backend-0520.py: SHA256 `312f8477a9ddb9fcb358595b6c986ee825e0a773d9e5d185224f37972bee5d8c`.
+
+## H5 — E049 paged-indexer verification-width discrimination (predeclared)
+
+- **Hypothesis:** the native four-query paged-indexer path benefits from
+  shared KV reads/scheduling absent from the one-query perf table. Predict
+  native width4 faster than flat4N at identical query values and causal
+  context lengths; copied versus shared physical KV pages distinguishes
+  grouping from address/cache reuse. Other attention kernels, projections,
+  FFN/draft compute and host scheduling remain competing costs.
+- **Experiment:** one B300, SGLang historical0.5.20 image, exact source94602;
+  reuse the pinned upstream paged-MQA test generator and production native/
+  split wrappers. No model weights, serving requests, perf-table rows or SDK
+  schema changes. Fixed seed42,32 indexer heads,128 dimensions,64-token pages.
+  Batch1/8/14 × context8192/131072/393216 × native4/shared-flat/disjoint-flat,
+  three graph-timing trials per arm. Actual generated context lengths remain
+  retained, not silently described as fixed uniform contexts.
+- Preserve identical query/weight/KV values and per-query causal context lengths
+  between arms. Precompute schedules outside timed wrappers; exclude data
+  allocation, quantization and scheduling preparation from kernel timing.
+  Require finite valid logits and numerical equivalence before timing each
+  case; stop on qualification failure and retain failed/unattempted accounting.
+  This is an indexer microbenchmark, not a whole-module lookup or request MAPE.
+- Pin runtime source/test/generator hashes before submission. Record GPU, driver,
+  Torch/DeepGEMM identities, observed clocks and all trial values. Do not use
+  results as a fitted latency subtraction or relabel plain decode as verify.
+- Bound one-GPU allocation45minutes plus60seconds cleanup: reserve2760
+  GPU-seconds from targeted-op remaining4400. Total remaining100570
+  GPU-seconds before submission. Reconcile actual allocated TRES and duration;
+  if Slurm allocates more than one GPU, stop before work and charge it.
+  No unrelated jobs, clock settings, driver or global environment changes.
+- **Conclusion:** pending source/runtime gates, numerical qualification and
+  timing. Production query-width schema changes remain a separate proposal
+  requiring the collector contract's explicit approval; this experiment changes
+  no producer/consumer contract and does not imply such approval.
+
+E049 source review before allocation finds fused verification writes the full
+base_seq+4 context into every paged-indexer query column; per-query causal
+limits are applied by downstream top-k processing. Use that constant-column
+metadata in all three arms, rather than the upstream standalone test's varying
+columns. The top-k causal mask is outside this kernel timing. Pin both fused
+metadata and indexer/wrapper sources; do not claim the test generator alone
+establishes serving parity. Source fetch at the guessed flat dsa.py path fails
+404; retain it and use the actual package's paged_mqa_logits.py source.
