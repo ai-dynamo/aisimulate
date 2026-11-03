@@ -36,7 +36,7 @@ class Progress(StrictModel):
 class Artifact(StrictModel):
     path: str = Field(min_length=1)
     kind: Literal["file", "request", "profile", "collector_checkpoint"] = "file"
-    scope: Literal["input", "collection", "validation"] = "input"
+    scope: Literal["input", "collection", "validation", "learned", "learned_validation"] = "input"
     archived: bool = Field(default=False, strict=True)
     sha256: Digest | None = None
     context_sha256: Digest | None = None
@@ -50,6 +50,7 @@ class Acceptance(StrictModel):
 class Configuration(StrictModel):
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     validation_inputs: dict[str, JsonValue] = Field(default_factory=dict)
+    learned_inputs: dict[str, JsonValue] = Field(default_factory=dict)
     draft_request: dict[str, JsonValue] = Field(default_factory=dict)
     progress: Progress = Field(default_factory=lambda: Progress(stage=3))
     artifacts: dict[str, Artifact] = Field(default_factory=dict)
@@ -130,15 +131,13 @@ def _load(path: Path) -> Checkpoint:
             elif ref.sha256 is None:
                 raise ValueError("saved immutable artifact is missing its SHA-256 snapshot")
             if (ref.context_sha256 is None) != (ref.scope == "input"):
-                raise ValueError("saved artifact context SHA-256 must exist only for collection/validation scope")
+                raise ValueError("saved artifact context SHA-256 must exist only for derived artifact scopes")
     for config in state.configurations.values():
         if config.acceptance is not None and config.acceptance.revision > state.revision:
             raise ValueError("profile acceptance revision cannot exceed checkpoint revision")
     for ref in state.artifacts.values():
         if ref.scope != "input":
-            raise ValueError(
-                "shared artifacts must use scope=input; put collection/validation files in a configuration"
-            )
+            raise ValueError("shared artifacts must use scope=input; put derived files in a configuration")
     return state
 
 
@@ -201,7 +200,7 @@ def _source_refs(artifacts: dict[str, Artifact]) -> dict[str, Any]:
 
 def _context(state: Checkpoint, config: Configuration, scope: str) -> str:
     request = deepcopy(_canonical_request(config))
-    if scope == "collection":
+    if scope in {"collection", "learned", "learned_validation"}:
         request.pop("workload", None)
         if isinstance(request.get("search"), dict):
             for key in ("objective", "seed"):
@@ -213,7 +212,15 @@ def _context(state: Checkpoint, config: Configuration, scope: str) -> str:
         "configuration_source_artifacts": _source_refs(config.artifacts),
         "request": request,
     }
-    if scope == "validation":
+    if scope in {"learned", "learned_validation"}:
+        value["learned_inputs"] = config.learned_inputs
+    if scope == "learned_validation":
+        value["learned_artifacts"] = {
+            name: {"path": ref.path, "sha256": ref.sha256, "kind": ref.kind}
+            for name, ref in config.artifacts.items()
+            if ref.scope == "learned" and not ref.archived
+        }
+    if scope in {"validation", "learned_validation"}:
         value.update(
             validation_inputs=state.validation_inputs, configuration_validation_inputs=config.validation_inputs
         )
@@ -257,9 +264,7 @@ def _capture_refs(state: Checkpoint, old: Checkpoint, target: Path) -> None:
             ref.context_sha256 = None
     for ref in state.artifacts.values():
         if ref.scope != "input":
-            raise ValueError(
-                "shared artifacts must use scope=input; put collection/validation files in a configuration"
-            )
+            raise ValueError("shared artifacts must use scope=input; put derived files in a configuration")
         if ref.kind == "collector_checkpoint":
             raise ValueError("mutable collector checkpoints belong to a configuration with scope=collection")
     for config in state.configurations.values():
@@ -443,6 +448,10 @@ def save_checkpoint(
             changed = _context(state, config, "acceptance") != _context(old, previous, "acceptance")
             collection_changed = _context(state, config, "collection") != _context(old, previous, "collection")
             validation_changed = _context(state, config, "validation") != _context(old, previous, "validation")
+            learned_changed = _context(state, config, "learned") != _context(old, previous, "learned")
+            learned_validation_changed = _context(state, config, "learned_validation") != _context(
+                old, previous, "learned_validation"
+            )
             draft_changed = previous.draft_request != config.draft_request
             if draft_changed or (changed and previous.acceptance is not None):
                 config.history.append(
@@ -463,6 +472,18 @@ def save_checkpoint(
                 explicit_blockers = isinstance(progress_patch, dict) and progress_patch.get("status") == "blocked"
                 if config.progress.stage >= 3 and not explicit_blockers:
                     config.progress = Progress(stage=3, next_action="Review and accept the changed draft.")
+            elif learned_changed and config.progress.stage >= 5:
+                config.progress = Progress(
+                    stage=5, next_action="Rebuild learned artifacts for the changed training inputs."
+                )
+            elif (
+                learned_validation_changed
+                and config.progress.stage >= 6
+                and (config.learned_inputs or any(ref.scope == "learned" for ref in config.artifacts.values()))
+            ):
+                config.progress = Progress(
+                    stage=6, next_action="Repeat learned validation with the changed learned inputs."
+                )
             elif validation_changed and not collection_changed and config.progress.stage >= 6:
                 config.progress = Progress(stage=6, next_action="Repeat validation with the changed validation inputs.")
         for name in accept:

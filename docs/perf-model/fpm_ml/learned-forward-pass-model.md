@@ -314,6 +314,104 @@ are not independent online overrides:
 | L2 penalty and maximum depth | Trainer's `0.0` and no depth limit | Recorded and validated; the online leaf objective and rebuilding respect them. |
 | Bin mapper and baseline | Learned during training | Preserved by online updates. Tree splits remain on the fitted bin thresholds. |
 
+### Package and install an A/B source bundle
+
+The same trainer can publish a versioned bundle containing the fitted forest,
+exact training rows and bins, canonical deployment identity, source provenance,
+and dependency hashes. This is an offline preparation step: production inference
+and adaptation continue through `RustForwardPassPerfModel.best_available`.
+
+Start from accepted training inputs. Supply provenance explicitly; `a` means
+self-benchmark measurements for this deployment, and `b` means a declared
+offline transfer seed. Neither label establishes measured serving accuracy or
+creates an interpolation prior. For example, save this JSON as `provenance.json`
+using the actual SHA-256 of each source file:
+
+```json
+{
+  "anchor_kind": "a",
+  "sources": [
+    {"reference": "accepted-campaign/train.jsonl", "sha256": "<64 hexadecimal characters>"}
+  ],
+  "evaluation_sources": []
+}
+```
+
+Training and evaluation files must be disjoint. The bundle records accepted
+training rows per store from the checkpoint, and the fitting rows retain their
+original FPM record provenance. Publication rejects resumed C lineage for these
+pristine seeds. Source references describe the supplied evidence; publication
+does not grant permission to redistribute it.
+
+Train and package in one command, using the identity prepared above:
+
+```bash
+python -m aisimulate_core.sdk.fpm_learned train \
+  --fpm accepted-campaign/train.jsonl --worker-type decode \
+  --identity deployment_identity.json --holdout-frac 0 \
+  --out models/decode_learned.json \
+  --bundle-output-dir models/decode_bundle \
+  --provenance provenance.json \
+  --prediction-config-out models/decode_prediction.json
+```
+
+With `--bundle-output-dir`, the CLI verifies that the supplied training and
+`--holdout-fpm` files match the declared source digests. Use separate holdout
+files instead of the legacy random holdout split. The existing `train` command
+without bundle options retains its artifact/checkpoint output and holdout behavior.
+
+Package an existing pristine training checkpoint without fitting it again:
+
+```bash
+python -m aisimulate_core.sdk.fpm_learned bundle \
+  --checkpoint models/decode_online_seed \
+  --output-dir models/decode_bundle \
+  --provenance provenance.json > models/decode_prediction.json
+
+python -m aisimulate_core.sdk.fpm_learned install-bundle \
+  --bundle models/decode_bundle/bundle.json \
+  --systems-root /my/performance-systems > models/installed_decode_prediction.json
+```
+
+The producer validates the staged bundle through the canonical Rust constructor
+before publishing its new directory. The installer copies only authenticated
+dependency files, preserves their bytes, and writes an immutable manifest-addressed
+bundle under `fpm_learned/bundles/`. Its atomic catalogue update designates the
+first bundle for an exact identity as default. A later installation preserves the
+default unless passed `--make-default`; existing resolved configurations retain
+their original source pins. Concurrent installers fail explicitly so one update
+cannot overwrite another. Output bundle directories and prediction configuration
+files must be new; separate artifact, checkpoint and configuration outputs stay
+outside the immutable bundle directory.
+
+The CLI prints a complete pinned canonical configuration. The SDK exposes the
+same workflow through `train_bundle(...)`, `export_bundle(...)`,
+`inspect_bundle(...)` and `install_bundle(...)` in `aisimulate_core.sdk.fpm_learned`.
+Each returns the prepared model's resolved configuration, including native
+fallback dependencies when present. `inspect_bundle(bundle_path, config=...)`
+also checks an expected canonical deployment identity without changing the caller's
+dictionary. Pass the returned configuration directly to `best_available`.
+Catalogue discovery requires explicit `estimation_mode: fpm_learned` and the
+installed systems root; installing a bundle leaves Auto's selection order unchanged.
+
+Each bundle records `training_recipe` from the seed: the model name,
+scikit-learn version, feature order, target and actual offline hyperparameters.
+The producer requires the supported scikit-learn 1.9.1 trainer, installed by the
+`learned` extra. Prediction and bundle inspection do not import the trainer.
+Callers own collection and initial fitting for missing stores; bundle loading
+does not collect observations or start training.
+
+For an optional qualified original-A prior, pass `bundle --prior prior.json`
+and `--prediction-config learned_request.json`. The prior JSON contains the
+existing `original_a` manifest binding plus optional `calibration` and
+`quality_gate` settings. The producer preserves the original manifest bytes and
+hash, copies its referenced evidence, and records verified path remaps. The
+canonical request supplies any external interpolation roots or explicit parquet
+path. Preserve those external dependencies with the returned configuration;
+a bundle alone does not pack an unrelated operation database installation.
+The prepared model's `dependency_info()` describes both owned files and external
+roots. Full snapshots provide the separate portable runtime-state workflow.
+
 ## 3. Use it
 
 ```python

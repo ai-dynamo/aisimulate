@@ -148,6 +148,7 @@ class ForwardPassEstimatorResolver:
                 return deepcopy(cached)
             model = RustForwardPassPerfModel.best_available(request)
             diagnostics = model.diagnostics()
+            diagnostics["dependencies"] = model.dependency_info()
         except Exception as exc:
             raise ForwardPassEstimatorResolutionError(
                 "Core cannot construct the exact forward-pass estimator for "

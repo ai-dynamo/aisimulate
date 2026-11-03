@@ -313,6 +313,57 @@ fn mixed_original_a_stream_preserves_decoded_groups_and_checks_every_byte() {
     assert!(!parse_error.contains("source digest mismatch"));
 }
 
+fn large_original_a_fixture() -> Fixture {
+    const METADATA_LIMIT: usize = 16 * 1024 * 1024;
+    let group_bytes = serde_json::to_vec(&group(Kind::CrossRankAggregated)).unwrap();
+    let rows = METADATA_LIMIT / group_bytes.len() + 1;
+    // A real observation population, not a large ignored padding string. Both
+    // mixed stores are already trained, so this legacy policy needs no native
+    // hardware fixture to qualify its original-A evidence.
+    let mut fixture = Fixture::new(rows, 2, false);
+    fixture.config.estimator_config.fpm_learned.artifact_path =
+        Some(fixture._dir.path().join("seed.json"));
+    let manifest = fixture._dir.path().join("manifest.json");
+    let bytes = std::fs::metadata(&manifest).unwrap().len();
+    assert!(bytes > METADATA_LIMIT as u64, "fixture bytes: {bytes}");
+    fixture
+}
+
+#[test]
+fn large_original_a_legacy_construction_and_portable_references() {
+    let fixture = large_original_a_fixture();
+    let manifest = fixture._dir.path().join("manifest.json");
+    let bytes = std::fs::metadata(&manifest).unwrap().len();
+    let model = ForwardPassPerfModel::best_available(fixture.config.clone()).unwrap();
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&group(Kind::CrossRankAggregated))
+            .unwrap()
+            .unwrap()
+            .is_finite()
+    );
+    let dependencies = model.dependency_info();
+    let recorded = dependencies["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["purpose"] == "original_a_manifest")
+        .unwrap();
+    assert_eq!(recorded["byte_length"], bytes);
+    assert_eq!(
+        recorded["sha256"],
+        digest(&std::fs::read(&manifest).unwrap())
+    );
+    let remaps = crate::perfmodel::fpm::source::portable_prior_remaps(
+        model.pinned_learned_config.as_ref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(remaps.len(), 2);
+    for remap in remaps {
+        assert_eq!(remap.sha256, digest(&std::fs::read(remap.path).unwrap()));
+    }
+}
+
 #[test]
 fn mixed_original_a_routes_cover_absent_partial_and_complete_support() {
     for (cross, local, expected) in [

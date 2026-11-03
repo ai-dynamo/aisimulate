@@ -309,6 +309,14 @@ profile route, and check measured-point queries. `onboard validate-fpm` then
 checks aggregated trace coverage. Use the accepted plan's generated `predict`
 and `recommend` configurations for ordinary simulation.
 
+Seeded learned timing is optional within these same six stages. Preserve the
+accepted profile and generated interpolation configs, train or install a verified
+A/B bundle, and select `fpm_learned` explicitly in a separate ordinary prediction
+config. Pass it to `onboard validate-fpm --prediction-config PATH`; matched
+serving validation retains that selected model and its pinned source files.
+The global `auto` default and collection-quality interpolation assay are unchanged.
+See [optional learned validation](implementation.md#optional-seeded-learned-validation).
+
 Keep collection quality, resolved memory, query coverage and measured serving
 accuracy as separate results. Missing query coverage is not fixed by changing
 identity labels or silently choosing another estimator. Use `onboard validate-serving`

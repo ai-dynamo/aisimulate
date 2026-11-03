@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import subprocess
 import sys
 import sysconfig
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -87,16 +87,9 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
         cwd=unrelated_repository,
     )
 
-    # Reuse the already-installed test dependencies without exposing the app
-    # source tree. Local editable environments may keep the core package in a
-    # separate source directory, while CI's preceding core-wheel step already
-    # places it in the current purelib directory.
+    # Reuse installed third-party dependencies without exposing either app or
+    # core source trees. The unified wheel must own both packages and native code.
     dependency_paths = [Path(sysconfig.get_path("purelib")).resolve()]
-    core_spec = importlib.util.find_spec("aisimulate_core")
-    assert core_spec is not None and core_spec.submodule_search_locations
-    core_root = Path(next(iter(core_spec.submodule_search_locations))).resolve().parent
-    if core_root not in dependency_paths:
-        dependency_paths.append(core_root)
     installed_purelib = Path(
         _run(
             [str(installed_python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
@@ -133,3 +126,79 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
     assert f"installed:aisimulate=={installed_version}:record-sha256:" in completed.stdout
     assert unrelated_head not in completed.stdout
     assert str(unrelated_repository) not in completed.stdout
+
+    learned = _run(
+        [
+            str(installed_python),
+            "-c",
+            textwrap.dedent(
+                """
+                import hashlib
+                import json
+                import shutil
+                import sys
+                from pathlib import Path
+
+                import aisimulate
+                import aisimulate_core
+                from aisimulate import _runtime
+                from aisimulate_core.sdk import fpm_bundle, fpm_learned, rust_engine_step
+                from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+                installed = Path(sys.argv[1]).resolve()
+                for module in (aisimulate, aisimulate_core, _runtime, fpm_bundle, fpm_learned, rust_engine_step):
+                    assert Path(module.__file__).resolve().is_relative_to(installed), module.__file__
+
+                identity = {
+                    "model": "wheel-test-model", "system": "wheel-test-system", "backend": "vllm",
+                    "backend_version": "1", "worker_type": "decode",
+                }
+                rows = [[{
+                    "version": 1, "worker_id": "wheel-test", "dp_rank": 0, "counter_id": index,
+                    "wall_time": (1 + index % 8) / 1000,
+                    "scheduled_requests": {
+                        "num_decode_requests": 1 + index % 8, "sum_decode_kv_tokens": 100 * (1 + index % 8)
+                    },
+                }] for index in range(32)]
+                source = Path("training.json")
+                source.write_text(json.dumps(rows))
+                config = fpm_learned.train_bundle(
+                    rows, "decode", output_dir="learned-bundle", identity=identity,
+                    provenance={
+                        "anchor_kind": "b",
+                        "sources": [{
+                            "reference": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()
+                        }],
+                        "evaluation_sources": [],
+                    },
+                    max_iter=3, max_leaf_nodes=3, min_samples_leaf=2, min_store_rows=5,
+                )
+                before = RustForwardPassPerfModel.best_available(config)
+                expected = before.estimate_forward_pass_time_ms(rows[0])
+                assert expected is not None
+                before.close()
+                installed_config = fpm_learned.install_bundle("learned-bundle/bundle.json", "systems")
+                shutil.rmtree("learned-bundle")
+                source.unlink()
+                frozen_config = fpm_learned.inspect_bundle(
+                    installed_config["estimator_config"]["fpm_learned"]["bundle_path"], adaptation="frozen"
+                )
+                frozen = RustForwardPassPerfModel.best_available(frozen_config)
+                assert frozen.estimate_forward_pass_time_ms(rows[0]) == expected
+                frozen.close()
+                model = RustForwardPassPerfModel.best_available({
+                    **identity, "estimation_mode": "fpm_learned", "systems_paths": [str(Path("systems").resolve())],
+                })
+                assert model.estimate_forward_pass_time_ms(rows[0]) == expected
+                assert model.dependency_info()["files"]
+                assert all(Path(item["path"]).is_file() for item in model.dependency_info()["files"])
+                model.close()
+                print("Verified installed learned train, bundle, install and discovery")
+                """
+            ),
+            str(installed_purelib),
+        ],
+        cwd=unrelated_repository,
+        env=env,
+    )
+    assert "Verified installed learned train, bundle, install and discovery" in learned.stdout

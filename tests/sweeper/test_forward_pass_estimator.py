@@ -479,6 +479,9 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
             self.config["backend_version"] = "0.24.0" if config.backend == "vllm" else "0.5.10"
             self.config["estimation_mode"] = "op_level"
 
+        def dependency_info(self):
+            return {"systems_paths": self.config["systems_paths"], "files": []}
+
         def diagnostics(self):
             return {
                 "readiness": "ready",
@@ -536,6 +539,9 @@ def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(m
             )
             self.config["backend_version"] = "0.24.0"
             self.config["estimation_mode"] = "op_level"
+
+        def dependency_info(self):
+            return {"systems_paths": self.config["systems_paths"], "files": []}
 
         def diagnostics(self):
             return {

@@ -181,9 +181,41 @@ pub enum LearnedDerivativeRefresh {
 
 /// Explicit learned-model sources and Rust-owned online fitting controls.
 /// Offline anchors are retained in addition to the bounded recent window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FpmLearnedConfig {
+    pub artifact_path: Option<PathBuf>,
+    pub checkpoint_path: Option<PathBuf>,
+    /// Digest of the artifact file or checkpoint manifest, pinned at construction.
+    pub source_sha256: Option<String>,
+    pub adaptation: LearnedAdaptation,
+    pub update_mode: LearnedUpdateMode,
+    pub recent_window: usize,
+    /// None keeps unit row weights; Some(beta) fixes total history mass.
+    pub history_weight: Option<f64>,
+    /// Retained recent support needed to reach the configured group mass.
+    pub history_weight_ramp_observations: usize,
+    /// Aggregate immutable history by complete fitted-bin vectors; preserve its mass.
+    pub history_bin_grouping: bool,
+    /// Only this many final seed trees may change; None updates all trees.
+    pub mutable_tree_tail: Option<usize>,
+    /// Convex displacement toward fitted leaf values; structural updates require 1.
+    pub update_step: f64,
+    /// Maximum global learned-observation age of recent rows, inclusive.
+    pub recent_max_age_observations: Option<usize>,
+    pub update_every: usize,
+    pub derivative_refresh: LearnedDerivativeRefresh,
+    pub split_sampling_rate: f64,
+    pub split_rank_tolerance: f64,
+    pub eager_refresh_interval: usize,
+    pub seed: u64,
+    /// Source resolution controls; flattened in JSON, excluded from legacy binary checkpoints.
+    pub source: super::LearnedSourceConfig,
+}
+// Runtime checkpoint v5 embeds this exact historical sequence. Source resolution
+// metadata belongs to the canonical configuration, not the fitting payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct FpmLearnedConfig {
+struct LegacyFpmLearnedConfig {
     pub artifact_path: Option<PathBuf>,
     pub checkpoint_path: Option<PathBuf>,
     /// Digest of the artifact file or checkpoint manifest, pinned at construction.
@@ -211,9 +243,109 @@ pub struct FpmLearnedConfig {
     pub seed: u64,
 }
 
+impl Default for LegacyFpmLearnedConfig {
+    fn default() -> Self {
+        FpmLearnedConfig::default().legacy()
+    }
+}
+impl FpmLearnedConfig {
+    fn legacy(&self) -> LegacyFpmLearnedConfig {
+        LegacyFpmLearnedConfig {
+            artifact_path: self.artifact_path.clone(),
+            checkpoint_path: self.checkpoint_path.clone(),
+            source_sha256: self.source_sha256.clone(),
+            adaptation: self.adaptation,
+            update_mode: self.update_mode,
+            recent_window: self.recent_window,
+            history_weight: self.history_weight,
+            history_weight_ramp_observations: self.history_weight_ramp_observations,
+            history_bin_grouping: self.history_bin_grouping,
+            mutable_tree_tail: self.mutable_tree_tail,
+            update_step: self.update_step,
+            recent_max_age_observations: self.recent_max_age_observations,
+            update_every: self.update_every,
+            derivative_refresh: self.derivative_refresh,
+            split_sampling_rate: self.split_sampling_rate,
+            split_rank_tolerance: self.split_rank_tolerance,
+            eager_refresh_interval: self.eager_refresh_interval,
+            seed: self.seed,
+        }
+    }
+}
+impl From<LegacyFpmLearnedConfig> for FpmLearnedConfig {
+    fn from(value: LegacyFpmLearnedConfig) -> Self {
+        Self {
+            artifact_path: value.artifact_path,
+            checkpoint_path: value.checkpoint_path,
+            source_sha256: value.source_sha256,
+            adaptation: value.adaptation,
+            update_mode: value.update_mode,
+            recent_window: value.recent_window,
+            history_weight: value.history_weight,
+            history_weight_ramp_observations: value.history_weight_ramp_observations,
+            history_bin_grouping: value.history_bin_grouping,
+            mutable_tree_tail: value.mutable_tree_tail,
+            update_step: value.update_step,
+            recent_max_age_observations: value.recent_max_age_observations,
+            update_every: value.update_every,
+            derivative_refresh: value.derivative_refresh,
+            split_sampling_rate: value.split_sampling_rate,
+            split_rank_tolerance: value.split_rank_tolerance,
+            eager_refresh_interval: value.eager_refresh_interval,
+            seed: value.seed,
+            source: super::LearnedSourceConfig::default(),
+        }
+    }
+}
+impl Serialize for FpmLearnedConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() {
+            return self.legacy().serialize(serializer);
+        }
+        let mut value = serde_json::to_value(self.legacy()).map_err(serde::ser::Error::custom)?;
+        let extra = serde_json::to_value(&self.source).map_err(serde::ser::Error::custom)?;
+        value
+            .as_object_mut()
+            .expect("learned config object")
+            .extend(extra.as_object().expect("source config object").clone());
+        value.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for FpmLearnedConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if !deserializer.is_human_readable() {
+            return LegacyFpmLearnedConfig::deserialize(deserializer).map(Self::from);
+        }
+        // Preserve duplicate-key rejection for direct callers as well as the
+        // canonical configuration decoder.
+        let yaml = serde_yaml::Value::deserialize(deserializer)?;
+        let mut value = serde_json::Value::deserialize(yaml).map_err(serde::de::Error::custom)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("expected learned configuration object"))?;
+        let mut source = serde_json::Map::new();
+        for key in super::source::SOURCE_CONFIG_KEYS {
+            if let Some(value) = object.remove(*key) {
+                source.insert((*key).to_owned(), value);
+            }
+        }
+        let mut result = Self::from(
+            serde_path_to_error::deserialize::<_, LegacyFpmLearnedConfig>(value).map_err(
+                |error| serde::de::Error::custom(format!("estimator_config.fpm_learned.{error}")),
+            )?,
+        );
+        result.source = serde_path_to_error::deserialize(serde_json::Value::Object(source))
+            .map_err(|error| {
+                serde::de::Error::custom(format!("estimator_config.fpm_learned.{error}"))
+            })?;
+        Ok(result)
+    }
+}
+
 impl Default for FpmLearnedConfig {
     fn default() -> Self {
         Self {
+            source: super::LearnedSourceConfig::default(),
             artifact_path: None,
             checkpoint_path: None,
             source_sha256: None,
@@ -239,58 +371,6 @@ impl Default for FpmLearnedConfig {
 impl FpmLearnedConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
-    }
-
-    /// Bind content before caller caches use the resolved configuration.
-    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
-        use sha2::{Digest, Sha256};
-        use std::io::Read;
-        for path in [&mut self.artifact_path, &mut self.checkpoint_path]
-            .into_iter()
-            .flatten()
-        {
-            *path = std::path::absolute(&*path).map_err(|source| AicError::Io {
-                path: path.clone(),
-                source,
-            })?;
-        }
-        let source = self
-            .artifact_path
-            .clone()
-            .or_else(|| {
-                self.checkpoint_path
-                    .as_ref()
-                    .map(|path| path.join("manifest.json"))
-            })
-            .ok_or_else(|| AicError::InvalidEngineConfig("fpm_learned source is missing".into()))?;
-        let mut file = std::fs::File::open(&source).map_err(|error| AicError::Io {
-            path: source.clone(),
-            source: error,
-        })?;
-        let mut digest = Sha256::new();
-        let mut bytes = [0u8; 65536];
-        loop {
-            let count = file.read(&mut bytes).map_err(|error| AicError::Io {
-                path: source.clone(),
-                source: error,
-            })?;
-            if count == 0 {
-                break;
-            }
-            digest.update(&bytes[..count]);
-        }
-        let actual = format!("{:x}", digest.finalize());
-        if self
-            .source_sha256
-            .as_ref()
-            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
-        {
-            return Err(AicError::InvalidEngineConfig(
-                "estimator_config.fpm_learned.source_sha256 does not match source contents".into(),
-            ));
-        }
-        self.source_sha256 = Some(actual);
-        Ok(())
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
@@ -1363,7 +1443,7 @@ impl EstimatorConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
-        if let Some(mixed) = &self.temporary_mixed_composition {
+        if let Some(mixed) = self.effective_mixed_composition() {
             mixed.validate()?;
             for (name, weight) in [
                 ("attention_kv_weight", self.features.attention_kv_weight),
@@ -2453,6 +2533,30 @@ mod tests {
         assert_eq!(
             config.fpm_regression.fit.rebuild_interval,
             RegressionFitConfig::default().rebuild_interval
+        );
+    }
+}
+
+#[cfg(test)]
+mod learned_source_wire_tests {
+    use super::*;
+
+    #[test]
+    fn source_controls_do_not_change_runtime_v5_binary_layout() {
+        let mut config = FpmLearnedConfig::default();
+        config.source.bundle_path = Some("bundle.json".into());
+        config.source.source_policy = super::super::LearnedSourcePolicy::ExplicitOnly;
+        config.source.resolved_source = Some(super::super::ResolvedLearnedSource::absent());
+        // The independent historical wire struct fixes the field sequence and
+        // types used by existing runtime-v5 checkpoint bytes.
+        let bytes = bincode::serialize(&config).unwrap();
+        assert_eq!(bytes, bincode::serialize(&config.legacy()).unwrap());
+        let restored: FpmLearnedConfig = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(restored, FpmLearnedConfig::default());
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            serde_json::from_value::<FpmLearnedConfig>(json).unwrap(),
+            config
         );
     }
 }

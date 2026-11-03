@@ -172,6 +172,11 @@ pub fn online_forest_checkpoint(
     model.export_learned_artifact()
 }
 
+/// Consumers use Core's selected dependency record for reconstruction/export.
+pub fn forward_pass_dependencies(model: &ForwardPassPerfModel) {
+    assert!(model.dependency_info()["systems_paths"].is_array());
+}
+
 /// Keep the KV request type in the external-consumer contract without
 /// constructing an environment-dependent estimate.
 pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequest {

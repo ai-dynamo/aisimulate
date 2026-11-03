@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -19,22 +20,27 @@ from aisimulate.output import prepare_output_directory
 
 from .plan import check_plan, plan_lock, request_id
 from .schema import SupportRequest
+from .timing import learned_timing_evidence, selected_timing_mode, verify_timing_dependencies
 
 
 def add_validation_parser(actions: Any) -> None:
     parser = actions.add_parser(
         "validate-fpm",
-        help="Check collected direct-FPM query coverage with a local Weka/AgentX trace.",
+        help="Check direct-FPM or explicitly selected learned timing with a local Weka/AgentX trace.",
         description=(
             "Run ordinary predict with cold aggregated replay, one client lane, HBM-only cache and no speculation. "
             "The trace may contain one play or a selected corpus. All selected requests must finish and every "
-            "native timing lookup must resolve for coverage to pass. Accuracy is not assessed. "
+            "required timing query must resolve for coverage to pass. Accuracy is not assessed. "
             "This command does not download traces or collect GPU measurements."
         ),
     )
     parser.add_argument("-c", "--config", required=True, help="Reviewed onboarding request.")
     parser.add_argument("--output-dir", required=True, help="Existing matching collection plan directory.")
     parser.add_argument("--trace", required=True, help="Local Weka JSON/JSONL file; replay its full contents.")
+    parser.add_argument(
+        "--prediction-config",
+        help="Optional ordinary prediction config selecting seeded learned timing for the same reviewed deployment.",
+    )
     parser.add_argument(
         "--validation-output-dir", required=True, help="Separate directory for config, replay and coverage evidence."
     )
@@ -53,7 +59,9 @@ def _fpm_artifacts(plan: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _prediction_config(request: SupportRequest, plan: Path, trace: Path) -> dict[str, Any]:
+def _prediction_config(
+    request: SupportRequest, plan: Path, trace: Path, selected_config: Path | None = None
+) -> dict[str, Any]:
     """Retain the reviewed deployment and replace only evaluation inputs."""
 
     if request.worker_type in {"prefill", "decode"}:
@@ -63,6 +71,26 @@ def _prediction_config(request: SupportRequest, plan: Path, trace: Path) -> dict
             "P/D serving configuration. Collection does not require actual P/D handoff."
         )
     prediction = load_yaml(plan / "predict/pilot.yaml")
+    if selected_config is not None:
+        selected = load_yaml(selected_config)
+        expected_engine = CorePredictionConfig.model_validate(prediction).engine.model_dump(mode="json")
+        selected_engine = CorePredictionConfig.model_validate(selected).engine.model_dump(mode="json")
+        expected_timing = expected_engine["workers"]["aggregated"].pop("timing")
+        selected_timing = selected_engine["workers"]["aggregated"].pop("timing")
+        selection_fields = {"estimation_mode", "fallback_policy", "estimator_config", "systems_paths"}
+        for field in selection_fields:
+            expected_engine.pop(field, None)
+            selected_engine.pop(field, None)
+        if selected_engine != expected_engine:
+            raise ValueError("selected prediction deployment/resources differ from the reviewed onboarding plan")
+        if {k: v for k, v in selected_timing.items() if k not in selection_fields} != {
+            k: v for k, v in expected_timing.items() if k not in selection_fields
+        }:
+            raise ValueError("selected timing identity differs from the reviewed onboarding plan")
+        fallback = selected_timing["fallback_policy"] or selected["engine"].get("fallback_policy", "deny")
+        if selected_timing_mode(selected) != "fpm_learned" or fallback != "deny":
+            raise ValueError("--prediction-config requires explicit fpm_learned timing with fallback_policy: deny")
+        prediction["engine"] = deepcopy(selected["engine"])
     prediction["traffic"] = {
         "source": {
             "type": "trace",
@@ -74,14 +102,15 @@ def _prediction_config(request: SupportRequest, plan: Path, trace: Path) -> dict
     }
     prediction["evaluation"] = {}
     engine = prediction["engine"]
-    if engine["mode"] != "aggregated" or engine.get("speculation") is not None:
+    if engine.get("mode", "aggregated") != "aggregated" or engine.get("speculation") is not None:
         raise ValueError("FPM replay validation requires aggregated serving with speculation disabled")
     worker = engine["workers"]["aggregated"]
-    timing = worker["timing"]
-    timing["estimation_mode"] = "fpm_interpolation"
-    timing["fallback_policy"] = "deny"
-    interpolation = timing.setdefault("estimator_config", {}).setdefault("fpm_interpolation", {})
-    interpolation.update(method="direct", collect_coverage=True)
+    if selected_config is None:
+        timing = worker.setdefault("timing", {})
+        timing["estimation_mode"] = "fpm_interpolation"
+        timing["fallback_policy"] = "deny"
+        interpolation = timing.setdefault("estimator_config", {}).setdefault("fpm_interpolation", {})
+        interpolation.update(method="direct", collect_coverage=True)
     if engine["model"] != request.identity.model:
         raise ValueError("saved prediction model differs from the reviewed collection identity")
     CorePredictionConfig.model_validate(prediction)
@@ -123,20 +152,28 @@ def run_validation(args: argparse.Namespace) -> int:
     plan = Path(args.output_dir).expanduser().resolve()
     trace = Path(args.trace).expanduser().resolve()
     output = Path(args.validation_output_dir).expanduser().resolve()
+    selected = getattr(args, "prediction_config", None)
+    selected = Path(selected).expanduser().resolve() if selected else None
     if not trace.is_file() or trace.suffix.lower() not in {".json", ".jsonl"}:
         raise ValueError("--trace must be a local Weka JSON or JSONL file")
     if output == plan or plan in output.parents or output in plan.parents:
         raise ValueError("validation output must be separate from the collection plan directory")
-    for source in (Path(args.config).expanduser().resolve(), trace):
+    for source in (Path(args.config).expanduser().resolve(), trace, *([selected] if selected else [])):
         if source == output or output in source.parents:
             raise ValueError(f"validation output must not contain the input file {source}")
     with plan_lock(plan):
         check_plan(request, plan)
-        prediction = _prediction_config(request, plan, trace)
+        prediction = _prediction_config(request, plan, trace, selected)
         if request.fpm_profile is not None:
             request.profile_deployment().resources.require_memory()
         collection = json.loads((plan / "support-plan.json").read_text(encoding="utf-8"))
-    for relative in ("predict.yaml", "validation.json", "prediction"):
+    learned = learned_timing_evidence(prediction, pin=True) if selected else None
+    if learned:
+        for ref in learned["dependencies"]:
+            source = Path(ref["path"]).resolve()
+            if source == output or output in source.parents:
+                raise ValueError(f"validation output must not contain the learned source {source}")
+    for relative in ("predict.yaml", "validation.json", "prediction", "learned-coverage.json"):
         if (output / relative).is_symlink():
             raise ValueError(f"refusing symlinked validation output {output / relative}")
     prepare_output_directory(output, overwrite=args.overwrite)
@@ -163,10 +200,14 @@ def run_validation(args: argparse.Namespace) -> int:
         },
         "prediction_config": _file_identity(prediction_path),
         "prediction_report": str(output / "prediction/prediction.json"),
-        "coverage_report": str(output / "prediction/fpm-coverage.json"),
+        "coverage_report": str(output / ("learned-coverage.json" if learned else "prediction/fpm-coverage.json")),
         "collection_schema_version": collection.get("schema_version"),
         "issues": ["replay has not completed"],
     }
+    if learned:
+        report["timing_model"] = learned
+        report["selected_prediction_config"] = _file_identity(selected)
+        report["scope"]["estimation_mode"] = "fpm_learned"
     _write_report(report_path, report)
     # Use the existing supervised CLI: the same compiler, capacity checks,
     # timing provider, source importer and host limits apply to ordinary predict.
@@ -193,11 +234,6 @@ def run_validation(args: argparse.Namespace) -> int:
         _write_report(report_path, report)
         raise
     report["prediction_exit_code"] = exit_code
-    coverage_path = Path(report["coverage_report"])
-    coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.is_file() else None
-    report["fpm_query_coverage"] = coverage
-    if coverage_path.is_file():
-        report["coverage_evidence"] = _file_identity(coverage_path)
     issues = []
     if exit_code != 0:
         issues.append(f"predict exited with status {exit_code}; replay coverage is incomplete")
@@ -210,12 +246,33 @@ def run_validation(args: argparse.Namespace) -> int:
         report["agentic_model_projection"] = replay.get("agentic_model_projection")
     else:
         issues.append("no completed prediction report was produced")
-    if not coverage or coverage.get("status") != "covered":
-        issues.append(
-            "native direct-FPM query coverage did not pass; inspect the coverage report for missing coordinates"
-        )
+    coverage_path = Path(report["coverage_report"])
+    if learned:
+        try:
+            verify_timing_dependencies(learned)
+        except (OSError, ValueError) as error:
+            issues.append(str(error))
+        coverage = {
+            "kind": "learned_replay",
+            "status": "covered" if not issues else "incomplete",
+            "accuracy": "not_assessed",
+            "scope": "All selected requests completed using the pinned learned model; not a generalization guarantee.",
+            "prediction_evidence": report.get("prediction_evidence"),
+        }
+        _write_report(coverage_path, coverage)
+    else:
+        coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.is_file() else None
+        if not coverage or coverage.get("status") != "covered":
+            issues.append(
+                "native direct-FPM query coverage did not pass; inspect the coverage report for missing coordinates"
+            )
+    report["fpm_query_coverage"] = coverage
+    if coverage_path.is_file():
+        report["coverage_evidence"] = _file_identity(coverage_path)
     if _file_identity(trace) != report["trace"]:
         issues.append("trace file changed during validation")
+    if selected and _file_identity(selected) != report["selected_prediction_config"]:
+        issues.append("selected prediction config changed during validation")
     if _fpm_artifacts(plan) != report["fpm_artifacts"]:
         issues.append("FPM library files changed during validation")
     with plan_lock(plan):

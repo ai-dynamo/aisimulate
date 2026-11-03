@@ -145,10 +145,14 @@ class ForwardPassPerfModelConfig:
     ``estimation_mode`` selection: request ``"fpm_regression"`` explicitly
     to require regression.
 
-    Select ``estimation_mode="fpm_learned"`` for a supplied tree artifact or
-    online checkpoint. ``estimator_config.fpm_learned.adaptation`` selects
+    Select ``estimation_mode="fpm_learned"`` for a supplied tree artifact,
+    checkpoint, or source bundle. Online source discovery uses the configured
+    systems roots unless ``source_policy="explicit_only"``. Explicit sources
+    and generated source/fallback pins survive configuration round trips.
+    ``estimator_config.fpm_learned.adaptation`` selects
     ``"online"`` by default, or explicit ``"frozen"`` (including independently
-    usable hybrid calibration). Online adaptation requires ``checkpoint_path``;
+    usable hybrid calibration). Online seeds require a training/runtime checkpoint,
+    either directly or within a bundle;
     omitted ``estimator_config.correction.enabled`` defaults to ``False`` for
     this mode. Rust owns all online
     defaults, validation, fitting, and checkpoint continuation. Learned models
@@ -262,7 +266,7 @@ class ForwardPassPerfModelConfig:
             if payload[name] is None:
                 payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
-        if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
+        if _needs_forward_pass_systems_paths(payload):
             payload["systems_paths"] = _resolve_forward_pass_systems_paths(
                 self.systems_paths, require_directories=not _carries_state_snapshot(self.estimator_config)
             )
@@ -600,6 +604,14 @@ class RustForwardPassPerfModel:
         """Trainer metadata embedded in a learned artifact; ``None`` for other modes."""
         raw = self._inner.learned_metadata()
         return None if raw is None else json.loads(raw)
+
+    def dependency_info(self) -> dict[str, Any]:
+        """Describe the prepared model's verified dependencies without reading files.
+
+        Consumers preserve this native record with exported configurations and
+        cache keys, including any internal learned fallback dependencies.
+        """
+        return json.loads(self._inner.dependency_info_json())
 
     def learned_online_diagnostics(self) -> dict[str, Any] | None:
         """Return learned state diagnostics, or ``None`` for another estimator."""
@@ -991,9 +1003,30 @@ def _carries_state_snapshot(estimator_config: Any) -> bool:
     return isinstance(estimator_config, Mapping) and estimator_config.get("state_snapshot") is not None
 
 
+def _needs_forward_pass_systems_paths(payload: Mapping[str, Any]) -> bool:
+    """Supply configured roots for native discovery without selecting a source.
+
+    Explicit learned sources and restored selections retain the historical
+    ability to load without an operation database installation. Only unresolved
+    catalogue lookup needs omitted roots expanded by the Python SDK.
+    """
+    mode = payload.get("estimation_mode")
+    if mode not in {"fpm_regression", "fpm_learned"} or payload.get("systems_paths"):
+        return True
+    estimator = payload.get("estimator_config")
+    if mode != "fpm_learned" or _carries_state_snapshot(estimator):
+        return False
+    learned = estimator.get("fpm_learned", {}) if isinstance(estimator, Mapping) else {}
+    if not isinstance(learned, Mapping):
+        return False  # Rust reports malformed configuration.
+    return learned.get("source_policy") != "explicit_only" and not any(
+        learned.get(name) is not None for name in ("bundle_path", "artifact_path", "checkpoint_path", "resolved_source")
+    )
+
+
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
     payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-    if payload.get("estimation_mode") not in {"fpm_regression", "fpm_learned"} or payload.get("systems_paths"):
+    if _needs_forward_pass_systems_paths(payload):
         # A snapshot owns its packed performance data; Rust points those paths
         # into the snapshot before it reads them.
         payload["systems_paths"] = _resolve_forward_pass_systems_paths(

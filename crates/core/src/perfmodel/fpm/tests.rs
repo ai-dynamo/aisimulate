@@ -3400,6 +3400,6 @@ fn canonical_learned_selection_is_explicit_and_online_rejects_cascaded_correctio
         ForwardPassPerfModel::best_available(config)
             .unwrap_err()
             .to_string()
-            .contains("exactly one")
+            .contains("at most one")
     );
 }

@@ -60,6 +60,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
+from contextlib import nullcontext
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -1046,6 +1047,56 @@ def train(
     return artifact
 
 
+def train_bundle(iterations, worker_type: str, *, output_dir, identity, provenance, **train_kwargs) -> dict[str, Any]:
+    """Train accepted A/B rows and return the validated bundle's pinned configuration.
+
+    Uses :func:`train` and its controls. ``provenance`` explicitly declares the
+    A/B anchor and training/evaluation source references with SHA-256 digests.
+    The new directory owns the exact checkpoint rows and forest. No prior is
+    inferred from the anchor label. See the learned-model workflow for examples.
+    """
+    from aisimulate_core.sdk.fpm_bundle import train_bundle as produce
+
+    return produce(
+        iterations, worker_type, output_dir=output_dir, identity=identity, provenance=provenance, **train_kwargs
+    )
+
+
+def export_bundle(
+    checkpoint_path, output_dir, *, provenance, recipe_version=None, prior=None, config=None
+) -> dict[str, Any]:
+    """Package an accepted A/B training checkpoint without changing its bytes.
+
+    Returns a complete configuration validated by the canonical Rust constructor.
+    The destination must be new. An optional qualified original-A prior retains
+    its manifest bytes and dependency hashes; it is never inferred from labels.
+    """
+    from aisimulate_core.sdk.fpm_bundle import export_bundle as produce
+
+    return produce(
+        checkpoint_path, output_dir, provenance=provenance, recipe_version=recipe_version, prior=prior, config=config
+    )
+
+
+def inspect_bundle(bundle_path, *, config=None, adaptation=None) -> dict[str, Any]:
+    """Validate a bundle through Rust and return its complete pinned configuration."""
+    from aisimulate_core.sdk.fpm_bundle import inspect_bundle as inspect
+
+    return inspect(bundle_path, config=config, adaptation=adaptation)
+
+
+def install_bundle(bundle_path, systems_root, *, make_default=False, config=None) -> dict[str, Any]:
+    """Validate and install an immutable bundle, returning its pinned configuration.
+
+    The first seed for an identity becomes its catalogue default. Later installs
+    preserve the default unless ``make_default=True``. This never changes Auto's
+    estimator order; catalogue discovery requires explicit learned mode.
+    """
+    from aisimulate_core.sdk.fpm_bundle import install_bundle as install
+
+    return install(bundle_path, systems_root, make_default=make_default, config=config)
+
+
 # ---------------------------------------------------------------------------
 # Pure-Python reference inference (mirrors learned.rs) and evaluation
 # ---------------------------------------------------------------------------
@@ -1229,28 +1280,57 @@ def _cmd_train(args: argparse.Namespace) -> int:
     features = None
     if args.features:
         features = list(FEATURE_PRESETS.get(args.features, ())) or [f.strip() for f in args.features.split(",")]
-    artifact = train(
-        train_set,
-        args.worker_type,
-        features=features,
-        target=args.target,
-        max_iter=args.max_iter,
-        learning_rate=args.learning_rate,
-        max_leaf_nodes=args.max_leaf_nodes,
-        min_samples_leaf=args.min_samples_leaf,
-        min_store_rows=args.min_store_rows,
-        random_state=args.seed,
-        early_stopping=args.early_stopping,
-        online_checkpoint_dir=args.online_checkpoint_dir,
-        identity=identity,
-        metadata={
-            "sources": [os.fspath(p) for p in args.fpm],
-            "join_ranks": args.join_ranks,
-            "train_iterations": len(train_set),
-            "holdout_iterations": len(holdout),
-            "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
-        },
-    )
+    provenance = None
+    if args.bundle_output_dir:
+        if not args.identity or not args.provenance:
+            raise ValueError("--bundle-output-dir requires --identity and --provenance")
+        bundle_dir = Path(args.bundle_output_dir).resolve()
+        if os.path.lexists(bundle_dir):
+            raise FileExistsError(f"bundle destination already exists: {bundle_dir}")
+        for output in (args.out, args.prediction_config_out, args.online_checkpoint_dir):
+            if output and Path(output).resolve().is_relative_to(bundle_dir):
+                raise ValueError(
+                    "artifact, checkpoint and prediction-config outputs must be outside the bundle directory"
+                )
+        if args.prediction_config_out and os.path.lexists(args.prediction_config_out):
+            raise FileExistsError(f"prediction configuration already exists: {args.prediction_config_out}")
+        if args.holdout_frac != 0:
+            raise ValueError("bundle publication requires --holdout-frac 0; use separate --holdout-fpm files")
+        provenance = _load_json_argument(args.provenance)
+        _check_cli_sources(provenance, args.fpm, args.holdout_fpm or [])
+    elif args.provenance or args.prediction_config_out:
+        raise ValueError("--provenance and --prediction-config-out require --bundle-output-dir")
+    temporary_checkpoint = args.bundle_output_dir and not args.online_checkpoint_dir
+    context = tempfile.TemporaryDirectory(prefix="aisimulate-learned-") if temporary_checkpoint else nullcontext()
+    with context as temporary:
+        checkpoint_dir = Path(temporary) / "checkpoint" if temporary_checkpoint else args.online_checkpoint_dir
+        artifact = train(
+            train_set,
+            args.worker_type,
+            features=features,
+            target=args.target,
+            max_iter=args.max_iter,
+            learning_rate=args.learning_rate,
+            max_leaf_nodes=args.max_leaf_nodes,
+            min_samples_leaf=args.min_samples_leaf,
+            min_store_rows=args.min_store_rows,
+            random_state=args.seed,
+            early_stopping=args.early_stopping,
+            online_checkpoint_dir=checkpoint_dir,
+            identity=identity,
+            metadata={
+                "sources": [os.fspath(p) for p in args.fpm],
+                "join_ranks": args.join_ranks,
+                "train_iterations": len(train_set),
+                "holdout_iterations": len(holdout),
+                "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
+            },
+        )
+        if args.bundle_output_dir:
+            resolved = export_bundle(checkpoint_dir, args.bundle_output_dir, provenance=provenance)
+            if args.prediction_config_out:
+                _write_prediction_config(args.prediction_config_out, resolved)
+            print(f"wrote validated bundle {Path(args.bundle_output_dir) / 'bundle.json'}")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(artifact, separators=(",", ":")), encoding="utf-8")
@@ -1260,6 +1340,50 @@ def _cmd_train(args: argparse.Namespace) -> int:
     if holdout:
         print(f"random holdout ({len(holdout)} iterations; consecutive steps are correlated, treat as a smoke check):")
         print(_format_report(evaluate(artifact, holdout)))
+    return 0
+
+
+def _load_json_argument(path: str | None) -> dict[str, Any] | None:
+    return None if path is None else json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_prediction_config(path: str, config: dict[str, Any]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # An existing accepted configuration is never silently replaced.
+    with destination.open("x", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2, allow_nan=False)
+        handle.write("\n")
+
+
+def _check_cli_sources(provenance: dict[str, Any], training: Sequence[str], evaluation: Sequence[str]) -> None:
+    for key, paths in (("sources", training), ("evaluation_sources", evaluation)):
+        actual = {_file_sha256(Path(path)) for path in paths}
+        declared = {entry["sha256"].lower() for entry in provenance.get(key, [])}
+        if actual != declared:
+            raise ValueError(f"provenance {key} digests must exactly match the supplied FPM files")
+
+
+def _cmd_bundle(args: argparse.Namespace) -> int:
+    resolved = export_bundle(
+        args.checkpoint,
+        args.output_dir,
+        provenance=_load_json_argument(args.provenance),
+        prior=_load_json_argument(args.prior),
+        config=_load_json_argument(args.prediction_config),
+    )
+    print(json.dumps(resolved, indent=2, allow_nan=False))
+    return 0
+
+
+def _cmd_install_bundle(args: argparse.Namespace) -> int:
+    resolved = install_bundle(
+        args.bundle,
+        args.systems_root,
+        make_default=args.make_default,
+        config=_load_json_argument(args.prediction_config),
+    )
+    print(json.dumps(resolved, indent=2, allow_nan=False))
     return 0
 
 
@@ -1307,6 +1431,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="also export fitted rows and bins to a new directory for Rust online fitting (early stopping must be off)",
     )
     tr.add_argument("--identity", help="canonical FPM configuration JSON; required with --online-checkpoint-dir")
+    tr.add_argument("--bundle-output-dir", help="publish a validated A/B bundle in a new directory")
+    tr.add_argument("--provenance", help="bundle provenance JSON declaring anchor kind and source hashes")
+    tr.add_argument("--prediction-config-out", help="write the bundle's complete pinned prediction JSON to a new file")
     tr.add_argument(
         "--early-stopping",
         action="store_true",
@@ -1323,6 +1450,25 @@ def _build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("evaluate", parents=[common], help="score an artifact against FPM files")
     ev.add_argument("--model", required=True)
     ev.set_defaults(func=_cmd_evaluate)
+
+    bundle = sub.add_parser("bundle", help="package and validate an existing A/B training checkpoint")
+    bundle.add_argument("--checkpoint", required=True)
+    bundle.add_argument("--output-dir", required=True)
+    bundle.add_argument("--provenance", required=True, help="explicit A/B source provenance JSON")
+    bundle.add_argument("--prior", help="qualified original-A prior configuration JSON")
+    bundle.add_argument(
+        "--prediction-config", help="canonical learned config with expected identity and external roots"
+    )
+    bundle.set_defaults(func=_cmd_bundle)
+
+    install = sub.add_parser("install-bundle", help="install a bundle and register an immutable catalogue entry")
+    install.add_argument("--bundle", required=True, help="bundle.json path")
+    install.add_argument("--systems-root", required=True)
+    install.add_argument(
+        "--make-default", action="store_true", help="replace this identity's current catalogue default"
+    )
+    install.add_argument("--prediction-config", help="canonical learned config preserving external prior dependencies")
+    install.set_defaults(func=_cmd_install_bundle)
     return parser
 
 

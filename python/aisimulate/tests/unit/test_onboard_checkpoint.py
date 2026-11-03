@@ -431,6 +431,79 @@ def test_validation_changes_preserve_collection_identity_and_approval(tmp_path, 
     assert _resume(path, capsys)["configurations"]["one"]["effective_status"] == "accepted"
 
 
+def test_training_recipe_changes_only_invalidate_learned_outputs(tmp_path, capsys, monkeypatch, request_payload):
+    path = tmp_path / "checkpoint.json"
+    scopes = {
+        "plan": "collection",
+        "direct_validation": "validation",
+        "bundle": "learned",
+        "learned_validation": "learned_validation",
+    }
+    for name in scopes:
+        (tmp_path / f"{name}.json").write_text("{}")
+    saved = _save(
+        path,
+        capsys,
+        monkeypatch,
+        {
+            "configurations": {
+                "one": {
+                    "draft_request": request_payload,
+                    "learned_inputs": {"recipe": "recipe-v1", "sources": ["accepted-observations"]},
+                    "progress": {"stage": 6, "status": "complete"},
+                    "artifacts": {name: {"path": f"{name}.json", "scope": scope} for name, scope in scopes.items()},
+                }
+            }
+        },
+        accept=["one"],
+    )
+    updated = _save(
+        path,
+        capsys,
+        monkeypatch,
+        {"configurations": {"one": {"learned_inputs": {"recipe": "recipe-v2"}}}},
+        1,
+        expected=2,
+    )
+    assert updated["configurations"]["one"]["profile_accepted"]
+    assert {issue["artifact"] for issue in updated["integrity_issues"]} == {"bundle", "learned_validation"}
+    original = saved["state"]["configurations"]["one"]
+    current = updated["state"]["configurations"]["one"]
+    assert current["acceptance"] == original["acceptance"]
+    assert current["artifacts"] == original["artifacts"]
+    assert current["progress"]["stage"] == 5
+    assert _resume(path, capsys, expected=2)["configurations"]["one"]["profile_accepted"]
+
+
+def test_validation_changes_do_not_invalidate_learned_training(tmp_path, capsys, monkeypatch, request_payload):
+    path = tmp_path / "checkpoint.json"
+    for name in ("bundle", "validation"):
+        (tmp_path / f"{name}.json").write_text("{}")
+    _save(
+        path,
+        capsys,
+        monkeypatch,
+        {
+            "configurations": {
+                "one": {
+                    "draft_request": request_payload,
+                    "learned_inputs": {"recipe": "recipe-v1"},
+                    "progress": {"stage": 6, "status": "complete"},
+                    "artifacts": {
+                        "bundle": {"path": "bundle.json", "scope": "learned"},
+                        "validation": {"path": "validation.json", "scope": "learned_validation"},
+                    },
+                }
+            }
+        },
+        accept=["one"],
+    )
+    result = _save(path, capsys, monkeypatch, {"validation_inputs": {"trace": "new-play"}}, 1, expected=2)
+    assert result["configurations"]["one"]["profile_accepted"]
+    assert {issue["artifact"] for issue in result["integrity_issues"]} == {"validation"}
+    assert result["state"]["configurations"]["one"]["progress"]["stage"] == 6
+
+
 def test_input_and_immutable_drift_survive_note_save_while_collector_can_advance(
     tmp_path, capsys, monkeypatch, request_payload
 ):

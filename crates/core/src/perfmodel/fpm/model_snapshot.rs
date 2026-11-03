@@ -202,7 +202,63 @@ fn owned_paths(
         }
         StateSnapshotKind::Regression | StateSnapshotKind::LearnedWithoutIdentity => {}
     }
+    // Learned source pins describe the snapshot's own exported seed. Relocate
+    // every repeated reference along with the public artifact/checkpoint path.
+    if let Some(source) = learned.source.resolved_source.as_mut() {
+        let base = match kind {
+            StateSnapshotKind::LearnedFrozen => Some(LEARNED_ARTIFACT_FILE),
+            StateSnapshotKind::LearnedOnline | StateSnapshotKind::CausalSelector => {
+                Some(ONLINE_CHECKPOINT_DIR)
+            }
+            _ => None,
+        };
+        if let Some(base) = base {
+            let original = source
+                .path
+                .clone()
+                .ok_or_else(|| invalid("saved learned source has no path"))?;
+            if let Some(path) = source.path.as_mut() {
+                owned.push((path, base.to_owned()));
+            }
+            if let Some(path) = source.seed_path.as_mut() {
+                owned.push((path, base.to_owned()));
+            }
+            for dependency in &mut source.dependencies {
+                let relative = if kind == StateSnapshotKind::LearnedFrozen {
+                    base.to_owned()
+                } else {
+                    let suffix = dependency.path.strip_prefix(&original).map_err(|_| {
+                        invalid("saved learned dependency is outside its checkpoint")
+                    })?;
+                    Path::new(base).join(suffix).to_string_lossy().into_owned()
+                };
+                owned.push((&mut dependency.path, relative));
+            }
+        }
+    }
     Ok(owned)
+}
+
+fn rebase_learned_source(
+    config: &mut ForwardPassPerfModelConfig,
+    from: &Path,
+    to: &Path,
+) -> Result<(), AicError> {
+    let source = &mut config.estimator_config.fpm_learned.source;
+    if let Some(pin) = source.resolved_source.as_mut() {
+        for path in pin
+            .path
+            .iter_mut()
+            .chain(pin.seed_path.iter_mut())
+            .chain(pin.dependencies.iter_mut().map(|dep| &mut dep.path))
+        {
+            let relative = path
+                .strip_prefix(from)
+                .map_err(|_| invalid("snapshot source is outside staging"))?;
+            *path = to.join(relative);
+        }
+    }
+    Ok(())
 }
 
 /// The directory that holds `relative` at `path`, if `path` ends with it.
@@ -285,6 +341,7 @@ pub(crate) fn relocate_snapshot_inputs(
         let learned = &mut config.estimator_config.fpm_learned;
         learned.artifact_path = Some(root.join(LEARNED_ARTIFACT_FILE));
         learned.checkpoint_path = None;
+        learned.source.resolved_source = None;
         return Ok(());
     };
     let saved = identity.estimator_config;
@@ -316,6 +373,7 @@ pub(crate) fn relocate_snapshot_inputs(
             let learned = &mut config.estimator_config.fpm_learned;
             learned.artifact_path = saved.fpm_learned.artifact_path;
             learned.checkpoint_path = saved.fpm_learned.checkpoint_path;
+            learned.source = saved.fpm_learned.source;
         }
         StateSnapshotKind::Regression | StateSnapshotKind::LearnedWithoutIdentity => {}
     }
@@ -679,6 +737,34 @@ impl ForwardPassPerfModel {
         self.check_state(&mut decoded.state)?;
         stage.write_recorded(STATE_FILE, &bytes)?;
 
+        if let Some(identity) = identity.as_mut() {
+            if matches!(
+                kind,
+                StateSnapshotKind::LearnedFrozen
+                    | StateSnapshotKind::LearnedOnline
+                    | StateSnapshotKind::CausalSelector
+            ) {
+                let mut staged = identity.clone();
+                let settings = &mut staged.estimator_config.fpm_learned;
+                settings.source.bundle_path = None;
+                settings.source.resolved_source = None;
+                settings.source.resolved_fallback = None;
+                for path in settings
+                    .artifact_path
+                    .iter_mut()
+                    .chain(settings.checkpoint_path.iter_mut())
+                {
+                    *path = stage.staging().join(
+                        path.strip_prefix(&destination)
+                            .map_err(|_| invalid("saved learned input is outside snapshot"))?,
+                    );
+                }
+                super::super::source::pin_legacy_source(&mut staged)?;
+                rebase_learned_source(&mut staged, stage.staging(), &destination)?;
+                identity.estimator_config.fpm_learned.source =
+                    staged.estimator_config.fpm_learned.source;
+            }
+        }
         let mut pinned = match identity.clone() {
             Some(identity) => identity,
             None => {
@@ -692,6 +778,7 @@ impl ForwardPassPerfModel {
                 .resolve()?;
                 config.estimator_config.fpm_learned.artifact_path =
                     Some(destination.join(LEARNED_ARTIFACT_FILE));
+                rebase_learned_source(&mut config, stage.staging(), &destination)?;
                 config
             }
         };
@@ -922,7 +1009,7 @@ fn causal_selector_base(
     config: &ForwardPassPerfModelConfig,
     stable_bytes: &[u8],
 ) -> Result<ForwardPassPerfModel, AicError> {
-    let settings = &config.estimator_config.fpm_learned;
+    let settings = config.estimator_config.fpm_learned.runtime_source_config();
     let checkpoint = settings
         .checkpoint_path
         .as_ref()
@@ -948,7 +1035,7 @@ fn causal_selector_base(
             ));
         }
     }
-    let online = OnlineLearner::load_combined_runtime(checkpoint, &mut learned, settings, config)?;
+    let online = OnlineLearner::load_combined_runtime(checkpoint, &mut learned, &settings, config)?;
     let options = config.estimator_config.correction_options();
     let combined = CalibratedOnlineModel::new(
         stable,
@@ -966,6 +1053,11 @@ fn causal_selector_base(
         is_correction_enabled: config.estimator_config.correction.enabled,
         query_coverage: None,
         snapshot_tuning: None,
+        pinned_learned_config: {
+            let mut pinned = config.clone();
+            super::super::source::pin_legacy_source(&mut pinned)?;
+            Some(pinned)
+        },
         mixed_composition: None,
     })
 }

@@ -691,6 +691,49 @@ lookup path; it is not held-out accuracy evidence.
 
 ### B6. Run Replay
 
+For optional learned timing, package an existing accepted A/B training checkpoint
+using the [learned producer](../fpm_ml/learned-forward-pass-model.md). Its provenance
+JSON must name the A/B anchor, immutable source hashes and distinct evaluation
+sources. Keep the native collection-quality assay and accepted memory profile.
+For example, after training and reviewing those inputs:
+
+```bash
+python -m aisimulate_core.sdk.fpm_learned bundle \
+  --checkpoint /absolute/path/to/accepted-training-checkpoint \
+  --provenance /absolute/path/to/training-provenance.json \
+  --output-dir "$FPM_RUN/learned-bundle" > "$FPM_RUN/learned-model-config.json"
+```
+
+The command returns a complete canonical timing configuration. Use its controls
+in a separate ordinary prediction file while preserving the accepted engine:
+
+```bash
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+import yaml
+
+run = Path(os.environ["FPM_RUN"])
+root = Path(os.environ["FPM_SIM"])
+prediction = yaml.safe_load((root / "predict/pilot.yaml").read_text())
+learned = json.loads((run / "learned-model-config.json").read_text())
+prediction["engine"]["workers"]["aggregated"]["timing"].update(
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config=learned["estimator_config"],
+)
+(run / "learned-predict.yaml").write_text(yaml.safe_dump(prediction, sort_keys=False))
+PY
+```
+
+Add `--prediction-config "$FPM_RUN/learned-predict.yaml"` to the replay command
+below and choose a separate learned validation output directory. Source identity
+must match this deployment exactly; validation rejects mismatches. This explicit
+choice preserves the generated interpolation files and the global `auto` default.
+Register bundle dependencies/configs as `scope: learned`, derived validation as
+`scope: learned_validation`, and source/recipe choices in `learned_inputs`.
+
 For a first trace check, select one complete local AgentX play and preserve its
 request dependencies. Run the existing cold aggregated replay with coverage:
 
@@ -701,8 +744,10 @@ aisimulate onboard validate-fpm \
   --validation-output-dir "$FPM_RUN/replay-validation"
 ```
 
-The result records completed replay separately from exact/interpolated/unsupported
-queries. A missing query stops execution; the partial report does not audit the
+For the default interpolation path, the result records completed replay separately
+from exact/interpolated/unsupported queries. The optional learned path records
+source pins, readiness and completed replay separately from accuracy. A missing
+query stops execution; the partial report does not audit the
 remaining trace. The supplied file is replayed completely. See
 [AgentX scope and coverage results](implementation.md#validate-fpm-query-coverage-with-agentx-replay).
 This does not qualify unsupported grouped-cache P/D handoff or full multimodal

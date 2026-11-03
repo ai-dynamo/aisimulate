@@ -78,6 +78,7 @@ pub(super) struct MixedComposition {
     admissions: BTreeMap<Kind, u64>,
     identity: serde_json::Value,
     prior: serde_json::Value,
+    native_dependency: serde_json::Value,
     attention_dp: usize,
     anchor_digests: BTreeSet<String>,
     pub(super) quality_gate: Option<QualityGate>,
@@ -168,7 +169,7 @@ impl MixedComposition {
         config: &ForwardPassPerfModelConfig,
         learned: &LearnedForwardPassModel,
     ) -> Result<Option<Self>, AicError> {
-        let Some(policy) = &config.estimator_config.temporary_mixed_composition else {
+        let Some(policy) = config.estimator_config.effective_mixed_composition() else {
             return Ok(None);
         };
         let source = &policy.original_a;
@@ -219,15 +220,11 @@ impl MixedComposition {
             return Err(invalid("original A source files cannot be empty"));
         }
         for reference in sources {
-            let path = if reference.path.is_absolute() {
-                reference.path
-            } else {
-                source
-                    .manifest_path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(reference.path)
-            };
+            let path = config.estimator_config.resolve_prior_dependency(
+                &source.manifest_path,
+                &reference.path,
+                &reference.sha256,
+            )?;
             check_source_file(&path, &reference.sha256)?;
         }
         let score_options = config.estimator_config.regression_options();
@@ -258,23 +255,25 @@ impl MixedComposition {
         let mut seed_kinds = BTreeSet::new();
         let mut anchor_digests = BTreeSet::new();
         for reference in &manifest.seed_artifacts {
-            let path = if reference.path.is_absolute() {
-                reference.path.clone()
-            } else {
-                source
-                    .manifest_path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(&reference.path)
-            };
+            let path = config.estimator_config.resolve_prior_dependency(
+                &source.manifest_path,
+                &reference.path,
+                &reference.sha256,
+            )?;
             let bytes = checked_bytes(&path, &reference.sha256)?;
             let seed =
                 LearnedForwardPassModel::from_json(std::str::from_utf8(&bytes).map_err(invalid)?)?;
             if let Some(expected) = &reference.checkpoint_manifest_sha256 {
-                let checkpoint = path
+                let checkpoint_reference = reference
+                    .path
                     .parent()
                     .unwrap_or(Path::new("."))
                     .join("manifest.json");
+                let checkpoint = config.estimator_config.resolve_prior_dependency(
+                    &source.manifest_path,
+                    &checkpoint_reference,
+                    expected,
+                )?;
                 let bytes = checked_bytes(&checkpoint, expected)?;
                 let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(invalid)?;
                 if value["schema"] != "aisimulate_fpm_training_checkpoint"
@@ -367,6 +366,7 @@ impl MixedComposition {
             admissions: BTreeMap::new(),
             identity,
             prior: serde_json::Value::Null,
+            native_dependency: serde_json::Value::Null,
             attention_dp: config.attention_dp as usize,
             anchor_digests,
             quality_gate: policy.quality_gate.as_ref().map(QualityGate::new),
@@ -383,10 +383,43 @@ impl MixedComposition {
         };
         let policy = &value.policy;
         let bounds = value.bounds;
+        if value.routes.iter().all(|route| !route.fallback_eligible)
+            && config
+                .estimator_config
+                .fpm_learned
+                .source
+                .resolved_fallback
+                .as_ref()
+                .is_some_and(|fallback| fallback.native.is_some())
+        {
+            return Err(invalid("native fallback pin has no eligible mixed route"));
+        }
         if value.routes.iter().any(|r| r.fallback_eligible) {
             // Preserve the compatible canonical interpolation method. Only
             // typed support misses are unavailable; malformed data remains an error.
-            let mut prior_config = config.clone();
+            let pinned_native = config
+                .estimator_config
+                .fpm_learned
+                .source
+                .resolved_fallback
+                .as_ref()
+                .and_then(|fallback| fallback.native.as_ref());
+            let mut prior_config = if let Some(pin) = pinned_native {
+                let saved: ForwardPassPerfModelConfig = serde_json::from_value(
+                    pin["provenance"]["config"].clone(),
+                )
+                .map_err(|error| invalid(format!("invalid resolved native fallback: {error}")))?;
+                if saved.estimation_mode != EstimationMode::FpmInterpolation
+                    || canonical_learned_identity(&saved)? != canonical_learned_identity(config)?
+                {
+                    return Err(invalid(
+                        "resolved native fallback deployment identity mismatch",
+                    ));
+                }
+                saved
+            } else {
+                config.clone()
+            };
             prior_config.estimation_mode = EstimationMode::FpmInterpolation;
             prior_config.fallback_policy = ForwardPassFallbackPolicy::Deny;
             prior_config.estimator_config.temporary_mixed_composition = None;
@@ -397,7 +430,38 @@ impl MixedComposition {
                 .estimator_config
                 .fpm_interpolation
                 .collect_coverage = false;
+            let data_stamp = if let Some(pin) = pinned_native {
+                let root = prior_config
+                    .systems_paths
+                    .first()
+                    .ok_or_else(|| invalid("native fallback has no pinned systems root"))?;
+                if prior_config.systems_paths.len() != 1 {
+                    return Err(invalid("native fallback must pin exactly one systems root"));
+                }
+                let (fingerprint, stamp) = super::super::snapshot::perf_db::current(
+                    root,
+                    &prior_config.system,
+                    prior_config
+                        .estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_deref(),
+                )?;
+                if serde_json::to_value(fingerprint).map_err(invalid)? != pin["fingerprint"] {
+                    return Err(invalid("resolved native fallback systems data changed"));
+                }
+                Some(stamp)
+            } else {
+                None
+            };
             let prior_model = ForwardPassPerfModel::best_available(prior_config)?;
+            let fingerprint = prior_model
+                .data_fingerprint()
+                .ok_or_else(|| invalid("native fallback has no systems fingerprint"))?
+                .as_ref()
+                .as_ref()
+                .map_err(invalid)?
+                .clone();
             let ForwardPassPerfMode::Native { engine, .. } = prior_model.mode else {
                 return Err(invalid("composition prior is not native interpolation"));
             };
@@ -416,7 +480,38 @@ impl MixedComposition {
                 })?;
                 Ok(format!("{:x}", reader.digest.finalize()))
             };
+            // Keep the legacy checkpoint calibration binding byte-compatible;
+            // the complete systems pin is separate resolved dependency data.
             value.prior = serde_json::json!({"provenance":prior_model.provenance,"parquet_sha256":file_digest(path)?,"metadata_sha256":file_digest(&path.with_extension("metadata.json"))?});
+            value.native_dependency = value.prior.clone();
+            value.native_dependency["fingerprint"] =
+                serde_json::to_value(fingerprint).map_err(invalid)?;
+            if pinned_native.is_some_and(|expected| expected != &value.native_dependency) {
+                return Err(invalid(
+                    "resolved native fallback inputs changed after construction",
+                ));
+            }
+            if let Some(stamp) = data_stamp {
+                let provenance = prior_model
+                    .provenance
+                    .as_ref()
+                    .expect("native prior provenance");
+                super::super::snapshot::perf_db::verified(
+                    provenance
+                        .selected_systems_root
+                        .as_deref()
+                        .expect("native prior root"),
+                    &provenance.config.system,
+                    provenance
+                        .config
+                        .estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_deref(),
+                    engine.database(),
+                    stamp,
+                );
+            }
             value.engine = Some(engine);
             if policy.mode == TemporaryMixedCompositionMode::ComposeCalibrated {
                 let axes = [
@@ -442,6 +537,10 @@ impl MixedComposition {
 
     pub(super) fn prefers_ordinary(&self) -> bool {
         self.policy.scenario == TemporaryMixedCompositionScenario::AC
+    }
+
+    pub(super) fn dependency_provenance(&self) -> &serde_json::Value {
+        &self.native_dependency
     }
 
     /// One selected-expert query; the second expert runs only for a typed

@@ -651,8 +651,11 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
     request.profile_deployment().resources.require_memory()
     trace = _checked(report["trace"])
     config_path = _checked(report["prediction_config"])
-    if load_yaml(config_path) != _prediction_config(request, root, trace):
-        raise ValueError("replay configuration differs from the reviewed direct-FPM workload")
+    learned = report.get("timing_model")
+    if learned:
+        _checked(report["selected_prediction_config"])
+    if load_yaml(config_path) != _prediction_config(request, root, trace, config_path if learned else None):
+        raise ValueError("replay configuration differs from the reviewed onboarding workload")
     if report["collection_id"] != request_id(request) or report["fpm_artifacts"] != _fpm_artifacts(root):
         raise ValueError("replay collection identity or formal data changed")
     source_hashes = sorted((x["sha256"], x["size_bytes"]) for x in collection["inputs"]["formal_data"])
@@ -668,14 +671,31 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
     coverage = _json(coverage_path)
     issues = _completion_issues(prediction)
     queries = coverage.get("queries", {})
+    if learned:
+        from aisimulate_core.sdk import RustForwardPassPerfModel
+
+        from .timing import canonical_timing_config, verify_timing_dependencies
+
+        verify_timing_dependencies(learned)
+        model = RustForwardPassPerfModel.best_available(canonical_timing_config(load_yaml(config_path)))
+        try:
+            if model.diagnostics()["provenance"]["config"] != learned["config"]:
+                raise ValueError("learned replay model differs from its recorded resolved configuration")
+        finally:
+            model.close()
+        if (
+            coverage.get("kind") != "learned_replay"
+            or coverage.get("prediction_evidence") != report["prediction_evidence"]
+        ):
+            issues.append("learned replay coverage does not bind the completed prediction")
     if (
         report.get("prediction_exit_code") != 0
         or coverage.get("status") != "covered"
-        or queries.get("unsupported") != 0
-        or queries.get("measured", 0) + queries.get("interpolated", 0) <= 0
+        or (not learned and queries.get("unsupported") != 0)
+        or (not learned and queries.get("measured", 0) + queries.get("interpolated", 0) <= 0)
         or report.get("fpm_query_coverage") != coverage
     ):
-        issues.append("native query coverage is incomplete or inconsistent")
+        issues.append("replay timing coverage is incomplete or inconsistent")
     return {
         "status": "passed" if not issues else "incomplete",
         "issues": issues,
