@@ -38,15 +38,33 @@ def _selections(path: Path) -> list[tuple[str, str, dict]]:
     return found
 
 
-PLANNED_CAPTURES = sorted((path.name, selection) for path in CAPTURES.glob("*.py") for selection in _selections(path))
+def _graded_sms(path: Path) -> tuple[int, ...]:
+    """A capture's GRADED_SMS when it declares one (a cell the plan leaves out elsewhere), else GRADED_SMS."""
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "GRADED_SMS" for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    return GRADED_SMS
+
+
+CAPTURE_FILES = sorted([*CAPTURES.glob("*.py"), *CAPTURES.glob("*/*.py")])
+PLANNED_CAPTURES = sorted(
+    (
+        (path.name, selection, sm)
+        for path in CAPTURE_FILES
+        for selection in _selections(path)
+        for sm in _graded_sms(path)
+    ),
+    key=lambda item: (item[0], str(item[1]), item[2]),
+)
 
 
 def test_the_plan_derived_captures_are_found():
-    assert len(PLANNED_CAPTURES) >= 44
+    assert len({(name, str(selection)) for name, selection, _sm in PLANNED_CAPTURES}) >= 48
 
 
-@pytest.mark.parametrize("sm", GRADED_SMS)
-@pytest.mark.parametrize(("name", "selection"), PLANNED_CAPTURES, ids=[name for name, _ in PLANNED_CAPTURES])
+@pytest.mark.parametrize(
+    ("name", "selection", "sm"), PLANNED_CAPTURES, ids=[f"{name}-sm{sm}" for name, _, sm in PLANNED_CAPTURES]
+)
 def test_capture_names_one_planned_case(name, selection, sm):
     backend, op, select = selection
     cases = plan(op, backend, sm).cases
