@@ -10,7 +10,10 @@ import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
-POINTS = {1: "agentx-446063", 8: "agentx-446069", 14: "agentx-446062"}
+from audit_shared_frontend import latencies
+
+POINTS = {1: "agentx-446063", 4: "agentx-446068", 8: "agentx-446069",
+          10: "agentx-446060", 13: "agentx-446061", 14: "agentx-446062"}
 
 
 def longest_prefix(left, right):
@@ -138,10 +141,13 @@ def main():
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--frozen", type=Path, required=True)
     parser.add_argument("--variant", action="append", required=True, help="NAME=retained-replay-directory")
+    parser.add_argument("--lanes", type=int, nargs="+", choices=POINTS, default=[1, 8, 14])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("Audit output already exists")
+    if len(args.lanes) != len(set(args.lanes)):
+        raise ValueError("Duplicate lane selection")
     variants = {}
     for specification in args.variant:
         name, directory = specification.split("=", 1)
@@ -153,10 +159,13 @@ def main():
     frozen = read(args.frozen)["cohorts"]
     result = {"schema": "aisimulate.glm-rsi.input-cache-audit.v1", "points": [],
               "frozen_sha256": checksum(args.frozen), "catalog_sha256": checksum(catalog_path),
-              "scope": "Development lanes only. Observational strata, not causal attribution or new scoring cohorts. "
+              "lanes": args.lanes,
+              "scope": "Explicit selected lanes. Observational strata, not causal attribution or new scoring cohorts. "
                        "Fresh tokens mean input minus reported cache reuse, not measured kernel work. "
                        "Different prompt lengths confound direct reuse-counter comparisons."}
     for lane, identity in POINTS.items():
+        if lane not in args.lanes:
+            continue
         run = next(row for row in catalog["runs"] if row["id"] == identity)
         receipt = run["artifacts"]["observations"]
         path = args.inputs / receipt["path"]
@@ -167,7 +176,28 @@ def main():
         for name, directory in variants.items():
             native_path = directory / identity / "native.json"
             native = read(native_path)
+            predicted = [row for row in native["telemetry"]["requests"] if row["phase"] == "profile"]
+            for row in predicted:
+                if row["terminal_status"] == "completed":
+                    latencies(row)
+            # Native headline throughput counts completed requests only. Keep
+            # canceled partial output explicit without adding it to that total.
+            total = sum(row["output_length"] for row in predicted if row["terminal_status"] == "completed")
+            if total != native["total_output_tokens"] or not math.isclose(
+                total * 1000 / native["duration_ms"], native["output_throughput_tok_s"], rel_tol=1e-10, abs_tol=1e-6
+            ):
+                raise ValueError("Native token/throughput accounting changed")
+            phase = native["agentic_profile"]
+            if (not math.isclose(phase["admission_cutoff_ms"] - phase["profile_start_ms"], 3_600_000, abs_tol=1e-6)
+                    or not math.isclose(phase["response_grace_deadline_ms"] - phase["admission_cutoff_ms"],
+                                        30_000, abs_tol=1e-6)):
+                raise ValueError("Original profile/grace boundaries changed")
             item = audit(observations, native["telemetry"]["requests"], frozen[identity]["dashboard"])
+            item["native_completed_output_tokens"] = total
+            item["native_noncompleted_output_tokens"] = sum(
+                row["output_length"] for row in predicted if row["terminal_status"] != "completed"
+            )
+            item["native_timestamp_token_throughput_boundaries_qualified"] = True
             item["native_sha256"] = checksum(native_path)
             point["variants"][name] = item
         result["points"].append(point)

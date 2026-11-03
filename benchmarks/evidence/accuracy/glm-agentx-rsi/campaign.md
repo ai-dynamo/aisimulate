@@ -2621,3 +2621,17 @@ First execute/audit1/8/14, then run unchanged4/10/13 once, with no tuning or
 source change from their results. This supersedes E047's earlier conditional
 held-out sentence; it does not relax frozen-cohort, win or publication rules.
 No replay result has been opened at this clarification. GPU cost remains zero.
+
+E047 development retains all4169 frozen TTFT and4166 TPOT requests, losing
+none. TTFT MAPE changes88.410318→91.048677%; TPOT changes68.252566→70.031252%.
+Neither objective improves. Independently recomputed native timestamps, output
+lengths, throughput and profile/grace boundaries qualify. The extended auditor
+initially includes canceled partial output in the completed-request headline
+token total: E003 lane14 retains13226 canceled tokens outside that total.
+Source report.rs explicitly counts completed admitted requests only. Correct
+the auditor to retain noncompleted output separately; no benchmark, eligibility
+or result is changed. Both failed audit attempts remain in execution history.
+The unchanged4/10/13 regression replays are running; no tuning follows their
+scores. This source-confirmed composition correction is not an accuracy win.
+- E047-frozen-dev-audit.json: SHA256 `5fb94d01bbc2fadae322be05cdef54699e8d31d887a4f48b8e1faab945378a4b`.
+- E047-independent-dev-audit.json: SHA256 `e3164f8fdfd0895f19287538fc4af0be8d96bceeed47aab8caebdfb799e09985`.
