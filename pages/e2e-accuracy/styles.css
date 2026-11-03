@@ -831,8 +831,8 @@ dialog::backdrop { background: #0009; }
 #profile-accuracy .agentx-feature-status.unknown, #profile-accuracy .agentx-feature-status.na { color:var(--muted); }
 #profile-accuracy .agentx-feature-detail { display:block; margin-top:4px; color:var(--muted); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
 #profile-accuracy .agentx-feature-badges { display:flex; flex-wrap:wrap; justify-content:center; gap:5px; margin-top:6px; }
-#profile-accuracy .agentx-feature-badge { display:inline-flex; align-items:baseline; gap:4px; max-width:100%; padding:3px 4px; border:1px solid var(--border); border-radius:5px; background:var(--accent-soft); font-size:10px; line-height:1.4; overflow-wrap:anywhere; }
-#profile-accuracy .agentx-feature-badge-key { color:var(--muted); font-size:9px; }
+#profile-accuracy .agentx-feature-badge { display:inline-flex; align-items:baseline; gap:3px; max-width:100%; padding:3px 2px; border:1px solid var(--border); border-radius:5px; background:var(--accent-soft); font-size:9px; line-height:1.4; white-space:nowrap; }
+#profile-accuracy .agentx-feature-badge-key { color:var(--muted); font-size:8px; }
 #profile-accuracy .agentx-feature-badge-value { color:var(--text); font-weight:600; }
 #profile-accuracy .agentx-feature-revision { margin:auto 0 0; padding-top:14px; color:var(--muted); font-size:10px; }
 @media (max-width:1100px) {
