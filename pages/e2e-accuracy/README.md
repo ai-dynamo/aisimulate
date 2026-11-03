@@ -981,7 +981,7 @@ An optional `agentx_campaign_catalog` may name a specific unscored failed/stoppe
 campaign under `catalog/e2e/agentx/qualifications/`. This adds its retained profiles
 to a **partial preview**, without changing the HF active catalog or qualification
 status. Partial previews carry `measurement_campaign_status: partial`, display a
-warning, and cannot pass the public snapshot gate. Replay qualification confirms
+warning on overview and detail pages, and cannot pass the public snapshot gate. Replay qualification confirms
 complete accounting of the explicitly selected profiles; it does not qualify the
 incomplete silicon campaign or authorize dataset promotion. No new GPU collection
 is part of this workflow.
