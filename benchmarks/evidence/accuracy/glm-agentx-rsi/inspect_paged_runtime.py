@@ -6,6 +6,7 @@
 import argparse
 import ast
 import hashlib
+import importlib
 import importlib.metadata
 import importlib.util
 import json
@@ -20,6 +21,8 @@ FILES = (
     "kernels/ops/attention/dsa/paged_mqa_logits.py",
     "srt/model_executor/model_runner.py",
     "srt/model_executor/runner.py",
+    "srt/model_executor/runner/__init__.py",
+    "srt/model_executor/runner_utils.py",
     "srt/model_executor/forward_batch_info.py",
     "srt/speculative/eagle_worker_v2.py",
 )
@@ -65,6 +68,14 @@ def main():
         for relative in ("srt/layers/attention/dsa/dsa_indexer.py",
                          "kernels/ops/attention/dsa_metadata.py", "kernels/ops/attention/dsa/paged_mqa_logits.py")
     )
+    runner = importlib.import_module("sglang.srt.model_executor.runner")
+    before = runner.get_is_capture_mode()
+    with runner.model_capture_mode():
+        during = runner.get_is_capture_mode()
+    after = runner.get_is_capture_mode()
+    if before or not during or after != before:
+        raise ValueError("Native capture-mode context did not enter and restore its flag")
+    result["capture_mode_export_qualified"] = {"before": before, "during": during, "after": after}
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
 
 

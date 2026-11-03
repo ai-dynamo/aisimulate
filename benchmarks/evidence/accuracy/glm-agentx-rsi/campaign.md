@@ -2923,3 +2923,20 @@ source, perf schema, model lookup, HF record or public dashboard is changed.
   real full/skip width4 module data in the remaining op budget; implement typed
   width-aware target pricing with draft approximation separate; validate all six
   frozen points and relevant lower-layer/Qwen regressions. No merge/promotion.
+
+## H5 — E051 falsify the runner import concern (predeclared CPU gate)
+
+- **Hypothesis:** E050's alleged collector import mismatch may be an inventory
+  error: Python can resolve a package `runner/__init__.py` when `runner.py` is
+  absent. Exact e009 model_runner source itself imports the runner package.
+  The package source re-exports `model_capture_mode` and `get_is_capture_mode`.
+- **Experiment:** extend only the CPU inventory with the package and runner_utils
+  paths. On the exact0.5.21 image, perform the collector's actual import and
+  enter/exit its capture context, verifying False→True→False. Same clean source,
+  image checksum, no GPU, timings, collector/data/model edits or new schema.
+  Preserve E050's raw file inventory and retract only the unsupported module
+  inference if this succeeds. Stop rather than change imports on file absence.
+- **Conclusion:** pending real package/context check. Source read already
+  disproves equating absent runner.py with absent runner package; no collector
+  bug or replacement import is established. The coordinated query-width
+  contract approval remains pending and is independent of this correction.
