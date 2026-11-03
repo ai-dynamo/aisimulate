@@ -134,6 +134,38 @@ def budget(jobs, limit=64 * 3600):
     return {"limit_gpu_seconds": limit, "charged_gpu_seconds": used, "remaining_gpu_seconds": limit - used}
 
 
+def compare_dashboard(frozen, candidate):
+    """Missing frozen metric observations invalidate wins, even if available MAPE falls."""
+    result = {}
+    for metric in METRICS:
+        field = metric + "_ms_ape"
+        baseline = [row for row in frozen if row[field] is not None]
+        index = {row["request_id"]: row for row in candidate}
+        if len(index) != len(candidate):
+            raise ValueError("Duplicate candidate pairing identity")
+        selected, missing = [], []
+        for row in baseline:
+            other = index.get(row["request_id"])
+            if other is None or other["status"] != "matched" or other[field] is None:
+                missing.append(row["request_id"])
+                continue
+            if other[f"silicon_{metric}_ms"] != row[f"silicon_{metric}_ms"]:
+                raise ValueError("Silicon changed inside a frozen comparison")
+            expected = 100 * abs(other[f"predicted_{metric}_ms"] - other[f"silicon_{metric}_ms"]) / other[f"silicon_{metric}_ms"]
+            if not math.isclose(expected, other[field], rel_tol=1e-10, abs_tol=1e-10):
+                raise ValueError("Candidate APE does not reconcile")
+            selected.append(other)
+        result[metric] = {
+            "frozen_count": len(baseline), "retained_count": len(selected), "lost_count": len(missing),
+            "baseline_sum_ape": sum(row[field] for row in baseline),
+            "candidate_sum_ape": sum(row[field] for row in selected),
+            "baseline_mape_percent": statistics.mean(row[field] for row in baseline) if baseline else None,
+            "candidate_mape_percent": statistics.mean(row[field] for row in selected) if selected else None,
+            "coverage_qualified": not missing,
+        }
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--public-bundle", type=Path, required=True)

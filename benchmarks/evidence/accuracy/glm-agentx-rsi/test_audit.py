@@ -4,7 +4,7 @@
 
 import pytest
 
-from audit import budget, metrics, write
+from audit import budget, compare_dashboard, metrics, write
 
 
 def test_pool_requests_and_keep_small_positive_denominators():
@@ -31,3 +31,11 @@ def test_frozen_evidence_cannot_be_overwritten(tmp_path):
     write(path, {"cohort": []})
     with pytest.raises(FileExistsError):
         write(path, {"cohort": ["changed"]})
+
+
+def test_losing_a_request_cannot_establish_a_win():
+    rows = [dict(request_id=str(i), status="matched", silicon_ttft_ms=1, predicted_ttft_ms=2,
+                 silicon_tpot_ms=1, predicted_tpot_ms=2, ttft_ms_ape=100, tpot_ms_ape=100) for i in range(2)]
+    score = compare_dashboard(rows, rows[:1])
+    assert score["tpot"]["lost_count"] == 1
+    assert not score["tpot"]["coverage_qualified"]
