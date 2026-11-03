@@ -2890,8 +2890,9 @@ distinct query widths under one old physical key. The Rust DSA table currently
 uses heads/batch/sequence grids and has no query-width channel. Do not fold
 projection/FFN token work or silently coerce width4 to width1.
 
-**E050 conclusion — prediction-runtime interfaces located; full-module
-collection is not yet qualified.** CPU1019323 completes253seconds, zero GPUs.
+**E050 conclusion — superseded in part by E051: runner is a package and the
+missing-module inference is false.** Prediction-runtime interfaces located; full-module
+collection is not yet qualified. CPU1019323 completes253seconds, zero GPUs.
 The image is SGLang0.5.21/Torch2.13.0+cu130, clean source Git
 `e00930c5489053f26d86b179cee0d087f846acbb`. Image SHA256
 `092f0f8ffc16b219579f463a60821ee102fe57a8e36513484c9669cb69d922e6`.
@@ -2919,7 +2920,7 @@ source, perf schema, model lookup, HF record or public dashboard is changed.
 - Concrete producer/consumer query-width proposal is saved above. The async
   approval question is pending; no response is treated as approval. Continue
   coordinated implementation only after the policy-required explicit answer.
-- Next after approval: resolve exact0.5.21 collector import/source parity; collect
+- Next after approval: qualify exact0.5.21 full-module metadata and graph capture; collect
   real full/skip width4 module data in the remaining op budget; implement typed
   width-aware target pricing with draft approximation separate; validate all six
   frozen points and relevant lower-layer/Qwen regressions. No merge/promotion.
@@ -2940,3 +2941,25 @@ source, perf schema, model lookup, HF record or public dashboard is changed.
   disproves equating absent runner.py with absent runner package; no collector
   bug or replacement import is established. The coordinated query-width
   contract approval remains pending and is independent of this correction.
+
+**E051 conclusion — missing-module hypothesis disproven; no collector import
+change justified.** CPU1019449 completes273seconds at zero GPUs. The exact
+0.5.21 package imports the API successfully and capture mode verifies
+False→True→False. Every original E050 source/hash receipt and image checksum
+is unchanged. The runner package SHA256 matches exact e009 upstream source.
+E050 correctly reports runner.py absent but incorrectly infers its Python
+module is unavailable; its package exists and exports the required context.
+Preserve the original inventory and retract that inference in the campaign
+and PR description. A guessed runner_utils.py source fetch also returns404;
+the source tree resolves a package there too. No runtime/collector replacement
+import is warranted. Full-module GPU measurement remains a separate gate.
+
+Confidence in the import disproof is high after real runtime execution and
+source/hash reconciliation; no request-MAPE consequence is claimed. GPU total
+remains129919seconds,100481 remaining, no active cluster jobs/reservations.
+The previous goal turn made concrete progress (E047–E050); this turn corrects
+an unsupported inventory inference. The same explicit query-width contract
+approval remains unanswered; no response is treated as approval, and no
+producer/consumer contract change has begun.
+- E051-independent-package-audit.json: SHA256 `e09e7e49b9daacfb72f22cd579baa456bed0531318a7c0eb8e4b09a82b540425`.
+- E051-runner-package-1019449/inventory.json: SHA256 `5a9b09d5bd155ac2275070f00d4b23576dc24a7a6216ab81d09aad72b18561b0`.
