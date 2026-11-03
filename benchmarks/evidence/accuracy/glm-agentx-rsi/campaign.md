@@ -31,8 +31,12 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
 Latest candidate E039 has retained all-six TTFT/TPOT **59.3595/67.7741%**
 with **13 lost frozen observations per metric**, so it is **not a win**. Its
-unchanged C4/C10/C13 validation is complete. GPU spend remains **29.2861/64 hours**,
-with no active GPU allocation. E039 used CPUs only.
+unchanged C4/C10/C13 validation is complete. GPU spend is **29.4617/64 hours**
+charged through failed smoke 1014958, plus the active E040 allocation 1015148
+(reserved maximum 6.1333 GPU-hours; actual charge pending terminal accounting).
+E039 used CPUs only. E040 has seven independently qualified unprofiled controls;
+its traced server is still starting. The three-node-hour validation reserve is
+untouched. No new six-point accuracy result has been accepted.
 
 ## Frozen baselines — E000/E003
 
@@ -1734,9 +1738,11 @@ stop condition is reached.
   remainder of 124970 GPU-seconds. Reserve only after source qualification;
   the three-node-hour GPU validation reserve remains intact. Record actual
   allocation including failures and cleanup.
-- **Conclusion:** pending source/query reconciliation. Missing trace boundaries
-  or counters make the corresponding comparison unavailable; preserve failures
-  and do not infer a six-point accuracy result from these finite diagnostics.
+- **Conclusion (in progress):** CPU source/query reconciliation qualifies and
+  the corrected eight-device graph/NVTX smoke passes. Actual model forward
+  capture remains pending. Missing trace boundaries or counters make the
+  corresponding comparison unavailable; preserve failures and do not infer
+  a six-point accuracy result from these finite diagnostics.
 
 E040 tooling: `profile_preflight.py --output PRIVATE_NEW_RECEIPT` inspects the
 actual installed profiler protocol/source hashes and trace tools without
