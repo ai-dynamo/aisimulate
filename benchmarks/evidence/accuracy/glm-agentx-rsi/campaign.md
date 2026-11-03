@@ -2161,3 +2161,30 @@ Independent native/identity/unit audit SHA256
 frozen-cohort audit `68d81663fa00875679f5ee024b9e448e556ac653e26fc279643738fac61dba1d`;
 common-eligible E039 comparison
 `7eebafaaedf99e340486014364cabf9affb05b9a767d189cf73db732c0d028ae`.
+
+## H2/H4/H1 — E042 source-confirmed cache/overlap/frontend composition (predeclared)
+
+- **Hypothesis:** physical EAGLE bigram prefix identity and page materialization
+  interact with the source-confirmed overlap loop and shared frontend. E025's
+  cache-only and E041's frontend/overlap negative results do not establish the
+  combined trajectory/cache behavior. Confidence is high in the individual
+  runtime contracts; no numerical improvement is assumed. Competing causes are
+  unrecorded historical input/admission histories and draft timing composition.
+- **Experiment:** build an isolated `simonec/` composition branch from E039
+  source `aa4c2aeab0050ad453295b9dff7c70cc80c29dab`, merging only the existing
+  cache-contract repair `9d76c7de1387b3e28767b3ffc67ba1d6449dbc9c` from #692.
+  Relative to E041, the only new modeled mechanism is the EAGLE cache contract.
+  Preserve the opt-in shared frontend, host-loop true, fixed CPU profile, original
+  caps, HF revision, observed outputs, all op-data bytes and frozen identities.
+  Do not retune either flag or the CPU rate based on scores.
+- Sign/DCO the combined source, build one exact wheel, hash its native module
+  and every packaged op-data file, and record both source parents. Run relevant
+  Rust engine/cache/frontend tests and Qwen CPU numerical/cache controls before
+  using the wheel. Existing focused production PRs remain separate drafts.
+- Run development **1/8/14** sequentially on CPUs. Independently audit config and
+  trace parity, native completion, measured-request accounting, both MAPEs and
+  lost/recovered frozen observations. Any smaller cohort remains unqualified.
+  Extend to unchanged 4/10/13 only if development results warrant validation.
+- **Conclusion:** pending source composition and qualification. This consumes
+  zero GPU budget, changes no default or public result, and is not a license to
+  replace op timing with fitted factors or historical arrival-clock oracles.
