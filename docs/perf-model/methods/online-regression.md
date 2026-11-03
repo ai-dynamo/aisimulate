@@ -19,7 +19,8 @@ and the plane's ability to describe a workload remain separate concerns. Periodi
 rebuilding is disabled by default (`None` in Rust/Python, `null` in JSON).
 Numerical recovery and conservative batch fallbacks remain enabled.
 The optional `fit.linear` controls support one to six fitted features, signed
-slopes, and lazy updates. Independently, `sampling.axes` and `bins_per_axis`
+slopes, and lazy updates; `fit.linear.feature_set: fpm5` instead fits the 17
+cross-rank aggregates of the learned `fpm5` preset. Independently, `sampling.axes` and `bins_per_axis`
 configure one to six retention dimensions. The defaults remain two A/M axes,
 a 4×4 grid, capacity 64 per store, nonnegative fitting, and eager updates.
 
@@ -27,6 +28,19 @@ The optional `fit.kind: spline` model learns two or three knots per feature axis
 It uses the same feature extraction, workload stores, and retained observations.
 The two-feature equations below describe the default linear model; the next
 section explains the spline's additional state.
+
+This page describes `estimation_mode: fpm_regression`. For the explicit
+`fpm_learned` estimator, a frozen forest can use hybrid calibration or an online
+forest can update binned trees from feedback. Its loss, historical evidence,
+retention and update rules are documented in the
+[online GBDT mathematics](../fpm_ml/online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) and
+[canonical field reference](../fpm_ml/configuration.md#learned-forest-and-online-fitting-controls).
+The learned estimator also supports a
+[causal expert selector](../fpm_ml/online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector)
+between a frozen hybrid-calibrated forest and an online forest. Its EWMA errors
+and switch counters are separate from regression fitting and readiness.
+The worker-ownership and predict-before-feedback requirements below apply to
+both estimators; their fitting algorithms and readiness are separate.
 
 ## Learned-knot spline regression
 
@@ -482,10 +496,12 @@ The sampler uses $`\log(1+x_j)`$ of its selected retention coordinates to choose
 cells. The independent fit uses its selected feature values. Grid bounds expand
 with incoming observations and do not
 shrink on eviction. If the store exceeds its capacity, it evicts the oldest
-observation in a most-populated cell. Hash-map ordering can affect tied
-choices. Each retained observation has weight one; an evicted observation
-has weight zero. This is spatially balanced retention, not a FIFO window or
-exponential forgetting.
+observation in a most-populated cell. Among equally populated cells it picks
+the lexicographically greatest cell index, and refits read cells in index
+order, so identical inputs retain and fit identical samples in every process.
+Each retained observation has weight one; an evicted observation has weight
+zero. This is spatially balanced retention, not a FIFO window or exponential
+forgetting.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
 eviction. With two fixed features:
@@ -622,6 +638,65 @@ duplicate axes, invalid grid shapes, and incompatible policy fields fail before
 estimator selection. `fit.linear` is rejected with `fit.kind: spline`;
 the spline fit and retention axes remain `[attention, moe]`.
 
+### fpm5 aggregate features
+
+`fit.linear.feature_set: fpm5` replaces the fitted coordinates with the 17
+named aggregates of the learned `fpm5` preset
+(`aisimulate_core.sdk.fpm_learned.FEATURE_PRESETS["fpm5"]`), in this order:
+`num_active_ranks`, `num_prefill_requests`, `sum_prefill_tokens`,
+`sum_prefill_kv_tokens`, `num_decode_requests`, `sum_decode_kv_tokens`,
+`max_rank_prefill_tokens`, `max_rank_decode_kv_tokens`,
+`max_rank_num_decode_requests`, `mean_prefill_chunk`, `mean_prefill_kv`,
+`prefill_attention_pairs`, `mean_decode_kv`, and the `log1p` of
+`sum_prefill_tokens`, `sum_prefill_kv_tokens`, `sum_decode_kv_tokens` and
+`prefill_attention_pairs`. Sums and counts run over the active attention-DP
+ranks, the `max_rank_*` features take the heaviest rank, and the prefill
+attention proxy is the balanced-partition estimate used by the learned model.
+Rust computes them from the same code as the learned forest's aggregate block,
+using only scheduled scalar counters. The set does not require request lists
+and omits the variance-derived aggregates.
+
+```yaml
+estimator_config:
+  fpm_regression:
+    fit:
+      linear:
+        feature_set: fpm5
+```
+
+Seventeen features make the face enumeration and incremental statistics above
+impractical, so this fit does not use them. Whenever the update policy
+publishes coefficients, the store refits all of its retained rows, at most
+`sampling.max_observations`:
+
+1. Standardize each feature as above. A constant feature is inactive, and so
+   is a feature whose raw values exactly repeat an earlier feature on every
+   retained row. With one attention-DP rank, for example, `num_active_ranks`
+   is constant and each `max_rank_*` equals its sum.
+2. Center the standardized active columns and the target. The intercept is
+   free, so it separates from the slopes.
+3. Solve for the slopes with Lawson–Hanson active-set nonnegative least
+   squares, or with a direct solve when `non_negative: false`. The
+   `singular_ridge_scale` ridge, scaled as for the singular retry above, is
+   always added to the slopes so collinear aggregates have one solution; the
+   `fpm5` set therefore requires a positive `singular_ridge_scale`.
+
+A candidate needs at least `max(min_observations, active features + 1)`
+retained rows; until then the store is unready. With aggregated multi-rank
+traffic, all 17 features can vary, so a store needs 18 rows, and
+configuration requires `sampling.max_observations >= 18`. As for the other
+linear fits, a candidate with all slopes zero keeps the previous serving
+snapshot. A refit that cannot fit, because newly varying aggregates outnumber
+the retained rows, also keeps the previous serving fit, so a ready store stays
+ready. Predictions are floored at $`10^{-6}`$ ms.
+
+Retention still buckets rows by `sampling.axes`, and `update_policy` gates
+publication exactly as described above. `rebuild_interval` must stay `null`,
+because every fit already uses the exact retained rows. `feature_set` requires
+the default `feature_axes` and the `standardized_nnls` fit kind. Each fit costs
+$`O(Mk^2)`$ to accumulate the normal equations plus a small $`k \times k`$
+active-set solve, where $M$ is the retained-row count and $`k \le 17`$.
+
 ## Selecting linear or spline regression
 
 ```python
@@ -646,7 +721,10 @@ axes, and no `fit.linear` block. Evaluate fit choice against deployment-specific
 observations; a nonlinear fit does not guarantee lower prediction error.
 
 Configuration serialization saves controls, not observations, knots, or fitted
-state. Reconstructing a saved configuration creates a cold model. Offline CLI,
+state. Reconstructing a saved configuration creates a cold model. To keep the
+retained samples, fits, statistics and search clocks, save a
+[state snapshot](../configuration.md#state-snapshots) with
+`save_state_snapshot`; restoring it predicts bit-identically and can continue tuning exactly. Offline CLI,
 Sweeper, and Replay reject an untrained regression even when its configuration
 parses successfully.
 

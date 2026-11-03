@@ -105,7 +105,7 @@ follow the [cost-model contract](../../perf-model/configuration.md#speculative-d
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
-Grouped caches, G2/G3 offload, state-cache `prefix_match_unit`, AFD/EPD,
+Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -204,7 +204,8 @@ HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
 Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matching
-with `prefix_match_unit`. Combinations accepted by the
+with `prefix_match_unit` smaller than `block_size`. Full-block alignment is supported.
+Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
 
@@ -223,10 +224,13 @@ and cannot be combined with a measured full-round profile.
 Acceptance determines sampled output progress, not a latency multiplier. Each
 decode query consumes one measured complete round at the request count and
 actual past-KV total, without another draft charge. Prefill uses its own matching
-SD cell. Mixed scheduled iterations retain replay's separate P/D phase-cost
-composition; the data does not establish mixed-round fidelity. Small token
-budgets can produce partial-width rounds that are still priced at the configured
-depth. Query coverage and a measured serving comparison remain separate checks.
+SD cell. A mixed scheduled iteration costs its prefill plus a full decode
+round as one forward. Without online corrections that equals replay's separate
+P/D phase costs; a tuned model applies the mixed iteration's correction to the
+sum instead of each phase's own. The data does not establish mixed-round
+fidelity. Small token budgets can produce partial-width rounds that are still
+priced at the configured depth. Query coverage and a measured serving
+comparison remain separate checks.
 
 The recorded usable pool is already net of draft/graph allocations. Do not add
 another reservation or scalar capacity override. This path requires vLLM pure

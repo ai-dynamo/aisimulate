@@ -86,7 +86,8 @@ def test_untrained_regression_preserves_source_but_cannot_run_offline(tmp_path, 
     }
     # Explicit regression has no other cause to report; the other modes name the missing data.
     reason = (
-        "regression estimator is not ready; replay requires training observations"
+        "fpm_regression estimator is not ready: no workload store has a usable fit; tune it with observed "
+        "forward passes or restore a calibrated state snapshot"
         if mode == "fpm_regression"
         else "no timing data for sglang on gb300; backends with data on gb300: none"
     )
@@ -100,7 +101,7 @@ def test_cli_saved_config_and_replay_preserve_source(source):
         model="Qwen/Qwen3-30B-A3B",
         hardware="b200_sxm",
         backend="sglang",
-        backend_version="0.5.17",
+        backend_version="next",
         moe_kernel_source=source,
         workers={"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 100}}}},
     )
@@ -110,7 +111,7 @@ def test_cli_saved_config_and_replay_preserve_source(source):
     config = payload["timing_model"]["config"]
     assert config.get("moe_kernel_source") == source
     assert ("moe_kernel_source" in config) == (source is not None)
-    role = _materialize_engine_role("sglang", "0.5.17", {}, payload, "aggregated")
+    role = _materialize_engine_role("sglang", "next", {}, payload, "aggregated")
     assert role["rank"]["timing_model"]["config"].get("moe_kernel_source") == source
 
 

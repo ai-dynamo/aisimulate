@@ -31,6 +31,7 @@ pub(crate) mod py_ops;
 pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
+pub mod execution_profile;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
@@ -56,10 +57,18 @@ pub use fpm::{
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
-    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
-    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
-    UnrecordedFpmQuantMode,
+    FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
+    LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
+    RegressionFeatureAxis, RegressionFeatureSet, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
+    SplineSearchConfig, UnrecordedFpmQuantMode,
+};
+pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
+pub use fpm::{
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
+    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
@@ -119,5 +128,5 @@ pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3:
 
 pub use fpm::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
-    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };

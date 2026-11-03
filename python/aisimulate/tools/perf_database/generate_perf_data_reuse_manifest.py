@@ -591,13 +591,13 @@ def render_manifest(summaries: list[dict]) -> str:
         "#                                routes on these keys being absent)",
         "#   systems:                     systems where rows for this (op_file, kernel_source) exist",
         "#   frameworks:                  backends that produce rows (= the inheritance whitelist)",
-        "#   total_raw_rows:              row count across all systems and frameworks",
-        "#   within_framework_dedup_rows: rows that duplicate prior versions within the same framework",
-        "#   median_pct_divergence:       optional; cross-framework latency spread for overlapping shapes",
+        "#",
+        "#   Row counts, dedup counts and divergence stats are analysis output; they",
+        "#   live in the --out-json / --out-md artifacts, not here, so a data refresh",
+        "#   only touches this file when the resolver-visible contract changes.",
         "groups:",
     ]
     for (_op, _ks), agg in sorted(by_pair.items()):
-        med = statistics.median(agg["median_pct_divergence"]) if agg["median_pct_divergence"] else None
         # Absence-load-bearing pairs are demoted to a resolver-inert tier so
         # they can never join a cross-backend inheritance filter (see the
         # ABSENCE_LOAD_BEARING docstring for the invariant and evidence).
@@ -607,10 +607,6 @@ def render_manifest(summaries: list[dict]) -> str:
         lines.append(f"    tier: {tier}")
         lines.append(f"    systems: [{', '.join(sorted(agg['systems']))}]")
         lines.append(f"    frameworks: [{', '.join(sorted(agg['frameworks']))}]")
-        lines.append(f"    total_raw_rows: {agg['total_raw_rows']}")
-        lines.append(f"    within_framework_dedup_rows: {agg['within_framework_dedup_rows']}")
-        if med is not None:
-            lines.append(f"    median_pct_divergence: {med:.2f}")
     return "\n".join(lines) + "\n"
 
 

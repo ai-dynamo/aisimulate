@@ -1111,6 +1111,91 @@ def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacit
         workflow._check_replay(tmp_path / "altered-replay/validation.json", original, collection, plan)
 
 
+@pytest.mark.parametrize("claim", [False, True])
+def test_linear_claim_stays_linear_from_import_through_validation(tmp_path, capsys, monkeypatch, claim):
+    from collector.fpm_forward.cli import _parser
+    from collector.fpm_forward.entry import _load_generator_overrides
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    from aisimulate import supervision
+    from aisimulate.support import collection_readiness
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.plan import check_plan
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    from .test_onboard_runtime import _LINEAR_CLAIM, _completed_runtime_collection
+
+    # The fixture imports the probe evidence, accepts the draft and completes a formal collection.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
+    layout = "linear" if claim else "grouped"
+    assert request.profile_deployment().resources.cache_layout == layout
+    # Collection readiness checks the formal phases against the accepted memory.
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    campaign = root / "fpm-artifacts" / checkpoint["plan_sha256"][:16]
+    args = _parser().parse_args(json.loads((root / "commands.json").read_text())["fpm_plan_local"][3:])
+    _write(campaign / "generator-overrides.json", _load_generator_overrides(args))
+    monkeypatch.setattr(
+        collection_readiness,
+        "_cell_report",
+        lambda plan, cell, campaign, entry: {"status": "ready", "blockers": [], "cell": cell.to_dict()},
+    )
+    readiness = collection_readiness.assess_readiness(request, root, root / "fpm-checkpoint")
+    assert readiness["ready_for_full_collection"], readiness["blockers"]
+    # Finalization keeps the accepted layout, and the finalized check verifies it against the collection.
+    target = tmp_path / "resolved"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    resources = resolved.profile_deployment().resources
+    assert resources.cache_layout == layout
+    provenance = json.loads(resolved.fpm_profile.provenance)
+    if claim:
+        assert resources.kv_bytes_per_token == 16
+        assert [group["page_size_bytes"] for group in provenance["measured_cache_groups"]] == [128, 128]
+    else:
+        assert "measured_cache_groups" not in provenance
+    verify_runtime_profile(resolved)
+    check_plan(resolved, target)
+    # The validation workflow replays the finalized profile and checks its resources against the collection.
+    trace = tmp_path / "trace.json"
+    _write(
+        trace,
+        {
+            "id": "synthetic-linear-claim",
+            "models": ["source"],
+            "block_size": 16,
+            "hash_id_scope": "local",
+            "requests": [{"t": 0, "type": "s", "model": "source", "in": 16, "out": 2, "hash_ids": [1]}],
+        },
+    )
+    monkeypatch.setattr(supervision, "main", cli.main)
+    replay = tmp_path / "replay"
+    command = [
+        "onboard",
+        "validate-fpm",
+        "--config",
+        str(target / "request.yaml"),
+        "--output-dir",
+        str(target),
+        "--trace",
+        str(trace),
+        "--validation-output-dir",
+        str(replay),
+    ]
+    assert cli.main(command) == 0
+    plan = load_repeatability_source(campaign)
+    collection = {
+        "inputs": {
+            "collection_directory": str(root),
+            "formal_data": [
+                workflow._identity(path) for path in sorted((root / "systems/data").rglob("fpm_forward_perf.*"))
+            ],
+        }
+    }
+    assert workflow._check_replay(replay / "validation.json", request, collection, plan)["status"] == "passed"
+
+
 def test_replay_revalidates_capacity_revision_against_original_timing_collection(tmp_path, capsys, monkeypatch):
     from collector.fpm_forward.repeatability import load_repeatability_source
 

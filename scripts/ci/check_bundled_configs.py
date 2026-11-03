@@ -169,23 +169,22 @@ def check_notice(root: Path, entry: dict, wheel: zipfile.ZipFile | None) -> None
     if not isinstance(notice, dict):
         raise InventoryError("missing canonical notice reference")
     text = notice_text(root, notice.get("file"), wheel)
-    section = notice.get("section")
-    if section:
-        matches = re.findall(r"^## " + re.escape(section) + r"\s*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
-        if len(matches) != 1:
-            raise InventoryError(f"missing or duplicate notice section: {section}")
-        text = matches[0]
+    section = nonempty(notice.get("section"), "notice section")
+    matches = re.findall(r"^## " + re.escape(section) + r"\s*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if len(matches) != 1:
+        raise InventoryError(f"missing or duplicate notice section: {section}")
+    text = matches[0]
     expected = notice.get("license_text_sha256")
     if notice.get("license_file"):
         candidates = [notice_text(root, notice["license_file"], wheel)]
     else:
-        candidates = re.findall(r"```text\n(.*?)\n```", text, re.S) if section else [text]
+        candidates = re.findall(r"```text\n(.*?)\n```", text, re.S)
     if not expected or expected not in {text_digest(candidate) for candidate in candidates}:
         raise InventoryError("required complete license text is missing or changed")
-    if section and Path(entry["path"]).name not in text:
+    if Path(entry["path"]).name not in text:
         raise InventoryError("canonical notice does not identify this configuration file")
     source = entry.get("source", {})
-    if section and source and source["revision"] not in text:
+    if source and source["revision"] not in text:
         raise InventoryError("canonical notice does not identify this upstream revision")
     if entry["copyright_owner"] not in text:
         raise InventoryError("canonical notice does not retain the recorded copyright owner")

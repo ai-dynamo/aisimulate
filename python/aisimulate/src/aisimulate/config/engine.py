@@ -54,6 +54,12 @@ def resolve_block_size(backend: str, configured: int | None) -> int:
     return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
 
 
+# Replay prices native estimators per phase or iteration and regression and
+# learned estimators per iteration (see "Engine replay timing" in
+# docs/perf-model/configuration.md).
+ReplayEstimationMode = Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"]
+
+
 class AFDTopologyPredictionConfig(StrictModel):
     """One concrete attention/FFN-disaggregated topology."""
 
@@ -128,6 +134,13 @@ class SchedulerPredictionConfig(StrictModel):
             "Rounds may be idle and do not count output tokens; zero disables the interval."
         ),
     )
+    async_scheduling: StrictBool | None = Field(
+        default=None,
+        description=(
+            "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
@@ -194,6 +207,13 @@ class G3OffloadConfig(StrictModel):
     shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
 
 
+class KvcrConfig(StrictModel):
+    """KVCR peer G2 fetch: pull a hinted prefix from another rank's private G2."""
+
+    latency_to_first_byte_ms: NonNegativeFloat = 1.0
+    bandwidth_gbps: NonNegativeFloat = 50.0
+
+
 def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> int:
     """Validate explicit byte geometry without invoking model inference."""
     for name, value in (("block_size", block_size), ("bytes_per_token", bytes_per_token)):
@@ -246,6 +266,7 @@ class KvCachePredictionConfig(StrictModel):
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
+    kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
 
     @field_validator("state_cache", mode="before")
@@ -259,6 +280,16 @@ class KvCachePredictionConfig(StrictModel):
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_kvcr(self):
+        if self.kvcr is None:
+            return self
+        if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
+            raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.g3_offload is not None:
+            raise ValueError("kvcr cannot be combined with g3_offload")
         return self
 
     @model_validator(mode="after")
@@ -357,7 +388,7 @@ class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
+    estimation_mode: ReplayEstimationMode | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
@@ -704,6 +735,16 @@ class TokenizationConfig(StrictModel):
     per_input_token_us: NonNegativeFloat = 0.0
 
 
+class DetokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_output_us: NonNegativeFloat = 0.0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.base_ms or self.per_output_us)
+
+
 class EstimatorPolicyConfig(StrictModel):
     nextn: NonNegativeInt = Field(default=0, le=5)
     nextn_accepted: NonNegativeFloat | None = None
@@ -746,7 +787,7 @@ class EstimatorPolicyConfig(StrictModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    estimation_mode: ReplayEstimationMode = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
 
@@ -837,6 +878,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     tokenization: TokenizationConfig | None = None
+    detokenization: DetokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -867,6 +909,12 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
             raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
+        if (
+            self.detokenization is not None
+            and self.detokenization.active
+            and (self.mode == "afd" or self.workers.encoder is not None)
+        ):
+            raise ValueError("engine.detokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.tokenization is not None and any(
             worker is not None and (worker.frontend is not None or worker.host_profile is not None)
             for worker in (self.workers.aggregated, self.workers.prefill)
@@ -1261,6 +1309,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("async_scheduling", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
@@ -1328,6 +1377,10 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
         companion = "decode" if afd.phase == "prefill" else "prefill"
         if configured != {companion}:
             raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+        # The AFD replay prices its companion from the companion model, which
+        # does not model async-scheduling admission.
+        if getattr(engine.workers, companion).scheduler.async_scheduling:
+            raise ValueError(f"AFD companion workers.{companion}.scheduler.async_scheduling=true is not modeled")
     else:
         if afd.phase != "both":
             raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")
@@ -1371,6 +1424,14 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
             raise ValueError("host_offload requires prefix_caching=true")
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
+        if worker.kv_cache.kvcr is not None and role == "decode":
+            raise ValueError("kvcr supports aggregated and prefill workers only")
+        if worker.kv_cache.kvcr is not None and worker.parallelism.pipeline > 1:
+            raise ValueError("kvcr does not support pipeline parallelism (parallelism.pipeline must be 1)")
+        if worker.kv_cache.kvcr is not None and (worker.parallelism.prefill_context or 1) > 1:
+            raise ValueError(
+                "kvcr does not support prefill context parallelism (parallelism.prefill_context must be 1)"
+            )
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
@@ -1380,8 +1441,14 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         if worker is None or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
-        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
-            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
+        if (
+            worker.kv_cache.prefix_match_unit is not None
+            and worker.kv_cache.prefix_match_unit != worker.kv_cache.block_size
+            and (engine.speculation is not None or engine.nextn > 0)
+        ):
+            raise ValueError(
+                "sub-block prefix_match_unit does not support speculative decoding (speculation or nextn > 0)"
+            )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
             raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")

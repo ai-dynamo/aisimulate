@@ -444,7 +444,9 @@ async def check():
         thread.start()
         try:
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch()
+                browser = await playwright.chromium.launch(
+                    executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+                )
                 page = await browser.new_page(viewport={"width": 1600, "height": 1050}, color_scheme="light")
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
@@ -471,7 +473,7 @@ async def check():
                 )
                 await expect(page.locator("thead th")).to_have_count(6)
                 assert not await page.locator('a[href*="coverage.html"]').count()
-                await expect(page.locator(".fpm-tabs a")).to_have_count(5)
+                await expect(page.locator(".fpm-tabs a")).to_have_count(6)
                 assert "op-based" not in await page.locator("body").inner_text()
                 await expect(page.locator(".overview-config-row").first).to_contain_text("7 excluded or unavailable")
                 await expect(page.locator("#overview-body")).not_to_contain_text("predicted")

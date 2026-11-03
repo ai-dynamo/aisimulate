@@ -83,6 +83,7 @@ pub(crate) struct DirectRequest {
     /// Image placeholders inside `tokens`; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,
+    pub kv_hint: Option<crate::engine::KvHintSource>,
 }
 
 impl DirectRequest {
@@ -195,6 +196,10 @@ pub(crate) struct MockEngineArgs {
     pub prefill_schedule_interval: usize,
     #[builder(default = "0")]
     pub prefill_decode_interval: usize,
+    /// Batches the engine keeps committed while busy; see
+    /// `EngineConfig::max_concurrent_batches`.
+    #[builder(default = "1")]
+    pub max_concurrent_batches: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""GLM-5.3-Flash text-only, pure TP graph.
+"""GLM-5.3-Flash text-only graph: TP attention, TP or EP routed experts.
 
 Architecture adapted from Z.AI MIT configuration eb9eb208eb0d988989d07a6a12d0fdeb5f52574a.
 Execution grouping follows the pinned vLLM/SGLang files listed in
@@ -106,15 +106,26 @@ class Glm53FlashModel(BaseModel):
             raise NotImplementedError("GLM-5.3-Flash currently supports vLLM and SGLang")
         tp = model_config.tp_size
         mtp, ep = model_config.resolve_moe_parallelism()
+        # Attention stays pure TP. Routed experts may be expert-parallel over
+        # the same ranks (MoE TP x EP = TP): with DP=1 neither runtime emits an
+        # all-to-all for this layout (vLLM MoEPrepareAndFinalizeNoDPEP, SGLang
+        # a2a backend none), so the explicit TP all-reduces stay the only
+        # collectives. Data-parallel attention (AG/RS, vLLM SP-MoE) is not modeled.
         if (
             tp not in {1, 2, 4, 8}
-            or mtp != tp
-            or ep != 1
+            or mtp * ep != tp
             or model_config.pp_size != 1
             or model_config.cp_size != 1
             or model_config.attention_dp_size != 1
         ):
-            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1")
+            raise NotImplementedError(
+                "GLM-5.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+                "data-parallel attention is not supported"
+            )
+        if backend_name == "vllm" and ep != 1 and mtp != 1:
+            # vLLM 0.31.0 FusedMoEParallelConfig: enable_expert_parallel
+            # shards experts over the whole TP x DP group (MoE TP=1).
+            raise NotImplementedError("GLM-5.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP")
         # Every TP size that divides the 64 attention/KDA heads is accepted
         # for both checkpoints; whether a deployment fits is a per-system
         # capacity question, not a constructor rule. The payload inventory
@@ -126,8 +137,11 @@ class Glm53FlashModel(BaseModel):
             raise NotImplementedError(
                 "GLM-5.3-Flash text baseline requires all 45 layers, nextn=0 and no decoder replay"
             )
-        if model_config.moe_backend in {"megamoe", "wideep"}:
-            raise NotImplementedError("GLM-5.3-Flash baseline uses tensor-parallel local experts")
+        if model_config.moe_backend is not None:
+            # DeepEP/megamoe all-to-all dispatch is not the TP-attention layout.
+            raise NotImplementedError(
+                "GLM-5.3-Flash uses the standard local-expert MoE; DeepEP/megamoe/wideep backends are not supported"
+            )
         self.raw_config = info["raw_config"]
         self.text_config = self.raw_config["text_config"]
         self.execution_profile = "full"
@@ -137,10 +151,9 @@ class Glm53FlashModel(BaseModel):
         expected = self.checkpoint_format if self.checkpoint_format == "nvfp4" else "fp8_block"
         if model_config.gemm_quant_mode.name != expected or model_config.moe_quant_mode.name != expected:
             raise NotImplementedError("GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition")
-        # Sparse-MLA latent KV: FP8 or BF16 on both backends. On SM90 both
-        # stock runtimes serve BF16 only: SGLang's IndexPool DSA backends cannot
-        # read FP8 KV, and vLLM 0.31.0 FLASHINFER_MLA_SPARSE_SM90 hands FP8 to
-        # FlashInfer plan() as uint8 storage, which it rejects. KDA state is FP32.
+        # Sparse-MLA latent KV: FP8 or BF16 on both backends. Native readiness
+        # gates SM90 FP8 KV by runtime version: vLLM >= 0.32.0 or SGLang >=
+        # 0.5.22 (TileLang DSA prefill and decode). KDA state remains FP32.
         kv_cache_dtype = model_config.kvcache_quant_mode.name
         if kv_cache_dtype not in {"fp8", "bfloat16"}:
             raise NotImplementedError(
@@ -256,6 +269,9 @@ class Glm53FlashModel(BaseModel):
             )
 
         def mlp(layer, phase):
+            # Dense FFN and shared experts stay TP-sharded over the attention TP
+            # group under EP (vLLM Glm5NextMLP without SP-MoE; SGLang
+            # DeepseekV2MLP with no a2a backend). Only routed experts use EP.
             dense = d.mlp_layer_types[layer] == "dense"
             width = (d.intermediate_size if dense else d.moe_intermediate_size * d.n_shared_experts) // tp
             # The NVFP4 checkpoint excludes shared experts. The FP8 checkpoint
@@ -276,8 +292,9 @@ class Glm53FlashModel(BaseModel):
                 # Generic path: BF16 router GEMM row (known approximation: the
                 # serving gate has BF16 weights and FP32 output, which no
                 # generic gemm_perf dtype captures; negligible here) and the
-                # routed-expert MoE row. Pure TP dispatch/combine are the
-                # explicit attention/FFN all-reduces, so no MoEDispatch.
+                # routed-expert MoE row (MoE TP x EP layout). With TP
+                # attention every rank holds all tokens: dispatch/combine are
+                # the explicit attention/FFN all-reduces, so no MoEDispatch.
                 moe = ops.MoE(
                     f"{phase}_moe_{layer}",
                     1,
@@ -285,8 +302,8 @@ class Glm53FlashModel(BaseModel):
                     d.moe_intermediate_size,
                     d.num_experts_per_tok,
                     d.n_routed_experts,
-                    tp,
-                    1,
+                    mtp,
+                    ep,
                     model_config.moe_quant_mode,
                     "power_law_1.01"
                     if model_config.workload_distribution == "power_law"
@@ -394,18 +411,16 @@ class Glm53FlashModel(BaseModel):
         self._resident_weight_bytes = float(sum(op.get_weights() for op in self.context_ops))
         # Generic GEMM/MoE FP8 weight inventory omits block scales; NVFP4's
         # mapping already includes its one FP8 scale per16 packed weights.
+        # Dense and shared experts are TP-sharded; routed experts by MoE TP x EP.
         if self.checkpoint_format == "fp8":
+            sparse = d.mlp_layer_types.count("sparse")
+            expert = 3 * h * d.moe_intermediate_size
             dense_elements = d.mlp_layer_types.count("dense") * 3 * h * d.intermediate_size // tp
-            moe_elements = (
-                d.mlp_layer_types.count("sparse")
-                * 3
-                * h
-                * d.moe_intermediate_size
-                * (d.n_routed_experts + d.n_shared_experts)
-                // tp
-            )
-            self._resident_weight_bytes += (dense_elements + moe_elements) * 4 / (128 * 128)
-        # Final RMSNorm is represented by a memory-only ElementWise op.
+            shared_elements = sparse * expert * d.n_shared_experts // tp
+            routed_elements = sparse * expert * d.n_routed_experts // (mtp * ep)
+            self._resident_weight_bytes += (dense_elements + shared_elements + routed_elements) * 4 / (128 * 128)
+        # Final RMSNorm is represented by a memory-only ElementWise op. The
+        # router weight and e_score_correction_bias are replicated on every rank.
         self._resident_weight_bytes += h * 2 + d.mlp_layer_types.count("sparse") * d.n_routed_experts * 4
 
     def get_resident_weights_bytes(self) -> float:

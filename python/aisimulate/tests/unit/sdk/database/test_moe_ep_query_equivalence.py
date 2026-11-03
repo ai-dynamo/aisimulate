@@ -349,7 +349,7 @@ def test_moe_expert_compute_quant_mode_is_a_constructor_fact():
 )
 def test_qwen38_vllm_0271_tp1_ep16_moe_lanes_are_silicon(quant_mode, expected_ms):
     """Pin the two collected Qwen3.8-Max EP16 lanes at an exact token point."""
-    db = get_database("gb300", "vllm", "0.27.1")
+    db = get_database("gb300", "vllm", "0.27.1", allow_unlisted_version=True)
     db.set_default_database_mode(common.DatabaseMode.SILICON)
     op = MoE(
         "qwen38_ep16_moe",

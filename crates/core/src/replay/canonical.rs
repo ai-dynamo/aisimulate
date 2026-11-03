@@ -345,8 +345,11 @@ pub fn canonicalize_json(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use uuid::Uuid;
 
-    use crate::replay::{ReplayCaptureOptions, TraceCollector};
+    use crate::replay::{
+        ReplayCaptureOptions, ReplayRequestPool, ReplayTerminalStatus, TraceCollector,
+    };
 
     use super::{CanonicalReplayCoverage, CanonicalReplayRecord, canonicalize_json};
 
@@ -376,6 +379,67 @@ mod tests {
         );
         let line = String::from_utf8(record.into_json_line().unwrap()).unwrap();
         assert!(line.starts_with(r#"{"coverage":"#));
+    }
+
+    #[test]
+    fn canonical_record_preserves_first_admission_reuse_after_readmission() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(904);
+        collector.on_arrival(uuid, 0.0, 32_768, 2);
+        for (at_ms, reused_input_tokens) in [(5.0, 512), (25.0, 25_088)] {
+            collector.on_admit(uuid, at_ms, reused_input_tokens);
+            collector.on_pool_admission_with_tier_attribution(
+                uuid,
+                ReplayRequestPool::Agg,
+                at_ms,
+                reused_input_tokens,
+                None,
+            );
+            collector.on_token(uuid, at_ms + 5.0);
+        }
+        collector.on_terminal(uuid, 30.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        let record =
+            CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap();
+        let serialized: Value = serde_json::from_slice(&record.into_json_line().unwrap()).unwrap();
+        let request = &serialized["per_request"][0];
+        assert_eq!(request["first_admission_reused_input_tokens"], 512);
+        assert_eq!(request["reused_input_tokens"], 25_088);
+        assert_eq!(request["admission_count"], 2);
+        assert_eq!(request["readmission_count"], 1);
+        assert_eq!(
+            request["admission_history"],
+            json!([
+                {
+                    "admission_ordinal": 0,
+                    "pool_admission_ordinal": 0,
+                    "pool": "agg",
+                    "at_ms": 5.0,
+                    "reused_input_tokens": 512,
+                    "is_readmission": false,
+                },
+                {
+                    "admission_ordinal": 1,
+                    "pool_admission_ordinal": 1,
+                    "pool": "agg",
+                    "at_ms": 25.0,
+                    "reused_input_tokens": 25_088,
+                    "is_readmission": true,
+                },
+            ])
+        );
+        assert_eq!(
+            serialized["summary"]["first_admission_prefix_cache_reused_ratio"],
+            512.0 / 32_768.0
+        );
+        assert_eq!(
+            serialized["summary"]["prefix_cache_reused_ratio"],
+            25_088.0 / 32_768.0
+        );
     }
 
     #[test]

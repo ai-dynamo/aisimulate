@@ -50,8 +50,9 @@ pub(crate) fn resolve_op_sources(
 /// function of the load identity + policy; a fixed map renders its full
 /// contents. `\x1f` (unit separator) keeps boundaries unambiguous; non-UTF-8
 /// paths degrade lossily instead of failing.
-/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`].
-type SharedTablesMemo = Mutex<HashMap<String, Weak<PerfTables>>>;
+/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`],
+/// keeping the systems root each entry was loaded from.
+type SharedTablesMemo = Mutex<HashMap<String, (PathBuf, Weak<PerfTables>)>>;
 
 fn shared_tables_key(
     systems_root: &Path,
@@ -67,6 +68,39 @@ fn shared_tables_key(
         resolver.identity_key(),
         fpm_parquet_path.map_or_else(String::new, |path| path.display().to_string())
     )
+}
+
+fn global_shared_tables() -> &'static SharedTablesMemo {
+    static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
+    SHARED_TABLES.get_or_init(Default::default)
+}
+
+/// Stop sharing the tables loaded for `system` from `systems_root`, under any
+/// spelling of that directory, except `keep`. Databases that hold them keep
+/// them; the next shared load parses the files again. A state snapshot
+/// fingerprints the data before its estimator loads it, so the estimator must
+/// not adopt tables that another engine parsed before that fingerprint.
+pub(crate) fn unshare_tables(systems_root: &Path, system: &str, keep: &[Arc<PerfTables>]) {
+    unshare_tables_in(global_shared_tables(), systems_root, system, keep);
+}
+
+fn unshare_tables_in(
+    memo: &SharedTablesMemo,
+    systems_root: &Path,
+    system: &str,
+    keep: &[Arc<PerfTables>],
+) {
+    let identity = |path: &Path| std::fs::canonicalize(path).or_else(|_| std::path::absolute(path));
+    let Ok(target) = identity(systems_root) else {
+        return;
+    };
+    memo.lock().unwrap().retain(|_, (root, tables)| {
+        tables.upgrade().is_some_and(|tables| {
+            tables.system != system
+                || identity(root).map_or(true, |root| root != target)
+                || keep.iter().any(|kept| Arc::ptr_eq(kept, &tables))
+        })
+    });
 }
 
 /// Whether a version dir is excluded from data loading wholesale: a legacy
@@ -642,9 +676,8 @@ impl PerfDatabase {
         tolerate_missing_data: bool,
         fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
-        static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
         Self::load_resolved_shared_in(
-            SHARED_TABLES.get_or_init(Default::default),
+            global_shared_tables(),
             systems_root,
             system,
             backend,
@@ -725,7 +758,12 @@ impl PerfDatabase {
             &resolver,
             fpm_parquet_path,
         );
-        if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
+        if let Some(tables) = memo
+            .lock()
+            .unwrap()
+            .get(&key)
+            .and_then(|(_, tables)| tables.upgrade())
+        {
             return Ok(Self::from_tables(tables));
         }
         let db = Self::load_with_resolver(
@@ -738,8 +776,11 @@ impl PerfDatabase {
             fpm_parquet_path,
         )?;
         let mut map = memo.lock().unwrap();
-        map.retain(|_, weak| weak.strong_count() > 0);
-        map.insert(key, Arc::downgrade(&db.tables));
+        map.retain(|_, (_, tables)| tables.strong_count() > 0);
+        map.insert(
+            key,
+            (systems_root.to_path_buf(), Arc::downgrade(&db.tables)),
+        );
         Ok(db)
     }
 
@@ -758,9 +799,8 @@ impl PerfDatabase {
         }
     }
 
-    /// The shared tables `Arc` (the load identity of the underlying data).
-    /// Exposed for the engine layer's table-sharing tests.
-    #[cfg(test)]
+    /// The shared tables `Arc` (the load identity of the underlying data),
+    /// for state snapshots that track which tables they verified.
     pub(crate) fn tables_arc(&self) -> &Arc<PerfTables> {
         &self.tables
     }
@@ -776,6 +816,17 @@ impl PerfDatabase {
     /// MSA cross-op "xop", ...).
     pub fn note_provenance(&self, tier: ProvenanceTier) {
         self.provenance.fetch_max(tier as u8, Ordering::Relaxed);
+    }
+
+    /// Clear the accumulator back to `Silicon`, returning the tier it held.
+    /// Noting that tier again afterwards leaves the accumulator as if it had
+    /// never been cleared, so a caller can observe the tiers one computation
+    /// fires.
+    pub(crate) fn take_provenance(&self) -> ProvenanceTier {
+        ProvenanceTier::from_rank(
+            self.provenance
+                .swap(ProvenanceTier::Silicon as u8, Ordering::Relaxed),
+        )
     }
 
     /// Clear the accumulator back to `Silicon` (start of a run).
@@ -1176,6 +1227,40 @@ mod tests {
         assert_eq!(db2.worst_provenance(), ProvenanceTier::Silicon);
         assert!(!Arc::ptr_eq(&db1.util_grids, &db2.util_grids));
         assert!(!Arc::ptr_eq(&db1.delta_lookups, &db2.delta_lookups));
+    }
+
+    #[test]
+    fn unsharing_a_root_under_another_spelling_reloads_only_that_system() {
+        let memo = SharedTablesMemo::default();
+        let load = |system: &str| {
+            PerfDatabase::load_resolved_shared_in(
+                &memo,
+                &systems_root(),
+                system,
+                "vllm",
+                "0.24.0",
+                false,
+                false,
+                false,
+                None,
+            )
+            .expect("shared load must succeed")
+        };
+        let (b200, h200) = (load("b200_sxm"), load("h200_sxm"));
+        // `systems_root()` is spelled with `..`; the canonical path is the same root.
+        let canonical = std::fs::canonicalize(systems_root()).unwrap();
+        unshare_tables_in(&memo, &canonical, "b200_sxm", &[]);
+        let reloaded = load("b200_sxm");
+        assert!(!Arc::ptr_eq(&reloaded.tables, &b200.tables));
+        assert!(Arc::ptr_eq(&load("h200_sxm").tables, &h200.tables));
+        // Kept tables stay shared.
+        unshare_tables_in(
+            &memo,
+            &canonical,
+            "b200_sxm",
+            &[Arc::clone(&reloaded.tables)],
+        );
+        assert!(Arc::ptr_eq(&load("b200_sxm").tables, &reloaded.tables));
     }
 
     #[test]

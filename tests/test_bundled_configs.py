@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 
 import pytest
@@ -149,11 +150,30 @@ def test_modified_upstream_config_requires_description(fixture):
         checker.validate(root, inventory)
 
 
-def test_notice_must_identify_the_file_and_revision(fixture):
+@pytest.mark.parametrize("section", [None, "", " "])
+def test_notice_section_is_required_even_with_a_separate_license_file(fixture, section):
+    root, _, entry, inventory, save = fixture
+    entry["notice"]["section"] = section
+    entry["notice"]["license_file"] = "LICENSE"
+    (root / "LICENSE").write_text("Example custom license. Copyright Example Owner.\n")
+    save()
+    with pytest.raises(checker.InventoryError, match="missing notice section"):
+        checker.validate(root, inventory)
+    del entry["notice"]["section"]
+    save()
+    with pytest.raises(checker.InventoryError, match="missing notice section"):
+        checker.validate(root, inventory)
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "message"),
+    [(REVISION, "2" * 40, "upstream revision"), ("example_config.json", "unrelated.json", "configuration file")],
+)
+def test_notice_must_identify_the_file_and_revision(fixture, original, replacement, message):
     root, _, _, inventory, _ = fixture
     notice = root / "THIRD_PARTY_NOTICES.md"
-    notice.write_text(notice.read_text().replace(REVISION, "2" * 40))
-    with pytest.raises(checker.InventoryError, match="upstream revision"):
+    notice.write_text(notice.read_text().replace(original, replacement))
+    with pytest.raises(checker.InventoryError, match=message):
         checker.validate(root, inventory)
 
 
@@ -241,6 +261,16 @@ def test_wheel_only_copied_config_is_caught(fixture):
         checker.validate(root, inventory, wheel_path=wheel)
 
 
+def test_wheel_missing_declared_config_is_caught(fixture):
+    root, _, _, inventory, _ = fixture
+    wheel = root.parent / "missing-config.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name in ["LICENSE", "THIRD_PARTY_NOTICES.md"]:
+            archive.writestr(f"aisimulate-1.dist-info/licenses/{name}", (root / name).read_bytes())
+    with pytest.raises(checker.InventoryError, match=r"missing=\[.*example_config.json"):
+        checker.validate(root, inventory, wheel_path=wheel)
+
+
 def test_wheel_bytes_must_match_the_declared_source(fixture):
     root, path, _, inventory, _ = fixture
     wheel = root.parent / "different.whl"
@@ -305,6 +335,50 @@ def test_current_inventory_is_complete_and_does_not_relabel_unknowns():
     assert len(qwen) == len(llama) == 2
     assert {e["license"] for e in qwen} == {"LicenseRef-Qwen3.8-Max"}
     assert {e["license"] for e in llama} == {"LicenseRef-Llama-4-Community"}
+
+
+def test_packaged_deepseek_v3_notice_preserves_unresolved_scope(tmp_path):
+    entries = checker.inventory_entries(checker.ROOT / checker.INVENTORY)
+    name = "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json"
+    entry = entries[name]
+    assert entry["origin"] == "legacy_unresolved"
+    assert entry["license"] == "UNKNOWN"
+    canonical = (checker.ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()
+    packaged = checker.ROOT / "python/aisimulate/THIRD_PARTY_NOTICES.md"
+    assert packaged.read_bytes() == canonical
+    # Exercise the legal payload reader with the packaging input, not a second
+    # handwritten notice fixture. Hosted wheel builds validate the real wheel.
+    wheel_path = tmp_path / "legal-payload.whl"
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        wheel.writestr("aisimulate-1.dist-info/licenses/THIRD_PARTY_NOTICES.md", packaged.read_bytes())
+    with zipfile.ZipFile(wheel_path) as wheel:
+        text = checker.notice_text(checker.ROOT, "THIRD_PARTY_NOTICES.md", wheel)
+    sections = dict(re.findall(r"^## (.*?)\n(.*?)(?=^## |\Z)", text, re.M | re.S))
+    notice = sections[entry["notice"]["section"]]
+    assert "deepseek-ai--DeepSeek-V3_config.json" in notice
+    assert "UNKNOWN / unresolved" in notice
+    assert entry["source"]["revision"] in notice
+    assert "LICENSE-CODE" in notice and "LICENSE-MODEL" in notice
+    assert "deepseek-ai--DeepSeek-V3_config.json" not in sections["DeepSeek model configuration files"]
+
+
+@pytest.mark.parametrize("missing_license", ["GLM-5.3 License", "NVIDIA Open Model Agreement"])
+def test_nvfp4_notice_requires_both_license_texts(tmp_path, missing_license):
+    name = "aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json"
+    entry = checker.inventory_entries(checker.ROOT / checker.INVENTORY)[name]
+    canonical = (checker.ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+    section = entry["notice"]["section"]
+    pattern = r"^## " + re.escape(section) + r"\s*\n(.*?)(?=^## |\Z)"
+    body = re.search(pattern, canonical, re.M | re.S).group(1)
+    license_text = re.findall(r"```text\n(.*?)\n```", body, re.S)[0]
+    assert "GLM-5.3 License" in license_text and "NVIDIA Open Model Agreement" in license_text
+    (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(canonical)
+    checker.check_notice(tmp_path, entry, None)
+    glm, agreement = license_text.split("NVIDIA Open Model Agreement\n", 1)
+    remaining = glm if missing_license == "NVIDIA Open Model Agreement" else "NVIDIA Open Model Agreement\n" + agreement
+    (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(canonical.replace(license_text, remaining))
+    with pytest.raises(checker.InventoryError, match="complete license text"):
+        checker.check_notice(tmp_path, entry, None)
 
 
 def test_content_changes_change_osrb_identity(fixture, tmp_path):

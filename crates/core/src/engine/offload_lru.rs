@@ -75,13 +75,21 @@ impl Lru {
     }
 
     fn oldest_first(&self) -> impl Iterator<Item = HostBlockKey> + '_ {
-        let mut node = self.nodes[SENTINEL as usize].newer;
+        self.oldest_after(None).map(|(_, key)| key)
+    }
+
+    /// Linked nodes newer than `cursor`, oldest first; all of them for `None`.
+    pub(crate) fn oldest_after(
+        &self,
+        cursor: Option<NonZeroU32>,
+    ) -> impl Iterator<Item = (NonZeroU32, HostBlockKey)> + '_ {
+        let start = cursor.map_or(SENTINEL, NonZeroU32::get);
+        let mut node = self.nodes[start as usize].newer;
         std::iter::from_fn(move || {
-            (node != SENTINEL).then(|| {
-                let LruNode { key, newer, .. } = self.nodes[node as usize];
-                node = newer;
-                key
-            })
+            let current = NonZeroU32::new(node)?;
+            let LruNode { key, newer, .. } = self.nodes[node as usize];
+            node = newer;
+            Some((current, key))
         })
     }
 

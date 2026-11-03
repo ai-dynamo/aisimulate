@@ -99,12 +99,29 @@ fn sdk_error_type(
 /// * `AicError::SolNotImplemented` raises
 ///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
+/// * `AicError::StateSnapshotIo` raises the built-in `OSError` subclass for
+///   its I/O kind (`FileNotFoundError`, `PermissionError`,
+///   `FileExistsError`, otherwise `OSError`), never the skippable
+///   missing-data class;
 /// * everything else stays `PyValueError`.
 ///
 /// The sdk import is lazy and failure-tolerant: in pure-Rust test contexts
 /// (cargo test without the sdk on `sys.path`) the conversion degrades to
 /// `PyValueError` with the same message.
 pub(crate) fn aic_to_py(e: AicError) -> PyErr {
+    if let AicError::StateSnapshotIo { source, .. } = &e {
+        let message = e.to_string();
+        return match source.kind() {
+            std::io::ErrorKind::NotFound => pyo3::exceptions::PyFileNotFoundError::new_err(message),
+            std::io::ErrorKind::PermissionDenied => {
+                pyo3::exceptions::PyPermissionError::new_err(message)
+            }
+            std::io::ErrorKind::AlreadyExists => {
+                pyo3::exceptions::PyFileExistsError::new_err(message)
+            }
+            _ => pyo3::exceptions::PyOSError::new_err(message),
+        };
+    }
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
     } else if matches!(e, AicError::EmpiricalNotImplemented(_)) {
@@ -357,6 +374,26 @@ impl AicEngine {
         self.inner.reset_provenance();
         py.allow_threads(|| self.inner.predict_decode_latency(bs, isl, osl))
             .map_err(aic_to_py)
+    }
+
+    /// One prefill-step latency at the exact
+    /// `(batch_size, total_prefill_tokens, total_kv_read_tokens)` totals.
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
     }
 
     /// One FPM decode-step latency at the collector's exact
@@ -889,6 +926,14 @@ impl AicEngine {
     }
 }
 
+/// Inspect the compiled baseline for authoring a pinned external profile.
+#[pyfunction]
+fn engine_spec_json_from_bincode(bytes: &[u8]) -> PyResult<String> {
+    let spec =
+        crate::perfmodel::engine::spec::EngineSpec::from_bincode(bytes).map_err(aic_to_py)?;
+    serde_json::to_string(&spec).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Convert a JSON-encoded [`EngineSpec`] into bincode bytes (Python → Rust
 /// op-transfer). Python's `compile_engine` builds the `EngineSpec` as a JSON
 /// string (externally-tagged `Op` variants + `EngineConfig`) — JSON is the
@@ -1050,6 +1095,10 @@ struct EngineBuildRequest {
     attention_dp_size: u32,
     dcp_size: Option<u32>,
     fpm_options: crate::FpmInterpolationConfig,
+    execution_profile: Option<(
+        crate::perfmodel::execution_profile::ExecutionProfileSelection,
+        crate::ForwardPassWorkerType,
+    )>,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
     cp_size: Option<u32>,
@@ -1109,6 +1158,7 @@ impl AicEngineBuilder {
                 attention_dp_size: 1,
                 dcp_size: None,
                 fpm_options: crate::FpmInterpolationConfig::default(),
+                execution_profile: None,
                 moe_tp_size: None,
                 moe_ep_size: None,
                 cp_size: None,
@@ -1596,6 +1646,13 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
             request.backend,
         )));
     }
+    if let Some((selection, worker_type)) = &request.execution_profile {
+        let spec = crate::perfmodel::engine::spec::EngineSpec::from_bincode(&spec_bytes)?;
+        let (spec, snapshot) = selection.apply(spec, &systems_root, *worker_type)?;
+        let mut engine = Engine::from_spec_bytes(&spec.to_bincode()?, snapshot.path())?;
+        engine.profile_snapshot = Some(snapshot);
+        return Ok(engine);
+    }
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
 
@@ -1699,6 +1756,12 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         attention_dp_size: config.attention_dp,
         dcp_size: config.dcp,
         fpm_options: config.estimator_config.fpm_interpolation.clone(),
+        execution_profile: config
+            .estimator_config
+            .op_level
+            .execution_profile
+            .clone()
+            .map(|selection| (selection, config.worker_type)),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
         cp_size: config.cp_size,
@@ -1796,6 +1859,11 @@ pub(crate) fn compile_engine_to_engine(
             request.fpm_interpolation.as_deref(),
             request.fpm_parquet_path.as_deref(),
         )?;
+        if controls.op_level.execution_profile.is_some() {
+            return Err(AicError::InvalidEngineConfig(
+                "external execution profiles require the canonical best_available interface".into(),
+            ));
+        }
         request.fpm_options = controls.fpm_interpolation.clone();
         request.fpm_interpolation = match controls.fpm_interpolation.method {
             crate::FpmInterpolationMethod::Auto => None,
@@ -1850,6 +1918,7 @@ fn engine_build_request(
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
         dcp_size: config.parallel.dcp_size,
         fpm_options: crate::FpmInterpolationConfig::default(),
+        execution_profile: None,
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
         cp_size: config.parallel.cp_size,
@@ -1975,6 +2044,26 @@ fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPe
     Ok(config)
 }
 
+/// Do not silently accept booleans or truncate a nonintegral draft length.
+fn parse_speculative_draft_length(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<u32>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_instance_of::<pyo3::types::PyBool>()
+        || !value.is_instance_of::<pyo3::types::PyInt>()
+    {
+        return Err(PyValueError::new_err(
+            "draft_length must be a positive integer",
+        ));
+    }
+    let depth = value
+        .extract::<u32>()
+        .ok()
+        .filter(|&depth| depth > 0 && depth < u32::MAX)
+        .ok_or_else(|| {
+            PyValueError::new_err("draft_length must be a positive integer smaller than 2**32 - 1")
+        })?;
+    Ok(Some(depth))
+}
+
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either
 /// a single FPM object or a JSON array of FPM objects (the wrapper's
 /// single-rank convenience form). Matches the old ctypes marshalling.
@@ -2007,6 +2096,17 @@ impl PyForwardPassPerfModel {
             .resolve()
             .map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Resolve the deployment identity used by learned artifacts and checkpoints.
+    #[staticmethod]
+    fn learned_identity(config_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?
+            .resolve()
+            .map_err(aic_to_py)?;
+        let identity =
+            crate::perfmodel::fpm::canonical_learned_identity(&config).map_err(aic_to_py)?;
+        serde_json::to_string(&identity).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Size declarative resources using canonical configuration, without timing
@@ -2185,6 +2285,7 @@ impl PyForwardPassPerfModel {
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
             encoder_parallel: None,
+            deployment_limits: None,
         };
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -2238,23 +2339,192 @@ impl PyForwardPassPerfModel {
             .transpose()
     }
 
+    fn learned_selector_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_selector_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
+    fn learned_online_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_online_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
+    fn flush_updates(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.flush_updates())
+            .map_err(aic_to_py)
+    }
+
+    fn append_mixed_learned_checkpoint(&mut self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        py.allow_threads(|| self.inner.append_mixed_learned_checkpoint(path))
+            .map_err(aic_to_py)
+    }
+
+    fn export_learned_artifact(&self) -> PyResult<String> {
+        self.inner.export_learned_artifact().map_err(aic_to_py)
+    }
+
+    fn learned_expert_artifacts(&self) -> PyResult<String> {
+        let value = self.inner.learned_expert_artifacts().map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_route(&self, fpm_json: &str) -> PyResult<Option<String>> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        self.inner
+            .mixed_composition_route(&metrics)
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn estimate_forward_pass_with_route(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        let value = py
+            .allow_threads(|| self.inner.estimate_forward_pass_with_route(&metrics))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn mixed_composition_state(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_state()
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn restore_mixed_composition_state(&mut self, state_json: &str) -> PyResult<()> {
+        let state =
+            serde_json::from_str(state_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner
+            .restore_mixed_composition_state(state)
+            .map_err(aic_to_py)
+    }
+
+    fn save_online_checkpoint(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        py.allow_threads(|| self.inner.save_online_checkpoint(path))
+            .map_err(aic_to_py)
+    }
+
+    /// Write the complete tuned state to a new directory and return the
+    /// pinned canonical configuration JSON that restores it.
+    #[pyo3(signature = (path, include_perf_db=false))]
+    fn save_state_snapshot(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        include_perf_db: bool,
+    ) -> PyResult<String> {
+        let options = crate::StateSnapshotOptions { include_perf_db };
+        let config = py
+            .allow_threads(|| self.inner.save_state_snapshot(path, &options))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Read a snapshot manifest summary as JSON without restoring the model.
+    #[staticmethod]
+    fn inspect_state_snapshot(path: &str) -> PyResult<String> {
+        let summary =
+            crate::ForwardPassPerfModel::inspect_state_snapshot(path).map_err(aic_to_py)?;
+        serde_json::to_string(&summary).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Launch rules that reject `config_json` as the timing model of the
+    /// engine described by `engine_args_json`; empty when compatible.
+    #[staticmethod]
+    fn engine_launch_mismatches(
+        config_json: &str,
+        engine_args_json: &str,
+    ) -> PyResult<Vec<String>> {
+        let config = parse_forward_pass_config(config_json)?;
+        let engine_args: serde_json::Value = serde_json::from_str(engine_args_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid engine arguments: {error}")))?;
+        crate::engine::EngineLaunchConfig::timing_config_mismatches(engine_args, &config)
+            .map_err(|error| PyValueError::new_err(format!("{error:#}")))
+    }
+
+    /// Per-store estimation and correction readiness as JSON.
+    fn readiness_report(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.readiness_report())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Deployment topology of the construction identity as JSON, or `None`.
+    fn deployment_topology(&self) -> PyResult<Option<String>> {
+        self.inner
+            .deployment_topology()
+            .map(|topology| {
+                serde_json::to_string(&topology)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
     /// a single FPM object or a per-attention-DP-rank array. Returns `None` for
     /// regression models without enough data yet and for learned models whose
     /// artifact has no store for the iteration's workload kind. Pure-Rust
     /// compute (GIL freed).
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
     fn estimate_forward_pass_time_ms(
         &self,
         py: Python<'_>,
         fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<f64>> {
         let metrics = parse_fpm_iteration(fpm_json)?;
-        py.allow_threads(|| self.inner.estimate_forward_pass_time_ms(&metrics))
-            .map_err(aic_to_py)
+        let draft_length = parse_speculative_draft_length(draft_length)?;
+        py.allow_threads(|| match draft_length {
+            Some(depth) => self
+                .inner
+                .estimate_speculative_forward_pass_time_ms(&metrics, depth),
+            None => self.inner.estimate_forward_pass_time_ms(&metrics),
+        })
+        .map_err(aic_to_py)
     }
 
-    fn estimate_forward_pass_detailed(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
+    fn estimate_forward_pass_detailed(
+        &self,
+        py: Python<'_>,
+        fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<String> {
         let metrics = parse_fpm_iteration(fpm_json)?;
+        if let Some(depth) = parse_speculative_draft_length(draft_length)? {
+            let result = py
+                .allow_threads(|| {
+                    self.inner
+                        .estimate_speculative_forward_pass_detailed(&metrics, depth)
+                })
+                .map_err(aic_to_py)?;
+            return serde_json::to_string(&result)
+                .map_err(|error| PyValueError::new_err(error.to_string()));
+        }
         let result = py
             .allow_threads(|| self.inner.estimate_forward_pass_detailed(&metrics))
             .map_err(aic_to_py)?;
@@ -2339,6 +2609,23 @@ impl PyForwardPassPerfModel {
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
     }
 
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     fn predict_decode_latency_total(
         &self,
         py: Python<'_>,
@@ -2391,6 +2678,7 @@ impl PyForwardPassPerfModel {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_build_smoke, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_bincode_from_json, m)?)?;
+    m.add_function(wrap_pyfunction!(engine_spec_json_from_bincode, m)?)?;
     m.add_function(wrap_pyfunction!(weights_ops_json, m)?)?;
     m.add_function(wrap_pyfunction!(gemm_quant_util_levels, m)?)?;
     m.add_function(wrap_pyfunction!(moe_quant_util_levels, m)?)?;
@@ -2864,6 +3152,21 @@ mod tests {
             // Non-typed variants stay ValueError regardless of the sdk.
             let other = aic_to_py(AicError::InvalidEngineConfig("bad".to_string()));
             assert_eq!(other.get_type(py).name().unwrap().to_string(), "ValueError");
+
+            // Snapshot I/O maps to built-in OSError subclasses by kind.
+            for (kind, name) in [
+                (std::io::ErrorKind::NotFound, "FileNotFoundError"),
+                (std::io::ErrorKind::PermissionDenied, "PermissionError"),
+                (std::io::ErrorKind::AlreadyExists, "FileExistsError"),
+                (std::io::ErrorKind::InvalidData, "OSError"),
+            ] {
+                let error = aic_to_py(AicError::StateSnapshotIo {
+                    path: PathBuf::from("/snapshot"),
+                    source: std::io::Error::new(kind, "io"),
+                });
+                assert_eq!(error.get_type(py).name().unwrap().to_string(), name);
+                assert!(error.value(py).to_string().contains("/snapshot"));
+            }
 
             // The message survives the mapping.
             let msg_err = aic_to_py(AicError::PerfDatabase("missing table xyz".to_string()));

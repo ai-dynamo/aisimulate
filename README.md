@@ -33,6 +33,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
+[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 AISimulate is the successor to the
@@ -83,7 +84,7 @@ Install this pair on Linux with Python 3.12 in a **separate environment**:
 <!-- readme-check: dynamo-install -->
 ```bash
 python3 -m pip install --extra-index-url https://pypi.nvidia.com \
-  "aisimulate==0.13.0.dev202609270000000058" "ai-dynamo==1.6.0.dev20260930"
+  "aisimulate==0.13.0.dev202610240000000082" "ai-dynamo==1.7.0.dev20261028"
 python3 -m pip check
 aisimulate predict --help
 ```
@@ -133,6 +134,17 @@ aisimulate predict \
   --config prediction.yaml \
   --output-dir ./aisimulate-prediction
 ```
+
+For offline `--stack engine` replay with vLLM/SGLang, `--capture-telemetry`
+also exports all-phase request records, periodic scheduler/cache/traffic samples,
+and agentic lifecycle events. Sampling defaults to 1,000 simulated milliseconds;
+adjust it with `--telemetry-sample-interval-ms`. See the
+[telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
+
+Add `--export-html` to `aisimulate predict` to capture telemetry and write a
+standalone `report.html` dashboard with profiling, warmup, and request timelines.
+Open it directly in a browser; charts and data are embedded for offline use.
+See the [dashboard guide](docs/getting-started/understand-results.md#replay-dashboard).
 
 ### Python prediction API
 
@@ -314,9 +326,8 @@ identified in the migration guide.
 ## Experimental status and validation boundary
 
 > [!WARNING]
-> Replay and Sweeper are experimental surfaces intended for evaluation and
-> feedback, not production capacity planning. Their APIs, schemas, search
-> behavior, and output may change without a standard deprecation period.
+> Replay and Sweeper are still evolving. Their APIs, schemas, search behavior,
+> and output may change without a standard deprecation period.
 
 AISimulate narrows a deployment search and identifies candidates; it does not
 replace validation on the target hardware. Benchmark shortlisted

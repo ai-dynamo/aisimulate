@@ -54,6 +54,13 @@ without changing the license registry too. Explicit required attribution is chec
 in notice prose outside the agreement itself. Canonical attribution remains in the root legal
 files and their byte-identical packaging copies.
 
+Identified entries require a nonempty `notice.section` that names exactly one
+canonical notice section. That section must identify the configuration filename,
+upstream revision, and copyright owner, even when `notice.license_file` points to
+the root license. Where multiple licenses apply together, the inventory retains
+the `AND` expression and pins a combined block containing both complete texts;
+removing either text fails validation.
+
 Fast CI runs `scripts/ci/check_bundled_configs.py` against source files. Full CI,
 platform-wheel jobs (including macOS), and nightly builds check the exact repaired
 wheel before it is staged or its runtime dependencies execute. These checks do not
@@ -180,6 +187,12 @@ Two kinds of validation then run:
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
   [required native probes](../../.github/fpe-required-probes.json).
+  Before probing, discovery resolves each required probe's `current` version
+  through the selected source's installed SDK and checks it against that source's
+  inventory. The resulting plan binds concrete versions to the source, tooling,
+  and wheel identities; packaging validates that plan and records its versions in
+  `fpe-qualification.json`. A passing older version cannot replace a failing
+  required version. Release branches resolve their own `current` versions.
 
 FPE generates deterministic web-matrix artifacts. Its standalone manual mode
 builds one wheel for the requested source SHA and uses that same wheel for all

@@ -323,6 +323,7 @@ def test_sglang_attention_runtime_fields_are_not_persisted_dimensions():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("kernel_source", ["triton", "flashinfer"])  # flashinfer refuses it in the worker
 @pytest.mark.parametrize(
     ("sm_version", "num_heads", "num_kv_heads", "head_dim", "max_kv_elements"),
     [
@@ -333,6 +334,7 @@ def test_sglang_attention_runtime_fields_are_not_persisted_dimensions():
     ],
 )
 def test_blackwell_context_cases_are_not_silently_removed(
+    kernel_source,
     sm_version,
     num_heads,
     num_kv_heads,
@@ -358,7 +360,7 @@ def test_blackwell_context_cases_are_not_silently_removed(
         attention_chunk_size=None,
         has_attention_sink=False,
         scaling=None,
-        kernel_source="triton",
+        kernel_source=kernel_source,
         architecture="TestForCausalLM",
     )
     getter = _load_collector_function(
@@ -388,12 +390,12 @@ def _run_attention_torch_source() -> str:
 
 @pytest.mark.unit
 def test_fp8_prefill_labels_follow_backend_compute_dtype():
-    """FP8 prefill labeling mirrors SGLang 0.5.14 per-backend compute truth.
+    """FP8 prefill labeling mirrors SGLang 0.5.21 per-backend compute truth.
 
     flashinfer has no FP8 prefill compute path at all (BF16 Q reads the FP8 KV
     cache with descales) and must reject the fp8_context_fmha case. trtllm_mha
-    (TRTLLM-GEN) requires BF16 inputs but quantizes Q internally via
-    scaled_fp8_quant (trtllm_mha_backend.py:154-158, 291-301), so its
+    (TRTLLM-GEN) takes BF16 inputs but casts Q to FP8 itself
+    (trtllm_mha_backend.py:1600-1609), so its
     fp8_context_fmha case runs WITHOUT an external cast — the FP8 compute
     happens inside the backend.
     """
@@ -404,6 +406,8 @@ def test_fp8_prefill_labels_follow_backend_compute_dtype():
     # trtllm_mha must be exempt from the external cast, not rejected.
     assert 'attn_backend_name != "trtllm_mha"' in source
     assert 'attn_backend_name in {"flashinfer", "trtllm_mha"}' not in source
+    # the refusal runs before the model runner is built: the queued case fails cheaply
+    assert source.index("has no FP8 prefill compute path") < source.index("MockModelRunner(")
 
 
 @pytest.mark.unit
@@ -411,7 +415,7 @@ def test_bf16_prefill_on_fp8_kv_fails_closed_on_internally_quantizing_backends()
     """A BF16-compute prefill on an FP8 KV cache does not exist on fa3/trtllm_mha.
 
     fa3 casts Q to the KV dtype whenever the cache is FP8 and head_dim <= 256
-    (flashattention_backend.py:857-872); TRTLLM-GEN always quantizes Q when the
+    (flashattention_backend.py:1322-1332); TRTLLM-GEN always quantizes Q when the
     cache is FP8. Collecting that combination would record FP8 compute under a
     bfloat16 attn_dtype label, so it must raise instead.
     """

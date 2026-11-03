@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use anyhow::{Result, anyhow};
@@ -9,9 +9,97 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use super::{
-    EngineEventBatch, Placement, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    EngineEventBatch, KvFetchAction, KvHints, Placement, PlacementDecision, PlacementEffects,
+    PlacementPolicy, RequestIdentity, WorkerTopology,
 };
+use crate::replay::protocol::AuthoredKvHints;
+
+/// Authored `kv_hints` resolution shared by the round-robin policies.
+///
+/// A hint is forwarded as its source's scheduler id only while the source
+/// worker is live in this pool, advertises router hints and has the named
+/// attention-DP rank. Any other authored hint is dropped: workers come and go
+/// under scaling, so naming one that is absent is not an error.
+#[derive(Debug, Default)]
+struct AuthoredKvHintSources {
+    /// Live workers that advertise router hints.
+    router_hint_workers: BTreeSet<usize>,
+}
+
+impl AuthoredKvHintSources {
+    fn new(workers: &[WorkerTopology]) -> Self {
+        let mut sources = Self::default();
+        for worker in workers {
+            sources.ready(worker);
+        }
+        sources
+    }
+
+    fn ready(&mut self, worker: &WorkerTopology) {
+        if worker.router_hint {
+            self.router_hint_workers.insert(worker.worker_id);
+        }
+    }
+
+    fn retire(&mut self, worker_id: usize) {
+        self.router_hint_workers.remove(&worker_id);
+    }
+
+    /// `workers` are the policy's live workers, with scheduler ids by DP rank.
+    fn resolve(
+        &self,
+        workers: &BTreeMap<usize, Vec<usize>>,
+        hint: Option<AuthoredKvHints>,
+    ) -> Option<KvHints> {
+        let hint = hint.filter(|hint| self.router_hint_workers.contains(&hint.source_worker))?;
+        let source_scheduler_id = *workers
+            .get(&hint.source_worker)?
+            .get(hint.source_dp_rank as usize)?;
+        Some(KvHints {
+            fetch: KvFetchAction {
+                source_scheduler_id,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct SessionPins(Option<FxHashMap<String, usize>>);
+
+impl SessionPins {
+    fn get(
+        &self,
+        session_id: Option<&str>,
+        preferred_rank: Option<u32>,
+        workers: &BTreeMap<usize, Vec<usize>>,
+    ) -> Result<Option<usize>> {
+        let pinned = self
+            .0
+            .as_ref()
+            .and_then(|pins| pins.get(session_id?).copied());
+        if let (Some(scheduler), Some(rank)) = (pinned, preferred_rank) {
+            anyhow::ensure!(
+                workers
+                    .values()
+                    .any(|ranks| ranks.get(rank as usize) == Some(&scheduler)),
+                "session affinity conflicts with the requested attention-DP rank"
+            );
+        }
+        Ok(pinned)
+    }
+
+    fn insert(&mut self, session_id: Option<String>, scheduler_id: usize) {
+        if let (Some(pins), Some(session)) = (&mut self.0, session_id) {
+            pins.insert(session, scheduler_id);
+        }
+    }
+
+    fn retire(&mut self, scheduler_ids: &[usize]) {
+        if let Some(pins) = &mut self.0 {
+            pins.retain(|_, scheduler| !scheduler_ids.contains(scheduler));
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct AggregatedRoundRobin {
@@ -24,7 +112,9 @@ pub struct AggregatedRoundRobin {
 pub struct AggregatedRoundRobinPlacement<Events: EngineEventBatch> {
     counter: AggregatedRoundRobin,
     workers: BTreeMap<usize, Vec<usize>>,
+    hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
+    session_pins: SessionPins,
 }
 
 impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
@@ -35,12 +125,20 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
         }
         Self {
             counter,
+            hints: AuthoredKvHintSources::new(&workers),
             workers: workers
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
             events: PhantomData,
+            session_pins: SessionPins::default(),
         }
+    }
+
+    /// Pin each session to its first selected scheduler until that worker retires.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.session_pins = SessionPins(enabled.then(FxHashMap::default));
+        self
     }
 }
 
@@ -57,28 +155,44 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let scheduler_id = self.counter.next(
-            self.workers.keys().copied(),
+        let pinned = self.session_pins.get(
+            session_id.as_deref(),
             request.preferred_dp_rank(),
-            |worker_id, rank| {
-                self.workers
-                    .get(&worker_id)
-                    .and_then(|ranks| ranks.get(rank as usize))
-                    .copied()
-            },
+            &self.workers,
         )?;
+        let scheduler_id = if let Some(scheduler) = pinned {
+            scheduler
+        } else {
+            self.counter.next(
+                self.workers.keys().copied(),
+                request.preferred_dp_rank(),
+                |worker_id, rank| {
+                    self.workers
+                        .get(&worker_id)
+                        .and_then(|ranks| ranks.get(rank as usize))
+                        .copied()
+                },
+            )?
+        };
+        if pinned.is_none() {
+            self.session_pins.insert(session_id, scheduler_id);
+        }
+        let kv_hints = self
+            .hints
+            .resolve(&self.workers, request.authored_kv_hints());
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
                 request_id,
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints,
                 placement_replica_id: None,
             }),
             released: Vec::new(),
@@ -111,17 +225,22 @@ where
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
         self.counter.worker_ready(worker.worker_id);
+        self.hints.ready(&worker);
         self.workers.insert(worker.worker_id, worker.scheduler_ids);
         Ok(Vec::new())
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
+        self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
+        self.hints.retire(worker.worker_id);
         self.counter.worker_removed(worker.worker_id);
         Ok(Vec::new())
     }
@@ -136,19 +255,29 @@ where
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     next: usize,
     workers: BTreeMap<usize, Vec<usize>>,
+    hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
+    session_pins: SessionPins,
 }
 
 impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
     pub fn new(workers: Vec<WorkerTopology>) -> Self {
         Self {
             next: 0,
+            hints: AuthoredKvHintSources::new(&workers),
             workers: workers
                 .into_iter()
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
             events: PhantomData,
+            session_pins: SessionPins::default(),
         }
+    }
+
+    /// Pin each session to its first selected scheduler until that worker retires.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.session_pins = SessionPins(enabled.then(FxHashMap::default));
+        self
     }
 
     #[cfg(test)]
@@ -171,50 +300,65 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
-        let active_count = match preferred_dp_rank {
-            Some(rank) => self
-                .workers
-                .values()
-                .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
-                .count(),
-            None => self.workers.values().map(Vec::len).sum::<usize>(),
-        };
-        if active_count == 0 {
-            if let Some(rank) = preferred_dp_rank {
-                return Err(anyhow!(
-                    "preferred attention-DP rank {rank} is out of range for the active worker pool"
-                ));
+        let pinned = self.session_pins.get(
+            session_id.as_deref(),
+            request.preferred_dp_rank(),
+            &self.workers,
+        )?;
+        let scheduler_id = if let Some(scheduler) = pinned {
+            scheduler
+        } else {
+            let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
+            let active_count = match preferred_dp_rank {
+                Some(rank) => self
+                    .workers
+                    .values()
+                    .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
+                    .count(),
+                None => self.workers.values().map(Vec::len).sum::<usize>(),
+            };
+            if active_count == 0 {
+                if let Some(rank) = preferred_dp_rank {
+                    return Err(anyhow!(
+                        "preferred attention-DP rank {rank} is out of range for the active worker pool"
+                    ));
+                }
+                return Err(anyhow!("no active workers for round-robin placement"));
             }
-            return Err(anyhow!("no active workers for round-robin placement"));
-        }
-        let index = self.next % active_count;
-        let scheduler_id = match preferred_dp_rank {
-            Some(rank) => self
-                .workers
-                .values()
-                .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
-                .nth(index),
-            None => self
-                .workers
-                .values()
-                .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
-                .nth(index),
-        }
-        .expect("active round-robin pool must contain a scheduler");
-        self.next = index + 1;
+            let index = self.next % active_count;
+            let scheduler_id = match preferred_dp_rank {
+                Some(rank) => self
+                    .workers
+                    .values()
+                    .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
+                    .nth(index),
+                None => self
+                    .workers
+                    .values()
+                    .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
+                    .nth(index),
+            }
+            .expect("active round-robin pool must contain a scheduler");
+            self.next = index + 1;
+            self.session_pins.insert(session_id, scheduler_id);
+            scheduler_id
+        };
+        let kv_hints = self
+            .hints
+            .resolve(&self.workers, request.authored_kv_hints());
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
                 request_id,
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints,
                 placement_replica_id: None,
             }),
             released: Vec::new(),
@@ -242,17 +386,22 @@ where
     }
 
     fn worker_ready(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.hints.ready(&worker);
         self.workers.insert(worker.worker_id, worker.scheduler_ids);
         Ok(Vec::new())
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
+        self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
+        self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
@@ -321,6 +470,7 @@ impl AggregatedRoundRobin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay::protocol::DirectRequest;
 
     #[derive(Debug)]
     struct TestRequest(Uuid);
@@ -347,6 +497,38 @@ mod tests {
         }
     }
 
+    /// A replay request with an authored hint, which placement reads through
+    /// the production `RequestIdentity` impl of `DirectRequest`.
+    #[derive(Debug)]
+    struct HintedTestRequest(DirectRequest);
+
+    impl HintedTestRequest {
+        fn numbered(ordinal: u128, kv_hints: Option<AuthoredKvHints>) -> Self {
+            Self(DirectRequest {
+                uuid: Some(Uuid::from_u128(ordinal)),
+                kv_hints,
+                ..DirectRequest::default()
+            })
+        }
+    }
+
+    impl RequestIdentity for HintedTestRequest {
+        fn request_id(&self) -> Option<Uuid> {
+            RequestIdentity::request_id(&self.0)
+        }
+
+        fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+            self.0.authored_kv_hints()
+        }
+    }
+
+    fn immediate(effects: PlacementEffects) -> Placement {
+        let PlacementDecision::Immediate(placement) = effects.decision else {
+            panic!("round-robin placement must be immediate");
+        };
+        placement
+    }
+
     fn scheduler_id(
         policy: &mut impl PlacementPolicy<TestRequest, Metadata = ()>,
         ordinal: u128,
@@ -366,19 +548,131 @@ mod tests {
     }
 
     #[test]
+    fn session_affinity_pins_dp_ranks_and_reassigns_retired_workers() {
+        for draining in [false, true] {
+            let worker = |worker_id| WorkerTopology {
+                worker_id,
+                scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+                router_hint: false,
+            };
+            let mut policy =
+                AggregatedRoundRobinPlacement::<()>::new(2, vec![worker(1), worker(2)])
+                    .with_session_affinity(true);
+            let place =
+                |policy: &mut AggregatedRoundRobinPlacement<()>, session: Option<&str>, rank| {
+                    PlacementPolicy::<DirectRequest>::place(
+                        policy,
+                        &DirectRequest {
+                            uuid: Some(Uuid::new_v4()),
+                            preferred_dp_rank: rank,
+                            ..DirectRequest::default()
+                        },
+                        (),
+                        session.map(str::to_owned),
+                        0.0,
+                    )
+                    .map(|effects| immediate(effects).scheduler_id)
+                };
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 11);
+            let error = place(&mut policy, Some("a"), Some(0)).unwrap_err();
+            assert!(error.to_string().contains("conflicts"));
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 20);
+            assert_eq!(place(&mut policy, None, None).unwrap(), 10);
+            assert_eq!(place(&mut policy, None, None).unwrap(), 21);
+            if draining {
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            } else {
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            }
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 20);
+            PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
+            assert!(
+                place(&mut policy, Some("a"), None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no active workers")
+            );
+        }
+    }
+
+    #[test]
+    fn pool_session_affinity_preserves_pins_until_worker_retirement() {
+        for draining in [false, true] {
+            let worker = |worker_id| WorkerTopology {
+                worker_id,
+                scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+                router_hint: false,
+            };
+            let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker(1), worker(2)])
+                .with_session_affinity(true);
+            let request_id = Uuid::new_v4();
+            let place = |policy: &mut PoolRoundRobinPlacement<()>, session: Option<&str>, rank| {
+                PlacementPolicy::<DirectRequest>::place(
+                    policy,
+                    &DirectRequest {
+                        uuid: Some(request_id),
+                        preferred_dp_rank: rank,
+                        ..DirectRequest::default()
+                    },
+                    (),
+                    session.map(str::to_owned),
+                    0.0,
+                )
+                .map(|effects| immediate(effects).scheduler_id)
+            };
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("b"), Some(1)).unwrap(), 21);
+            assert!(!PlacementPolicy::<DirectRequest>::cancel_pending(
+                &mut policy,
+                request_id
+            ));
+            PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, request_id, 0.0)
+                .unwrap();
+            PlacementPolicy::<DirectRequest>::prefill_completed(&mut policy, request_id, 0.0)
+                .unwrap();
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 11);
+            assert!(
+                place(&mut policy, Some("a"), Some(0))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("conflicts")
+            );
+            assert_eq!(place(&mut policy, None, None).unwrap(), 20);
+            if draining {
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            } else {
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            }
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 21);
+            assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 21);
+            PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
+            assert!(place(&mut policy, Some("a"), None).is_err());
+        }
+    }
+
+    #[test]
     fn pool_rotation_preserves_position_after_topology_change() {
         let mut policy = PoolRoundRobinPlacement::<()>::new(vec![
             WorkerTopology {
                 worker_id: 0,
                 scheduler_ids: vec![10],
+                router_hint: false,
             },
             WorkerTopology {
                 worker_id: 1,
                 scheduler_ids: vec![11],
+                router_hint: false,
             },
             WorkerTopology {
                 worker_id: 2,
                 scheduler_ids: vec![12],
+                router_hint: false,
             },
         ]);
 
@@ -393,6 +687,7 @@ mod tests {
             WorkerTopology {
                 worker_id: 2,
                 scheduler_ids: vec![12],
+                router_hint: false,
             },
             0.0,
         )
@@ -406,6 +701,7 @@ mod tests {
         let worker = |worker_id| WorkerTopology {
             worker_id,
             scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+            router_hint: false,
         };
         let mut policy =
             AggregatedRoundRobinPlacement::<()>::new(2, vec![worker(1), worker(2), worker(3)]);
@@ -468,10 +764,12 @@ mod tests {
             WorkerTopology {
                 worker_id: 0,
                 scheduler_ids: vec![10, 11],
+                router_hint: false,
             },
             WorkerTopology {
                 worker_id: 1,
                 scheduler_ids: vec![20, 21],
+                router_hint: false,
             },
         ]);
         let place = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, rank| {
@@ -509,10 +807,12 @@ mod tests {
                 WorkerTopology {
                     worker_id: 0,
                     scheduler_ids: vec![10, 11],
+                    router_hint: false,
                 },
                 WorkerTopology {
                     worker_id: 1,
                     scheduler_ids: vec![20, 21],
+                    router_hint: false,
                 },
             ],
         );
@@ -541,6 +841,115 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("out of range")
+        );
+    }
+
+    /// Two workers with two ranks each, whose engines accept router hints or not.
+    fn kv_hint_topology(router_hint: bool) -> Vec<WorkerTopology> {
+        vec![
+            WorkerTopology {
+                worker_id: 0,
+                scheduler_ids: vec![10, 11],
+                router_hint,
+            },
+            WorkerTopology {
+                worker_id: 1,
+                scheduler_ids: vec![20, 21],
+                router_hint,
+            },
+        ]
+    }
+
+    fn hinted_placement(
+        policy: &mut impl PlacementPolicy<HintedTestRequest, Metadata = ()>,
+        ordinal: u128,
+        source: Option<(usize, u32)>,
+    ) -> Placement {
+        let kv_hints = source.map(|(source_worker, source_dp_rank)| AuthoredKvHints {
+            source_worker,
+            source_dp_rank,
+        });
+        let request = HintedTestRequest::numbered(ordinal, kv_hints);
+        immediate(policy.place(&request, (), None, 0.0).unwrap())
+    }
+
+    fn fetch_from(source_scheduler_id: usize) -> Option<KvHints> {
+        Some(KvHints {
+            fetch: KvFetchAction {
+                source_scheduler_id,
+            },
+        })
+    }
+
+    fn assert_forwards_authored_kv_hints(
+        policy: &mut impl PlacementPolicy<HintedTestRequest, Metadata = ()>,
+    ) {
+        // The source is resolved from its authored (worker, rank) to a scheduler
+        // id, independent of which rank receives the request.
+        assert_eq!(
+            hinted_placement(policy, 1, Some((1, 0))).kv_hints,
+            fetch_from(20)
+        );
+        assert_eq!(
+            hinted_placement(policy, 2, Some((0, 1))).kv_hints,
+            fetch_from(11)
+        );
+        // Round-robin never creates a hint.
+        assert_eq!(hinted_placement(policy, 3, None).kv_hints, None);
+    }
+
+    #[test]
+    fn authored_kv_hint_is_forwarded_as_scheduler_id() {
+        assert_forwards_authored_kv_hints(&mut AggregatedRoundRobinPlacement::<()>::new(
+            2,
+            kv_hint_topology(true),
+        ));
+        assert_forwards_authored_kv_hints(&mut PoolRoundRobinPlacement::<()>::new(
+            kv_hint_topology(true),
+        ));
+        // A pool without router-hint workers, such as P/D decode, forwards nothing.
+        let mut plain = PoolRoundRobinPlacement::<()>::new(kv_hint_topology(false));
+        assert_eq!(hinted_placement(&mut plain, 4, Some((1, 0))).kv_hints, None);
+    }
+
+    /// A hint whose source has drained or been removed, or that names a worker
+    /// or rank the pool lacks, is dropped, never an error, and the request is
+    /// still placed. A worker that joins later is a source.
+    fn assert_drops_authored_kv_hints_without_a_live_source(
+        policy: &mut impl PlacementPolicy<HintedTestRequest, Metadata = ()>,
+    ) {
+        let drained = kv_hint_topology(true).remove(1);
+        policy.worker_draining(drained.clone(), 0.0).unwrap();
+        let placement = hinted_placement(policy, 1, Some((1, 1)));
+        assert_eq!(placement.kv_hints, None);
+        assert_eq!(placement.scheduler_id / 10, 1, "worker 0 serves it");
+        policy.worker_removed(drained, 0.0).unwrap();
+        for source in [(1, 0), (0, 2), (7, 0)] {
+            assert_eq!(hinted_placement(policy, 2, Some(source)).kv_hints, None);
+        }
+        policy
+            .worker_ready(
+                WorkerTopology {
+                    worker_id: 2,
+                    scheduler_ids: vec![30, 31],
+                    router_hint: true,
+                },
+                0.0,
+            )
+            .unwrap();
+        assert_eq!(
+            hinted_placement(policy, 3, Some((2, 1))).kv_hints,
+            fetch_from(31)
+        );
+    }
+
+    #[test]
+    fn authored_kv_hint_without_a_live_source_is_dropped() {
+        assert_drops_authored_kv_hints_without_a_live_source(
+            &mut AggregatedRoundRobinPlacement::<()>::new(2, kv_hint_topology(true)),
+        );
+        assert_drops_authored_kv_hints_without_a_live_source(
+            &mut PoolRoundRobinPlacement::<()>::new(kv_hint_topology(true)),
         );
     }
 }

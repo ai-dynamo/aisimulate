@@ -289,12 +289,6 @@ impl WaitingQueue {
         self.stats = QueueStats::default();
         self.requests.drain(range)
     }
-
-    /// Mutable walk that leaves every request's `queued_length` unchanged;
-    /// `stats` is not re-derived.
-    pub(super) fn iter_mut(&mut self) -> std::collections::vec_deque::IterMut<'_, SglangRequest> {
-        self.requests.iter_mut()
-    }
 }
 
 impl Deref for WaitingQueue {

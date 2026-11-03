@@ -95,6 +95,63 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### GLM-5.3-Flash Ops data and the fleet `next` slot
+
+Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0
+the derived fleet `next` versions. The two Kimi-K3 B300 cases follow `next`,
+so they now read the B300 SGLang 0.5.20 tables collected for GLM. The
+change comes from `gemm_perf` and `custom_allreduce_perf`: with only the
+GEMM table present, static context and generation change by +1.819 and
+-0.607 ms; with only the all-reduce table, by -0.913 and -0.213 ms. With
+only the 0.5.20 KDA, MoE, mHC or GLM attention table present, the records
+are unchanged. Only the failing static and
+disaggregated records were refreshed, from
+`9a08d1557462c02a6cc8552360afee89538a0540` with a matching native build:
+
+| Metric (ms), both cases | Before | After |
+| --- | ---: | ---: |
+| Static context | 87.881 | 88.761 |
+| Static generation | 13.912 | 13.091 |
+| Static total | 101.793 | 101.852 |
+| Disaggregated TTFT | 174.004 | 175.747 |
+| Disaggregated TPOT | 16.936 | 16.319 |
+| Disaggregated request | 190.940 | 192.066 |
+
+The aggregate references pass unchanged and the mixed records keep their
+`PerfDataNotAvailableError`. The four Qwen3.8-Max GB300 cases pin SGLang
+0.5.17 and vLLM 0.27.1, which are no longer queryable versions. They set
+`allow_unlisted_version=True` and keep their references unchanged; the
+parity tests and `pin_goldens.py` both admit that version through
+`_surface_metrics`.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh kimi-k3-b300-sglang-next-nospec::static \
+  kimi-k3-b300-sglang-next-nospec::disagg \
+  kimi-k3-b300-sglang-next-dspark-nextn7::static \
+  kimi-k3-b300-sglang-next-dspark-nextn7::disagg
+```
+
+To reproduce the attribution, start from this PR with its native extension
+built and with the pre-refresh `goldens/engine_step.json` from
+`9a08d1557462c02a6cc8552360afee89538a0540` checked out. Move every
+`data/b300_sxm/<family>/sglang/0.5.20` directory (`gemm`, `moe`, `kda`, `mhc`,
+`comm`, `glm53_attention`) out of the systems tree. Then restore one family
+at a time and run:
+
+```bash
+python/aisimulate/.venv/bin/python -m pytest -c python/aisimulate/pytest.ini -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  -k 'kimi-k3-b300-sglang-next-nospec and (TestRustEngineStepStaticParity or TestRustEngineStepDisaggParity)'
+```
+
+With no 0.5.20 families present, the static and disaggregated records pass
+against the old references. With only `gemm` or only `comm` present, both
+records drift. `gemm` alone moves disaggregated TTFT/TPOT by +2.07%/−2.01%,
+and `comm` alone moves them by −1.04%/−1.64%; the two together give the
+refreshed values above. With only `kda`, `moe`, `mhc` or `glm53_attention`
+present, both records pass.
+
 ### B60 graph-timing data promotion in PR #329
 
 The `qwen3-30b-a3b-b60-vllm-scan-coverage` case follows the `current`

@@ -60,6 +60,10 @@ The replay engine models vLLM's attention-DP prefill cadence through
 `EngineConfig::prefill_schedule_interval`. See the
 [configuration and validation notes](../../docs/replay/engine/workers.md#vllm-prefill-schedule-interval).
 
+`EngineConfig::async_scheduling` models vLLM's async-scheduling batch queue,
+which delays requests that arrive at a busy engine; see
+[vLLM async scheduling](../../docs/replay/engine/workers.md#vllm-async-scheduling).
+
 SGLang uses `EngineConfig::prefill_decode_interval` to block prefill for N
 scheduler rounds after a group-wide EXTEND. Its default is zero and its semantics
 are separate from vLLM's cadence; see the
