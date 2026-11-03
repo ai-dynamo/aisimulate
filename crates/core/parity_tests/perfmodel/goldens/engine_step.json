@@ -286,6 +286,13 @@
         }
       }
     },
+    "glm53-b300-sglang-0521-mtp3-dense-prefix": {
+      "mixed": {
+        "values": {
+          "mixed_step": 245.78695039008653
+        }
+      }
+    },
     "glm53flash-fp8-gb300-vllm-tp2-sol": {
       "mixed": {
         "values": {
@@ -2040,6 +2047,10 @@
     "glm52-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
       "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+    },
+    "glm53-b300-sglang-0521-mtp3-dense-prefix::mixed": {
+      "engine": "rust",
+      "git_head": "07fd47e9573116cfbb9bbe89e59ed2540f87b9c3"
     },
     "glm53flash-fp8-gb300-vllm-tp2-sol::mixed": {
       "engine": "rust",
