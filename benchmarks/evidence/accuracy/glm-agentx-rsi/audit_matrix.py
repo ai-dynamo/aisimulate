@@ -114,6 +114,10 @@ def main():
                 ("client_start", args.client_replay),
                 ("server_submission", args.submission_replay),
             ):
+                prediction_origin = min(
+                    int(measured[rid]["start_ns"] if clock == "client_start" else measured[rid]["dispatch"]["at_ns"])
+                    for rid in ids
+                )
                 path = directory / name / "native.json"
                 native = read(path)
                 predictions = native["telemetry"]["requests"]
@@ -125,13 +129,13 @@ def main():
                     p, r = predicted[rid], reference[rid]
                     row = measured[rid]
                     arrival = int(row["start_ns"] if clock == "client_start" else row["dispatch"]["at_ns"])
-                    ttft = p["first_token_ms"] - (int(row["start_ns"]) - origin) / 1e6
+                    ttft = p["first_token_ms"] - (int(row["start_ns"]) - prediction_origin) / 1e6
                     if (
                         p["terminal_status"] != "completed"
                         or p["input_length"] != 131072
                         or p["output_length"] != 128
                         or p["first_admission_reused_input_tokens"] != 0
-                        or abs(p["arrival_time_ms"] - (arrival - origin) / 1e6) > 1e-6
+                        or abs(p["arrival_time_ms"] - (arrival - prediction_origin) / 1e6) > 1e-6
                     ):
                         raise ValueError("Native completion, input/output, cache or arrival mismatch")
                     values["ttft"].append((ttft, r["ttft"]))

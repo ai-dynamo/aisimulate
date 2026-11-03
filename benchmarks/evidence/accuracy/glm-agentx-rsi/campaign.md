@@ -1032,6 +1032,22 @@ pooled equal-per-request errors without importing the prediction helper's scorin
 functions. Undefined positive-reference errors reject control qualification;
 no requests are silently dropped.
 
+E036 GPU retry 1012931 completes all 48 planned requests in 881 allocated
+seconds at eight GPUs, exit zero: charge 7048 GPU-seconds. Including the first
+failed attempt, E036 costs 10328 GPU-seconds. Total campaign charge is 93734
+GPU-seconds / 26.037222 GPU-hours, leaving 136666 GPU-seconds / 37.962778
+GPU-hours, with no active GPU reservation. All 73 retained GPU artifacts have
+checksum/byte-count entries in `E036-GPU-1012931-manifest.json`.
+
+The first submission-clock CPU replay fails its arrival-identity guard. Native
+trace loading shifts the earliest arrival to zero, removing the shared 40.493977
+ms origin offset in repeat zero. Preserve that failed replay. The corrected
+helper explicitly uses the earliest selected clock as the native origin, retains
+all inter-arrival deltas, and translates predicted first-output times back to
+client starts for TTFT. A regression test verifies identical client TTFT under
+the shifted origin. Regenerate both comparisons in new directories; this is a
+coordinate correction, not timing calibration or a prediction-model change.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process

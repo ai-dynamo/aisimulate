@@ -18,6 +18,14 @@ def read(path):
     return json.loads(path.read_bytes())
 
 
+def replay_origin_ns(measured, clock):
+    if clock == "client_start":
+        return min(int(row["start_ns"]) for row in measured)
+    if clock == "server_submission":
+        return min(int(row["dispatch"]["at_ns"]) for row in measured)
+    raise ValueError("Unknown recorded arrival clock")
+
+
 def client_ttft_ms(prediction, reference, origin_ns):
     """Keep the client clock boundary even when replay starts at API submission."""
     return prediction["first_token_ms"] + (origin_ns - int(reference["start_ns"])) / 1e6
@@ -90,12 +98,13 @@ def main():
                             or final["meta"].get("prompt_tokens") != context
                         ):
                             raise ValueError("Native controls fail cold/input/output qualification")
-                    origin = min(int(row["start_ns"]) for row in measured)
+                    client_origin = replay_origin_ns(measured, "client_start")
+                    origin = replay_origin_ns(measured, args.arrival_clock)
                     if args.dispatch_matrix:
                         for row in measured:
                             dispatch = row["dispatch"]
                             if not (
-                                int(row["prepared_at_ns"]) <= origin <= int(row["start_ns"])
+                                int(row["prepared_at_ns"]) <= client_origin <= int(row["start_ns"])
                                 <= int(dispatch["at_ns"]) <= int(row["events"][0]["at_ns"])
                                 and dispatch["rid"] == row["rid"] and dispatch["input_tokens"] == context
                             ):
@@ -175,6 +184,7 @@ def main():
                     evidence = {
                         "case": name, "scope": "Finite cold native diagnostics; the recorded arrival clock is explicit",
                         "arrival_clock": args.arrival_clock,
+                        "clock_origin_ns": str(origin),
                         "ttft_boundary": "Client start to first client output, preserved across both replay clocks",
                         "framework_comparison": "Measured SGLang 0.5.20; prediction database 0.5.21, cross-version",
                         "source_requests_sha256": hashlib.sha256(raw).hexdigest(),

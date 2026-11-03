@@ -3,7 +3,7 @@
 
 import pytest
 from audit_matrix import errors, interval
-from predict_matrix import client_ttft_ms, qualify_ready_event
+from predict_matrix import client_ttft_ms, qualify_ready_event, replay_origin_ns
 
 
 def test_submission_replay_preserves_original_client_ttft_boundary():
@@ -43,3 +43,17 @@ def test_independent_audit_pools_requests_and_preserves_stream_denominator():
 def test_independent_audit_rejects_undefined_control_scores(pairs):
     with pytest.raises(ValueError):
         errors(pairs)
+
+
+def test_submission_zero_based_origin_restores_client_transport_delay():
+    client_origin = 4_000_000_000_000_000
+    reference = {"start_ns": str(client_origin + 3_000_000)}
+    measured = [
+        {"start_ns": str(client_origin), "dispatch": {"at_ns": str(client_origin + 20_000_000)}},
+        {"start_ns": str(client_origin + 3_000_000), "dispatch": {"at_ns": str(client_origin + 10_000_000)}},
+    ]
+    assert replay_origin_ns(measured, "client_start") == client_origin
+    submission_origin = replay_origin_ns(measured, "server_submission")
+    assert submission_origin == client_origin + 10_000_000
+    assert client_ttft_ms({"first_token_ms": 90.0}, reference, submission_origin) == 97.0
+    assert client_ttft_ms({"first_token_ms": 100.0}, reference, client_origin) == 97.0
