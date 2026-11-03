@@ -1783,3 +1783,24 @@ the image. This does not imply missing runtime source. Extend the same CPU
 preflight with `--sources-dir` to retain exact step/NVTX/capture sources, tool
 help, Python identity and unmodified package notices before GPU reservation.
 The raw upstream sources remain private references and are not added to this PR.
+
+An independent PyArrow/raw-grid calculation reproduces all three selected
+DSA generation contributions exactly (3.389841/3.768679/4.321036ms), including
+per-bracket row indices and interpolation weights, physical 21/78 full and
+57/78 skip-indexer fractions and the existing 81-layer MTP scale. Both variant
+heads are eight, MLA/GEMM BF16 and KV FP8 at packed width four. The first
+uniqueness assertion rejects same-sequence aliases; source inspection confirms
+the documented last-file-row-wins collapse of `(isl, step)` to their sum. The
+corrected audit retains every alias index and follows that policy, without
+editing or selecting new data. SHA256:
+`3ce8d35fafd0006eda58bcc8dea0152bb2cfd07ef2e7fe69725b389a7f546fae`.
+This qualifies selected lookup arithmetic, not actual GPU timing or draft
+composition. Layer 78's measured precision and executed kernel path still
+require the targeted trace.
+
+CPU source-export job **1014580** uses signed source
+`7f5d8e400d9b41ee24bd669f1e6633f676e9f2ab`, archive SHA256
+`3568fa4577af2775fd741e4c95e14cfb8ec60b6fd3a1b5533fe0173f9aaf8af8`.
+It has the same zero-GPU resource contract as the first profiler preflight.
+Do not reserve or charge GPU time until its actual runtime annotations and
+Nsight capture flags are reconciled.
