@@ -287,13 +287,14 @@ def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path)
     # an unsigned 64-bit integer is the only seed that can have drawn the stream.
     if not 0 <= evidence["seed"] < 2**64:
         raise lacks("input_provenance.seed")
-    # The generator draws ids from the half-open range [vocab_low, vocab_high_exclusive) and requires
-    # 0 <= vocab_low < vocab_high_exclusive (collector/glm53flash_attention_tokens.py:67, 79), so the range holds
-    # vocab_high_exclusive - vocab_low ids. The producer records both bounds in every artifact.
+    # The generator draws ids from the half-open range [vocab_low, vocab_high_exclusive). It requires
+    # 0 <= vocab_low < vocab_high_exclusive and at most 2**63 ids in the range
+    # (collector/glm53flash_attention_tokens.py:67, 79), so the range holds vocab_high_exclusive - vocab_low ids. The
+    # producer records both bounds in every artifact.
     low, high = evidence.get("vocab_low"), evidence.get("vocab_high_exclusive")
     if type(low) is not int or low < 0:
         raise lacks("input_provenance.vocab_low")
-    if type(high) is not int or high <= low:
+    if type(high) is not int or not 0 < high - low <= 2**63:
         raise lacks("input_provenance.vocab_high_exclusive")
     # A stream holds at most as many distinct tokens as tokens and as ids to draw from, and a nonempty one holds at
     # least one. The producer records this number in every artifact, so a record without it is refused like any other

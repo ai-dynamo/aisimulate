@@ -614,6 +614,31 @@ def test_glm_producer_token_evidence_passes_for_real_and_boundary_values(tmp_pat
         assert len(_validate(tmp_path / name, cell).points) == 2
 
 
+@pytest.mark.parametrize(
+    ("high", "accepted"),
+    [(2**63 + 1, True), (2**63 + 2, False)],
+    ids=["range-at-the-generator-cap", "range-above-the-generator-cap"],
+)
+def test_glm_producer_vocabulary_range_follows_the_generator_cap(tmp_path, high, accepted):
+    # The generator takes at most 2**63 ids in its range, so the validator takes the same. A lower bound of 1 puts
+    # exactly 2**63 ids in the first range and one more in the second, and both upper bounds exceed 2**63.
+    low = 1
+    cell = glm_cell("prefill")
+    payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
+    payload["input_provenance"].update(vocab_low=low, vocab_high_exclusive=high)
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    if accepted:
+        assert len(seeded.generate(seeded.SEED, 1, low, high)) == 1
+        assert len(_validate(tmp_path, cell).points) == 2
+    else:
+        with pytest.raises(ValueError, match="invalid token generator request"):
+            seeded.generate(seeded.SEED, 1, low, high)
+        with pytest.raises(
+            ValueError, match=r"native GLM-5\.3-Flash result lacks valid input_provenance\.vocab_high_exclusive: "
+        ):
+            _validate(tmp_path, cell)
+
+
 def _change_the_sidecar(payload: dict, sidecar: Path) -> None:
     raw = b'{"benchmark_id":1,"point_type":"prefill","note":"another rank"}\n'
     sidecar.write_bytes(raw)
