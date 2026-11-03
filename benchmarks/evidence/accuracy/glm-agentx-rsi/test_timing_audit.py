@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Distinguish delivered counts, retained over-generation and completion overhead."""
 
-from analyze_timing import planned_ids, request_metrics, span
+import json
+
+from analyze_timing import analyze_frontend, planned_ids, request_metrics, span
 
 
 def event(ms, tokens, rank=0):
@@ -41,3 +43,51 @@ def test_failed_request_is_retained_and_full_manifest_has_221_identities():
     assert result["status"] == "failed" and result["rid"] == "rsi-failed"
     assert "unavailable" in result
     assert len(planned_ids()) == 221
+
+
+def test_frontend_pair_requires_cache_input_hash_and_preparation_receipts(tmp_path):
+    directory = tmp_path / "instrumented-mtp"
+    (directory / "client").mkdir(parents=True)
+    rows = []
+    for endpoint in ("native", "chat"):
+        rid = "rsi-frontend-c8192-r0-" + endpoint
+        rows += [
+            {"rid": rid + "-warm", "status": "completed", "events": [{"meta": {"prompt_tokens": 64}}]},
+            {
+                "rid": rid,
+                "status": "completed",
+                "endpoint": endpoint,
+                "prefix_tokens": 64,
+                "cached_tokens": 64,
+                "input_tokens": 96,
+                "expected_input_tokens": 96,
+                "input_sha256": "same",
+                "start_ns": "0",
+                "end_ns": "10000000",
+                "output_tokens": 16,
+                "requested_output_tokens": 16,
+                "events": [event(4, 1), event(9, 16)],
+            },
+        ]
+    source = directory / "client/requests.jsonl"
+    source.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    stages = directory / "frontend-123.jsonl"
+    stage = {
+        "start_ns": "1000000",
+        "end_ns": "3000000",
+        "service_ms": 2,
+        "input_tokens": 96,
+        "input_sha256": "same",
+        "template_cache_requested": False,
+    }
+    stages.write_text(json.dumps(stage) + "\n")
+    result = analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]
+    assert result["qualified_pairs"] == 1 and len(result["unrecorded_or_unattempted"]) == 32
+    rows[-1]["cached_tokens"] = None
+    source.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0
+    rows[-1]["cached_tokens"] = 64
+    source.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    stage["input_sha256"] = "different"
+    stages.write_text(json.dumps(stage) + "\n")
+    assert analyze_frontend(tmp_path)["modes"]["instrumented-mtp"]["qualified_pairs"] == 0

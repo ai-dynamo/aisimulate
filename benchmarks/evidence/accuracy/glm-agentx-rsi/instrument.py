@@ -3,12 +3,34 @@
 # SPDX-License-Identifier: Apache-2.0
 """Install one optional output-ready hook in a writable diagnostic container."""
 
+import argparse
 import ast
 import hashlib
 import importlib.metadata
 import importlib.util
 import json
 from pathlib import Path
+
+
+def inject_frontend(source):
+    tree = ast.parse(source)
+    methods = [
+        method
+        for owner in tree.body
+        if isinstance(owner, ast.ClassDef)
+        for method in owner.body
+        if isinstance(method, ast.FunctionDef) and method.name == "_render_and_encode_chat_template"
+    ]
+    if len(methods) != 1 or "rsi_frontend" in source:
+        raise ValueError("Unexpected or already instrumented chat-template interface")
+    method = methods[0]
+    if method.decorator_list:
+        raise ValueError("Chat-template method unexpectedly has decorators")
+    lines = source.splitlines(keepends=True)
+    lines.insert(method.lineno - 1, '    @__import__("rsi_frontend").measure_template\n')
+    result = "".join(lines)
+    ast.parse(result)
+    return result
 
 
 def inject(source):
@@ -32,7 +54,7 @@ def inject(source):
     return modified
 
 
-def main():
+def main(frontend=False):
     package = importlib.metadata.distribution("sglang")
     specification = importlib.util.find_spec("sglang")
     if specification is None or specification.origin is None:
@@ -49,6 +71,18 @@ def main():
     source = path.read_text()
     modified = inject(source)
     path.write_text(modified)
+    frontend_receipt = None
+    if frontend:
+        chat = root / "srt/entrypoints/openai/serving_chat.py"
+        original = chat.read_text()
+        updated = inject_frontend(original)
+        chat.write_text(updated)
+        frontend_receipt = {
+            "relative_path": "sglang/srt/entrypoints/openai/serving_chat.py",
+            "original_sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "instrumented_sha256": hashlib.sha256(updated.encode()).hexdigest(),
+            "boundary": "synchronous chat template render and encode; not the whole HTTP frontend",
+        }
     print(
         json.dumps(
             {
@@ -57,10 +91,13 @@ def main():
                 "original_sha256": hashlib.sha256(source.encode()).hexdigest(),
                 "instrumented_sha256": hashlib.sha256(modified.encode()).hexdigest(),
                 "boundary": "host scheduler output-ready, before detokenization/HTTP; not GPU kernel time",
+                "frontend": frontend_receipt,
             }
         )
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--frontend", action="store_true")
+    main(parser.parse_args().frontend)

@@ -135,12 +135,114 @@ def analyze(root):
     }
 
 
+def analyze_frontend(root):
+    """Qualify paired endpoint controls; never fit costs to benchmark errors."""
+    result = {}
+    expected = {
+        f"rsi-frontend-c{context}-r{repeat}-{endpoint}{suffix}"
+        for context in (8192, 131072, 393216)
+        for repeat in range(3)
+        for endpoint in ("native", "chat")
+        for suffix in ("", "-warm")
+    }
+    for mode in MODES[:2]:
+        directory = root / mode
+        source = directory / "client/requests.jsonl"
+        rows = [json.loads(line) for line in source.open()] if source.exists() else []
+        counts = Counter(row["rid"] for row in rows)
+        if any(n > 1 for n in counts.values()) or set(counts) - expected:
+            raise ValueError("Duplicate or unexpected frontend identity")
+        index = {row["rid"]: row for row in rows}
+        stages = [json.loads(line) for path in directory.glob("frontend-*.jsonl") for line in path.open()]
+        pairs = []
+        for context in (8192, 131072, 393216):
+            for repeat in range(3):
+                identity = f"rsi-frontend-c{context}-r{repeat}"
+                native, chat = (index.get(identity + "-" + endpoint) for endpoint in ("native", "chat"))
+                pair = {"context_label": context, "repeat": repeat, "qualified": False, "reasons": []}
+                if not native or not chat:
+                    pair["reasons"].append("missing endpoint measurement")
+                else:
+                    for row in (native, chat):
+                        warm = index.get(row["rid"] + "-warm")
+                        if row["status"] != "completed" or not warm or warm["status"] != "completed":
+                            pair["reasons"].append("incomplete measured request or preparation")
+                        elif not warm["events"] or warm["events"][-1].get("meta", {}).get("prompt_tokens") != row.get(
+                            "prefix_tokens"
+                        ):
+                            pair["reasons"].append("preparation input receipt differs")
+                        if row.get("input_tokens") != row.get("expected_input_tokens"):
+                            pair["reasons"].append("template input length differs")
+                        if row.get("cached_tokens") != row.get("prefix_tokens"):
+                            pair["reasons"].append("cache receipt missing or differs from seeded prefix")
+                        if row["endpoint"] == "native" and "unavailable" in span(
+                            row["events"], row["requested_output_tokens"]
+                        ):
+                            pair["reasons"].append("native output counters invalid")
+                        times = [int(e["at_ns"]) for e in row["events"]]
+                        if (
+                            not times
+                            or times != sorted(times)
+                            or not int(row["start_ns"]) <= times[0] <= times[-1] <= int(row["end_ns"])
+                        ):
+                            pair["reasons"].append("invalid client boundaries")
+                        elif row.get("output_tokens") != row["requested_output_tokens"]:
+                            pair["reasons"].append("output length differs")
+                        else:
+                            pair[row["endpoint"] + "_ttft_ms"] = (times[0] - int(row["start_ns"])) / 1e6
+                    if native.get("input_sha256") != chat.get("input_sha256"):
+                        pair["reasons"].append("paired token identities differ")
+                    matched = [
+                        s
+                        for s in stages
+                        if int(chat["start_ns"]) <= int(s["start_ns"]) <= int(s["end_ns"]) <= int(chat["end_ns"])
+                    ]
+                    if mode == "instrumented-mtp":
+                        if len(matched) != 1:
+                            pair["reasons"].append("missing or ambiguous synchronous stage")
+                        else:
+                            stage = matched[0]
+                            if (
+                                stage["input_sha256"] != chat["input_sha256"]
+                                or stage["input_tokens"] != chat["expected_input_tokens"]
+                            ):
+                                pair["reasons"].append("server token identities differ")
+                            if stage.get("template_cache_requested") is not False:
+                                pair["reasons"].append("template-cache policy differs")
+                            if (
+                                stage["service_ms"] < 0
+                                or abs(stage["service_ms"] - (int(stage["end_ns"]) - int(stage["start_ns"])) / 1e6)
+                                > 1e-9
+                            ):
+                                pair["reasons"].append("invalid synchronous stage units")
+                            pair["synchronous_stage"] = stage
+                    pair["qualified"] = not pair["reasons"]
+                    if pair["qualified"]:
+                        pair["chat_minus_native_ttft_ms"] = pair["chat_ttft_ms"] - pair["native_ttft_ms"]
+                pairs.append(pair)
+        result[mode] = {
+            "planned": len(expected),
+            "recorded": len(rows),
+            "unrecorded_or_unattempted": sorted(expected - set(counts)),
+            "status_counts": dict(Counter(row["status"] for row in rows)),
+            "qualified_pairs": sum(pair["qualified"] for pair in pairs),
+            "pairs": pairs,
+            "collector_completed": (directory / "completion.json").exists(),
+        }
+    return {
+        "schema": "aisimulate.glm-rsi.frontend-audit.v1",
+        "scope": "paired synthetic diagnostics; no headline MAPE",
+        "modes": result,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--suite", choices=("timing", "frontend"), default="timing")
     args = parser.parse_args()
-    result = analyze(args.root)
+    result = analyze_frontend(args.root) if args.suite == "frontend" else analyze(args.root)
     with args.output.open("x") as stream:
         stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
     print(

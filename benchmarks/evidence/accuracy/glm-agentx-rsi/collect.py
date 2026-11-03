@@ -231,10 +231,10 @@ def main():
             },
         },
     )
-    if args.suite == "timing":
-        control(args.output, args.model, deadline, False, True, args.acceptance_policy)
+    control(args.output, args.model, deadline, False, True, args.acceptance_policy, args.suite)
     subprocess.run(
-        [sys.executable, str(Path(__file__).with_name("instrument.py"))],
+        [sys.executable, str(Path(__file__).with_name("instrument.py"))]
+        + (["--frontend"] if args.suite == "frontend" else []),
         check=True,
         stdout=(args.output / "instrumentation.json").open("x"),
     )

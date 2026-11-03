@@ -4,7 +4,6 @@
 """Paired native/chat controls with equal tokenized inputs and seeded prefix cache."""
 
 import argparse
-import hashlib
 import json
 import threading
 import time
@@ -12,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from probe import flush_cache, request, retain_case
+from rsi_frontend import token_digest
 from transformers import AutoTokenizer
 
 
@@ -117,7 +117,7 @@ def main():
             ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
             tokenize_ms = (time.monotonic_ns() - began) / 1e6
             prefix = (len(ids) // 64 - 1) * 64
-            digest = hashlib.sha256(json.dumps(ids).encode()).hexdigest()
+            digest = token_digest(ids)
             for repeat in range(3):
                 # Alternate order to expose drift; independently reset and seed each endpoint.
                 endpoints = ("native", "chat") if repeat % 2 == 0 else ("chat", "native")

@@ -92,6 +92,20 @@ is correct and coalescing can compress the observed interval. Historical
 coalescing remains unproven without server-ready/receipt observations; no baseline
 correction is accepted. Keep the original last-content response boundary.
 
+**E019 — raw chunk-count cross-check.** Audit profiling records on development
+lanes without changing eligibility: 1/5/9 positive TPOT references below 0.1 ms
+at lanes 1/8/14. Some contain many raw HTTP chunks: a 252-output-token C14 record
+reports 77 chunks, 14.104 ms HTTP receiving and 14.130 ms full decode duration.
+Server usage, output-token count and output-sequence length agree for all nine
+C14 examples. A timestamp shared within one raw chunk therefore cannot alone
+explain the entire pattern. Delayed buffering/draining upstream or client-side
+remains a hypothesis; chunk counts do not locate the delay. Two C14 burst records
+on different client workers begin visible content within 2.7 ms of each other;
+this coincidence is descriptive, not causal proof. The original metric values
+and every headline request remain retained. Private artifact
+`E019-receipt-chunks-v2.json` explicitly supersedes a zero-row diagnostic that
+used the wrong phase spelling; the invalid first attempt remains preserved.
+
 **Experiment E005, readiness repair qualified for retry.** Compare uninstrumented MTP, instrumented MTP and
 instrumented plain decode with fresh servers. Synthetic controls use 8192/131072
 input tokens, 16/128 output tokens, lanes 1/8/14, repeats and explicit cache-flush
@@ -172,12 +186,13 @@ Competing explanations: correct inputs with incorrect execution or client timing
 
 **E018 — predeclared paired frontend experiment (pending).** Test whether large
 mostly cached prompts incur frontend work missing from native token replay.
-Use a fresh, instrumented historical server with the original forced-acceptance
+Use fresh uninstrumented and instrumented historical servers with the original forced-acceptance
 policy, synchronous scheduling and all other E017 settings. For each of three
 synthetic context labels (8192/131072/393216), construct one chat-template token
 sequence. Compare native input IDs against chat messages, alternating endpoint
 order over three repeats. Independently flush and seed exactly the same aligned
-prefix before each request; retain all 18 preparation and 18 measured requests.
+prefix before each request; retain 18 preparation and 18 measured requests per
+mode (72 total), reporting instrumentation effects separately.
 Preparation primes the allocator and remains unscored. Require exact server input
 and output lengths, identical input hashes and equal reported cache reuse before
 attribution; missing cache receipts leave the comparison unavailable. Serialize
@@ -187,9 +202,21 @@ Predicted observable: extra chat time before first scheduler readiness at equal
 GPU input/cache state. Competing explanations include template mismatch, parser
 buffering and drift; this synthetic repeated text cannot establish the entire
 Weka workload's frontend cost. No fitted latency constant will be introduced.
+The exact image's synchronous `_render_and_encode_chat_template` method renders
+then encodes the full text without a thread offload. Its source SHA256 is
+`047e4391dc87816a62da34392eea9379fcb1f93025e70c3b327de8b596f59b09`.
+An optional timer retains stage duration, input count and a little-endian u32
+token digest; it records projection cost separately and retains no text/arrays.
+Join exactly one stage inside each chat request and require its digest to match
+the native input. Missing/ambiguous stage, token or cache evidence disqualifies
+the comparison. Use `analyze_timing.py --suite frontend` for independent checks.
 The existing collector selects this suite explicitly; the default timing suite
 and frozen running job remain unchanged. CPU runtime-source extraction (1005817)
 uses no GPUs and pins the exact image before interpreting framework internals.
+It completes successfully in 362 seconds. Existing `engine.tokenization` can
+represent independently measured queued service costs; it is unset in the frozen
+replay. Do not choose costs using MAPE or assume repeated synthetic text prices
+the Weka corpus without further qualification.
 
 **Experiment E002/E004.** Parse retained runtime receipts. C1 used a running-request
 cap of 2, while replay allowed 256; C4 used 8. Change only C1's cap to 2.
