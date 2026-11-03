@@ -83,6 +83,8 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   positions, and a larger value is accepted. `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT`
   sets the measured context (131,072 at most). The producer refuses a point
   whose per-request length exceeds the measured context.
+- The producer refuses a point of more than 32 requests, the batch limit that
+  its artifact states.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3

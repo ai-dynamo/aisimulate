@@ -514,6 +514,12 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                     raise ValueError(
                         f"GLM-5.3-Flash decode context {max(contexts)} exceeds the measured context limit {limit}"
                     )
+                # The native decode check bounds the batch by the running-request limit, which can exceed MAX_BATCH.
+                # The artifact states MAX_BATCH as kvwarm.max_batch, and the prefill check bounds the batch by it too.
+                if point.batch_size > MAX_BATCH:
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode batch {point.batch_size} exceeds the producer limit {MAX_BATCH}"
+                    )
 
     @staticmethod
     def _glm_decode_prompt(context):

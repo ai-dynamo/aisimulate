@@ -471,6 +471,26 @@ def test_explicit_decode_points_stay_within_the_measured_context(monkeypatch, tm
     assert str(refused.value) == "GLM-5.3-Flash decode context 262144 exceeds the measured context limit 131072"
 
 
+def test_explicit_decode_points_stay_within_the_producer_batch_limit(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(batch_size):
+        points = [Point("decode", 1, batch_size, 0, batch_size * 4096)]
+        s = make_scheduler(module, tmp_path, points)
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    assert [point.batch_size for point in build(32)._bench_grid] == [32]
+    # The artifact states the producer's batch limit as kvwarm.max_batch, and the native decode check allows a batch up
+    # to the running-request limit, so the producer refuses a larger batch.
+    with pytest.raises(ValueError) as refused:
+        build(33)
+    assert str(refused.value) == "GLM-5.3-Flash decode batch 33 exceeds the producer limit 32"
+
+
 def hub_stand_in(monkeypatch, cached):
     """Install a ``huggingface_hub`` that answers every cache lookup with ``cached``. Returns the lookups."""
     lookups = []
