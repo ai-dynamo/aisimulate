@@ -248,6 +248,60 @@ def test_host_offload_rejects_legacy_depth_during_capability_preflight(
     capabilities.require_compatible(spec)
 
 
+@pytest.mark.parametrize("name", ["aic_nextn", "nextn"])
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("with_g2", [False, True])
+def test_runner_zero_legacy_depth_executes_as_disabled(name, nested_rank, with_g2):
+    args = _engine_args()
+    if with_g2:
+        args.update(kv_cache_bytes_per_token=1024, native_host_offload={"num_host_blocks": 16})
+    if nested_rank:
+        materialized = _materialize_engine_role("vllm", "test", {}, args, "aggregated")
+        args = {key: materialized[key] for key in ("rank", "dp_size", "tensor_parallel_size")}
+    rank = args.get("rank", args)
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    runner = EngineReplayRunnerFactory().create(0)
+    baseline = runner.run(spec)
+    rank[name] = 0
+    disabled = runner.run(spec)
+    assert disabled.metrics["completed_requests"] == 1
+    assert disabled.metrics["total_output_tokens"] == 2
+    for metric in ("mean_e2e_latency_ms", "mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
+        assert disabled.metrics[metric] == baseline.metrics[metric]
+    # Positive legacy depth remains forbidden with G2 and valid without it.
+    rank[name] = 2
+    if with_g2:
+        with pytest.raises(ValueError, match="requires canonical mtp speculation"):
+            runner.run(spec)
+    else:
+        rank["aic_nextn_accept_rates"] = "1,0.5"
+        assert runner.run(spec).metrics["completed_requests"] == 1
+
+
+@pytest.mark.parametrize(
+    "controls,message",
+    [
+        ({"aic_nextn": 0, "nextn": 0}, "duplicates aic_nextn"),
+        ({"aic_nextn": 0, "nextn": 2}, "duplicates aic_nextn"),
+        ({"aic_nextn": False}, "aic_nextn must be a positive integer"),
+        ({"nextn": 0.0}, "aic_nextn must be a positive integer"),
+    ],
+)
+def test_runner_disabled_depth_normalization_preserves_input_validation(controls, message):
+    args = {**_engine_args(), **controls}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match=message):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
 def _canonical_speculation_deployment(speculation, *, backend="vllm"):
     version = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}[backend]
     timing = {

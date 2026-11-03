@@ -1883,6 +1883,12 @@ def _materialize_engine_role(
         if capacity_materialized:
             memory_fraction_overrides.clear()
 
+    # Zero is the documented disabled value. Resolve aliases before dropping it
+    # so duplicate inputs still fail, and keep bool/float inputs for validation.
+    legacy_nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
+    if legacy_nextn is not None and not (type(legacy_nextn) is int and legacy_nextn == 0):
+        rank["aic_nextn"] = legacy_nextn
+
     speculation_raw = rank.pop("speculation", None)
     timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
     canonical_speculation = timing_config.get("speculation")
