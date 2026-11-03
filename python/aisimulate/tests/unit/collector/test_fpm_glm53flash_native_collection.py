@@ -410,6 +410,66 @@ REFUSALS = [
         lambda p, _: _evidence(p).pop("unique_token_count"),
         id="unique-count-absent",
     ),
+    # The pinned vocabulary has 154,820 ids, so a stream of 262,240 tokens cannot hold more distinct tokens than that.
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(unique_token_count=_evidence(p)["count"]),
+        id="unique-count-equals-count-above-the-vocabulary",
+    ),
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(unique_token_count=seeded.VOCAB_HIGH - seeded.VOCAB_LOW + 1),
+        id="unique-count-one-above-the-vocabulary",
+    ),
+    # The vocabulary is the half-open range of its low and high ids, so ids 50 to 149 are 100 ids and not 150.
+    pytest.param(
+        "input_provenance.unique_token_count",
+        lambda p, _: _evidence(p).update(vocab_low=50, vocab_high_exclusive=150, unique_token_count=101),
+        id="unique-count-above-a-vocabulary-that-starts-above-zero",
+    ),
+    pytest.param("input_provenance.vocab_low", lambda p, _: _evidence(p).update(vocab_low=-1), id="vocab-low-negative"),
+    pytest.param(
+        "input_provenance.vocab_low", lambda p, _: _evidence(p).update(vocab_low=False), id="vocab-low-is-a-boolean"
+    ),
+    pytest.param(
+        "input_provenance.vocab_low", lambda p, _: _evidence(p).update(vocab_low=0.0), id="vocab-low-is-a-float"
+    ),
+    pytest.param("input_provenance.vocab_low", lambda p, _: _evidence(p).pop("vocab_low"), id="vocab-low-absent"),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).update(vocab_high_exclusive=True),
+        id="vocab-high-is-a-boolean",
+    ),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).update(vocab_high_exclusive=float(seeded.VOCAB_HIGH)),
+        id="vocab-high-is-a-float",
+    ),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).pop("vocab_high_exclusive"),
+        id="vocab-high-absent",
+    ),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).update(vocab_high_exclusive=_evidence(p)["vocab_low"]),
+        id="vocab-range-empty",
+    ),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).update(vocab_low=10, vocab_high_exclusive=5),
+        id="vocab-range-inverted",
+    ),
+    pytest.param(
+        "input_provenance.vocab_high_exclusive",
+        lambda p, _: _evidence(p).update(vocab_high_exclusive=-1),
+        id="vocab-high-negative",
+    ),
+    pytest.param(
+        "input_provenance.vocab_low",
+        lambda p, _: _evidence(p).update(vocab_low=-10, vocab_high_exclusive=-5),
+        id="vocab-range-negative",
+    ),
     pytest.param(
         "input_provenance.tokenizer_json_sha256",
         lambda p, _: _evidence(p).update(tokenizer_json_sha256="abc"),
@@ -531,21 +591,25 @@ def test_glm_producer_artifact_refuses_each_unaudited_item(tmp_path, field, tamp
 def test_glm_producer_token_evidence_passes_for_real_and_boundary_values(tmp_path, monkeypatch):
     producer = load_producer(monkeypatch)
     # The producer draws its largest measured context of 131,072 tokens plus a window of 4,099 tokens for each of up
-    # to 32 requests, from seed 53 over the pinned vocabulary. Its distinct-token count is that of the real stream.
+    # to 32 requests, from seed 53 over the pinned vocabulary of 154,820 ids. Its distinct-token count is that of the
+    # real stream, which does not draw every id.
     count = producer.MAX_CONTEXT + producer.MAX_BATCH * seeded.REQUEST_STRIDE
     tokens = seeded.generate(seeded.SEED, count, seeded.VOCAB_LOW, seeded.VOCAB_HIGH)
-    assert (seeded.SEED, count) == (53, 262240)
+    assert (seeded.SEED, count, len(set(tokens))) == (53, 262240, 126418)
     cases = {
-        "producer": (seeded.SEED, count, len(set(tokens))),
+        "producer": {"seed": seeded.SEED, "count": count, "unique_token_count": len(set(tokens))},
         # The smallest seed and a stream of one token.
-        "smallest": (0, 1, 1),
-        # The largest seed and a stream whose tokens are all distinct.
-        "largest": (2**64 - 1, count, count),
+        "smallest": {"seed": 0, "count": 1, "unique_token_count": 1},
+        # The largest seed and a stream that draws every id of the vocabulary, the most distinct tokens that it allows.
+        "largest": {"seed": 2**64 - 1, "count": count, "unique_token_count": seeded.VOCAB_HIGH - seeded.VOCAB_LOW},
+        # The ids 50 to 149 are 100 ids, because the upper bound is exclusive. They cap the distinct tokens of a longer
+        # stream at 100.
+        "narrow-vocabulary": {"count": count, "unique_token_count": 100, "vocab_low": 50, "vocab_high_exclusive": 150},
     }
-    for name, (seed, total, unique) in cases.items():
+    for name, fields in cases.items():
         cell = glm_cell("prefill")
         payload = glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED])
-        payload["input_provenance"].update(seed=seed, count=total, unique_token_count=unique)
+        payload["input_provenance"].update(fields)
         write_glm_rank(_pod(tmp_path / name, cell), payload)
         assert len(_validate(tmp_path / name, cell).points) == 2
 
