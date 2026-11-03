@@ -30,6 +30,9 @@ mixed), `HYBRID_CASES` x 4 at a 1e-4 rtol, `SOL_CASES` (static+mixed) at
 1e-4, and the two #1456 site-transfer tie-break anchors
 (`TIE_AGG_CASES`/`TIE_DISAGG_CASES`) — plus the typed-error/provenance
 contract tests and the anti-vacuous golden guards.
+`MTP_TARGET_CASES` pins the direct mixed-step surface, whose `ModelConfig`
+preserves the MTP depth. The CLI smoke helpers do not forward that depth and
+are not used to anchor MTP target-layer composition.
 If an assertion fails, the message prints the golden value, Rust value,
 absolute delta, percent delta, tolerance, and status for each metric.
 
