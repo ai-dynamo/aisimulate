@@ -982,6 +982,23 @@ controls, not an oracle fix for historical AgentX cohorts. Support the hypothesi
 only if submission alignment improves ordering/error with qualified clocks and
 all pairs retained; otherwise investigate scheduler/perf-model semantics.
 
+E036 CPU preflight 1011181 completes in 296 seconds with zero GPUs allocated,
+verifying the prepared-byte transport and ten source hashes against collector
+`7ec97a9147d4b25bfd9c4bcf97c667865abe4472`. The original dispatch-manager source
+SHA256 remains `952fdfcf…`; preserve the complete receipt. GPU job 1011234 uses
+that frozen collector with its 45-minute Slurm limit and full 22080 GPU-second
+reservation. Replace reservation with actual allocation/cleanup cost at termination.
+
+The comparison helper keeps client-start→first-client-output TTFT as the metric
+boundary for both replay clocks. For submission arrivals, derive predicted client
+TTFT from the model's absolute first-output time and original client start;
+do not compare its shorter native submission-relative TTFT directly. Two tests
+verify that boundary and explicit generated/emitted/tail conservation. New matrix
+observations require v2 counter receipts; old generated-only observations stay
+readable in the original control mode. Generated count means retained accepted
+`output_ids`, not all physically processed draft/verification tokens. No kernel
+counter or output-throughput boundary is redefined.
+
 ## Repeat and compatibility controls
 
 **E009 hypothesis/experiment.** Test replay variability with a fresh C14 process
