@@ -27,7 +27,7 @@ from aisimulate.generator.dynamo_features import (
 )
 from aisimulate.generator.utils import has_fixed_request_lengths
 
-from .rule_engine import apply_rule_plugins
+from .rule_engine import _align_token_budgets, apply_rule_plugins
 
 _JINJA_ENV = Environment(trim_blocks=True, lstrip_blocks=True)
 _JINJA_ENV.filters.setdefault("multiply", lambda value, factor: value * factor)
@@ -249,6 +249,27 @@ def _last_int_flag(tokens: list[str], flag: str) -> Optional[int]:
         return int(value) if value is not None else None
     except ValueError:
         return None
+
+
+def _validate_preserved_trtllm_token_budgets(
+    rendered_templates: dict[str, str], cli_args: Optional[dict[str, list[str]]] = None
+) -> None:
+    """Check the deployed budget and KV geometry after engine overrides."""
+    roles = {}
+    for role in ("agg", "prefill", "decode", "encode"):
+        engine = yaml.safe_load(rendered_templates.get(f"extra_engine_args_{role}.yaml") or "")
+        if not isinstance(engine, dict):
+            continue
+        limits = engine.get("build_config", engine)
+        kv_cache = engine.get("kv_cache_config")
+        budget = limits.get("max_num_tokens") if isinstance(limits, dict) else None
+        if cli_args is not None:
+            budget = _last_int_flag(cli_args.get(role) or [], "--max-num-tokens")
+        roles[role] = {
+            "max_num_tokens": budget,
+            "tokens_per_block": kv_cache.get("tokens_per_block") if isinstance(kv_cache, dict) else None,
+        }
+    _align_token_budgets({"preserve_engine_limits": True, "params": roles}, "trtllm")
 
 
 def _warn_unaligned_trtllm_transfer_buffer(
@@ -759,15 +780,18 @@ def render_backend_templates(
             context[cli_key] = cli_str
             rendered_templates[tmpl_key] = cli_str
 
-    # Every public path renders here, after its final engine YAML and CLI
-    # flags, so this is the single warning boundary.
+    # Check the deployed values after overrides and before any artifact is emitted.
     if backend == "trtllm":
-        _warn_unaligned_trtllm_transfer_buffer(
-            rendered_templates,
-            {role: list(context.get(f"{role}_cli_args_list") or []) for role in ("prefill", "decode")}
+        deployed_cli_args = (
+            {role: list(context.get(f"{role}_cli_args_list") or []) for role in worker_plan}
             if deployment_target == "dynamo-python"
-            else None,
+            else None
         )
+        if param_values.get("preserve_engine_limits") or (param_values.get("params") or {}).get(
+            "preserve_engine_limits"
+        ):
+            _validate_preserved_trtllm_token_budgets(rendered_templates, deployed_cli_args)
+        _warn_unaligned_trtllm_transfer_buffer(rendered_templates, deployed_cli_args)
 
     # Compute GPU counts per worker using rule outputs, falling back to WorkerConfig.
     pv_params = param_values.get("params", {}) or {}

@@ -138,6 +138,10 @@ and prefill-token budgets on every backend.
 For TRT-LLM, the total-token budget must also be divisible by an explicitly
 configured `tokens_per_block`: with a block size of 128, use 5120 instead of
 5000 or 5056. An unset block size remains delegated to the runtime.
+For preserved candidates, this check also runs after `extra_engine_args` has
+overridden the engine YAML. It uses the final KV geometry and deployed budget,
+including the direct CLI budget on `dynamo-python`, and rejects incompatible
+values before writing artifacts.
 
 A trace workload has no fixed request length, so the bridge lowers it without
 ISL/OSL. It rejects lengths supplied for a trace, whether on the workload or

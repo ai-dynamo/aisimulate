@@ -134,6 +134,50 @@ def test_preserved_trtllm_budget_respects_explicit_block_size(rule, budget, alig
         assert engine["max_num_tokens"] == budget
 
 
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("target, version", [("dynamo-j2", None), ("dynamo-j2", "1.0.0"), ("dynamo-python", None)])
+@pytest.mark.parametrize(
+    "budget, extra, invalid_yaml, invalid_cli",
+    [
+        (5056, {"kv_cache_config": {"tokens_per_block": 128}}, True, True),
+        (8192, {"max_num_tokens": 5056, "kv_cache_config": {"tokens_per_block": 128}}, True, False),
+        (8192, {"max_num_tokens": 5000}, True, False),
+        (5120, {"kv_cache_config": {"tokens_per_block": 128}}, False, False),
+        (5056, {"kv_cache_config": {"free_gpu_memory_fraction": 0.8}}, False, False),
+    ],
+    ids=["block-override", "budget-and-block-override", "budget-override", "aligned", "override-drops-block"],
+)
+def test_preserved_trtllm_budget_checks_effective_engine_overrides(
+    tmp_path, rule, target, version, budget, extra, invalid_yaml, invalid_cli
+):
+    params = _params(preserve=True, rule=rule)
+    worker = params["params"]["prefill"]
+    worker["max_num_tokens"] = budget
+    worker["extra_engine_args"] = copy.deepcopy(extra)
+    if version == "1.0.0" and "max_num_tokens" in extra:
+        worker["extra_engine_args"]["build_config"] = {
+            "max_num_tokens": worker["extra_engine_args"].pop("max_num_tokens")
+        }
+    output_dir = tmp_path / "deployment"
+    invalid = invalid_cli if target == "dynamo-python" else invalid_yaml
+    if invalid:
+        with pytest.raises(ValueError, match=r"Cannot preserve evaluated prefill\.max_num_tokens"):
+            generate_backend_artifacts(
+                params, "trtllm", backend_version=version, deployment_target=target, output_dir=str(output_dir)
+            )
+        assert not output_dir.exists()
+    else:
+        artifacts = generate_backend_artifacts(params, "trtllm", backend_version=version, deployment_target=target)
+        engine = yaml.safe_load(artifacts["extra_engine_args_prefill.yaml"])
+        if target == "dynamo-python":
+            cli = shlex.split(artifacts["cli_args_prefill"])
+            effective_budget = int(cli[cli.index("--max-num-tokens") + 1])
+        else:
+            effective_budget = engine.get("build_config", engine)["max_num_tokens"]
+        assert effective_budget == budget
+        assert effective_budget % engine.get("kv_cache_config", {}).get("tokens_per_block", 64) == 0
+
+
 def test_default_vllm_rules_still_resize_unpinned_requests():
     result = apply_rule_plugins(_params(preserve=False), "vllm")
 
