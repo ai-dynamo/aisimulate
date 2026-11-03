@@ -113,6 +113,7 @@ def test_bundle_survives_consumer_only_rerun_and_cross_run(handoff, package):
         ("source_sha", "c" * 40),
         ("run_id", "404"),
         ("repository_id", "different"),
+        ("storage_repo", "wrong-storage-repo"),
         ("name", "other"),
         ("architecture", "arm64"),
         ("commit", "d" * 40),
@@ -249,7 +250,7 @@ def test_wheel_workflows_only_upload_manifests_and_preserve_credentials_boundary
                     )
                 if uses.endswith("/wheel-storage"):
                     found += 1
-                    assert job["environment"] in ("pr-wheel-staging", "automated-release")
+                    assert "environment" in job
                     assert settings["source-sha"] and settings["architecture"]
                     expected = (
                         "WHEEL_STORAGE_WRITE_TOKEN" if settings["mode"] == "upload" else "WHEEL_STORAGE_READ_TOKEN"
@@ -279,3 +280,73 @@ def test_rerun_producer_keeps_old_objects_and_publishes_a_new_attempt(handoff):
     handoff.manifest.write_bytes(first_manifest)
     download(handoff, attempt="4")
     assert (handoff.output / name).read_bytes() == b"first build"
+
+
+def selected_environment(job, *, ref="refs/heads/main", preview=False):
+    expression = job["environment"]
+    if not expression.startswith("${{"):
+        return expression
+    expression = expression[3:-2].strip()
+    expression = expression.replace("github.ref", repr(ref)).replace("inputs.preview", repr(preview))
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    return eval(expression, {"__builtins__": {}, "startsWith": str.startswith})
+
+
+@pytest.mark.parametrize("workflow", ["ci.yml", "fpe-support-matrix.yml"])
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("refs/heads/main", "automated-release"),
+        ("refs/heads/release/0.13.0", "automated-release"),
+        ("refs/heads/pull-request/199", "pr-wheel-staging"),
+        ("refs/heads/fix-handoff", "pr-wheel-staging"),
+    ],
+)
+def test_ci_and_fpe_handoffs_select_storage_by_workflow_ref(workflow, ref, expected):
+    jobs = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())["jobs"]
+    for name, job in jobs.items():
+        transfers = [s for s in job.get("steps", []) if s.get("uses", "").endswith("/wheel-storage")]
+        if not transfers or name == "stage-application-wheel":
+            continue
+        assert selected_environment(job, ref=ref) == expected
+        assert all(s["with"]["repo"] == "${{ vars.WHEEL_STORAGE_REPO }}" for s in transfers)
+
+
+@pytest.mark.parametrize(
+    "workflow,expected",
+    [
+        ("nightly-ci.yml", "automated-release"),
+        ("fpe-release-qualify.yml", "automated-release"),
+        ("fpm-accuracy-branch.yml", "automated-release"),
+        ("simulation-performance.yml", "pr-wheel-staging"),
+    ],
+)
+def test_official_campaigns_and_pr_simulations_keep_their_storage_scope(workflow, expected):
+    jobs = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())["jobs"]
+    for job in jobs.values():
+        if any(s.get("uses", "").endswith("/wheel-storage") for s in job.get("steps", [])):
+            # Simulation can be manually launched from main, but still evaluates a PR.
+            assert selected_environment(job) == expected
+
+
+@pytest.mark.parametrize("preview,expected", [(False, "automated-release"), (True, "pr-wheel-staging")])
+def test_accuracy_previews_are_separate_from_official_nightly_reuse(preview, expected):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/e2e-accuracy-branch.yml").read_text())["jobs"]
+    for job in jobs.values():
+        if any(s.get("uses", "").endswith("/wheel-storage") for s in job.get("steps", [])):
+            assert selected_environment(job, preview=preview) == expected
+
+
+@pytest.mark.parametrize("repo", ["sw-dynamo-aisimulate-pr-pypi-local", "sw-dynamo-aisimulate-pypi-local"])
+def test_manifest_pins_the_producer_storage_repository(handoff, repo):
+    handoff.monkeypatch.setenv("STORAGE_REPO", repo)
+    (handoff.source / "aisim-0.13.0.whl").write_bytes(b"wheel")
+    transfer.main()
+    assert json.loads(handoff.manifest.read_text())["storage_repo"] == repo
+    download(handoff, run="202")
+    assert all(f"/{repo}/ci-wheels/" in url for url, _, _ in handoff.requests)
+    handoff.monkeypatch.setenv("STORAGE_REPO", "sw-dynamo-dev-generic-local")
+    handoff.requests.clear()
+    with pytest.raises(ValueError, match="producer mismatch"):
+        download(handoff, run="202")
+    assert not handoff.requests

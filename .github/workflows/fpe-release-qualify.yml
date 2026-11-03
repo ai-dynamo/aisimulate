@@ -24,7 +24,7 @@ env:
 
 jobs:
   prepare:
-    environment: pr-wheel-staging
+    environment: automated-release
     name: Build and identify release FPE wheel
     if: github.ref == 'refs/heads/main'
     runs-on: prod-aisimulate-default-amd64-v1
@@ -79,7 +79,7 @@ jobs:
           retention-days: 7
 
   generate:
-    environment: pr-wheel-staging
+    environment: automated-release
     name: Release FPE (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: prepare
     runs-on: prod-aisimulate-default-amd64-v1
@@ -138,7 +138,7 @@ jobs:
           retention-days: 7
 
   qualify:
-    environment: pr-wheel-staging
+    environment: automated-release
     name: Qualify release FPE artifact
     needs: [prepare, generate]
     runs-on: ubuntu-24.04

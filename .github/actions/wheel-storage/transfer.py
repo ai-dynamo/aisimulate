@@ -191,9 +191,10 @@ def main() -> None:
         manifest_path.write_text(
             json.dumps(
                 {
-                    "schema": 2,
+                    "schema": 3,
                     "repository": repository,
                     "repository_id": repository_id,
+                    "storage_repo": repo,
                     "run_id": run_id,
                     "attempt": attempt,
                     "name": name,
@@ -213,8 +214,9 @@ def main() -> None:
         if not isinstance(manifest, dict):
             raise ValueError("invalid wheel manifest")
         if (
-            manifest.get("schema") != 2
+            manifest.get("schema") != 3
             or manifest.get("repository_id") != repository_id
+            or manifest.get("storage_repo") != repo
             or manifest.get("run_id") != run_id
             or manifest.get("name") != name
             or manifest.get("source_sha") != source_sha

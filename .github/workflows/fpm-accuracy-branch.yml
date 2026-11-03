@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   wheel:
-    environment: pr-wheel-staging
+    environment: automated-release
     name: Prepare exact accuracy wheel
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 120
@@ -126,7 +126,7 @@ jobs:
           retention-days: 7
 
   campaign:
-    environment: pr-wheel-staging
+    environment: automated-release
     name: Qualify FPM accuracy (${{ inputs.artifact_key }})
     needs: wheel
     runs-on: prod-aisimulate-default-amd64-v1

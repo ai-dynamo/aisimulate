@@ -257,7 +257,7 @@ Each logical handoff name (for example `application-test-wheel-arm64`) produces
 an Actions artifact named `<name>-manifest`, containing only `wheel-manifest.json`.
 The manifest is published after every payload has passed an Artifactory read-back
 check. It binds source SHA, workflow SHA, repository ID, producer run/attempt,
-architecture, relative filenames, sizes, and SHA-256 digests. Objects live under:
+architecture, storage repository, relative filenames, sizes, and SHA-256 digests. Objects live under:
 
 ```text
 <repository>/ci-wheels/<github-repository-id>/<producer-run-id>/<producer-attempt>/<handoff-name>/<sha256>/<relative-path>
@@ -276,23 +276,36 @@ publication remains incomplete until the manifest upload succeeds.
 
 ### Environment prerequisites
 
-Before merging/enabling these workflows, set repository variables
-`WHEEL_STORAGE_URL` (HTTPS Artifactory service root) and `WHEEL_STORAGE_REPO`
-(the shared transient repository key). These are separate from final publication
-settings. Configure the existing environments:
+Set repository variable `WHEEL_STORAGE_URL` to
+`https://artifactory.nvidia.com/artifactory`. Define `WHEEL_STORAGE_REPO` at the
+**environment level**, with no repository-wide fallback:
 
-- `pr-wheel-staging`: admit trusted `pull-request/*`, `main`, and `release/*`
-  branches. Manual workflows must use an admitted trusted ref. Configure
-  `WHEEL_STORAGE_WRITE_TOKEN` for uploads and `WHEEL_STORAGE_READ_TOKEN` for
-  downloads, both scoped to the shared handoff repository.
-- `automated-release`: preserve its existing publication controls; configure
-  `WHEEL_STORAGE_WRITE_TOKEN` for nightly handoffs and `WHEEL_STORAGE_READ_TOKEN`
-  for consuming qualified CI wheels. Keep its existing `ARTIFACTORY_*` publication
-  settings and credentials unchanged; the handoff repository can be separate.
-- Scope the handoff tokens to `ci-wheels/<github-repository-id>/` with read/write
-  separated, and retain objects for at least as long as their Actions manifests
-  (30 days by default; FPE/accuracy handoffs use seven days). Expired objects
-  require a producer rebuild, not a fallback to a different wheel.
+| GitHub environment | `WHEEL_STORAGE_REPO` | Used by |
+| --- | --- | --- |
+| `pr-wheel-staging` | `sw-dynamo-aisimulate-pr-pypi-local` | Copied-PR CI, PR accuracy previews, and simulation comparisons (including manual comparisons launched from main) |
+| `automated-release` | `sw-dynamo-aisimulate-pypi-local` | Main/release CI, nightly builds, release FPE, and official accuracy/FPE consumers |
+
+Full CI and standalone FPE select the environment from the workflow ref;
+`main` and `release/*` use `automated-release`, while PR/source refs use
+`pr-wheel-staging`. E2E accuracy previews use PR storage; published accuracy
+campaigns and their cross-run nightly downloads use official storage. The
+manifest records the producer's storage repository, and downloads reject a
+repository mismatch before making an authenticated request.
+
+Before enabling transfer jobs:
+
+- In **each** environment, configure `WHEEL_STORAGE_WRITE_TOKEN` with read plus
+  deploy/write permission and `WHEEL_STORAGE_READ_TOKEN` with read-only permission
+  for that environment's repository and `ci-wheels/1330347449/**` prefix. The two
+  environments may use different token values. No delete/admin permission is
+  needed. Existing `ARTIFACTORY_*` final-publication settings remain unchanged.
+- Preserve branch admission: `automated-release` admits `main` and `release/*`;
+  `pr-wheel-staging` admits trusted `pull-request/*` refs and the main/release
+  refs used to launch manual PR comparisons. A manual PR comparison remains in
+  PR storage even when its workflow is dispatched from main.
+- Retain objects in **both** repositories for at least as long as their Actions
+  manifests (30 days by default; FPE/accuracy handoffs use seven days). Expired
+  objects require a producer rebuild, not a fallback to a different wheel.
 
 The action never forwards credentials to redirects. Consumers receive the read
 credential only in the transfer step. No credential or environment configuration

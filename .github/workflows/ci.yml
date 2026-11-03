@@ -398,7 +398,7 @@ jobs:
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   application-wheel:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
     if: >-
@@ -599,7 +599,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   application-test-wheel:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Test Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
@@ -641,7 +641,7 @@ jobs:
           token: ${{ secrets.WHEEL_STORAGE_WRITE_TOKEN }}
 
   application-tests:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard.suite }}, ${{ matrix.shard.group }})
     needs: [fast-ci, select-full-ci, application-test-wheel]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}

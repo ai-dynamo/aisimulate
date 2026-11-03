@@ -34,7 +34,7 @@ env:
 
 jobs:
   prepare-wheel:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Prepare exact FPE wheel
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 30
@@ -124,7 +124,7 @@ jobs:
           retention-days: 7
 
   discover-shards:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Discover matrix shards
     needs: prepare-wheel
     runs-on: ubuntu-24.04
@@ -165,7 +165,7 @@ jobs:
         run: python scripts/fpe/run_release_fpe.py discover --wheel-dir fpe-wheel
 
   generate:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: [discover-shards, prepare-wheel]
     runs-on: prod-aisimulate-default-amd64-v1
@@ -241,7 +241,7 @@ jobs:
           retention-days: 7
 
   build-web-matrix:
-    environment: pr-wheel-staging
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Qualify and build FPE support matrix
     needs: [generate, discover-shards, prepare-wheel]
     runs-on: ubuntu-24.04

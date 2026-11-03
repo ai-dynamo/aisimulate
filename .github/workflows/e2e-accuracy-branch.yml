@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   wheel:
-    environment: pr-wheel-staging
+    environment: ${{ inputs.preview && 'pr-wheel-staging' || 'automated-release' }}
     name: Prepare exact accuracy wheel
     runs-on: prod-aisimulate-default-amd64-v1
     timeout-minutes: 120
@@ -188,7 +188,7 @@ jobs:
           retention-days: 7
 
   shards:
-    environment: pr-wheel-staging
+    environment: ${{ inputs.preview && 'pr-wheel-staging' || 'automated-release' }}
     name: Evaluate E2E shard ${{ matrix.shard }} (${{ inputs.artifact_key }})
     needs: [wheel, measurements]
     strategy:
