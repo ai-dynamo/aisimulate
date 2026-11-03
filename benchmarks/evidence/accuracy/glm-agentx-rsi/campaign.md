@@ -2037,3 +2037,39 @@ forward comparisons and exact-lookup shape availability visible. Synthetic tests
 include kernels that execute after the CPU scope and separate streams whose
 combined wall span differs from their kernel sum. Raw traces and all numerical
 intermediates remain private; this produces no historical request-MAPE update.
+
+The first independent native forward audit **v1 rejects request-round alignment**:
+all sixteen rank captures have **44 VERIFY ranges**, while each measured request
+reports **43 verification rounds**. Preserve v1 SHA256
+`5cb9cc6347c57a1c834fe2939ebc61f6b33be64f6e5b60cca507c173d309c2ba`.
+All captured ModelRunner GPU ranges themselves pass explicit correlation and
+annotation checks; every request passes numerical accounting. Do not delete a
+range or rewrite the request counter to obtain agreement.
+
+The exact image's scheduler source matches pinned upstream SHA256
+`439ee96dd785fbb63a9f139b192cec984c252df16a573a436877f0ef9a4ca045`.
+Its overlap loop launches the current batch before processing the prior result.
+A bounded read-only image export of the result processor also exactly matches
+upstream `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, SHA256
+`e4fb82ba6bc501f2e8f29a0fc76ce240d1d128210122619c899917433c2b6ddb`.
+It skips speculative counter increments for already finished/retracted requests
+and explicitly handles an overlap overshoot tick. This supports the executed /
+reported count distinction; preserve both populations and do not select an
+identity-free subset to stand in for observed request rounds.
+
+The native CUDA-graph draft and draft-extension paths bypass
+`ModelRunner.forward`. Their existing `spec_stage_span` annotations are named
+`draft` and `draft_extend`; the latter also contains the prefill ModelRunner
+`DRAFT` scope. Capture all of these source-defined phases. The v2 audit adds
+execution-population descriptions, keeps request-round alignment unqualified,
+and includes descendant GPU annotations for nested scopes. Do not add nested
+scope totals, summed kernels or TP ranks to estimate latency. Decode labels
+omit shape aggregates when their CPU length mirrors are absent on the CUDA-graph
+path; exact generation lookup inputs remain unavailable rather than inferred.
+Both prefill shapes are retained in their actual labels.
+
+All eight loaded target receipts share the same dtype/quantizer signature;
+all eight draft receipts share the BF16/unquantized-MoE signature. This upgrades
+the precision observation from rank-0 evidence to all-rank evidence, without
+attributing a numerical accuracy gap to it yet. No historical measurement,
+scoring cohort or headline MAPE changes.
