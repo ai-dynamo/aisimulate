@@ -450,6 +450,27 @@ def test_native_warmup_planning_never_runs_under_the_producer(monkeypatch, tmp_p
     assert s.warmup_planned == []
 
 
+def test_explicit_decode_points_stay_within_the_measured_context(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    monkeypatch.delenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", raising=False)
+
+    def build(total_kv_read_tokens):
+        points = [Point("decode", 1, 1, 0, total_kv_read_tokens)]
+        s = make_scheduler(module, tmp_path, points)
+        # A run that serves a 1,048,576-token context and measures up to 131,072 tokens. The native decode check
+        # bounds a context by the runtime context only.
+        s._glm_context_policy = module.glm_context_policy(1048576, 131072)
+        s._bench_explicit_points = points
+        s._bench_build_grid()
+        return s
+
+    assert [point.total_kv_read_tokens for point in build(131072)._bench_grid] == [131072]
+    # The artifact states the measured context as kvwarm.max_context, so a deeper point is refused.
+    with pytest.raises(ValueError) as refused:
+        build(262144)
+    assert str(refused.value) == "GLM-5.3-Flash decode context 262144 exceeds the measured context limit 131072"
+
+
 def hub_stand_in(monkeypatch, cached):
     """Install a ``huggingface_hub`` that answers every cache lookup with ``cached``. Returns the lookups."""
     lookups = []

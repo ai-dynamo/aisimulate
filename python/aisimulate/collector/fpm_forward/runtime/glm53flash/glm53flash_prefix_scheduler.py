@@ -506,6 +506,14 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                 contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
                 if min(contexts) < 3:
                     raise ValueError("GLM real decode requires per-request context >= 3; no clamping")
+                # The native decode check bounds a context by the runtime context, which can exceed the measured
+                # context. The artifact states the measured context as kvwarm.max_context, and the prefill check bounds
+                # prefix plus new tokens by it too.
+                limit = self._glm_context_policy["measured_context_limit"]
+                if max(contexts) > limit:
+                    raise ValueError(
+                        f"GLM-5.3-Flash decode context {max(contexts)} exceeds the measured context limit {limit}"
+                    )
 
     @staticmethod
     def _glm_decode_prompt(context):

@@ -81,7 +81,8 @@ scheduler file equals `ai-dynamo/dynamo@395f0240`, and
   `--revision` with the same value. Without it, vLLM loads the default branch.
 - `--max-model-len` must be at least the measured context plus 7 internal
   positions, and a larger value is accepted. `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT`
-  sets the measured context (131,072 at most).
+  sets the measured context (131,072 at most). The producer refuses a point
+  whose per-request length exceeds the measured context.
 
 Engine arguments, beyond the usual Dynamo benchmark flags:
 `--enable-prefix-caching --prefix-match-unit 4 --kv-cache-dtype fp8_e4m3
