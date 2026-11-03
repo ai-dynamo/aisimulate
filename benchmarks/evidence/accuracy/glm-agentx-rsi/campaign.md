@@ -1173,7 +1173,18 @@ workloads use 5111.75/7200 TP8-equivalent node-seconds. The retry reduces its wa
 limit to 33 minutes plus 60 seconds cleanup (16320 GPU-seconds), fitting the
 remaining 2088.25 node-seconds; require a fresh immutable source and CPU receipt.
 
-**Conclusion:** pending repaired protocol qualification and bounded GPU collection.
+Actual-serializer CPU preflight **1013377** passes in 245 CPU-only seconds.
+Receipt SHA256
+`dcf26114b6b94811acd5d4a89c3082fba44ffc5613b013ec15449f4a0a2c0541`
+verifies zero/64 cache counts against the real pinned serializer, both coding
+sequences and all ten source hashes. Source
+`6b65b5723550c62563c05d453d699d36d9566084` passes 68 focused tests; GPU retry
+**1013407** uses its immutable archive and a 33-minute wall limit without requeue.
+Reserve 16320 GPU-seconds including cleanup, leaving 117514 unreserved. The
+client must additionally check the live resolved reporting flag before the first
+warmup; otherwise it rejects collection rather than inferring cache state.
+
+**Conclusion:** pending bounded GPU collection and independent audit.
  No new
 modeling setting, fitted latency, HF promotion or dashboard replacement.
 
