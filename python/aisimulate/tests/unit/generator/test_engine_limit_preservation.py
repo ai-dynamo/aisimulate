@@ -78,15 +78,16 @@ def test_externally_evaluated_engine_limits_are_preserved(backend: str, rule: st
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-def test_preserved_unaligned_budget_is_rounded_with_a_warning(backend, caplog):
-    """A Sweeper candidate simulated at 5000 tokens deploys 5056; the change is logged, not silent."""
+@pytest.mark.parametrize("key", ["max_num_tokens", "max_prefill_tokens"])
+@pytest.mark.parametrize("budget", [32, 5000])
+def test_preserved_unaligned_budget_is_rejected(backend, key, budget):
     params = _params(preserve=True, rule="benchmark")
-    params["params"]["prefill"]["max_num_tokens"] = 5000
-    params["params"]["prefill"]["max_prefill_tokens"] = 5000
-    with caplog.at_level(logging.WARNING):
-        result = apply_rule_plugins(copy.deepcopy(params), backend)
-    assert result["params"]["prefill"]["max_num_tokens"] == 5056
-    assert "prefill max_num_tokens=5000 was evaluated by the caller; the deployment uses 5056" in caplog.text
+    params["params"]["prefill"][key] = budget
+
+    with pytest.raises(ValueError, match=rf"Cannot preserve evaluated prefill\.{key}={budget}.*Re-evaluate"):
+        apply_rule_plugins(params, backend)
+
+    assert params["params"]["prefill"][key] == budget
 
 
 def test_default_vllm_rules_still_resize_unpinned_requests():

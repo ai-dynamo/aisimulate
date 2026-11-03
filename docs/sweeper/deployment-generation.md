@@ -129,6 +129,13 @@ those choices. It rejects combinations it cannot lower, including analytical
 AFD/EPD and heterogeneous P/D hardware. AFD predictions instead produce their
 own analytical artifacts; see [AFD topology](../replay/engine/analytical.md#afd).
 
+Deployment token budgets must be multiples of 64. Ordinary generator requests
+round them upward, but an already evaluated candidate with an unaligned budget
+is rejected: changing the budget would invalidate its prediction and ranking.
+Re-evaluate with an aligned budget before generating a deployment; for example,
+use 64 instead of 32, or 5056 instead of 5000. This applies to both total-token
+and prefill-token budgets on every backend.
+
 A trace workload has no fixed request length, so the bridge lowers it without
 ISL/OSL. It rejects lengths supplied for a trace, whether on the workload or
 as `SlaConfig.isl`/`SlaConfig.osl` overrides, because generated fields would be
