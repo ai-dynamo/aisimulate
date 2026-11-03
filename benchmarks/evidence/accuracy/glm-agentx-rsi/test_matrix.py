@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+from audit_matrix import errors, interval
 from predict_matrix import client_ttft_ms, qualify_ready_event
 
 
@@ -25,3 +26,20 @@ def test_recorded_native_tail_requires_explicit_conservation():
         qualify_ready_event({**event, "finished_len": None})
     with pytest.raises(ValueError, match="explicit"):
         qualify_ready_event({"output_tokens": 130})
+
+
+def test_independent_audit_pools_requests_and_preserves_stream_denominator():
+    # Unequal reference magnitudes must not turn into a ratio of means.
+    result = errors([(100, 50), (100, 1000)])
+    assert result["n"] == 2 and result["mape"] == 95
+    assert result["mean_absolute_ms"] == 475
+    assert interval([
+        {"at_ns": "1000000000", "output_tokens": 3},
+        {"at_ns": "1127000000", "output_tokens": 128},
+    ]) == (1000000000, 1.0)
+
+
+@pytest.mark.parametrize("pairs", [[], [(1, 0)], [(float("nan"), 1)], [(1, float("inf"))]])
+def test_independent_audit_rejects_undefined_control_scores(pairs):
+    with pytest.raises(ValueError):
+        errors(pairs)

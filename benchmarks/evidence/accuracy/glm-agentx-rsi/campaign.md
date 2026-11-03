@@ -1025,6 +1025,12 @@ The versioned receipt is supplied explicitly to GPU job **1012931**, with requeu
 disabled and a 45-minute limit. Hold 22080 GPU-seconds including cleanup, leaving
 121634 unreserved; reconcile actual allocation when terminal. All 51 focused
 collector/auditor/clock/counter tests pass. No accuracy result is accepted yet.
+The separate matrix auditor derives request intervals and native TPOT directly
+from first/last boundaries, verifies delivered/generated/tail counts, original
+pair identities, cold-cache receipts and both arrival clocks. It recomputes
+pooled equal-per-request errors without importing the prediction helper's scoring
+functions. Undefined positive-reference errors reject control qualification;
+no requests are silently dropped.
 
 ## Repeat and compatibility controls
 
@@ -1224,6 +1230,7 @@ python predict_matrix.py --controls PRIVATE_GPU_CONTROLS --template FROZEN_CONFI
 # E036 requires the new submission receipts and keeps client TTFT boundaries.
 python predict_matrix.py --dispatch-matrix --arrival-clock client_start --controls PRIVATE_SUBMISSION_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_CLIENT_CLOCK_MATRIX
 python predict_matrix.py --dispatch-matrix --arrival-clock server_submission --controls PRIVATE_SUBMISSION_CONTROLS --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_SUBMISSION_CLOCK_MATRIX
+python audit_matrix.py --controls PRIVATE_SUBMISSION_CONTROLS --client-replay CLIENT_CLOCK_MATRIX --submission-replay SUBMISSION_CLOCK_MATRIX --output NEW_MATRIX_AUDIT_JSON
 # Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
