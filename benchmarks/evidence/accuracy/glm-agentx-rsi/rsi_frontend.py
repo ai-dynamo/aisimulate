@@ -45,6 +45,10 @@ def measure_template(function):
             "input_sha256": token_digest(ids),
             "template_cache_requested": kwargs.get("use_cache"),
             "stage": "synchronous_chat_template_render_encode",
+            "api_process_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+            "api_thread_environment": {
+                key: os.environ.get(key) for key in ("TOKENIZERS_PARALLELISM", "RAYON_NUM_THREADS", "OMP_NUM_THREADS")
+            },
         }
         row["projection_ms"] = (time.monotonic_ns() - stop) / 1e6
         # No prompt, rendered text, token array or exception body is retained.

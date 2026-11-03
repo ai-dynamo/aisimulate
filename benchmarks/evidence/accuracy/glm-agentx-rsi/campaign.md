@@ -229,6 +229,8 @@ token digest; it records projection cost separately and retains no text/arrays.
 Retain wall, process-CPU and calling-thread CPU time separately, plus the serving
 host CPU model/affinity, tokenizer package versions and thread settings. Host
 measurements require these identities; B300 GPU identity alone is insufficient.
+Stage receipts capture the actual API process's affinity and thread environment;
+collector process settings alone do not establish child-process settings.
 The local template explicitly requests `return_dict=False`, matching the server's
 list-of-token-IDs contract across Transformers releases.
 Join exactly one stage inside each chat request and require its digest to match
@@ -593,12 +595,13 @@ python audit.py --public-bundle PUBLIC_BRANCH_DIR --pr665-evidence PRIVATE_REPLA
 python replay.py --tooling FROZEN_TOOLING --inputs FROZEN_HF_INPUTS --output NEW_EXPERIMENT_DIR --lanes 1 8 14
 python reduce_stall.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_REDUCTION_DIR
 python analyze_timing.py --root PRIVATE_GPU_CONTROLS --output NEW_TIMING_AUDIT_JSON
+python analyze_timing.py --suite frontend --root PRIVATE_FRONTEND_CONTROLS --output NEW_FRONTEND_AUDIT_JSON
 python predict_cold.py --template FROZEN_CONFIG --predictor FROZEN_AGENTX_PREDICT --output NEW_COLD_PREDICTIONS
 # Remote collector: --suite frontend selects the separately qualified E018 controls.
 qualify_weka ORIGINAL_WEKA_TRACE --materialize PRIVATE_LOWERED_JSONL
 PYTHONPATH=FROZEN_TOOLING python recorded_arrivals.py --inputs FROZEN_HF_INPUTS --lowered PRIVATE_LOWERED_JSONL --predictor FROZEN_AGENTX_PREDICT --frozen FROZEN_COHORTS --output NEW_DIAGNOSTIC_DIR
-python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py
-uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py
+python -m pytest -c /dev/null -p no:cacheprovider test_audit.py test_timing.py test_timing_audit.py
+uv run --no-project --with 'transformers>=4.57,<5' --with pytest python -m pytest -c /dev/null -p no:cacheprovider test_probe.py test_frontend.py
 ```
 
 The GPU scripts require an immutable model receipt, successful CPU preflight,
