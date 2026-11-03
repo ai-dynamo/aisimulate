@@ -40,6 +40,11 @@ def validate_snapshot(snapshot, *, preview=False):
         "preview",
         "completed_at",
     }
+    partial = snapshot.get("measurement_campaign_status")
+    if partial is not None:
+        if not preview or partial != "partial":
+            raise ValueError("Partial measurement campaigns require a preview")
+        fields.add("measurement_campaign_status")
     if set(snapshot) != fields or snapshot["preview"] is not preview:
         raise ValueError("Invalid AgentX qualification identity")
     if not re.fullmatch(r"main|release/[A-Za-z0-9][A-Za-z0-9._/-]*", snapshot["branch"]) and not preview:

@@ -85,6 +85,26 @@ FEATURES = {
     "events.recompute": "Recomputation",
     "events.state_restore": "Recurrent-state restoration",
 }
+SILICON_FEATURES = {
+    "cache.g1_prefix",
+    "cache.sub_block_prefix_reuse",
+    "cache.g2",
+    "cache.g3",
+    "cache.hybrid_state",
+    "speculation",
+    "cache.kvcr",
+    "routing.kv_aware",
+}
+PARAMETERS.update(
+    {"match_granularity_tokens", "scope", "cache_types", "implementation", "method", "algorithm", "draft_length"}
+)
+STRING_VALUES.update(
+    {
+        "scope": {"local", "shared", "unknown", "not_applicable"},
+        "method": {"off", "mtp", "dspark", "eagle3", "dflash", "dflash2", "ngram", "draft_model", "unknown"},
+    }
+)
+
 QWEN_ENABLED = {
     "agentx.weka",
     "agentx.seeded_snapshots",
@@ -129,9 +149,11 @@ def validate(value, benchmark_id=None):
     if benchmark_id is not None and value["benchmark_id"] != benchmark_id:
         raise ValueError("Feature metadata belongs to another benchmark")
     taxonomy = value["taxonomy"]
-    if not isinstance(taxonomy, dict) or set(taxonomy) != {"revision", "sha256"}:
+    if taxonomy is not None and (not isinstance(taxonomy, dict) or set(taxonomy) != {"revision", "sha256"}):
         raise ValueError("Invalid feature taxonomy")
-    if not re.fullmatch(r"[a-f0-9]{40}", taxonomy["revision"]) or not re.fullmatch(r"[a-f0-9]{64}", taxonomy["sha256"]):
+    if taxonomy is not None and (
+        not re.fullmatch(r"[a-f0-9]{40}", taxonomy["revision"]) or not re.fullmatch(r"[a-f0-9]{64}", taxonomy["sha256"])
+    ):
         raise ValueError("Feature taxonomy requires pinned revisions")
     seen = set()
     if not isinstance(value["features"], list):
@@ -140,7 +162,7 @@ def validate(value, benchmark_id=None):
         if not isinstance(row, dict) or set(row) != {"id", "state", "parameters", "observed", "evidence"}:
             raise ValueError("Invalid feature fields")
         identity = row["id"]
-        if identity not in FEATURES or identity in seen or row["state"] not in STATES:
+        if identity not in set(FEATURES) | SILICON_FEATURES or identity in seen or row["state"] not in STATES:
             raise ValueError("Unknown or duplicate feature")
         seen.add(identity)
         if not isinstance(row["parameters"], list):
@@ -153,11 +175,25 @@ def validate(value, benchmark_id=None):
             if not isinstance(name, str) or name not in PARAMETERS or name in names:
                 raise ValueError("Invalid feature parameter name")
             names.add(name)
+            if name == "cache_types" and isinstance(scalar, list):
+                if (
+                    not scalar
+                    or any(v not in {"recurrent_state", "sliding_window", "compressed_cache"} for v in scalar)
+                    or len(set(scalar)) != len(scalar)
+                ):
+                    raise ValueError("Invalid cache types")
+                continue
             if scalar is not None and type(scalar) not in {str, bool, int, float}:
                 raise ValueError("Feature parameters must be scalar")
-            if isinstance(scalar, str) and (len(scalar) > 200 or re.search(r"/|https?:|Bearer|hf_", scalar)):
+            if isinstance(scalar, str) and (
+                len(scalar) > 200 or re.search(r"[\x00-\x1f]|/|https?:|Bearer|hf_", scalar)
+            ):
                 raise ValueError("Private or unsafe feature parameter")
-            if isinstance(scalar, str) and scalar not in STRING_VALUES.get(name, set()):
+            if (
+                isinstance(scalar, str)
+                and name not in {"cache_types", "implementation", "algorithm"}
+                and scalar not in STRING_VALUES.get(name, set())
+            ):
                 raise ValueError("Unapproved feature parameter value")
             if type(scalar) in {int, float} and (not math.isfinite(scalar) or scalar < 0):
                 raise ValueError("Nonfinite feature parameter")
@@ -169,7 +205,7 @@ def validate(value, benchmark_id=None):
             raise ValueError("Invalid observed feature count")
         if (observed["state"] == "unknown") != (count is None):
             raise ValueError("Unknown usage must retain an unknown count")
-        if observed["state"] == "exercised" and count == 0 or observed["state"] == "not_observed" and count != 0:
+        if (observed["state"] == "exercised" and count == 0) or (observed["state"] == "not_observed" and count != 0):
             raise ValueError("Observed feature count disagrees with state")
         if not isinstance(row["evidence"], list):
             raise ValueError("Invalid feature evidence")
@@ -177,15 +213,29 @@ def validate(value, benchmark_id=None):
             if not isinstance(evidence, dict) or set(evidence) != {"sha256", "pointer"}:
                 raise ValueError("Invalid feature evidence fields")
             if not re.fullmatch(r"[a-f0-9]{64}", evidence["sha256"]) or not re.fullmatch(
-                r"/[A-Za-z0-9_~/.-]+", evidence["pointer"]
+                r"(?:|/[A-Za-z0-9_~/.-]+)", evidence["pointer"]
             ):
                 raise ValueError("Invalid feature evidence reference")
             if re.search(r"/(?:Users|home|lustre|tmp|mnt)/", evidence["pointer"]):
                 raise ValueError("Local paths are not JSON evidence pointers")
         if row["state"] in {"enabled", "disabled"} and not row["evidence"]:
             raise ValueError("Resolved feature states require evidence")
-    if seen != set(FEATURES):
+    if seen not in (set(FEATURES), SILICON_FEATURES):
         raise ValueError("Incomplete feature inventory; retain unknowns explicitly")
+    if seen == SILICON_FEATURES:
+        rows = {row["id"]: row for row in value["features"]}
+        for identity in ("cache.g2", "cache.g3"):
+            parameters = {p["name"]: p["value"] for p in rows[identity]["parameters"]}
+            if parameters.get("scope") not in STRING_VALUES["scope"]:
+                raise ValueError("Offload scope must remain explicit")
+        params = {p["name"]: p["value"] for p in rows["speculation"]["parameters"]}
+        method, length = params.get("method"), params.get("draft_length")
+        if method not in STRING_VALUES["method"] or "draft_length" not in params:
+            raise ValueError("Speculation requires method and draft length")
+        if length is not None and (type(length) is not int or length <= 0):
+            raise ValueError("Invalid configured draft length")
+        if method == "off" and (rows["speculation"]["state"] != "disabled" or length is not None):
+            raise ValueError("Speculation off makes draft length not applicable")
     return value
 
 

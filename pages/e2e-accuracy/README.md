@@ -944,3 +944,44 @@ The AgentX overview displays Request TPOT MAPE before Request TTFT MAPE;
 column values and request denominators follow that order.
 
 Feature badges align left, with each label and value on the same line. Missing feature values display Unrecorded while internal unknown states remain unchanged.
+
+### Portable HF silicon bundles and candidate previews
+
+The AgentX HF reader consumes the thin `catalog/e2e/agentx.json` index, verifies
+its manifest checksums, then resolves each artifact relative to its configuration
+bundle. The current draft keeps the existing `v1` schema identifiers. It does
+not read the superseded opaque-object dataset layout. Existing published dashboard
+snapshots retain their original provenance and remain readable.
+
+HF contains silicon evidence only. CI reconstructs pinned upstream corpora from
+`data/e2e/agentx/corpus.json`, checks both source and derived hashes and filtering
+order, and applies observed output-length substitutions. Finite token traces are
+reconstructed from recorded token equality and dependencies. Replay configuration,
+prediction database selection, and simulator cache geometry belong to CI rather
+than the HF bundles. The reviewed policies currently cover B300 TP8 GLM/SGLang and
+Qwen/vLLM. They retain the existing op-level policy, correction disabled, SGLang
+0.5.21 / vLLM 0.31.0 databases, and GLM verification depth 3 with acceptance 1.99.
+These simulator choices are distinct from the silicon's configured draft length.
+Qwen cache geometry is requalified from all recorded worker ranks using the
+collection probe's shared-pool mapping.
+
+The HF feature inventory has eight entries: prefix caching, sub-block reuse,
+G2, G3, hybrid state cache, speculation, KVCR, and KV-aware routing. States, scopes,
+cache types, method and configured draft length come from measured evidence.
+Missing values stay unknown; Planner metadata cannot establish KV-aware routing.
+Feature and configuration evidence checksums and JSON pointers must resolve.
+
+For pre-merge validation, dispatch **E2E Accuracy Matrix** from the exact trusted
+`pull-request/<number>` copy with `preview=true`, the PR head `expected_sha` and
+`branch`, and an immutable `agentx_revision` from the reviewed HF candidate.
+The override applies only to AgentX; existing InfX selection remains unchanged.
+Candidate overrides are rejected outside trusted previews.
+
+An optional `agentx_campaign_catalog` may name a specific unscored failed/stopped
+campaign under `catalog/e2e/agentx/qualifications/`. This adds its retained profiles
+to a **partial preview**, without changing the HF active catalog or qualification
+status. Partial previews carry `measurement_campaign_status: partial`, display a
+warning, and cannot pass the public snapshot gate. Replay qualification confirms
+complete accounting of the explicitly selected profiles; it does not qualify the
+incomplete silicon campaign or authorize dataset promotion. No new GPU collection
+is part of this workflow.

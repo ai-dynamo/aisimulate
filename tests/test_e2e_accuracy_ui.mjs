@@ -1302,3 +1302,21 @@ test("AgentX supplemental features bind to the original dataset and complete ben
     {...evidence,records:[{...evidence.records[0],feature_artifact_sha256:"bad"},evidence.records[1]]},
   ]) assert.throws(()=>validate(invalid,summary),/Feature evidence|feature evidence/);
 });
+
+test("curated silicon features expose recorded scopes, cache types and actual draft length", () => {
+  const context = vm.createContext({window: {}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js", import.meta.url), "utf8"), context);
+  const record=(id,parameters)=>({id,state:"enabled",parameters:Object.entries(parameters).map(([name,value])=>({name,value}))});
+  const point={id:"example",config_summary:[],feature_metadata:{schema:"aisimulate.benchmark.features.v1",benchmark_id:"example",features:[
+    record("cache.sub_block_prefix_reuse",{match_granularity_tokens:16}),
+    record("cache.g2",{scope:"shared"}),record("cache.hybrid_state",{cache_types:["recurrent_state"]}),
+    record("routing.kv_aware",{}),record("speculation",{method:"dspark",draft_length:7}),
+  ]}};
+  const html=context.window.AgentX.featureChecklist(point);
+  assert.match(featureCell(html,"sub-block-prefix","silicon"),/Match granularity: 16 tokens/);
+  assert.match(featureCell(html,"cache.g2","silicon"),/Scope: shared/);
+  assert.match(featureCell(html,"cache.hybrid_state","silicon"),/State-cache type: recurrent_state/);
+  assert.match(featureCell(html,"kv-aware-routing","silicon"),/agentx-feature-status on/);
+  assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
+  assert.match(featureCell(html,"speculation","aisim"),/agentx-feature-status unknown/);
+});

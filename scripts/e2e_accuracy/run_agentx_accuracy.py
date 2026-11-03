@@ -5,6 +5,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,16 @@ from scripts.e2e_accuracy.agentx_contract import (
     validate_public,
     validate_result,
 )
+from scripts.e2e_accuracy.agentx_inputs import (
+    CORPORA,
+    checked,
+    document,
+    finite_trace,
+    load_runs,
+    reconstruct,
+    replay_config,
+    safe_path,
+)
 
 REPO = "ai-dynamo/aisim-infx-cache"
 
@@ -37,43 +48,120 @@ def read(path):
     return json.loads(Path(path).read_bytes())
 
 
-def fetch(revision, output):
+def fetch(revision, output, *, metadata_only=False, campaign_catalog=None, preview=False):
     if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
         raise ValueError("AgentX requires an immutable HF commit")
     catalog = validate_catalog(read(hf_hub_download(REPO, INDEX, repo_type="dataset", revision=revision)))
-    paths = {a["path"]: a for run in catalog["runs"] for a in run["artifacts"].values()}
-    for name, entry in paths.items():
-        # Only replay inputs are needed in daily CI; full raw evidence stays in HF.
-        if not any(
-            entry
-            in [
-                run["artifacts"].get(k)
-                for k in ("trace", "config", "observations", "overrides", "comparison", "feature_metadata")
-            ]
-            for run in catalog["runs"]
+    if campaign_catalog:
+        if not preview or not re.fullmatch(r"catalog/e2e/agentx/qualifications/[a-z0-9-]+\.json", campaign_catalog):
+            raise ValueError("Incomplete measurements require an explicit trusted preview")
+        campaign_source = read(hf_hub_download(REPO, campaign_catalog, repo_type="dataset", revision=revision))
+        if (
+            campaign_source.get("schema") != "aisimulate.agentx.silicon-qualification.v1"
+            or campaign_source.get("scored") is not False
+            or campaign_source.get("status") not in {"failed", "stopped"}
         ):
-            continue
-        source = Path(hf_hub_download(REPO, name, repo_type="dataset", revision=revision))
-        if digest(source) != entry["sha256"] or source.stat().st_size != entry["bytes"]:
-            raise ValueError("AgentX source checksum mismatch")
-        target = output / name
+            raise ValueError("Not an unscored incomplete silicon campaign")
+        catalog = {"schema": catalog["schema"], "runs": [*catalog["runs"], *campaign_source["runs"]]}
+        catalog["snapshot_id"] = hashlib.sha256(canonical(catalog)).hexdigest()
+        validate_catalog(catalog)
+    output.mkdir(parents=True, exist_ok=True)
+    if campaign_catalog:
+        (output / "measurement-status.json").write_bytes(canonical({"measurement_campaign_status": "partial"}))
+
+    def download(name, entry=None):
+        target = safe_path(output, name)
         target.parent.mkdir(parents=True, exist_ok=True)
+        source = Path(hf_hub_download(REPO, name, repo_type="dataset", revision=revision))
         shutil.copyfile(source, target)
+        if entry is not None:
+            checked(output, {**entry, "path": name})
+        return target
+
+    registry = read(download(CORPORA))
+    if registry.get("schema") != "aisimulate.agentx.corpora.v1":
+        raise ValueError("Invalid corpus registry")
+    roles = {
+        "configuration",
+        "workload",
+        "observations",
+        "overrides",
+        "feature_metadata",
+        "cache_receipt",
+        "runtime_receipt",
+        "source_manifest",
+        "recipe",
+        "feature_point_receipt",
+        "feature_harness_receipt",
+        "snapshot_receipt",
+        "harness_receipt",
+    }
+    corpora = set()
+    for entry in catalog["runs"]:
+        path = download(entry["manifest"]["path"], entry["manifest"])
+        run = read(path)
+        if any(run.get(key) != entry[key] for key in ("id", "category", "configuration_id")):
+            raise ValueError("AgentX manifest identity mismatch")
+        if run.get("corpus_id") is not None:
+            corpora.add(run["corpus_id"])
+        for role, artifact_entry in run["artifacts"].items():
+            if role in roles or (
+                role == "raw" and run.get("boundary") == "complete_finite_cohort" and not metadata_only
+            ):
+                name = safe_path(path.parent, artifact_entry["path"]).relative_to(output).as_posix()
+                download(name, artifact_entry)
+        feature_document = read(
+            checked(
+                output,
+                {
+                    **run["artifacts"]["feature_metadata"],
+                    "path": (path.parent / run["artifacts"]["feature_metadata"]["path"]).relative_to(output).as_posix(),
+                },
+            )
+        )
+        configuration = read(
+            checked(
+                output,
+                {
+                    **run["artifacts"]["configuration"],
+                    "path": (path.parent / run["artifacts"]["configuration"]["path"]).relative_to(output).as_posix(),
+                },
+            )
+        )
+        hashes = {ref["sha256"] for row in feature_document["features"] for ref in row["evidence"]}
+        hashes.update(
+            ref["sha256"] for ref in configuration.get("requested", []) + configuration.get("effective_evidence", [])
+        )
+        for value in run["artifacts"].values():
+            if value["sha256"] in hashes:
+                name = safe_path(path.parent, value["path"]).relative_to(output).as_posix()
+                if not (output / name).exists():
+                    download(name, value)
+    for identity in sorted(corpora) if not metadata_only else []:
+        descriptor = registry["sources"][identity]
+        source = Path(
+            hf_hub_download(
+                descriptor["repository"], descriptor["filename"], repo_type="dataset", revision=descriptor["revision"]
+            )
+        )
+        target = safe_path(output / "corpora", identity + ".jsonl")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        reconstruct(descriptor, source, target)
     (output / INDEX).parent.mkdir(parents=True, exist_ok=True)
     (output / INDEX).write_bytes(canonical(catalog))
+    load_runs(output, catalog)
 
 
 def artifact(root, run, name):
-    entry = run["artifacts"][name]
-    path = root / entry["path"]
-    if digest(path) != entry["sha256"] or path.stat().st_size != entry["bytes"]:
-        raise ValueError("AgentX input checksum mismatch")
-    return path
+    return checked(root, run["artifacts"][name])
 
 
 def prepare_trace(root, run, output):
-    source = artifact(root, run, "trace")
     target = output / "traces.jsonl"
+    if run["corpus_id"] is None:
+        finite_trace(root, run, target)
+        return target
+    source = safe_path(root / "corpora", run["corpus_id"] + ".jsonl")
     if "overrides" not in run["artifacts"]:
         shutil.copyfile(source, target)
         return target
@@ -282,7 +370,7 @@ def run_one(root, run, directory, timeout):
     if sum(r["phase"] == "profile" for r in observations) != run["measured_requests"]:
         raise ValueError("Measured cohort count mismatch")
     trace = prepare_trace(root, run, directory)
-    config = read(artifact(root, run, "config"))
+    config = replay_config(root, run)
     config["traffic"]["source"]["paths"] = [str(trace.resolve())]
     config_path = directory / "input-config.json"
     config_path.write_bytes(canonical(config))
@@ -329,9 +417,10 @@ def run_one(root, run, directory, timeout):
         )
         for pair in scores["pairs"]:
             pair.update(ttft_ms_ape=None, tpot_ms_ape=None)
-    if report and "comparison" in run["artifacts"]:
+    reference = document(root, run, "workload").get("silicon_reference")
+    if report and reference:
         report["comparison"] = build_comparison(
-            read(artifact(root, run, "comparison")),
+            reference,
             report,
             read(directory / "dashboard.json"),
             scores,
@@ -378,7 +467,9 @@ def campaign(args):
         raise ValueError("Published AgentX campaigns require the evaluated wheel")
     catalog = validate_catalog(read(args.inputs / INDEX))
     args.output.mkdir(parents=True, exist_ok=True)
-    selected = [run for index, run in enumerate(catalog["runs"]) if index % args.shard_count == args.shard_index]
+    selected = [
+        run for index, run in enumerate(load_runs(args.inputs, catalog)) if index % args.shard_count == args.shard_index
+    ]
     evaluated_driver = driver_digest()
     results = [run_one(args.inputs, run, args.output / run["id"], args.point_timeout) for run in selected]
     snapshot = {
@@ -392,6 +483,11 @@ def campaign(args):
         "cohort_sha256": catalog["snapshot_id"],
         "preview": args.preview,
     }
+    status = args.inputs / "measurement-status.json"
+    if status.exists():
+        if not args.preview or read(status) != {"measurement_campaign_status": "partial"}:
+            raise ValueError("Partial measurement campaigns cannot publish")
+        snapshot.update(read(status))
     (args.output / f"shard-{args.shard_index}.json").write_bytes(canonical({"snapshot": snapshot, "runs": results}))
 
 
@@ -410,12 +506,23 @@ def qualify(args):
         raise ValueError("AgentX qualification driver differs from replay driver")
     if snapshot["cohort_sha256"] != catalog["snapshot_id"]:
         raise ValueError("AgentX cohort digest differs")
+    status = args.inputs / "measurement-status.json"
+    if snapshot.get("measurement_campaign_status"):
+        if (
+            snapshot.get("preview") is not True
+            or not status.exists()
+            or read(status) != {"measurement_campaign_status": "partial"}
+        ):
+            raise ValueError("Partial measurement campaigns cannot publish")
+    elif status.exists():
+        raise ValueError("Measurement campaign status differs from replay")
     snapshot["completed_at"] = datetime.now(UTC).isoformat()
     args.output.mkdir(parents=True, exist_ok=True)
     summaries = []
+    sources = {r["id"]: r for r in load_runs(args.inputs, catalog)}
     for run in runs:
         validate_result(run)
-        source = next(r for r in catalog["runs"] if r["id"] == run["id"])
+        source = sources[run["id"]]
         if any(run[key] != source[key] for key in IDENTITY):
             raise ValueError("Result identity differs from the reviewed catalog")
         relative = "details/" + run["id"] + ".json"
@@ -444,6 +551,10 @@ if __name__ == "__main__":
     parser.add_argument("--inputs", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision")
+    parser.add_argument("--campaign-catalog", help="Explicit unscored silicon campaign to include in a partial preview")
+    parser.add_argument(
+        "--metadata-only", action="store_true", help="Fetch bundle metadata for qualification without replay corpora"
+    )
     parser.add_argument("--branch", default="main")
     parser.add_argument("--commit")
     parser.add_argument("--wheel-sha256")
@@ -459,7 +570,13 @@ if __name__ == "__main__":
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         parser.error("Invalid shard selection")
     if args.action == "fetch":
-        fetch(args.revision, args.output)
+        fetch(
+            args.revision,
+            args.output,
+            metadata_only=args.metadata_only,
+            campaign_catalog=args.campaign_catalog,
+            preview=args.preview,
+        )
     elif args.action == "run":
         campaign(args)
     else:

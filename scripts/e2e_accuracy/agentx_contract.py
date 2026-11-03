@@ -5,11 +5,13 @@
 import hashlib
 import json
 import math
+import posixpath
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from scripts.e2e_accuracy.agentx_comparison import validate as validate_comparison
+from scripts.e2e_accuracy.agentx_inputs import safe_path
 from scripts.e2e_accuracy.benchmark_features import validate as validate_features
 
 INPUT_SCHEMA = "aisimulate.agentx.inputs.v1"
@@ -49,8 +51,18 @@ def driver_digest(read_file=None):
         names += ("agentx_comparison.py", "agentx_curves.py")
     if b'"benchmark_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("benchmark_features.py",)
+    if b'"agentx_inputs.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
+        names += (
+            "agentx_inputs.py",
+            "../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",
+        )
     return hashlib.sha256(
-        canonical({name: hashlib.sha256(read_file("scripts/e2e_accuracy/" + name)).hexdigest() for name in names})
+        canonical(
+            {
+                name: hashlib.sha256(read_file(posixpath.normpath("scripts/e2e_accuracy/" + name))).hexdigest()
+                for name in names
+            }
+        )
     ).hexdigest()
 
 
@@ -87,10 +99,16 @@ def native_completion_qualified(native, boundary):
         or profile.get("client_in_flight_requests") != 0
     ):
         return False
-    times = [profile.get(key) for key in (
-        "profile_start_ms", "admission_cutoff_ms", "response_grace_deadline_ms",
-        "finished_at_ms", "cancel_drain_deadline_ms",
-    )]
+    times = [
+        profile.get(key)
+        for key in (
+            "profile_start_ms",
+            "admission_cutoff_ms",
+            "response_grace_deadline_ms",
+            "finished_at_ms",
+            "cancel_drain_deadline_ms",
+        )
+    ]
     if not all(finite(value) for value in times) or times != sorted(times) or times[0] == times[1]:
         return False
     _, cutoff, grace, finished, _ = times
@@ -105,9 +123,15 @@ def native_completion_qualified(native, boundary):
         return False
     canceled = {r["uuid"] for r in requests if r.get("terminal_status") == "canceled"}
     completed = [r for r in requests if r.get("terminal_status") == "completed"]
-    counts = {"issued_requests": len(requests), "successful_responses": len(completed), "canceled_requests": len(canceled)}
-    if not canceled or len(completed) + len(canceled) != len(requests) or any(
-        type(profile.get(key)) is not int or profile[key] != count for key, count in counts.items()
+    counts = {
+        "issued_requests": len(requests),
+        "successful_responses": len(completed),
+        "canceled_requests": len(canceled),
+    }
+    if (
+        not canceled
+        or len(completed) + len(canceled) != len(requests)
+        or any(type(profile.get(key)) is not int or profile[key] != count for key, count in counts.items())
     ):
         return False
     for row in requests:
@@ -118,11 +142,18 @@ def native_completion_qualified(native, boundary):
             return False
     events = [e for e in telemetry.get("lifecycle", []) if e.get("phase") == "profile"]
     settled = {e.get("request_uuid") for e in events if e.get("event") == "quiescent"}
-    acknowledged = {e.get("request_uuid") for e in events if e.get("event") == "causal_terminal" and e.get("status") == "canceled"}
+    acknowledged = {
+        e.get("request_uuid") for e in events if e.get("event") == "causal_terminal" and e.get("status") == "canceled"
+    }
     unsettled = ids - settled
-    return bool(unsettled) and unsettled <= canceled and canceled <= acknowledged and all(
-        type(profile.get(key)) is int and profile[key] == len(unsettled)
-        for key in ("server_unsettled_requests", "unsettled_server_requests")
+    return (
+        bool(unsettled)
+        and unsettled <= canceled
+        and canceled <= acknowledged
+        and all(
+            type(profile.get(key)) is int and profile[key] == len(unsettled)
+            for key in ("server_unsettled_requests", "unsettled_server_requests")
+        )
     )
 
 
@@ -132,54 +163,31 @@ def validate_catalog(catalog):
     snapshot = hashlib.sha256(canonical({k: v for k, v in catalog.items() if k != "snapshot_id"})).hexdigest()
     if catalog["snapshot_id"] != snapshot or not catalog["runs"]:
         raise ValueError("Invalid AgentX snapshot identity")
-    ids, identities = set(), set()
+    ids = set()
     for run in catalog["runs"]:
-        if set(run) != {*IDENTITY, "artifacts"} or not re.fullmatch(r"[a-z0-9-]+", run["id"]):
+        if set(run) != {"id", "category", "configuration_id", "manifest"} or not re.fullmatch(r"[a-z0-9-]+", run["id"]):
             raise ValueError("Invalid AgentX run identity")
         if run["id"] in ids:
             raise ValueError("Duplicate AgentX run")
         ids.add(run["id"])
-        identity = tuple(
-            run[k]
-            for k in (
-                "category",
-                "model",
-                "hardware",
-                "backend",
-                "lanes",
-                "initial_input_tokens",
-                "cache_state",
-                "repeat",
-            )
-        )
-        if identity in identities:
-            raise ValueError("Duplicate AgentX workload identity")
-        identities.add(identity)
-        if run["category"] not in {"agentx", "self_collected"} or type(run["lanes"]) is not int or run["lanes"] < 1:
-            raise ValueError("Invalid AgentX category or lane count")
-        if run["boundary"] not in {"successful_profile_span", "complete_finite_cohort"}:
-            raise ValueError("Unknown measurement boundary")
-        for entry in run["artifacts"].values():
-            if set(entry) != {"path", "sha256", "bytes"} or not re.fullmatch(
-                r"data/e2e/agentx/objects/[0-9a-f]{64}\.(json|jsonl|md)", entry["path"]
-            ):
-                raise ValueError("Unsafe AgentX artifact path")
-            if (
-                not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
-                or type(entry["bytes"]) is not int
-                or entry["bytes"] < 0
-            ):
-                raise ValueError("Invalid AgentX artifact checksum")
-            if Path(entry["path"]).stem != entry["sha256"]:
-                raise ValueError("Artifact name differs from its checksum")
-        if not {"trace", "config", "observations"} <= run["artifacts"].keys():
-            raise ValueError("Incomplete AgentX replay inputs")
-        if (
-            run["category"] == "self_collected"
-            and run["boundary"] == "successful_profile_span"
-            and "feature_metadata" not in run["artifacts"]
+        if run["category"] not in {"agentx", "self_collected"} or not re.fullmatch(
+            r"cfg-[0-9a-f]{64}", run["configuration_id"]
         ):
-            raise ValueError("New Weka collections require silicon feature metadata")
+            raise ValueError("Invalid AgentX configuration identity")
+        entry = run["manifest"]
+        if (
+            set(entry) != {"path", "sha256", "bytes"}
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+            or type(entry["bytes"]) is not int
+            or entry["bytes"] < 0
+        ):
+            raise ValueError("Invalid AgentX manifest checksum")
+        safe_path(Path("."), entry["path"])
+        source = "official" if run["category"] == "agentx" else "self-collected"
+        if not entry["path"].startswith(f"data/e2e/agentx/{source}/") or not entry["path"].endswith(
+            f"/{run['id']}/manifest.json"
+        ):
+            raise ValueError("Unsafe AgentX manifest path")
     return catalog
 
 
@@ -211,7 +219,11 @@ def score(observations, native, boundary):
         predicted = candidates[0] if len(candidates) == 1 else None
         if actual["status"] != "completed":
             failure = actual.get("failure_reason")
-            reason = failure if failure in {"context_overflow", "measurement_metrics_unavailable", "measurement_cancelled"} else "measurement_failed"
+            reason = (
+                failure
+                if failure in {"context_overflow", "measurement_metrics_unavailable", "measurement_cancelled"}
+                else "measurement_failed"
+            )
         elif actual.get("identity_valid") is False:
             reason = "missing_measurement_identity"
         elif measured_keys[actual["key"]] > 1:
@@ -287,6 +299,7 @@ def validate_public(value):
         "branch",
         "commit_sha",
         "dataset_revision",
+        "measurement_campaign_status",
         "wheel_sha256",
         "driver_sha256",
         "run_id",

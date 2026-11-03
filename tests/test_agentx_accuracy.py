@@ -94,8 +94,12 @@ def bundle(run=None):
     summary_run = {k: v for k, v in run.items() if k not in {"pairs", "report"}}
     summary_run["detail_path"] = f"details/{run['id']}.json"
     files = {
-        "summary.json": canonical({"schema": SUMMARY_SCHEMA, "snapshot": snapshot, "runs": [summary_run]}),
-        summary_run["detail_path"]: canonical({"schema": SUMMARY_SCHEMA, "snapshot": snapshot, **run}),
+        "summary.json": canonical(
+            {"schema": SUMMARY_SCHEMA, "snapshot": snapshot, "runs": [summary_run]}
+        ),
+        summary_run["detail_path"]: canonical(
+            {"schema": SUMMARY_SCHEMA, "snapshot": snapshot, **run}
+        ),
     }
     seal(files, snapshot)
     return files
@@ -108,7 +112,11 @@ def seal(files, snapshot=None):
             "schema": "aisimulate.agentx.qualification.v1",
             "status": "complete",
             "snapshot": snapshot,
-            "files": {k: hashlib.sha256(v).hexdigest() for k, v in files.items() if k != "qualification.json"},
+            "files": {
+                k: hashlib.sha256(v).hexdigest()
+                for k, v in files.items()
+                if k != "qualification.json"
+            },
         }
     )
 
@@ -131,7 +139,9 @@ def test_macro_points_micro_requests_and_no_error_of_means():
 
 
 @pytest.mark.parametrize("backend,version", [("sglang", "0.5.21"), ("vllm", "0.31.0")])
-def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(tmp_path, monkeypatch, backend, version):
+def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(
+    tmp_path, monkeypatch, backend, version
+):
     config = tmp_path / "config.json"
     config.write_text(
         json.dumps(
@@ -163,7 +173,9 @@ def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(tmp
     )
     modules = {
         "aisimulate": api,
-        "aisimulate.compiler": SimpleNamespace(prediction_to_replay_spec=lambda value: value),
+        "aisimulate.compiler": SimpleNamespace(
+            prediction_to_replay_spec=lambda value: value
+        ),
         # No get_latest_database_version: the reviewed pin must take precedence.
         "aisimulate.sdk.perf_database": SimpleNamespace(),
         "aisimulate.replay.dashboard": SimpleNamespace(),
@@ -246,7 +258,12 @@ def cutoff_native():
             ],
             "lifecycle": [
                 {"phase": "profile", "request_uuid": "ok", "event": "quiescent"},
-                {"phase": "profile", "request_uuid": "cancel", "event": "causal_terminal", "status": "canceled"},
+                {
+                    "phase": "profile",
+                    "request_uuid": "cancel",
+                    "event": "causal_terminal",
+                    "status": "canceled",
+                },
             ],
         },
     }
@@ -258,7 +275,9 @@ def test_profile_cutoff_accepts_accounted_client_cancellation_without_hiding_ser
     assert native["telemetry"]["completion_status"] == "server_unsettled"
     assert native["agentic_profile"]["server_unsettled_requests"] == 1
     assert not native_completion_qualified(native, "complete_finite_cohort")
-    assert native_completion_qualified({"telemetry": {"completion_status": "completed"}}, "complete_finite_cohort")
+    assert native_completion_qualified(
+        {"telemetry": {"completion_status": "completed"}}, "complete_finite_cohort"
+    )
 
 
 @pytest.mark.parametrize(
@@ -276,7 +295,9 @@ def test_profile_cutoff_accepts_accounted_client_cancellation_without_hiding_ser
         ("finished_at_ms", 640_001),
     ],
 )
-def test_unsettled_profile_requires_complete_accounting_and_bounded_deadlines(field, value):
+def test_unsettled_profile_requires_complete_accounting_and_bounded_deadlines(
+    field, value
+):
     native = cutoff_native()
     native["agentic_profile"][field] = value
     assert not native_completion_qualified(native, "successful_profile_span")
@@ -313,12 +334,16 @@ def test_unsettled_profile_rejects_unexplained_work_and_incomplete_replays(case)
     elif case == "timeout":
         telemetry["completion_status"] = "time_limited"
     else:
-        telemetry["phase_boundaries"].append({"phase": "preparation", "completion_status": "aborted"})
+        telemetry["phase_boundaries"].append(
+            {"phase": "preparation", "completion_status": "aborted"}
+        )
     assert not native_completion_qualified(native, "successful_profile_span")
 
 
 def test_every_measured_request_accounted_and_metric_denominators():
-    actual = [observation(str(i)) for i in range(7)] + [observation("warm", phase="preparation")]
+    actual = [observation(str(i)) for i in range(7)] + [
+        observation("warm", phase="preparation")
+    ]
     actual[1]["status"] = "failed"
     actual[6].update(ttft_ms=0, tpot_ms=None)
     predicted = [
@@ -344,7 +369,11 @@ def test_every_measured_request_accounted_and_metric_denominators():
         "unmatched_predictions": 1,
         "input_length_mismatch": 1,
     }
-    assert x["request_errors"]["ttft_ms"]["count"] == x["request_errors"]["tpot_ms"]["count"] == 1
+    assert (
+        x["request_errors"]["ttft_ms"]["count"]
+        == x["request_errors"]["tpot_ms"]["count"]
+        == 1
+    )
     assert len(x["pairs"]) == 7
     assert x["pairs"][6]["ttft_ms_ape"] is None
 
@@ -365,14 +394,22 @@ def test_units_finite_cohort_delays_and_profile_boundary():
     assert x["silicon"]["ttft_ms"] == 100
     assert all(v is None for v in x["point_errors"].values())
     assert x["request_errors"]["ttft_ms"]["count"] == 0
-    ambiguous = score([observation(), observation()], [observation()], "successful_profile_span")
+    ambiguous = score(
+        [observation(), observation()], [observation()], "successful_profile_span"
+    )
     assert ambiguous["coverage"]["ambiguous_measurement"] == 2
     assert ambiguous["coverage"]["measured"] == len(ambiguous["pairs"]) == 2
     assert ambiguous["request_errors"]["ttft_ms"]["count"] == 0
-    unknown = score([observation(identity_valid=False)], [observation()], "successful_profile_span")
+    unknown = score(
+        [observation(identity_valid=False)], [observation()], "successful_profile_span"
+    )
     assert unknown["coverage"]["missing_measurement_identity"] == 1
     assert unknown["request_errors"]["ttft_ms"]["count"] == 0
-    excluded = score([observation(status="failed", failure_reason="context_overflow")], [], "successful_profile_span")
+    excluded = score(
+        [observation(status="failed", failure_reason="context_overflow")],
+        [],
+        "successful_profile_span",
+    )
     assert excluded["coverage"]["context_overflow"] == 1
     assert excluded["coverage"]["measured"] == 1
 
@@ -395,7 +432,9 @@ def test_qwen_preparation_relabel_and_native_milliseconds():
             ]
         }
     }
-    rows = normalize_native(native, [observation("warm", phase="preparation")], "self_collected")
+    rows = normalize_native(
+        native, [observation("warm", phase="preparation")], "self_collected"
+    )
     assert rows[0]["phase"] == "preparation"
     assert rows[0]["ttft_ms"] == 300
     assert rows[0]["tpot_ms"] is None
@@ -467,53 +506,139 @@ def test_checksum_failure_before_replay(tmp_path):
     with pytest.raises(ValueError, match="checksum"):
         artifact(
             tmp_path,
-            {"artifacts": {"trace": {"path": "data.json", "sha256": "a" * 64, "bytes": 7}}},
+            {
+                "artifacts": {
+                    "trace": {"path": "data.json", "sha256": "a" * 64, "bytes": 7}
+                }
+            },
             "trace",
         )
+
+
+def silicon_inputs(tmp_path, run):
+    from scripts.e2e_accuracy.agentx_contract import IDENTITY
+
+    source = {k: run[k] for k in IDENTITY}
+    source.update(
+        schema="aisimulate.agentx.benchmark.v1",
+        configuration_id="cfg-" + "a" * 64,
+        corpus_id=None,
+    )
+    from scripts.e2e_accuracy.benchmark_features import SILICON_FEATURES
+
+    features = {
+        "schema": "aisimulate.benchmark.features.v1",
+        "benchmark_id": run["id"],
+        "taxonomy": None,
+        "features": [
+            {
+                "id": key,
+                "state": "unknown",
+                "observed": {"state": "unknown", "count": None},
+                "evidence": [],
+                "parameters": (
+                    [{"name": "scope", "value": "unknown"}]
+                    if key in {"cache.g2", "cache.g3"}
+                    else [
+                        {"name": "method", "value": "unknown"},
+                        {"name": "draft_length", "value": None},
+                    ]
+                    if key == "speculation"
+                    else []
+                ),
+            }
+            for key in sorted(SILICON_FEATURES)
+        ],
+    }
+    base = (
+        tmp_path
+        / f"data/e2e/agentx/official/model/B300/sglang/version/tp8/{source['configuration_id']}/active/{run['id']}"
+    )
+    base.mkdir(parents=True)
+    source["artifacts"] = {}
+    for role, value in {
+        "feature_metadata": features,
+        "configuration": {
+            "schema": "aisimulate.agentx.silicon-config.v1",
+            "identity": {
+                k: run[k]
+                for k in (
+                    "model",
+                    "hardware",
+                    "backend",
+                    "measured_backend_version",
+                    "precision",
+                    "tensor_parallel",
+                )
+            },
+        },
+        "workload": {
+            "schema": "aisimulate.agentx.workload.v1",
+            "benchmark_id": run["id"],
+            "corpus_id": None,
+        },
+        "observations": [observation()],
+    }.items():
+        content = canonical(value)
+        (base / (role + ".json")).write_bytes(content)
+        source["artifacts"][role] = {
+            "path": role + ".json",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "bytes": len(content),
+        }
+    content = canonical(source)
+    path = base / "manifest.json"
+    path.write_bytes(content)
+    entry = {k: source[k] for k in ("id", "category", "configuration_id")}
+    entry["manifest"] = {
+        "path": path.relative_to(tmp_path).as_posix(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "bytes": len(content),
+    }
+    catalog = {"schema": "aisimulate.agentx.inputs.v1", "runs": [entry]}
+    catalog["snapshot_id"] = hashlib.sha256(canonical(catalog)).hexdigest()
+    catalog_path = tmp_path / "catalog/e2e/agentx.json"
+    catalog_path.parent.mkdir(parents=True)
+    catalog_path.write_bytes(canonical(catalog))
+    return catalog
 
 
 def test_qualification_requires_exact_catalog_identities(tmp_path):
     from argparse import Namespace
 
     from scripts.e2e_accuracy.agentx_contract import (
-        IDENTITY,
-        INDEX,
-        INPUT_SCHEMA,
         driver_digest,
     )
     from scripts.e2e_accuracy.run_agentx_accuracy import qualify
 
     run = result()
-    checksum = hashlib.sha256(b"[]").hexdigest()
-    source = {k: run[k] for k in IDENTITY}
-    source["artifacts"] = {
-        k: {
-            "path": f"data/e2e/agentx/objects/{checksum}.json",
-            "sha256": checksum,
-            "bytes": 2,
-        }
-        for k in ("trace", "config", "observations")
-    }
-    catalog = {"schema": INPUT_SCHEMA, "runs": [source]}
-    catalog["snapshot_id"] = hashlib.sha256(canonical(catalog)).hexdigest()
-    catalog_path = tmp_path / INDEX
-    catalog_path.parent.mkdir(parents=True)
-    catalog_path.write_bytes(canonical(catalog))
+    catalog = silicon_inputs(tmp_path, run)
     snapshot = json.loads(bundle()["summary.json"])["snapshot"]
     del snapshot["completed_at"]
     snapshot.update(cohort_sha256=catalog["snapshot_id"], driver_sha256=driver_digest())
-    args = Namespace(inputs=tmp_path, shards=tmp_path, shard_count=1, output=tmp_path / "public")
+    args = Namespace(
+        inputs=tmp_path, shards=tmp_path, shard_count=1, output=tmp_path / "public"
+    )
     for selected in ([], [run, run], [{**run, "model": "wrong/model"}]):
-        (tmp_path / "shard-0.json").write_bytes(canonical({"snapshot": snapshot, "runs": selected}))
+        (tmp_path / "shard-0.json").write_bytes(
+            canonical({"snapshot": snapshot, "runs": selected})
+        )
         with pytest.raises(ValueError):
             qualify(args)
-    (tmp_path / "shard-0.json").write_bytes(canonical({"snapshot": snapshot, "runs": [run]}))
+    (tmp_path / "shard-0.json").write_bytes(
+        canonical({"snapshot": snapshot, "runs": [run]})
+    )
     qualify(args)
-    files = {p.relative_to(args.output).as_posix(): p.read_bytes() for p in args.output.rglob("*.json")}
+    files = {
+        p.relative_to(args.output).as_posix(): p.read_bytes()
+        for p in args.output.rglob("*.json")
+    }
     assert validate_bundle(files)["runs"][0]["id"] == run["id"]
 
 
-def test_publisher_requires_successful_trusted_job_and_exact_driver(tmp_path, monkeypatch):
+def test_publisher_requires_successful_trusted_job_and_exact_driver(
+    tmp_path, monkeypatch
+):
     from scripts.e2e_accuracy.agentx_contract import driver_digest
     from scripts.pages import agentx_pages as publisher
 
@@ -566,7 +691,9 @@ def test_publisher_requires_successful_trusted_job_and_exact_driver(tmp_path, mo
     def git(args, **kwargs):
         if "for-each-ref" in args:
             return ""
-        return (Path(__file__).resolve().parents[1] / args[-1].split(":", 1)[1]).read_bytes()
+        return (
+            Path(__file__).resolve().parents[1] / args[-1].split(":", 1)[1]
+        ).read_bytes()
 
     monkeypatch.setattr(publisher.subprocess, "check_output", git)
     publisher.prepare(tmp_path, tmp_path / "accepted")
@@ -574,7 +701,10 @@ def test_publisher_requires_successful_trusted_job_and_exact_driver(tmp_path, mo
     job["conclusion"] = "failure"
     publisher.prepare(tmp_path, tmp_path / "failed")
     assert not (tmp_path / "failed" / key).exists()
-    assert json.loads((tmp_path / "failed/updates.json").read_text())["main"]["status"] == "failed"
+    assert (
+        json.loads((tmp_path / "failed/updates.json").read_text())["main"]["status"]
+        == "failed"
+    )
     job["head_sha"] = "e" * 40
     with pytest.raises(ValueError, match="Untrusted"):
         publisher.prepare(tmp_path, tmp_path / "foreign")
