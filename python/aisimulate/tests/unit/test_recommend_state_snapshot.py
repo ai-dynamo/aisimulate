@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.recommend import recommendation_to_sweeper, run_recommendation
+from aisimulate.recommend import recommendation_from_payload, recommendation_to_sweeper, run_recommendation
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolutionError, ForwardPassEstimatorResolver
@@ -851,8 +851,8 @@ def test_the_supervised_recommendation_keeps_edits_and_which_engine_controls_the
     def worker(command, **_):
         with (Path(command[-1]) / "input.pickle").open("rb") as source:
             pickle.load(source)
-            raw, _ = pickle.load(source)
-        config = CoreRecommendationConfig.model_validate(raw)
+            raw, _, unset = pickle.load(source)
+        config = recommendation_from_payload(raw, unset)
         seen["space"] = recommendation_to_sweeper(config).search_space
         seen["max_trials"] = config.optimizer.max_trials
         return {"status": "failed", "reason": "converted"}
@@ -872,6 +872,13 @@ def test_the_supervised_recommendation_keeps_edits_and_which_engine_controls_the
         "deepep_moe",
     )
     assert seen["max_trials"] == 1
+    # Without a snapshot, an omitted backend's default choices edited to one
+    # backend keep that edit.
+    config = CoreRecommendationConfig.model_validate(_request(None))
+    config.engine.backend.choices = ["sglang"]
+    with pytest.raises(RuntimeError, match="converted"):
+        run_recommendation(config, stack="engine", runner_factory=EngineReplayRunnerFactory(), show_progress=False)
+    assert seen["space"].backend == recommendation_to_sweeper(config).search_space.backend == ["sglang"]
 
 
 def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(planner_snapshots):

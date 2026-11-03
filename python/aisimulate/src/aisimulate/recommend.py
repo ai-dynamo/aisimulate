@@ -42,6 +42,25 @@ _FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
 EXPLICIT_ENGINE_CONTROLS = (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
 
 
+def recommendation_payload(config: CoreRecommendationConfig) -> tuple[dict, list[str]]:
+    """The configuration a supervised worker rebuilds, and the engine fields the caller left unset.
+
+    Validating the payload marks every field it holds set, while
+    ``recommendation_to_sweeper`` tells an omitted engine control or backend
+    from an explicit one by the fields set. Every value travels, including
+    edits to objects created by default, and the names restore the omissions.
+    """
+    unset = sorted({*EXPLICIT_ENGINE_CONTROLS, "backend"} - config.engine.model_fields_set)
+    return config.model_dump(mode="json"), unset
+
+
+def recommendation_from_payload(raw: dict, unset: list[str]) -> CoreRecommendationConfig:
+    """Rebuild the configuration :func:`recommendation_payload` sent, with the same fields set."""
+    config = CoreRecommendationConfig.model_validate(raw)
+    config.engine.__pydantic_fields_set__.difference_update(unset)
+    return config
+
+
 def run_recommendation(
     config: CoreRecommendationConfig,
     *,
