@@ -143,7 +143,7 @@ window.AgentX = (() => {
     return `./agentx/point.html?${params}#view=point&stage=profile&variant=observed`;
   }
   async function json(path) {
-    const response = await fetch(path);
+    const response = await fetch(path, {cache:"no-cache"});
     if (!response.ok) throw new Error(`Evidence unavailable (HTTP ${response.status}).`);
     return response.json();
   }
@@ -162,7 +162,7 @@ window.AgentX = (() => {
     const entry=loaded.entry.feature_evidence;
     if(entry===undefined)return null;
     if(entry.path!==loaded.entry.summary_path.replace(/summary\.json$/,"feature-evidence.json")||!/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("Invalid feature evidence path or checksum.");
-    const response=await fetch(loaded.base+"feature-evidence.json");
+    const response=await fetch(loaded.base+"feature-evidence.json", {cache:"no-cache"});
     if(!response.ok)throw new Error(`Feature evidence unavailable (HTTP ${response.status}).`);
     const bytes=await response.arrayBuffer();
     const digest=[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(b=>b.toString(16).padStart(2,"0")).join("");

@@ -1000,7 +1000,9 @@ The AISim column reads this structured record, never human-readable
 `config_summary` labels or the silicon column. Each role retains its own states
 and parameters. Enabled, disabled, N/A, unsupported and recording failure remain
 distinct. Configured enablement does not establish observed use: for example,
-KVCR may be enabled but unused without router hints. The current AgentX producer
+KVCR may be enabled but unused without router hints. Prefix-use observations
+cover the retained preparation and profile requests; other exercise states remain
+unknown unless the runtime provides attributable evidence. The current AgentX producer
 uses native offline replay without a Dynamo router adapter, so Dynamo KV-aware
 routing is N/A. Planner metadata cannot establish that routing setting.
 
