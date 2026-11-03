@@ -31,11 +31,16 @@ has been accepted. C10 TPOT and C8 TTFT regressions remain visible below.
 
 Latest all-six E047 retains all8624 TTFT/8614 TPOT observations but worsens
 MAPE to84.6707/70.1656%; it is not a win. Earlier E039–E042 frontend/cache/
-overlap candidates also fail qualification. GPU spend is36.0639/64 hours with
+overlap candidates also fail qualification. GPU spend is36.0886/64 hours with
 no active allocation; the three-node-hour validation reserve is untouched.
 E046 qualifies all-rank numerical verify/draft/extension geometry4/1/4; its
 synchronized captures substantially perturb timing and cannot calibrate costs.
 No newly developed six-point accuracy fix is accepted.
+
+E048 finds22–39% full-batch cadence overprediction. E049 isolates a native
+paged-indexer grouping/KV-reuse benefit with all27 comparisons numerically
+qualified. Whole-model impact is open; the proposed coordinated query-width
+data-contract change awaits explicit policy-required approval. No GPU is active.
 
 ## Frozen baselines — E000/E003
 
@@ -2847,7 +2852,8 @@ The concrete proposed scope is:
 - Carry verification width from the model's actual MTP setting through Python
   serialization and the Rust DSA operator/query. Separate request count from
   query-token count; preserve all projection/FFN/communication token work.
-  Preserve old serialized payloads and ordinary width1 behavior with defaults.
+  Preserve old JSON op fields and ordinary width1 behavior with defaults;
+  explicitly version/invalidate incompatible compiled binary caches.
 - Price the78 physical target attention layers using real width4 module data.
   Keep the legacy3-layer draft approximation separate and unchanged until its
   own BF16/width/seeded-indexer ledger qualifies; do not hide an extra draft
@@ -2874,3 +2880,46 @@ independent diagnostics that do not alter the contract can continue.
   producer/consumer schema, lookup, source runtime or public artifact changes.
 - **Conclusion:** pending inventory. This independent read can continue while
   the explicit coordinated query-width approval question remains pending.
+
+Proposal compatibility review: the frozen native wire is currently schema29.
+A new DSA operator field requires a schema bump and explicit rejection/rebuild
+of older compiled binary caches; defaults preserve old JSON op semantics, not
+binary-layout reinterpretation. Keep width1 physical perf files unchanged;
+new-width records need a versioned/gated source so older readers cannot merge
+distinct query widths under one old physical key. The Rust DSA table currently
+uses heads/batch/sequence grids and has no query-width channel. Do not fold
+projection/FFN token work or silently coerce width4 to width1.
+
+**E050 conclusion — prediction-runtime interfaces located; full-module
+collection is not yet qualified.** CPU1019323 completes253seconds, zero GPUs.
+The image is SGLang0.5.21/Torch2.13.0+cu130, clean source Git
+`e00930c5489053f26d86b179cee0d087f846acbb`. Image SHA256
+`092f0f8ffc16b219579f463a60821ee102fe57a8e36513484c9669cb69d922e6`.
+The paged-MQA wrappers and fused metadata are byte-identical to E049's
+historical0.5.20 interfaces; DSA backend/indexer/runner sources differ. Keep
+runtime identities separate; this is not permission to reuse measured timings
+across versions. All nine requested source paths are accounted: eight present,
+`model_executor/runner.py` absent. The existing generation collector imports
+`model_capture_mode` from `model_executor.runner`, exposing an import-path
+compatibility concern before any full-module allocation. Source inventory alone
+does not qualify a replacement import or the rest of the collector. No runtime
+source, perf schema, model lookup, HF record or public dashboard is changed.
+- Inventory SHA256 `89802f617322004c6dd1de77a31d1ea8cef3079fe14ad80004fe13da86ae39e8`.
+
+### Campaign checkpoint — awaiting explicit contract approval
+
+- Frozen dashboard and research baselines remain immutable; neither<10% target
+  is met, and no new campaign fix satisfies the all-six request-accuracy gate.
+- E047's all-six correction retains every original observation but is negative;
+  draft710 is separate. E048/E049 establish the next evidence-backed primitive
+  mechanism, with no fitted correction or accuracy claim.
+- GPU charge129919seconds; remaining100481; no active GPU/CPU jobs or reservations.
+  Qwen CPU controls and94 campaign checks pass; Full CI for pushed research and
+  candidate heads is pending/queued, not reported as passed.
+- Concrete producer/consumer query-width proposal is saved above. The async
+  approval question is pending; no response is treated as approval. Continue
+  coordinated implementation only after the policy-required explicit answer.
+- Next after approval: resolve exact0.5.21 collector import/source parity; collect
+  real full/skip width4 module data in the remaining op budget; implement typed
+  width-aware target pricing with draft approximation separate; validate all six
+  frozen points and relevant lower-layer/Qwen regressions. No merge/promotion.
