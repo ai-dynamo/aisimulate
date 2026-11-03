@@ -93,6 +93,12 @@ def install_forward_nvtx():
         path.write_bytes(modified)
         receipt["geometry_patch"] = {"relative_path": "sglang/" + relative, "original_sha256": expected,
                                      "instrumented_sha256": hashlib.sha256(modified).hexdigest()}
+        relative = "srt/speculative/eagle_draft_cuda_graph_runner.py"
+        expected = "c61e107e8a4eb69b10d0ab82ebf2c397a6080ba15d0e2187ed291c832c307fae"
+        actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValueError("Native draft captured-width contract differs from the qualified image")
+        receipt["geometry_graph_source"] = {"relative_path": "sglang/" + relative, "sha256": actual}
     print(json.dumps(receipt))
 
 

@@ -245,9 +245,33 @@ def test_geometry_reads_only_bounded_metadata_during_explicit_profile(tmp_path, 
     assert len(reads) == 2
     assert module.bounded_values(Tensor(list(range(65)))) is None
     assert len(reads) == 2
+    batch.input_ids = None
+    batch.positions = Tensor([8192])
+    batch.spec_info = SimpleNamespace(num_tokens_per_req=-1)
+
+    class NativeDraftGraph:
+        captured_req_width = 1
+
+        def execute(self, value):
+            return value.batch_size + 9
+
+    assert module.graph_execute(NativeDraftGraph().execute, batch, stage="draft") == 10
+    row = json.loads(next(tmp_path.glob("*.jsonl")).read_text().splitlines()[-1])
+    assert row["status"] == "recorded" and row["input_token_count"] == 1
+    assert row["input_token_count_source"] == "native_graph_captured_req_width"
+    assert row["input_ids_present"] is False and row["native_captured_req_width"] == 1
+    # Unknown metadata is retained as unavailable; it must not abort the serving request.
+    assert module.graph_execute(lambda value: value.batch_size, batch, stage="draft") == 1
+    row = json.loads(next(tmp_path.glob("*.jsonl")).read_text().splitlines()[-1])
+    assert row["status"] == "unavailable" and row["input_token_count"] is None
+    batch.seq_lens = object()
+    assert module.graph_execute(NativeDraftGraph().execute, batch, stage="draft") == 10
+    row = json.loads(next(tmp_path.glob("*.jsonl")).read_text().splitlines()[-1])
+    assert row["status"] == "unavailable" and row["error_type"] == "ValueError"
+    read_count = len(reads)
     monkeypatch.setenv("RSI_FORWARD_GEOMETRY", "0")
     module.geometry(batch, "draft")
-    assert len(reads) == 2
+    assert len(reads) == read_count
 
 
 def test_torch_graph_probe_requires_explicit_gpu_correlations_on_all_devices(tmp_path):

@@ -42,3 +42,11 @@ def test_geometry_keeps_all_executions_and_rejects_incomplete_or_wrong_width():
         qualify_rows(rows, 1)
     with pytest.raises(ValueError, match="Incomplete numerical profile"):
         qualify_rows(rows[:35], 0)
+    changed = copy.deepcopy(rows)
+    for row in changed:
+        if row["stage"] == "draft":
+            row.update(num_tokens_per_req=-1, native_captured_req_width=1)
+    assert qualify_rows(changed, 0)["8192"]["counts"]["draft"] == 11
+    changed[2]["status"] = "unavailable"
+    with pytest.raises(ValueError, match="Unavailable numerical"):
+        qualify_rows(changed, 0)

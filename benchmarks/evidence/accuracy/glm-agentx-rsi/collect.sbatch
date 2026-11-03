@@ -39,9 +39,11 @@ if test "${RSI_SUITE:-timing}" = forward-profile; then
             ;;
         torch)
             if test "${RSI_FORWARD_GEOMETRY:-0}" = 1; then
-                test "$profile_wall_limit" = 00:20:00
-                control_seconds=1140
-                reservation_seconds=10080
+                case "$profile_wall_limit" in
+                    00:20:00) control_seconds=1140; reservation_seconds=10080 ;;
+                    00:15:00) control_seconds=840; reservation_seconds=7680 ;;
+                    *) exit 1 ;;
+                esac
             else
                 test "$profile_wall_limit" = 00:25:00
                 control_seconds=1440

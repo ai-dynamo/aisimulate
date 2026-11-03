@@ -2462,3 +2462,34 @@ request/cache/output accounting must qualify first. Regression fixtures reject
 wrong widths, malformed positions, wrong devices and missing contexts, while
 retaining eleven synthetic executions rather than trimming to a reported count.
 These are qualification rules, not a score-dependent selection of rounds.
+
+E046 first allocation **1016586 fails after367 seconds**; charge2936 GPU-seconds,
+including startup/termination. Two native controls qualify; one profiled request
+fails and seven remain unattempted. All partial receipts and errors remain.
+The diagnostic hook assumes `ForwardBatch.input_ids` is populated at draft-graph
+entry. Exact image source instead deliberately leaves it `None`: native
+`EAGLEDraftCudaGraphRunner.execute` computes `raw_num_token = raw_bs *
+captured_req_width` and constructs IDs inside the graph. This is an
+instrumentation failure, not a model/server accuracy result. The failed stop
+endpoint's connection refusal is secondary to the scheduler exception.
+
+A bounded image-source export pins the unmodified graph runner SHA256
+`c61e107e8a4eb69b10d0ab82ebf2c397a6080ba15d0e2187ed291c832c307fae`.
+Repair the diagnostic to use the actual bound graph runner's captured width
+when IDs are absent, recording that source explicitly and retaining the unset
+spec width. The native graph gate permits unset spec widths; actual captured
+width and consecutive numerical positions remain required. Do not assume
+width1 from model names. Gate the new source hash before collection.
+Unknown numerical metadata is recorded unavailable without aborting a measured
+request; its auditor rejects qualification. Regression tests exercise absent
+IDs, the native bound-method width, missing graph metadata, malformed metadata,
+continued request execution and rejection of unavailable receipts.
+
+**Retry resource gate:** total charged126358 GPU-seconds (**35.0994 hours**),
+global remainder104042, op/forward remainder7872 GPU-seconds (**984 node-seconds**).
+No active allocation remains. The unchanged20-minute cap no longer fits.
+`geometry_retry_collect.sbatch` instead reserves at most15minutes plus60seconds
+cleanup: **7680 GPU-seconds**, collector deadline840seconds, same8 B300/64 CPUs/
+1TiB, unchanged native controls/image/settings. Recheck live jobs and source
+checksums before reserving/submitting once. Keep the validation pool untouched;
+no automatic retry after this allowance. Geometry remains diagnostic only.

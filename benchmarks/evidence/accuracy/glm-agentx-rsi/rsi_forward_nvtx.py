@@ -30,7 +30,7 @@ def bounded_values(value):
     raise ValueError("Unknown numerical geometry field")
 
 
-def geometry(batch, stage, *, graph_entry=False):
+def geometry(batch, stage, *, graph_entry=False, graph_runner=None):
     global _GEOMETRY_ORDINAL
     if os.environ.get("RSI_FORWARD_GEOMETRY") != "1" or not detailed_annotations_enabled():
         return
@@ -38,27 +38,46 @@ def geometry(batch, stage, *, graph_entry=False):
     # No prompt/output IDs are read. These samples cannot qualify unperturbed cadence.
     row = {"schema": "aisimulate.glm-rsi.forward-geometry.v1", "ordinal": _GEOMETRY_ORDINAL,
            "stage": stage, "graph_entry": graph_entry, "pid": os.getpid(),
-           "device": torch.cuda.current_device(), "begin_ns": str(time.monotonic_ns()),
-           "batch_size": batch.batch_size, "input_token_count": batch.input_ids.numel(),
-           "seq_lens": bounded_values(batch.seq_lens),
-           "seq_lens_cpu": bounded_values(getattr(batch, "seq_lens_cpu", None)),
-           "seq_lens_sum": batch.seq_lens_sum,
-           "positions_bounded": bounded_values(batch.positions),
-           "extend_seq_lens_cpu": bounded_values(getattr(batch, "extend_seq_lens_cpu", None)),
-           "extend_prefix_lens_cpu": bounded_values(getattr(batch, "extend_prefix_lens_cpu", None)),
-           "num_tokens_per_req": getattr(batch.spec_info, "num_tokens_per_req", None),
-           "dsa_topk_seed_present": getattr(batch.spec_info, "dsa_topk_indices", None) is not None,
+           "device": torch.cuda.current_device(), "begin_ns": str(time.monotonic_ns()), "status": "recorded",
            "scope": "Synchronized numerical metadata diagnostic; not unperturbed CPU/GPU cadence"}
-    row["end_ns"] = str(time.monotonic_ns())
+    try:
+        captured_width = getattr(graph_runner, "captured_req_width", None)
+        count = batch.input_ids.numel() if batch.input_ids is not None else None
+        count_source = "input_ids_shape" if count is not None else "unavailable"
+        if (count is None and graph_entry and stage == "draft"
+                and type(captured_width) is int and captured_width > 0):
+            # Native execute computes raw_num_token = raw_bs * captured_req_width.
+            # It intentionally constructs input_ids inside the graph.
+            count = batch.batch_size * captured_width
+            count_source = "native_graph_captured_req_width"
+        row.update(batch_size=batch.batch_size, input_token_count=count, input_token_count_source=count_source,
+                   input_ids_present=batch.input_ids is not None, native_captured_req_width=captured_width,
+                   seq_lens=bounded_values(batch.seq_lens),
+                   seq_lens_cpu=bounded_values(getattr(batch, "seq_lens_cpu", None)),
+                   seq_lens_sum=batch.seq_lens_sum, positions_bounded=bounded_values(batch.positions),
+                   extend_seq_lens_cpu=bounded_values(getattr(batch, "extend_seq_lens_cpu", None)),
+                   extend_prefix_lens_cpu=bounded_values(getattr(batch, "extend_prefix_lens_cpu", None)),
+                   num_tokens_per_req=getattr(batch.spec_info, "num_tokens_per_req", None),
+                   dsa_topk_seed_present=getattr(batch.spec_info, "dsa_topk_indices", None) is not None)
+        if count is None:
+            row.update(status="unavailable", reason="Native input shape is not exposed at this boundary")
+        row["end_ns"] = str(time.monotonic_ns())
+        serialized = json.dumps(row, allow_nan=False)
+    except (AttributeError, TypeError, ValueError, RuntimeError) as error:
+        # A failed metadata probe must not abort the measured serving request.
+        row = {key: row[key] for key in ("schema", "ordinal", "stage", "graph_entry", "pid", "device", "begin_ns")}
+        row.update(status="unavailable", error_type=type(error).__name__, end_ns=str(time.monotonic_ns()),
+                   reason="Numerical metadata could not be captured; request execution continues")
+        serialized = json.dumps(row)
     root = Path(os.environ["RSI_FORWARD_NVTX_ROOT"])
     root.mkdir(parents=True, exist_ok=True)
     with (root / f"geometry-{os.getpid()}.jsonl").open("a") as stream:
-        stream.write(json.dumps(row, allow_nan=False) + "\n")
+        stream.write(serialized + "\n")
     _GEOMETRY_ORDINAL += 1
 
 
 def graph_execute(function, batch, *args, stage):
-    geometry(batch, stage, graph_entry=True)
+    geometry(batch, stage, graph_entry=True, graph_runner=getattr(function, "__self__", None))
     return function(batch, *args)
 
 

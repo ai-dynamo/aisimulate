@@ -1685,3 +1685,8 @@ original and modified checksums are retained. The diagnostic reads bounded
 numerical geometry only during explicit profiler windows, preserves graph-call
 arguments, and changes no serving algorithm. Its synchronous metadata reads are
 declared measurement perturbations, not uninstrumented performance evidence.
+The optional draft input-count receipt follows the captured-width contract of
+`python/sglang/srt/speculative/eagle_draft_cuda_graph_runner.py` at the same
+immutable commit; the unmodified image source checksum is required. It records
+`batch_size * captured_req_width` when the native graph intentionally has not
+constructed its input-ID buffer. No token-ID values are read.

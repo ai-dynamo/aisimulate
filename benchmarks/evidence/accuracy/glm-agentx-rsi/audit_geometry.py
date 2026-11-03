@@ -19,6 +19,8 @@ def checksum(path):
 def qualify_rows(rows, device):
     contexts, context = defaultdict(list), None
     for ordinal, row in enumerate(rows):
+        if row.get("status", "recorded") != "recorded":
+            raise ValueError("Unavailable numerical geometry remains unqualified")
         if (row["schema"] != "aisimulate.glm-rsi.forward-geometry.v1" or row["ordinal"] != ordinal
                 or row["device"] != device or row["batch_size"] != 1
                 or int(row["end_ns"]) < int(row["begin_ns"])):
@@ -50,7 +52,11 @@ def qualify_rows(rows, device):
         if context is None or lengths[0] < context or lengths[0] > context + 132:
             raise ValueError("Decode KV geometry exceeds the controlled output cohort")
         expected = {"target_verify": 4, "draft": 1, "draft_extend": 4}.get(phase)
-        if expected is not None and (count != expected or row["num_tokens_per_req"] != expected):
+        width = row["num_tokens_per_req"]
+        if phase == "draft" and width in (None, -1):
+            # Native can_run_graph permits unset spec widths. Capture width is authoritative.
+            width = row.get("native_captured_req_width")
+        if expected is not None and (count != expected or width != expected):
             raise ValueError("Runtime token width differs from the pinned phase contract")
         positions = row["positions_bounded"]
         if positions is not None:
@@ -93,6 +99,9 @@ def main():
     if command.get("geometry_diagnostic") is not True or patch.get("geometry_patch", {}).get(
         "original_sha256") != "8fc9285c458d746874c96da7b16bef2733509dea3d1170cbad9e787bcde67754":
         raise ValueError("Numerical instrumentation does not match the pinned source")
+    if patch.get("geometry_graph_source", {}).get(
+        "sha256") != "c61e107e8a4eb69b10d0ab82ebf2c397a6080ba15d0e2187ed291c832c307fae":
+        raise ValueError("Native draft captured-width source is not qualified")
     root = args.controls / "instrumented-mtp/model-receipts"
     receipts = [json.loads(path.read_bytes()) for path in root.glob("model-*.json")]
     if len(receipts) != 16:
