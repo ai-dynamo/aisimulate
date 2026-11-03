@@ -3,6 +3,7 @@
 """Measured feature provenance must survive publication without guessed states."""
 
 import copy
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -13,6 +14,7 @@ from test_agentx_accuracy import bundle, result
 from scripts.e2e_accuracy.benchmark_features import (
     FEATURES,
     add_agentx_receipt,
+    add_branch_receipt,
     add_preemption_receipt,
     from_vllm_receipt,
     validate,
@@ -36,6 +38,84 @@ def metadata():
         "a" * 64,
         {"revision": "b" * 40, "sha256": "c" * 64},
     )
+
+
+def feature_sidecar(summary):
+    record = metadata()
+    return {
+        "schema": "aisimulate.agentx.features.v1",
+        "measurement_dataset_revision": summary["snapshot"]["dataset_revision"],
+        "feature_dataset_revision": "d" * 40,
+        "measurement_catalog_sha256": "e" * 64,
+        "feature_catalog_sha256": "f" * 64,
+        "records": [
+            {
+                "benchmark_id": record["benchmark_id"],
+                "feature_artifact_sha256": hashlib.sha256(agentx_pages.canonical(record)).hexdigest(),
+                "feature_metadata": record,
+            }
+        ],
+    }
+
+
+def test_feature_backfill_keeps_qualified_prediction_bytes_and_revisions(tmp_path):
+    files = bundle()
+    summary = json.loads(files["summary.json"])
+    branch = summary["snapshot"]["branch"]
+    key = artifact_key(branch)
+    destination = tmp_path / "published"
+    base = destination / "branches" / key
+    for name, content in files.items():
+        target = base / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    catalog = {
+        "schema_version": 1,
+        "branches": [{"branch": branch, "status": "evaluated", "summary_path": f"branches/{key}/summary.json"}],
+    }
+    (destination / "branches.json").write_bytes(agentx_pages.canonical(catalog))
+    sidecar = feature_sidecar(summary)
+    evidence = tmp_path / "reviewed-features.json"
+    evidence.write_bytes(agentx_pages.canonical(sidecar))
+    agentx_pages.attach_feature_evidence(destination, branch, evidence)
+    assert {name: (base / name).read_bytes() for name in files} == files
+    descriptor = json.loads((destination / "branches.json").read_bytes())["branches"][0]["feature_evidence"]
+    assert descriptor["path"] == f"branches/{key}/feature-evidence.json"
+    assert descriptor["sha256"] == hashlib.sha256((base / "feature-evidence.json").read_bytes()).hexdigest()
+    assert agentx_pages.validate_feature_evidence(sidecar, summary) == sidecar
+    catalog["branches"][0]["summary_path"] = "../outside/summary.json"
+    (destination / "branches.json").write_bytes(agentx_pages.canonical(catalog))
+    with pytest.raises(ValueError, match="destination"):
+        agentx_pages.attach_feature_evidence(destination, branch, evidence)
+
+
+@pytest.mark.parametrize(
+    "problem", ["dataset", "missing", "duplicate", "identity", "checksum", "private", "extra", "record_field", "path"]
+)
+def test_feature_backfill_rejects_mixed_incomplete_or_private_evidence(problem):
+    summary = json.loads(bundle()["summary.json"])
+    value = feature_sidecar(summary)
+    record = value["records"][0]
+    if problem == "dataset":
+        value["measurement_dataset_revision"] = "f" * 40
+    elif problem == "missing":
+        value["records"] = []
+    elif problem == "duplicate":
+        value["records"].append(copy.deepcopy(record))
+    elif problem == "identity":
+        record["feature_metadata"]["benchmark_id"] = "another-benchmark"
+    elif problem == "checksum":
+        record["feature_artifact_sha256"] = "0" * 64
+    elif problem == "private":
+        record["feature_metadata"]["prompt"] = "private input"
+    elif problem == "extra":
+        value["raw_log"] = "private log"
+    elif problem == "record_field":
+        record["source_path"] = "/Users/private"
+    elif problem == "path":
+        record["feature_metadata"]["features"][0]["evidence"] = [{"sha256": "a" * 64, "pointer": "/Users/private"}]
+    with pytest.raises(ValueError):
+        agentx_pages.validate_feature_evidence(value, summary)
 
 
 def test_enabled_does_not_claim_exercised_and_missing_is_unknown():
@@ -171,3 +251,14 @@ def test_preemption_counts_retain_observed_interval_scope_without_claiming_disab
     receipt["intervals"][0]["preemptions"] = 2
     rows = {row["id"]: row for row in add_preemption_receipt(metadata(), receipt, "a" * 64)["features"]}
     assert rows["events.preemption"]["observed"] == {"state": "exercised", "count": 2}
+
+
+def test_branch_counters_preserve_dispatch_and_join_definitions_and_unknowns():
+    value = add_branch_receipt(metadata(), {"branch_stats": {"children_spawned": 5, "parents_resumed": 2}}, "a" * 64)
+    rows = {row["id"]: row for row in value["features"]}
+    assert rows["events.subagent_spawn"]["observed"]["count"] == 5
+    assert rows["events.join"]["observed"]["count"] == 2
+    assert rows["events.tool_wait"]["observed"]["count"] is None
+    assert rows["events.join"]["evidence"][0]["pointer"] == "/branch_stats/parents_resumed"
+    with pytest.raises(ValueError, match="branch counter"):
+        add_branch_receipt(metadata(), {"branch_stats": {"children_spawned": -1}}, "a" * 64)

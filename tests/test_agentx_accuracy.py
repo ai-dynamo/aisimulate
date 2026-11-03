@@ -262,6 +262,9 @@ def test_units_finite_cohort_delays_and_profile_boundary():
     unknown = score([observation(identity_valid=False)], [observation()], "successful_profile_span")
     assert unknown["coverage"]["missing_measurement_identity"] == 1
     assert unknown["request_errors"]["ttft_ms"]["count"] == 0
+    excluded = score([observation(status="failed", failure_reason="context_overflow")], [], "successful_profile_span")
+    assert excluded["coverage"]["context_overflow"] == 1
+    assert excluded["coverage"]["measured"] == 1
 
 
 def test_qwen_preparation_relabel_and_native_milliseconds():

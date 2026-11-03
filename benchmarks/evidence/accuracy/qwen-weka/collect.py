@@ -244,7 +244,11 @@ def main():
         {
             "gpu_budget_seconds": args.budget_seconds,
             "job_id": os.getenv("SLURM_JOB_ID"),
-            "code": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in code.glob("*") if p.is_file()},
+            "code": {
+                p.relative_to(code).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in code.rglob("*")
+                if p.is_file() and p.suffix in {".py", ".sbatch", ".md"}
+            },
         },
     )
     run(args.root, code, client, args.model, 14, 600, deadline, pilot=True)

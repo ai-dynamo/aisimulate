@@ -31,8 +31,10 @@ PARAMETERS = {
     "profile_seconds",
     "observed_requests",
     "unknown_requests",
+    "phase_scope",
 }
 STRING_VALUES = {
+    "phase_scope": {"profile", "preparation", "preparation_and_profile", "exported_harness_counters"},
     "mamba_cache_mode": {"align", "all", "none"},
     "state_dtype": {"float32", "bfloat16", "float16", "auto"},
     "mode": {"none", "first_turn_prefix", "all_turns_prefix"},
@@ -41,6 +43,8 @@ STRING_VALUES = {
         "distinct_observed_subagent_sessions",
         "requests_with_recorded_cached_tokens",
         "preemptions_in_retained_intervals",
+        "dag_child_sessions_dispatched",
+        "parents_resumed_after_branch_joins",
     },
 }
 FEATURES = {
@@ -361,6 +365,7 @@ def add_agentx_receipt(value, configuration, configuration_sha256, cuts, cuts_sh
     def observed(identity, count, definition):
         rows[identity]["observed"] = {"state": "exercised" if count else "not_observed", "count": count}
         rows[identity]["parameters"].append({"name": "count_definition", "value": definition})
+        rows[identity]["parameters"].append({"name": "phase_scope", "value": "preparation_and_profile"})
         rows[identity]["evidence"].append({"sha256": requests_sha256, "pointer": "/requests"})
         if count and rows[identity]["state"] == "unknown":
             rows[identity]["state"] = "enabled"
@@ -407,6 +412,7 @@ def add_preemption_receipt(value, receipt, checksum):
         state="enabled" if count else "unknown",
         observed={"state": "exercised" if count else "not_observed", "count": count},
         parameters=[
+            {"name": "phase_scope", "value": "profile"},
             {"name": "count_definition", "value": "preemptions_in_retained_intervals"},
             {
                 "name": "observation_seconds",
@@ -419,4 +425,31 @@ def add_preemption_receipt(value, receipt, checksum):
         ],
         evidence=[{"sha256": checksum, "pointer": "/intervals"}],
     )
+    return validate(value)
+
+
+def add_branch_receipt(value, summary, checksum):
+    """Use the harness's actual dispatch/join counters, preserving their exported scope."""
+    counters = summary.get("branch_stats")
+    if not isinstance(counters, dict):
+        return value
+    rows = {row["id"]: row for row in value["features"]}
+    for identity, key, definition in (
+        ("events.subagent_spawn", "children_spawned", "dag_child_sessions_dispatched"),
+        ("events.join", "parents_resumed", "parents_resumed_after_branch_joins"),
+    ):
+        count = counters.get(key)
+        if key not in counters:
+            continue
+        if type(count) is not int or count < 0:
+            raise ValueError("Invalid harness branch counter")
+        rows[identity].update(
+            state="enabled" if count else "unknown",
+            observed={"state": "exercised" if count else "not_observed", "count": count},
+            parameters=[
+                {"name": "count_definition", "value": definition},
+                {"name": "phase_scope", "value": "exported_harness_counters"},
+            ],
+            evidence=[{"sha256": checksum, "pointer": "/branch_stats/" + key}],
+        )
     return validate(value)

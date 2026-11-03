@@ -5,6 +5,7 @@
 
 import asyncio
 import functools
+import hashlib
 import http.server
 import json
 import re
@@ -29,6 +30,10 @@ from scripts.pages.prepare_e2e_accuracy_pages import artifact_key
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, *args):
         pass
 
@@ -287,6 +292,13 @@ async def check():
                 await expect(frame.locator(".agentx-features a")).to_have_attribute(
                     "href", "../../feature-support-matrix/#agentx"
                 )
+                panels = await frame.locator(".agentx-summary-layout > *").evaluate_all(
+                    "nodes => nodes.map(n => ({tag:n.tagName, ...n.getBoundingClientRect().toJSON()}))"
+                )
+                assert [p["tag"] for p in panels] == ["ASIDE", "SECTION"]
+                assert panels[0]["right"] <= panels[1]["left"] + 1
+                assert abs(panels[0]["top"] - panels[1]["top"]) <= 1
+                assert abs(panels[0]["height"] - panels[1]["height"]) <= 1
                 await expect(frame).not_to_contain_text("Request accounting")
                 await expect(frame).not_to_contain_text("All measured request comparisons")
                 assert await frame.evaluate(
@@ -436,6 +448,64 @@ async def check():
                 await expect(page.locator("#repeat")).to_have_value("2")
                 await page.locator("#back").click()
                 await expect(page.locator("#agentx-content")).to_contain_text("Archived finite campaign")
+                archive = site / "e2e-accuracy/agentx/archive/finite-v1"
+                key = artifact_key("main")
+                summary_path = archive / "branches" / key / "summary.json"
+                original_summary = summary_path.read_bytes()
+                summary = json.loads(original_summary)
+                records = []
+                for run in summary["runs"]:
+                    feature = feature_fixture()
+                    feature["benchmark_id"] = run["id"]
+                    if run["repeat"] == 1:
+                        next(f for f in feature["features"] if f["id"] == "cache.g1_prefix")["state"] = "disabled"
+                    records.append(
+                        {
+                            "benchmark_id": run["id"],
+                            "feature_artifact_sha256": hashlib.sha256(canonical(feature)).hexdigest(),
+                            "feature_metadata": feature,
+                        }
+                    )
+                sidecar = {
+                    "schema": "aisimulate.agentx.features.v1",
+                    "measurement_dataset_revision": summary["snapshot"]["dataset_revision"],
+                    "feature_dataset_revision": "f" * 40,
+                    "measurement_catalog_sha256": "a" * 64,
+                    "feature_catalog_sha256": "b" * 64,
+                    "records": records,
+                }
+                catalog = json.loads((archive / "branches.json").read_bytes())
+                entry = next(e for e in catalog["branches"] if e["branch"] == "main")
+                content = canonical(sidecar)
+                sidecar_path = archive / "branches" / key / "feature-evidence.json"
+                sidecar_path.write_bytes(content)
+                entry["feature_evidence"] = {
+                    "path": f"branches/{key}/feature-evidence.json",
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+                (archive / "branches.json").write_bytes(canonical(catalog))
+                await page.goto(
+                    f"http://127.0.0.1:{server.server_port}/e2e-accuracy/agentx/point.html?branch=main&campaign=finite-v1&category=self_collected&model=Qwen%2FQwen3.5-397B-A17B&lanes=1"
+                )
+                cache_feature = page.locator('[data-feature="cache.g1_prefix"]')
+                await expect(cache_feature).to_contain_text("Enabled")
+                await expect(page.locator(".agentx-feature-revision")).to_contain_text("f" * 12)
+                await page.locator("#repeat").select_option("1")
+                await expect(cache_feature).to_contain_text("Off")
+                await page.locator('[data-view="evidence"]').click()
+                await expect(page.locator("#view-evidence")).to_contain_text("Feature metadata dataset revision")
+                await expect(page.locator("#view-evidence")).to_contain_text(summary["snapshot"]["dataset_revision"])
+                assert summary_path.read_bytes() == original_summary
+                sidecar_path.write_bytes(content + b" ")
+                await page.reload()
+                await expect(page.locator('[role="alert"]')).to_contain_text("checksum mismatch")
+                sidecar["measurement_dataset_revision"] = "0" * 40
+                content = canonical(sidecar)
+                sidecar_path.write_bytes(content)
+                entry["feature_evidence"]["sha256"] = hashlib.sha256(content).hexdigest()
+                (archive / "branches.json").write_bytes(canonical(catalog))
+                await page.reload()
+                await expect(page.locator('[role="alert"]')).to_contain_text("dataset mismatch")
                 assert not errors, errors
                 await browser.close()
         finally:

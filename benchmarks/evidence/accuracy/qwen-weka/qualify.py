@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 from scripts.e2e_accuracy.benchmark_features import validate_qwen_baseline
+from scripts.e2e_accuracy.agentx_contract import score
+from scripts.e2e_accuracy.run_agentx_accuracy import normalize_native
 
 
 def read(path):
@@ -47,8 +49,15 @@ def qualify(normalized, replay):
     telemetry = native.get("telemetry", {})
     if telemetry.get("completion_status") != "completed":
         raise ValueError("Pilot native replay ended early")
-    if not telemetry.get("requests") or not telemetry.get("samples"):
-        raise ValueError("Pilot native request/sample telemetry is missing")
+    if not telemetry.get("requests") or not telemetry.get("samples") or not telemetry.get("lifecycle"):
+        raise ValueError("Pilot native request/sample/lifecycle telemetry is missing")
+    scored = score(
+        observations,
+        normalize_native(native, observations, "self_collected", "successful_profile_span"),
+        "successful_profile_span",
+    )
+    if not scored["coverage"]["matched"] or any(not item["count"] for item in scored["request_errors"].values()):
+        raise ValueError("Pilot has no valid comparable request cohort")
     return {
         "schema": "aisimulate.qwen-weka.pilot-qualification.v1",
         "status": "qualified",
@@ -58,6 +67,8 @@ def qualify(normalized, replay):
         "feature_metadata_sha256": hashlib.sha256((normalized / "feature_metadata.json").read_bytes()).hexdigest(),
         "native_sha256": hashlib.sha256((replay / "native.json").read_bytes()).hexdigest(),
         "feature_count": len(features["features"]),
+        "matched_requests": scored["coverage"]["matched"],
+        "metric_denominators": {name: item["count"] for name, item in scored["request_errors"].items()},
     }
 
 

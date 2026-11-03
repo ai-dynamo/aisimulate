@@ -55,6 +55,10 @@ checking the full measured window, eligible corpus, recorded selections,
 request/stream accounting, effective feature settings and a functional native
 replay. A successful client exit alone does not qualify it. Without qualification
 the collector stops before consuming the time needed for six full profiles.
+Before intake, verify frozen executable source hashes against the signed source
+commit. Retain that comparison as `collector-source.json` beside `execution.json`;
+normalization carries this receipt into HF when present. Prediction provenance
+records its separately evaluated wheel and commit.
 
 ## Normalization and HF
 
@@ -71,6 +75,10 @@ Raw streaming records retain output token IDs privately. Numerical comparisons
 use only conserved chunk counts and recorded timestamps; missing chunk accounting
 stays unavailable. Preemption counts identify their covered observation intervals;
 missing scrapes do not become zeros or prove a feature was disabled.
+Raw context-overflow records omitted from the harness's ordinary metric export
+remain in measured accounting with explicit exclusions. Spawn/join counters
+retain their harness-export scope and definitions; request-derived counts name
+their preparation/profile scope and missing observations separately.
 
 Silicon feature records use `aisimulate.benchmark.features.v1`, linked through
 `runs[].artifacts.feature_metadata` with path, SHA256 and byte count. Stable IDs

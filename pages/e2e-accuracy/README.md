@@ -775,14 +775,26 @@ then reuses them for workload selection. No other concurrency's details are fetc
 On mobile, sample counts move below the error to keep the table within the screen.
 The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
-A benchmark feature checklist sits beside the concurrency summary on desktop and
-below it on smaller screens. It follows the selected run, using its saved
+A benchmark feature checklist sits to the left of the concurrency summary in
+one bordered row. Both panels stretch to the same height; the summary table fills
+its panel. On smaller screens, they stack with the checklist first. Additional
+features scroll within the expanded list. The checklist follows the selected run,
+using its saved
 `aisimulate.benchmark.features.v1` silicon record. Enabled, Off, N/A, and Not recorded
 remain distinct. Enabled does not imply exercised; observed counts appear only
 when recorded. Missing historical records stay Not recorded, with
 no inference from model names, replay settings, or the support matrix. Core AgentX
 features appear first; additional recorded features expand under More features.
 The checklist links to the AgentX support matrix and exposes no raw evidence.
+Reviewed historical backfills may attach a separate `aisimulate.agentx.features.v1`
+sidecar through `scripts.pages.agentx_pages.attach_feature_evidence`. It pins the
+original measurement revision, the feature-record revision, both catalog hashes,
+and each canonical feature artifact hash. Publication requires the same complete
+run inventory and allowlisted metadata; it rejects mismatched datasets, duplicate
+identities, private fields, checksum failures, and unsafe destinations. The branch
+catalog advertises the sidecar path and checksum. Details verify that checksum and
+measurement revision before using the records, and show the supplemental HF revision
+separately. Prediction payloads, qualification hashes, and accuracy values stay intact.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 
