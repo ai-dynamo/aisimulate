@@ -1754,6 +1754,15 @@ impl WorkloadDriver {
         now_ms: f64,
         reset_measurements: impl FnOnce() -> Result<()>,
     ) -> Result<Option<AgenticPreparationTransition>> {
+        self.finish_agentic_preparation_with_observer(now_ms, reset_measurements, |_| {})
+    }
+
+    pub(crate) fn finish_agentic_preparation_with_observer(
+        &mut self,
+        now_ms: f64,
+        reset_measurements: impl FnOnce() -> Result<()>,
+        before_transition: impl FnOnce(&Self),
+    ) -> Result<Option<AgenticPreparationTransition>> {
         let pending_transition = self
             .agentic_preparation
             .as_ref()
@@ -1863,6 +1872,7 @@ impl WorkloadDriver {
             bail!("agentic profile deadline overflow at activation");
         }
         reset_measurements()?;
+        before_transition(self);
         for plan in handoff_plays {
             self.commit_agentic_profile_play(plan, now_ms);
         }

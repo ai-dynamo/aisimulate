@@ -1035,8 +1035,8 @@
       },
       "disagg": {
         "values": {
-          "disagg_request": 79.212,
-          "disagg_tpot": 4.901,
+          "disagg_request": 79.456,
+          "disagg_tpot": 5.145,
           "disagg_ttft": 74.311
         }
       },
@@ -1048,8 +1048,8 @@
       "static": {
         "values": {
           "static_ctx": 37.53,
-          "static_gen": 4.608,
-          "static_total": 42.138
+          "static_gen": 4.806,
+          "static_total": 42.336
         }
       }
     },
@@ -2483,7 +2483,7 @@
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "19067832cc1478b1edf26fed3ac7cae3ac7c56cc"
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::mixed": {
       "engine": "rust",
@@ -2491,7 +2491,7 @@
     },
     "nemotron-h-56b-b200-trtllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "19067832cc1478b1edf26fed3ac7cae3ac7c56cc"
     },
     "nemotron-h-56b-b200-vllm-empirical::agg": {
       "engine": "rust",

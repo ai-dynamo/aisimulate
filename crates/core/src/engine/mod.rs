@@ -48,21 +48,25 @@ pub use handoff::{
 pub use kvcr::{KvcrPullCounts, KvcrStats};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, KvEventTier,
-    KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
-    PressureEvent, PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
+    EncoderShape, ForwardPassMetrics, HostCacheMetrics, ImageSpec, KvBlock, KvEvent, KvEventData,
+    KvEventTier, KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PrefixCacheLookupCounts, PressureEvent, PressureKind, PressureState, Request,
+    StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(all(test, feature = "python"))]
+pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
-    MixedPassMs, PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
+    DecodeWork, IterationMs, MixedPassMs, PrefillTotals, PrefillWork, RankWork,
+    TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
+    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 #[cfg(feature = "python")]
 pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
-pub(in crate::engine) use timing::modeled_duration_ms;
+pub(in crate::engine) use timing::{modeled_duration_ms, predict_group_iteration_ms};
 #[doc(hidden)]
 pub use trace::g1_parent_chain_events;

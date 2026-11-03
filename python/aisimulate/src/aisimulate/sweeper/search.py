@@ -28,7 +28,7 @@ import math
 import multiprocessing as mp
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -621,11 +621,18 @@ def _materialize_one(
                 )
         estimator_resolver = estimator_resolver or ForwardPassEstimatorResolver(config.search_space)
         forward_pass_estimators = estimator_resolver.resolve_candidate(sample)
+        # A role whose regression or learned model does not know the version
+        # leaves it to another role, or to the candidate's own resolution.
+        known_versions = [
+            spec.backend_version for spec in forward_pass_estimators.values() if spec.backend_version != "unknown"
+        ]
         backend_version = (
-            next(iter(forward_pass_estimators.values())).backend_version
+            next(iter(known_versions), None)
             if forward_pass_estimators
             else config.search_space.requested_backend_version(selection["backend"])
         )
+        if backend_version is None and forward_pass_estimators:
+            backend_version = config.search_space.requested_backend_version(selection["backend"])
         if backend_version is None:
             if sample["deployment_mode"] == "disagg":
                 role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
@@ -1148,6 +1155,27 @@ def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
     return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
+def _in_suggestion_order(
+    todo: list[tuple[Suggestion, _PreparedCandidate]],
+    results: Iterable[tuple[Suggestion, _EvalResult]],
+) -> Iterator[tuple[Suggestion, _EvalResult]]:
+    """Yield a batch's ``(suggestion, result)`` pairs in ``todo`` order, each as soon as
+    every earlier suggestion has finished, so candidate ids, the ledger and optimizer
+    feedback do not depend on which worker finished first. A finished result therefore
+    reaches the ledger and the execution checkpoint only after its earlier siblings.
+    """
+    position = {id(suggestion): index for index, (suggestion, _) in enumerate(todo)}
+    finished: dict[int, tuple[Suggestion, _EvalResult]] = {}
+    next_position = 0
+    for suggestion, result in results:
+        finished[position[id(suggestion)]] = (suggestion, result)
+        while next_position in finished:
+            yield finished.pop(next_position)
+            next_position += 1
+    if next_position != len(todo):
+        raise RuntimeError("Sweeper runner contract violation: a batch did not report every suggestion")
+
+
 class Sweeper:
     """Compose and execute isolated backend-neutral configuration sweeps.
 
@@ -1200,7 +1228,8 @@ class Sweeper:
         ``on_candidate``, when provided, is invoked once per recorded candidate
         outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
         failed) with a deep copy of the ``CandidateRecord`` appended to the run's
-        candidate ledger, in evaluation order. The copy is detached: mutating it
+        candidate ledger, in recording order: each batch's pre-replay rejections,
+        then its replays in suggestion order. The copy is detached: mutating it
         has no effect on the ledger used to build ``SweepResult``. It complements
         ``on_round``, which only reports the cumulative feasible-candidate list at
         round boundaries.
@@ -1593,14 +1622,14 @@ class Sweeper:
                     ),
                 )
                 candidate_records.append(record)
-                if on_candidate is not None:
-                    # Detach: on_candidate must not be able to mutate the ledger
-                    # entry that SweepResult is built from.
-                    on_candidate(record.model_copy(deep=True))
                 if resource_aware:
                     from ..supervision import checkpoint
 
                     checkpoint("candidate_completed", record.model_dump(mode="json"))
+                if on_candidate is not None:
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
@@ -1784,7 +1813,7 @@ class Sweeper:
                         todo.append((suggestion, prepared))
                         prepared_by_key[key] = prepared
 
-                    for suggestion, evaluation in _eval_batch(todo):
+                    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
                         candidate = evaluation.candidate
                         observe_metrics = evaluation.observe_metrics
                         outcome = evaluation.outcome

@@ -633,8 +633,10 @@ pub fn run_engine_handoff_conformance(
 }
 
 /// Pipeline-parallel size of an `aic`/`ais` timing provider (`pp`, alias
-/// `pp_size`, default 1). Other providers model one stage. A present value that
-/// is not a positive integer is rejected rather than read as 1.
+/// `pp_size`, default 1). Other providers model one stage. A regression or
+/// learned identity that records `pp` as `"unknown"` takes the engine's
+/// topology, which replays one stage. Any other present value that is not a
+/// positive integer is rejected rather than read as 1.
 fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u64, ReplayError> {
     let crate::engine::TimingModelConfig::External { provider, config } = timing else {
         return Ok(1);
@@ -648,6 +650,9 @@ fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u
     else {
         return Ok(1);
     };
+    if value.as_str() == Some(crate::UNKNOWN_IDENTITY) {
+        return Ok(1);
+    }
     value.as_u64().filter(|size| *size > 0).ok_or_else(|| {
         ReplayError::InvalidSpec(format!(
             "timing provider `{key}` must be a positive integer, got {value}"
@@ -895,6 +900,20 @@ mod kvcr_tests {
                     .contains("`pp` must be a positive integer"),
                 "{error}"
             );
+        }
+        // A regression or learned identity that does not know its pipeline
+        // width takes the engine's single stage.
+        let timing = EngineConfig::default().built_in_timing_model().unwrap();
+        for pp in ["pp", "pp_size"] {
+            let unknown = config_with(
+                Some(KvcrConfig::default()),
+                pp,
+                serde_json::json!("unknown"),
+            );
+            let factory = ReplayEngineFactory::with_timing_model(Arc::clone(&timing))
+                .role_factory(&unknown, WorkerStage::Aggregated, false)
+                .unwrap_or_else(|error| panic!("kvcr with {pp}=unknown: {error}"));
+            assert_eq!(factory.kvcr_config, Some(KvcrConfig::default()));
         }
         // Pipeline parallelism alone is not KVCR's to reject.
         let plain = role_factory(&config(None, "pp"), WorkerStage::Aggregated);

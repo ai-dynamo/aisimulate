@@ -39,6 +39,8 @@ pub struct G2DomainStats {
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    /// Opt-in all-phase native observation capture; independent of summary epochs.
+    pub telemetry: Option<super::telemetry::ReplayTelemetryCapture>,
     pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
     /// Versioned forecast contract, present only for a lookahead eviction policy.
     pub kv_eviction_assumption: Option<&'static str>,
@@ -477,6 +479,9 @@ impl Serialize for ReplayReport {
             power.validate().map_err(serde::ser::Error::custom)?;
         }
         let mut map = serializer.serialize_map(None)?;
+        if let Some(telemetry) = &self.telemetry {
+            map.serialize_entry("telemetry", telemetry)?;
+        }
         map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
         if let Some(assumption) = self.kv_eviction_assumption {
             map.serialize_entry("kv_eviction_assumption", assumption)?;
@@ -683,6 +688,9 @@ where
 #[derive(Debug)]
 struct TraceRequestStats {
     arrival_time_ms: f64,
+    /// Position in this reporting epoch's arrival order. Unlike the request
+    /// UUID, which may be random, it orders the summary deterministically.
+    arrival_ordinal: u64,
     first_admit_ms: Option<f64>,
     terminal_time_ms: Option<f64>,
     terminal_status: Option<ReplayTerminalStatus>,
@@ -1034,6 +1042,50 @@ pub struct PerRequestRecord {
     pub terminal_status: ReplayTerminalStatus,
 }
 
+impl PerRequestRecord {
+    pub(crate) fn shift_timestamps(&mut self, delta_ms: f64) {
+        self.arrival_time_ms += delta_ms;
+        self.terminal_time_ms += delta_ms;
+        for timestamp in [
+            &mut self.dispatched_at_ms,
+            &mut self.tokenized_ms,
+            &mut self.first_admit_ms,
+            &mut self.first_token_ms,
+            &mut self.last_token_ms,
+            &mut self.prefill_admit_ms,
+            &mut self.source_held_ms,
+            &mut self.destination_reserved_ms,
+            &mut self.destination_activated_ms,
+            &mut self.decode_admit_ms,
+            &mut self.source_released_ms,
+            &mut self.encoder_ready_ms,
+            &mut self.frontend_ready_ms,
+            &mut self.scheduler_received_ms,
+            &mut self.selected_ms,
+            &mut self.prefill_complete_ms,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *timestamp += delta_ms;
+        }
+        for routing in &mut self.routing_history {
+            for time in [
+                &mut routing.queue_entered_at_ms,
+                &mut routing.released_at_ms,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *time += delta_ms;
+            }
+        }
+        for admission in &mut self.admission_history {
+            admission.at_ms += delta_ms;
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TraceRequestStatsSnapshot {
@@ -1141,6 +1193,8 @@ pub struct TraceCollector {
     bounded_summary: Option<bounded::BoundedSummary>,
     completed_to_retire: Vec<Uuid>,
     prepared_report: Option<ReplayReport>,
+    /// Ordinal of the next arrival in this reporting epoch.
+    next_arrival_ordinal: u64,
     /// Absolute simulated timestamp at which this reporting epoch began.
     /// Collection uses the runtime clock; aggregate rates use elapsed epoch
     /// time. Warmed reports rebase measured request and play outcome timestamps
@@ -1424,10 +1478,13 @@ impl TraceCollector {
         input_length: usize,
         requested_output_length: usize,
     ) {
+        let arrival_ordinal = self.next_arrival_ordinal;
+        self.next_arrival_ordinal += 1;
         self.requests.insert(
             uuid,
             TraceRequestStats {
                 arrival_time_ms,
+                arrival_ordinal,
                 first_admit_ms: None,
                 terminal_time_ms: None,
                 terminal_status: None,
@@ -1938,6 +1995,13 @@ impl TraceCollector {
         ))
     }
 
+    pub(crate) fn first_admission_input(&self, uuid: Uuid) -> Option<usize> {
+        self.requests
+            .get(&uuid)
+            .filter(|stats| stats.first_admit_ms.is_none())
+            .map(|stats| stats.input_length)
+    }
+
     /// Drain measurements while retaining the configuration that applies to
     /// each reporting epoch of a reusable runtime. The absolute report boundary
     /// includes idle time in this epoch and starts the next one.
@@ -1968,21 +2032,17 @@ impl TraceCollector {
         if let Some(report) = self.prepared_report.take() {
             return report;
         }
-        let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
-        request_order.sort_unstable_by(|left_uuid, right_uuid| {
-            let left = self
+        // Arrival ordinals are unique within an epoch; the UUID only keeps the
+        // order total.
+        let request_order = {
+            let mut keys = self
                 .requests
-                .get(left_uuid)
-                .expect("request order must reference retained request");
-            let right = self
-                .requests
-                .get(right_uuid)
-                .expect("request order must reference retained request");
-            left.authored_id
-                .as_deref()
-                .cmp(&right.authored_id.as_deref())
-                .then_with(|| left_uuid.cmp(right_uuid))
-        });
+                .iter()
+                .map(|(uuid, stats)| (stats.authored_id.as_deref(), stats.arrival_ordinal, *uuid))
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.into_iter().map(|(.., uuid)| uuid).collect::<Vec<_>>()
+        };
 
         for uuid in &request_order {
             let stats = self
@@ -2198,6 +2258,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            telemetry: None,
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             kv_eviction_assumption: None,
             committed_prefill_tokens: self.committed_prefill_tokens,
@@ -2279,8 +2340,11 @@ impl TraceCollector {
     /// Only requests with a terminal outcome are emitted. Requests truncated
     /// by a simulation-time cap have no terminal outcome and remain omitted.
     pub fn per_request_records(&self) -> Vec<PerRequestRecord> {
-        let mut records = Vec::with_capacity(self.requests.len());
-        for (uuid, stats) in &self.requests {
+        // Build records in arrival order; the stable sort below keeps it for ties.
+        let mut requests = self.requests.iter().collect::<Vec<_>>();
+        requests.sort_unstable_by_key(|(uuid, stats)| (stats.arrival_ordinal, **uuid));
+        let mut records = Vec::with_capacity(requests.len());
+        for (uuid, stats) in requests {
             let Some(detail) = stats.detail.as_deref() else {
                 continue;
             };
@@ -2361,43 +2425,7 @@ impl TraceCollector {
             .and_then(|phases| phases.profile_start_ms)
         {
             for record in &mut records {
-                record.arrival_time_ms -= origin;
-                record.terminal_time_ms -= origin;
-                for timestamp in [
-                    &mut record.dispatched_at_ms,
-                    &mut record.tokenized_ms,
-                    &mut record.first_admit_ms,
-                    &mut record.first_token_ms,
-                    &mut record.last_token_ms,
-                    &mut record.prefill_admit_ms,
-                    &mut record.source_held_ms,
-                    &mut record.destination_reserved_ms,
-                    &mut record.destination_activated_ms,
-                    &mut record.decode_admit_ms,
-                    &mut record.source_released_ms,
-                    &mut record.encoder_ready_ms,
-                    &mut record.frontend_ready_ms,
-                    &mut record.scheduler_received_ms,
-                    &mut record.selected_ms,
-                    &mut record.prefill_complete_ms,
-                ] {
-                    if let Some(time) = timestamp {
-                        *time -= origin;
-                    }
-                }
-                for routing in &mut record.routing_history {
-                    for timestamp in [
-                        &mut routing.queue_entered_at_ms,
-                        &mut routing.released_at_ms,
-                    ] {
-                        if let Some(time) = timestamp {
-                            *time -= origin;
-                        }
-                    }
-                }
-                for admission in &mut record.admission_history {
-                    admission.at_ms -= origin;
-                }
+                record.shift_timestamps(-origin);
             }
         }
         // Authored IDs make agentic output stable across equivalent import
@@ -2408,7 +2436,6 @@ impl TraceCollector {
                 .as_deref()
                 .cmp(&b.request_id.as_deref())
                 .then_with(|| a.arrival_time_ms.total_cmp(&b.arrival_time_ms))
-                .then_with(|| a.uuid.cmp(&b.uuid))
         });
         records
     }
@@ -3626,6 +3653,48 @@ mod tests {
                 vec!["request-a", "request-b", "request-c"]
             );
         }
+    }
+
+    #[rstest::rstest]
+    fn summary_and_records_are_independent_of_runtime_uuid(
+        #[values(None, Some("request"))] request_id: Option<&str>,
+    ) {
+        let report = |uuids: [u128; 3]| {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(true);
+            for (uuid, ttft_ms) in uuids.into_iter().zip([1.0e16, 1.0, 1.0]) {
+                let uuid = Uuid::from_u128(uuid);
+                collector.on_arrival(uuid, 0.0, 100, 1);
+                if let Some(request_id) = request_id {
+                    collector.on_agentic_metadata(
+                        uuid,
+                        request_id.to_string(),
+                        "play".to_string(),
+                        0.0,
+                    );
+                }
+                collector.on_admit(uuid, 0.0, 0);
+                collector.on_token(uuid, ttft_ms);
+                collector.on_terminal(uuid, ttft_ms, ReplayTerminalStatus::Completed);
+            }
+            collector.finish()
+        };
+        let (left, right) = (report([1, 2, 3]), report([3, 1, 2]));
+
+        // Tied arrivals under different UUIDs must sum and list in the same order.
+        assert_eq!(
+            serde_json::to_value(&left).unwrap(),
+            serde_json::to_value(&right).unwrap()
+        );
+        let ttfts = |report: &ReplayReport| {
+            report
+                .per_request
+                .iter()
+                .map(|record| record.ttft_ms)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ttfts(&left), vec![Some(1.0e16), Some(1.0), Some(1.0)]);
+        assert_eq!(ttfts(&left), ttfts(&right));
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental

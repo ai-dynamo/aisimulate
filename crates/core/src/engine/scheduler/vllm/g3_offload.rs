@@ -237,7 +237,7 @@ mod tests {
     use super::*;
     use crate::engine::g3_offload::G3Tier;
     use crate::engine::host_offload::StoreOutcome;
-    use crate::engine::host_offload::{C, private};
+    use crate::engine::host_offload::{C, per_rank};
     use crate::engine::{G3OffloadConfig, G3Scope};
 
     fn fixture(capacity: usize) -> (VllmG3OffloadAdapter, HostTier, SharedG3Tier) {
@@ -262,7 +262,7 @@ mod tests {
             1_000_000,
         )
         .unwrap();
-        let tier = private(capacity, 0.0, 0.0);
+        let tier = per_rank(capacity, 0.0, 0.0);
         (
             VllmG3OffloadAdapter::new(registry.clone(), 1),
             tier,

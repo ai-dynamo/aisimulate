@@ -59,10 +59,11 @@ pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
     FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
     LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
-    RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
-    RegressionUpdatePolicy, SelectorConfig, SplineFitConfig, SplineSearchConfig,
-    UnrecordedFpmQuantMode,
+    RegressionFeatureAxis, RegressionFeatureSet, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
+    SplineSearchConfig, UnrecordedFpmQuantMode,
 };
+pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
 pub use fpm::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
     ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,

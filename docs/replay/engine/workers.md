@@ -120,6 +120,14 @@ cache changes and timing become visible at that point. A rank with no work
 still waits for the others, so a request that arrives mid-pass cannot start
 early.
 
+The default timing prices the whole pass at once: every rank's batch, idle
+ranks included, goes to the performance model as one multi-rank
+`ForwardPassMetrics` query, and each rank's forward takes that shared time from
+its compute start. Fixed and polynomial timing, and the exceptions under
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing),
+keep pricing each rank's own prefill and decode, so the pass ends with the
+slowest rank's own time.
+
 On the `engine` stack, requests are placed round-robin across workers and then
 across the ranks of each worker. A trace request that names a `dp_rank` keeps
 that rank. Worker counts are fixed for the whole run. The

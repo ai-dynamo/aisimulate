@@ -278,8 +278,15 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 
 
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
-    """Keep additive defaults out of timing payloads parsed by older runners."""
+    """Keep additive defaults out of timing payloads parsed by older runners.
+
+    A configuration that restores a state snapshot keeps them: restoration
+    compares the saved identity exactly, and only a current runner restores one.
+    """
     result = dict(config)
+    estimator_config = result.get("estimator_config")
+    if isinstance(estimator_config, dict) and estimator_config.get("state_snapshot") is not None:
+        return result
     for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)

@@ -279,10 +279,7 @@ class DeepSeekV32Model(BaseModel):
         # -> is_layer_skipped, modelopt.py:150-161 @0.24.0). Exclusions are
         # PER-PROJECTION: DeepSeek-V3.2-NVFP4 keeps q/kv/indexer in BF16 but
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
-        extra_params.setdefault(
-            "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(raw_config, precise_module_paths=backend_name == "vllm"),
-        )
+        extra_params.setdefault("dsa_attn_quant_exclusions", attention_projection_exclusions(raw_config))
         if _shared_experts_excluded_from_quant(raw_config):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
         # GLM-5.2 shares one DSA topk index across ``index_topk_freq`` layers
