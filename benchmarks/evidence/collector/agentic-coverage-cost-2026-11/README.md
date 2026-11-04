@@ -4,6 +4,12 @@ This audit compares the extra **collection GPU-hours**, not allocated GPU-hours,
 of broad shared-grid coverage and model-owned long-history coverage. It does not
 publish smoke measurements as production performance data.
 
+Read the [cost summary](cost-summary.md) for qualified components, exact case
+counts and remaining unknown totals. [NCCL components](nccl-cost-components.json)
+are shared system costs reported separately from the three framework lanes.
+The report snapshot and raw measurements identify their own input revisions;
+new evidence requires a fresh report, not relabeling an earlier snapshot.
+
 The [review ledger](review-ledger.md) records fixes, evidence and qualification limits across #664, #665 and #666.
 
 ## Coverage philosophy and evidence
@@ -240,13 +246,17 @@ From `python/aisimulate`, generate a report from normalized native samples and
 frozen baseline/shared/model inventories:
 
 ```bash
+audit_root=../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11
+unzip "$audit_root/frozen-plan-tables.zip" -d /tmp/pr664-frozen-plans
 python -m tools.perf_database.collection_cost_report \
-  --samples /tmp/pr664-cost-results/samples.jsonl \
-  --source-commit <full-candidate-sha> \
-  --baseline /tmp/pr664-cost-frozen/baseline \
-  --shared /tmp/pr664-cost-final4/shared \
-  --model /tmp/pr664-cost-final4/model \
-  --output /tmp/pr664-cost-results/report.json
+  --samples "$audit_root/measured-samples.jsonl" \
+  --source-equivalence "$audit_root/source-equivalence.json" \
+  --repository ../.. \
+  --source-commit c569abb1cd034c934f47974209515e3507f60b8a \
+  --baseline /tmp/pr664-frozen-plans/baseline \
+  --shared /tmp/pr664-frozen-plans/shared \
+  --model /tmp/pr664-frozen-plans/model \
+  --output /tmp/pr664-cost-report.json
 ```
 
 Each JSONL record identifies system, backend, operation, exact scalar CSV `case`,
@@ -260,7 +270,7 @@ Point estimates require the same checkpoint, geometry, precision, dispatch,
 framework, device and source revision. Interpolation requires measured corners
 on every workload axis; it never extrapolates. Interpolated components require
 at most 20% relative error on explicit held-out points. Independent group
-holdouts check reconstruction within 15%. Repeated observations bound empirical
+repeat holdouts check forecasts within 15%. Repeated observations bound empirical
 ranges; these are not statistical confidence intervals. With one observation,
 the range has no measured repeat-variation information.
 
