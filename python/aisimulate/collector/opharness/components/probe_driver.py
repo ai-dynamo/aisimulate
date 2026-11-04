@@ -659,6 +659,152 @@ def _generator_src_commit() -> dict:
     return {"generator_src": repo, "generator_commit": rev, "generator_branch": branch or "detached"}
 
 
+def _prepare_probe(run: dict) -> tuple[str, list[str], dict] | None:
+    """Render the run's golden config and return (probe script, argv, extra env) with
+    container paths under WORK; None (with run["skip"] set) when the run cannot be probed.
+    One builder for the per-GPU docker queues and the collection-pipeline shards."""
+    raw = f"{WORK}/archive/raw/{run['id']}.json"
+    tp = int(run.get("tp", 1))
+    if run["backend"] == "sglang":
+        art = render_golden(run)
+        if art is None:
+            run["skip"] = f"golden render failed: {run.get('golden_error')}"
+            return None
+        cli = extract_sglang_cli_from_run_sh(art / "run_0.sh")
+        run.update(engine_cli=cli, engine_args_fidelity="cli-golden", golden_dir=str(art))
+        kv = ["--kv-dtype", run["kv_dtype"]] if run.get("kv_dtype") else []
+        if tp > 1:
+            run["probe_route"] = "launch_server"
+            return (
+                "probe_sglang_server.py",
+                ["--model", run["model_dir"], "--engine-cli", cli, "--tp", str(tp), *kv, "--out", raw],
+                {},
+            )
+        return "probe_sglang.py", ["--model", run["model_dir"], "--engine-cli", cli, "--trace", *kv, "--out", raw], {}
+    if run["backend"] == "vllm":  # golden fpm run.sh, consumed verbatim
+        art = render_golden(run)
+        if art is None:
+            run["skip"] = f"golden render failed: {run.get('golden_error')}"
+            return None
+        src = next((p for p in (art / "run.sh", art / "run_0.sh") if p.exists()), None)
+        if src is None:
+            run["skip"] = f"golden has no run.sh: {art}"
+            return None
+        rsh = ROOT / "archive" / "run_sh" / f"{run['id']}.sh"
+        rsh.write_text(src.read_text())
+        run.update(run_sh=str(rsh), engine_args_fidelity="cli-golden", golden_dir=str(art))
+        kv = ["--kv-cache-dtype", run["kv_dtype"]] if run.get("kv_dtype") else []
+        argv = ["--run-sh", f"{WORK}/archive/run_sh/{run['id']}.sh", "--model-override", run["model_dir"], *kv]
+        return "probe_vllm.py", [*argv, "--trace", "--out", raw], {}
+    # trtllm: golden extra_engine_args (agg_config.yaml), consumed verbatim
+    art = render_golden(run)
+    if art is None:
+        run["skip"] = f"golden render failed: {run.get('golden_error')}"
+        return None
+    src = art / "agg_config.yaml"
+    if not src.exists():
+        run["skip"] = f"golden has no agg_config.yaml: {art}"
+        return None
+    eyml = ROOT / "archive" / "run_sh" / f"{run['id']}.engine.yaml"
+    eyml.write_text(src.read_text())
+    run.update(engine_args_fidelity="cli-golden", render_artifact=str(eyml), golden_dir=str(art))
+    # any checkpoint with custom code (auto_map) needs it; cheapest correct rule is to always pass it
+    kv = ["--kv-dtype", run["kv_dtype"]] if run.get("kv_dtype") else []
+    common = [
+        "--model",
+        run["model_dir"],
+        "--trust-remote-code",
+        *kv,
+        "--engine-yaml",
+        f"{WORK}/archive/run_sh/{run['id']}.engine.yaml",
+    ]
+    if tp > 1:
+        run["probe_route"] = "trtllm-serve"
+        return "probe_trtllm_server.py", ["--model", run["model_dir"], "--tp", str(tp), *common[2:], "--out", raw], {}
+    return "probe_trtllm.py", [*common, "--out", raw], {"TLLM_WORKER_USE_SINGLE_PROCESS": "1"}
+
+
+_SHARD_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def emit_shards(runs: list[dict], plan_name: str, out_dir: Path, url_base: str, upload: bool = True) -> None:
+    """The collection-pipeline route for serving probes: one ``probe.serving`` shard per run.
+
+    A run's inputs (its dummy model dir and rendered engine config, the files its argv names
+    under WORK) go into ``<id>.tgz``; ``<id>.json`` names the same probe script and argv as the
+    docker queue, with WORK replaced by ``{BUNDLE}`` and the raw path by ``{OUT}``. Both go to
+    ``url_base`` (the WebDAV share); collector/probes/serving.py fetches them in the job and
+    writes ``raw_<id>.json`` into the shard dir, which ``--import-raws`` files back into
+    archive/raw/. Shard plans land in ``<out_dir>/tp<N>/<backend>.yaml``: a tp>1 run needs a
+    job with that many GPUs (AISIM_GPU_NUM)."""
+    import tarfile
+    import urllib.request
+
+    src_info = _generator_src_commit()
+    (ROOT / "archive" / "run_sh").mkdir(parents=True, exist_ok=True)
+    bundles = out_dir / "bundles"
+    bundles.mkdir(parents=True, exist_ok=True)
+    plans: dict[tuple[int, str], list[dict]] = {}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for run in (r for r in runs if "skip" not in r):
+        run.update(src_info)
+        probe = _prepare_probe(run)
+        if probe is None:
+            continue
+        script, argv, env = probe
+        run.update(probe_script=script, probe_args=argv, probe_env=env, probe_route_pipeline=True)
+        run["exec_fingerprint"] = exec_fingerprint(run)
+        raw = f"{WORK}/archive/raw/{run['id']}.json"
+        rels = sorted({a[len(WORK) + 1 :] for a in argv if a.startswith(WORK + "/") and a != raw})
+        tgz = bundles / f"{_SHARD_NAME.sub('_', run['id'])}.tgz"
+        with tarfile.open(tgz, "w:gz", dereference=True) as tar:
+            for rel in rels:
+                tar.add(ROOT / rel, arcname=rel)
+        spec = {
+            "run_id": run["id"],
+            "backend": run["backend"],
+            "script": script,
+            "args": [a.replace(raw, f"{{OUT}}/raw_{run['id']}.json").replace(WORK, "{BUNDLE}") for a in argv],
+            "env": env,
+            "bundle": f"{url_base}/{tgz.name}",
+            "fingerprint": run["exec_fingerprint"]["fingerprint"],
+        }
+        spec_file = tgz.with_suffix(".json")
+        spec_file.write_text(json.dumps(spec, indent=1))
+        if upload:
+            for f in (tgz, spec_file):
+                req = urllib.request.Request(f"{url_base}/{f.name}", data=f.read_bytes(), method="PUT")
+                opener.open(req, timeout=600).close()
+        shard = {"op": "probe.serving", "name": tgz.stem[:120], "case_filter": f"spec={url_base}/{spec_file.name}"}
+        plans.setdefault((int(run.get("tp", 1)), run["backend"]), []).append(shard)
+    for (tp, backend), shards in sorted(plans.items()):
+        d = out_dir / f"tp{tp}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{backend}.yaml").write_text(
+            yaml.safe_dump({"backend": backend, "shards": shards}, sort_keys=False, width=1000)
+        )
+        print(f"{d / f'{backend}.yaml'}: {len(shards)} probe.serving shards (tp{tp})")
+    (ROOT / "archive" / plan_name).write_text(json.dumps(runs, indent=1))
+
+
+def import_raws(result_dir: Path, plan_name: str) -> None:
+    """File the ``raw_<id>.json`` of a pipeline job's probe.serving shards into archive/raw/,
+    each with the fingerprint sidecar its plan run recorded, so --records/--matrix read them."""
+    runs = {r["id"]: r for r in json.loads((ROOT / "archive" / plan_name).read_text())}
+    (ROOT / "archive" / "raw").mkdir(parents=True, exist_ok=True)
+    n = 0
+    for f in sorted(result_dir.rglob("raw_*.json")):
+        rid = f.stem[len("raw_") :]
+        run = runs.get(rid)
+        if run is None or "exec_fingerprint" not in run:
+            print(f"skip {f}: no run {rid} with a fingerprint in {plan_name}", file=sys.stderr)
+            continue
+        (ROOT / "archive" / "raw" / f"{rid}.json").write_text(f.read_text())
+        (ROOT / "archive" / "raw" / f"{rid}.fp").write_text(run["exec_fingerprint"]["fingerprint"] + "\n")
+        n += 1
+    print(f"imported {n} raws into {ROOT / 'archive' / 'raw'}")
+
+
 def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
     SCRATCH_QUEUES.mkdir(parents=True, exist_ok=True)
     src_info = _generator_src_commit()
@@ -699,85 +845,22 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             f"-v {ROOT}:{WORK} -v {ROOT}/jitcache:/root/.cache {_EXTRA_MOUNT}"
             f"-e TRITON_CACHE_DIR=/root/.cache/triton -e DG_JIT_CACHE_DIR=/root/.cache/deep_gemm "
         )
-        if run["backend"] == "sglang":
-            art = render_golden(run)
-            if art is None:
-                run["skip"] = f"golden render failed: {run.get('golden_error')}"
-                continue
-            cli = extract_sglang_cli_from_run_sh(art / "run_0.sh")
-            run["engine_cli"] = cli
-            run["engine_args_fidelity"] = "cli-golden"
-            run["golden_dir"] = str(art)
-            _kv = f" --kv-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
-            if int(run.get("tp", 1)) > 1:
-                run["probe_route"] = "launch_server"
-                cmd = (
-                    head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang_server.py "
-                    f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --tp {run['tp']}{_kv} "
-                    f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}"
-                )
-            else:
-                cmd = (
-                    head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang.py "
-                    f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace{_kv} "
-                    f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}"
-                )
-        elif run["backend"] == "vllm":  # golden fpm run.sh, consumed verbatim
-            art = render_golden(run)
-            if art is None:
-                run["skip"] = f"golden render failed: {run.get('golden_error')}"
-                continue
-            src = next((p for p in (art / "run.sh", art / "run_0.sh") if p.exists()), None)
-            if src is None:
-                run["skip"] = f"golden has no run.sh: {art}"
-                continue
-            rsh = ROOT / "archive" / "run_sh" / f"{run['id']}.sh"
-            rsh.write_text(src.read_text())
-            run["run_sh"] = str(rsh)
-            run["engine_args_fidelity"] = "cli-golden"
-            run["golden_dir"] = str(art)
-            _kv = f" --kv-cache-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
-            cmd = (
-                head + f"--entrypoint python3 {run['image']} {PROBES_IN_CONTAINER}/probe_vllm.py "
-                f"--run-sh {WORK}/archive/run_sh/{run['id']}.sh --model-override {run['model_dir']}{_kv} "
-                f"--trace --out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}"
-            )
-        else:  # trtllm: golden extra_engine_args (agg_config.yaml), consumed verbatim
-            art = render_golden(run)
-            if art is None:
-                run["skip"] = f"golden render failed: {run.get('golden_error')}"
-                continue
-            src = art / "agg_config.yaml"
-            if not src.exists():
-                run["skip"] = f"golden has no agg_config.yaml: {art}"
-                continue
-            eyml = ROOT / "archive" / "run_sh" / f"{run['id']}.engine.yaml"
-            eyml.write_text(src.read_text())
-            run["engine_args_fidelity"] = "cli-golden"
-            run["render_artifact"] = str(eyml)
-            run["golden_dir"] = str(art)
-            # any checkpoint with custom code (auto_map) needs it; cheapest
-            # correct rule is to always pass it for dummy probing
-            trc = "--trust-remote-code "
-            _kv = f"--kv-dtype {run['kv_dtype']} " if run.get("kv_dtype") else ""
-            if int(run.get("tp", 1)) > 1:
-                run["probe_route"] = "trtllm-serve"
-                cmd = (
-                    head + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm_server.py "
-                    f"--model {run['model_dir']} --tp {run['tp']} {trc}{_kv}"
-                    f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
-                    f"--out {WORK}/archive/raw/{run['id']}.json' "
-                    f"2>&1 | tail -1 ; }}"
-                )
-            else:
-                cmd = (
-                    head.replace("docker run --rm ", "docker run --rm -e TLLM_WORKER_USE_SINGLE_PROCESS=1 ")
-                    + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm.py "
-                    f"--model {run['model_dir']} {trc}{_kv}"
-                    f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
-                    f"--out {WORK}/archive/raw/{run['id']}.json' "
-                    f"2>&1 | tail -1 ; }}"
-                )
+        probe = _prepare_probe(run)
+        if probe is None:
+            continue
+        script, argv, env = probe
+        run.update(probe_script=script, probe_args=argv, probe_env=env)
+        env_flags = "".join(f"-e {k}={v} " for k, v in env.items())
+        invocation = f"python3 {PROBES_IN_CONTAINER}/{script} {shlex.join(argv)}"
+        if run["backend"] == "trtllm":  # the trtllm images need a login shell for their environment
+            invocation = f"bash -lc {shlex.quote(invocation)}"
+        entry = "--entrypoint python3 " if run["backend"] == "vllm" else ""
+        if entry:
+            invocation = invocation.removeprefix("python3 ")
+        cmd = (
+            head.replace("docker run --rm ", f"docker run --rm {env_flags}")
+            + f"{entry}{run['image']} {invocation} 2>&1 | tail -1 ; }}"
+        )
         run["exec_fingerprint"] = exec_fingerprint(run)
         _fp = run["exec_fingerprint"]["fingerprint"]
         cmd = cmd.replace("__FP__", _fp)
@@ -1683,6 +1766,18 @@ def main() -> None:
         "--only", default=None, help="comma list of repo substrings — plan/queues cover only matching checkpoints"
     )
     ap.add_argument("--plan-name", default="plan.json")
+    ap.add_argument(
+        "--emit-shards",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="collection-pipeline route: probe.serving shard plans in DIR/tp<N>/, inputs uploaded to --url-base",
+    )
+    ap.add_argument("--url-base", default=None, help="WebDAV directory the probe.serving shards fetch from")
+    ap.add_argument("--no-upload", action="store_true", help="with --emit-shards: write bundles, do not upload")
+    ap.add_argument(
+        "--import-raws", type=Path, default=None, metavar="DIR", help="file a job result's raws into archive/raw/"
+    )
     ap.add_argument("--records", action="store_true", help="raw probe JSONs -> archive/records.jsonl")
     ap.add_argument(
         "--matrix",
@@ -1691,6 +1786,9 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    if args.import_raws:
+        import_raws(args.import_raws, args.plan_name)
+        return
     if args.records:
         build_records()
         return
@@ -1709,6 +1807,11 @@ def main() -> None:
     if args.plan:
         for r in runs:
             print(json.dumps(r))
+        return
+    if args.emit_shards:
+        if not args.url_base:
+            ap.error("--emit-shards needs --url-base")
+        emit_shards(runs, args.plan_name, args.emit_shards, args.url_base.rstrip("/"), upload=not args.no_upload)
         return
     if args.emit_queues:
         gpu_list = (

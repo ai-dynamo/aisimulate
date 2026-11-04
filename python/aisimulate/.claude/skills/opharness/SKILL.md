@@ -35,7 +35,9 @@ on those SMs only. Run ids include the platform name.
 
 ```
 python3 components/workflow_check.py <workflow> --param fw=vllm --param version=0.30.0 [--param sm=sm120]
-python3 components/probe_driver.py --plan | --emit-queues | --records | --matrix        # never --plan with --emit-queues
+python3 components/probe_driver.py --emit-shards <dir> --url-base <share> [--only ...]   # serving probes as probe.serving shards
+python3 components/probe_driver.py --import-raws <job result dir> | --records | --matrix
+python3 components/probe_driver.py --plan | --emit-queues                               # dry plan / per-GPU docker route on a probe box
 python3 components/gates.py plan --fw <fw> --sm <sm> --out <dir>                       # probe.trace_case shard plan
 python3 components/gates.py grade --fw <fw> --sm <sm> --results <job result dir>       # verdicts per gate
 python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)

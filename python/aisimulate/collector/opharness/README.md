@@ -54,8 +54,12 @@ reads it; otherwise cite the run (pipeline id, system, version) at the code.
   under the profiler, its measurement child processes included), and `gates.py grade` reads
   the unpacked job result. A gate exists on an SM where its case is planned; `no_serving`
   marks an SM whose probe box cannot serve the model, which gets a `platform-floor` verdict.
-- **Serving probes** (`probe_driver.py`, `probes/`) still run on a box with the
-  framework images.
+- **Serving probes** run on the collection pipeline too: `probe_driver.py --emit-shards
+  <dir> --url-base <share dir>` renders each run's golden config, uploads its inputs (dummy
+  model dir and rendered config) and writes `probe.serving` shard plans per tp
+  (`collector/probes/serving.py` runs the same `probes/probe_<fw>.py`); after the job,
+  `--import-raws <job result dir>` files the raws, then `--records` / `--matrix` as before.
+  `--emit-queues` keeps the per-GPU docker route for a box with the framework images.
 
 ## Rules
 
