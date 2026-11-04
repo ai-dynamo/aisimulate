@@ -254,12 +254,12 @@ def derived_repos(fam: dict, targets: dict) -> list[str]:
     return sorted((mentioned - excluded - owned_elsewhere) | set(fam.get("extra_repos") or []))
 
 
-def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
+def derive_roster_checkpoints(fam: dict, targets: dict, only: list[str] | None = None) -> list[dict]:
     """Roster checkpoints DERIVED from the collector's own case declarations
     (derived_repos). Profile comes from the checkpoint's quant metadata;
     variants from the dummy manifest. targets.yaml holds only the overlay
     (checkpoint_overrides)."""
-    repos = derived_repos(fam, targets)
+    repos = [r for r in derived_repos(fam, targets) if not only or any(p in r for p in only)]
     manifest = json.loads((ROOT / "dummy_models" / "variants_manifest.json").read_text())
     variants_of: dict[str, list[str]] = {}
     for v in manifest["variants"]:
@@ -500,7 +500,7 @@ def select_dummy_dir(
     return None, f"no dummy dir {leaf}"
 
 
-def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
+def enumerate_runs(targets: dict, full: bool, backends: list[str], only: list[str] | None = None) -> list[dict]:
     runs = []
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
     # topology_policy.tp_required: checkpoints whose representative probe must run
@@ -536,7 +536,7 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
         versions = be["versions"] if full else [be["versions"][-1]]
         for fam_name, fam in targets["families"].items():
             if fam.get("derive") and "checkpoints" not in fam:
-                fam["checkpoints"] = derive_roster_checkpoints(fam, targets)
+                fam["checkpoints"] = derive_roster_checkpoints(fam, targets, only)
             variants = fam.get("dummy_variants") or []
             if not variants and not any(c.get("variants") for c in fam["checkpoints"]):
                 continue  # adapter pending (kimi_k3)
@@ -738,6 +738,7 @@ def emit_shards(runs: list[dict], plan_name: str, out_dir: Path, url_base: str, 
     archive/raw/. Shard plans land in ``<out_dir>/tp<N>/<backend>.yaml``: a tp>1 run needs a
     job with that many GPUs (AISIM_GPU_NUM)."""
     import tarfile
+    import urllib.error
     import urllib.request
 
     src_info = _generator_src_commit()
@@ -746,6 +747,12 @@ def emit_shards(runs: list[dict], plan_name: str, out_dir: Path, url_base: str, 
     bundles.mkdir(parents=True, exist_ok=True)
     plans: dict[tuple[int, str], list[dict]] = {}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if upload:  # WebDAV refuses a PUT into a missing collection; an existing one answers 405
+        try:
+            opener.open(urllib.request.Request(f"{url_base}/", method="MKCOL"), timeout=60).close()
+        except urllib.error.HTTPError as exc:
+            if exc.code != 405:
+                raise
     for run in (r for r in runs if "skip" not in r):
         run.update(src_info)
         probe = _prepare_probe(run)
@@ -1799,9 +1806,10 @@ def main() -> None:
         check_coverage(load_targets(args.targets))
         return
     targets = load_targets(args.targets)
-    runs = enumerate_runs(targets, args.full, args.backends.split(","))
+    pats = [p.strip() for p in (args.only or "").split(",") if p.strip()]
+    # --only scopes the roster derivation too: a single checkpoint needs only its own fetched config
+    runs = enumerate_runs(targets, args.full, args.backends.split(","), pats or None)
     if args.only:
-        pats = [p.strip() for p in args.only.split(",") if p.strip()]
         runs = [r for r in runs if any(p in (r.get("repo") or "") for p in pats)]
         print(f"--only {args.only}: {len(runs)} runs")
     if args.plan:
