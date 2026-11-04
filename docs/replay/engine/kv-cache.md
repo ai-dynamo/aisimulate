@@ -373,6 +373,11 @@ the receiving rank. CLI traffic carries no hints, so
 `aisimulate predict --stack engine` runs KVCR idle: apart from the `kvcr`
 section, the results equal G2 alone.
 
+For a complete CLI example with router-generated hints, follow
+[Simulate KVCR peer reuse](../dynamo.md#simulate-kvcr-peer-reuse). It uses
+`--stack dynamo`, two workers with private G2, and a Mooncake trace, and compares
+KVCR-enabled replay against a G2-only baseline.
+
 <a id="state-cache"></a>
 <a id="manual-state-cache-sizing"></a>
 
