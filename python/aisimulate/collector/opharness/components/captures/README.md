@@ -6,7 +6,7 @@ inside the framework image under `path_diff.py --capture`:
 
 ```
 python3 components/path_diff.py --capture --out /work/facts/pathdiff/opcov_<name>.json \
-    [--env AIC_DSA_CONTEXT_SEQ_LENS=4096] -- /work/.../captures/<name>.py
+    -- /work/.../captures/<name>.py
 ```
 
 `verdicts_<fw>.sh` re-derives the gate files for one framework from the

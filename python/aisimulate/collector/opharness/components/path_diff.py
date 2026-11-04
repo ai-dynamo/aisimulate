@@ -62,22 +62,16 @@ ROOT = Path(
 # capture (in-container; only stdlib + torch)
 
 
-def capture(argv: list[str], out: str, env: list[str] | None = None) -> int:
+def capture(argv: list[str], out: str) -> int:
     import runpy
 
     import torch
     from torch.profiler import ProfilerActivity, profile
 
-    # Cell selection. A whole-sweep capture is a UNION of every
-    # length/prefix-conditional path the collector can take and can only be
-    # compared with a serving record that unions them — none does. The
-    # collectors already expose cell filters through environment variables
-    # (AIC_DSA_CONTEXT_{SEQ_LENS,PREFIX_LENS,BATCH_SIZES}, op_smoke
-    # --case-index/--case-prefix on argv); `--env K=V` sets them here so the
-    # capture file records the cell it measured and the verdict can name it.
-    for kv in env or []:
-        k, _, v = kv.partition("=")
-        os.environ[k] = v
+    # Cell selection: a capture names ONE planned case (op_smoke.run_planned /
+    # planned_row); a whole-sweep capture unions every length/prefix-conditional
+    # path and matches no serving record. Any AIC_/AIS_ variable still set is
+    # recorded so the verdict shows it (V4 rule 5: rows never depend on one).
     cell_env = {
         k: v
         for k, v in os.environ.items()
@@ -216,10 +210,6 @@ def equiv_key(kernel: str, role: str | None) -> str:
         if r == role:
             k = re.sub(pat, rep, k)
     return k
-
-
-def tile_equiv(kernel: str) -> str:  # kept for callers/tests: the gemm-role view
-    return equiv_key(kernel, "gemm")
 
 
 def infer_target(gate_name: str | None):
@@ -602,21 +592,13 @@ def main() -> int:
         choices=["prefill", "decode", "profile_run"],
         help="select serving evidence from this execution phase only",
     )
-    ap.add_argument(
-        "--env",
-        action="append",
-        default=None,
-        metavar="K=V",
-        help="capture mode: set a collector cell filter (e.g. "
-        "AIC_DSA_CONTEXT_SEQ_LENS=4096) before running; recorded in the capture",
-    )
     ap.add_argument("cmd", nargs="*", help="capture mode: script + args (after --)")
     args = ap.parse_args()
     if args.capture:
         cmd = args.cmd
         if cmd and cmd[0] == "python3":
             cmd = cmd[1:]
-        return capture(cmd, args.out, args.env)
+        return capture(cmd, args.out)
     if args.diff:
         return diff(
             args.capture_file,
