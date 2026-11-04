@@ -1308,8 +1308,10 @@
         "Recipe logs establish geometry/settings; native collection runtimes are separately pinned and do not imply automatic serving-kernel parity.",
         "Active audited AgentX recipes use vLLM; SGLang Kimi standalone MLA is not extended by this model policy.",
         "The dense 1M fallback still has native/index constraints; native MLA coverage does not qualify every fallback geometry.",
-        "Native pilots held: the generic MLA factory must first prove it honors Kimi mla_use_nope semantics. Planned points are not qualified measurements."
-      ]
+        "Native pilots held: the generic MLA factory must first prove it honors Kimi mla_use_nope semantics. Planned points are not qualified measurements.",
+        "Owner withdrew the new optional MLA points rather than introducing an unqualified native NoPE adapter; normal #676 coverage and KDA widths remain."
+      ],
+      "declaration_status": "historical_withdrawn_optional_MLA_points; final M excludes these points"
     },
     {
       "family": "MiniMax-M3.1",

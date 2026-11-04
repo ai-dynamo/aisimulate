@@ -225,7 +225,11 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
         "collector.collect": SimpleNamespace(
             _is_cuda_fatal_exception=lambda error, torch: isinstance(error, MemoryError)
         ),
-        "collector.helper": SimpleNamespace(cuda_context_error=lambda device: None),
+        "collector.helper": SimpleNamespace(
+            cuda_context_error=lambda device: None,
+            WorkerRestartSignal=type("RestartSignal", (), {}),
+            EXIT_CODE_RESTART=10,
+        ),
     }
     monkeypatch.setattr(anchor.importlib, "import_module", lambda name: modules[name])
     monkeypatch.setattr(anchor.importlib.metadata, "version", lambda name: "0.5.21")
@@ -280,3 +284,14 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
     modules["collector.helper"].cuda_context_error = lambda device: None
     oom = anchor.run(request, tmp_path / "oom-context")
     assert oom["worker_recycle_required"] is True and len(oom["calls"]) == 1
+
+    def normal_restart(batch, length, **kwargs):
+        native(batch, length, **kwargs)
+        raise SystemExit(10)
+
+    modules["native.module"].native = normal_restart
+    restarted = anchor.run(request, tmp_path / "normal-restart")
+    assert restarted["status"] == "partial" and restarted["calls"][0]["status"] == "passed"
+    assert restarted["calls"][0]["persisted_forward_rows"] == 1
+    assert restarted["worker_recycle_reason"] == "normal_executor_restart"
+    assert len(restarted["unattempted_rows"]) == 1
