@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -67,7 +68,7 @@ IMPLEMENTED_COMPONENTS = {
 
 
 def _load_targets() -> dict:
-    return yaml.safe_load((HARNESS / "targets.yaml").read_text())
+    return _probe_driver_module().load_targets(HARNESS / "targets.yaml")
 
 
 def _conclusions_text() -> str:
@@ -588,6 +589,7 @@ def pred_family_observed(p):
     return True, f"role '{role}' observed on {len(hits)} (backend, repo) cells"
 
 
+@functools.cache
 def _probe_driver_module():
     import importlib.util
 

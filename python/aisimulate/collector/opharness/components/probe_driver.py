@@ -874,6 +874,21 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
         )
 
 
+def load_targets(path) -> dict:
+    """targets.yaml with each backend's probed version and image taken from
+    collector/framework_manifest.yaml (the framework default pin, digest image),
+    the one home of a pin."""
+    import yaml
+
+    targets = yaml.safe_load(Path(path).read_text())
+    manifest = yaml.safe_load((Path(__file__).resolve().parents[2] / "framework_manifest.yaml").read_text())
+    for fw, be in targets["backends"].items():
+        pin = manifest["frameworks"][fw]["default"]
+        be["versions"] = [str(pin["version"])]
+        be["images"] = {str(pin["version"]): pin["images"]["default"]}
+    return targets
+
+
 def roster_repos(targets: dict) -> list[str]:
     """Every checkpoint repo the probe roster names (targets.yaml families, derived ones
     included). Needs no dummies: fetch_inputs.py --from-roster runs before they exist."""
@@ -1904,7 +1919,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.migrate_run_ids:
-        plat = (yaml.safe_load(args.targets.read_text()).get("platform") or {}).get("name") or "h20_sm90"
+        plat = (load_targets(args.targets).get("platform") or {}).get("name") or "h20_sm90"
         st = migrate_run_ids(ROOT, plat, apply=args.apply)
         print(json.dumps({"platform": plat, **st}))
         if not args.apply:
@@ -1914,12 +1929,12 @@ def main() -> None:
         build_records()
         return
     if args.matrix:
-        build_matrix(yaml.safe_load(args.targets.read_text()))
+        build_matrix(load_targets(args.targets))
         return
     if args.check_coverage:
-        check_coverage(yaml.safe_load(args.targets.read_text()))
+        check_coverage(load_targets(args.targets))
         return
-    targets = yaml.safe_load(args.targets.read_text())
+    targets = load_targets(args.targets)
     runs = enumerate_runs(targets, args.full, args.backends.split(","))
     if args.only:
         pats = [p.strip() for p in args.only.split(",") if p.strip()]

@@ -17,7 +17,7 @@ give the same answer twice is a component invocation, never free-hand.
 
 | # | Step | Who | Instrument / artifact |
 |---|------|-----|------------------------|
-| 1 | Bump the pin | owner | The collector pin is `collector/framework_manifest.yaml` (the default, or a family pin for the ops in scope); `targets.yaml` backends.<fw> names the version the probes deploy (one per backend; result files are named per version, so old matrices stay in the local results/ and the previous campaign's evidence bundle) |
+| 1 | Bump the pin | owner | The collector pin is `collector/framework_manifest.yaml` (the default, or a family pin for the ops in scope); the probes deploy the framework default pin and its digest image from the same file (`probe_driver.load_targets`); result files are named per version, so old matrices stay in the local results/ |
 | 3 | Scope the re-probe | script | `probe_driver.py --plan --only <representative models of this family>` — the reverse mapping (family -> representative models) comes from the previous matrix |
 | 4 | Re-run identity | script | `probe_driver.py --emit-queues` + queues -> `--records` -> `--matrix` (a NEW `results/<sm>/<fw>-<ver>.yaml`; diff vs the old file IS the upgrade report) |
 | 4c | Plan diff | script | `components/case_inventory.py --fw --version --sm --base <rev>` on any CPU: the collector's case plan (`collect.py --plan-only --plan-table`) diffed against the base revision -> `results/<sm>/cases/<fw>-<ver>.yaml`. An op leaving the plan, or cases and categorical values leaving it without a `collector/skips.py` entry accounting for them, is a regression BEFORE any GPU hour. There is no waiver file: a deliberate loss is a skips.py entry with its reason |
