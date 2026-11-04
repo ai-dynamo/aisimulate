@@ -4315,6 +4315,107 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn qualified_mamba_decode_reads_rows_only_at_width_one() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let root = tempfile::tempdir().expect("tmpdir");
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).expect("mkdir data");
+        // One measured decode row for two requests at qualified_mamba's shape.
+        write_parquet(
+            &data.join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["vllm_flashinfer_selective_state_update"],
+                ),
+                Col::Str("phase", vec!["generation"]),
+                Col::I64("batch_size", vec![2]),
+                Col::I64("seq_len", vec![1]),
+                Col::I64("d_model", vec![4096]),
+                Col::I64("d_state", vec![128]),
+                Col::I64("d_conv", vec![4]),
+                Col::I64("nheads", vec![64]),
+                Col::I64("head_dim", vec![64]),
+                Col::I64("n_groups", vec![4]),
+                Col::I64("chunk_size", vec![128]),
+                Col::F64("latency", vec![0.25]),
+            ],
+        );
+        let db = Arc::new(PerfDatabase::load(root.path(), "testsys", "test", "1.0").expect("load"));
+        let ms = |bytes: f64| bytes / db.system_spec.gpu.mem_bw * 1000.0;
+        let decode_only = |nextn: Option<u32>, width: u32, requests: u32| {
+            let spec = EngineSpec::new(
+                fixture_engine_config(nextn),
+                vec![],
+                vec![qualified_mamba(false, width)],
+            );
+            let engine = Engine::build(spec, Arc::clone(&db)).unwrap();
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_decode_requests: requests,
+                    sum_decode_kv_tokens: requests * 8,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let estimate = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            let op = &estimate.ranks[0].operations[0];
+            (
+                estimate.latency_ms.unwrap(),
+                op.latency_ms,
+                op.source.clone(),
+            )
+        };
+        // Width one keeps the measured row.
+        let (total, op_ms, source) = decode_only(None, 1, 2);
+        assert_eq!((total, op_ms, source.as_str()), (0.25, 0.25, "silicon"));
+        // Width four verifies four tokens per request: activations for
+        // 4 tokens (18,560 B each) plus one state read and four 1 MiB writes.
+        for requests in [2_u32, 3] {
+            let bytes = f64::from(requests) * (4.0 * 18_560.0 + 5.0 * 1_048_576.0);
+            let (total, op_ms, source) = decode_only(Some(3), 4, requests);
+            assert!(
+                (total - ms(bytes)).abs() < 1e-12,
+                "{requests} requests: {total}"
+            );
+            assert_eq!((op_ms, source.as_str()), (total, "sol"));
+        }
+        // A mixed step selects the same decode source for the same op.
+        for (nextn, width, source) in [(None, 1, "silicon"), (Some(3), 4, "sol")] {
+            let spec = EngineSpec::new(
+                fixture_engine_config(nextn),
+                vec![qualified_mamba(true, 1)],
+                vec![qualified_mamba(false, width)],
+            );
+            let engine = Engine::build(spec, Arc::clone(&db)).unwrap();
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_prefill_requests: 1,
+                    sum_prefill_tokens: 16,
+                    num_decode_requests: 2,
+                    sum_decode_kv_tokens: 16,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let estimate = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            let decode = estimate.ranks[0]
+                .operations
+                .iter()
+                .find(|op| op.name == "generation_ssm")
+                .unwrap();
+            assert_eq!(decode.source, source, "width {width}");
+        }
+    }
+
+    #[test]
     fn mamba_ops_are_validated_at_build() {
         let db = build_engine(None).db;
         let build = |nextn: Option<u32>, op: Op| {
