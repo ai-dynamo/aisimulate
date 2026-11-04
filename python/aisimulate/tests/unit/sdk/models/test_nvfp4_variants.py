@@ -90,7 +90,7 @@ def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
 
         assert model.model_family == "NEMOTRONH"
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
-        assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
+        assert model_config.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
     finally:
         sdk_utils.get_model_config_from_model_path.cache_clear()
@@ -276,12 +276,13 @@ def test_qwen36_preserves_explicit_global_gemm_override(hf_id, ffn_name, gemm_mo
 @pytest.mark.parametrize(
     ("hf_id", "backend", "moe_mode"),
     [
-        # vLLM has no weight-only NVFP4 MoE lane: the compressed-tensors
-        # dispatch quantizes activations at run time and serves the w4a4
-        # FP4-tensor-core kernels (collected kernel_source
-        # vllm_compressedtensorsw4a4nvfp4moe_*), so the W4A16_NVFP4 storage
-        # label resolves to the nvfp4 execution mode there (AIC-1748).
-        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.nvfp4),
+        # Lightning is a ModelOpt export: vLLM builds ModelOptNvFp4FusedMoE with
+        # use_a16 for its W4A16_NVFP4 experts and runs them weight-only on
+        # Marlin, so the label mode is kept (the AIC-1748 w4a4 remap covers
+        # non-ModelOpt checkpoints only).
+        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.w4a16_nvfp4),
+        # Nano's experts are W4A4 NVFP4, so its vLLM lane is unchanged.
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.nvfp4),
         # Qwen3.6 stays on the weight-only profile even on vLLM: it is served
         # through HYBRID's calibrated XPROFILE relation by design (the remap
         # is scoped to architectures with PROVEN w4a4 vLLM dispatch).
@@ -297,6 +298,24 @@ def test_w4a16_nvfp4_label_resolves_to_the_backend_execution_lane(hf_id, backend
     model_config = _model_config()
     get_model(hf_id, model_config, backend_name=backend)
     assert model_config.moe_quant_mode == moe_mode
+
+
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({"quantization_config": {"quant_method": "compressed-tensors"}}, common.MoEQuantMode.nvfp4),
+        (None, common.MoEQuantMode.nvfp4),
+        ({"hf_quant_config": {"quantization": {"quant_algo": "MIXED_PRECISION"}}}, common.MoEQuantMode.w4a16_nvfp4),
+        ({"quantization_config": {"quant_method": "modelopt"}}, common.MoEQuantMode.w4a16_nvfp4),
+        ({"quantization_config": {"quant_method": "modelopt_mixed"}}, common.MoEQuantMode.w4a16_nvfp4),
+    ],
+)
+def test_vllm_w4a4_remap_skips_modelopt_exports(raw_config, expected):
+    from aisimulate_core.sdk.models.helpers import resolve_vllm_moe_execution_mode
+
+    mode = common.MoEQuantMode.w4a16_nvfp4
+    assert resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM", raw_config) == expected
+    assert resolve_vllm_moe_execution_mode(mode, "trtllm", "NemotronHForCausalLM", raw_config) == mode
 
 
 def test_explicit_w4a16_nvfp4_moe_mode_wins_over_the_vllm_remap():
@@ -385,11 +404,9 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
 
     # quantized_layers lists the GDN in_proj_qkv, in_proj_z and out_proj, the full-attention
     # q/k/v/o and the shared-expert gate/up/down projections as static per-tensor FP8. The
-    # export keeps in_proj_a and in_proj_b in BF16; pricing their GEMM (in_proj_ba) with the
-    # other GDN projections is an approximation that docs/perf-model/support-matrix.md states.
+    # export leaves in_proj_a and in_proj_b unlisted, so their GEMM (in_proj_ba) is BF16.
     for name in (
         "context_gdn_in_proj_gemm",
-        "context_gdn_in_proj_ba_gemm",
         "context_gdn_out_proj_gemm",
         "context_qkv_gemm",
         "context_proj_gemm",
@@ -398,7 +415,6 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
         "context_full_shared_gate_up_gemm",
         "context_full_shared_down_gemm",
         "generation_gdn_in_proj_gemm",
-        "generation_gdn_in_proj_ba_gemm",
         "generation_gdn_out_proj_gemm",
         "generation_qkv_gemm",
         "generation_proj_gemm",
@@ -414,6 +430,8 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
     # The router (mlp.gate), the scalar shared-expert gate and lm_head are not quantized. SGLang
     # fuses the scalar gate into the merge kernel, so only vLLM and TRT-LLM emit its GEMM.
     bf16_names = (
+        "context_gdn_in_proj_ba_gemm",
+        "generation_gdn_in_proj_ba_gemm",
         "context_gdn_router_gemm",
         "context_full_router_gemm",
         "context_logits_gemm",
@@ -494,7 +512,7 @@ def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkey
     # The GDN, full-attention and shared-expert projections take the fp8_static path: per-tensor FP8 GEMM rows
     # minus the compute-scale rows. The engine labels every fp8_static result "estimated" by construction
     # (GemmOp::query in crates/core/src/perfmodel/operators/gemm.rs).
-    projections = ("gdn_in_proj_gemm", "gdn_in_proj_ba_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")
+    projections = ("gdn_in_proj_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")
     shared_experts = (
         "gdn_shared_gate_up_gemm",
         "gdn_shared_down_gemm",
@@ -505,11 +523,12 @@ def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkey
         assert prefill[f"context_{name}"]["source"] == "estimated", name
     for name in projections:
         assert decode[f"generation_{name}"]["source"] == "estimated", name
-    # The routed experts read measured NVFP4 MoE rows, and the router and lm_head GEMMs read measured BF16 GEMM
-    # rows; the graph test above pins their quant modes.
-    for name in ("gdn_moe", "full_moe", "gdn_router_gemm", "full_router_gemm", "logits_gemm"):
+    # The routed experts read measured NVFP4 MoE rows, and the in_proj_ba, router and lm_head GEMMs read measured
+    # BF16 GEMM rows; the graph test above pins their quant modes.
+    for name in ("gdn_moe", "full_moe", "gdn_in_proj_ba_gemm", "gdn_router_gemm", "full_router_gemm", "logits_gemm"):
         assert prefill[f"context_{name}"]["source"] == "silicon", name
-    assert decode["generation_logits_gemm"]["source"] == "silicon"
+    for name in ("gdn_in_proj_ba_gemm", "logits_gemm"):
+        assert decode[f"generation_{name}"]["source"] == "silicon", name
     # SGLang decode nests the router, the routed experts and the shared experts in one overlap op per layer type.
     # The engine reports that op under one label merged from its members, so prefill pins their lanes.
     for name in ("generation_gdn_moe_overlap", "generation_full_moe_overlap"):
@@ -532,13 +551,15 @@ def test_qwen35_nvfp4_v2_engine_scales_each_decode_op_by_the_mtp_factor(monkeypa
         assert op["latency_ms"] == pytest.approx(base[name]["latency_ms"] * scale, rel=1e-9), name
 
 
-def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
+def test_gemma4_exclusions_keep_attention_and_mlp_bf16_but_not_routed_experts():
     model = get_model("nvidia/Gemma-4-26B-A4B-NVFP4", _model_config(), backend_name="trtllm")
     by_name = {op._name: op for op in model.context_ops + model.generation_ops}
 
     assert by_name["context_swa_qkv_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
     assert by_name["context_swa_shared_mlp_gate_up_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
-    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.bfloat16
+    # The checkpoint excludes layers.N.mlp* (the shared dense MLP) but quantizes the routed experts
+    # (layers.N.experts.E.* carry NVFP4 weight_scale/weight_scale_2/input_scale tensors).
+    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
 def test_kimi_k26_exclusions_keep_attention_and_shared_experts_bf16():
