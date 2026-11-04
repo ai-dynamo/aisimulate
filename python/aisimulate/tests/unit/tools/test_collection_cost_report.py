@@ -341,3 +341,13 @@ def test_nonhistory_pairs_support_identical_alternatives_without_double_charge(t
     assert report.non_history_scenario_proof(records[1], "attention_context", target, target) is None
     changed = {key: {**row, "_task_case": {**row, "tp": "8"}} for key, row in target.items()}
     assert report.non_history_scenario_proof(records[1], "moe", target, changed) is None
+
+
+def test_missing_forward_evidence_retains_spend_but_cannot_fit():
+    missing = sample(2, 3, forward_latency_ms=None, native_forward_rows=[])
+    assert report.measured_cost([missing]) == 3
+    assert report.predict(missing["case"], [missing]) is None
+    missing["role"] = "holdout"
+    assert not report.validation([sample(1, 1), missing, sample(3, 3)])["passed"]
+    observed = {**missing, "native_forward_rows": [{"latency": "0.5"}]}
+    assert report.predict(observed["case"], [observed]) == (3, 3)
