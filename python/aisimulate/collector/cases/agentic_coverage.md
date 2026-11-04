@@ -39,9 +39,9 @@ when an identity cannot be resolved.
 
 | Model route | Added coverage | Qualification |
 |---|---|---|
-| Qwen3.5-397B dense layers | Full-lookup anchors 24K/32K/40K/64K/128K/262K, selected B1/2/4; decode through 262K at B1/2/4/8 | Uses the declared 32 query / 2 KV heads, d256 and valid TP shards. History stays at the audited model range; no 1M Qwen declaration. |
+| Qwen3.5-397B dense layers | Full-lookup anchors 24K/32K/40K at measured B1/2/4/8/16, 64K/128K/262K at selected B1/2/4; decode through 262K at B1/2/4/8 | Uses the declared 32 query / 2 KV heads, d256 and valid TP shards. History stays at the audited model range; no 1M Qwen declaration. |
 | Kimi-K3 native MLA | B1 context at 512K/1M; selected B1/2/4 decode at those histories | Uses 96 native heads at TP1/2/4/8. Native-module support is separate from the legacy dense fallback. |
-| GLM-5.2/5.3 DSA | Intermediate 786432/917504 history, selected sparse queries including 32K, and B8/16/32 tail decode | Uses 64 native heads and valid TP shards. Full and reused-indexer operations stay separate. The 32K query is a qualified collection shape, not proof every serving recipe uses it. |
+| GLM-5.2/5.3 DSA | Intermediate 786432/917504 history, selected sparse queries including 32K, and B8/16/32 tail decode | Uses 64 native heads and valid TP shards. Full and reused-indexer operations stay separate. The NVFP4 TP8/head8 row also declares #665's 22 measured B52 history points through 720896; B52 is a calibration key, not an observed GPU-forward batch. The 32K query is a qualified collection shape, not proof every serving recipe uses it. |
 | MiniMax-M3 MSA | Intermediate history, 32K new queries, selected tail decode batches | Native MSA geometry and precision; global history does not enlarge recurrent/GEMM token work. |
 | DSV4.1, MuseSpark, QwenNext unsupported routes | No invented extension | Exact model/backend/feature support and forward tuples must be qualified separately. |
 
@@ -89,3 +89,14 @@ frameworks/SM generations, aliases, limits, runtime-safe deduplication,
 explicit row manifests, CLI and resumed grouped collection. GPU qualification
 and numerical/serving parity remain separate checks. No full-sweep cost or
 coverage-completeness claim is made from structural counts alone.
+
+
+Runtime-sensitive deduplication keeps the pinned planner's representative when
+native module semantics agree. For audited GLM checkpoints, tokenizer and MLP
+metadata are outside the extracted attention module; native explicit qk/v
+fields override redundant `head_dim`. An expert-only quantization recipe is
+ignored for this equivalence check only when it excludes every self-attention
+module, or explicitly quantizes only MLP modules. Unknown quantization and
+changed attention/indexer/RoPE dimensions remain significant. A new incompatible
+collision at the same persisted key raises rather than writing duplicate or
+misidentified consumer rows. Targeted NVFP4 runs retain their own checkpoint.

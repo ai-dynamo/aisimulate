@@ -47,9 +47,22 @@ model_case_values:
       # claims of observed per-rank forwards. See agentic_coverage.md.
       long_history_cases:
         context:
+          # Preserve #666's measured calibration rows at these three lengths.
           - [1, 24576, 0]
+          - [2, 24576, 0]
+          - [4, 24576, 0]
+          - [8, 24576, 0]
+          - [16, 24576, 0]
           - [1, 32768, 0]
+          - [2, 32768, 0]
+          - [4, 32768, 0]
+          - [8, 32768, 0]
+          - [16, 32768, 0]
           - [1, 40960, 0]
+          - [2, 40960, 0]
+          - [4, 40960, 0]
+          - [8, 40960, 0]
+          - [16, 40960, 0]
           - [1, 65536, 0]
           - [2, 65536, 0]
           - [4, 65536, 0]

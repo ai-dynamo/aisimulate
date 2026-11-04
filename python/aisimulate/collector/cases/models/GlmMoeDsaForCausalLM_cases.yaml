@@ -236,6 +236,38 @@ model_case_values:
           - [16, 1048575, 0]
           - [32, 1048575, 0]
 
+
+    # #665 measured calibration frontier, not observed per-rank production
+    # batches. B52 is the real-request key; serving pads its graph to B56.
+    - model_path: nvidia/GLM-5.2-NVFP4
+      attention_type: dsa
+      native_num_heads: 64
+      long_history_tensor_parallel_sizes: [8]
+      long_history_cases:
+        generation:
+          - [52, 1, 0]
+          - [52, 4, 0]
+          - [52, 8, 0]
+          - [52, 16, 0]
+          - [52, 32, 0]
+          - [52, 64, 0]
+          - [52, 128, 0]
+          - [52, 256, 0]
+          - [52, 512, 0]
+          - [52, 1024, 0]
+          - [52, 2048, 0]
+          - [52, 4096, 0]
+          - [52, 8192, 0]
+          - [52, 16384, 0]
+          - [52, 32768, 0]
+          - [52, 65536, 0]
+          - [52, 131072, 0]
+          - [52, 262144, 0]
+          - [52, 393216, 0]
+          - [52, 524288, 0]
+          - [52, 655360, 0]
+          - [52, 720896, 0]
+
 framework_specific_model_case_values:
   vllm:
     mla_module:

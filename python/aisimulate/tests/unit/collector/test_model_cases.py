@@ -1800,6 +1800,9 @@ def test_collector_case_yaml_numeric_lists_are_sorted():
             for key, nested in value.items():
                 yield from walk_numeric_lists(nested, (*path, str(key)))
         elif isinstance(value, list):
+            # Correlated history triples are coordinates, not sortable sweep axes.
+            if len(path) >= 3 and path[-3] == "long_history_cases" and path[-2] in {"context", "generation"}:
+                return
             if len(value) > 1 and all(is_number(item) for item in value):
                 yield path, value
             for index, nested in enumerate(value):

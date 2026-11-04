@@ -89,7 +89,6 @@ from datetime import datetime
 from inspect import Parameter, signature
 from pathlib import Path
 
-from collector.coverage import long_history_coverage
 from helper import (
     EXIT_CODE_OPS_NOT_IN_PLAN,
     EXIT_CODE_RESTART,
@@ -1135,6 +1134,9 @@ def _collector_model_path(model_path: str | None):
 
 
 def _get_test_cases_for_model(get_func, model_path: str | None, *, include_long_history: bool = False):
+    # Direct-script startup adds the package root before main(), not at import time.
+    from collector.coverage import long_history_coverage
+
     with long_history_coverage(include_long_history):
         return _get_model_cases(get_func, model_path)
 

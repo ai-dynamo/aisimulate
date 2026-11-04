@@ -264,7 +264,8 @@ still apply; device capacity is refused at runtime, not used to vary the plan.
 
 Module additions use their model's declared TP shards and native projection
 GEMM. Their workload points are unioned before deduplication. Runtime-sensitive
-cases share an owner only when config semantics agree, not merely because the
-models have the same head count. Existing normal points and their ownership
+cases share an owner only when native attention semantics agree, not merely
+because the models have the same head count. Unknown quantization remains part
+of that comparison; new incompatible collisions raise before collection. Existing normal points and their ownership
 remain unchanged. Plan rows retain exact manifests and existing IDs; no perf
 schema, filename or consumer key changes are introduced.
