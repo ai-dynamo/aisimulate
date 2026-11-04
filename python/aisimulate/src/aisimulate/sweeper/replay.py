@@ -363,7 +363,28 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
             or any(identity.get(name) is not None for name in ("aic_nextn", "speculation"))
             or identity.get("nextn") not in (None, 0)
         ):
-            raise ValueError("agentic replay requires speculative decoding disabled")
+            selections = [
+                selection
+                for selection in (rank.get("speculation"), identity.get("speculation"))
+                if selection is not None
+            ]
+            if not (
+                deployment.deployment_mode == "agg"
+                and role == "aggregated"
+                and selections
+                and all(isinstance(selection, Mapping) and selection.get("kind") == "mtp" for selection in selections)
+                and isinstance(offload, Mapping)
+                and offload.get("scope", "dp_rank_local") == "dp_rank_local"
+                and rank.get("enable_prefix_caching", True) is True
+                and rank.get("g3_offload") is None
+                and rank.get("state_cache") is None
+                and rank.get("prefix_match_unit") is None
+                and not rank.get("kv_cache_groups")
+            ):
+                raise ValueError(
+                    "agentic G2 replay requires speculative decoding disabled except canonical MTP "
+                    "on an aggregated worker with prefix caching and scope=dp_rank_local"
+                )
         prefix = "" if role == "aggregated" else f"{role}_"
         dp_values = [
             source[name]
@@ -412,6 +433,7 @@ class RunnerCapabilities:
     supports_tokenization: bool = False
     supports_detokenization: bool = False
     supports_deferred_encoder_overlay: bool = False
+    supports_mtp_host_offload: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -543,6 +565,20 @@ class RunnerCapabilities:
                     raise ValueError("generic speculation is unsupported for AFD")
                 if not self.supports_generic_speculation:
                     raise ValueError("runner does not support generic speculation; use --stack engine")
+            if rank.get("native_host_offload") is not None:
+                canonical_mtp = any(
+                    isinstance(selection, Mapping) and selection.get("kind") == "mtp"
+                    for selection in (requested_speculation, identity.get("speculation"))
+                )
+                legacy_depth = any(
+                    controls.get(name) not in (None, 0)
+                    for controls in (rank, identity)
+                    for name in ("aic_nextn", "nextn")
+                )
+                if legacy_depth and not canonical_mtp:
+                    raise ValueError("native_host_offload with speculative decoding requires canonical mtp speculation")
+                if canonical_mtp and not self.supports_mtp_host_offload:
+                    raise ValueError("runner does not support MTP with host offload; use --stack engine")
             explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
             if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:

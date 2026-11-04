@@ -138,7 +138,8 @@ class SchedulerPredictionConfig(StrictModel):
         default=None,
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
-            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts "
+            "or MTP with G2 host offload."
         ),
     )
 
@@ -1268,7 +1269,24 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload")
+            if kind != "mtp":
+                raise ValueError(f"{kind} speculation does not support host_offload")
+            if worker.scheduler.async_scheduling is True:
+                raise ValueError("mtp speculation with host_offload requires async_scheduling=false")
+            cache = worker.kv_cache
+            if (
+                backends != {"vllm"}
+                or modes != {"aggregated"}
+                or role != "aggregated"
+                or worker.parallelism.attention_data != 1
+                or not cache.prefix_caching
+                or cache.host_offload.scope != "dp_rank_local"
+                or cache.g3_offload is not None
+            ):
+                raise ValueError(
+                    "mtp speculation with host_offload requires aggregated vllm, attention_data=1, "
+                    "prefix_caching=true, scope=dp_rank_local, and no g3_offload"
+                )
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
@@ -1415,6 +1433,8 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
+    if engine.nextn or engine.nextn_accepted is not None:
+        raise ValueError("host_offload with speculative decoding requires canonical engine.speculation kind=mtp")
     if engine.mode == "afd":
         raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":
