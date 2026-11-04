@@ -248,6 +248,22 @@ def _serving_moe_gate(declared, hidden_size, num_experts, topk, dtype, moe_backe
     return gate
 
 
+def _refuse_moe_weight_capacity(
+    hidden_size, inter_size, num_experts, moe_tp_size, moe_ep_size, weight_bits, is_gated, capacity_bytes
+):
+    """Reject only a proven lower bound: local resident expert matrices, no workspace estimate."""
+    # create_moe's gate/up projection has 2*I rows for SwiGLU and I for Relu2;
+    # the down projection adds H*I. Mapping shards experts by EP and I by TP.
+    matrices = 3 if is_gated else 2
+    local_elements = (num_experts // moe_ep_size) * hidden_size * (inter_size // moe_tp_size) * matrices
+    minimum_bytes = (local_elements * weight_bits + 7) // 8
+    if minimum_bytes >= capacity_bytes:
+        raise RuntimeError(
+            f"FIXME(kernel-limit): does not fit: resident expert weights need at least {minimum_bytes} bytes, "
+            f"device capacity is {capacity_bytes} bytes; excludes scales, inputs, outputs and workspace"
+        )
+
+
 def _run_moe_case(
     moe_type,
     num_tokens_lists,
@@ -541,6 +557,16 @@ def _run_moe_case(
         create_moe_kwargs["swiglu_limit"] = swiglu_limit
     if "activation_type" in create_moe_params and activation_type is not None:
         create_moe_kwargs["activation_type"] = activation_type
+    _refuse_moe_weight_capacity(
+        hidden_size,
+        inter_size,
+        num_experts,
+        moe_tp_size,
+        moe_ep_size,
+        _weight_bits,
+        is_gated,
+        torch.cuda.get_device_properties(device).total_memory,
+    )
     moe = create_moe(**create_moe_kwargs)
     moe.to(torch.device(device))
 

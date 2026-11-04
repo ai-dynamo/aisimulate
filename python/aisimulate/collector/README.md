@@ -102,6 +102,13 @@ to parquet under
 
 # Model-centric cases and healing runs
 
+TRT-LLM MoE workers refuse a case before module allocation when its local
+resident expert weights alone exceed live device capacity. This lower bound
+accounts for gated/non-gated matrices and TP/EP sharding; passing it does not
+establish room for scales, inputs, outputs, graph buffers or native workspace.
+Those later allocation failures remain recorded failures rather than hidden
+shape exclusions. Plans remain independent of device memory.
+
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
