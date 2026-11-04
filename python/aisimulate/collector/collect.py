@@ -2985,6 +2985,11 @@ def _all_op_names() -> list[str]:
     from collector.fpm_forward import FPM_FORWARD_OP
 
     ops.append(FPM_FORWARD_OP)
+    # Validation probes (collector/probes/<name>.py) run through the same interface
+    # as probe.<name>, so the collection pipeline schedules them as ordinary shards.
+    from collector.probes import probe_op_names
+
+    ops.extend(probe_op_names())
     return ops
 
 
@@ -6379,7 +6384,8 @@ def main():
         default=None,
         metavar="SUBSTR",
         help="Run only cases whose string form contains SUBSTR (repeatable, OR semantics). "
-        "Ephemeral healing filter — never persisted to YAML.",
+        "Ephemeral healing filter — never persisted to YAML. For a probe op (--ops probe.<name>) "
+        "each value is a comma list of key=value probe arguments.",
     )
     parser.add_argument(
         "--cases-from",
@@ -6441,6 +6447,14 @@ def main():
         reject_fpm_arguments_without_fpm(args)
     except ValueError as error:
         parser.error(str(error))
+    from collector.probes import PROBE_PREFIX, run_probe
+
+    if any(op.startswith(PROBE_PREFIX) for op in args.ops or ()):
+        # A probe is not a collector op: no plan, no table, one JSON result in the working
+        # directory (the pipeline's shard dir). It runs alone; exit 0 marks the shard done.
+        if len(args.ops) != 1:
+            parser.error(f"a {PROBE_PREFIX}<name> op runs alone")
+        sys.exit(run_probe(args.ops[0][len(PROBE_PREFIX) :], args.case_filters or [], Path.cwd(), backend=args.backend))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
     if fpm_requested and set(args.ops or ()) != {FPM_FORWARD_OP}:
         parser.error("fpm_forward must be collected alone; do not mix campaign and local op entries")

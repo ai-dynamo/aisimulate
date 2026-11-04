@@ -15,7 +15,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from collector.helper import get_sm_version
+from collector.helper import get_sm_version, trace_child_argv
 from collector.op_plans import plan_cases
 from collector.sglang.dsv41_contract import build_manifest, canonical_json, validate_row
 
@@ -438,7 +438,7 @@ def run_dsv41_module_worker(
         fcntl.flock(lock, fcntl.LOCK_EX)
         bind_output_profile(perf_filename, execution_profile)
         with (output / "native.log").open("w") as log:
-            subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
+            subprocess.run(trace_child_argv(command), check=True, stdout=log, stderr=subprocess.STDOUT)
     if not (output / "COMPLETE").is_file():
         raise RuntimeError("fresh native attempt did not produce completion receipt")
     rows = aggregate_rank_records(sorted(output.glob("rank-*.jsonl")), tp_size)

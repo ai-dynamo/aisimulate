@@ -851,6 +851,32 @@ THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT 
 For any questions regarding this license, please contact model-business@notice.qwencloud.com.
 ```
 
+## NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_config.json` | `config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+
+Upstream repository:
+https://huggingface.co/nvidia/Qwen3.5-397B-A17B-NVFP4-V2/tree/8f590eae8f10bf55d9a46f79ea0280bde435c9f8
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Alibaba Cloud (the base Qwen3.5-397B-A17B
+configuration). The copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: the Apache
+License, Version 2.0 (`license: apache-2.0`). The upstream repository ships
+no separate license or NOTICE file. The base model, Qwen/Qwen3.5-397B-A17B,
+uses the same license; its `LICENSE` at revision
+`8472618112abcbd45acbcdc58436aff4233c23f7` states "Copyright 2026 Alibaba
+Cloud". The license text is in the `LICENSE` file distributed with this
+notice. The file digests are recorded in the adjacent
+`src/aisimulate_core/model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md`.
+
 ## StepFun Step-3.7-Flash model configuration files
 
 The following files are modified adaptations of the named Hugging Face
@@ -1447,6 +1473,30 @@ the upstream repository as `LICENSE`; the card states that the NVIDIA Open
 Model Agreement does not modify or supersede it. The full texts of both are
 preserved in the adjacent distributed
 `src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+
+## NVIDIA Nemotron 3.5 Super VL NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+
+Upstream repository:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/da5b2650a835292c678994a1fa3fb653250fb508
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+License, as declared by the upstream model card at that revision: the
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1),
+https://openmdw.ai/license/1-1/. The card metadata declares
+`license: other` and `license_name: openmdw-1.1`, and the upstream
+repository ships no separate license file. The full agreement text is
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md`.
 
 ## vLLM DeepSeek V4 cache sizing
 
