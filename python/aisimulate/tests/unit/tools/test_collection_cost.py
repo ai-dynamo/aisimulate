@@ -80,11 +80,14 @@ def test_shared_fixture_includes_standalone_mla_and_restores_baseline():
 
     before_context = set(op_plans.plan("mla_context", "trtllm", 103).cases)
     before_generation = set(op_plans.plan("mla_generation", "trtllm", 103).cases)
+    before_dense = set(op_plans.plan("attention_generation", "trtllm", 103).cases)
     with inventory.shared_policy():
         expanded_context = set(op_plans.plan("mla_context", "trtllm", 103).cases)
         expanded_generation = set(op_plans.plan("mla_generation", "trtllm", 103).cases)
         assert before_context < expanded_context
         assert before_generation < expanded_generation
+        expanded_dense = set(op_plans.plan("attention_generation", "trtllm", 103).cases)
+        assert before_dense < expanded_dense
         assert any(case.input_len == 1048576 for case in expanded_context)
         assert any(case.input_len == 1048575 for case in expanded_generation)
     assert set(op_plans.plan("mla_context", "trtllm", 103).cases) == before_context

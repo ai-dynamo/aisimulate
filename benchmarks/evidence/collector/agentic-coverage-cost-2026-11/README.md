@@ -348,3 +348,9 @@ full until their receipt arrives; missing ledgers denote work not yet started,
 not successful zero-cost coverage. Allocation durations appear only in scheduler
 provenance and are never used as collection costs. Quotas remain per-system
 1 anchor plus0.375 validation GPU-hours and a separate1 correctness GPU-hour.
+
+The S generation fixture unions original #676 points with the guarded broad
+extensions. Applying the new KV-index guard to the entire old grid would remove
+existing anchors and understate collection cost; the fixture and regression test
+retain those baseline points. This is an incremental shared-grid counterfactual,
+not a literal replay of old #664 deletions.
