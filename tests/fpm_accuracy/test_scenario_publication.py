@@ -408,9 +408,9 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
         ),
     )
     monkeypatch.setattr(
-        cli.importlib.metadata,
-        "distribution",
-        lambda name: SimpleNamespace(
+        cli,
+        "installed_distribution",
+        lambda: SimpleNamespace(
             read_text=lambda filename: json.dumps({"archive_info": {"hashes": {"sha256": wheel_hash}}})
         ),
     )
