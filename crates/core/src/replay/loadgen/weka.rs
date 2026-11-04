@@ -36,10 +36,14 @@ const NANOSECONDS_PER_MILLISECOND: f64 = 1_000_000.0;
 const WEKA_CORPUS_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-corpus-v1\0";
 const WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2: &[u8] = b"aisimulate-weka-corpus-semantics-v2\0";
 
+const WEKA_CHAT_TEMPLATE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-weka-chat-template-v1\0";
+
+type WekaGraphCacheKey<K> = (K, WekaNestedTimestampBasis, Option<WekaChatTemplate>);
+
 #[derive(Default)]
 struct WekaGraphCache {
-    path_digests: HashMap<(PathBuf, WekaNestedTimestampBasis), String>,
-    graphs: HashMap<(String, WekaNestedTimestampBasis), CachedWekaGraph>,
+    path_digests: HashMap<WekaGraphCacheKey<PathBuf>, String>,
+    graphs: HashMap<WekaGraphCacheKey<String>, CachedWekaGraph>,
 }
 
 #[derive(Clone)]
@@ -113,6 +117,35 @@ impl WekaResolvedTimestampBasis {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WekaImportOptions {
     pub nested_timestamp_basis: WekaNestedTimestampBasis,
+    /// Tokens the served model's chat template adds to each prompt. `None`
+    /// replays the trace's `in` lengths and hash blocks unchanged.
+    pub chat_template: Option<WekaChatTemplate>,
+}
+
+/// Tokens a chat template adds around the message content that a Weka `in`
+/// counts. A turn is one request of a stream (a conversation, a detected chain
+/// or a subagent thread); each later turn's history adds one assistant and one
+/// user message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WekaChatTemplate {
+    /// Tokens on a stream's first request: the request's fixed tokens and its
+    /// one message's role header and end marker.
+    pub request_tokens: usize,
+    /// Tokens each later turn adds: the role headers and end markers of one
+    /// assistant and one user message.
+    pub turn_tokens: usize,
+    /// Tokens at the end of a request that the next turn's prompt does not
+    /// repeat: the last message's end marker and the generation prompt.
+    pub tail_tokens: usize,
+}
+
+impl WekaChatTemplate {
+    fn prompt_length(self, content_tokens: usize, turn: usize) -> usize {
+        content_tokens
+            .saturating_add(self.request_tokens)
+            .saturating_add(self.turn_tokens.saturating_mul(turn))
+    }
 }
 
 /// A preflighted local Weka corpus.
@@ -200,7 +233,7 @@ impl WekaImporter {
             )?;
         }
         let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis);
-        let digest = semantic_digest(&raw_digest, nested_timestamp_basis);
+        let digest = semantic_digest(&raw_digest, nested_timestamp_basis, options.chat_template);
 
         let mut plays = 0;
         let mut requests = 0;
@@ -225,6 +258,7 @@ impl WekaImporter {
                         source_name,
                         plays,
                         nested_timestamp_basis.effective_basis(),
+                        options.chat_template,
                     )?;
                     validate_preflight_graph(trace.block_size, &lowered.rows)?;
                     raw_zero_outputs += lowered.raw_zero_outputs;
@@ -391,7 +425,11 @@ pub(crate) fn load_weka_agentic_graph_cached(
 ) -> Result<(AgenticTrace, WekaResolvedTimestampBasis, bool)> {
     let canonical_path = canonical_source_path(path)?;
     let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
-    let path_key = (canonical_path.clone(), options.nested_timestamp_basis);
+    let path_key = (
+        canonical_path.clone(),
+        options.nested_timestamp_basis,
+        options.chat_template,
+    );
 
     let known_digest = if use_cache {
         cache
@@ -413,9 +451,11 @@ pub(crate) fn load_weka_agentic_graph_cached(
             .lock()
             .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
         if current_digest == known_digest
-            && let Some(cached) = cache
-                .graphs
-                .get(&(current_digest, options.nested_timestamp_basis))
+            && let Some(cached) = cache.graphs.get(&(
+                current_digest,
+                options.nested_timestamp_basis,
+                options.chat_template,
+            ))
         {
             assert_expected_block_size(&cached.graph, expected_block_size)?;
             tracing::info!(
@@ -450,7 +490,11 @@ pub(crate) fn load_weka_agentic_graph_cached(
     cache.path_digests.insert(path_key, raw_digest.clone());
     cache
         .graphs
-        .entry((raw_digest, options.nested_timestamp_basis))
+        .entry((
+            raw_digest,
+            options.nested_timestamp_basis,
+            options.chat_template,
+        ))
         .or_insert_with(|| CachedWekaGraph {
             graph: graph.clone(),
             resolved_timestamp_basis,
@@ -719,6 +763,7 @@ fn lower_trace(
     relative_path: &str,
     source_play_ordinal: usize,
     nested_timestamp_basis: WekaNestedTimestampBasis,
+    chat_template: Option<WekaChatTemplate>,
 ) -> Result<LoweredTrace> {
     validate_trace_header(trace, relative_path)?;
     let namespace = namespace(relative_path);
@@ -993,16 +1038,59 @@ fn lower_trace(
     let mut used_hashes = HashMap::new();
     let mut source_hashes = HashMap::new();
     for stream in streams {
-        for request in stream.requests {
+        // With a chat template: the stream's previous request, as its row and
+        // its trace content.
+        let mut previous: Option<(usize, usize, Vec<u64>)> = None;
+        for (turn, mut request) in stream.requests.into_iter().enumerate() {
             let request_id = row_by_source[&request.source_id].clone();
-            let hash_ids = normalized_hashes(
-                relative_path,
-                &request_id,
-                &request.request,
-                trace.block_size,
-                &mut used_hashes,
-                &mut source_hashes,
-            )?;
+            let content_tokens = request.request.input_length;
+            if let Some(template) = chat_template {
+                request.request.input_length = template.prompt_length(content_tokens, turn);
+            }
+            let hash_ids = match (chat_template, &previous) {
+                (Some(template), Some((row, previous_content, previous_trace_hashes))) => {
+                    let previous_row: &AgenticMooncakeRow = &rows[*row];
+                    // The next prompt repeats the previous one up to the trace
+                    // content the two share; the rest of the previous content
+                    // and the template's tail are not repeated.
+                    let shared_content =
+                        lcp(previous_trace_hashes, &request.request.hash_ids) * trace.block_size;
+                    let not_repeated = previous_content
+                        .saturating_sub(shared_content)
+                        .saturating_add(template.tail_tokens);
+                    let shared_tokens = previous_row
+                        .input_length
+                        .unwrap_or_default()
+                        .saturating_sub(not_repeated);
+                    // `shared_tokens` never exceeds the previous prompt, so
+                    // only its full blocks are repeated.
+                    templated_hashes(
+                        &request_id,
+                        request.request.input_length,
+                        previous_row.hash_ids.as_deref().unwrap_or_default(),
+                        shared_tokens / trace.block_size,
+                        trace.block_size,
+                        &mut used_hashes,
+                    )?
+                }
+                // A stream's first request keeps the trace's blocks; blocks
+                // past the trace's length are private to it.
+                _ => normalized_hashes(
+                    relative_path,
+                    &request_id,
+                    &request.request,
+                    trace.block_size,
+                    &mut used_hashes,
+                    &mut source_hashes,
+                )?,
+            };
+            if chat_template.is_some() {
+                previous = Some((
+                    rows.len(),
+                    content_tokens,
+                    std::mem::take(&mut request.request.hash_ids),
+                ));
+            }
             rows.push(AgenticMooncakeRow {
                 request_id,
                 play_id: play_id.clone(),
@@ -1460,6 +1548,39 @@ fn normalized_hashes(
     Ok(result)
 }
 
+/// Hash blocks of a templated request whose first `shared_blocks` full blocks
+/// repeat its stream predecessor's prompt. Its prompt diverges there, so the
+/// remaining blocks are private to the request.
+fn templated_hashes(
+    request_id: &str,
+    input_length: usize,
+    previous: &[u64],
+    shared_blocks: usize,
+    block_size: usize,
+    used: &mut HashMap<u64, String>,
+) -> Result<Vec<u64>> {
+    let full_blocks = input_length / block_size;
+    let has_partial = !input_length.is_multiple_of(block_size);
+    let shared = shared_blocks.min(full_blocks).min(previous.len());
+    let mut result = Vec::with_capacity(full_blocks + usize::from(has_partial));
+    result.extend_from_slice(&previous[..shared]);
+    for block_index in shared..full_blocks {
+        result.push(unique_hash(
+            "weka-full-block",
+            &format!("templated:{request_id}:{block_index}"),
+            used,
+        )?);
+    }
+    if has_partial {
+        result.push(unique_hash(
+            "weka-partial-tail",
+            &format!("{request_id}:{full_blocks}:{input_length}"),
+            used,
+        )?);
+    }
+    Ok(result)
+}
+
 fn unique_hash(domain: &str, identity: &str, used: &mut HashMap<u64, String>) -> Result<u64> {
     for nonce in 0_u32..=u32::MAX {
         let digest = blake3::hash(format!("{domain}\0{identity}\0{nonce}").as_bytes());
@@ -1742,13 +1863,28 @@ fn new_corpus_hasher() -> blake3::Hasher {
     hasher
 }
 
-fn semantic_digest(raw_digest: &str, basis: WekaResolvedTimestampBasis) -> String {
+fn semantic_digest(
+    raw_digest: &str,
+    basis: WekaResolvedTimestampBasis,
+    chat_template: Option<WekaChatTemplate>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(WEKA_CORPUS_SEMANTIC_DIGEST_DOMAIN_V2);
     hasher.update(&(raw_digest.len() as u64).to_le_bytes());
     hasher.update(raw_digest.as_bytes());
     hasher.update(&(basis.as_str().len() as u64).to_le_bytes());
     hasher.update(basis.as_str().as_bytes());
+    // Absent, the digest stays the one corpora had before chat templates.
+    if let Some(template) = chat_template {
+        hasher.update(WEKA_CHAT_TEMPLATE_DIGEST_DOMAIN_V1);
+        for tokens in [
+            template.request_tokens,
+            template.turn_tokens,
+            template.tail_tokens,
+        ] {
+            hasher.update(&(tokens as u64).to_le_bytes());
+        }
+    }
     hasher.finalize().to_hex().to_string()
 }
 
@@ -2327,6 +2463,124 @@ mod tests {
     }
 
     #[test]
+    fn chat_template_sets_prompt_lengths_and_shared_blocks_per_turn() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // One stream: outer:1 rewrites the partial block 3 and is spliced back
+        // as the seam continuation; outer:2 extends outer:1.
+        write_trace(
+            &path,
+            serde_json::json!([
+                {"t":0.0,"type":"s","model":"model","in":10,"out":1,"hash_ids":[1,2,3],"api_time":0.2},
+                {"t":1.0,"type":"s","model":"model","in":15,"out":1,"hash_ids":[1,2,9,10],"api_time":0.2},
+                {"t":2.0,"type":"s","model":"model","in":17,"out":1,"hash_ids":[1,2,9,10,11],"api_time":0.2}
+            ]),
+        );
+        let template = WekaChatTemplate {
+            request_tokens: 3,
+            turn_tokens: 2,
+            tail_tokens: 1,
+        };
+        let open = |chat_template| {
+            WekaImporter::open_with_options(
+                &path,
+                WekaImportOptions {
+                    chat_template,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let row = |rows: &[AgenticMooncakeRow], suffix: &str| {
+            rows.iter()
+                .find(|row| row.request_id.ends_with(suffix))
+                .unwrap()
+                .clone()
+        };
+        let plain = open(None);
+        let templated = open(Some(template));
+        let plain_rows = plain.collect_rows().unwrap().1;
+        let rows = templated.collect_rows().unwrap().1;
+        assert_eq!(
+            plain.header().source.digest,
+            WekaImporter::open(&path).unwrap().header().source.digest
+        );
+        assert_ne!(
+            plain.header().source.digest,
+            templated.header().source.digest
+        );
+        let (first, second, third) = (
+            row(&rows, "outer:0"),
+            row(&rows, "outer:1"),
+            row(&rows, "outer:2"),
+        );
+        assert_eq!(first.session_id, second.session_id);
+        assert_eq!(second.session_id, third.session_id);
+        let hashes = |row: &AgenticMooncakeRow| row.hash_ids.clone().unwrap();
+        let (first_hashes, second_hashes, third_hashes) =
+            (hashes(&first), hashes(&second), hashes(&third));
+
+        // Turn 0: 10 + 3 = 13 tokens: the trace's three blocks, all full now,
+        // then a partial one. Untemplated, 10 tokens fill only blocks 1 and 2.
+        assert_eq!(first.input_length, Some(13));
+        assert_eq!(first_hashes.len(), 4);
+        assert_eq!(first_hashes[..2], hashes(&row(&plain_rows, "outer:0"))[..2]);
+        // Turn 1: 15 + 3 + 2 = 20 tokens. The two share trace blocks 1 and 2
+        // (8 tokens), so outer:0's last 10 - 8 = 2 content tokens and its
+        // 1-token tail are not repeated: 13 - 3 = 10 shared tokens, 2 blocks.
+        assert_eq!(second.input_length, Some(20));
+        assert_eq!(second_hashes.len(), 5);
+        assert_eq!(second_hashes[..2], first_hashes[..2]);
+        // Turn 2: 17 + 3 + 4 = 24 tokens. It repeats all of outer:1's content,
+        // so only the tail is not repeated: 20 - 1 = 19 shared tokens, 4 blocks.
+        assert_eq!(third.input_length, Some(24));
+        assert_eq!(third_hashes.len(), 6);
+        assert_eq!(third_hashes[..4], second_hashes[..4]);
+        // Blocks past the shared prefix are private to their request.
+        let mut private = second_hashes[2..].to_vec();
+        private.extend_from_slice(&third_hashes[4..]);
+        private.push(first_hashes[3]);
+        let seen = plain_rows
+            .iter()
+            .flat_map(hashes)
+            .chain(first_hashes[..3].iter().copied())
+            .collect::<HashSet<_>>();
+        assert!(private.iter().all(|hash| !seen.contains(hash)));
+        assert_eq!(private.iter().collect::<HashSet<_>>().len(), private.len());
+    }
+
+    #[test]
+    fn chat_template_keys_the_graph_cache() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        write_trace(&path, serde_json::json!([request(0.0, 10, 1, &[1, 2, 3])]));
+        let load = |chat_template| {
+            load_weka_agentic_graph_cached(
+                &path,
+                None,
+                WekaImportOptions {
+                    chat_template,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap()
+        };
+        let length = |loaded: (AgenticTrace, WekaResolvedTimestampBasis, bool)| {
+            (loaded.0.nodes()[0].input_length(), loaded.2)
+        };
+        let template = WekaChatTemplate {
+            request_tokens: 3,
+            turn_tokens: 2,
+            tail_tokens: 1,
+        };
+        assert_eq!(length(load(None)), (10, false));
+        assert_eq!(length(load(Some(template))), (13, false));
+        assert_eq!(length(load(Some(template))), (13, true));
+        assert_eq!(length(load(None)), (10, true));
+    }
+
+    #[test]
     fn explicit_subagent_spawn_and_join_use_one_parent_stream() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("trace.json");
@@ -2744,6 +2998,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .err()
@@ -2887,6 +3142,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2894,6 +3150,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2931,6 +3188,7 @@ mod tests {
             &path,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Absolute,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2987,6 +3245,7 @@ mod tests {
             &equivalent,
             WekaImportOptions {
                 nested_timestamp_basis: WekaNestedTimestampBasis::Relative,
+                ..Default::default()
             },
         )
         .unwrap();

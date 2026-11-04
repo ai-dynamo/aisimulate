@@ -805,6 +805,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "chat_template": {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8},
                 },
                 "load": {
                     "type": "trace_timestamps",
@@ -827,6 +828,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["arrival_speedup_ratio"] == 2.0
     assert workload["agentic_lanes"] == 3
     assert workload["weka_nested_timestamp_basis"] == "relative"
+    assert workload["weka_chat_template"] == {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -967,6 +969,22 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
                 "weka_nested_timestamp_basis": "guess",
             },
             "must be 'auto', 'absolute', or 'relative'",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "mooncake",
+                "weka_chat_template": {"request_tokens": 1, "turn_tokens": 1, "tail_tokens": 1},
+            },
+            "weka_chat_template requires Weka input",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "weka",
+                "weka_chat_template": {"request_tokens": -1, "turn_tokens": 1, "tail_tokens": 1},
+            },
+            "greater than or equal to 0",
         ),
     ],
 )

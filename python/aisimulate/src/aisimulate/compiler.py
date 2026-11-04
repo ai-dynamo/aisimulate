@@ -1028,6 +1028,8 @@ def _traffic(
         )
         if source.nested_timestamp_basis is not None:
             workload["weka_nested_timestamp_basis"] = source.nested_timestamp_basis
+        if source.chat_template is not None:
+            workload["weka_chat_template"] = source.chat_template.model_dump(mode="json")
         if load.type == "concurrency":
             workload["replay_concurrency"] = load.concurrency
         else:

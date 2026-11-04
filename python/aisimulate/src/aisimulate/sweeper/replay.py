@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from ..config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
+from ..config.traffic import AgenticProfileOptions, AgenticSnapshotOptions, WekaChatTemplate
 from ..fpm_profile import load_fpm_profile
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
@@ -609,6 +609,11 @@ class RunnerCapabilities:
                 raise ValueError("weka_nested_timestamp_basis requires Weka input")
             if weka_basis not in {"auto", "absolute", "relative"}:
                 raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        weka_chat_template = spec.workload.get("weka_chat_template")
+        if weka_chat_template is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_chat_template requires Weka input")
+            WekaChatTemplate.model_validate(weka_chat_template)
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

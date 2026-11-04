@@ -92,12 +92,21 @@ TraceFormat = Literal[
 WekaNestedTimestampBasis = Literal["auto", "absolute", "relative"]
 
 
+class WekaChatTemplate(StrictModel):
+    """Tokens the served model's chat template adds around the content a Weka `in` counts."""
+
+    request_tokens: NonNegativeInt
+    turn_tokens: NonNegativeInt
+    tail_tokens: NonNegativeInt
+
+
 class TraceSource(StrictModel):
     type: Literal["trace"]
     paths: list[str]
     format: TraceFormat = "mooncake"
     block_size: PositiveInt | None = None
     nested_timestamp_basis: WekaNestedTimestampBasis | None = None
+    chat_template: WekaChatTemplate | None = None
 
     @field_validator("paths")
     @classmethod
@@ -114,6 +123,8 @@ class TraceSource(StrictModel):
             self.block_size = 512
         if self.nested_timestamp_basis is not None and self.format != "weka":
             raise ValueError("nested_timestamp_basis is only valid for trace format 'weka'")
+        if self.chat_template is not None and self.format != "weka":
+            raise ValueError("chat_template is only valid for trace format 'weka'")
         return self
 
 

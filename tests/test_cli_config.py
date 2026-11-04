@@ -1007,6 +1007,31 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
             }
         )
 
+    template = {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
+    templated_weka = CorePredictionConfig.model_validate(
+        {
+            "traffic": {
+                "source": {"type": "trace", "paths": ["weka-corpus"], "format": "weka", "chat_template": template},
+                "load": {"type": "trace_timestamps"},
+            },
+            "engine": _engine(),
+        }
+    )
+    assert weka.traffic.source.chat_template is None
+    assert templated_weka.traffic.source.chat_template.model_dump() == template
+    for source, message in (
+        ({"paths": ["trace.jsonl"], "format": "mooncake", "chat_template": template}, "only valid for trace format"),
+        ({"paths": ["weka-corpus"], "format": "weka", "chat_template": {**template, "turn_tokens": -1}}, "turn_tokens"),
+        ({"paths": ["weka-corpus"], "format": "weka", "chat_template": {"request_tokens": 16}}, "turn_tokens"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            CorePredictionConfig.model_validate(
+                {
+                    "traffic": {"source": {"type": "trace", **source}, "load": {"type": "trace_timestamps"}},
+                    "engine": _engine(),
+                }
+            )
+
 
 @pytest.mark.parametrize(
     "traffic",
