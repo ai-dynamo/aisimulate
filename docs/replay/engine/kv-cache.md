@@ -503,8 +503,8 @@ AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
 one aggregated worker, one prefill and one decode worker, or several aggregated
 workers that each own a `dp_rank_local` G2. All need `attention_data: 1`, static
 workers and no speculative decoding. Either G2 scope works with one worker per
-role; G3 is not supported. `kvcr` is accepted; it pulls only when a router hint
-names a peer worker. Results are qualified `functional_only`.
+role; G3 is not supported. `kvcr` is accepted but never pulls, because agentic
+traffic carries no router hint. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 
