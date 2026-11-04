@@ -13,6 +13,28 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 prefill admission and ratio lifecycle
+
+The admission budget, arrival limits, continuation priority, and ratio
+lifecycle in repository-root
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the protected-prefix capacity check in
+`crates/core/src/engine/kv_manager/sglang_backend.rs`, the regression fixtures in
+`crates/core/src/replay/components/engine.rs` and `crates/core/tests/engine.rs`,
+and the descriptions in
+`docs/replay/engine/{workers.md,sglang-vl-host-loop.md}` are modified behavioral
+adaptations of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/mem_cache/{prefill_budget.py,allocator/base.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_policy.py,schedule_batch.py,tp_worker.py,utils.py}`,
+and `python/sglang/srt/managers/scheduler_components/new_token_ratio_tracker.py`.
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's synchronous request leases
+and discrete-event scheduling. No serving implementation is vendored.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root

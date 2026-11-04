@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
@@ -76,6 +77,237 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
         uuid: None,
         arrival_timestamp_ms: None,
         ..Default::default()
+    }
+}
+
+mod admission_v0522 {
+    use super::*;
+
+    #[test]
+    fn arrival_clips_generation_to_the_empty_pool_budget() {
+        let mut core = SglangCore::new(test_args(63, 16, 8192));
+        core.receive(direct_request((0..900).collect(), 100));
+        assert_eq!(core.waiting[0].max_output_tokens, 79);
+        let mut outputs = 0;
+        let mut now = 0.0;
+        for _ in 0..90 {
+            let pass = core.execute_hidden_pass(now);
+            assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+            outputs += pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count();
+            now = pass.end_ms;
+            if core.is_drained() {
+                break;
+            }
+        }
+        assert_eq!(outputs, 79);
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn a_candidate_cannot_spend_its_own_cached_prefix() {
+        let config = SglangConfig::from_args(&test_args(128, 16, 8192));
+        let mut manager = SglangKvManager::new(2048, 16, KvEventPublishers::default(), 0);
+        let prefix = (10_000..10_512).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&prefix).unwrap();
+        manager.finish(&prefix, cached.lease);
+        let mut shared = prefix.clone();
+        shared.extend(20_000..20_512);
+        let mut waiting = WaitingQueue::from([
+            SglangRequest::new(direct_request((0..1000).collect(), 16), 16, 0),
+            SglangRequest::new(direct_request(shared, 16), 16, 0),
+        ]);
+        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        assert_eq!(result.can_run.len(), 1);
+        assert_eq!(waiting.len(), 1);
+        assert!(result.batch_is_full);
+        assert_eq!(
+            manager.cache().evictable_size,
+            512,
+            "rejected match releases its temporary pin"
+        );
+        assert_eq!(
+            manager
+                .cache()
+                .prefix_match_hashes_len(&compute_block_hash_for_seq(&prefix, 16)),
+            512
+        );
+    }
+
+    #[test]
+    fn a_small_first_chunk_does_not_bypass_the_whole_prompt_gate() {
+        let config = SglangConfig::from_args(&test_args(16, 4, 8));
+        let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+        let held = manager.allocate_for_request(&vec![99; 40]).unwrap();
+        let mut waiting = WaitingQueue::from([SglangRequest::new(
+            direct_request((0..32).collect(), 4),
+            4,
+            0,
+        )]);
+        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        assert!(result.can_run.is_empty());
+        assert_eq!(manager.cache().available_tokens(), 24);
+        assert!(!waiting[0].kv_lease.is_active());
+        manager.abort(held.lease);
+    }
+
+    #[rstest::rstest]
+    #[case(0.9, 6)]
+    #[case(0.975, 10)]
+    fn continuation_makes_progress_even_when_the_batch_is_full(
+        #[case] ratio: f64,
+        #[case] expected_materialized: usize,
+    ) {
+        let mut args = test_args(16, 4, 6);
+        args.max_num_seqs = Some(1);
+        let config = SglangConfig::from_args(&args);
+        let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+        let mut waiting = WaitingQueue::from([SglangRequest::new(
+            direct_request((0..12).collect(), 1),
+            4,
+            0,
+        )]);
+        let mut first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[], false);
+        let continuation = first.can_run.pop().unwrap();
+        assert_eq!(continuation.materialized_tokens, 4);
+        waiting.push_back(continuation);
+
+        let mut running = SglangRequest::new(direct_request(vec![99; 4], 54), 4, 0);
+        running.sequence_tokens.extend(vec![100; 34]);
+        manager
+            .allocate_for_request_lease_capped(&running.sequence_tokens, &mut running.kv_lease, 0)
+            .unwrap();
+        running.materialized_tokens = 38;
+        running.allocated_tokens = 40;
+        running.debug_assert_invariants(4);
+        let second =
+            get_new_batch_prefill(&mut waiting, &mut manager, &config, ratio, &[running], true);
+        assert_eq!(second.can_run.len(), 1);
+        assert_eq!(second.can_run[0].materialized_tokens, expected_materialized);
+        assert_eq!(
+            second.prefill_fpm[0].tokens_computed,
+            expected_materialized - 4
+        );
+        assert!(second.admissions.is_empty());
+    }
+
+    #[test]
+    fn lpm_keeps_the_owned_continuation_ahead_of_a_longer_hit() {
+        let mut args = test_args(64, 4, 8);
+        args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        let config = SglangConfig::from_args(&args);
+        let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
+        let hot = vec![99; 32];
+        let cached = manager.allocate_for_request(&hot).unwrap();
+        manager.finish(&hot, cached.lease);
+        let mut waiting = WaitingQueue::from([SglangRequest::new(
+            direct_request((0..24).collect(), 1),
+            4,
+            0,
+        )]);
+        let mut first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let continuation = first.can_run.pop().unwrap();
+        let id = continuation.uuid;
+        waiting.push_back(SglangRequest::new(direct_request(hot, 1), 4, 0));
+        waiting.push_back(continuation);
+        apply_schedule_policy(&mut waiting, &manager, &config);
+        assert_eq!(waiting.front().unwrap().uuid, id);
+        let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        assert_eq!(next.can_run[0].uuid, id);
+        assert!(next.admissions.is_empty());
+    }
+
+    #[test]
+    fn ratio_stays_put_while_blocked_and_resets_only_after_queues_drain() {
+        let mut core = SglangCore::new(test_args(16, 4, 16));
+        let held = core.kv_manager.allocate_for_request(&vec![99; 56]).unwrap();
+        let id = core.receive(direct_request((0..8).collect(), 4));
+        core.new_token_ratio = 0.3;
+        for _ in 0..3 {
+            let pass = core.execute_hidden_pass(0.0);
+            assert!(pass.admissions.is_empty());
+            assert_eq!(core.new_token_ratio, 0.3);
+            assert_eq!(
+                pass.same_timestamp_retry,
+                crate::engine::generalized::SameTimestampRetry::Exhausted
+            );
+        }
+        core.apply_command(SchedulerCommand::CancelRequest { request_id: id })
+            .unwrap();
+        core.kv_manager.abort(held.lease);
+        core.execute_hidden_pass(0.0);
+        assert_eq!(core.new_token_ratio, core.config.init_new_token_ratio);
+    }
+
+    #[test]
+    fn arrival_on_an_idle_rank_preserves_the_ratio_until_the_group_starts_a_new_wave() {
+        let mut core = SglangCore::new(test_args(16, 4, 16));
+        core.new_token_ratio = 0.3;
+        core.prepare_group_pass(5);
+        core.finish_group_pass(false, true);
+        assert!(core.is_drained());
+        core.receive(direct_request((0..8).collect(), 4));
+        core.prepare_group_pass(6);
+        let pass = core.execute_hidden_pass(0.0);
+        core.finish_group_pass(true, true);
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(core.new_token_ratio, 0.3);
+
+        core.apply_command(SchedulerCommand::CancelRequest {
+            request_id: pass.admissions[0].uuid,
+        })
+        .unwrap();
+        assert!(core.is_drained());
+        core.receive(direct_request((20..28).collect(), 4));
+        core.prepare_group_pass(0);
+        assert_eq!(core.new_token_ratio, core.config.init_new_token_ratio);
+    }
+
+    #[test]
+    fn finishing_inflight_memory_skips_decode_without_retraction_or_ratio_decay() {
+        let mut args = test_args(16, 1, 16);
+        args.sglang.as_mut().unwrap().host_loop = true;
+        let mut core = SglangCore::new(args);
+        let done = core.receive(direct_request(vec![1, 2], 1));
+        let survivor = core.receive(direct_request(vec![3, 4], 3));
+        let first = core.execute_hidden_pass(0.0);
+        assert_eq!(core.running.len(), 2);
+        let held = core.kv_manager.allocate_for_request(&vec![99; 11]).unwrap();
+        core.new_token_ratio = 0.4;
+        let skipped = core.execute_hidden_pass(first.end_ms);
+        assert!(skipped.pressure_events.is_empty());
+        assert_eq!(skipped.fpm.unwrap().num_decode_requests, 0);
+        assert!(
+            skipped
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == done && signal.completed)
+        );
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(core.running[0].uuid, survivor);
+        assert_eq!(core.running[0].output_len(), 1);
+        assert_eq!(core.new_token_ratio, 0.4);
+        let resumed = core.execute_hidden_pass(skipped.end_ms);
+        assert_eq!(resumed.fpm.unwrap().num_decode_requests, 1);
+        assert!(resumed.pressure_events.is_empty());
+        assert_eq!(
+            core.new_token_ratio,
+            0.4 - core.config.new_token_ratio_decay_step
+        );
+        core.kv_manager.abort(held.lease);
+    }
+
+    #[test]
+    fn initial_ratio_is_capped_before_minimum_and_decay_are_derived() {
+        let mut args = test_args(64, 4, 16);
+        args.sglang.as_mut().unwrap().schedule_conservativeness = Some(2.0);
+        let config = SglangConfig::from_args(&args);
+        assert_eq!(config.init_new_token_ratio, 1.0);
+        assert_eq!(config.min_new_token_ratio, 0.14);
+        assert_eq!(config.new_token_ratio_decay_step, 0.86 / 600.0);
     }
 }
 
@@ -194,7 +426,7 @@ fn rejects_prompt_at_or_above_max_model_len(
         );
     }
     // A rejected request must not block later valid work.
-    core.receive(direct_request(vec![1; 7], 10));
+    core.receive(direct_request(vec![1], 1));
     let mut signals = Vec::new();
     for step in 0..4 {
         signals.extend(
@@ -266,7 +498,8 @@ fn belady_keeps_failed_admission_outstanding_until_terminal_cancellation() {
     let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
     let uuid = Uuid::from_u128(1);
     let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
-    let mut core = SglangCore::new(test_args(1, 4, 8));
+    let mut core = SglangCore::new(test_args(16, 4, 8));
+    let held = core.kv_manager.allocate_for_request(&vec![99; 56]).unwrap();
     core.set_belady_oracle(oracle.clone());
     let mut request = direct_request(tokens, 0);
     request.uuid = Some(uuid);
@@ -281,6 +514,7 @@ fn belady_keeps_failed_admission_outstanding_until_terminal_cancellation() {
         .unwrap();
     assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
     assert!(core.is_empty());
+    core.kv_manager.abort(held.lease);
 }
 
 #[test]
@@ -290,7 +524,7 @@ fn request_storage_reservation_is_bounded_for_submit_and_destination() {
     const CLIP_MAX_NEW_TOKENS: usize = 7;
     let args = MockEngineArgs::builder()
         .engine_type(EngineType::Sglang)
-        .num_gpu_blocks(4)
+        .num_gpu_blocks(8)
         .block_size(BLOCK_SIZE)
         .speedup_ratio(0.0)
         .sglang(Some(SglangArgs {
@@ -349,7 +583,7 @@ fn request_storage_reservation_is_bounded_for_submit_and_destination() {
         ..Default::default()
     });
     let (token_capacity, hash_capacity) = core.request_storage_capacities(planned).unwrap();
-    let realizable_planned = 8;
+    let realizable_planned = 9;
     assert!(token_capacity >= prompt.len() + realizable_planned);
     assert!(hash_capacity >= (prompt.len() + realizable_planned) / BLOCK_SIZE);
     assert!(
@@ -421,9 +655,9 @@ fn interval_idle_ratio_distinguishes_a_busy_peer_from_global_idle() {
     core.new_token_ratio = ratio_after_prior_decodes;
 
     // A peer's EXTEND arms this idle rank too.
-    core.prepare_group_pass();
+    core.prepare_group_pass(1);
     core.finish_group_pass(true, true);
-    core.prepare_group_pass();
+    core.prepare_group_pass(2);
     let pass = core.execute_hidden_pass(0.0);
     assert_eq!(pass.end_ms, 0.0);
     assert!(!core.model_work_in_pass());
@@ -432,7 +666,7 @@ fn interval_idle_ratio_distinguishes_a_busy_peer_from_global_idle() {
 
     // On the next round the whole group is idle: upstream on_idle resets the
     // ratio. This round must neither keep decaying it nor retain the old value.
-    core.prepare_group_pass();
+    core.prepare_group_pass(3);
     core.execute_hidden_pass(0.0);
     core.finish_group_pass(false, false);
     assert_eq!(core.new_token_ratio, core.config.init_new_token_ratio);
@@ -440,33 +674,27 @@ fn interval_idle_ratio_distinguishes_a_busy_peer_from_global_idle() {
 }
 
 #[test]
-fn same_timestamp_retry_hint_stops_when_admission_state_converges() {
+fn impossible_prompt_is_rejected_without_same_timestamp_retries() {
     let mut core = SglangCore::new(test_args(1, 4, 8));
     core.receive(direct_request(vec![1; 8], 2));
     let now_ms = 37.0;
-    let mut retries = 0usize;
-
-    let terminal_retry_status = loop {
-        let pass = core.execute_pass_internal(None, now_ms);
-        assert_eq!(pass.end_ms, now_ms, "retry must not advance virtual time");
-        assert!(pass.admissions.is_empty());
-        assert!(pass.output_signals.is_empty());
-        assert!(pass.pressure_events.is_empty());
-        assert!(pass.lifecycle_events.is_empty());
-        assert!(pass.kv_events.is_empty());
-        if pass.same_timestamp_retry != crate::engine::generalized::SameTimestampRetry::Retry {
-            break pass.same_timestamp_retry;
-        }
-        retries += 1;
-        assert!(retries < 1024, "SGLang admission state must converge");
-    };
-
-    assert!(retries > 1, "the regression must exercise repeated retries");
+    let pass = core.execute_pass_internal(None, now_ms);
+    assert_eq!(pass.end_ms, now_ms);
+    assert!(pass.admissions.is_empty());
+    assert!(matches!(
+        pass.output_signals.as_slice(),
+        [OutputSignal {
+            rejected: true,
+            completed: true,
+            token_id: None,
+            ..
+        }]
+    ));
     assert_eq!(
-        terminal_retry_status,
+        pass.same_timestamp_retry,
         crate::engine::generalized::SameTimestampRetry::Exhausted
     );
-    assert!(!core.is_empty(), "the impossible request remains in flight");
+    assert!(core.is_drained());
 }
 
 #[test]
@@ -631,9 +859,9 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let args = test_args(8, 4, 16);
     let config = SglangConfig::from_args(&args);
     let (buffer, sink) = capture_kv_event_sink();
-    // Three pages. The cached prompt spans two; SGLang's `input_len - 1` match cap means the
+    // Four pages. The cached prompt spans two; SGLang's `input_len - 1` match cap means the
     // admitted request reuses only the first cached page and owns a fresh page for the rest.
-    let mut kv_manager = SglangKvManager::new(15, 4, KvEventPublishers::new(Some(sink)), 0);
+    let mut kv_manager = SglangKvManager::new(16, 4, KvEventPublishers::new(Some(sink)), 0);
     let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
     let cached = kv_manager.allocate_for_request(&prompt).unwrap();
@@ -652,7 +880,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         images: Vec::new(),
         pending_terminal: false,
     }]);
-    let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[])
+    let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false)
         .can_run
         .pop()
         .unwrap();
@@ -661,21 +889,21 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(req.kv_pages()[..1], cached_pages[..1]);
     assert_eq!(req.kv_pages().len(), 2);
 
-    // The three-token blocker owns a complete physical page (it evicts the second, no longer
-    // referenced cached page to get it). With three pages total there is no free capacity, so the
+    // The seven-token blocker owns two pages (it evicts the second, no longer
+    // referenced cached page to get them). With four pages total there is no free capacity, so the
     // cache-hit request is retracted while the blocker can fill the remainder of its own page.
-    let blocker_tokens = vec![9, 10, 11];
+    let blocker_tokens = vec![9, 10, 11, 12, 13, 14, 15];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
     let blocker = SglangRequest {
         is_decode_handoff: false,
         uuid: Uuid::from_u128(90_003),
         sequence_tokens: blocker_tokens,
-        prompt_len: 3,
+        prompt_len: 7,
         max_output_tokens: 1,
         planned_output_ids: None,
         kv_lease: blocker_alloc.lease,
-        materialized_tokens: 3,
-        allocated_tokens: 4,
+        materialized_tokens: 7,
+        allocated_tokens: 8,
         images: Vec::new(),
         pending_terminal: false,
     };
@@ -708,8 +936,8 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert!(pressure.state_after.active_blocks <= pressure.state_before.active_blocks);
     // The retraction itself frees only the page the request owned beyond the cached prefix; the
     // second cached page had already been evicted for the blocker.
-    assert_eq!(pressure.state_before.active_blocks, 3);
-    assert_eq!(pressure.state_after.active_blocks, 2);
+    assert_eq!(pressure.state_before.active_blocks, 4);
+    assert_eq!(pressure.state_after.active_blocks, 3);
     // That leaves the cached first page unprotected, and `release_req` evicts it toward the
     // blocker's 20-token reserve. The private page was never published.
     kv_manager.flush_events();
@@ -2262,7 +2490,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_chunked_prefill_admits_next_chunk_when_full_prompt_does_not_fit() {
+    fn test_chunked_prefill_waits_when_full_prompt_does_not_fit() {
         let config = SglangConfig {
             chunked_prefill_size: 8,
             ..SglangConfig::from_args(
@@ -2288,9 +2516,10 @@ mod core_behavior {
             pending_terminal: false,
         }]);
 
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].materialized_tokens, 8);
+        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false);
+        assert!(admit.can_run.is_empty());
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(kv_manager.cache().available_tokens(), 12);
     }
 
     #[test]
@@ -3233,6 +3462,7 @@ mod forward_pass_metrics {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         let fresh = Uuid::from_u128(3);
+        let mut first = None;
         for (uuid, tokens, max_output_tokens) in [
             (r1, (0..4).collect::<Vec<_>>(), 30),
             (r2, (100..104).collect(), 30),
@@ -3247,10 +3477,13 @@ mod forward_pass_metrics {
                 images: Vec::new(),
                 kv_hint: None,
             });
+            if uuid == r1 {
+                first = Some(core.execute_pass(&mut collector, 0.0));
+            }
         }
-        // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
-        // pass once r1's remaining output is only reserved at `new_token_ratio`.
-        let first = core.execute_pass(&mut collector, 0.0);
+        // Submit r2 after r1's prefill so its admission uses the running reserve
+        // ratio. Queueing both initially would mark the running batch full.
+        let first = first.unwrap();
         assert_eq!(core.running.len(), 1);
         // A request that does not fit waits in the queue ahead of any retraction.
         core.receive(DirectRequest {
@@ -3516,10 +3749,12 @@ mod forward_pass_metrics {
 
     #[test]
     fn test_single_token_requests_finish_in_the_prefill_pass_without_kv_slots() {
-        // Two 4-token prompts with `max_output_tokens = 1` fill two of three pages. SGLang finishes
+        // Two 4-token prompts with `max_output_tokens = 1` need five pages of admission headroom. SGLang finishes
         // them in `process_batch_result_prefill` → `check_finished()`: the sampled token never gets
         // a KV slot, so there is no decode forward and no memory pressure at all.
-        let mut core = SglangCore::new(three_page_args());
+        let mut args = three_page_args();
+        args.num_gpu_blocks = 5;
+        let mut core = SglangCore::new(args);
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
@@ -3956,13 +4191,13 @@ mod host_loop_passes {
     }
 
     #[test]
-    fn decode_metrics_count_the_ghost_rows_the_forward_runs() {
+    fn decode_metrics_exclude_aggregated_rows_finishing_inflight() {
         // Two four-token prompts prefill together; a request that finishes on its
-        // first token stays a batch member of the next decode under the host loop.
+        // first token is excluded from the next aggregated decode under the host loop.
         for (host_loop, outputs, rows, kv_tokens) in [
             (false, [1, 3], 1, 5),
-            (true, [1, 3], 2, 10),
-            (true, [1, 1], 2, 10),
+            (true, [1, 3], 1, 5),
+            (true, [1, 1], 0, 0),
         ] {
             let mut args = test_args(128, 1, 128);
             args.sglang.as_mut().unwrap().host_loop = host_loop;
@@ -4041,21 +4276,13 @@ mod host_loop_passes {
         );
         assert!(!core.is_drained());
 
-        // Iteration 2: the finished request is still a batch member, so a decode
-        // launches; it synchronizes with the forward (20) and the GPU runs it 20..24.
-        // The first forward's result is observed at 20.
+        // Iteration 2 filters the row finishing by length. No decode launches;
+        // the first forward's result is observed at 20 and the core drains.
         let second = core.execute_hidden_pass(first.end_ms);
         assert_eq!(second.end_ms, 20.0);
         assert_eq!(second.output_signals.len(), 1);
         assert!(second.output_signals[0].completed);
         assert_eq!(second.output_signals[0].uuid, uuid);
-        assert!(!core.is_drained());
-
-        // Iteration 3: nothing to launch; the ghost decode's empty result is observed
-        // when the GPU finishes it (24).
-        let third = core.execute_hidden_pass(second.end_ms);
-        assert_eq!(third.end_ms, 24.0);
-        assert!(third.output_signals.is_empty());
         assert!(core.is_drained());
     }
 
@@ -4516,6 +4743,9 @@ mod host_loop_passes {
                 uuid: Some(Uuid::from_u128(uuid)),
                 ..direct_request(tokens.collect(), 30)
             });
+            if uuid == 1 {
+                core.execute_hidden_pass(0.0);
+            }
         }
         let mut delivered = std::collections::HashMap::<Uuid, usize>::new();
         let mut now_ms = 0.0;
@@ -4641,8 +4871,8 @@ mod vision_batches {
     fn decode_ranks_prefill_again_without_pricing_the_tower() {
         // A decode rank prefills only after a retraction, and its timing model has no
         // vision prices: the images were encoded on the prefill rank. Two decode rows
-        // own the whole pool; the one without output is retracted with its placeholders
-        // and prefills again in the next pass.
+        // share a pool under an external KV hold; the one without output is
+        // retracted with its placeholders and prefills after that hold releases.
         struct LatencyOnly;
         impl crate::engine::TimingModel for LatencyOnly {
             fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
@@ -4658,7 +4888,7 @@ mod vision_batches {
                 Ok(1.0)
             }
         }
-        let mut args = test_args(2, 4, 16);
+        let mut args = test_args(8, 4, 16);
         args.worker_type = crate::engine::common::protocols::WorkerType::Decode;
         args.perf_model = crate::engine::common::perf_model::PerfModel::External {
             timing: Arc::new(LatencyOnly),
@@ -4692,10 +4922,12 @@ mod vision_batches {
             });
         }
 
+        let held = core.kv_manager.allocate_for_request(&vec![99; 24]).unwrap();
         let first = core.execute_hidden_pass(0.0);
         let requeued = core.waiting.front().unwrap();
         assert_eq!(requeued.uuid, retracted);
         assert_eq!(requeued.images, images, "retraction keeps the placeholders");
+        core.kv_manager.abort(held.lease);
 
         let second = core
             .try_execute_hidden_pass(first.end_ms)

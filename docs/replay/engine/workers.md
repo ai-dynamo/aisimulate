@@ -77,6 +77,15 @@ fallback used for filtering is not copied into that payload. AFD companion
 workers follow the same rule for their role. These are serving limits, not
 measured performance data.
 
+Native SGLang admission follows v0.5.22. For context limit `C`, KV token
+capacity `K`, page size `B`, and prompt length `P`, its request limit is
+`R = min(C - 1, K - 1)` (with unset `C` bounded by `K`). Prompts at or above
+`R - 5`, or whose prompt plus one page cannot fit strictly below `K`, are
+rejected. Requested outputs are clamped to the nonnegative minimum of the
+requested count, `R - P - 1`, and `K - ceil(P / B) * B - B - 1`.
+This can shorten generation even when the configured context is larger than
+the prompt plus the requested outputs.
+
 ## Parallelism
 
 ### GPU count
@@ -156,6 +165,23 @@ With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a
 prompt larger than `max_batched_tokens` can never be scheduled and the run
 fails. Keep `max_batched_tokens` at least as large as the longest prompt.
+
+SGLang checks the whole remaining prompt before admitting its first chunk.
+The check protects the matched prefix from eviction and reserves one page
+plus the remaining output budget (clipped at 4096 tokens by default).
+Each admitted chunk charges page-rounded input and one page of overhead;
+only the final chunk also reserves outputs. Thus, a small chunk size cannot
+make an otherwise unfit request admissible. An in-flight chunk runs before
+new requests, including with LPM, and may use a partial-page compute budget
+to make progress.
+
+Running requests reserve their remaining output budget at `new_token_ratio`.
+Its initial value is `min(0.7 * schedule_conservativeness, 1)`, its floor is
+14% of that initial value, and each non-retracting running-batch update
+decays it by one six-hundredth of the initial-to-floor distance. Retraction
+re-estimates it from the survivors. Fully idle workers reset it; queued or
+transfer-held work does not. A skipped decode waiting for an in-flight
+completion neither retracts requests nor decays the ratio.
 
 <a id="vllm-prefill-schedule-interval"></a>
 

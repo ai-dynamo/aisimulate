@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Behavioral model of the SGLang scheduler loop (`Scheduler.get_next_batch_to_run`,
-//! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
-//! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
+//! `update_running_batch`, `ScheduleBatch.retract_decode`). Re-implemented in
 //! Rust from the observed semantics; no SGLang source is copied. The overlap-iteration wiring
 //! hosted here (the `HostLoop` drain, `inflight_source`, the prefix-cache commits deferred until
 //! the forward's result is observed, and the pricing of vision-cache misses) was verified against
-//! v0.5.19 (`0bcd822`); batch selection and the prefill/decode interval keep the `5c8bd8b5` pin.
+//! v0.5.19 (`0bcd822`). Prefill admission, arrival limits, the ratio lifecycle and filtering
+//! in-flight length completions follow public v0.5.22 (`baa9befa381511cd4d56f83980951e5a45fffc6d`);
+//! see THIRD_PARTY_NOTICES.md for the source paths.
 //! The decode retraction order and its post-release eviction (`retract_decode`, `release_req`)
 //! were verified against v0.5.20 (`94602c9c`).
 //!
@@ -44,8 +45,9 @@ use crate::engine::{
 
 use super::config::SglangConfig;
 use super::decode::{
-    DecodeShape, cache_materialized_prefix, cache_prefix_through, cleanup_completed_request,
-    price_decode_shape, simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
+    DecodeResult, DecodeShape, cache_materialized_prefix, cache_prefix_through,
+    cleanup_completed_request, decode_memory_fits, price_decode_shape,
+    simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
 };
 use super::frontend::FrontendRuntime;
 use super::host_loop::{ForwardOutputs, HostLoop};
@@ -72,6 +74,7 @@ pub(crate) struct SglangCore {
     prebuilt_ready: VecDeque<SglangRequest>,
     pub(super) running: Vec<SglangRequest>,
     pub(super) new_token_ratio: f64,
+    batch_is_full: bool,
     pub(super) kv_manager: SglangKvManager,
     belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
@@ -103,7 +106,6 @@ pub(crate) struct SglangCore {
     prefill_in_pass: bool,
     model_work_in_pass: bool,
     decode_forwards: usize,
-    interval_idle_in_pass: bool,
     /// The scheduled pass awaiting its forward time.
     unpriced: Option<UnpricedPass>,
 }
@@ -266,6 +268,7 @@ impl SglangCore {
             prebuilt_ready: VecDeque::new(),
             running: Vec::new(),
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
+            batch_is_full: false,
             kv_manager: SglangKvManager::new_with_prefix_caching(
                 total_tokens,
                 args.block_size,
@@ -287,7 +290,6 @@ impl SglangCore {
             prefill_in_pass: false,
             model_work_in_pass: false,
             decode_forwards: 0,
-            interval_idle_in_pass: false,
             unpriced: None,
             #[cfg(test)]
             destination_reservation_attempts: 0,
@@ -643,18 +645,15 @@ impl SglangCore {
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
-        // This is the normalized context budget, without SGLang frontend margins.
-        // GPU parity at context_length=128: a 16-token prompt requesting 112
-        // tokens yielded 110; requesting 113 or using a prompt >=122 was rejected.
-        // Reproduce with a pinned version/config before
-        // modeling these differences; they do not establish a fixed token offset.
-        // https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045
-        let max_output_tokens = request.effective_max_output_tokens().min(
-            self.config
-                .max_model_len
-                .map(|limit| limit.saturating_sub(request.tokens.len()))
-                .unwrap_or(usize::MAX),
-        );
+        let prompt_len = request.tokens.len();
+        let max_output_tokens = request
+            .effective_max_output_tokens()
+            .min(self.config.max_request_len().saturating_sub(prompt_len + 1))
+            .min(self.config.total_kv_tokens.saturating_sub(
+                super::config::ceil_to_block(prompt_len, self.config.block_size)
+                    + self.config.block_size
+                    + 1,
+            ));
         let output_storage_hint = self.config.output_storage_hint(
             request.tokens.len(),
             max_output_tokens,
@@ -667,6 +666,7 @@ impl SglangCore {
     }
 
     fn complete_source(&mut self, mut request: SglangRequest) {
+        self.batch_is_full = false;
         let uuid = request.uuid;
         self.active_request_ids.remove(&uuid);
         // SGLang v0.5.20 `process_batch_result_disagg_prefill` caches the completed
@@ -873,11 +873,15 @@ impl SglangCore {
         self.is_empty() && self.prefill_rounds_remaining == 0 && !self.scheduler_is_drained()
     }
 
-    pub(crate) fn prepare_group_pass(&mut self) {
+    pub(crate) fn prepare_group_pass(&mut self, wave_step: u64) {
+        // The engine resets the wave only after every rank drains. A local
+        // idle rank must retain its ratio while a peer is still busy.
+        if wave_step == 0 {
+            self.new_token_ratio = self.config.init_new_token_ratio;
+        }
         self.group_pass_prepared = true;
         self.prefill_in_pass = false;
         self.model_work_in_pass = false;
-        self.interval_idle_in_pass = false;
     }
 
     /// Device time of the forward this pass launched under the host loop; `None`
@@ -897,10 +901,15 @@ impl SglangCore {
     /// Apply the synchronized EXTEND signal once per scheduler round, including
     /// rounds without a GPU forward. Idle siblings must receive the same signal.
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
-        if self.interval_idle_in_pass && !any_rank_ran_model {
-            // Upstream reaches on_idle() when no rank has a forward and resets
-            // the admission ratio. A local IDLE batch with a busy DP peer does
-            // not reach on_idle(), so it preserves the ratio instead.
+        if !any_rank_ran_model
+            && self.is_empty()
+            && self.source_holds.is_empty()
+            && self.pending_destinations.is_empty()
+            && self.destination_holds.is_empty()
+            && self.active_destination_handoffs.is_empty()
+        {
+            // Empty local work with a busy peer or queued/held requests does
+            // not reach SGLang's fully-idle reset.
             self.new_token_ratio = self.config.init_new_token_ratio;
         }
         self.prefill_rounds_remaining = if any_rank_prefilled {
@@ -982,6 +991,7 @@ impl SglangCore {
     }
 
     fn bump_capacity_generation(&mut self) {
+        self.batch_is_full = false;
         self.capacity_generation = self
             .capacity_generation
             .checked_add(1)
@@ -1163,16 +1173,16 @@ impl SglangCore {
         }
         // Overlength requests leave the queue now and report rejection after this pass's tokens.
         let mut rejected = Vec::new();
-        if let Some(limit) = self.config.max_model_len
-            && self
-                .waiting
-                .stats
-                .maximum_length()
-                .is_some_and(|length| length >= limit as u64)
+        let input_limit = self.config.max_input_len();
+        if self
+            .waiting
+            .stats
+            .maximum_length()
+            .is_some_and(|length| length >= input_limit as u64)
         {
             for _ in 0..self.waiting.len() {
                 let request = self.waiting.pop_front().expect("waiting request retained");
-                if request.prompt_len() < limit {
+                if request.prompt_len() < input_limit {
                     self.waiting.push_back(request);
                 } else {
                     rejected.push(request);
@@ -1182,6 +1192,9 @@ impl SglangCore {
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
+        if self.running.is_empty() {
+            self.batch_is_full = false;
+        }
 
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut admit = match admission.stage_for(materialized_waiting) {
@@ -1194,10 +1207,12 @@ impl SglangCore {
                 &self.config,
                 self.new_token_ratio,
                 &self.running,
+                self.batch_is_full,
             ),
             // Gate the entire prefill entry point, including chunk continuation.
             AdmissionStage::FreshKv => Default::default(),
         };
+        self.batch_is_full |= admit.batch_is_full;
 
         let batch_size = admit.can_run.len();
         self.config.perf_model.validate_prefill_batch(
@@ -1239,7 +1254,6 @@ impl SglangCore {
         self.vision_cache.store(&vision_misses);
 
         // Ghost members still form a batch: `filter_batch` has not seen them finish.
-        let forward = self.host.is_some() && (batch_size > 0 || !self.running.is_empty());
         let selected_ms = now_ms;
 
         admissions.append(&mut admit.admissions);
@@ -1303,11 +1317,34 @@ impl SglangCore {
             Vec::new()
         };
 
+        // The aggregated overlap loop filters rows whose queued result finishes
+        // by length. Keep their KV until that result is observed below. If the
+        // survivors need that memory, skip this decode instead of retracting.
+        let mut finishing_inflight = if !prefill_pass
+            && self.host.is_some()
+            && self.config.worker_type == WorkerType::Aggregated
+            && self.config.speculative_max_tokens.is_none()
+        {
+            self.running
+                .extract_if(.., |request| request.pending_terminal)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let skip_decode = !finishing_inflight.is_empty()
+            && !decode_memory_fits(&self.running, &self.kv_manager, &self.config);
+        if !finishing_inflight.is_empty() {
+            self.batch_is_full = false;
+        }
+        let updates_running_batch = !prefill_pass && !skip_decode && !self.running.is_empty();
+        let forward =
+            self.host.is_some() && (prefill_pass || (!skip_decode && !self.running.is_empty()));
+
         // Capture scheduled decode data before the decode step modifies running. A prefill-first
         // pass is a pure prefill forward: nothing is scheduled for decode. Under the host loop
         // a finished request is still a row of this batch until the next iteration observes
         // it, so the metrics carry the same rows the timing provider is charged for.
-        let scheduled_decode_lens: Vec<u64> = if prefill_pass {
+        let scheduled_decode_lens: Vec<u64> = if prefill_pass || skip_decode {
             Vec::new()
         } else {
             self.running
@@ -1316,7 +1353,6 @@ impl SglangCore {
                 .map(|req| req.current_sequence_len() as u64)
                 .collect()
         };
-        self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         // The prefill forward is priced later. Its first tokens take no time,
         // and a decode pass computes no prefill or vision.
@@ -1328,6 +1364,11 @@ impl SglangCore {
                 &self.config,
                 decode_start_ms,
             )
+        } else if skip_decode {
+            Ok(DecodeResult {
+                end_ms: decode_start_ms,
+                ..Default::default()
+            })
         } else {
             simulate_decode_step_with_sampler(
                 &mut self.running,
@@ -1445,6 +1486,7 @@ impl SglangCore {
                     self.inflight_source
                         .extract_if(.., |request| observed_terminals.contains(&request.uuid)),
                 );
+                terminals.append(&mut finishing_inflight);
                 for request in terminals {
                     self.complete_source(request);
                 }
@@ -1490,7 +1532,7 @@ impl SglangCore {
             // point, before the forward.
             self.new_token_ratio = estimate;
             self.bump_capacity_generation();
-        } else if !prefill_pass && !self.interval_idle_in_pass {
+        } else if updates_running_batch {
             // The ratio decays in `update_running_batch`, i.e. only on decode passes.
             self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
                 .max(self.config.min_new_token_ratio);
@@ -1569,6 +1611,9 @@ impl SglangCore {
         if !grouped {
             // Standalone core callers have a one-rank synchronization domain.
             self.finish_group_pass(self.prefill_in_pass, self.model_work_in_pass);
+            if self.is_drained() {
+                self.new_token_ratio = self.config.init_new_token_ratio;
+            }
         }
         let mut decode_shape = decode.decode.take();
         let work = RankWork {

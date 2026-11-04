@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::cell::RefCell;
 use std::num::NonZeroU32;
@@ -17,8 +20,9 @@ use aisimulate_core::replay::{
     PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition,
     ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest,
     ReplayRequestPool, ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy,
-    ReplayScalingSnapshot, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology,
-    run_engine_replay, run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
+    ReplayScalingSnapshot, ReplaySpec, ReplayTerminalStatus, ReplayTopology, Replayer,
+    WorkerPoolSpec, WorkerTopology, run_engine_replay, run_engine_replay_with_optional_role_timing,
+    run_engine_replay_with_timing,
 };
 use anyhow::Result;
 use uuid::Uuid;
@@ -144,13 +148,18 @@ fn every_backend_stops_at_max_model_len() {
     for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
         for speculative in [false, true] {
             for planned in [false, true] {
-                for (prompt, output, expected) in [(3, 10, 5), (7, 10, 1), (3, 2, 2), (3, 0, 0)] {
+                for (prompt, output, expected) in [(3, 20, 13), (9, 20, 7), (3, 2, 2), (3, 0, 0)] {
+                    let expected = if backend == Backend::Sglang {
+                        output.min(14 - prompt)
+                    } else {
+                        expected
+                    };
                     let mut config = engine_config(TimingModelConfig::Fixed {
                         prefill_ms: 1.0,
                         decode_ms: 1.0,
                     });
                     config.rank.backend = backend;
-                    config.rank.max_model_len = Some(8);
+                    config.rank.max_model_len = Some(16);
                     config.rank.sglang.chunked_prefill_size = 4;
                     if speculative {
                         config.rank.aic_nextn = Some(2);
@@ -185,14 +194,17 @@ fn backends_reserve_only_context_capped_output(
         decode_ms: 1.0,
     });
     config.rank.backend = backend;
-    config.rank.max_model_len = Some(8);
-    config.rank.num_gpu_blocks = 5;
+    config.rank.max_model_len = Some(12);
+    config.rank.num_gpu_blocks = 8;
     config.rank.enable_prefix_caching = false;
     let mut replay = spec(config);
     replay.requests = vec![request("a", 0.0, 4, 100), request("b", 0.0, 4, 100)];
     let report = run_engine_replay(replay).unwrap();
     assert_eq!(report.request_counts.completed_requests, 2);
-    assert_eq!(report.request_counts.total_output_tokens, 8);
+    assert_eq!(
+        report.request_counts.total_output_tokens,
+        if backend == Backend::Sglang { 12 } else { 16 }
+    );
     assert_eq!(report.per_request[0].first_admit_ms, Some(0.0));
     assert_eq!(
         report.per_request[0].first_admit_ms,
@@ -203,7 +215,7 @@ fn backends_reserve_only_context_capped_output(
 #[test]
 fn disaggregated_backends_stop_at_max_model_len() {
     for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
-        for prompt in [3, 7] {
+        for prompt in [3, 9] {
             let timing = TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
                 decode_ms: 1.0,
@@ -211,15 +223,15 @@ fn disaggregated_backends_stop_at_max_model_len() {
             let mut replay = disaggregated_spec(backend, timing.clone(), timing);
             let mut config: ReplayEngineConfig =
                 serde_json::from_value(replay.engine.clone()).unwrap();
-            config.prefill.as_mut().unwrap().rank.max_model_len = Some(8);
-            config.decode.as_mut().unwrap().rank.max_model_len = Some(8);
+            config.prefill.as_mut().unwrap().rank.max_model_len = Some(16);
+            config.decode.as_mut().unwrap().rank.max_model_len = Some(16);
             replay.engine = serde_json::to_value(config).unwrap();
-            replay.requests = vec![request("limited", 0.0, prompt, 10)];
+            replay.requests = vec![request("limited", 0.0, prompt, 20)];
             let report = run_engine_replay(replay).unwrap();
             assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
             assert_eq!(
                 report.per_request[0].output_length,
-                8 - prompt,
+                if backend == Backend::Sglang { 14 } else { 16 } - prompt,
                 "{backend:?}"
             );
         }
@@ -582,7 +594,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
         cases.push((tokens, Some(4)));
     }
     // Force eviction after repeatedly splitting the original long edge.
-    cases.push((vec![10_000; 252], Some(252)));
+    cases.push((vec![10_000; 248], Some(248)));
     cases.push((seed.clone(), None));
     let mut tokens = seed[..32].to_vec();
     tokens.extend([20_000; 4]);
@@ -903,20 +915,25 @@ fn sglang_interval_zero_duration_chunk_replay_makes_deterministic_progress() {
 #[test]
 fn sglang_interval_does_not_hide_an_impossible_request_after_countdown() {
     let mut config = impossible_sglang_config();
-    config.rank.num_gpu_blocks = 2;
+    config.rank.num_gpu_blocks = 4;
     config.rank.prefill_decode_interval = 1025;
     config.rank.sglang.schedule_conservativeness = 0.0;
     let mut replay = spec(config);
     replay.requests = vec![
         request("fits-and-arms-interval", 0.0, 4, 1),
-        request("impossible", 0.0, 12, 2),
+        request("impossible", 0.0, 20, 2),
     ];
 
-    let error = run_engine_replay(replay).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining"
-    );
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.request_counts.total_output_tokens, 1);
+    let rejected = report
+        .per_request
+        .iter()
+        .find(|req| req.request_id.as_deref() == Some("impossible"))
+        .unwrap();
+    assert_eq!(rejected.terminal_status, ReplayTerminalStatus::Rejected);
+    assert_eq!(rejected.first_admit_ms, None);
 }
 
 #[test]
@@ -1586,15 +1603,20 @@ fn impossible_sglang_config() -> ReplayEngineConfig {
 }
 
 #[test]
-fn impossible_sglang_request_returns_a_livelock_error_instead_of_spinning() {
+fn impossible_sglang_request_is_rejected_without_spinning() {
     let mut replay = spec(impossible_sglang_config());
     replay.requests = vec![request("impossible", 0.0, 8, 2)];
 
-    let error = run_engine_replay(replay).unwrap_err();
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 0);
+    assert_eq!(report.request_counts.total_output_tokens, 0);
+    assert_eq!(report.per_request.len(), 1);
     assert_eq!(
-        error.to_string(),
-        "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining"
+        report.per_request[0].terminal_status,
+        ReplayTerminalStatus::Rejected
     );
+    assert_eq!(report.per_request[0].first_admit_ms, None);
+    assert_eq!(report.per_request[0].terminal_time_ms, 0.0);
 }
 
 #[test]
@@ -1606,11 +1628,19 @@ fn impossible_sglang_request_cannot_escape_into_a_future_event_or_soft_cap() {
         request("future", 100.0, 4, 1),
     ];
 
-    let error = run_engine_replay(replay).unwrap_err();
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 0);
+    assert_eq!(report.request_counts.total_output_tokens, 0);
+    assert_eq!(report.per_request.len(), 1);
     assert_eq!(
-        error.to_string(),
-        "replay invariant violated: offline replay detected an effect-free zero-duration pass with 1 in-flight requests remaining"
+        report.per_request[0].request_id.as_deref(),
+        Some("impossible")
     );
+    assert_eq!(
+        report.per_request[0].terminal_status,
+        ReplayTerminalStatus::Rejected
+    );
+    assert_eq!(report.per_request[0].terminal_time_ms, 0.0);
 }
 
 #[test]
@@ -1628,11 +1658,16 @@ fn impossible_disaggregated_sglang_prefill_is_not_hidden_as_an_external_wait() {
     replay.engine = serde_json::to_value(config).unwrap();
     replay.requests = vec![request("impossible-disagg-prefill", 0.0, 8, 2)];
 
-    let error = run_engine_replay(replay).unwrap_err();
-    assert!(
-        error.to_string().contains("effect-free zero-duration pass"),
-        "{error}"
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 0);
+    assert_eq!(report.request_counts.total_output_tokens, 0);
+    assert_eq!(report.per_request.len(), 1);
+    assert_eq!(
+        report.per_request[0].terminal_status,
+        ReplayTerminalStatus::Rejected
     );
+    assert_eq!(report.per_request[0].first_admit_ms, None);
+    assert_eq!(report.per_request[0].terminal_time_ms, 0.0);
 }
 
 #[test]
@@ -1956,7 +1991,7 @@ fn disaggregated_prefill_does_not_reserve_or_generate_the_decode_output_length()
         let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
         let prefill = config.prefill.as_mut().unwrap();
         prefill.rank.block_size = 4;
-        prefill.rank.num_gpu_blocks = 2;
+        prefill.rank.num_gpu_blocks = if backend == Backend::Sglang { 3 } else { 2 };
         let decode = config.decode.as_mut().unwrap();
         decode.rank.block_size = 4;
         decode.rank.num_gpu_blocks = 64;
@@ -2906,8 +2941,8 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
     use aisimulate_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
     // Hand oracle: the 4 ms prefill launches at 0 and its loop returns at
     // once; the next iteration observes it at 4 ms and launches a 3 ms
-    // decode, observed at 7 ms. The finished request still fills the batch
-    // launched then, observed at 10 ms by the last iteration.
+    // decode, observed at 7 ms. The queued result finishes by length, so its
+    // row is filtered before selecting another forward.
     assert_eq!(
         passes,
         [
@@ -2918,8 +2953,7 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
                 0
             ),
             (4.0, 3.0, vec![], 1),
-            (7.0, 3.0, vec![], 1),
-            (10.0, 0.0, vec![], 0),
+            (7.0, 0.0, vec![], 1),
         ]
     );
     assert_eq!(*timing.phase_calls.lock().unwrap(), 0);

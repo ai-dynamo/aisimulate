@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Protected-prefix admission capacity follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
@@ -326,6 +327,20 @@ impl SglangKvManager {
             .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
         debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
         matched
+    }
+
+    /// Capacity while the candidate's matched prefix is protected from eviction.
+    /// The caller selects a shape before acquiring its persistent request lease.
+    pub(crate) fn protected_admission_capacity(
+        &mut self,
+        lease: &RadixRequestLease,
+        prefix_tokens: usize,
+    ) -> usize {
+        let pages = prefix_tokens / self.cache.page_size();
+        let (_, last_node) = self.match_prefix_hashes_and_lock(&lease.page_hashes[..pages]);
+        let capacity = self.cache.available_tokens() + self.cache.evictable_size;
+        self.cache.dec_lock_ref(last_node);
+        capacity
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {

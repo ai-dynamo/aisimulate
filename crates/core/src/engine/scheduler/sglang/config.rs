@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
@@ -59,6 +59,19 @@ pub(super) struct SglangConfig {
 }
 
 impl SglangConfig {
+    pub(super) fn max_request_len(&self) -> usize {
+        self.max_model_len
+            .unwrap_or(self.total_kv_tokens)
+            .min(self.total_kv_tokens)
+            .saturating_sub(1)
+    }
+
+    pub(super) fn max_input_len(&self) -> usize {
+        self.max_request_len()
+            .saturating_sub(5)
+            .min(self.total_kv_tokens.saturating_sub(self.block_size))
+    }
+
     pub(super) fn from_args(args: &MockEngineArgs) -> Self {
         let sglang = args.sglang.as_ref();
         debug_assert!(
@@ -70,7 +83,8 @@ impl SglangConfig {
         let schedule_conservativeness = sglang
             .and_then(|s| s.schedule_conservativeness)
             .unwrap_or(1.0);
-        let init_new_token_ratio = DEFAULT_INIT_NEW_TOKEN_RATIO * schedule_conservativeness;
+        let init_new_token_ratio =
+            (DEFAULT_INIT_NEW_TOKEN_RATIO * schedule_conservativeness).min(1.0);
         let min_new_token_ratio = init_new_token_ratio * DEFAULT_MIN_NEW_TOKEN_RATIO_FACTOR;
         let decay_steps = DEFAULT_NEW_TOKEN_RATIO_DECAY_STEPS;
         let decay_step = (init_new_token_ratio - min_new_token_ratio) / decay_steps;
