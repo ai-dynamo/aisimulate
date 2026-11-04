@@ -354,3 +354,8 @@ extensions. Applying the new KV-index guard to the entire old grid would remove
 existing anchors and understate collection cost; the fixture and regression test
 retain those baseline points. This is an incremental shared-grid counterfactual,
 not a literal replay of old #664 deletions.
+
+The corrected S census uses fixture `a4d70f51c` and final4ea model geometry.
+Across all24 lanes and every inventoried operation, both B→S and B→M have
+zero removed physical cells. Previous pre-union S removal counts are
+superseded; no deletion is priced as reduced collection work.
