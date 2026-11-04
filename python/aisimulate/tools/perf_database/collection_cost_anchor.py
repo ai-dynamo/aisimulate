@@ -90,6 +90,27 @@ def run(spec: dict, output: Path) -> dict:
             raise ValueError("version-routed registries require the normal resolver; no fallback is permitted")
         module = importlib.import_module(entry.module)
         function = getattr(module, entry.run_func)
+        # Direct collectors expose their benchmark helper in this module. Native
+        # module subprocesses keep their existing point clocks in the raw log.
+        benchmark = getattr(module, "benchmark_with_power", None)
+        measurements = []
+
+        @contextlib.contextmanager
+        def record_benchmark(*args, **kwargs):
+            with benchmark(*args, **kwargs) as measured:
+                yield measured
+            measurements.append(
+                {
+                    "forward_latency_ms": measured.get("latency_ms"),
+                    "num_runs_executed": measured.get("num_runs_executed"),
+                    "requested_warmups": kwargs.get("num_warmups", 3),
+                    "repeat_n": kwargs.get("repeat_n", 1),
+                    "phase_seconds": dict(measured.get("phase_seconds") or {}),
+                }
+            )
+
+        if benchmark is not None:
+            module.benchmark_with_power = record_benchmark
         policy = inventory.shared_policy() if spec["scenario"] == "shared" else contextlib.nullcontext()
         with policy:
             options = {"include_long_history": True} if spec["scenario"] == "model" else {}
@@ -119,6 +140,8 @@ def run(spec: dict, output: Path) -> dict:
                 result["calls"].append(call)
                 (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             result["forward_rows"] = list(csv.DictReader(perf.open())) if perf.exists() else []
+            result["direct_benchmark_measurements"] = measurements
+            result["subprocess_repetition_policy"] = spec.get("source_checked_subprocess_repetition_policy")
             if not result["forward_rows"]:
                 raise ValueError("native calls produced no forward measurements")
             result["status"] = "passed" if all(call["status"] == "passed" for call in result["calls"]) else "failed"
