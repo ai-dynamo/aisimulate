@@ -265,6 +265,10 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
     assert rejected["status"] == "failed" and "unverified" in rejected["error"]
     assert len(calls) == 1
     entry.unverified = False
+    repeated = anchor.run({**request, "native_passes": 2}, tmp_path / "two-passes")
+    assert repeated["status"] == "passed", repeated
+    assert repeated["native_calls_requested"] == 2
+    assert [call["native_pass_index"] for call in repeated["calls"]] == [1, 2]
     modules["collector.op_plans"].plan = lambda *args, **kw: Plan(
         [Case(32, 1048575), Case(64, 1048575)], [], [[32, 1048575], [64, 1048575]]
     )

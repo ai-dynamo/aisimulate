@@ -476,3 +476,10 @@ The driver also records actual framework/Torch/CUDA-build and already-loaded
 CUDA-runtime API versions, GPU UUID, image-hash receipt and thread settings.
 Unknown host concurrency remains null. This audit instrumentation is separate
 from the frozen collector/kernel revision and does not enable long history.
+
+For feature-identification only, `native_passes: 2` repeats the same selected
+native rows within one worker and records pass identity. Each shape’s first use
+and its subsequent use stay separate; three fresh matched groups can then
+validate a warm component independently. Every call remains inside the bounded
+collection clock. The default is one pass; repeated sampling adds no coverage
+claims or collector behavior changes.
