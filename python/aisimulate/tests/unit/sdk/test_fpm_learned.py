@@ -181,6 +181,29 @@ def test_counter_join_rejects_heartbeat_offset_ranks() -> None:
     assert len(fpm_learned.group_iterations(rank0 + rank1, "none")) == 6
 
 
+def test_charge_own_launch_moves_the_next_launch_back() -> None:
+    def prefill(tokens: int, wall: float, counter: int) -> dict:
+        fpm = _decode_fpm(0, 0, wall, counter=counter)
+        fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": tokens}
+        return fpm
+
+    # decode, eager prefill, decode, piecewise prefill, then an idle heartbeat (counter 4) before a decode
+    records = [
+        _decode_fpm(8, 800, 0.200, counter=0),
+        prefill(8192, 0.120, 1),
+        _decode_fpm(8, 800, 0.070, counter=2),
+        prefill(1024, 0.040, 3),
+        _decode_fpm(8, 800, 0.030, counter=5),
+    ]
+    stall_ms = {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
+    out = fpm_learned.charge_own_launch([[fpm] for fpm in records], stall_ms, 4096)
+    # each record loses the launch of the pass after it and takes back its own; the total is unchanged
+    assert [fpm_learned.iteration_wall_ms(ranks) for ranks in out] == pytest.approx([20.0, 300.0, 20.0, 90.0, 30.0])
+    assert records[0]["wall_time"] == 0.200
+    with pytest.raises(ValueError, match="one rank per iteration"):
+        fpm_learned.charge_own_launch([records[:2]], stall_ms, 4096)
+
+
 def _stump_artifact() -> dict:
     return {
         "schema": fpm_learned.SCHEMA_NAME,

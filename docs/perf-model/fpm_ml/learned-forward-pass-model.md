@@ -69,8 +69,39 @@ capture list, and max batched tokens all change `wall_time` and belong to the
 model's identity.
 
 `wall_time` means different things per backend. The vLLM producer
-(`InstrumentedScheduler`) measures each step from `schedule()` to
-`update_from_output()` on the host clock, one value per step. The SGLang
+(`InstrumentedScheduler`) ends each step when its model output arrives and
+starts it when the previous step's output arrived, or at `schedule()` after an
+idle step, on the host clock, one value per step. With async scheduling on a
+one-GPU worker, vLLM launches the next step before it processes the current
+step's output
+([`EngineCore.step_with_batch_queue`](https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/v1/engine/core.py)).
+An eager next step (more scheduled tokens than `max_cudagraph_capture_size`)
+takes far longer to launch than a decode step takes to run, so the decode
+record carries the rest of that launch and the eager record looks short. A
+model fitted on such records learns how often each kind of step follows
+another, which changes with the workload. `charge_own_launch(iterations,
+stall_ms, max_cudagraph_capture_size)` moves each launch back to its own step;
+`train` and `evaluate` apply it with `--launch-stall FILE`:
+
+```json
+{"max_cudagraph_capture_size": 4096,
+ "stall_ms": {"decode":  {"piecewise": 50, "eager": 180},
+              "prefill": {"piecewise": 15, "eager": 190}}}
+```
+
+`stall_ms[carrier][next]` is what a record carries when the next step is
+piecewise (with prefill, at most `max_cudagraph_capture_size` tokens) or eager,
+compared with a decode next step; `carrier` is `prefill` for a record with
+prefill tokens, else `decode`. A record with prefill runs long enough to hide
+most of a piecewise launch. The values above are an illustration: measure them
+on your deployment, for example as the weights of next-step indicators in a
+linear fit of `wall_time`. Records follow each other when they share
+`worker_id` and their `counter_id` values differ by one. A step's token count
+comes from `extend_lengths` when present (see [per-request
+fields](#per-request-fields)), else from prefill tokens plus one per decode
+request; with speculative decoding, which schedules several tokens per decode
+request, collect `extend_lengths`. The output is ordinary
+iterations, so a regression's `tune_with_fpms` takes it too. The SGLang
 producer reads a CUDA-event `DeviceTimer` around the forward, but it
 accumulates every *finished* interval at emission time and drops the record
 when nothing finished. With the overlap scheduler on, a step whose result
