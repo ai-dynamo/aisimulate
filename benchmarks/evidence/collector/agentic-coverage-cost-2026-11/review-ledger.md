@@ -24,7 +24,9 @@ Cost qualification and exact-head CI are reported separately from code completio
 
 Validation before the final audit additions: **4,699 collector tests passed,
 31 skipped**; the native Rust B52 consumer test and #665 canonical data validator
-passed. Audit-helper changes have their own focused tests. New pushes require
+passed. After integration with current main, 763 focused coverage/planner/audit tests passed.
+The final audit helpers passed all41 focused tests; lint and copyright checks
+passed for all1,763 tracked source files. New pushes require
 fresh exact-head Full CI and GitHub-verified signatures. #665 and #666 require
 the final #664 collector before merge. Infrastructure failures before checkout
 must be retried without claiming that the affected tests ran.

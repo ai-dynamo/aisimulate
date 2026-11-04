@@ -412,10 +412,10 @@ CRC was verified after creation. B uses pinned676; S is the corrected final5
 superset fixture; M retains final4ea geometry. These frozen files require no GPU
 work to inspect or reproduce the cost census.
 
-The final coordinator transfer raises only B300 validation from0.375 to0.875
-GPU-hours, leaving all eight1-hour anchor caps and the other seven validation
-caps unchanged. Audit allowance is11.5 and correctness allowance0.5, totaling
-12 GPU-hours. The correctness owner confirmed all seven completed jobs have an
+An intermediate coordinator transfer raised B300 validation from0.375 to0.875
+GPU-hours. Later A100 cancellation reassigned its unused allowance; the final
+per-system quotas and charges are in [the budget summary](final-budget-summary.json).
+Audit allowance is11.5 and correctness allowance0.5, totaling12 GPU-hours. The correctness owner confirmed all seven completed jobs have an
 administrative allocation upper bound of1711 GPU-seconds (<1800) and will run
 no more jobs. That bound permits the transfer; it is not substituted for actual
 collection cost in any anchor or estimate. Older timestamped ledger snapshots
