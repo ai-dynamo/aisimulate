@@ -282,3 +282,25 @@ three concurrent framework workers using exclusive one-GPU steps, records
 that UUID while a worker runs. The fourth reserved GPU is idle and excluded.
 These workers share a Grace host and request eight CPUs each (32 CPUs for the
 allocation); their timings are not isolated-host CPU bandwidth measurements.
+
+For full causal dense prefill (`attention_context`, `window_size=0`), sequence
+interpolation uses squared `input_len` for execution. When explicitly recorded,
+nonoverlapping `preparation_seconds` and `execution_seconds` must sum to the
+inclusive point clock; preparation uses ordinary sequence length and execution
+uses squared sequence length. Without those clocks, only inclusive time is fit,
+with no claimed phase decomposition. Nonlinear fits still require an independent
+held-out point within the 20% gate: the measured B300 vLLM 262K/1M endpoints
+predict the withheld 512K call within 6%, whereas ordinary sequence interpolation
+fails. This does not authorize extrapolation or other native geometries.
+
+An older op anchor can be admitted with `--source-equivalence PATH --repository
+REPO`. The JSON `proofs` list names source/target revisions, backend, operation
+and identical file SHA256 values (`source_sha256`, `target_sha256`). The report
+verifies both immutable Git revisions for the dense implementation, registry,
+helper, case-generator and registry-types files, plus vLLM utilities. Admission
+is limited to exact scalar native case arguments with the same geometry and
+protocol; it is not whole-collector or audit-driver equivalence. Changes to
+selection metadata and failed-call handling are outside that proof. The report
+retains actual source SHAs and the complete supplied proof, including protocol
+qualifications. Historical anchors without observed repetition counts or phase
+clocks keep those fields null.
