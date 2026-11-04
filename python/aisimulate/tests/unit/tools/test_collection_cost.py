@@ -195,6 +195,8 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
     calls = []
 
     def native(batch, length, *, perf_filename, device, skip_indexer):
+        pending = json.loads((Path(perf_filename).parent / "result.json").read_text())["pending_call"]
+        assert pending["status"] == "running" and pending["index"] >= 0
         calls.append((batch, length, device, skip_indexer))
         Path(perf_filename).write_text("op_name,latency\ndsa_generation_module,0.7897\n")
 

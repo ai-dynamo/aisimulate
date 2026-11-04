@@ -29,6 +29,12 @@ PKG_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PKG_ROOT))
 
 
+def save_result(output: Path, result: dict) -> None:
+    temporary = output / "result.json.tmp"
+    temporary.write_text(json.dumps(result, indent=2) + "\n")
+    temporary.replace(output / "result.json")
+
+
 def select_plan(planned, requested: list[dict]):
     """Select exact generated cases/dispatches; refuse missing or duplicate requests."""
     wanted = {json.dumps({k: v for k, v in row.items() if not k.startswith("_")}, sort_keys=True) for row in requested}
@@ -184,6 +190,13 @@ def run(spec: dict, output: Path) -> dict:
                 call_started = time.perf_counter()
                 call = {"index": index, "row": str(row)}
                 rows_before = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
+                result["pending_call"] = {
+                    **call,
+                    "status": "running",
+                    "started_elapsed_seconds": call_started - started,
+                }
+                save_result(output, result)
+                print(json.dumps({"event": "native_call_start", **result["pending_call"]}), flush=True)
                 try:
                     kwargs = {"perf_filename": str(perf), "device": "cuda:0", **entry.run_kwargs_dict}
                     if entry.extra_perf_filenames:
@@ -219,7 +232,8 @@ def run(spec: dict, output: Path) -> dict:
                         result["unattempted_rows"] = [str(pending) for pending in rows[index + 1 :]]
                 call["native_call_seconds"] = time.perf_counter() - call_started
                 result["calls"].append(call)
-                (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+                result.pop("pending_call", None)
+                save_result(output, result)
                 if result.get("worker_recycle_required"):
                     break
             result["forward_rows"] = list(csv.DictReader(perf.open())) if perf.exists() else []
@@ -237,7 +251,7 @@ def run(spec: dict, output: Path) -> dict:
         traceback.print_exc()
     finally:
         result["worker_seconds"] = time.perf_counter() - started
-        (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+        save_result(output, result)
     return result
 
 
