@@ -180,7 +180,12 @@ class _TokenTensor:
 def _run_sweep(tokens, *, fail_stage=None, fail_tokens=None):
     """Run the actual case body with native allocation/timing calls replaced."""
     tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
-    body = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_moe_case")
+    bodies = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in {"_refuse_moe_weight_capacity", "_run_moe_case"}
+    ]
+    assert len(bodies) == 2
     calls = []
     rows = []
     state = {"stage": "dry_run"}
@@ -206,6 +211,7 @@ def _run_sweep(tokens, *, fail_stage=None, fail_tokens=None):
     device = SimpleNamespace(index=0)
     torch = MagicMock()
     torch.device.return_value = device
+    torch.cuda.get_device_properties.return_value = SimpleNamespace(total_memory=80 * 2**30)
     torch.randn.side_effect = lambda shape: _TokenTensor(shape[0])
     torch.inference_mode = nullcontext
     moe = SimpleNamespace(forward=forward, to=lambda device: None)
@@ -235,7 +241,7 @@ def _run_sweep(tokens, *, fail_stage=None, fail_tokens=None):
         "log_perf": lambda **kwargs: rows.extend(kwargs["item_list"]),
         "tensorrt_llm": SimpleNamespace(__version__="test"),
     }
-    exec(compile(ast.Module(body=[body], type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=bodies, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
 
     def run():
         namespace["_run_moe_case"]("bfloat16", tokens, 4096, 2048, 2, 8, 2, 2, False, "model", perf_filename="unused")
