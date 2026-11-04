@@ -35,6 +35,7 @@ import json
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import MappingProxyType
 from typing import NamedTuple
@@ -1345,13 +1346,65 @@ def _history_limit(model_path: str) -> int:
     return limit
 
 
+def _history_attention_unquantized(model_path: str, config: dict) -> bool:
+    """Prove a routed-expert quantization recipe leaves every self-attention module alone."""
+    quant = config.get("quantization_config") or {}
+    if not quant:
+        return True
+    modelopt = _modelopt_quant(model_path)
+    algo = str(modelopt.get("quant_algo", "")).upper()
+    if algo == "MIXED_PRECISION":
+        lanes = modelopt.get("quantized_layers")
+        return isinstance(lanes, dict) and bool(lanes) and all(".mlp." in path for path in lanes)
+    if algo != "NVFP4":
+        return False
+    layers = config.get("num_hidden_layers")
+    # Only whole-attention wildcards establish exclusion of all current and
+    # future projections/indexers; a match for one named projection is insufficient.
+    patterns = [
+        pattern
+        for pattern in modelopt.get("exclude_modules") or []
+        if isinstance(pattern, str) and pattern.endswith("*")
+    ]
+    return (
+        type(layers) is int
+        and layers > 0
+        and all(
+            any(
+                fnmatchcase(f"model.layers.{layer}.self_attn", pattern)
+                or fnmatchcase(f"model.layers.{layer}.self_attn.", pattern)
+                for pattern in patterns
+            )
+            for layer in range(layers)
+        )
+    )
+
+
 def _history_runtime_signature(model_path: str) -> str:
-    # Conservative equivalence: a consumer key alone does not identify model
-    # weights, RoPE or sparse/indexer geometry. Only exact config equivalence
-    # (apart from labels and routed-expert quantization) shares an owner.
     config = dict(_history_config(model_path))
-    for label in ("_name_or_path", "_commit_hash", "transformers_version", "quantization_config"):
+    for label in ("_name_or_path", "_commit_hash", "transformers_version"):
         config.pop(label, None)
+    if config.get("model_type") == "glm_moe_dsa":
+        # These are outside the extracted self_attn module. Its native builders
+        # take explicit qk_nope/qk_rope/v dimensions, not HF's redundant head_dim:
+        # vllm.collect_mla_module._create_attention_module; TRT create_attention_layer;
+        # SGLang DeepseekV2AttentionMLA.__init__ (deepseek_v2.py:1993-1998
+        # @e00930c5489053f26d86b179cee0d087f846acbb) takes those explicit args;
+        # its local config loader strips HF layer_types before constructing it.
+        for field in ("bos_token_id", "eos_token_id", "pad_token_id", "num_experts", "mlp_bias", "moe_router_dtype"):
+            config.pop(field, None)
+        layer_types = config.get("layer_types")
+        if isinstance(layer_types, list) and set(layer_types) == {"deepseek_sparse_attention"}:
+            config.pop("layer_types")
+        if all(config.get(field) is not None for field in ("qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim")):
+            config.pop("head_dim", None)
+        # Never strip arbitrary quantization: every self_attn must be excluded,
+        # or the mixed recipe must explicitly name only MLP modules. KV precision
+        # is separately explicit in ModuleCase and the workers' cache config.
+        if _history_attention_unquantized(model_path, config):
+            config.pop("quantization_config", None)
+        else:
+            config["resolved_modelopt_quantization"] = _modelopt_quant(model_path)
     return json.dumps(config, sort_keys=True)
 
 
@@ -1361,6 +1414,15 @@ def _with_history_module_cases(
     """Union exact model points before deduplicating consumer keys; keep ordinary owners first."""
     if not includes_long_history():
         return cases
+    # Reuse the pinned planner's representative for an equivalent runtime,
+    # even when a newly requested point was absent from its old grid.
+    signatures = {path: _history_runtime_signature(path) for path in {case.model_path for case in cases}}
+    representatives = {}
+    for case in cases:
+        architecture = (
+            None if attention_type == "mla" else tuple(_history_config(case.model_path).get("architectures", []))
+        )
+        representatives.setdefault((architecture, case.gemm_type, signatures[case.model_path]), case.model_path)
     profiles = _model_case_values("mla_module")
     for backend in ("vllm", "sglang", "trtllm"):
         profiles += _framework_specific_model_case_values("mla_module", backend)
@@ -1372,6 +1434,8 @@ def _with_history_module_cases(
         if shared_index_only and not _shares_dsa_index(model_path):
             continue
         points = history_points(profile, phase, _history_limit(model_path))
+        signatures.setdefault(model_path, _history_runtime_signature(model_path))
+        architecture = None if attention_type == "mla" else tuple(_history_config(model_path).get("architectures", []))
         native_heads = int(profile["native_num_heads"])
         shards = profile.get("long_history_tensor_parallel_sizes", profile.get("tensor_parallel_sizes"))
         if not shards or any(type(tp) is not int or tp <= 0 or native_heads % tp for tp in shards):
@@ -1382,6 +1446,7 @@ def _with_history_module_cases(
         for precision in precisions:
             if precision.gemm_type != _projection_gemm(model_path):
                 continue
+            owner = representatives.get((architecture, precision.gemm_type, signatures[model_path]), model_path)
             for num_heads in heads:
                 for batch, length, prefix in points:
                     cases.append(
@@ -1392,14 +1457,24 @@ def _with_history_module_cases(
                             precision.kv_cache_dtype,
                             precision.compute_dtype,
                             precision.gemm_type,
-                            model_path,
+                            owner,
                             prefix,
                         )
                     )
+    # Keep #676's ordinary owners, then union equal-runtime points onto them.
+    # Config signatures are memoized only within this plan, never across inputs.
     physical = {}
     for case in cases:
-        signature = _history_runtime_signature(case.model_path)
-        key = (*case[:6], signature, case.prefix_len)
+        architecture = (
+            None if attention_type == "mla" else tuple(_history_config(case.model_path).get("architectures", []))
+        )
+        key = (*case[:6], architecture, case.prefix_len)
+        existing = physical.get(key)
+        if existing is not None and signatures[existing.model_path] != signatures[case.model_path]:
+            raise ValueError(
+                f"long-history coverage collides at one {attention_type} persisted key with incompatible runtime "
+                f"semantics: {existing.model_path} versus {case.model_path}; declare a compatible representative"
+            )
         physical.setdefault(key, case)
     return list(physical.values())
 

@@ -91,7 +91,7 @@ def test_qwen_points_use_own_geometry_and_aliases_without_cross_product(monkeypa
             (1, 1, 256),
         }
         assert max(case.input_len for case in extra) == 262144
-        assert all(case.batch_size <= 4 for case in extra)
+        assert all(case.batch_size <= 16 for case in extra)
         sets.append(extra)
     assert sets[0] == sets[1]
 
@@ -139,8 +139,8 @@ def test_runtime_geometry_prevents_wrong_cross_model_dedup(monkeypatch):
     monkeypatch.setattr(op_plans, "_framework_specific_model_case_values", lambda _op, _backend: [])
     monkeypatch.setattr(op_plans, "get_mla_module_precision_specs", lambda *_args, **_kwargs: [])
     cases = [op_plans.ModuleCase(524287, 1, 8, "fp8", "bfloat16", "bfloat16", path) for path in ("a", "b")]
-    with long_history_coverage(True):
-        assert len(op_plans._with_history_module_cases(cases, "mla", "generation", None)) == 2
+    with long_history_coverage(True), pytest.raises(ValueError, match="incompatible runtime semantics"):
+        op_plans._with_history_module_cases(cases, "mla", "generation", None)
     configs["b"] = {**configs["a"], "_name_or_path": "b"}
     with long_history_coverage(True):
         assert len(op_plans._with_history_module_cases(cases, "mla", "generation", None)) == 1
@@ -214,3 +214,93 @@ assert checkpoint.filter_done(tasks) == []
         [sys.executable, "-c", script, str(tmp_path)], env=env, text=True, capture_output=True, timeout=120
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_qwen_measured_666_anchor_batches_are_retained(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "Qwen/Qwen3.5-397B-A17B")
+    points = plan("attention_context", "vllm", 103, include_long_history=True).cases
+    actual = {
+        (case.batch_size, case.input_len)
+        for case in points
+        if (case.num_heads, case.num_kv_heads, case.head_dim, case.kv_cache_dtype) == (4, 1, 256, "bfloat16")
+    }
+    assert {(batch, length) for batch in (1, 2, 4, 8, 16) for length in (24576, 32768, 40960)} <= actual
+
+
+def test_glm_measured_665_batch52_frontier_is_declared_for_native_head8(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5.2-NVFP4")
+    expected = {
+        1,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16384,
+        32768,
+        65536,
+        131072,
+        262144,
+        393216,
+        524288,
+        655360,
+        720896,
+    }
+    for op in ("dsa_generation_module", "dsa_generation_module_skip_indexer"):
+        cases = plan(op, "sglang", 103, include_long_history=True).cases
+        selected = [case for case in cases if case.batch_size == 52]
+        assert {case.seq_len for case in selected} == expected
+        assert {case.num_heads for case in selected} == {8}
+
+
+def test_glm_expert_only_quantization_and_redundant_head_dim_are_safe_to_union():
+    reference = op_plans._history_runtime_signature("zai-org/GLM-5.2")
+    assert op_plans._history_runtime_signature("nvidia/GLM-5.2-NVFP4") == reference
+    assert op_plans._history_runtime_signature("nvidia/GLM-5.3-NVFP4") == reference
+
+
+def test_unknown_quantization_and_actual_head_geometry_are_never_erased(monkeypatch):
+    reference = op_plans._history_config("zai-org/GLM-5.2")
+    changed = {**reference, "qk_nope_head_dim": 128}
+    configs = {"a": reference, "b": changed}
+    monkeypatch.setattr(
+        op_plans, "_packaged_config", lambda path, kind="config": configs[path] if kind == "config" else {}
+    )
+    assert op_plans._history_runtime_signature("a") != op_plans._history_runtime_signature("b")
+    configs["b"] = {**reference, "quantization_config": {"quant_method": "unknown", "target": "self_attn"}}
+    assert op_plans._history_runtime_signature("a") != op_plans._history_runtime_signature("b")
+
+
+def test_added_module_points_have_one_persisted_key_per_runtime_owner():
+    for op in ("dsa_context_module", "dsa_generation_module"):
+        cases = plan(op, "vllm", 103, include_long_history=True).cases
+        keys = {
+            (*case[:6], tuple(op_plans._history_config(case.model_path).get("architectures", [])), case.prefix_len)
+            for case in cases
+        }
+        assert len(keys) == len(cases)
+
+
+def test_equivalent_model_points_reuse_existing_canonical_owner():
+    for op in ("dsa_context_module", "dsa_generation_module"):
+        normal = plan(op, "vllm", 103)
+        extended = plan(op, "vllm", 103, include_long_history=True)
+        owners = {case.model_path for case in normal.cases}
+        assert {case.model_path for case in extended.cases} <= owners
+
+
+def test_partial_quantization_exclusions_do_not_prove_attention_unquantized(monkeypatch):
+    config = {"quantization_config": {"quant_algo": "NVFP4"}, "num_hidden_layers": 2}
+    monkeypatch.setattr(
+        op_plans,
+        "_modelopt_quant",
+        lambda _path: {"quant_algo": "NVFP4", "exclude_modules": ["model.layers.*.self_attn.probe*"]},
+    )
+    assert not op_plans._history_attention_unquantized("example/model", config)
