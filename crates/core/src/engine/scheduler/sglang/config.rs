@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::sync::Arc;
 
@@ -72,7 +75,17 @@ impl SglangConfig {
         let decay_steps = DEFAULT_NEW_TOKEN_RATIO_DECAY_STEPS;
         let decay_step = (init_new_token_ratio - min_new_token_ratio) / decay_steps;
 
-        let policy_str = sglang.and_then(|s| s.schedule_policy.as_deref());
+        // SGLang's decode server runs a chunk cache unless its radix cache is enabled.
+        let enable_prefix_caching = args.enable_prefix_caching
+            && (args.worker_type != WorkerType::Decode
+                || sglang.is_some_and(|s| s.disaggregation_decode_enable_radix_cache));
+
+        // SGLang's decode server serves its waiting queue in arrival order.
+        let policy_str = if args.worker_type == WorkerType::Decode {
+            None
+        } else {
+            sglang.and_then(|s| s.schedule_policy.as_deref())
+        };
         let schedule_policy = match policy_str {
             Some("lpm") => SchedulePolicy::Lpm,
             Some("fifo") | Some("fcfs") | None => SchedulePolicy::Fifo,
@@ -108,7 +121,7 @@ impl SglangConfig {
             block_size: args.block_size,
             total_kv_tokens: args.num_gpu_blocks * args.block_size,
             max_model_len: args.max_model_len,
-            enable_prefix_caching: args.enable_prefix_caching,
+            enable_prefix_caching,
             kv_transfer_bytes_per_token: args.kv_transfer_bytes_per_token,
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,

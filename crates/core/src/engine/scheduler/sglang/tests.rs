@@ -1187,6 +1187,10 @@ mod destination_lifecycle {
     use crate::engine::common::protocols::WorkerType;
 
     fn args(worker_type: WorkerType) -> MockEngineArgs {
+        args_with_decode_radix_cache(worker_type, true)
+    }
+
+    fn args_with_decode_radix_cache(worker_type: WorkerType, enabled: bool) -> MockEngineArgs {
         MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)
             .num_gpu_blocks(16)
@@ -1197,10 +1201,100 @@ mod destination_lifecycle {
             .sglang(Some(SglangArgs {
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
+                disaggregation_decode_enable_radix_cache: enabled,
                 ..Default::default()
             }))
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn decode_worker_serves_its_waiting_queue_in_arrival_order() {
+        use crate::engine::scheduler::sglang::config::{SchedulePolicy, SglangConfig};
+
+        let lpm = |worker_type| {
+            let mut args = args(worker_type);
+            args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".to_string());
+            SglangConfig::from_args(&args).schedule_policy
+        };
+        assert_eq!(lpm(WorkerType::Decode), SchedulePolicy::Fifo);
+        assert_eq!(lpm(WorkerType::Prefill), SchedulePolicy::Lpm);
+    }
+
+    #[rstest::rstest]
+    #[case::chunk_cache(false)]
+    #[case::radix_cache(true)]
+    fn decode_radix_cache_controls_reuse_of_transferred_prompts(#[case] enabled: bool) {
+        let tokens = (0..8).collect::<Vec<_>>();
+        let mut source = SglangCore::new_with_kv_capture(args(WorkerType::Prefill), 51);
+        let mut destination = SglangCore::new_with_kv_capture(
+            args_with_decode_radix_cache(WorkerType::Decode, enabled),
+            52,
+        );
+        let mut now_ms = 0.0;
+        let mut stored = Vec::new();
+        let mut transferable = Vec::new();
+        for turn in 0..2u128 {
+            let request_id = Uuid::from_u128(21_000 + turn);
+            let handoff_id = HandoffId::from(Uuid::from_u128(22_000 + turn));
+            drive_source_to_hold(
+                &mut source,
+                handoff_id,
+                request(request_id, tokens.clone(), 2),
+            );
+            let reserved = destination
+                .apply_command_effects(
+                    SchedulerCommand::ReserveDestination {
+                        handoff_id,
+                        request: request(request_id, tokens.clone(), 2),
+                    },
+                    true,
+                )
+                .unwrap();
+            let [
+                SchedulerLifecycleEvent::DestinationReserved {
+                    transferable_prompt_tokens,
+                    ..
+                },
+            ] = reserved.lifecycle_events.as_slice()
+            else {
+                panic!("expected one reservation: {:?}", reserved.lifecycle_events);
+            };
+            transferable.push(*transferable_prompt_tokens);
+            assert_eq!(
+                destination
+                    .apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                    .unwrap(),
+                SchedulerCommandResult::Applied
+            );
+            assert_eq!(
+                source
+                    .apply_command(SchedulerCommand::ReleaseSource { handoff_id })
+                    .unwrap(),
+                SchedulerCommandResult::Applied
+            );
+            for _ in 0..8 {
+                let pass = execute(&mut destination, now_ms);
+                now_ms = pass.end_ms;
+                stored.extend(stored_hashes(&pass.kv_events));
+                if destination.is_empty() {
+                    break;
+                }
+            }
+            assert!(destination.is_empty());
+        }
+        stored.extend(stored_hashes(&destination.drain_kv_events()));
+
+        if enabled {
+            assert!(!stored.is_empty());
+            assert!(transferable[1] < transferable[0], "{transferable:?}");
+        } else {
+            // SGLang's decode chunk cache: nothing is published or reused.
+            assert!(stored.is_empty());
+            assert_eq!(transferable, [8, 8]);
+            assert_eq!(destination.kv_manager.cache().evictable_size, 0);
+            assert_eq!(destination.kv_manager.cache().prefix_match_len(&tokens), 0);
+        }
     }
 
     fn request(uuid: Uuid, tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
@@ -1670,6 +1764,7 @@ mod destination_lifecycle {
             .sglang(Some(SglangArgs {
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
+                disaggregation_decode_enable_radix_cache: true,
                 ..Default::default()
             }))
             .build()

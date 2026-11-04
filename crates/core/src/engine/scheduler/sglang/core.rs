@@ -246,6 +246,7 @@ impl SglangCore {
         kv_event_publishers: KvEventPublishers,
     ) -> Self {
         let config = SglangConfig::from_args(&args);
+        let enable_prefix_caching = config.enable_prefix_caching;
         let host = config.host_loop.then(HostLoop::new);
         let frontend = config.frontend.clone().map(FrontendRuntime::new);
         let vision_cache = VisionCache::new(config.vlm_cache_bytes);
@@ -270,7 +271,7 @@ impl SglangCore {
                 args.block_size,
                 kv_event_publishers,
                 dp_rank,
-                args.enable_prefix_caching,
+                enable_prefix_caching,
                 args.emit_kv_token_ids,
             ),
             belady: None,

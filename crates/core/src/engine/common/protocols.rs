@@ -169,6 +169,7 @@ pub(crate) struct SglangArgs {
     pub schedule_conservativeness: Option<f64>,
     pub vlm_cache_bytes: Option<u64>,
     pub host_loop: bool,
+    pub disaggregation_decode_enable_radix_cache: bool,
     pub frontend: Option<FrontendConfig>,
 }
 

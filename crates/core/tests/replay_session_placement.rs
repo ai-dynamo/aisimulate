@@ -401,6 +401,9 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                 config.rank.max_num_seqs = 1;
                 config.rank.emit_kv_events = true;
                 config.rank.emit_kv_token_ids = true;
+                // SGLang decode ranks store KV only with their radix cache enabled.
+                config.rank.sglang.disaggregation_decode_enable_radix_cache =
+                    backend == Backend::Sglang;
                 spec.engine = serde_json::to_value(config).unwrap();
                 spec.requests = (0..3)
                     .map(|i| ReplayRequest {
