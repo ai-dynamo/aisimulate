@@ -1,0 +1,90 @@
+{
+  "collector_ref": "c569abb1cd034c934f47974209515e3507f60b8a",
+  "gpu": "H100 80GB HBM3",
+  "node": "pool0-0002",
+  "runtime_squashfs_sha256": "8cb6197c0eb7434f7f9e28f22aaf60eedfbddac32add0aa07476bc9a9e5f8803",
+  "planned": 4,
+  "passed": 0,
+  "failed": 4,
+  "unattempted": 0,
+  "published_performance_rows": 0,
+  "attempts": [
+    {
+      "path": "28298/collector-1/result.json",
+      "phase": "prefill",
+      "layer": "collector",
+      "status": "failed",
+      "process_seconds": 32.019548913,
+      "call_seconds": 12.82464754092507,
+      "error": "Expected strides[leading_dim] == 1, but got 0."
+    },
+    {
+      "path": "28298/collector-0/result.json",
+      "phase": "decode",
+      "layer": "collector",
+      "status": "failed",
+      "process_seconds": 23.018537484,
+      "call_seconds": 4.242921385914087,
+      "error": "Expected strides[leading_dim] == 1, but got 0."
+    },
+    {
+      "path": "28298/native-1/result.json",
+      "phase": "prefill",
+      "layer": "native",
+      "status": "failed",
+      "process_seconds": 23.183475306,
+      "call_seconds": 4.348423256073147,
+      "error": "Expected strides[leading_dim] == 1, but got 0."
+    },
+    {
+      "path": "28298/native-0/result.json",
+      "phase": "decode",
+      "layer": "native",
+      "status": "failed",
+      "process_seconds": 23.051754195,
+      "call_seconds": 4.36316941305995,
+      "error": "Expected strides[leading_dim] == 1, but got 0."
+    }
+  ],
+  "native_comparison": [
+    {
+      "phase": "prefill",
+      "metadata_identical": true,
+      "implementation_field_differences": {
+        "scale": [
+          0.044194173824159216,
+          0.04419417382415922
+        ]
+      },
+      "kernel_argument_differences": {
+        "softmax_scale": [
+          0.044194173824159216,
+          0.04419417382415922
+        ]
+      }
+    },
+    {
+      "phase": "decode",
+      "metadata_identical": true,
+      "implementation_field_differences": {
+        "scale": [
+          0.044194173824159216,
+          0.04419417382415922
+        ]
+      },
+      "kernel_argument_differences": {
+        "softmax_scale": [
+          0.044194173824159216,
+          0.04419417382415922
+        ]
+      }
+    }
+  ],
+  "process_seconds_total": 101.27331589799999,
+  "process_gpu_hours_total": 0.02813147663833333,
+  "timing_boundary": "Shell timestamps immediately before and after Python inside container; includes interpreter, imports, harness setup, collector setup and attempted forward. Excludes scheduler, container start, source extraction, image hashing, nvidia-smi and gaps between processes.",
+  "native_source_sha256": {
+    "vllm/model_executor/layers/attention/attention.py": "bde77677fd0e95ea09c6a580dfaf09b57741e8183e00cb106e2d1cc64d8e03f2",
+    "vllm/forward_context.py": "8dab5a4dee60e46c4e52821667321c9f05c793578af49cddbdb204cf9324c403"
+  }
+}
