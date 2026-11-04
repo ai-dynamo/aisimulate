@@ -72,16 +72,15 @@ H20 and crashed on B300 (2026-09-20).
    `unverified_sms` mark in the registry — the gate then shows blocked, not
    done. Never leave a sibling SM silently green.
 4. Verdict-plane artifacts are per-SM by construction
-   (`kernel_taxonomy_<sm>.yaml`, `results/pathdiff/<sm>/`,
-   `results/retests/<sm>/`); a new SM starts with its own vocabulary file,
-   never by editing another SM's.
+   (SM-scoped rules in `kernel_taxonomy.yaml`, `results/pathdiff/<sm>/`,
+   `results/retests/<sm>/`); a new SM adds taxonomy rules scoped to it with `sms:`.
 5. Arch-neutral fixes discovered on one SM propagate to the other SMs via
    an explicit cross-SM work order (state the fix, the serving citation,
    and the requested re-smoke — the B300->H20 block-table exchange is the
    template).
 
 AI never: re-derives comparison baselines, renames labels outside
-`kernel_taxonomy_<sm>.yaml`, or concludes "unsupported" from reading code — every
+`kernel_taxonomy.yaml`, or concludes "unsupported" from reading code — every
 "the framework does X" claim needs a component-produced record.
 
 Progress is derived, not self-reported: `components/workflow_check.py upgrade_op --param ...` evaluates the sibling `upgrade_op.yaml` manifest against artifacts and names the first actionable step.

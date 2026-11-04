@@ -1035,7 +1035,7 @@ def clean_path(path: str) -> str:
 
 
 def current_sm() -> str:
-    """The SM every per-SM artifact is keyed by (kernel_taxonomy_<sm>.yaml,
+    """The SM every per-SM artifact is keyed by (the taxonomy rules it applies,
     results/pathdiff/<sm>/, results/retests/<sm>/, results/<sm>/). Source of
     truth is targets.yaml `platform.sm` (the box this checkout is pinned to);
     AIS_SM only overrides it (grading another SM's evidence from here). Until
@@ -1057,17 +1057,13 @@ def current_sm() -> str:
 
 
 def load_taxonomy():
+    """(regex, backend, role) rules for the run's SM from kernel_taxonomy.yaml: the
+    rules whose `sms` names this SM, plus every rule without `sms`, in file order."""
     import yaml
 
-    # Per-SM vocabulary files (owner decision 2026-09-20: the verdict plane
-    # forks by SM — a platform's kernel names are that platform's data, and
-    # separate files delete the cross-arch audit discipline a shared file
-    # demanded). Discoverability rule: kernel_taxonomy_<sm>.yaml, enumerable
-    # by glob; a session working sm103 never touches the sm90 file.
     sm = current_sm()
-    path = Path(__file__).parent / f"kernel_taxonomy_{sm}.yaml"
-    rules = yaml.safe_load(path.read_text())["rules"]
-    return [(re.compile(r["match"]), r["backend"], r["role"]) for r in rules]
+    rules = yaml.safe_load((Path(__file__).parent / "kernel_taxonomy.yaml").read_text())["rules"]
+    return [(re.compile(r["match"]), r["backend"], r["role"]) for r in rules if sm in r.get("sms", [sm])]
 
 
 _TAXONOMY = load_taxonomy()

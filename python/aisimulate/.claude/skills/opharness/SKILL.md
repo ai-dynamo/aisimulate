@@ -23,9 +23,9 @@ the workflow you are on (`collector/opharness/workflows/<workflow>.md` + `.yaml`
 | `CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps` | every probe/capture container | mandatory on boxes with a host MPS daemon (queues set it). |
 | `HF_HUB_OFFLINE=1`, `TRITON_CACHE_DIR`, `DG_JIT_CACHE_DIR` | containers | offline + shared JIT cache (`<ws>/jitcache`), set by the emitted queues. |
 
-## Per-SM artifacts (never shared across SMs)
+## Per-SM artifacts
 
-`components/kernel_taxonomy_<sm>.yaml`, `results/<sm>/<fw>-<ver>.yaml`,
+Rules scoped by `sms:` in `components/kernel_taxonomy.yaml`, `results/<sm>/<fw>-<ver>.yaml`,
 `results/pathdiff/<sm>/<fw>-<ver>/`, `results/retests/<sm>/`. Gate lines in
 `components/captures/verdicts_*.sh` may carry `FLOOR_SM=<sm> FLOOR_NOTE="..."`
 (platform floor on that SM) or `SERVING_RAW=<raw>` (graded against a dedicated

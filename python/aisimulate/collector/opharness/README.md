@@ -47,7 +47,7 @@ results stay out of git).
 | `dummies.py` | build depth-cut, width-true dummy checkpoints (quant/dispatch behave like the real model, load in minutes) |
 | `probe_driver.py` | the G1 driver: golden `cli generate` render -> per-GPU probe queues -> curated records -> results matrices — records and matrix cells carry `golden_facts` (did the render apply the generator's model facts, or did the pipeline swallow a facts-resolution failure), and a checkpoint under `dummy_overrides.family` is probed only on that adapter's dummy (a dir built by another adapter is skipped as `dummy not built`) (`--plan/--emit-queues/--records/--matrix/--check-coverage`, `--only` to scope) |
 | `probes/` | in-container identity probes per framework: in-process for tp1, the server route (`probe_*_server.py`) for tp>1 |
-| `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
+| `kernel_taxonomy.yaml` | kernel-name -> canonical-backend vocabulary for every SM; `sms:` scopes a rule to the SMs whose kernels need it (both sides of a verdict translate through the same rules) |
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary |
 | `op_smoke.py` | one case of one registered op through the executor's (get_func, run_func) contract — "can this collector build and time a case on the new pin" |
 | `case_inventory.py` | the collector's case plan for (fw, sm) — `collect.py --plan-only --plan-table` on any CPU — diffed against a base revision -> results/<sm>/cases/; a loss no `collector/skips.py` entry accounts for is the test-case regression; `--skips` lists the entries a pin bump re-checks |
@@ -115,10 +115,9 @@ docstring for the invocation set.
 
 ## Per-SM runs (sm90 / sm100 / sm103 / sm120)
 
-Every verdict-plane artifact is keyed by SM and nothing is shared across SMs:
-`components/kernel_taxonomy_<sm>.yaml` (vocabulary — a new SM starts with its
-own file, seeded from the closest SM and then labelled from THAT box's raws;
-probe_driver refuses to run without it), `results/<sm>/<fw>-<ver>.yaml`
+Every verdict-plane artifact is keyed by SM: the taxonomy rules a run applies
+(`components/kernel_taxonomy.yaml`; a new SM adds rules scoped to it with `sms:`,
+labelled from THAT box's raws), `results/<sm>/<fw>-<ver>.yaml`
 (matrix), `results/pathdiff/<sm>/<fw>-<ver>/` (gate verdicts),
 `results/retests/<sm>/` (customization retests).
 
@@ -134,7 +133,7 @@ Which SM a command works on:
    2026-09-30 the default was a hard-coded sm90, and an sm120 box that forgot
    the export labelled its records with the sm90 vocabulary silently.
 3. On a new box: set `platform` in targets.yaml (name, sm, SDK `system` used
-   for the golden render), add `kernel_taxonomy_<sm>.yaml`, then run the
+   for the golden render), add `sms:`-scoped taxonomy rules where its kernels differ, then run the
    workflow exactly as on sm90; `workflow_check upgrade_op --param fw=... --param
    version=...` shows honest todos for the new SM until its own evidence exists.
 
@@ -142,8 +141,8 @@ SM103 (B300) is treated as equivalent to SM100 (owner decision 2026-10-05): it i
 kernels by that family (sglang `major == 10`, trtllm/vllm `in (100, 103)`), so a
 collector that tests `sm == 100` silently measures the wrong lane on B300
 (sglang encoder, fixed 2026-10-05). Branch on the family the framework's own
-selector uses. `kernel_taxonomy_sm103.yaml` is seeded from the sm100 file and
-still needs labelling from B300 raws; no sm103 records exist yet.
+selector uses. The sm103 taxonomy rules are the sm100 ones; no sm103 records
+exist yet.
 
 Gate declarations are SM-aware: a `run ...` line in `captures/verdicts_*.sh`
 declares the gate for every SM; prefix `FLOOR_SM=<sm> FLOOR_NOTE="<framework
@@ -182,7 +181,7 @@ back to the SDK's bundled config with a PROVENANCE note (tokenizer via
    check against the target release before folding in. SM, by contrast, IS
    forked — on both planes: per-SM collector files (falls due at the next pin
    move, together with folding the 029 lanes back into base) and per-SM
-   verdict-plane data (kernel_taxonomy_<sm>.yaml, results/pathdiff/<sm>/,
+   verdict-plane data (SM-scoped taxonomy rules, results/pathdiff/<sm>/,
    results/retests/<sm>/). Rationale: version copies are serial (one alive at
    a time — git's case); SM copies are parallel, maintained by different
    sessions on different machines — physical separation replaces the
