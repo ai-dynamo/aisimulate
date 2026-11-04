@@ -137,7 +137,8 @@ def test_generate_naive_config_renders_valid_dgd_without_database_version(monkey
         if doc["kind"] == "DynamoGraphDeployment"
     ]
     name = dgd["metadata"]["name"]
-    assert re.fullmatch(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?", name)
+    for label in name.split("."):
+        assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", label), name
     assert len(name) <= 253
     assert "None" not in name
     services = dgd["spec"]["services"]
