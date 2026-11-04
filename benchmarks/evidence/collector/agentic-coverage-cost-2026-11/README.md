@@ -164,9 +164,10 @@ candidate anchors and do not establish fleet totals.
 
 ## Budget, estimates and acceptance
 
-The approved 12 collection GPU-hours are partitioned into 8 anchor, 1 correctness
-and 3 validation GPU-hours after the coordinator transferred unused correctness quota. Each system has 1 anchor plus 0.375 validation GPU-hours; the correctness agent has a separate 1 GPU-hour cap. This audit owns 11: **1 anchor GPU-hour and 0.375 validation
-GPU-hour per system**. The correctness campaign owns the remaining 1.
+The approved 12 collection GPU-hours are partitioned into 8 anchor, 0.5 correctness
+and 3.5 validation GPU-hours after coordinator transfers of unused correctness quota.
+B300 has1 anchor plus0.875 validation GPU-hours; the other seven systems each
+have1 anchor plus0.375 validation. The correctness agent has a separate0.5 cap. This audit owns11.5 GPU-hours in total; correctness owns the remaining0.5.
 Unused quotas require coordinator reassignment before transfer. A file lock
 protects one ledger, not independent cluster filesystems: each system receives
 its fixed quota and must keep one ledger for every local job using that quota.
@@ -346,8 +347,7 @@ per-system anchor/validation ledger events and exact scheduler states. Finished
 collection seconds include failed attempts. Open reservations are charged in
 full until their receipt arrives; missing ledgers denote work not yet started,
 not successful zero-cost coverage. Allocation durations appear only in scheduler
-provenance and are never used as collection costs. Quotas remain per-system
-1 anchor plus0.375 validation GPU-hours and a separate1 correctness GPU-hour.
+provenance and are never used as collection costs. That historical snapshot predates the final coordinator transfer below.
 
 The S generation fixture unions original #676 points with the guarded broad
 extensions. Applying the new KV-index guard to the entire old grid would remove
@@ -399,3 +399,12 @@ that manifest and records the archive hash. Every ZIP member hash and archive
 CRC was verified after creation. B uses pinned676; S is the corrected final5
 superset fixture; M retains final4ea geometry. These frozen files require no GPU
 work to inspect or reproduce the cost census.
+
+The final coordinator transfer raises only B300 validation from0.375 to0.875
+GPU-hours, leaving all eight1-hour anchor caps and the other seven validation
+caps unchanged. Audit allowance is11.5 and correctness allowance0.5, totaling
+12 GPU-hours. The correctness owner confirmed all seven completed jobs have an
+administrative allocation upper bound of1711 GPU-seconds (<1800) and will run
+no more jobs. That bound permits the transfer; it is not substituted for actual
+collection cost in any anchor or estimate. Older timestamped ledger snapshots
+retain their contemporaneous quota history.
