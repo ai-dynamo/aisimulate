@@ -1,0 +1,41 @@
+max_num_batched_tokens (8192) exceeds max_num_seqs * max_model_len (4097). This may lead to unexpected behavior.
+Traceback (most recent call last):
+  File "/workspace/results/pr664-fp8-native-20261103/28298/native_audit.py", line 102, in <module>
+    c.run_attention_torch(*r['shape'], perf_filename=str(out / 'diagnostic.csv'))
+  File "/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/utils.py", line 653, in wrapper
+    return func(stack, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/collect_attn.py", line 376, in run_attention_torch
+    with benchmark_with_power(
+  File "/usr/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/helper.py", line 507, in benchmark_with_power
+    kernel_func()
+  File "/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/collect_attn.py", line 365, in run
+    impl.forward(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py", line 1450, in forward
+    _FA4_DENSE_ATTENTION_KERNEL(
+  File "/workspace/results/pr664-fp8-native-20261103/28298/native_audit.py", line 42, in kernel
+    return orig_kernel(**kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py", line 283, in __call__
+    return self.kernel(q=q, k=k, v=v, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py", line 116, in kernel
+    return flash_attn_varlen_func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/flash_attn_interface.py", line 445, in flash_attn_varlen_func
+    out, softmax_lse, _, _ = _flash_attn_fwd(
+                             ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py", line 1436, in _flash_attn_fwd
+    q_descale_tensor, k_descale_tensor, v_descale_tensor = (
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py", line 1437, in <genexpr>
+    to_cute_tensor(t, assumed_align=4, leading_dim=1)
+  File "/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/cute_dsl_utils.py", line 206, in to_cute_tensor
+    return tensor.mark_layout_dynamic(leading_dim=leading_dim)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/cute/runtime.py", line 238, in mark_layout_dynamic
+    self._dltensor_wrapper.mark_layout_dynamic(leading_dim)
+RuntimeError: Expected strides[leading_dim] == 1, but got 0.

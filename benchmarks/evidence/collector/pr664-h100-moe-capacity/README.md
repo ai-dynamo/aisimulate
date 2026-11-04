@@ -42,9 +42,8 @@ records both hashes. `summary.json` is derived evidence, not a measurement
 record. Native remote roots:
 `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-capacity-20261103/{28267,28269}`.
 
-The separate FP8 head-512 attention n4/kv1 stride failure remains unqualified.
-The installed vLLM 0.31.0 `set_default_quant_scales` in
-`model_executor/layers/attention/attention.py` creates scalar scale tensors,
-matching the collector; changing their rank merely to bypass CuteDSL's
-stride check would not establish serving parity. Earlier n16/kv2 positive
-controls and n4/kv1 failures remain the evidence for that nonblocking gap.
+The separate FP8 head-512 n4/KV1 failure now has a
+[native Attention.forward control](../pr664-sm90-fp8-native/README.md).
+Both prefill and decode reproduce the same FA4 singleton-descale stride
+failure in the collector and native layer. These shapes remain failed
+coverage; no scale/stride workaround or serving success is claimed.

@@ -1,0 +1,348 @@
+{
+  "kind": "collector",
+  "context": true,
+  "shape": [
+    1,
+    4096,
+    4,
+    1,
+    512,
+    true,
+    true,
+    0
+  ],
+  "publish_eligible": false,
+  "source_ref": "c569abb1cd034c934f47974209515e3507f60b8a",
+  "packages": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130"
+  },
+  "gpu": {
+    "name": "NVIDIA H100 80GB HBM3",
+    "capability": [
+      9,
+      0
+    ]
+  },
+  "source_hashes": {
+    "collect_attn.py": "9d8c1a55ec46f840e2138139ccfad9b7cde52abb93e91352a0dccde653014210",
+    "flash_attn.py": "ea53fb41165323f13094604051c73d44a579994fe5a427243aa9faafc280b1c2"
+  },
+  "native_backend_layer_reads": [
+    "_k_scale",
+    "_q_scale",
+    "_v_scale",
+    "impl"
+  ],
+  "metadata": {
+    "num_actual_tokens": 4096,
+    "max_query_len": 4096,
+    "query_start_loc": {
+      "shape": [
+        2
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": [
+        0,
+        4096
+      ]
+    },
+    "max_seq_len": 4096,
+    "seq_lens": {
+      "shape": [
+        1
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": [
+        4096
+      ]
+    },
+    "block_table": {
+      "shape": [
+        1,
+        64
+      ],
+      "stride": [
+        64,
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": null
+    },
+    "slot_mapping": {
+      "shape": [
+        4096
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int64",
+      "device": "cuda:0",
+      "values": null
+    },
+    "use_cascade": false,
+    "common_prefix_len": 0,
+    "cu_prefix_query_lens": null,
+    "prefix_kv_lens": null,
+    "suffix_kv_lens": null,
+    "max_dcp_context_kv_len": 0,
+    "dcp_context_kv_lens": null,
+    "num_decode_reqs": 0,
+    "num_prefill_reqs": 0,
+    "num_decode_tokens": 0,
+    "num_prefill_tokens": 0,
+    "scheduler_metadata": {
+      "shape": [
+        9
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": null
+    },
+    "prefix_scheduler_metadata": null,
+    "max_num_splits": 0,
+    "causal": true,
+    "mm_prefix_query_range_tensor": null,
+    "rswa_prefix_lens": null,
+    "rswa_window": null,
+    "rswa_window_tensor": null
+  },
+  "collector_impl": {
+    "dcp_world_size": 1,
+    "dcp_rank": 0,
+    "pcp_world_size": 1,
+    "pcp_rank": 0,
+    "total_cp_world_size": 1,
+    "total_cp_rank": 0,
+    "need_to_return_lse_for_decode": false,
+    "num_heads": 4,
+    "head_size": 512,
+    "scale": 0.044194173824159216,
+    "num_kv_heads": 1,
+    "alibi_slopes": null,
+    "sliding_window": "(-1, -1)",
+    "kv_cache_dtype": "fp8",
+    "logits_soft_cap": 0,
+    "kv_sharing_target_layer_name": null,
+    "num_queries_per_kv": 4,
+    "attn_type": "decoder",
+    "vllm_flash_attn_version": 4,
+    "fa4_hd256": false,
+    "batch_invariant_enabled": false,
+    "sinks": null,
+    "supports_quant_query_input": false,
+    "_dcp_dtype": null,
+    "_dcp_max_num_tokens": 0
+  },
+  "collector_impl_class": "<class 'vllm.v1.attention.backends.flash_attn.FlashAttentionImpl'>",
+  "mock_fields": {
+    "_q_scale": {
+      "shape": [],
+      "stride": [],
+      "dtype": "torch.float32",
+      "device": "cuda:0",
+      "values": [
+        1.0
+      ]
+    },
+    "_k_scale": {
+      "shape": [],
+      "stride": [],
+      "dtype": "torch.float32",
+      "device": "cuda:0",
+      "values": [
+        1.0
+      ]
+    },
+    "_v_scale": {
+      "shape": [],
+      "stride": [],
+      "dtype": "torch.float32",
+      "device": "cuda:0",
+      "values": [
+        1.0
+      ]
+    },
+    "_q_scale_float": 1.0,
+    "_k_scale_float": 1.0,
+    "_v_scale_float": 1.0
+  },
+  "kernel_arguments": {
+    "q": {
+      "shape": [
+        4096,
+        4,
+        512
+      ],
+      "stride": [
+        2048,
+        512,
+        1
+      ],
+      "dtype": "torch.bfloat16",
+      "device": "cuda:0",
+      "values": null
+    },
+    "k": {
+      "shape": [
+        8192,
+        64,
+        1,
+        512
+      ],
+      "stride": [
+        65536,
+        1024,
+        512,
+        1
+      ],
+      "dtype": "torch.float8_e4m3fn",
+      "device": "cuda:0",
+      "values": null
+    },
+    "v": {
+      "shape": [
+        8192,
+        64,
+        1,
+        512
+      ],
+      "stride": [
+        65536,
+        1024,
+        512,
+        1
+      ],
+      "dtype": "torch.float8_e4m3fn",
+      "device": "cuda:0",
+      "values": null
+    },
+    "out": {
+      "shape": [
+        4096,
+        4,
+        512
+      ],
+      "stride": [
+        2048,
+        512,
+        1
+      ],
+      "dtype": "torch.bfloat16",
+      "device": "cuda:0",
+      "values": null
+    },
+    "cu_seqlens_q": {
+      "shape": [
+        2
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": [
+        0,
+        4096
+      ]
+    },
+    "max_seqlen_q": 4096,
+    "seqused_k": {
+      "shape": [
+        1
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": [
+        4096
+      ]
+    },
+    "max_seqlen_k": 4096,
+    "softmax_scale": 0.044194173824159216,
+    "causal": true,
+    "alibi_slopes": null,
+    "window_size": "[-1, -1]",
+    "block_table": {
+      "shape": [
+        1,
+        64
+      ],
+      "stride": [
+        64,
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": null
+    },
+    "softcap": 0,
+    "scheduler_metadata": {
+      "shape": [
+        9
+      ],
+      "stride": [
+        1
+      ],
+      "dtype": "torch.int32",
+      "device": "cuda:0",
+      "values": null
+    },
+    "fa_version": 4,
+    "q_descale": null,
+    "k_descale": {
+      "shape": [
+        1,
+        1
+      ],
+      "stride": [
+        0,
+        0
+      ],
+      "dtype": "torch.float32",
+      "device": "cuda:0",
+      "values": [
+        1.0
+      ]
+    },
+    "v_descale": {
+      "shape": [
+        1,
+        1
+      ],
+      "stride": [
+        0,
+        0
+      ],
+      "dtype": "torch.float32",
+      "device": "cuda:0",
+      "values": [
+        1.0
+      ]
+    },
+    "dynamic_causal": null,
+    "num_splits": 0,
+    "s_aux": null,
+    "mask_mod": null,
+    "aux_tensors": null
+  },
+  "status": "failed",
+  "error": "Expected strides[leading_dim] == 1, but got 0.",
+  "traceback": "Traceback (most recent call last):\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/native_audit.py\", line 102, in <module>\n    c.run_attention_torch(*r['shape'], perf_filename=str(out / 'diagnostic.csv'))\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/utils.py\", line 653, in wrapper\n    return func(stack, *args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/collect_attn.py\", line 376, in run_attention_torch\n    with benchmark_with_power(\n  File \"/usr/lib/python3.12/contextlib.py\", line 137, in __enter__\n    return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/helper.py\", line 507, in benchmark_with_power\n    kernel_func()\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/source/python/aisimulate/collector/vllm/collect_attn.py\", line 365, in run\n    impl.forward(\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py\", line 1450, in forward\n    _FA4_DENSE_ATTENTION_KERNEL(\n  File \"/workspace/results/pr664-fp8-native-20261103/28298/native_audit.py\", line 42, in kernel\n    return orig_kernel(**kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py\", line 283, in __call__\n    return self.kernel(q=q, k=k, v=v, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/flash_attn.py\", line 116, in kernel\n    return flash_attn_varlen_func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/flash_attn_interface.py\", line 445, in flash_attn_varlen_func\n    out, softmax_lse, _, _ = _flash_attn_fwd(\n                             ^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py\", line 1436, in _flash_attn_fwd\n    q_descale_tensor, k_descale_tensor, v_descale_tensor = (\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/interface.py\", line 1437, in <genexpr>\n    to_cute_tensor(t, assumed_align=4, leading_dim=1)\n  File \"/usr/local/lib/python3.12/dist-packages/vllm/vllm_flash_attn/cute/cute_dsl_utils.py\", line 206, in to_cute_tensor\n    return tensor.mark_layout_dynamic(leading_dim=leading_dim)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/cute/runtime.py\", line 238, in mark_layout_dynamic\n    self._dltensor_wrapper.mark_layout_dynamic(leading_dim)\nRuntimeError: Expected strides[leading_dim] == 1, but got 0.\n",
+  "call_seconds": 12.82464754092507,
+  "peak_allocated_bytes": 1140888576
+}
