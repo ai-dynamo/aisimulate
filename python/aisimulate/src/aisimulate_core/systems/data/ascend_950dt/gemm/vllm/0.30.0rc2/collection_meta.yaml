@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# SYNTHETIC M4 STAGING DATA -- NOT A MEASUREMENT. See ../README.md.
+#
+# Deliberately a status-only schema-v1 sidecar: collector_ref / collector_hash
+# / case_plan_hash / collected_at attest a real campaign on a real device, and
+# no such campaign exists yet (M5 owns it). Nothing here is fabricated --
+# the entry claims only the directory identity and that coverage is partial.
+# M5 replaces the whole directory with collector-written data and the
+# sidecar collect.py emits.
+schema_version: 1
+runtime:
+  framework: vllm_npu
+  version: 0.30.0rc2
+tables:
+  gemm_perf:
+    status: partial
