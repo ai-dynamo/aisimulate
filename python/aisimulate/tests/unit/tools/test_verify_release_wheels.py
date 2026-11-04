@@ -39,7 +39,7 @@ def test_spica_scan_covers_all_archive_member_types(verifier):
 
 
 def test_release_verifier_rejects_stale_spica_archive_member(verifier, monkeypatch, tmp_path):
-    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    wheel = tmp_path / "aisim-1.2.0-py3-none-any.whl"
     required = {
         "aisimulate/legacy_cli/main.py",
         "aisimulate/generator/api.py",
@@ -54,8 +54,8 @@ def test_release_verifier_rejects_stale_spica_archive_member(verifier, monkeypat
         for name in required:
             archive.writestr(name, "")
         archive.writestr(
-            "aisimulate-1.2.0.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: aisimulate\nVersion: 1.2.0\n",
+            "aisim-1.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: aisim\nVersion: 1.2.0\n",
         )
         archive.writestr("spica/data/model.bin", b"stale")
 
@@ -97,13 +97,13 @@ def test_config_adapter_readme_remains_repository_only(verifier):
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):
-    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    wheel = tmp_path / "aisim-1.2.0-py3-none-any.whl"
     for name in verifier.LEGAL_FILES:
         (tmp_path / name).write_text(f"canonical {name}\n")
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in verifier.LEGAL_FILES:
             archive.writestr(
-                f"aisimulate-1.2.0.dist-info/licenses/{name}",
+                f"aisim-1.2.0.dist-info/licenses/{name}",
                 (tmp_path / name).read_bytes(),
             )
 
@@ -112,11 +112,11 @@ def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp
 
 
 def test_release_verifier_rejects_missing_legal_file(verifier, monkeypatch, tmp_path):
-    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    wheel = tmp_path / "aisim-1.2.0-py3-none-any.whl"
     (tmp_path / "LICENSE").write_text("canonical license\n")
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(
-            "aisimulate-1.2.0.dist-info/licenses/LICENSE",
+            "aisim-1.2.0.dist-info/licenses/LICENSE",
             (tmp_path / "LICENSE").read_bytes(),
         )
 
@@ -154,12 +154,12 @@ def test_rust_crate_package_rejects_infra_roots(verifier, monkeypatch, root):
 
 @pytest.mark.parametrize("package", ["aiconfigurator", "aiconfigurator_core"])
 def test_release_verifier_rejects_removed_import_packages(verifier, tmp_path, package):
-    wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"
+    wheel = tmp_path / "aisim-1.2.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(f"{package}/__init__.py", "")
         archive.writestr(
-            "aisimulate-1.2.0.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: aisimulate\nVersion: 1.2.0\n",
+            "aisim-1.2.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: aisim\nVersion: 1.2.0\n",
         )
     with pytest.raises(RuntimeError, match="removed legacy import packages"):
         verifier._verify_wheel(wheel, set())

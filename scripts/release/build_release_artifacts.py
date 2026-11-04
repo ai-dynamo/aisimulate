@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import re
 import shutil
@@ -15,10 +16,14 @@ import sys
 import tempfile
 import tomllib
 import zipfile
+from email import message_from_bytes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "0.14.0"
+PYTHON_PACKAGE = "aisim"
+CRATE_PACKAGE = "aisim-core"
+REQUIRE_CLI_ALIAS = True
 # Nightly CI stamps a dev suffix via scripts/release/apply_dev_version.py:
 # PEP 440 `0.14.0.devYYYYMMDD` in the wheel, SemVer `0.14.0-dev.YYYYMMDD` in
 # the crate, optionally followed by a ten-digit run number in both formats.
@@ -27,7 +32,7 @@ VERSION = "0.14.0"
 DEV_SUFFIX_RE = re.compile(r"\.dev[0-9]{8}(?:[0-9]{10})?")
 
 EXPECTED_PYTHON_PROJECTS = {
-    ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate",
+    ROOT / "python" / "aisimulate" / "pyproject.toml": PYTHON_PACKAGE,
 }
 EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
@@ -40,6 +45,16 @@ def _toml(path: Path) -> dict[str, object]:
 
 def _is_source_manifest(path: Path) -> bool:
     return not IGNORED_DISCOVERY_DIRS.intersection(path.relative_to(ROOT).parts)
+
+
+def _expected_scripts() -> dict[str, str]:
+    scripts = {
+        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisimulate": "aisimulate.supervision:main",
+    }
+    if REQUIRE_CLI_ALIAS:
+        scripts["aisim"] = "aisimulate.supervision:main"
+    return scripts
 
 
 def check_manifests() -> tuple[str, str]:
@@ -66,9 +81,9 @@ def check_manifests() -> tuple[str, str]:
         package = manifest.get("package")
         if isinstance(package, dict) and package.get("publish", True) is not False:
             publishable_crates[path] = str(package["name"])
-    assert publishable_crates == {EXPECTED_CRATE: "aisimulate-core"}, (
+    assert publishable_crates == {EXPECTED_CRATE: CRATE_PACKAGE}, (
         "publishable Rust manifest set changed:\n"
-        f"expected={{{EXPECTED_CRATE!r}: 'aisimulate-core'}}\nactual={publishable_crates}"
+        f"expected={{{EXPECTED_CRATE!r}: {CRATE_PACKAGE!r}}}\nactual={publishable_crates}"
     )
 
     app = _toml(ROOT / "python" / "aisimulate" / "pyproject.toml")["project"]
@@ -88,12 +103,11 @@ def check_manifests() -> tuple[str, str]:
         *app["dependencies"],
         *(dependency for group in optional_dependencies.values() for dependency in group),
     ]
-    assert not any(str(dep).lower().startswith(("aisimulate-core", "aiconfigurator")) for dep in dependencies)
+    assert not any(
+        str(dep).lower().startswith(("aisim-core", "aisimulate-core", "aiconfigurator")) for dep in dependencies
+    )
     assert not any(str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies)
-    assert app["scripts"] == {
-        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
-        "aisimulate": "aisimulate.supervision:main",
-    }
+    assert app["scripts"] == _expected_scripts()
     return py_version, crate_version
 
 
@@ -144,7 +158,7 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
             str(target),
             env={**os.environ, "PYO3_PYTHON": sys.executable},
         )
-        crate = target / "package" / f"aisimulate-core-{crate_version}.crate"
+        crate = target / "package" / f"{CRATE_PACKAGE}-{crate_version}.crate"
         if not crate.is_file():
             raise SystemExit(f"cargo did not produce {crate}")
         shutil.copy2(crate, output / crate.name)
@@ -154,13 +168,32 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
 
 def verify_output(output: Path, py_version: str, crate_version: str) -> None:
     names = sorted(path.name for path in output.iterdir() if path.is_file())
-    expected_crate = f"aisimulate-core-{crate_version}.crate"
-    app_wheels = [name for name in names if name.startswith(f"aisimulate-{py_version}-") and name.endswith(".whl")]
+    expected_crate = f"{CRATE_PACKAGE}-{crate_version}.crate"
+    app_wheels = [
+        name for name in names if name.startswith(f"{PYTHON_PACKAGE}-{py_version}-") and name.endswith(".whl")
+    ]
     assert len(names) == 2, f"expected exactly two artifacts, got {names}"
-    assert len(app_wheels) == 1, f"missing or duplicate aisimulate wheel: {names}"
+    assert len(app_wheels) == 1, f"missing or duplicate AISim wheel: {names}"
     assert expected_crate in names, f"missing {expected_crate}: {names}"
     wheel_path = output / app_wheels[0]
     with zipfile.ZipFile(wheel_path) as wheel:
+        metadata_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        dist_info = f"{PYTHON_PACKAGE}-{py_version}.dist-info"
+        assert metadata_paths == [f"{dist_info}/METADATA"], (
+            f"expected one matching wheel METADATA file, found {metadata_paths}"
+        )
+        metadata = message_from_bytes(wheel.read(metadata_paths[0]))
+        assert metadata.get_all("Name") == [PYTHON_PACKAGE], "wheel metadata Name does not match selected source"
+        assert metadata.get_all("Version") == [py_version], "wheel metadata Version does not match selected source"
+        entry_point_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/entry_points.txt")]
+        assert entry_point_paths == [f"{dist_info}/entry_points.txt"], (
+            f"expected one matching wheel entry_points.txt, found {entry_point_paths}"
+        )
+        entry_points = configparser.RawConfigParser()
+        entry_points.optionxform = str
+        entry_points.read_string(wheel.read(entry_point_paths[0]).decode("utf-8"))
+        scripts = dict(entry_points.items("console_scripts")) if entry_points.has_section("console_scripts") else {}
+        assert scripts == _expected_scripts(), "wheel console scripts do not match selected source"
         for legal_file in LEGAL_FILES:
             matches = [name for name in wheel.namelist() if name.endswith(f".dist-info/licenses/{legal_file}")]
             assert len(matches) == 1, f"expected one packaged {legal_file}, found {matches}"
@@ -174,6 +207,7 @@ def verify_output(output: Path, py_version: str, crate_version: str) -> None:
 
 def main() -> None:
     global ROOT, VERSION, EXPECTED_PYTHON_PROJECTS, EXPECTED_CRATE
+    global PYTHON_PACKAGE, CRATE_PACKAGE, REQUIRE_CLI_ALIAS
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, help="Release source checkout")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
@@ -187,8 +221,14 @@ def main() -> None:
         manifest = subprocess.check_output(
             ["git", "show", "HEAD:python/aisimulate/pyproject.toml"], cwd=ROOT, text=True
         )
-        VERSION = str(tomllib.loads(manifest)["project"]["version"])
-    EXPECTED_PYTHON_PROJECTS = {ROOT / "python" / "aisimulate" / "pyproject.toml": "aisimulate"}
+        committed_project = tomllib.loads(manifest)["project"]
+        VERSION = str(committed_project["version"])
+        PYTHON_PACKAGE = committed_project["name"]
+        if PYTHON_PACKAGE not in ("aisim", "aisimulate"):
+            raise ValueError(f"unsupported source distribution: {PYTHON_PACKAGE}")
+        CRATE_PACKAGE = f"{PYTHON_PACKAGE}-core"
+        REQUIRE_CLI_ALIAS = "aisim" in committed_project["scripts"]
+    EXPECTED_PYTHON_PROJECTS = {ROOT / "python" / "aisimulate" / "pyproject.toml": PYTHON_PACKAGE}
     EXPECTED_CRATE = ROOT / "crates" / "core" / "Cargo.toml"
 
     py_version, crate_version = check_manifests()

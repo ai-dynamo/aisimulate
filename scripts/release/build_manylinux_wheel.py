@@ -14,6 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.release.package_identity import single_wheel
+
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON_PROJECT = ROOT / "python" / "aisimulate"
 PLATFORM_BY_MACHINE = {
@@ -39,11 +42,10 @@ def _run(*command: str, cwd: Path = ROOT) -> None:
 
 
 def _single_wheel(directory: Path, description: str) -> Path:
-    wheels = sorted(directory.glob("aisimulate-*.whl"))
-    if len(wheels) != 1:
-        names = [path.name for path in wheels]
-        raise SystemExit(f"expected exactly one {description}, found {names}")
-    return wheels[0]
+    try:
+        return single_wheel(directory)
+    except ValueError as error:
+        raise SystemExit(f"expected exactly one {description}: {error}") from error
 
 
 def build(output: Path) -> Path:

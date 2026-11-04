@@ -9,13 +9,13 @@ AISimulate 0.14.0 has one product version and exactly two release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
-| `aisimulate` wheel | `python/aisimulate/pyproject.toml` | Application, CLI, estimator SDK, model/performance data, FPM Collector workflow/runtime, Replay, Sweeper, and the unified native runtime |
-| `aisimulate-core` crate | `crates/core/Cargo.toml` | Engine-neutral estimator, simulation, and deterministic Replay for Rust consumers |
+| `aisim` wheel | `python/aisimulate/pyproject.toml` | Application, CLI, estimator SDK, model/performance data, FPM Collector workflow/runtime, Replay, Sweeper, and the unified native runtime |
+| `aisim-core` crate | `crates/core/Cargo.toml` | Engine-neutral estimator, simulation, and deterministic Replay for Rust consumers |
 
 The external public-API test fixture is `publish = false` and excluded from the
 product workspace. Imported AIConfigurator source does not retain another buildable `aiconfigurator`,
 `aiconfigurator-core`, or Python `aisimulate-core` manifest. The
-`aisimulate` and `aisimulate_core` namespaces live inside the `aisimulate` wheel.
+`aisimulate` and `aisimulate_core` namespaces live inside the `aisim` wheel.
 The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
 Python import namespaces are removed. See the [migration guide](../aic-backward-compatibility/migration.md#python-imports-and-resources).
 
@@ -30,6 +30,27 @@ distribution.
 For published versions, wheel platform tags, source installation, and internal
 nightly consumption, see the [installation guide](../getting-started/installation.md). The product
 version in a manifest does not establish publication on an index.
+
+The current distribution names are `aisim` (Python) and `aisim-core` (Rust).
+Python imports remain `aisimulate` and `aisimulate_core`; `aisim` and
+`aisimulate` invoke the same CLI. Current release tooling also validates and
+qualifies historical `aisimulate` / `aisimulate-core` sources by their committed
+manifest identities. Nightly GitLab triggers select the project from the built
+wheel identity; renamed builds require release-automation MR !84 before cutover.
+
+## Distribution migration
+
+The renamed `aisim` wheel owns the same Python packages and CLI files as the
+historical `aisimulate` wheel. Existing users must uninstall `aisimulate` before
+installing `aisim`, including upgrades; mixed installations must be repaired
+by removing the old distribution and force-reinstalling the selected new wheel,
+or by creating a fresh environment. See the [migration procedure](../getting-started/installation.md#migrate-to-the-renamed-distribution).
+
+Coordinate downstream dependency declarations, especially Dynamo, before the
+cutover. A consumer requiring `aisimulate` can reinstall the old distribution
+and recreate the overlap. New-name environments require compatible consumers
+that declare `aisim`, followed by `pip check`. Historical release qualification
+continues using its original distribution in a separate environment.
 
 ## Packaged license files
 
@@ -70,8 +91,8 @@ manifest compiles the Rust trees. See [AIC synchronization](aic-sync.md).
 
 ## Nightly CI and FPE qualification
 
-Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
-architecture and one `aisimulate-core` Rust source crate. A changes guard compares
+Main branch nightly CI builds the approved release surface: one `aisim` wheel per Linux
+architecture and one `aisim-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
 `0.14.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
@@ -138,14 +159,14 @@ as workflow artifacts; publishing dashboard pages is a separate Pages workflow
 that consumes successful nightlies.
 
 The GitLab request contract was checked against release-automation revision
-`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
-`.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
+`cc63ecf80165209f630d4a5b3868983e980c6cc2` (release-automation MR !84), specifically
+the root `.gitlab-ci.yml` variable forwarding and `projects/aisim.yml` consumer.
 The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
 request selects `ref=main` and forwards these fields:
 
 | Variable | Nightly value |
 | --- | --- |
-| `PROJECT` | `aisimulate` |
+| `PROJECT` | Built wheel identity: `aisim`, or `aisimulate` for historical source |
 | `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
 | `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
 | `WHEEL_VERSION` | Exact stamped wheel version |
