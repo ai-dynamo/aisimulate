@@ -51,3 +51,5 @@ The 40-file source closure at the original revision reproduces the recorded hash
 
 The original source revision, original data hashes and later validation revision
 are separate evidence. No later collector revision is assigned to historical data.
+
+The executed harness SHA-256 was `8da754f13e4d5e8a7790dcbaa13c268308c997c19a5520619188c2e3122f9602`. The published copy adds only the SPDX header; measurement code is unchanged.
