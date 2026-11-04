@@ -491,7 +491,7 @@ def test_agentic_g2_runner_capability_remains_explicit(nested_rank, scopes, work
 @pytest.mark.parametrize(
     "scopes,field,value",
     [
-        (("dp_rank_local",), "num_workers", 2),
+        (("cluster_shared",), "num_workers", 2),
         (("cluster_shared",), "num_workers", 0),
         (("dp_rank_local",), "num_workers", True),
         (("dp_rank_local", None), "num_prefill_workers", 2),
