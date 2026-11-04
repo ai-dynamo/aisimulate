@@ -16,7 +16,7 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
-python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'import aisimulate; print(aisimulate.__version__)'
 python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
 ```
 
