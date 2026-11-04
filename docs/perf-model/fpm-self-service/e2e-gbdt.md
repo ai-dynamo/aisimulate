@@ -279,10 +279,12 @@ split options are described in the
 Use the deployment identity reviewed before collection. Confirm it still
 matches the selected native files and role; resolve mismatches before fitting.
 
-Train one AISimulate-compatible GBDT per role. These commands use attention
-DP=1. For higher attention DP, first establish complete synchronized iteration
-groups using the [rank-grouping contract](../fpm_ml/learned-forward-pass-model.md);
-independent rank rows are not a substitute for those groups.
+Train one AISimulate-compatible GBDT per role. These training and evaluation
+commands support attention DP=1 only. `--join-ranks none` treats each record
+independently, while `--join-ranks counter` refuses cross-rank joins. For higher
+attention DP, the Python `train` and `evaluate` APIs accept complete iteration
+groups established using a trustworthy shared iteration identity. Producing
+and validating those synchronized groups is outside this walkthrough.
 
 ```bash
 python -m aisimulate_core.sdk.fpm_learned train \
