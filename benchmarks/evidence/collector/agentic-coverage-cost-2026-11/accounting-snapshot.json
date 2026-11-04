@@ -1,0 +1,946 @@
+{
+  "timestamp_utc": "2026-11-04T06:46:12.048744+00:00",
+  "budget_gpu_hours": {
+    "audit": 11,
+    "correctness": 1,
+    "per_system_anchor": 1,
+    "per_system_validation": 0.375
+  },
+  "clusters": [
+    {
+      "host": "aws-pdx-slurm-1-login-01.nvidia.com",
+      "data": {
+        "ledgers": {
+          "b300_sxm/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b300-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "vllm-attention_context-vllm-1024106",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "reserved",
+                "run_id": "trtllm-attention_context-trtllm-1024108",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "reserved",
+                "run_id": "sglang-attention_context-sglang-1024107",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "finished",
+                "run_id": "vllm-attention_context-vllm-1024106",
+                "gpu_seconds": 256.198481295025
+              },
+              {
+                "event": "reserved",
+                "run_id": "vllm-attention_generation-vllm-1024106",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "finished",
+                "run_id": "vllm-attention_generation-vllm-1024106",
+                "gpu_seconds": 22.43134184705559
+              },
+              {
+                "event": "finished",
+                "run_id": "trtllm-attention_context-trtllm-1024108",
+                "gpu_seconds": 526.941800612025
+              },
+              {
+                "event": "reserved",
+                "run_id": "trtllm-attention_generation-trtllm-1024108",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "finished",
+                "run_id": "sglang-attention_context-sglang-1024107",
+                "gpu_seconds": 590.4024286228232
+              },
+              {
+                "event": "reserved",
+                "run_id": "sglang-attention_generation-sglang-1024107",
+                "gpu_seconds": 595
+              },
+              {
+                "event": "finished",
+                "run_id": "trtllm-attention_generation-trtllm-1024108",
+                "gpu_seconds": 69.59290743432939
+              },
+              {
+                "event": "finished",
+                "run_id": "sglang-attention_generation-sglang-1024107",
+                "gpu_seconds": 28.04559240397066
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-moe-baseline-b300_sxm-vllm-1024416",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-moe-baseline-b300_sxm-vllm-1024416",
+                "gpu_seconds": 10.201164366095327
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-moe-baseline-b300_sxm-sglang-1024417",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-moe-baseline-b300_sxm-trtllm-1024418",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-moe-baseline-b300_sxm-trtllm-1024418",
+                "gpu_seconds": 14.858803992159665
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-moe-baseline-b300_sxm-sglang-1024417",
+                "gpu_seconds": 89.54143226705492
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-followup-moe-baseline-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-followup-moe-baseline-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-followup-moe-expanded-b300_sxm-sglang-followup-1024497",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-followup-moe-baseline-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 40.884088954888284
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-followup-moe-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-followup-moe-baseline-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 106.72696087509394
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-followup-moe-expanded-b300_sxm-sglang-followup-1024497",
+                "gpu_seconds": 92.97451840608846
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-followup-moe-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 25.594338420778513
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-followup-moe-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-followup-msa-expanded-b300_sxm-sglang-followup-1024497",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-followup-dsa-baseline-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-followup-moe-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 89.84090658184141
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-followup-msa-expanded-b300_sxm-sglang-followup-1024497",
+                "gpu_seconds": 84.8397609370295
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-followup-dsa-baseline-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-followup-dsa-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-followup-dsa-baseline-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 41.98037302074954
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-followup-dsa-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 32.01251852372661
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-followup-dsa-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-followup-msa-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-followup-msa-expanded-b300_sxm-trtllm-followup-1024498",
+                "gpu_seconds": 29.59986252523959
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-followup-dsa-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 71.20109888492152
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-followup-msa-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-followup-msa-expanded-b300_sxm-vllm-followup-1024499",
+                "gpu_seconds": 32.64728963794187
+              }
+            ],
+            "finished_gpu_seconds": 2256.515669608838,
+            "open_reserved_gpu_seconds": 65,
+            "charged_gpu_seconds": 2321.515669608838,
+            "remaining_gpu_seconds": 1278.484330391162
+          },
+          "b300_sxm/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b300_sxm-validation-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-validation-moe-baseline-b300_sxm-vllm-validation-1024561",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-validation-moe-baseline-b300_sxm-trtllm-validation-1024560",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-validation-moe-baseline-b300_sxm-sglang-validation-1024562",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-validation-moe-baseline-b300_sxm-trtllm-validation-1024560",
+                "gpu_seconds": 41.37833830493037
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-validation-moe-baseline-b300_sxm-vllm-validation-1024561",
+                "gpu_seconds": 101.66909089498222
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-validation-moe-expanded-b300_sxm-trtllm-validation-1024560",
+                "gpu_seconds": 155
+              }
+            ],
+            "finished_gpu_seconds": 143.04742919991259,
+            "open_reserved_gpu_seconds": 280,
+            "charged_gpu_seconds": 423.0474291999126,
+            "remaining_gpu_seconds": 926.9525708000874
+          }
+        },
+        "scheduler": "1024416|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.batch|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.extern|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.0|COMPLETED|0:0|00:00:25|pool0-0231\n1024417|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.batch|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.extern|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.0|COMPLETED|0:0|00:01:54|pool0-0025\n1024418|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.batch|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.extern|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.0|COMPLETED|0:0|00:00:41|pool0-0025\n1024497|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.batch|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.extern|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.0|COMPLETED|0:0|00:01:55|pool0-0231\n1024497.1|COMPLETED|0:0|00:01:47|pool0-0231\n1024498|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.batch|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.extern|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.0|COMPLETED|0:0|00:01:05|pool0-0139\n1024498.1|COMPLETED|0:0|00:00:52|pool0-0139\n1024498.2|CANCELLED by 141787|0:9|00:01:26|pool0-0139\n1024498.3|COMPLETED|0:0|00:00:56|pool0-0139\n1024498.4|COMPLETED|0:0|00:00:54|pool0-0139\n1024499|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.batch|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.extern|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.0|COMPLETED|0:0|00:02:01|pool0-0139\n1024499.1|COMPLETED|0:0|00:01:45|pool0-0139\n1024499.2|COMPLETED|0:0|00:00:58|pool0-0139\n1024499.3|COMPLETED|0:0|00:01:26|pool0-0139\n1024499.4|COMPLETED|0:0|00:00:46|pool0-0139\n1024560|RUNNING|0:0|00:02:24|pool0-0231\n1024560.batch|RUNNING|0:0|00:02:24|pool0-0231\n1024560.extern|RUNNING|0:0|00:02:24|pool0-0231\n1024560.0|COMPLETED|0:0|00:01:06|pool0-0231\n1024560.1|RUNNING|0:0|00:00:23|pool0-0231\n1024561|RUNNING|0:0|00:02:24|pool0-0139\n1024561.batch|RUNNING|0:0|00:02:24|pool0-0139\n1024561.extern|RUNNING|0:0|00:02:24|pool0-0139\n1024561.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024562|RUNNING|0:0|00:02:24|pool0-0139\n1024562.batch|RUNNING|0:0|00:02:24|pool0-0139\n1024562.extern|RUNNING|0:0|00:02:24|pool0-0139\n1024562.0|RUNNING|0:0|00:01:46|pool0-0139\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "aws-iad-slurm-2-login-02.nvidia.com",
+      "data": {
+        "ledgers": {
+          "h100_sxm/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h100_sxm-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-moe-baseline-h100_sxm-sglang-28307",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-moe-baseline-h100_sxm-sglang-28307",
+                "gpu_seconds": 59.469544027000666
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-followup-moe-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-followup-moe-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 46.19190626963973
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-followup-dsa-baseline-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-followup-dsa-baseline-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 90.16672795917839
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-followup-dsa-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-followup-dsa-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 300.17559142317623
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-followup-msa-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-followup-msa-expanded-h100_sxm-sglang-followup-28318",
+                "gpu_seconds": 106.88989673834294
+              }
+            ],
+            "finished_gpu_seconds": 602.893666417338,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 602.893666417338,
+            "remaining_gpu_seconds": 2997.106333582662
+          },
+          "h100_sxm/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h100_sxm-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          }
+        },
+        "scheduler": "28306|PENDING|0:0|00:00:00|None assigned\n28307|COMPLETED|0:0|00:01:59|pool0-0001\n28307.batch|COMPLETED|0:0|00:01:59|pool0-0001\n28307.extern|COMPLETED|0:0|00:01:59|pool0-0001\n28307.0|COMPLETED|0:0|00:01:39|pool0-0001\n28308|PENDING|0:0|00:00:00|None assigned\n28318|COMPLETED|0:0|00:12:25|pool0-0006\n28318.batch|COMPLETED|0:0|00:12:25|pool0-0006\n28318.extern|COMPLETED|0:0|00:12:25|pool0-0006\n28318.0|COMPLETED|0:0|00:01:24|pool0-0006\n28318.1|COMPLETED|0:0|00:02:10|pool0-0006\n28318.2|COMPLETED|0:0|00:05:39|pool0-0006\n28318.3|COMPLETED|0:0|00:02:24|pool0-0006\n28319|PENDING|0:0|00:00:00|None assigned\n28320|PENDING|0:0|00:00:00|None assigned\n28329|RUNNING|0:0|00:00:09|pool0-0006\n28329.batch|RUNNING|0:0|00:00:09|pool0-0006\n28329.extern|RUNNING|0:0|00:00:09|pool0-0006\n28330|PENDING|0:0|00:00:00|None assigned\n28331|PENDING|0:0|00:00:00|None assigned\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "neb-cdg-slurm-1-login-02.nvidia.com",
+      "data": {
+        "ledgers": {
+          "h200_sxm/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h200_sxm-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-moe-baseline-h200_sxm-vllm-41624",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-moe-baseline-h200_sxm-vllm-41624",
+                "gpu_seconds": 10.394985629012808
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-moe-baseline-h200_sxm-sglang-41625",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-moe-baseline-h200_sxm-sglang-41625",
+                "gpu_seconds": 48.53504852904007
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-followup-moe-baseline-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-followup-moe-baseline-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 34.138195062056184
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-followup-moe-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-followup-moe-expanded-h200_sxm-sglang-followup-41629",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-followup-moe-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 28.42785853799433
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-followup-moe-expanded-h200_sxm-sglang-followup-41629",
+                "gpu_seconds": 38.46030229399912
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-followup-dsa-baseline-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-followup-dsa-baseline-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 40.776313204085454
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-followup-dsa-baseline-h200_sxm-sglang-followup-41629",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-followup-dsa-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-followup-dsa-baseline-h200_sxm-sglang-followup-41629",
+                "gpu_seconds": 90.12936652801
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-followup-dsa-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 81.78369708405808
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-followup-msa-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-followup-dsa-expanded-h200_sxm-sglang-followup-41629",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-followup-msa-expanded-h200_sxm-vllm-followup-41628",
+                "gpu_seconds": 45.50306673697196
+              }
+            ],
+            "finished_gpu_seconds": 418.148833605228,
+            "open_reserved_gpu_seconds": 305,
+            "charged_gpu_seconds": 723.148833605228,
+            "remaining_gpu_seconds": 2876.851166394772
+          },
+          "h200_sxm/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h200_sxm-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          }
+        },
+        "scheduler": "41624|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.batch|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.extern|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.0|COMPLETED|0:0|00:01:35|neb-cdg-slurm-1-gpu-5\n41625|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.batch|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.extern|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.0|COMPLETED|0:0|00:02:42|neb-cdg-slurm-1-gpu-5\n41626|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.batch|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.extern|COMPLETED|0:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41628|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.batch|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.extern|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.0|COMPLETED|0:0|00:01:15|neb-cdg-slurm-1-gpu-5\n41628.1|COMPLETED|0:0|00:01:44|neb-cdg-slurm-1-gpu-5\n41628.2|COMPLETED|0:0|00:01:21|neb-cdg-slurm-1-gpu-5\n41628.3|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41628.4|COMPLETED|0:0|00:01:53|neb-cdg-slurm-1-gpu-5\n41629|RUNNING|0:0|00:08:52|neb-cdg-slurm-1-gpu-5\n41629.batch|RUNNING|0:0|00:08:52|neb-cdg-slurm-1-gpu-5\n41629.extern|RUNNING|0:0|00:08:52|neb-cdg-slurm-1-gpu-5\n41629.0|COMPLETED|0:0|00:02:22|neb-cdg-slurm-1-gpu-5\n41629.1|COMPLETED|0:0|00:03:13|neb-cdg-slurm-1-gpu-5\n41629.2|RUNNING|0:0|00:02:37|neb-cdg-slurm-1-gpu-5\n41630|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.batch|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.extern|COMPLETED|0:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41635|PENDING|0:0|00:00:00|None assigned\n41636|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.batch|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.extern|COMPLETED|0:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41637|RUNNING|0:0|00:00:02|neb-cdg-slurm-1-gpu-5\n41637.batch|RUNNING|0:0|00:00:02|neb-cdg-slurm-1-gpu-5\n41637.extern|RUNNING|0:0|00:00:02|neb-cdg-slurm-1-gpu-5\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "nsc-svg-slurm-1-login-02.nvidia.com",
+      "data": {
+        "ledgers": {
+          "b200_sxm/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b200_sxm-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-moe-baseline-b200_sxm-vllm-2488684",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-moe-baseline-b200_sxm-vllm-2488684",
+                "gpu_seconds": 9.400188764557242
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-moe-baseline-b200_sxm-trtllm-2488686",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-moe-baseline-b200_sxm-sglang-2488685",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-moe-baseline-b200_sxm-trtllm-2488686",
+                "gpu_seconds": 44.35407321061939
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-moe-baseline-b200_sxm-sglang-2488685",
+                "gpu_seconds": 77.96216981392354
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-followup-moe-baseline-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-followup-moe-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-followup-moe-baseline-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-followup-moe-baseline-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 34.36021380126476
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-followup-moe-baseline-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 78.01644120272249
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-followup-moe-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-followup-moe-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 77.66968692559749
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-followup-moe-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-followup-moe-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 16.60434636566788
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-followup-dsa-baseline-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-followup-dsa-baseline-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-followup-moe-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 78.4755686847493
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-followup-dsa-baseline-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-followup-dsa-baseline-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 88.45127493701875
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-followup-dsa-baseline-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 37.704779809340835
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-followup-dsa-baseline-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 90.72874000668526
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-followup-dsa-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-followup-dsa-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-followup-dsa-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-followup-dsa-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 66.54234262928367
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-followup-dsa-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 54.87812625616789
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-followup-msa-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-followup-msa-expanded-b200_sxm-vllm-followup-2488752",
+                "gpu_seconds": 30.085080854594707
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-followup-msa-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-followup-dsa-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 221.716956759803
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-followup-msa-expanded-b200_sxm-trtllm-followup-2488754",
+                "gpu_seconds": 103.52016804926097
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-followup-msa-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-followup-msa-expanded-b200_sxm-sglang-followup-2488753",
+                "gpu_seconds": 76.5791406231001
+              }
+            ],
+            "finished_gpu_seconds": 1187.0492986943573,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 1187.0492986943573,
+            "remaining_gpu_seconds": 2412.9507013056427
+          },
+          "b200_sxm/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b200_sxm-validation-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-validation-moe-baseline-b200_sxm-vllm-validation-2488828",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-validation-moe-baseline-b200_sxm-trtllm-validation-2488830",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-validation-moe-baseline-b200_sxm-trtllm-validation-2488830",
+                "gpu_seconds": 27.986532399896532
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-validation-moe-baseline-b200_sxm-sglang-validation-2488829",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-validation-moe-baseline-b200_sxm-vllm-validation-2488828",
+                "gpu_seconds": 76.33350114990026
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-validation-moe-expanded-b200_sxm-trtllm-validation-2488830",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-validation-moe-expanded-b200_sxm-trtllm-validation-2488830",
+                "gpu_seconds": 18.161474467022344
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-validation-moe-expanded-b200_sxm-vllm-validation-2488828",
+                "gpu_seconds": 155
+              }
+            ],
+            "finished_gpu_seconds": 122.48150801681913,
+            "open_reserved_gpu_seconds": 280,
+            "charged_gpu_seconds": 402.48150801681913,
+            "remaining_gpu_seconds": 947.5184919831809
+          }
+        },
+        "scheduler": "2488684|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.batch|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.extern|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.0|COMPLETED|0:0|00:00:31|nsc-svg-slurm-1-gpu-74\n2488685|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.batch|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.extern|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.0|COMPLETED|0:0|00:01:52|nsc-svg-slurm-1-gpu-74\n2488686|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.batch|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.extern|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.0|COMPLETED|0:0|00:01:19|nsc-svg-slurm-1-gpu-74\n2488752|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.batch|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.extern|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.0|COMPLETED|0:0|00:01:37|nsc-svg-slurm-1-gpu-74\n2488752.1|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488752.2|COMPLETED|0:0|00:00:57|nsc-svg-slurm-1-gpu-74\n2488752.3|COMPLETED|0:0|00:01:25|nsc-svg-slurm-1-gpu-74\n2488752.4|COMPLETED|0:0|00:00:49|nsc-svg-slurm-1-gpu-74\n2488753|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.batch|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.extern|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.0|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-74\n2488753.1|COMPLETED|0:0|00:01:59|nsc-svg-slurm-1-gpu-74\n2488753.2|COMPLETED|0:0|00:04:12|nsc-svg-slurm-1-gpu-74\n2488753.3|COMPLETED|0:0|00:01:49|nsc-svg-slurm-1-gpu-74\n2488754|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.batch|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.extern|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.0|COMPLETED|0:0|00:01:10|nsc-svg-slurm-1-gpu-74\n2488754.1|COMPLETED|0:0|00:00:52|nsc-svg-slurm-1-gpu-74\n2488754.2|COMPLETED|0:0|00:02:06|nsc-svg-slurm-1-gpu-74\n2488754.3|COMPLETED|0:0|00:01:31|nsc-svg-slurm-1-gpu-74\n2488754.4|COMPLETED|0:0|00:02:21|nsc-svg-slurm-1-gpu-74\n2488828|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488828.batch|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488828.extern|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488828.0|COMPLETED|0:0|00:01:36|nsc-svg-slurm-1-gpu-74\n2488828.1|RUNNING|0:0|00:00:17|nsc-svg-slurm-1-gpu-74\n2488829|RUNNING|0:0|00:01:32|nsc-svg-slurm-1-gpu-74\n2488829.batch|RUNNING|0:0|00:01:32|nsc-svg-slurm-1-gpu-74\n2488829.extern|RUNNING|0:0|00:01:32|nsc-svg-slurm-1-gpu-74\n2488829.0|RUNNING|0:0|00:01:17|nsc-svg-slurm-1-gpu-74\n2488830|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-133\n2488830.batch|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-133\n2488830.extern|RUNNING|0:0|00:02:17|nsc-svg-slurm-1-gpu-133\n2488830.0|COMPLETED|0:0|00:01:01|nsc-svg-slurm-1-gpu-133\n2488830.1|RUNNING|0:0|00:00:48|nsc-svg-slurm-1-gpu-133\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "computelab-sc-01",
+      "data": {
+        "ledgers": {
+          "a100_sxm/anchor": {
+            "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/a100_sxm-anchor-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 3600
+          },
+          "a100_sxm/validation": {
+            "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/a100_sxm-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          },
+          "l40s/anchor": {
+            "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/l40s-anchor-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 3600
+          },
+          "l40s/validation": {
+            "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/l40s-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          }
+        },
+        "scheduler": "5598802|PENDING|0:0|00:00:00|None assigned\n5598807|PENDING|0:0|00:00:00|None assigned\n5598809|PENDING|0:0|00:00:00|None assigned\n5598813|PENDING|0:0|00:00:00|None assigned\n5598814|PENDING|0:0|00:00:00|None assigned\n5598820|PENDING|0:0|00:00:00|None assigned\n5599133|PENDING|0:0|00:00:00|None assigned\n5599134|PENDING|0:0|00:00:00|None assigned\n5599135|PENDING|0:0|00:00:00|None assigned\n5599136|PENDING|0:0|00:00:00|None assigned\n5599137|PENDING|0:0|00:00:00|None assigned\n5599138|PENDING|0:0|00:00:00|None assigned\n5599369|PENDING|0:0|00:00:00|None assigned\n5599370|PENDING|0:0|00:00:00|None assigned\n5599371|PENDING|0:0|00:00:00|None assigned\n5599372|PENDING|0:0|00:00:00|None assigned\n5599373|PENDING|0:0|00:00:00|None assigned\n5599374|PENDING|0:0|00:00:00|None assigned\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "oci-hsg-cs-001-login-01.nvidia.com",
+      "data": {
+        "ledgers": {
+          "gb200/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb200-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-moe-baseline-gb200-vllm-8611346",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-moe-baseline-gb200-vllm-8611346",
+                "gpu_seconds": 9.336162140127271
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-moe-baseline-gb200-trtllm-8611346",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-moe-baseline-gb200-trtllm-8611346",
+                "gpu_seconds": 15.499173725023866
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-moe-baseline-gb200-sglang-8611346",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-moe-baseline-gb200-sglang-8611346",
+                "gpu_seconds": 89.9422233288642
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-remaining-moe-baseline-gb200-vllm-remaining-8611443",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-remaining-moe-baseline-gb200-vllm-remaining-8611443",
+                "gpu_seconds": 83.0336284628138
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-remaining-moe-baseline-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-remaining-moe-baseline-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 28.40957917505875
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-remaining-moe-expanded-gb200-sglang-remaining-8611443",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-remaining-moe-expanded-gb200-sglang-remaining-8611443",
+                "gpu_seconds": 90.7448597010225
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-remaining-moe-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-remaining-moe-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 21.907460675109178
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-remaining-moe-expanded-gb200-vllm-remaining-8611443",
+                "gpu_seconds": 245
+              }
+            ],
+            "finished_gpu_seconds": 338.87308720801957,
+            "open_reserved_gpu_seconds": 245,
+            "charged_gpu_seconds": 583.8730872080196,
+            "remaining_gpu_seconds": 3016.1269127919804
+          },
+          "gb200/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb200-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          }
+        },
+        "scheduler": "8611346|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.batch|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.extern|COMPLETED|0:0|00:05:07|nvl72118-T18\n8611346.0|COMPLETED|0:0|00:00:45|nvl72118-T18\n8611346.1|COMPLETED|0:0|00:01:28|nvl72118-T18\n8611346.2|COMPLETED|0:0|00:02:28|nvl72118-T18\n8611443|RUNNING|0:0|00:08:32|nvl72077-T09\n8611443.batch|RUNNING|0:0|00:08:32|nvl72077-T09\n8611443.extern|RUNNING|0:0|00:08:32|nvl72077-T09\n8611443.0|COMPLETED|0:0|00:01:54|nvl72077-T09\n8611443.1|COMPLETED|0:0|00:01:26|nvl72077-T09\n8611443.2|COMPLETED|0:0|00:02:18|nvl72077-T09\n8611443.3|COMPLETED|0:0|00:01:18|nvl72077-T09\n8611443.4|RUNNING|0:0|00:01:09|nvl72077-T09\n8611755|PENDING|0:0|00:00:00|None assigned\n"
+      },
+      "error": ""
+    },
+    {
+      "host": "oci-jhb-slurm-1-login-01.nvidia.com",
+      "data": {
+        "ledgers": {
+          "gb300/anchor": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb300-anchor-budget.jsonl",
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-remaining-moe-baseline-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-remaining-moe-baseline-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 98.49445844895672
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-remaining-moe-baseline-gb300-trtllm-remaining-1538129",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-remaining-moe-baseline-gb300-trtllm-remaining-1538129",
+                "gpu_seconds": 35.362081662984565
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-remaining-moe-expanded-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-remaining-moe-expanded-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 74.86283386300784
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-remaining-moe-expanded-gb300-trtllm-remaining-1538129",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-remaining-moe-expanded-gb300-trtllm-remaining-1538129",
+                "gpu_seconds": 24.949326602974907
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-remaining-dsa-baseline-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-remaining-dsa-baseline-gb300-vllm-remaining-1538129",
+                "gpu_seconds": 49.0531933469465
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-remaining-dsa-baseline-gb300-trtllm-remaining-1538129",
+                "gpu_seconds": 95
+              }
+            ],
+            "finished_gpu_seconds": 282.7218939248705,
+            "open_reserved_gpu_seconds": 95,
+            "charged_gpu_seconds": 377.7218939248705,
+            "remaining_gpu_seconds": 3222.2781060751295
+          },
+          "gb300/validation": {
+            "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb300-validation-budget.jsonl",
+            "exists": false,
+            "events": [],
+            "finished_gpu_seconds": 0,
+            "open_reserved_gpu_seconds": 0,
+            "charged_gpu_seconds": 0,
+            "remaining_gpu_seconds": 1350
+          }
+        },
+        "scheduler": "1538129|RUNNING|0:0|00:07:28|nvl72d409-T03\n1538129.batch|RUNNING|0:0|00:07:28|nvl72d409-T03\n1538129.extern|RUNNING|0:0|00:07:28|nvl72d409-T03\n1538129.0|COMPLETED|0:0|00:01:55|nvl72d409-T03\n1538129.1|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.2|COMPLETED|0:0|00:01:32|nvl72d409-T03\n1538129.3|COMPLETED|0:0|00:00:54|nvl72d409-T03\n1538129.4|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.5|RUNNING|0:0|00:00:26|nvl72d409-T03\n1538251|PENDING|0:0|00:00:00|None assigned\n"
+      },
+      "error": ""
+    }
+  ]
+}

@@ -333,3 +333,11 @@ cache differences do not establish setup savings. Validation pairs reuse the
 same already-populated cache in fresh workers. NCCL, KDA and all other
 unmeasured strata retain unknown time subtotals; this snapshot establishes
 measured components, not a finite complete fleet total.
+
+[`accounting-snapshot.json`](accounting-snapshot.json) preserves timestamped
+per-system anchor/validation ledger events and exact scheduler states. Finished
+collection seconds include failed attempts. Open reservations are charged in
+full until their receipt arrives; missing ledgers denote work not yet started,
+not successful zero-cost coverage. Allocation durations appear only in scheduler
+provenance and are never used as collection costs. Quotas remain per-system
+1 anchor plus0.375 validation GPU-hours and a separate1 correctness GPU-hour.
