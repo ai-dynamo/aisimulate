@@ -27,10 +27,30 @@ Explicit invalid configuration is not converted into a fallback estimator.
 
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
 use the NemotronH text model. AISimulate reads the nested `llm_config` and
-accepts `linear_attention` and `full_attention` layer names. Inferred
-`W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
-Explicit precision overrides retain their values. This recognition does not
-add vision modeling or measured timing coverage.
+accepts `linear_attention` and `full_attention` layer names. The bundled
+`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` export stores routed
+and shared experts as NVFP4 with 4-bit activations. In its 88 decoder
+layers, the Mamba and attention projections are static per-tensor FP8, and
+so is the LM head. Its latent projections and router stay BF16, as do the
+attention projections of its one multi-token prediction (MTP) layer, and
+its KV cache is FP8. AISimulate infers `nvfp4` for the routed experts. It
+prices the Mamba, attention, shared-expert and latent projections as
+`fp8_static`, and the router and LM-head GEMMs in BF16. For the shared
+experts, the latent projections and the LM head, these lanes differ from
+the stored precision and are approximations. An inferred `W4A16_NVFP4` MoE
+label, which this export does not use, selects the vLLM `nvfp4` execution
+lane. Explicit precision overrides retain their values. AISimulate does
+not build the MTP layer as its own attention and MoE block. With `nextn`
+above zero, it scales every decode operation, the Mamba operations
+included, by `(nextn + L) / L` for `L` decoder layers. That factor is an
+approximation: it spreads the cost of the attention-plus-MoE MTP block
+evenly over the hybrid graph. Accepted-token progress is applied
+separately by the upper prediction layer, and the MTP weights and KV
+cache are not counted. This support adds no vision modeling and no
+measured timing data. The text path compiles, but the published matrix
+marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
+because the export declares a vision encoder that AISimulate does not
+model; the SDK tests cover the text path.
 
 ## Published FPE matrix
 
