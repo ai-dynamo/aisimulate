@@ -54,8 +54,9 @@ model; the SDK tests cover the text path.
 
 The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
 configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
-quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN),
-full-attention and shared-expert projections are static per-tensor FP8, and
+quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
+`in_proj_qkv`, `in_proj_z` and `out_proj` projections, its full-attention
+projections and its shared-expert projections are static per-tensor FP8, and
 its KV cache is FP8. AISimulate prices those projections as `fp8_static`, the
 routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
 GEMMs in BF16, as the export stores them. Two lanes are approximations. The
