@@ -101,3 +101,12 @@ hash-identified in `input-manifest.json`. Raw result root:
 `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-gpu-review-20261102/sglang/pairs-1001596`.
 The run used about 0.09 allocation GPU-hours; that historical allocation
 figure is not a collection-cost estimate.
+
+## Runtime image identity
+
+`image-index.json` is the unmodified registry manifest at immutable digest
+`sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469`.
+Its AMD64 child is `sha256:2dbe4c7f53230b09aaa8fa41891c13c51d9d2e253f486a70822aaf08783fff75`,
+matching the native image used by the paired experiment and recollection. The
+packaged sidecar records the index; the harness receipt identifies the executed
+child. Hashing this manifest reproduces the sidecar's index digest.
