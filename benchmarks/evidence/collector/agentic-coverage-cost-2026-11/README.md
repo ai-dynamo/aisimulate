@@ -503,3 +503,13 @@ pair can require the same UUID; repeated trials on different GPUs of the same
 SKU remain visible as hardware variance rather than different software. A
 two-pass worker clock is an experimental observation, not a normal one-pass
 collection forecast. Only explicitly scoped pass components may enter a fit.
+
+The conditional dense pilot uses context16K/32K rather than the planned
+B4/Q32/d256/64K point. A [preexisting H20 warning](https://github.com/ai-dynamo/aisimulate/blob/e8cbe2dc150f0df309993474842c2e417753873d/python/aisimulate/collector/trtllm/collect_attn.py#L486),
+already inherited by #676, associates faults with large packed Q/O offsets.
+Its proposed `(B-1) * query_length * Q_heads * head_dim * 2` byte threshold is
+explicitly unverified against kernel source, and no committed raw fault trace
+was found. It is an empirical warning, not a proven H100/B300 kernel contract.
+The omitted point remains planned and unmeasured here; assign neither success
+nor zero cost. B1 avoids that particular offset expression, and decode uses
+query length1; other memory, context and kernel restrictions still apply.
