@@ -75,6 +75,14 @@ def shared_policy():
         set(module["generation_sequence_lengths"]) | {262144, 524288, 786432, 917504, 1048575}
     )
     module["generation"]["max_tokens"] = 37486592
+    standalone = data["common_case_values"]["mla"]
+    standalone["context_sequence_lengths"] = sorted(
+        set(standalone["context_sequence_lengths"]) | {24576, 40960, 65536, 131072, 262144, 524288, 1048576}
+    )
+    standalone["max_context_tokens"] = 1048576
+    standalone["generation_target_sequence_lengths"] = sorted(
+        set(standalone["generation_target_sequence_lengths"]) | {262144, 524288, 1048576}
+    )
     original_loader = generator._load_base_cases_data
     original_points = plans._attention_points
 

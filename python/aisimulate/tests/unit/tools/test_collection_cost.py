@@ -71,6 +71,26 @@ def test_phase_parser_keeps_inclusive_time_and_does_not_sum_nested_bench(tmp_pat
     assert points[0]["phase_seconds"]["bench_timed"] == 0.01
 
 
+def test_shared_fixture_includes_standalone_mla_and_restores_baseline():
+    path = _TOOL.with_name("collection_cost_inventory.py")
+    spec = importlib.util.spec_from_file_location("collection_cost_inventory_test", path)
+    inventory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inventory)
+    from collector import op_plans
+
+    before_context = set(op_plans.plan("mla_context", "trtllm", 103).cases)
+    before_generation = set(op_plans.plan("mla_generation", "trtllm", 103).cases)
+    with inventory.shared_policy():
+        expanded_context = set(op_plans.plan("mla_context", "trtllm", 103).cases)
+        expanded_generation = set(op_plans.plan("mla_generation", "trtllm", 103).cases)
+        assert before_context < expanded_context
+        assert before_generation < expanded_generation
+        assert any(case.input_len == 1048576 for case in expanded_context)
+        assert any(case.input_len == 1048575 for case in expanded_generation)
+    assert set(op_plans.plan("mla_context", "trtllm", 103).cases) == before_context
+    assert set(op_plans.plan("mla_generation", "trtllm", 103).cases) == before_generation
+
+
 def test_reservations_bound_parallel_work_and_actual_time_releases_only_unused_budget(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     cost.reserve(ledger, "a", 60, 100)

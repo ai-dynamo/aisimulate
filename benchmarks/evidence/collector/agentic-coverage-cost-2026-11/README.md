@@ -51,6 +51,9 @@ savings. #676 already declares some near-1M module points, so neither the old
 #664 case counts nor the review's roughly 1,500 GPU-hour extrapolation can serve
 as the new delta. S is a **policy reconstruction**, not a claim that old and new
 collector implementations produce identical inventories or timings.
+The shared fixture includes standalone MLA's expanded context lengths and 1M
+context budget, plus 262K/512K/1M decode lengths. These are separate from the
+MLA/DSA/MSA module grids and must contribute their own added cases.
 
 The eight systems are the non-RTX NVIDIA entries of the auto-collector's
 `AISimSystem` enum at `208c494160e9473ad4012dea77c7b5265a3bc1d7`,
