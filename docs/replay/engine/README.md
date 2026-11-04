@@ -77,11 +77,14 @@ domains instead of the single values above; see
 | `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Engine prediction and recommendation accept `auto`, `op_level`,
-`fpm_interpolation`, and `fpm_regression` in their global and worker timing
-selection schemas. They reject `fpm_learned` during configuration validation.
-Native replay also rejects it before loading artifacts: phase timing cannot
-provide the complete iteration features required by the
-[learned estimate/tune API](../../perf-model/fpm_ml/configuration.md).
+`fpm_interpolation`, `fpm_regression`, and `fpm_learned` in their global and
+worker timing selection schemas. Replay prices every pass of a regression or
+learned role with one `ForwardPassMetrics` query over the worker's
+attention-DP ranks, adding the per-request lengths a learned artifact reads,
+and rejects such a role when its model lacks a workload store the role needs,
+hosts the vision encoder or uses speculative decoding; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
+These roles are latency-only, so their replay reports no power.
 
 Field tables on these pages use the following columns:
 
@@ -188,9 +191,11 @@ engine:
 ```
 
 Each worker has `workers` detokenizer servers, shared by its attention-DP
-ranks, and each request belongs to one of them. When a pass ends, each server
-takes the outputs of that pass that belong to it as one job, after the jobs it
-has taken before. A job takes `base_ms + per_output_us × outputs`, where an
+ranks, and each request belongs to one of them. When the engine returns a
+pass's outputs, at the pass end or, with vLLM's
+[`launch`](workers.md#vllm-pass-launch), once the next pass is launched, each
+server takes the outputs of that pass that belong to it as one job, after the
+jobs it has taken before. A job takes `base_ms + per_output_us × outputs`, where an
 output is one request's new tokens in the pass, and the client receives every
 output of the job when it ends.
 

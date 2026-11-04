@@ -17,7 +17,6 @@ import importlib
 import inspect
 import json
 import os
-import random
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
@@ -51,12 +50,7 @@ except ImportError:
 NON_GATED_MOE_MODELS = ["Nemotron-3"]
 _MXFP4_MOE_TYPES = {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
 
-from collector.case_generator import (
-    get_common_moe_test_cases,
-    get_moe_quantization_modes,
-    get_moe_quantization_module_config,
-    moe_model_allows_quantization,
-)
+from collector.case_generator import get_common_moe_test_cases, get_moe_quantization_module_config
 from collector.helper import (
     EXIT_CODE_RESTART,
     balanced_logits,
@@ -65,6 +59,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.op_plans import plan_cases
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
@@ -81,7 +76,7 @@ def _clear_deepgemm_moe_workspaces() -> None:
     DeepGemmFusedMoE sizes its workspaces per num_tokens and parks every size
     in the memory_buffer_utils pool (``DeepGemmFusedMoE.buffers``); left alone
     over the 27-token-count sweep the pool reached 251 GB on gb300 and the
-    next 63 GiB request OOMed (2026-10-11: gb300 60 / gb200 108 fp8_block
+    next 63 GiB request OOMed (gb300 60 / gb200 108 fp8_block
     cases, Kimi-K2 / DeepSeek-V3 geometries). 1.3.0rc29 moved the module from
     ``_torch.modules.fused_moe`` to ``_torch.moe.fused_moe``; the previous
     single-path import failed silently inside a try/except and the pool was
@@ -118,54 +113,6 @@ def _moe_model_behavior(model_name: str) -> str:
     if model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
         return "swigluoai"
     return "swiglu"
-
-
-def _moe_execution_key(common_moe_testcase, moe_type: str, min_latency_mode: bool):
-    module_config = get_moe_quantization_module_config(
-        "trtllm",
-        moe_type,
-        model_name=common_moe_testcase.model_name,
-    )
-    return (
-        moe_type,
-        tuple(common_moe_testcase.num_tokens_list),
-        common_moe_testcase.hidden_size,
-        common_moe_testcase.inter_size,
-        common_moe_testcase.topk,
-        common_moe_testcase.num_experts,
-        common_moe_testcase.tp,
-        common_moe_testcase.ep,
-        min_latency_mode,
-        common_moe_testcase.token_expert_distribution,
-        common_moe_testcase.power_law_alpha,
-        _moe_model_behavior(common_moe_testcase.model_name),
-        json.dumps(module_config, sort_keys=True, separators=(",", ":")),
-    )
-
-
-def _moe_consumer_keys(common_moe_testcase, moe_type: str, min_latency_mode: bool):
-    """Return every consumer-visible key emitted by one getter task."""
-    distribution = (
-        f"power_law_{common_moe_testcase.power_law_alpha}"
-        if common_moe_testcase.token_expert_distribution == "power_law"
-        else common_moe_testcase.token_expert_distribution
-    )
-    table = "low_latency" if min_latency_mode else "default"
-    return tuple(
-        (
-            table,
-            moe_type,
-            distribution,
-            common_moe_testcase.topk,
-            common_moe_testcase.num_experts,
-            common_moe_testcase.hidden_size,
-            common_moe_testcase.inter_size,
-            common_moe_testcase.tp,
-            common_moe_testcase.ep,
-            num_tokens,
-        )
-        for num_tokens in common_moe_testcase.num_tokens_list
-    )
 
 
 def gc_collect():
@@ -219,105 +166,7 @@ def cleanup_empty_json_files(directory):
 
 
 def get_moe_test_cases():
-    """Build list of MoE test case tuples for trtllm >= 1.1 (power_law, SM-dependent quant modes)."""
-    sm_version = get_sm_version()
-    # Quant-mode axis (SM floors/intervals) is declared on moe.yaml's
-    # moe_trtllm quantization_modes and filtered here, same as the sglang and
-    # vllm collectors. The previous hand-coded if-chain silently bypassed the
-    # YAML axis, so quant-mode gates (e.g. w4a16_mxfp4 max_sm_exclusive: 120)
-    # never took effect for trtllm. Mode-by-mode the YAML axis reproduces the
-    # old chain exactly, except w4a16_mxfp4 at sm>=120 which is the sanctioned
-    # gate (see the citation on its moe.yaml entry). int4_wo stays in the
-    # sweep (min_sm: 100) so unsupported model rows fail in TensorRT-LLM
-    # itself instead of stopping at AIC validation.
-    moe_list = get_moe_quantization_modes("trtllm", sm_version=sm_version)
-
-    test_cases = []
-    seen = set()
-    consumer_key_owners = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in get_common_moe_test_cases():
-        model_name = common_moe_testcase.model_name
-
-        for moe_type in moe_list:
-            if not moe_model_allows_quantization("trtllm", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-
-            # Alignment constraints (w4afp8 %128, fp8_block 128x128 block
-            # scales, the TLLM_CHECK weight-bits alignment) are enforced in
-            # run_moe_torch as cited, classified raises — generation-time
-            # drops are sanctioned for memory feasibility only
-            # (layer_permissions.md: execute or raise).
-
-            min_latency_mode_options = [False]
-
-            if moe_type == "nvfp4" and get_sm_version() in (100, 103) and common_moe_testcase.num_experts <= 256:
-                # SM103 treated as SM100 (owner decision 2026-10-05: "sm103 可以认为等价sm100" —
-                # same capability major, same trtllm-gen kernel family; re-verify on a B300 box).
-                # FIXME: recent version only supports SM100 for min-latency mode.
-                # current support, DS router only support up to 256 experts.
-                # Renormalize router only support <=128 experts. trtllmgen kernels only
-                # support renormalize, ds and llama router.
-                min_latency_mode_options.append(True)
-
-            for min_latency_mode in min_latency_mode_options:
-                num_tokens_list = common_moe_testcase.num_tokens_list
-                if not num_tokens_list:
-                    continue
-                execution_key = _moe_execution_key(common_moe_testcase, moe_type, min_latency_mode)
-                if execution_key in seen:
-                    continue
-                consumer_keys = _moe_consumer_keys(common_moe_testcase, moe_type, min_latency_mode)
-                for consumer_key in consumer_keys:
-                    previous_owner = consumer_key_owners.get(consumer_key)
-                    if previous_owner is not None and previous_owner[0] != execution_key:
-                        previous_model = previous_owner[1]
-                        raise ValueError(
-                            "TRT-LLM MoE population collision: "
-                            f"models {previous_model!r} and {model_name!r} map distinct benchmark "
-                            f"invocations to consumer key {consumer_key!r}; "
-                            "the current moe_perf consumer cannot represent both"
-                        )
-                for consumer_key in consumer_keys:
-                    consumer_key_owners[consumer_key] = (execution_key, model_name)
-                seen.add(execution_key)
-                test_cases.append(
-                    [
-                        moe_type,
-                        num_tokens_list,
-                        common_moe_testcase.hidden_size,
-                        common_moe_testcase.inter_size,
-                        common_moe_testcase.topk,
-                        common_moe_testcase.num_experts,
-                        common_moe_testcase.tp,
-                        common_moe_testcase.ep,
-                        min_latency_mode,
-                        common_moe_testcase.model_name,
-                        common_moe_testcase.token_expert_distribution,
-                        common_moe_testcase.power_law_alpha,
-                    ]
-                )
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared trtllm
-    # quant policy excluded all of its moe cases (mirrors the vllm getter).
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared trtllm "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    # Try to optimize number of autotune cache hits by shuffling test cases.
-    # This makes sure the same cache keys are far apart from each other.
-    random.seed(42)
-    random.shuffle(test_cases)
-
-    return test_cases
+    return plan_cases("moe", "trtllm", get_sm_version())
 
 
 def _declared_moe_routing(model_name: str):
@@ -335,7 +184,7 @@ def _declared_moe_routing(model_name: str):
 def _zero_routing_bias(gate) -> None:
     """Serving gates allocate e_score_correction_bias with torch.empty and only
     load_weights fills it (DeepseekV3Gate, modeling_deepseekv3.py:884,926-935
-    @1.3.0rc29; DeepseekV4Gate and MiniMaxM3Gate likewise). Their top-k ranks
+    ; DeepseekV4Gate and MiniMaxM3Gate likewise). Their top-k ranks
     score + bias, and the collector's balanced / power-law logits separate the
     intended experts by ~1e-3 after the sigmoid, so whatever that memory holds
     would pick the experts instead of the row's distribution. Zero it, as
@@ -348,7 +197,7 @@ def _serving_moe_gate(declared, hidden_size, num_experts, topk, dtype, moe_backe
     """The gate serving builds for this architecture, with a zeroed bias.
 
     DeepSeek-V3-family / GLM / Kimi / Nemotron-H: DeepseekV3Gate
-    (modeling_deepseekv3.py:979-994 @1.3.0rc29). DeepSeek-V4: DeepseekV4Gate,
+    (modeling_deepseekv3.py:979-994). DeepSeek-V4: DeepseekV4Gate,
     whose routing runs separately (gate_forward, sqrt-softplus scoring;
     modeling_deepseekv4.py:1533-1546, moe/fused_moe/routing.py:524-614). The
     collected layer is a scored one: the first n_hash_layers route by token id
@@ -429,7 +278,7 @@ def _run_moe_case(
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
     # ``dtype`` is the MODEL/activation dtype serving hands to create_moe
     # (modeling_deepseekv3.py:798 ``dtype=config.torch_dtype`` -> DeepseekV3MoE
-    # -> create_moe(dtype=dtype) @1.3.0rc29; identical at rc23). Quantization
+    # -> create_moe(dtype=dtype); identical at rc23). Quantization
     # travels in quant_config only. Passing float8 here (pre-rc29 habit) is
     # rejected by rc29's MoE resolution ("CutlassFusedMoE FP8_BLOCK_SCALES
     # requires torch.bfloat16, got torch.float8_e4m3fn") and never matched
@@ -437,17 +286,7 @@ def _run_moe_case(
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
-    # FIXME(kernel-limit): TRT-LLM >= 1.3.0rc29 MoE resolution has no implementation for W4A16 on
-    # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
-    # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
-    # W4A16 checkpoint either (benchmarks/evidence/collector/op-probe-2026-10/results/sm100/trtllm-1.3.0rc29.yaml:
-    # Kimi-K2.5 fail, finding sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin
-    # (moe_resolution.py:665 @1.3.0rc29 raises it), not a per-shape failure; refuse before building weights.
-    if moe_type == "int4_wo" and get_sm_version() in (100, 103):
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
-            f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"
-        )
+    # int4_wo: collector/skips.py skips it on every SM (no TRT-LLM implementation), so it is never queued.
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
     elif moe_type == "w4afp8":
@@ -531,8 +370,8 @@ def _run_moe_case(
     # DeepGEMM-JIT-backed for fp8_block grouped GEMM and shares the same
     # 1x128/128x128 scale layout; SM120's Triton block-scale path uses the
     # same 128 granularity. Raise a cited, classified error instead of
-    # filtering the shapes at generation time (layer_permissions.md sanctions
-    # only memory-feasibility drops there). Re-verify the per-SM paths on the
+    # filtering the shapes at generation time (layer_permissions.md: getters
+    # drop no case). Re-verify the per-SM paths on the
     # next framework version bump.
     if moe_type == "fp8_block" and (hidden_size % 128 != 0 or (inter_size // moe_tp_size) % 128 != 0):
         raise ValueError(
@@ -584,11 +423,11 @@ def _run_moe_case(
         swiglu_limit = torch.tensor([7.0] * (num_experts // moe_ep_size), dtype=torch.float32).to(torch.device(device))
         if 90 <= get_sm_version() < 100:
             # Hopper only: serving's AUTO resolution returns TRITON exactly
-            # for 90<=sm<100 (resolve_moe_backend, model_config.py:334-335
-            # @1.3.0rc20). SM89/Ada is NOT in this bucket: TritonFusedMoE's
+            # for 90<=sm<100 (resolve_moe_backend, model_config.py:334-335).
+            # SM89/Ada is NOT in this bucket: TritonFusedMoE's
             # own guard rejects non-SM9x with EP>1 (fused_moe_triton.py:1495
             # -1497), and with EP=1 it would run a backend serving never
-            # selects there (hardware-observed on L40S 2026-07-21: EP=16
+            # selects there (hardware-observed on L40S EP=16
             # raises NotImplementedError, EP=1 runs off-serving-truth).
             model_config.moe_backend = "triton"
         elif 100 <= get_sm_version() < 120:
@@ -598,9 +437,9 @@ def _run_moe_case(
         else:
             # SM120, SM89/Ada and anything else: serving's AUTO resolution
             # routes GptOss to CUTLASS (resolve_moe_backend,
-            # model_config.py:329-337@1.3.0rc20: TRTLLM only for
+            # model_config.py:329-337: TRTLLM only for
             # 100<=sm<120, TRITON only for 90<=sm<100, CUTLASS fallback).
-            # Hardware-observed on RTX PRO 6000 2026-07-19: the trtllm pin
+            # Hardware-observed on RTX PRO 6000 the trtllm pin
             # fails "does not support SM120".
             model_config.moe_backend = "cutlass"
     else:
@@ -612,7 +451,7 @@ def _run_moe_case(
             # TRTLLMGenFusedMoE; CUTLASS rejects WFP4A16 on SM100. On SM120
             # TRTLLMGenFusedMoE refuses ("does not support SM120 and above")
             # and serving AUTO falls through to CUTLASS
-            # (resolve_moe_backend, model_config.py:345@1.3.0rc20).
+            # (resolve_moe_backend, model_config.py:345).
             model_config.moe_backend = "trtllm"
         elif moe_type == "fp8_block":
             if is_sm_100f(sm_version):
@@ -621,10 +460,10 @@ def _run_moe_case(
             else:
                 # Hopper AND SM120: CUTLASS with FP32 scale — serving AUTO
                 # resolves fp8_block to TRTLLM only when is_sm_100f
-                # (resolve_moe_backend, model_config.py:339-343@1.3.0rc20),
+                # (resolve_moe_backend, model_config.py:339-343),
                 # everything else lands on CUTLASS; DeepGEMM has no SM120
                 # grouped-GEMM recipe (layout.hpp:76 "Unknown recipe",
-                # hardware-observed 2026-07-19).
+                # hardware-observed).
                 model_config.moe_backend = "cutlass"
         else:
             model_config.moe_backend = "cutlass"
@@ -662,7 +501,7 @@ def _run_moe_case(
             # modeling_nemotron_h.py:236 @1.3.0rc29. RenormalizeMoeRoutingMethod
             # (customMoeRoutingKernel) is the softmax-top-k family (Qwen3-MoE,
             # Mixtral, ...), and running it for DeepSeek-V3 diverged the
-            # moe_fp8block gate on H20 (2026-10-01). The router GEMM that feeds the
+            # moe_fp8block gate on H20. The router GEMM that feeds the
             # gate (dsv3_router_gemm_op) stays outside this op, as before.
             # DeepSeek-V4 and MiniMax-M3 build their own gates (_serving_moe_gate).
             routing_method = _serving_moe_gate(
@@ -671,7 +510,7 @@ def _run_moe_case(
             router_logits_dtype = torch.float32
         elif is_gpt_oss:
             # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
-            # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
+            # modeling_gpt_oss.py:159-162 (93cb6518), :165-168@1.3.0rc20.
             routing_method = RenormalizeMoeRoutingMethod(
                 topk, output_dtype=torch.bfloat16 if model_config.moe_backend == "trtllm" else torch.float32
             )
@@ -686,7 +525,7 @@ def _run_moe_case(
         "intermediate_size": inter_size,
         "dtype": dtype,
         # Native GPT-OSS expert construction requests bias=True:
-        # modeling_gpt_oss.py:183@1.3.0rc14 (93cb6518), :189@1.3.0rc20.
+        # modeling_gpt_oss.py:183 (93cb6518), :189@1.3.0rc20.
         "bias": is_gpt_oss,
         # In both low latency and attention dp scenarios, create_moe needs not to do allreduce
         # inside op.
@@ -816,7 +655,7 @@ def _run_moe_case(
                 continue
 
     # TRTLLMGen MXFP4 must warm its tactic cache just like serving:
-    # model_engine.py:827-842@1.3.0rc14 (93cb6518). A B200 GPT-OSS
+    # model_engine.py:827-842 (93cb6518). A B200 GPT-OSS
     # TP1/256-token graph measurement drops 26% after explicit tuning. Keep the
     # separate Triton/CUTLASS MXFP4 tuning behavior unchanged.
     if moe_type != "w4a16_mxfp4" or model_config.moe_backend == "trtllm":
@@ -824,10 +663,10 @@ def _run_moe_case(
         # The tuned-tactic cache MUST be SM-scoped: tactic indices are positions
         # in the runner's per-arch config table, and replaying another arch's
         # indices overruns the table (hardware-observed on RTX PRO 6000
-        # 2026-07-25: SM100-tuned fp8 cache replayed on SM120 →
+        # SM100-tuned fp8 cache replayed on SM120 →
         # "vector::_M_range_check: __n (which is 29) >= this->size() (which is
         # 21)" in FusedMoeRunner.run_moe; same failure family as the wideep
-        # collector's 2026-07-19 fix in collect_moe_compute.py). Pre-fix cache
+        # collector's fix in collect_moe_compute.py). Pre-fix cache
         # files without the sm prefix are dead — their tuning SM is not
         # recorded, so they are never trusted again.
         cache_path = (
@@ -934,7 +773,7 @@ def _run_moe_case(
         # CUDA-graph timing is mandatory: a failed capture raises
         # (benchmark_with_power default allow_graph_fail=False) and the case
         # fails classified. The moe row has no column that could record an
-        # eager-timed measurement, and the fallback used until 2026-10-12
+        # eager-timed measurement, and the former eager fallback
         # shipped the Python launch-loop floor as kernel latency.
         with benchmark_with_power(
             device=device,
@@ -952,15 +791,15 @@ def _run_moe_case(
         elif moe_type == "fp8_block" and get_sm_version() == 120:
             # SM120 fp8_block never reaches CUTLASS kernels: CutlassFusedMoE's
             # forward dispatches to run_triton_fp8_block_scale_moe on SM120
-            # (fused_moe_cutlass.py:958-960@1.3.0rc20, "CUTLASS TMA fails on
+            # (fused_moe_cutlass.py:958-960, "CUTLASS TMA fails on
             # SM120 ... cuTensorMapEncodeTiled limitations"), so the ground
             # truth is the Triton block-scale MoE kernel.
             # FIXME(kernel-limit): that Triton kernel requires a power-of-2
             # LOCAL expert count — _moe_prefix_kernel does
             # tl.arange(0, NUM_EXPERTS) (fused_moe_triton_fp8_block_scale.py:
-            # 37-45,136-142@1.3.0rc20) and triton rejects non-power-of-2
+            # 37-45,136-142) and triton rejects non-power-of-2
             # ranges at compile time. Hardware-observed on RTX PRO 6000
-            # 2026-07-26: every fp8_block model with 384 experts
+            # every fp8_block model with 384 experts
             # (DeepSeek-V4-Pro, Kimi-K2) or 160 experts (Qwen3-Coder-480B)
             # fails on every EP split (384/ep and 160/ep are never pow2)
             # while 256/128-expert models pass; serving hits the identical
@@ -1044,7 +883,7 @@ def _worker_restart_policy() -> tuple[int, int] | None:
 def _release_trtllm_memory_buffers() -> int:
     """Drop TRT-LLM's global workspace buffer pool between cases; returns MiB released.
 
-    b200 probe 2026-10-29 (job 514855922, TRTLLM_MOE_LEAK_DEBUG=1): everything still
+    b200 probe (job 514855922, TRTLLM_MOE_LEAK_DEBUG=1): everything still
     allocated after a case was `BufferBlock` tensors of
     tensorrt_llm/_torch/memory_buffer_utils.py — the module-level ``_buffer = Buffers()``
     pool the fused-MoE kernels draw their workspaces from (2.7-86 GiB, the two
@@ -1052,7 +891,7 @@ def _release_trtllm_memory_buffers() -> int:
     the next case replaces it, so memory did not grow across 117 cases. Serving keeps
     it alive for the model's lifetime; between collector cases nothing is live, so
     every block (reserved ones included — ``clear_memory_buffers`` keeps those) is
-    released here and the leak guard measures real residue again. @1.3.0rc29; a
+    released here and the leak guard measures real residue again.; a
     TRT-LLM without this module (older pins) makes this a no-op.
     """
     try:
@@ -1074,7 +913,7 @@ def _release_trtllm_memory_buffers() -> int:
 def _print_live_cuda_tensors(device, top: int = 8) -> None:
     """TRTLLM_MOE_LEAK_DEBUG=1: name what still pins CUDA memory after a case.
 
-    b200 probe 2026-10-29 (jobs 514778748/514778867): 2.7-86 GiB stayed allocated after
+    b200 probe (jobs 514778748/514778867): 2.7-86 GiB stayed allocated after
     every DeepSeek-V3 fp8_block case, so the leak guard recycled the worker each time and
     the policy bought nothing. Lists the largest live CUDA tensors with the types of the
     objects that reference them (gc view; a traceback-free best effort).

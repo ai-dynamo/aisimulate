@@ -19,7 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 from collector.case_generator import get_common_mhc_test_cases
-from collector.helper import benchmark_with_power, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.version_resolver import _check_compat
 
@@ -28,11 +29,11 @@ from collector.version_resolver import _check_compat
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
 #
-# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin,
-# 2026-10-30). Each architecture is additionally gated by
+# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin).
+# Each architecture is additionally gated by
 # ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
 # installed release raises instead of running.
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "vllm==0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
@@ -97,7 +98,7 @@ _ARCHITECTURE_COMPAT = {
 # requires EP and TP>1 and DP>1 (vllm/config/parallel.py:718-735). Rows carry
 # no TP dimension; pure-TP (TP1/2/4) serving reads the same num_tokens rows.
 #
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
 # ced6857a): glm5next/nvidia/model.py moved to glm5next/common/model.py; the
 # only diff on the decoder layer is one added Glm5NextMLP kwarg (L358), so
 # every model.py line above is the 0.30.0 line +1 with identical content
@@ -165,46 +166,8 @@ def _init_cuda(device: str) -> None:
     init_workspace_manager(torch.device(device))
 
 
-def _active_mhc_common_cases():
-    # Architecture is part of the invocation identity: DeepSeek-V4-Flash and
-    # GLM-5.3-Flash share (hidden_size, hc_mult) but run different call sites.
-    seen: set[tuple[str, str, int, int]] = set()
-    for case in get_common_mhc_test_cases():
-        key = (case.architecture, case.phase, case.hidden_size, case.hc_mult)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield case
-
-
 def get_mhc_module_test_cases() -> list[dict]:
-    cases: list[dict] = []
-    glm5next_profiles: dict[tuple[int, int], tuple[str, list[int]]] = {}
-    for case in _active_mhc_common_cases():
-        num_tokens_list = [16] if "--smoke" in sys.argv else case.num_tokens_list
-        if case.architecture == GLM5NEXT_ARCHITECTURE:
-            # GLM call sites are a framework-dispatch fact (see the audit
-            # above), not the generator's pre/post phase pair: collect the
-            # model profile once and expand every serving op below.
-            glm5next_profiles.setdefault((case.hidden_size, case.hc_mult), (case.model_name, num_tokens_list))
-            continue
-        for num_tokens in num_tokens_list:
-            cases.append(
-                {
-                    "id": f"mhc_{case.phase}_hs{case.hidden_size}_hcm{case.hc_mult}_{num_tokens}",
-                    "params": [case.phase, num_tokens, case.hidden_size, case.hc_mult],
-                }
-            )
-    for (hidden_size, hc_mult), (model_path, num_tokens_list) in glm5next_profiles.items():
-        for op in GLM5NEXT_VLLM_OPS:
-            for num_tokens in num_tokens_list:
-                cases.append(
-                    {
-                        "id": f"mhc_glm5next_{op}_hs{hidden_size}_hcm{hc_mult}_{num_tokens}",
-                        "params": [op, num_tokens, hidden_size, hc_mult, GLM5NEXT_ARCHITECTURE, model_path],
-                    }
-                )
-    return cases
+    return plan_cases("mhc_module", "vllm", get_sm_version())
 
 
 def _default_num_tokens() -> list[int]:
@@ -229,7 +192,7 @@ def _mhc_pre(residual, fn, base, scale):
     # mhc_pre_tilelang standalone only on the FIRST layer and always with
     # norm_weight=attn_norm.weight (fused-RMSNorm big_fuse variant), and every
     # subsequent layer boundary runs the fused mhc_fused_post_pre_tilelang
-    # (vllm/models/deepseek_v4/nvidia/model.py:854-890 @0.24.0). This
+    # (vllm/models/deepseek_v4/nvidia/model.py:854-890). This
     # collector measures the norm_weight=None variant because the SDK's
     # DeepSeekV4 model composes mhc_pre + attn_norm (ElementWise) + mhc_post
     # as separate per-layer ops (src/aisimulate/sdk/models/deepseek_v4.py)
@@ -366,7 +329,7 @@ def _build_glm5next_sites(text_config, *, device: str):
 
     The returned module binds the serving decoder layer's own ``hc_pre`` /
     ``hc_post`` / ``hc_fused_post_pre`` methods (glm5next/common/model.py
-    L558-620 @v0.31.0), so every
+    L558-620), so every
     kernel argument (eps values, post multiplier, Sinkhorn repeat, n_splits,
     tile_n, fused-norm weight) is the one serving passes. Parameters mirror
     ``Glm5NextDecoderLayer.__init__`` (model.py L362-405): fp32 hc fn/base/scale
@@ -498,7 +461,7 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
         return "vllm.model_executor.layers.mhc.hc_contract"
     from vllm.utils.deep_gemm import is_deep_gemm_supported
 
-    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-71 @v0.31.0) uses
+    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-71) uses
     # DeepGEMM tf32_hc_prenorm_gemm when is_deep_gemm_supported() (L38), else
     # the TileLang prenorm GEMM.
     gemm = "deepgemm" if is_deep_gemm_supported() else "tilelang"
@@ -509,7 +472,7 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
     if op == "fused_post_pre":
         from vllm.model_executor.kernels.mhc.tilelang_kernels import mhc_fused_post_pre_split_config
 
-        # mhc_fused_post_pre_tilelang (tilelang.py L814-983 @v0.31.0; branch
+        # mhc_fused_post_pre_tilelang (tilelang.py L814-983; branch
         # L893/L914-976) picks the fused post+GEMM kernel when a split config
         # exists (tilelang_kernels.py L67-95: num_tokens <= 32 and
         # hidden_size % 128 == 0), else post + prenorm GEMM.

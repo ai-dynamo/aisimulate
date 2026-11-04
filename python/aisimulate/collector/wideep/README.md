@@ -97,7 +97,6 @@ is one coordinated change:
    path and confirm its global-token accounting.
 2. Add only the verified `moe_ep` `OpEntry` to
    `collector/wideep/vllm/registry.py` and set the module's `__compat__` pin.
-3. In the same commit, add its collector hash closure and the cited vLLM
-   `deepep_moe` kernel-source mapping.
+3. In the same commit, add the cited vLLM `deepep_moe` kernel-source mapping.
 4. Replace the dormant contract tests with positive registry, runtime,
    kernel-identity, and hardware validation tests.

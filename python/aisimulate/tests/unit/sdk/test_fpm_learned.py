@@ -7,6 +7,7 @@ import gzip
 import json
 import math
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -178,6 +179,29 @@ def test_counter_join_rejects_heartbeat_offset_ranks() -> None:
     with pytest.raises(ValueError, match="dp_ranks \\[0, 1\\]"):
         fpm_learned.group_iterations(rank0 + rank1, "counter")
     assert len(fpm_learned.group_iterations(rank0 + rank1, "none")) == 6
+
+
+def test_charge_own_launch_moves_the_next_launch_back() -> None:
+    def prefill(tokens: int, wall: float, counter: int) -> dict:
+        fpm = _decode_fpm(0, 0, wall, counter=counter)
+        fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": tokens}
+        return fpm
+
+    # decode, eager prefill, decode, piecewise prefill, then an idle heartbeat (counter 4) before a decode
+    records = [
+        _decode_fpm(8, 800, 0.200, counter=0),
+        prefill(8192, 0.120, 1),
+        _decode_fpm(8, 800, 0.070, counter=2),
+        prefill(1024, 0.040, 3),
+        _decode_fpm(8, 800, 0.030, counter=5),
+    ]
+    stall_ms = {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
+    out = fpm_learned.charge_own_launch([[fpm] for fpm in records], stall_ms, 4096)
+    # each record loses the launch of the pass after it and takes back its own; the total is unchanged
+    assert [fpm_learned.iteration_wall_ms(ranks) for ranks in out] == pytest.approx([20.0, 300.0, 20.0, 90.0, 30.0])
+    assert records[0]["wall_time"] == 0.200
+    with pytest.raises(ValueError, match="one rank per iteration"):
+        fpm_learned.charge_own_launch([records[:2]], stall_ms, 4096)
 
 
 def _stump_artifact() -> dict:
@@ -392,7 +416,55 @@ def test_train_requires_both_request_lists() -> None:
         fpm["scheduled_requests"]["past_kv_lengths"] = [50, 50]
         past_only.append([fpm])
     with pytest.raises(ValueError, match="per-request features requested"):
-        fpm_learned.train(past_only, "decode", max_iter=5, min_store_rows=10)
+        fpm_learned.train(
+            past_only, "decode", features=fpm_learned.FEATURE_PRESETS["atomic5"], max_iter=5, min_store_rows=10
+        )
+
+
+def test_default_features_are_the_fpm5_aggregates_for_every_worker_type() -> None:
+    assert set(fpm_learned.DEFAULT_FEATURES) == set(fpm_learned.DEFAULT_FEATURE_PRESET) == set(fpm_learned.WORKER_TYPES)
+    for worker_type in fpm_learned.WORKER_TYPES:
+        assert fpm_learned.DEFAULT_FEATURE_PRESET[worker_type] == "fpm5"
+        assert fpm_learned.DEFAULT_FEATURES[worker_type] == fpm_learned.FEATURE_PRESETS["fpm5"]
+    assert len(fpm_learned.FPM5_FEATURE_NAMES) == 17
+    assert not any(name.startswith(("req_", "slot")) for name in fpm_learned.FPM5_FEATURE_NAMES)
+
+
+def _aggregate_decode_records() -> list[dict]:
+    # Stock FPM v1 records: aggregates only, no extend_lengths/past_kv_lengths.
+    return [_decode_fpm(1 + i % 8, 1000 * (1 + i), 0.004 + 0.0005 * (i % 8), counter=i) for i in range(30)]
+
+
+@pytest.mark.parametrize("worker_type", fpm_learned.WORKER_TYPES)
+def test_aggregate_only_streams_train_with_the_default_features(worker_type: str) -> None:
+    pytest.importorskip("sklearn")
+    decode = [[fpm] for fpm in _aggregate_decode_records()]
+    prefill = [[_prefill_fpm(1 + i % 4, 512 * (1 + i % 6), 128 * i, 0.01 + 0.002 * (i % 6))] for i in range(30)]
+    rows = {"decode": decode, "prefill": prefill, "aggregated": decode + prefill}[worker_type]
+    artifact = fpm_learned.train(rows, worker_type, max_iter=5, min_store_rows=10)
+    assert artifact["features"] == list(fpm_learned.FPM5_FEATURE_NAMES)
+    expected = {"decode": {"pure_decode"}, "prefill": {"pure_prefill"}, "aggregated": {"pure_decode", "pure_prefill"}}
+    assert set(artifact["stores"]) == expected[worker_type]
+
+
+@pytest.mark.parametrize("preset", ["atomic5", "atomic10", "sglang18", "hisim"])
+def test_explicit_per_request_presets_still_require_request_lists(preset: str) -> None:
+    pytest.importorskip("sklearn")
+    rows = [[_decode_fpm(2, 100 + i, 0.01, counter=i)] for i in range(30)]
+    with pytest.raises(ValueError, match="per-request features requested.*fpm5"):
+        fpm_learned.train(rows, "decode", features=fpm_learned.FEATURE_PRESETS[preset], max_iter=5, min_store_rows=10)
+
+
+def test_cli_train_records_the_default_fpm5_preset(tmp_path: Path) -> None:
+    pytest.importorskip("sklearn")
+    source = tmp_path / "fpm.jsonl"
+    source.write_text("".join(json.dumps(fpm) + "\n" for fpm in _aggregate_decode_records()))
+    out = tmp_path / "model.json"
+    argv = ["train", "--fpm", str(source), "--worker-type", "decode", "--out", str(out)]
+    assert fpm_learned.main([*argv, "--max-iter", "5", "--min-store-rows", "10", "--holdout-frac", "0"]) == 0
+    artifact = json.loads(out.read_text())
+    assert artifact["features"] == list(fpm_learned.FPM5_FEATURE_NAMES)
+    assert artifact["metadata"]["features_preset"] == "fpm5"
 
 
 def test_train_export_roundtrip_matches_sklearn() -> None:
@@ -407,16 +479,12 @@ def test_train_export_roundtrip_matches_sklearn() -> None:
         fpm["scheduled_requests"]["extend_lengths"] = [1] * nd
         fpm["scheduled_requests"]["past_kv_lengths"] = [kv // nd] * nd
         rng_iterations.append([fpm])
-    # aggregate-only records cannot feed the default per-request feature set
-    with pytest.raises(ValueError, match="per-request features requested"):
-        fpm_learned.train([[_decode_fpm(2, 100, 0.01)]] * 30, "decode", max_iter=5, min_store_rows=10)
     artifact = fpm_learned.train(rng_iterations, "decode", max_iter=50, min_store_rows=10)
     assert artifact["schema"] == fpm_learned.SCHEMA_NAME
     assert set(artifact["stores"]) == {"pure_decode"}
     assert artifact["metadata"]["hyperparameters"]["early_stopping"] is False
     assert artifact["metadata"]["trees_fitted"]["pure_decode"] == len(artifact["stores"]["pure_decode"]["trees"]) == 50
-    assert artifact["features"] == list(fpm_learned.ATOMIC_DECODE_FEATURE_NAMES)
-    assert fpm_learned.DEFAULT_FEATURES["prefill"] == fpm_learned.ATOMIC_PREFILL_FEATURE_NAMES
+    assert artifact["features"] == list(fpm_learned.FPM5_FEATURE_NAMES)
     assert set(fpm_learned.ATOMIC_DECODE_FEATURE_NAMES) < set(fpm_learned.ATOMIC_PREFILL_FEATURE_NAMES)
     assert set(fpm_learned.ATOMIC_PREFILL_FEATURE_NAMES) < set(fpm_learned.REQUEST_FEATURE_NAMES)
     # In-distribution fit sanity check; export parity with the fitted sklearn
@@ -479,7 +547,17 @@ def test_exported_artifact_in_rust_matches_fitted_sklearn_model(target: str) -> 
         fpm["scheduled_requests"]["past_kv_lengths"] = past
         iterations.append([fpm])
     params = {"max_iter": 40, "learning_rate": 0.1, "max_leaf_nodes": 15, "min_samples_leaf": 5}
-    artifact = fpm_learned.train(iterations, "decode", target=target, min_store_rows=10, **params)
+    # Per-request features keep the Rust loader's request-list path under test;
+    # the aggregate default would not read the lists.
+    artifact = fpm_learned.train(
+        iterations,
+        "decode",
+        features=fpm_learned.ATOMIC_DECODE_FEATURE_NAMES,
+        target=target,
+        min_store_rows=10,
+        **params,
+    )
+    assert set(artifact["features"]) == set(fpm_learned.ATOMIC_DECODE_FEATURE_NAMES)
 
     # Same rows, hyperparameters and seed as the trainer, so the fit is identical.
     rows, y_ms = fpm_learned.build_dataset(iterations, "decode", artifact["features"])["pure_decode"]

@@ -111,6 +111,13 @@ doc = "replay/engine/README.md#detokenization"
 cells = ["supported", "supported", "supported"]
 note = "Each emitting worker's detokenizer servers add a fixed plus per-output-token delay before the client sees tokens."
 
+[[sections.rows]]
+name = "Engine-loop launch cost"
+doc = "replay/engine/workers.md#vllm-pass-launch"
+# SGLang's host loop leaves the scheduler thread's batch-level CPU work uncharged.
+cells = ["limited", "not_supported", "not_supported"]
+note = "User-measured launch costs set when vLLM returns a pass's outputs; one-GPU aggregated workers with async scheduling, offline replay only."
+
 [[sections]]
 id = "speculation"
 title = "Speculative decoding"
@@ -291,3 +298,45 @@ name = "Dynamo deployment generation"
 doc = "sweeper/deployment-generation.md"
 cells = ["supported", "supported", "supported"]
 note = "Renders the selected candidate for a pinned serving image."
+
+# Stable benchmark identifiers; observed-event IDs describe evidence, not support claims.
+[benchmark_features]
+schema_version = 1
+ids = [
+    "agentx.weka",
+    "agentx.seeded_snapshots",
+    "agentx.live_warmup",
+    "agentx.continuous_profile",
+    "agentx.sequential_recycling",
+    "agentx.cache_bust",
+    "agentx.shuffle",
+    "scheduling.continuous_batching",
+    "scheduling.chunked_prefill",
+    "scheduling.async",
+    "cache.g1_prefix",
+    "cache.hybrid_state",
+    "cache.g2",
+    "cache.g3",
+    "cache.kvcr",
+    "topology.aggregated",
+    "topology.tensor_parallel",
+    "topology.expert_parallel",
+    "topology.attention_dp",
+    "topology.pipeline_parallel",
+    "topology.context_parallel",
+    "topology.multi_node",
+    "topology.pd",
+    "speculation",
+    "routing.planner",
+    "precision.quantized_weights",
+    "precision.quantized_kv",
+    "workload.multimodal",
+    "events.subagent_spawn",
+    "events.join",
+    "events.tool_wait",
+    "events.cache_reuse",
+    "events.eviction",
+    "events.preemption",
+    "events.recompute",
+    "events.state_restore",
+]

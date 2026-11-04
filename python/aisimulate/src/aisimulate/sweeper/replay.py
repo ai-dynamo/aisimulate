@@ -424,6 +424,7 @@ class RunnerCapabilities:
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
+    supports_scheduler_launch: bool = False
     supports_deferred_encoder_overlay: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
@@ -601,6 +602,13 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.detokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.detokenization requires offline replay")
+        agg_rank = (deployment.agg_engine_args or {}).get("rank", deployment.agg_engine_args)
+        if isinstance(agg_rank, Mapping) and agg_rank.get("launch") is not None:
+            # Only offline replay releases the outputs a vLLM rank holds until it returns them.
+            if not self.supports_scheduler_launch:
+                raise ValueError("runner does not support scheduler.launch; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("scheduler.launch requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:

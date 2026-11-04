@@ -87,6 +87,12 @@ impl EngineFactory {
         self.config.native_host_offload.is_some() || self.config.frontend.is_some()
     }
 
+    /// Whether ranks built by this factory can hold outputs past their pass
+    /// (vLLM `launch`).
+    pub(crate) fn can_hold_outputs(&self) -> bool {
+        self.config.launch.is_some()
+    }
+
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
         let seed_offset = engine_seed_offset(identity)?;

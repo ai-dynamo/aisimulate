@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run a perf-data collection campaign as declared shards, one container per shard.
 
-Why this exists (sm120 campaign, 2026-09-30): every box so far re-invented the
+Why this exists (sm120 campaign): every box so far re-invented the
 same launcher by hand — an image with the finalize deps added, ``--case-filter``
 shards, one cwd per shard so staging CSVs never collide, a GPU pool, and the
 finalize step. Each re-invention drifted somewhere (the sm120 run passed

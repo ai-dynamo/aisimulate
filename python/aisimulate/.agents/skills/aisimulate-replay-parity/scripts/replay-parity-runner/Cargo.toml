@@ -10,7 +10,7 @@ publish = false
 [workspace]
 
 [dependencies]
-aisimulate-core = { path = "../../../../../../../crates/core" }
+aisimulate-core = { package = "aisim-core", path = "../../../../../../../crates/core" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

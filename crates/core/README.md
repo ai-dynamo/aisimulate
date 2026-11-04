@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate Core
 
-`aisimulate-core` is the single public Rust package for engine-neutral
-inference simulation. It preserves three explicit implementation and API
-layers:
+`aisim-core` is the single public Rust package for engine-neutral inference
+simulation. Its Rust library namespace remains `aisimulate_core`. It preserves
+three explicit implementation and API layers:
 
 - `aisimulate_core::engine` owns scheduling, native GPU KV accounting,
   preemption, timing, and attention-DP composition.
@@ -61,8 +61,15 @@ The replay engine models vLLM's attention-DP prefill cadence through
 [configuration and validation notes](../../docs/replay/engine/workers.md#vllm-prefill-schedule-interval).
 
 `EngineConfig::async_scheduling` models vLLM's async-scheduling batch queue,
-which delays requests that arrive at a busy engine; see
+which delays requests that arrive at a busy engine. It also frees a finished
+request's blocks for the pass after next and, with a CPU tier, does not preempt
+a request that the pass in flight runs; see
 [vLLM async scheduling](../../docs/replay/engine/workers.md#vllm-async-scheduling).
+`EngineConfig::launch` adds the engine loop's launch costs. A rank then holds
+each pass's outputs until the driver releases them through
+`GeneralizedMockerEngine::next_emission_ms` and `take_due_emissions`, as
+offline replay does; see
+[vLLM pass launch](../../docs/replay/engine/workers.md#vllm-pass-launch).
 
 SGLang uses `EngineConfig::prefill_decode_interval` to block prefill for N
 scheduler rounds after a group-wide EXTEND. Its default is zero and its semantics

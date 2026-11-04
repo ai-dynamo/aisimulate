@@ -11,7 +11,7 @@ use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
-    FpmQueryCoverage, KvCacheEstimateRequest,
+    FpmQueryCoverage, FpmSeedTargetNormalization, FpmSeedTargetRow, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -83,6 +83,17 @@ pub fn profile_model(
 /// Coverage is owned by the model returned by the one construction API.
 pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
     model.fpm_query_coverage()
+}
+
+/// Preparation reports and their rows must be nameable by external Rust callers.
+pub fn fpm_seed_targets(
+    model: &ForwardPassPerfModel,
+) -> Result<FpmSeedTargetNormalization, AicError> {
+    model.fpm_seed_target_normalization()
+}
+
+pub fn fpm_seed_rows(report: &FpmSeedTargetNormalization) -> &[FpmSeedTargetRow] {
+    &report.rows
 }
 
 pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
@@ -252,6 +263,17 @@ mod tests {
     }
 
     #[test]
+    fn phase_only_provider_keeps_per_rank_group_pricing() {
+        use aisimulate_core::TimingModel;
+        use aisimulate_core::engine::{IterationMs, RankWork};
+        let ranks = [RankWork::idle(0), RankWork::idle(1)];
+        let iteration: Option<IterationMs> = LatencyOnlyProvider
+            .predict_iteration_ms(&ranks)
+            .unwrap();
+        assert_eq!(iteration, None);
+    }
+
+    #[test]
     fn timing_evidence_types_are_public() {
         let operation =
             TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
@@ -262,6 +284,26 @@ mod tests {
             decode: TimingPhaseEvidence::default(),
         };
         assert_eq!(summary.prefill.energy_wms, Some(900.0));
+    }
+
+    #[test]
+    fn rank_operation_evidence_is_an_additive_field() {
+        // Rank evidence serialized before the field existed still loads, and
+        // whole-model FPM ranks keep their serialized schema.
+        let rank: aisimulate_core::FpmRankEstimate = serde_json::from_value(serde_json::json!({
+            "rank": 0, "latency_ms": 1.0, "prefill_ms": 1.0, "decode_ms": null,
+            "decode_baseline_ms": null, "marginal_decode_ms": null, "queries": [],
+        }))
+        .unwrap();
+        assert!(rank.operations.is_empty());
+        assert!(serde_json::to_value(&rank)
+            .unwrap()
+            .get("operations")
+            .is_none());
+        let _ = aisimulate_core::FpmRankEstimate {
+            operations: Vec::new(),
+            ..rank
+        };
     }
 
     #[test]
@@ -695,6 +737,7 @@ mod tests {
                     cooldown: 4,
                     startup_observations: 10,
                 },
+                feature_set: None,
             });
             let model = ForwardPassPerfModel::best_available(config).unwrap();
             let resolved = &model.provenance().unwrap().config;
@@ -711,6 +754,57 @@ mod tests {
             assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
             assert!(!reloaded.regression_store_diagnostics()[0].ready);
         }
+    }
+
+    #[test]
+    fn regression_fpm5_feature_set_is_public_and_fits_multi_rank_iterations() {
+        use aisimulate_core::{LinearFitConfig, RegressionFeatureSet, ScheduledRequestMetrics};
+
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::FpmRegression;
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_set: Some(RegressionFeatureSet::Fpm5),
+            ..LinearFitConfig::default()
+        });
+        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+        let resolved = model.provenance().unwrap().config.clone();
+        let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+        assert_eq!(&reloaded.provenance().unwrap().config, &resolved);
+
+        let rank = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Two attention-DP ranks; latency follows the heavier rank's KV reads
+        // plus the total batch size.
+        let latency = |a: (u32, u32), b: (u32, u32)| {
+            2.0 + 1e-3 * f64::from(a.1.max(b.1)) + 0.05 * f64::from(a.0 + b.0)
+        };
+        let iteration = |i: u32| {
+            let a = (i % 7 + 1, (i % 11 + 1) * 400);
+            let b = (i % 5 + 1, (i % 13 + 2) * 350);
+            let wall = latency(a, b);
+            vec![rank(a.0, a.1, wall), rank(b.0, b.1, wall)]
+        };
+        let observations: Vec<_> = (0..60).map(iteration).collect();
+        model.tune_with_fpms(&observations).unwrap();
+        assert!(model.regression_store_diagnostics()[0].ready);
+        let (a, b) = ((4, 3_000), (2, 5_200));
+        let estimate = model
+            .estimate_forward_pass_time_ms(&[rank(a.0, a.1, 0.0), rank(b.0, b.1, 0.0)])
+            .unwrap()
+            .unwrap();
+        assert!((estimate - latency(a, b)).abs() < 1e-6 * latency(a, b));
     }
 
     #[test]
@@ -1079,7 +1173,28 @@ mod tests {
         assert!(restored.tune_with_fpms(&observations).is_err());
         let report: ForwardPassReadinessReport = restored.readiness_report();
         assert_eq!(report, model.readiness_report());
-        let summary = ForwardPassPerfModel::inspect_state_snapshot(&directory).unwrap();
+        // A copy restores from its own directory once the original is gone.
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&moved).unwrap();
+        for name in ["manifest.json", "config.json", "state.bin"] {
+            std::fs::copy(directory.join(name), moved.join(name)).unwrap();
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+        let mut config: aisimulate_core::ForwardPassPerfModelConfig =
+            serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
+        config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
+        let relocated = ForwardPassPerfModel::best_available(config).unwrap();
+        assert_eq!(
+            relocated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
         assert_eq!(summary.kind, StateSnapshotKind::Regression);
         assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
         assert_eq!(summary.topology, model.deployment_topology());
@@ -1092,6 +1207,35 @@ mod tests {
             mismatches,
             ["dp_size conflicts with canonical attention_dp"]
         );
+    }
+
+    #[test]
+    fn unknown_identity_and_deployment_limits_are_public() {
+        use aisimulate_core::{
+            DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassPerfModelConfig,
+            UNKNOWN_IDENTITY, UNKNOWN_SIZE,
+        };
+        let mut config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "dynamo-planner/model", "system": UNKNOWN_IDENTITY, "backend": "vllm",
+            "worker_type": "decode", "tp": "unknown", "estimation_mode": "fpm_regression",
+            "deployment_limits": {"num_gpus": 4, "max_kv_tokens": 65536}
+        }))
+        .unwrap();
+        assert_eq!(config.tp, UNKNOWN_SIZE);
+        assert_eq!(config.unknown_identity_facts(), ["system", "tp"]);
+        let limits: DeploymentLimits = config.deployment_limits.unwrap();
+        assert_eq!(limits.num_gpus, DeploymentLimit::Known(4));
+        assert_eq!(limits.max_num_seqs.known(), None);
+        // Limits may be added: downstream code sets fields on the default.
+        let mut built = DeploymentLimits::default();
+        built.num_gpus = DeploymentLimit::Known(4);
+        built.max_kv_tokens = DeploymentLimit::Known(65536);
+        assert_eq!(built, limits);
+        let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+        let topology = serde_json::to_value(model.deployment_topology().unwrap()).unwrap();
+        assert_eq!(topology["tp"], UNKNOWN_IDENTITY);
+        config.estimation_mode = EstimationMode::OpLevel;
+        assert!(ForwardPassPerfModel::best_available(config).is_err());
     }
 }
 
@@ -1196,6 +1340,24 @@ pub fn operation_diagnostics(
     AicError,
 > {
     model.static_phase_diagnostics(1, 128, 0, true)
+}
+
+/// The canonical detailed estimate carries each operation-graph rank's
+/// operation evidence, in the same type as the static phase diagnostics.
+pub fn rank_operation_evidence(
+    model: &ForwardPassPerfModel,
+    metrics_by_rank: &[aisimulate_core::ForwardPassMetrics],
+) -> Result<
+    Vec<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>>,
+    AicError,
+> {
+    let estimate: aisimulate_core::ForwardPassEstimate =
+        model.estimate_forward_pass_detailed(metrics_by_rank)?;
+    Ok(estimate
+        .ranks
+        .into_iter()
+        .map(|rank: aisimulate_core::FpmRankEstimate| rank.operations)
+        .collect())
 }
 
 /// Join engines built by separate factories to one cluster-shared G2 pool.

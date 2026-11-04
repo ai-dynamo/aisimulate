@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""tools/perf_database/collect_campaign.py — the invariants a hand-rolled launcher drifted on (sm120, 2026-09-30)."""
+"""tools/perf_database/collect_campaign.py — the invariants a hand-rolled launcher drifted on (sm120)."""
 
 import importlib.util
 import sys

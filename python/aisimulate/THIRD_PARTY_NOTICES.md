@@ -357,6 +357,33 @@ in virtual time, which committed batch an arriving request can join while the
 engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
 asynchronous worker execution. That revision has no root NOTICE file.
 
+The async-scheduling block frees, preemption rules and engine-loop timing in
+repository-root files `crates/core/src/engine/scheduler/vllm/core.rs` and
+`crates/core/src/engine/scheduler/rank.rs` are an independently written,
+modified Rust simulation adaptation of behavioral contracts at vLLM tag
+`v0.30.0` (commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`):
+
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/config/parallel.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/executor/uniproc_executor.py
+
+and of the CUDA-graph dispatch at vLLM tag `v0.32.0` (commit
+`5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/LICENSE
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, when a finished request's blocks return to the pool, which
+running request may be preempted while a pass is in flight, when the engine
+loop decides a pass and returns the previous pass's outputs, and which passes
+run without a CUDA graph; it does not reproduce asynchronous worker execution.
+Neither revision has a root NOTICE file.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 
@@ -876,6 +903,36 @@ THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT 
 
 For any questions regarding this license, please contact model-business@notice.qwencloud.com.
 ```
+
+## StepFun Step-3.7-Flash model configuration files
+
+The following files are modified adaptations of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash@5f6244077ac62e04eec3f320501ff8c2b293373a` |
+| `src/aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash-FP8_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash-FP8@b3d7916fccac844cca050d7520f2aaa513f9a84f` |
+
+Upstream repositories:
+https://huggingface.co/stepfun-ai/Step-3.7-Flash and
+https://huggingface.co/stepfun-ai/Step-3.7-Flash-FP8
+
+Copyright owner: StepFun. Both repositories declare the Apache-2.0 license in
+their model cards. Its terms are in this repository's `LICENSE` and at
+https://www.apache.org/licenses/LICENSE-2.0.
+
+The packaged files are modified. They keep the decoder (`text_config`) fields
+that AISimulate reads, moved to the top level, with these changes:
+
+- The architecture is named `Step3p7FlashForCausalLM` and the model type
+  `step3p7`.
+- `num_attention_groups` is written as `num_key_value_heads`.
+- The MoE fields are written as `num_experts`, `num_experts_per_tok`,
+  `first_k_dense_replace`, `n_shared_experts` and `scoring_func`.
+- The `layer_types` entries of the MTP layers are dropped.
+- In the FP8 file, `quantization_config` keeps `quant_method`,
+  `weight_block_size` and `activation_scheme`.
 
 ## Meta Llama 4
 
@@ -1443,6 +1500,30 @@ the upstream repository as `LICENSE`; the card states that the NVIDIA Open
 Model Agreement does not modify or supersede it. The full texts of both are
 preserved in the adjacent distributed
 `src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+
+## NVIDIA Nemotron 3.5 Super VL NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+
+Upstream repository:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/da5b2650a835292c678994a1fa3fb653250fb508
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+License, as declared by the upstream model card at that revision: the
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1),
+https://openmdw.ai/license/1-1/. The card metadata declares
+`license: other` and `license_name: openmdw-1.1`, and the upstream
+repository ships no separate license file. The full agreement text is
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md`.
 
 ## vLLM DeepSeek V4 cache sizing
 

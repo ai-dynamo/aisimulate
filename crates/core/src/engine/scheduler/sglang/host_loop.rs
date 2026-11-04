@@ -44,6 +44,7 @@ use crate::engine::common::protocols::OutputSignal;
 use super::request::SglangRequest;
 
 /// Scheduler-thread timeline of one iteration.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct IterationTiming {
     /// Modeled completion of this iteration's forward, if it launched one.
@@ -154,33 +155,52 @@ impl HostLoop {
     /// produces for the scheduler; they are held back and returned by the next
     /// call, which observes them. The returned outputs are `None` when no batch
     /// was in flight.
+    #[cfg(test)]
     pub(super) fn plan(
         &mut self,
         selected_ms: f64,
         forward: Option<(f64, ForwardOutputs)>,
     ) -> (IterationTiming, Option<ForwardOutputs>) {
-        let gpu_end_ms = forward
-            .as_ref()
-            .map(|(gpu_ms, _)| self.gpu_free_ms.max(selected_ms) + gpu_ms);
-        if let Some(gpu_end_ms) = gpu_end_ms {
-            self.gpu_free_ms = gpu_end_ms;
-        }
+        let (end_ms, observed) = self.observe(selected_ms);
+        let gpu_end_ms = self.launch(selected_ms, forward);
+        (IterationTiming { gpu_end_ms, end_ms }, observed)
+    }
+
+    /// Wait for and take the previous iteration's forward: the scheduler
+    /// thread returns at the returned time with that forward's outputs, `None`
+    /// when no batch was in flight. Neither depends on the forward this
+    /// iteration launches.
+    pub(super) fn observe(&mut self, selected_ms: f64) -> (f64, Option<ForwardOutputs>) {
         let observed = self.in_flight.take();
         // `copy_done.synchronize()` on the previous batch is the only point where
         // the scheduler thread waits for the GPU.
         let end_ms = observed
             .as_ref()
             .map_or(selected_ms, |previous| selected_ms.max(previous.gpu_end_ms));
-        if let (Some((_, outputs)), Some(gpu_end_ms)) = (forward, gpu_end_ms) {
-            self.in_flight = Some(InFlightBatch {
-                gpu_end_ms,
-                outputs,
-            });
-        }
-        (
-            IterationTiming { gpu_end_ms, end_ms },
-            observed.map(|previous| previous.outputs),
-        )
+        (end_ms, observed.map(|previous| previous.outputs))
+    }
+
+    /// Launch this iteration's forward, selected at `selected_ms`, after
+    /// [`Self::observe`]: it starts when the previous forward has finished and
+    /// runs for its modeled device time. Returns its completion, `None` when
+    /// the iteration launched no forward.
+    pub(super) fn launch(
+        &mut self,
+        selected_ms: f64,
+        forward: Option<(f64, ForwardOutputs)>,
+    ) -> Option<f64> {
+        debug_assert!(
+            self.in_flight.is_none(),
+            "observe the previous forward first"
+        );
+        let (gpu_ms, outputs) = forward?;
+        let gpu_end_ms = self.gpu_free_ms.max(selected_ms) + gpu_ms;
+        self.gpu_free_ms = gpu_end_ms;
+        self.in_flight = Some(InFlightBatch {
+            gpu_end_ms,
+            outputs,
+        });
+        Some(gpu_end_ms)
     }
 }
 

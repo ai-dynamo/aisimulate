@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Verified against 1.3.0rc20 serving source (2026-07-18, B200/SM100 phase).
+# Verified against 1.3.0rc20 serving source.
 # Serving's MLA absorption BMM wrapper `fp8_block_scaling_bmm_out`
-# (tensorrt_llm/_torch/modules/attention.py:1151-1191@1.3.0rc20) dispatches:
+# (tensorrt_llm/_torch/modules/attention.py:1151-1191) dispatches:
 #   SM90/89  -> torch.ops.trtllm.fp8_block_scaling_bmm_out (measured here);
 #   SM120    -> the same torch op with per_token_quant_and_transform;
 #   SM100/103 (is_sm_100f) -> plain bf16 torch.bmm on dequantized weights by
@@ -12,12 +12,12 @@
 # dispatch per serving: the fp8 torch op on SM89/90/120, load-time dequant +
 # bf16 torch.ops.trtllm.bmm_out on SM100/103 (what serving actually runs for
 # an fp8 checkpoint there), a classified raise anywhere else — mirroring the
-# wrapper's own NotImplementedError (attention.py:1080-1093@1.3.0rc20). The
+# wrapper's own NotImplementedError (attention.py:1080-1093). The
 # invoked op is recorded per-row in kernel_source.
-# SM120 half RESOLVED on 1.3.0rc20/SM120 (2026-07-19, RTX PRO 6000): the
+# SM120 half RESOLVED on 1.3.0rc20/SM120: the
 # serving pair — fp8_utils.per_token_quant_and_transform(need_permute102=True)
 # activation quant + resmooth_to_fp8_e8m0/transform_sf_into_required_layout
-# weight scales (transform_weights, attention.py:3013-3028@1.3.0rc20) into the
+# weight scales (transform_weights, attention.py:3013-3028) into the
 # same torch.ops.trtllm.fp8_block_scaling_bmm_out — runs pre+post shapes
 # (t in {1,64,512,2048}) with finite outputs and fp8-level numerics vs a bf16
 # reference (mean rel err 6-8%, scale=1.0 isolation). The fp8 axis is
@@ -36,28 +36,14 @@ __compat__ = "trtllm==1.3.0rc29"
 import tensorrt_llm
 import tensorrt_llm.quantization.utils.fp8_utils as fp8_utils
 import torch
-from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-
-
-def _supported_dtypes() -> set[str]:
-    # fp8 axis opens wherever fp8 checkpoints exist (sm > 86, matching the
-    # fp8-KV floors elsewhere). WHICH kernel an fp8 case measures is a
-    # runtime dispatch decision in the run functions (_fp8_bmm_serving_path),
-    # mirroring serving's fp8_block_scaling_bmm_out wrapper
-    # (attention.py:1159-1190@1.3.0rc20) — closing the axis at generation
-    # time silently removed SM100/103 coverage (layer_permissions.md:
-    # execute or raise; dispatch may change HOW, never WHETHER).
-    dtype_list = ["bfloat16"]
-    if get_sm_version() > 86:
-        dtype_list += ["fp8"]
-    return set(dtype_list)
+from collector.op_plans import plan_cases
 
 
 def _fp8_bmm_serving_path() -> bool:
     """True where serving invokes torch.ops.trtllm.fp8_block_scaling_bmm_out.
 
-    Serving's wrapper dispatch (attention.py:1080-1093,1159-1190@1.3.0rc20):
+    Serving's wrapper dispatch (attention.py:1080-1093,1159-1190):
     SM89/90 and SM120 call the fp8 torch op (different activation-quant
     helpers); SM100/103 (is_sm_100f, _utils.py:793-796) run plain bf16
     torch.bmm on weights dequantized at load time; every OTHER SM raises
@@ -96,7 +82,7 @@ def _prep_fp8_weight(weight_fp8: torch.Tensor, weight_scale: torch.Tensor):
 
     SM120 serving resmooths block scales to e8m0 and transforms the layout at
     weight-load time (MLA.transform_weights → resmooth_parameters,
-    attention.py:3013-3028@1.3.0rc20); SM89/90 consume the raw float32
+    attention.py:3013-3028); SM89/90 consume the raw float32
     1x128 block scales directly.
     """
     if get_sm_version() == 120:
@@ -115,8 +101,8 @@ def _prep_fp8_weight(weight_fp8: torch.Tensor, weight_scale: torch.Tensor):
 def _quantize_fp8_activation(x: torch.Tensor):
     """Per-forward activation quant, mirroring serving per SM.
 
-    Serving's fp8_block_scaling_bmm_out wrapper (attention.py:1159-1176
-    @1.3.0rc20) quantizes mat1 with fp8_batched_quantize_1x128_permute102 on
+    Serving's fp8_block_scaling_bmm_out wrapper (attention.py:1159-1176)
+    quantizes mat1 with fp8_batched_quantize_1x128_permute102 on
     SM89/90 and fp8_utils.per_token_quant_and_transform(need_permute102=True)
     on SM120, then calls the same torch.ops.trtllm.fp8_block_scaling_bmm_out.
     """
@@ -125,21 +111,12 @@ def _quantize_fp8_activation(x: torch.Tensor):
     return torch.ops.trtllm.fp8_batched_quantize_1x128_permute102(x)
 
 
-def _get_mla_bmm_test_cases(op_name: str):
-    supported_dtypes = _supported_dtypes()
-    return [
-        [case.num_tokens, case.num_heads, case.dtype, case.num_warmups, case.num_runs]
-        for case in get_mla_bmm_case_specs("trtllm", op_name)
-        if case.dtype in supported_dtypes
-    ]
-
-
 def get_mla_gen_pre_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_pre")
+    return plan_cases("mla_bmm_gen_pre", "trtllm", get_sm_version())
 
 
 def get_mla_gen_post_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_post")
+    return plan_cases("mla_bmm_gen_post", "trtllm", get_sm_version())
 
 
 def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf_filename, device="cuda:0"):
