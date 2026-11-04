@@ -1532,10 +1532,10 @@ impl EstimatorConfig {
         ] {
             let selected =
                 regression.sampling.axes.contains(&axis) || linear.feature_axes.contains(&axis);
-            if selected && !constant.is_some_and(|value| value > 0) {
+            if constant == Some(0) || (selected && constant.is_none()) {
                 return Err(invalid_regression_config(
                     &format!("fit.linear.{field}"),
-                    &format!("must be positive when the {name} axis is selected"),
+                    &format!("must be positive, and is required when the {name} axis is selected"),
                 ));
             }
         }
@@ -2341,7 +2341,7 @@ mod tests {
         .unwrap_err();
         assert!(
             message.contains(
-                "fit.linear.max_kv_splits must be positive when the longest_split axis is selected"
+                "fit.linear.max_kv_splits must be positive, and is required when the longest_split axis is selected"
             ),
             "{message}"
         );
@@ -2354,9 +2354,10 @@ mod tests {
             message.contains("fit.linear.max_cudagraph_capture_size"),
             "{message}"
         );
+        // Zero is rejected even where no axis reads it.
         assert!(
             validated(serde_json::json!({
-                "fit": {"linear": {"feature_axes": ["eager"], "max_cudagraph_capture_size": 0}}
+                "fit": {"linear": {"feature_axes": ["E"], "max_cudagraph_capture_size": 0}}
             }))
             .is_err()
         );
