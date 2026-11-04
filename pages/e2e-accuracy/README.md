@@ -662,6 +662,11 @@ as well as the selected filter.
 
 ## AgentX beta
 
+The Hardware / backend column shows the recorded measured framework version,
+such as `sglang 0.5.20`. Grouped rows retain all distinct measured versions; missing
+versions stay unrecorded. The Performance model column identifies the prediction
+database version separately.
+
 Model and concurrency rows show a dedicated Performance model column, such as `Op-based
 (vllm 0.31.0)`. The detail page uses the full `Op-based perf model (vllm 0.31.0)`
 label after the run/lane/request counts.

@@ -180,6 +180,7 @@ def fixtures(site, weka=False):
     summary["runs"] = []
     for run in runs:
         run["config_summary"] = [{"name": "Estimation", "value": "op_level"}]
+        run["measured_backend_version"] = "0.31.0" if run["backend"] == "vllm" else "0.5.20"
         run["prediction_backend_version"] = "0.31.0" if run["backend"] == "vllm" else "0.5.21"
         run["report"] = report
         entry = {k: v for k, v in run.items() if k not in {"pairs", "report"}}
@@ -319,6 +320,10 @@ async def check():
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
                 await expect(table.locator("thead th")).to_have_count(9)
+                hardware = table.locator(".agentx-model td:first-of-type")
+                await expect(hardware.nth(0)).to_contain_text("B300 · sglang 0.5.20")
+                await expect(hardware.nth(0)).not_to_contain_text("sglang 0.5.21")
+                await expect(hardware.nth(1)).to_contain_text("B300 · vllm 0.31.0")
                 await expect(table.locator("tr[data-agentx-parent] .agentx-perf-model")).to_have_text(
                     ["Op-based (sglang 0.5.21)"] * 6 + ["Op-based (vllm 0.31.0)"] * 3
                 )
