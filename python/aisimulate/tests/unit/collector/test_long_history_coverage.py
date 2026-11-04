@@ -304,3 +304,17 @@ def test_partial_quantization_exclusions_do_not_prove_attention_unquantized(monk
         lambda _path: {"quant_algo": "NVFP4", "exclude_modules": ["model.layers.*.self_attn.probe*"]},
     )
     assert not op_plans._history_attention_unquantized("example/model", config)
+
+
+@pytest.mark.parametrize("op", ["mla_context_module", "mla_generation_module"])
+def test_unqualified_kimi_nope_extension_is_not_enabled(monkeypatch, op):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "moonshotai/Kimi-K3")
+    baseline = plan(op, "vllm", 103)
+    extended = plan(op, "vllm", 103, include_long_history=True)
+    assert baseline.cases
+    assert extended.cases == baseline.cases
+    # The pin's ordinary geometry remains; no new long-history recipe is
+    # inferred from Kimi's 1M context limit or native-head declaration.
+    profiles = case_generator._framework_specific_model_case_values("mla_module", "vllm")
+    assert profiles and all("long_history_cases" not in profile for profile in profiles)
+    assert all("long_history_tensor_parallel_sizes" not in profile for profile in profiles)

@@ -46,6 +46,16 @@ See [the declaration fields](cases/README.md#optional-long-history-points) and
 estimates count setup changes, point preparation, warmup/capture and timed
 forwards; scheduler wait and GPU allocation overhead are excluded.
 
+Kimi-K3 adds no optional MLA history points yet: pinned vLLM 0.30.0
+[`MultiHeadLatentAttention`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/mla.py#L136)
+uses NoPE and fused cache operations that the existing generic DeepSeek module
+does not reproduce. A native adapter needs cache registration/binding, absorbed
+weight processing, forward/metadata and FP8 policy support, plus a consumer
+review of its output-gate timing boundary and silicon qualification. See the
+[deferred extension](cases/agentic_coverage.md#deferred-kimi-k3-mla-extension).
+Normal coverage and independent KDA width additions remain enabled; the missing
+native long-history route is an unmeasured gap, not zero collection cost.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
