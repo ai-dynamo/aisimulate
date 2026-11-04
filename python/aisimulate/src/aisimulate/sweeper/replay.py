@@ -320,6 +320,10 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
     ranks = [(role, args, args.get("rank", args)) for role, args in roles]
     if not any(isinstance(rank, Mapping) and rank.get("native_host_offload") is not None for _, _, rank in ranks):
         return
+    # Imported here: the SDK loads the Rust runtime, and this module is read
+    # where it is not built, through result.py.
+    from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
     deployment = spec.backend_deployment
     if spec.execution_mode != "offline":
         raise ValueError("agentic host offload requires offline execution")
@@ -378,12 +382,15 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         ):
             raise ValueError("agentic replay requires speculative decoding disabled")
         prefix = "" if role == "aggregated" else f"{role}_"
+        # A fitted snapshot's identity may spell its width unknown; as in the
+        # runner, that leaves the role's own DP, which the other sources give.
+        known_identity = {name: value for name, value in identity.items() if value != UNKNOWN_IDENTITY}
         dp_values = [
             source[name]
             for source, names in (
                 (args, ("dp_size", "aic_attention_dp_size")),
                 (rank, ("dp_size", "aic_attention_dp_size")),
-                (identity, ("attention_dp", "attention_dp_size")),
+                (known_identity, ("attention_dp", "attention_dp_size")),
                 (deployment.parallel_config, (f"{prefix}attention_dp",)),
             )
             for name in names
