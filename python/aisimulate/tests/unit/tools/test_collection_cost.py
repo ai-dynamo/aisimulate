@@ -50,6 +50,27 @@ def test_duplicate_or_mismatched_plan_tables_fail(tmp_path):
         cost.load_tables(tmp_path / "duplicate")
 
 
+def test_grouped_token_extension_does_not_recharge_old_inner_cells():
+    old = {"moe_type": "fp8", "num_tokens": "(16384, 32768)", "model_name": "model"}
+    new = {**old, "num_tokens": "(16384, 32768, 65536)"}
+    before = {cost.case_key(row) for row in cost.inner_cells(old)}
+    after = {cost.case_key(row) for row in cost.inner_cells(new)}
+    assert before <= after and len(after - before) == 1
+    expanded = cost.inner_cells({"phase": "verify", "batch_sizes": "(1, 8)", "seq_lens": "(3, 5, 6)"})
+    assert len(expanded) == 6 and expanded[0]["_task_case"]["batch_sizes"] == "(1, 8)"
+
+
+def test_phase_parser_keeps_inclusive_time_and_does_not_sum_nested_bench(tmp_path):
+    log = tmp_path / "log"
+    log.write_text(
+        "  [DSA point timing] decode b=32, kv=1048575: history=70.91s bench=0.05s bench_timed=0.01s total=75.43s\n"
+    )
+    points = cost.phase_timings(log)
+    assert len(points) == 1 and points[0]["inclusive_seconds"] == 75.43
+    assert points[0]["phase_seconds"]["history"] == 70.91
+    assert points[0]["phase_seconds"]["bench_timed"] == 0.01
+
+
 def test_reservations_bound_parallel_work_and_actual_time_releases_only_unused_budget(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     cost.reserve(ledger, "a", 60, 100)

@@ -10,12 +10,15 @@ No framework imports or device-memory predictions are needed for comparison.
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import fcntl
 import hashlib
+import itertools
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import time
@@ -30,14 +33,35 @@ def case_key(row: dict) -> str:
     Plan tables contain case fields, not arbitrary run labels. In particular a
     module model_path selects checkpoint/runtime semantics and cannot be dropped.
     """
-    return json.dumps(row, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {key: value for key, value in row.items() if not key.startswith("_")}, sort_keys=True, separators=(",", ":")
+    )
+
+
+def inner_cells(row: dict) -> list[dict]:
+    """Expand grouped MoE/KDA task axes before comparing physical work.
+
+    The original task remains available for grouping/native invocation, but is
+    not part of a physical cell's identity. An appended token anchor must not
+    make all old cells appear removed and re-added.
+    """
+    axes = [key for key in ("num_tokens", "batch_sizes", "seq_lens") if key in row and row[key].startswith(("(", "["))]
+    if not axes:
+        return [row]
+    values = [ast.literal_eval(row[key]) for key in axes]
+    if any(not isinstance(axis, (tuple, list)) or not axis for axis in values):
+        raise ValueError("grouped axes must be non-empty integer lists")
+    return [
+        {**row, **{key: str(value) for key, value in zip(axes, point, strict=True)}, "_task_case": row}
+        for point in itertools.product(*values)
+    ]
 
 
 def load_tables(directory: Path) -> dict[str, dict[str, dict]]:
     tables = {}
     for path in sorted(directory.glob("*.csv")):
         with path.open(newline="") as handle:
-            rows = list(csv.DictReader(handle))
+            rows = [cell for row in csv.DictReader(handle) for cell in inner_cells(row)]
         keyed = {case_key(row): row for row in rows}
         if len(keyed) != len(rows):
             raise ValueError(f"duplicate physical plan rows in {path}")
@@ -66,7 +90,9 @@ def compare(baseline: Path, candidate: Path) -> dict:
 def stratum(row: dict) -> tuple:
     """Keep different native kernels and precisions in separate timing buckets."""
     return tuple(
-        (key, value) for key, value in sorted(row.items()) if "dtype" in key or key in {"dispatch", "gemm_type"}
+        (key, value)
+        for key, value in sorted(row.items())
+        if "dtype" in key or key in {"dispatch", "gemm_type", "moe_type", "phase"}
     )
 
 
@@ -76,8 +102,10 @@ def work_proxy(row: dict, *, dense_context: bool = False) -> float:
     def number(*names, default=1):
         return next((float(row[name]) for name in names if row.get(name)), default)
 
-    batch = number("batch_size", "batch")
-    length = number("input_len", "seq_len", "seq_length", "sequence_length", "kv_cache_length", "sequence")
+    batch = number("batch_size", "batch", "batch_sizes")
+    length = number(
+        "input_len", "seq_len", "seq_length", "sequence_length", "kv_cache_length", "sequence", "num_tokens", "seq_lens"
+    )
     prefix = number("prefix_len", "prefix", default=0)
     heads = number("num_heads", "head_num", "local_heads")
     width = number("head_dim")
@@ -162,6 +190,25 @@ def finish(path: Path, run_id: str, gpu_seconds: float) -> None:
             handle.write(json.dumps({"event": "finished", "run_id": run_id, "gpu_seconds": gpu_seconds}) + "\n")
 
 
+def phase_timings(log: Path) -> list[dict]:
+    """Read native point clocks; bench_* fields are nested, not additive phases."""
+    points = []
+    for line in log.read_text(errors="replace").splitlines():
+        if "point timing]" not in line and " module timing]" not in line:
+            continue
+        phases = {key: float(value) for key, value in re.findall(r"([A-Za-z_]+)=([0-9]+(?:\.[0-9]+)?)s", line)}
+        if "total" in phases:
+            points.append(
+                {
+                    "native_log": line.strip(),
+                    "phase_seconds": phases,
+                    "inclusive_seconds": phases["total"],
+                    "nested_phase_warning": "bench_* phases already belong to bench; do not sum twice",
+                }
+            )
+    return points
+
+
 def run(spec: dict, output: Path) -> dict:
     """Launch inside an existing GPU container; scheduler/container time stays outside."""
     output.mkdir(parents=True, exist_ok=False)
@@ -188,6 +235,7 @@ def run(spec: dict, output: Path) -> dict:
         "collection_seconds": seconds,
         "collection_gpu_hours": seconds * gpus / 3600,
         "allocation_seconds_included": False,
+        "native_point_timings": phase_timings(output / "collection.log"),
     }
     (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result

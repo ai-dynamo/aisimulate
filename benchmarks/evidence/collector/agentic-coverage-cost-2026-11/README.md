@@ -63,6 +63,10 @@ labels. Module `model_path` must remain in identity: it selects checkpoint,
 architecture and projection/runtime semantics. Deduplicate aliases only when
 the planner declares them equivalent; never discard model identity ad hoc.
 Runtime memory failures are measured outcomes, not CPU inventory predictions.
+MoE token lists and KDA batch/query lists are grouped tasks, not physical cells:
+the comparison tool expands those axes before taking differences and retains
+the original task as grouping metadata. Adding one token/verification anchor
+must not make existing cells appear removed and re-added.
 
 ## Sampling and time boundary
 
@@ -100,6 +104,13 @@ the accounting wrapper **inside an existing container**, immediately before the
 collector process. Shared initialization is charged only when the extension
 adds workers/groups or changes the group's initialization. Per-point cache/history
 preparation remains incremental even when the worker was already loaded.
+The native driver captures actual `num_runs_executed` and helper phases for
+direct calls. For native child-process module calls, use their existing point
+clocks and label repetition counts as source-checked requests if the native
+log does not expose executed counts. Disable power-adaptive repetitions for
+these pilots and record that setting. Phase logs contain nested benchmark
+breakdowns, and some module first-point logs also expose shared setup: use
+inclusive group/point clocks for totals, not the sum of every printed phase.
 
 Historical B300 anchors in `historical-b300-anchors.json` separate instrumented
 worker, native-call and loaded-runner point boundaries. They are not newly timed
