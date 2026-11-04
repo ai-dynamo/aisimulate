@@ -239,12 +239,10 @@ def collector_mentioned_repos() -> set[str]:
     return mentioned
 
 
-def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
-    """Roster checkpoints DERIVED from the collector's own case declarations:
-    every org/repo its cases yamls mention, minus gated repos and repos owned
-    by other (special-adapter) families, plus probe-only extra_repos. Profile
-    comes from the checkpoint's quant metadata; variants from the dummy
-    manifest. targets.yaml holds only the overlay (checkpoint_overrides)."""
+def derived_repos(fam: dict, targets: dict) -> list[str]:
+    """The repos of a derived family: every org/repo the collector's case yamls
+    mention, minus gated repos and repos owned by other (special-adapter)
+    families, plus probe-only extra_repos."""
     mentioned = collector_mentioned_repos()
     # owner-decided exclusions live in targets.yaml roster.excluded (each entry
     # carries decided_by/reason); any OTHER missing config is a hard stop that
@@ -253,7 +251,15 @@ def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
     owned_elsewhere = {
         ck["repo"] for fname, f in targets["families"].items() if not f.get("derive") for ck in f.get("checkpoints", [])
     }
-    repos = sorted((mentioned - excluded - owned_elsewhere) | set(fam.get("extra_repos") or []))
+    return sorted((mentioned - excluded - owned_elsewhere) | set(fam.get("extra_repos") or []))
+
+
+def derive_roster_checkpoints(fam: dict, targets: dict) -> list[dict]:
+    """Roster checkpoints DERIVED from the collector's own case declarations
+    (derived_repos). Profile comes from the checkpoint's quant metadata;
+    variants from the dummy manifest. targets.yaml holds only the overlay
+    (checkpoint_overrides)."""
+    repos = derived_repos(fam, targets)
     manifest = json.loads((ROOT / "dummy_models" / "variants_manifest.json").read_text())
     variants_of: dict[str, list[str]] = {}
     for v in manifest["variants"]:
@@ -866,6 +872,18 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             f"e.g. {_nofacts[0]['id']}: {(_nofacts[0]['golden_facts'] or {}).get('reason')}",
             file=sys.stderr,
         )
+
+
+def roster_repos(targets: dict) -> list[str]:
+    """Every checkpoint repo the probe roster names (targets.yaml families, derived ones
+    included). Needs no dummies: fetch_inputs.py --from-roster runs before they exist."""
+    repos: set[str] = set()
+    for fam in targets["families"].values():
+        if fam.get("derive") and "checkpoints" not in fam:
+            repos.update(derived_repos(fam, targets))
+        else:
+            repos.update(ck["repo"] for ck in fam.get("checkpoints") or [])
+    return sorted(repos)
 
 
 def check_coverage(targets: dict) -> None:

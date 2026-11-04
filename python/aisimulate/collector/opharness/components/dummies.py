@@ -50,8 +50,8 @@ DSV4_RATIO_KIND = {4: "csa", 128: "hca", 0: "full"}
 #       hfquant_exclude_from_sibling: <repo>  -> complete condensed hf_quant stubs
 #       drop_auto_map: <reason>               -> declared auto_map removal
 #   (both are RECORDED edits with facts in targets.yaml — never silent fallbacks)
-# Loaded once at import; the roster itself lives in repos.txt (one repo per
-# line, optional "<repo> <family>") so growing coverage never edits code.
+# Loaded once at import; the roster is whatever fetch_inputs.py fetched into
+# configs/ (its --from-roster reads the targets.yaml probe roster).
 def _load_targets_declarations() -> tuple[dict, dict, dict]:
     import yaml
 
@@ -138,21 +138,12 @@ def _provision_aux_files(
 
 
 def load_repos(configs_dir: Path) -> dict[str, str]:
-    roster = configs_dir / "repos.txt"
     repos: dict[str, str] = {}
-    if roster.exists():
-        for line in roster.read_text().splitlines():
-            line = line.split("#")[0].strip()
-            if not line:
-                continue
-            parts = line.split()
-            repos[parts[0]] = parts[1] if len(parts) > 1 else _SPECIAL.get(parts[0], "generic")
-    else:  # fall back to every fetched config
-        for f in configs_dir.glob("*.json"):
-            if f.name.endswith("_hfquant.json"):
-                continue
-            repo = f.stem.replace("_", "/", 1)
-            repos[repo] = _SPECIAL.get(repo, "generic")
+    for f in configs_dir.glob("*.json"):  # every fetched config.json (fetch_inputs.py)
+        if f.name.endswith("_hfquant.json") or f.name == "dsv4_expert_dtypes.json":
+            continue
+        repo = f.stem.replace("_", "/", 1)
+        repos[repo] = _SPECIAL.get(repo, "generic")
     return repos
 
 

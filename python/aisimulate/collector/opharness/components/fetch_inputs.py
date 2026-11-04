@@ -12,7 +12,7 @@ dummy dirs from. Weights are never downloaded. Missing config.json is a hard
 stop (OWNER DECISION: fetch or exclude), never a silent skip.
 
 Usage: fetch_model_inputs.py [--configs configs] REPO [REPO ...]
-       fetch_model_inputs.py --from-roster           (every repo in configs/repos.txt)
+       fetch_model_inputs.py --from-roster           (every repo the targets.yaml probe roster names)
 Auth: HF token from $HF_TOKEN or ~/.cache/huggingface/token; proxies from the environment.
 """
 
@@ -148,15 +148,20 @@ def main() -> int:
         default=Path(ws) / "configs",
         help="workspace configs/ dir (default: $AIS_PROBE_WORKSPACE/configs, else ./configs)",
     )
-    ap.add_argument("--from-roster", action="store_true", help="every repo in <configs>/repos.txt")
+    ap.add_argument("--from-roster", action="store_true", help="every repo the targets.yaml probe roster names")
     ap.add_argument("repos", nargs="*")
     args = ap.parse_args()
     repos = list(args.repos)
     if args.from_roster:
-        for line in (args.configs / "repos.txt").read_text().splitlines():
-            line = line.split("#")[0].strip()
-            if line:
-                repos.append(line.split()[0])
+        import importlib.util
+
+        import yaml
+
+        here = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("probe_driver_fi", here / "probe_driver.py")
+        pd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pd)
+        repos += pd.roster_repos(yaml.safe_load((here.parent / "targets.yaml").read_text()))
     if not repos:
         ap.error("give repos or --from-roster")
     token = _token()
