@@ -6454,6 +6454,9 @@ def main():
         # directory (the pipeline's shard dir). It runs alone; exit 0 marks the shard done.
         if len(args.ops) != 1:
             parser.error(f"a {PROBE_PREFIX}<name> op runs alone")
+        forced = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+        if forced:  # a probe plans and runs on this GPU; a forced SM would label it as another
+            parser.error(f"AIS_SM/AIC_SM={forced} is a case-inventory override; unset it to run a probe")
         sys.exit(run_probe(args.ops[0][len(PROBE_PREFIX) :], args.case_filters or [], Path.cwd(), backend=args.backend))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
     if fpm_requested and set(args.ops or ()) != {FPM_FORWARD_OP}:
@@ -6534,6 +6537,10 @@ def main():
     forced_sm = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
     if forced_sm:
         parser.error(f"AIS_SM/AIC_SM={forced_sm} is a case-inventory override; unset it to collect")
+    from collector.helper import TRACE_CHILD_DIR_ENV
+
+    if os.environ.get(TRACE_CHILD_DIR_ENV):  # it profiles measurement children, which changes their timings
+        parser.error(f"{TRACE_CHILD_DIR_ENV} is a probe.trace_case capture switch; unset it to collect")
 
     # Setup logging - debug flag is handled inside setup_logging
     global _LOGGER_CONFIGURED

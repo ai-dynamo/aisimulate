@@ -227,3 +227,21 @@ def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
     out = trace_case.run({"backend": "vllm", "op": "kda", "env.AIS_KDA_DECODE_PATHS": "fused"}, tmp_path)
     assert seen["paths"] == "fused" and out["env"] == {"AIS_KDA_DECODE_PATHS": "fused"} and out["select"] == {}
     assert "AIS_KDA_DECODE_PATHS" not in os.environ
+
+
+def test_decode_step_fails_when_a_mode_yields_no_per_layer_value(monkeypatch, tmp_path):
+    def engine(spec):
+        if spec["mode"] == "eager":
+            return {**spec, "points": [], "error": "child timed out after 3600s"}
+        return {**spec, "points": [{"point": list(p), "step_ms": 1.0 + spec["layers"]} for p in spec["points"]]}
+
+    monkeypatch.setattr(vllm_decode_step, "_engine", engine)
+    out = vllm_decode_step.run({"model": "org/m", "layers": "4+8", "points": "1x1024"}, tmp_path)
+    assert [r["mode"] for r in out["per_layer_ms"]] == ["graph"] and out["failed"] is True
+
+
+def test_decode_step_draws_token_ids_inside_the_vocabulary():
+    assert vllm_decode_step._vocab_size({"text_config": {"vocab_size": 32000}}) == 32000
+    assert vllm_decode_step._vocab_size({"vocab_size": 151936}) == 151936
+    with pytest.raises(ValueError, match="no vocab_size"):
+        vllm_decode_step._vocab_size({"text_config": {}})
