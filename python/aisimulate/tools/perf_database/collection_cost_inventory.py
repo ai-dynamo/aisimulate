@@ -100,12 +100,14 @@ def shared_policy():
 def export(backend: str, sm: int, output: Path, scenario: str) -> dict:
     plans = importlib.import_module("collector.op_plans")
     registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
-    registered = {entry.op for entry in registry}
+    registered = {entry.op: entry for entry in registry}
     output.mkdir(parents=True, exist_ok=True)
     summaries = {}
     for op in OPS:
         if op not in plans.OP_PLANS or op not in registered:
             continue
+        entry = registered[op]
+        eligible = not entry.unverified and sm not in entry.unverified_sms
         with_context = {"include_long_history": True} if scenario == "model" else {}
         planned = plans.plan(op, backend, sm, **with_context)
         spec = plans.OP_PLANS[op]
@@ -122,6 +124,8 @@ def export(backend: str, sm: int, output: Path, scenario: str) -> dict:
             "runs": sum(map(len, dispatches)),
             "groups": len({tuple(getattr(case, field) for field in spec.group_fields) for case in planned.cases}),
             "table": path.name,
+            "executor_eligible": eligible,
+            "ineligible_reason": None if eligible else "registry marks this operation unverified on this SM",
         }
     return summaries
 
@@ -132,15 +136,43 @@ def main():
     parser.add_argument("--system", choices=tuple(SYSTEMS), required=True)
     parser.add_argument("--scenario", choices=("baseline", "shared", "model"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--collector-root",
+        type=Path,
+        default=PKG_ROOT,
+        help="Collector package directory; baseline must point to the pinned #676 tree",
+    )
     args = parser.parse_args()
+    collector_root = args.collector_root.resolve()
+    if args.scenario == "baseline":
+        changed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(collector_root),
+                "diff",
+                "--quiet",
+                "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+                "--",
+                "collector",
+            ],
+            check=False,
+        )
+        if changed.returncode:
+            raise ValueError("baseline collector tree differs from pinned #676; use --collector-root for that checkout")
+    sys.path.insert(0, str(collector_root))
     if args.scenario == "shared":
         with shared_policy():
             summary = export(args.backend, SYSTEMS[args.system], args.output, args.scenario)
     else:
         summary = export(args.backend, SYSTEMS[args.system], args.output, args.scenario)
-    sha = subprocess.check_output(["git", "-C", str(PKG_ROOT), "rev-parse", "HEAD"], text=True).strip()
+    sha = subprocess.check_output(["git", "-C", str(collector_root), "rev-parse", "HEAD"], text=True).strip()
+    tree = subprocess.check_output(
+        ["git", "-C", str(collector_root), "rev-parse", "HEAD:python/aisimulate/collector"], text=True
+    ).strip()
     result = {
         "collector_commit": sha,
+        "collector_tree": tree,
         "system": args.system,
         "backend": args.backend,
         "scenario": args.scenario,

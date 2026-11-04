@@ -37,6 +37,14 @@ Freeze the #676 base at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`:
   planner/model population, using in-memory sweep overrides only.
 - **M:** the refactored candidate with model-owned long-history coverage enabled.
 
+B must be exported from a checkout whose **collector tree** equals the pinned
+#676 revision; the exporter rejects a changed tree. Export S and M from the
+same final candidate so retained non-history MoE/KDA changes are included in
+both. The initial B/S-only snapshots in `inventory-summary.json` predate that
+integration and are explicitly preliminary. NCCL is not an `OP_PLANS` operation;
+count its added sizes separately using its native driver and do not omit its
+cost from the series total.
+
 Compute `S − B` and `M − B`, including old anchors newly admitted at larger
 batches. Report removed cases as a regression; do not silently turn them into
 savings. #676 already declares some near-1M module points, so neither the old
@@ -129,7 +137,10 @@ GPUs / 3,600. Allocation time is never a cost input.
 From `python/aisimulate`, using the supported development Python:
 
 ```bash
+# Point this to a checkout at the exact pinned #676 collector tree.
+base_collector=/path/to/pinned-676/python/aisimulate
 python tools/perf_database/collection_cost_inventory.py --backend vllm \
+  --collector-root "$base_collector" \
   --system b300_sxm --scenario baseline --output /tmp/cost/B
 python tools/perf_database/collection_cost_inventory.py --backend vllm \
   --system b300_sxm --scenario shared --output /tmp/cost/S
@@ -142,6 +153,10 @@ python tools/perf_database/collection_cost.py sample \
 ```
 
 The model scenario requires the refactor's `include_long_history` planner API.
+S and M commands above run from the final candidate checkout, and every summary
+records its actual source commit and collector-tree identity. Native sampling
+refuses registry operations marked unverified on that SM; report their planned
+population separately from executor-eligible totals.
 Native pilot specs passed to `collection_cost.py run` contain a unique `run_id`,
 `argv` array, `cwd`, participating `gpus` and `timeout_seconds`. Use argument
 arrays, not shell interpolation. Supply `--ledger` and the fixed system quota

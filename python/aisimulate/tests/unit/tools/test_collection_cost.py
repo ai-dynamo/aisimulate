@@ -8,6 +8,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import pytest
@@ -115,3 +116,76 @@ def test_native_selection_keeps_only_requested_dispatch_and_refuses_missing_case
     assert len(planned.cases) == 2
     with pytest.raises(ValueError, match="absent"):
         anchor.select_plan(planned, [{"batch_size": "8", "input_len": "262144", "dispatch": "a"}])
+
+
+def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_path, monkeypatch):
+    path = _TOOL.with_name("collection_cost_anchor.py")
+    spec = importlib.util.spec_from_file_location("collection_cost_anchor_run", path)
+    anchor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(anchor)
+
+    class Case(NamedTuple):
+        batch_size: int
+        input_len: int
+
+    @dataclass
+    class Plan:
+        cases: list
+        dispatches: list
+        rows: list
+
+    calls = []
+
+    def native(batch, length, *, perf_filename, device, skip_indexer):
+        calls.append((batch, length, device, skip_indexer))
+        Path(perf_filename).write_text("op_name,latency\ndsa_generation_module,0.7897\n")
+
+    entry = SimpleNamespace(
+        op="dsa_generation_module",
+        module="native.module",
+        run_func="native",
+        unverified=False,
+        unverified_sms=(),
+        perf_filename="perf.txt",
+        run_kwargs_dict={"skip_indexer": True},
+        extra_perf_filenames=(),
+    )
+    modules = {
+        "torch": SimpleNamespace(
+            cuda=SimpleNamespace(
+                set_device=lambda n: None,
+                get_device_name=lambda n: "NVIDIA B300 SXM6 AC",
+                get_device_capability=lambda n: (10, 3),
+                get_device_properties=lambda n: SimpleNamespace(total_memory=287428640768),
+                synchronize=lambda: None,
+            )
+        ),
+        "collector.op_plans": SimpleNamespace(plan=lambda *args, **kw: Plan([Case(32, 1048575)], [], [[32, 1048575]])),
+        "tools.perf_database.collection_cost_inventory": SimpleNamespace(),
+        "collector.sglang.registry": SimpleNamespace(REGISTRY=[entry]),
+        "native.module": SimpleNamespace(native=native),
+    }
+    monkeypatch.setattr(anchor.importlib, "import_module", lambda name: modules[name])
+    monkeypatch.setattr(anchor.importlib.metadata, "version", lambda name: "0.5.21")
+    monkeypatch.setenv("AISIM_COLLECTOR_REF", "a" * 40)
+    monkeypatch.delenv("AIS_SM", raising=False)
+    monkeypatch.delenv("AIC_SM", raising=False)
+    request = {
+        "collector_commit": "a" * 40,
+        "backend": "sglang",
+        "sm": 103,
+        "gpu_name_contains": "NVIDIA B300",
+        "package_version": "0.5.21",
+        "scenario": "baseline",
+        "op": "dsa_generation_module",
+        "cases": [{"batch_size": "32", "input_len": "1048575", "dispatch": ""}],
+    }
+    result = anchor.run(request, tmp_path / "probe")
+    assert result["status"] == "passed", result
+    assert calls == [(32, 1048575, "cuda:0", True)]
+    assert result["forward_rows"][0]["latency"] == "0.7897"
+    assert result["calls"][0]["native_call_seconds"] >= 0
+    entry.unverified = True
+    rejected = anchor.run(request, tmp_path / "unverified")
+    assert rejected["status"] == "failed" and "unverified" in rejected["error"]
+    assert len(calls) == 1
