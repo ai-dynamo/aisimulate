@@ -155,7 +155,6 @@ def test_capacity_fallback_advances_past_a_load_oom(pd, tmp_path, monkeypatch):
     """The representative dummy cut is the FIRST variant unless its raw probe
     OOMed at engine load on this backend; then the next smaller faithful cut is
     queued and the switch is recorded on the run (never silent)."""
-    import json
 
     monkeypatch.setattr(pd, "ROOT", tmp_path)
     for v in ("depth8", "depth4"):
@@ -185,7 +184,6 @@ def test_capacity_fallback_advances_past_a_load_oom(pd, tmp_path, monkeypatch):
 def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
     """When every cut OOMed the smallest one stays queued (its failure is the
     honest matrix cell) — the fallback never invents a cut that does not exist."""
-    import json
 
     monkeypatch.setattr(pd, "ROOT", tmp_path)
     for v in ("depth8", "depth4"):
@@ -226,39 +224,6 @@ def test_run_id_carries_the_platform(pd):
     h20 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "h20_sm90")
     b200 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "b200_sm100")
     assert len({legacy, h20, b200}) == 3 and len(h20) == 12
-
-
-def test_migrate_run_ids_renames_artifacts_and_rewrites_ids(pd, tmp_path):
-    ws = tmp_path / "ws"
-    (ws / "archive" / "raw").mkdir(parents=True)
-    (ws / "archive" / "run_sh").mkdir()
-    ck = {"repo": "org/m", "profile": "fp8"}
-    old = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None)
-    new = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "h20_sm90")
-    run = {
-        "id": old,
-        "repo": "org/m",
-        "profile": "fp8",
-        "variant": "v",
-        "backend": "vllm",
-        "version": "0.30.0",
-        "tp": 1,
-        "kv_dtype": None,
-        "platform": "h20_sm90",
-    }
-    (ws / "archive" / "plan_vllm.json").write_text(json.dumps([run]))
-    (ws / "archive" / "raw" / f"{old}.json").write_text(json.dumps({"provenance": {"id": old}, "ok": True}))
-    (ws / "archive" / "raw" / f"{old}.fp").write_text("deadbeef")
-    (ws / "archive" / "run_sh" / f"{old}.sh").write_text("#!/bin/bash\n")
-    (ws / "archive" / "records.jsonl").write_text(json.dumps({"id": old, "target": {"repo": "org/m"}}) + "\n")
-    assert pd.migrate_run_ids(ws, "h20_sm90", apply=False)["runs"] == 1
-    st = pd.migrate_run_ids(ws, "h20_sm90", apply=True)
-    assert st["renamed"] == 3
-    assert (ws / "archive" / "raw" / f"{new}.json").exists() and not (ws / "archive" / "raw" / f"{old}.json").exists()
-    assert json.loads((ws / "archive" / "raw" / f"{new}.json").read_text())["provenance"]["id"] == new
-    assert json.loads((ws / "archive" / "plan_vllm.json").read_text())[0]["id"] == new
-    assert json.loads((ws / "archive" / "records.jsonl").read_text().strip())["id"] == new
-    assert pd.migrate_run_ids(ws, "h20_sm90", apply=False)["runs"] == 0  # idempotent
 
 
 def test_attention_identity_uses_taxonomy_backend_labels(pd):

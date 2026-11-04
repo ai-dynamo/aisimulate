@@ -306,70 +306,6 @@ def _run_id(ck: dict, variant: str, backend: str, version: str, tp: int, kv, pla
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
-def migrate_run_ids(root: Path, platform: str, apply: bool = False) -> dict:
-    """Rename every pre-2026-09-30 artifact of this workspace to the
-    platform-bearing run id: archive/raw/<id>.json + .fp, run_sh/<id>.sh,
-    golden/<id>/, and the id fields in plan*.json, records.jsonl,
-    archive.jsonl. Idempotent; dry-run unless apply=True."""
-    import shutil
-
-    mapping: dict[str, str] = {}
-    for pf in sorted((root / "archive").glob("plan*.json")):
-        try:
-            runs = json.loads(pf.read_text())
-        except Exception:
-            continue
-        for r in runs:
-            if not isinstance(r, dict) or r.get("skip") or "repo" not in r:
-                continue
-            ck = {"repo": r["repo"], "profile": r.get("profile")}
-            plat = r.get("platform") or platform
-            old = _run_id(ck, r["variant"], r["backend"], r["version"], r["tp"], r.get("kv_dtype"))
-            new = _run_id(ck, r["variant"], r["backend"], r["version"], r["tp"], r.get("kv_dtype"), plat)
-            if r["id"] == old:
-                mapping[old] = new
-    stats = {"runs": len(mapping), "renamed": 0, "rewritten_lines": 0, "files": 0}
-    if not apply:
-        return stats | {"dry_run": True}
-    for old, new in mapping.items():
-        for rel in (f"raw/{old}.json", f"raw/{old}.fp", f"run_sh/{old}.sh", f"golden/{old}"):
-            src, dst = root / "archive" / rel, root / "archive" / rel.replace(old, new)
-            if src.exists() and not dst.exists():
-                shutil.move(str(src), str(dst))
-                stats["renamed"] += 1
-        raw = root / "archive" / "raw" / f"{new}.json"
-        if raw.exists():  # the raw carries its own id (provenance.id): --records rebuilds from it
-            text = raw.read_text()
-            if f'"id": "{old}"' in text:
-                raw.write_text(text.replace(f'"id": "{old}"', f'"id": "{new}"'))
-                stats["rewritten_lines"] += 1
-    for pf in sorted((root / "archive").glob("plan*.json")):
-        text = pf.read_text()
-        n = 0
-        for old, new in mapping.items():
-            if f'"id": "{old}"' in text:
-                text = text.replace(f'"id": "{old}"', f'"id": "{new}"')
-                n += 1
-        if n:
-            pf.write_text(text)
-            stats["files"] += 1
-    for name in ("records.jsonl", "archive.jsonl"):
-        jp = root / "archive" / name
-        if not jp.exists():
-            continue
-        out = []
-        for line in jp.read_text().splitlines():
-            for old, new in mapping.items():
-                if f'"id": "{old}"' in line:
-                    line = line.replace(f'"id": "{old}"', f'"id": "{new}"')
-                    stats["rewritten_lines"] += 1
-                    break
-            out.append(line)
-        jp.write_text("\n".join(out) + "\n")
-        stats["files"] += 1
-    return stats
-
-
 def _oom_at_load(rid: str) -> bool:
     """True when the raw probe for this run id failed at engine LOAD with CUDA OOM
     (weights of the dummy cut do not fit the probe GPU)."""
@@ -1903,28 +1839,12 @@ def main() -> None:
     ap.add_argument("--plan-name", default="plan.json")
     ap.add_argument("--records", action="store_true", help="raw probe JSONs -> archive/records.jsonl")
     ap.add_argument(
-        "--migrate-run-ids",
-        action="store_true",
-        help="rename pre-2026-09-30 artifacts (raw/.fp/run_sh/golden, plan/records/archive ids) "
-        "to platform-bearing run ids; add --apply to write",
-    )
-    ap.add_argument(
-        "--apply", action="store_true", help="with --migrate-run-ids: perform the renames (default dry-run)"
-    )
-    ap.add_argument(
         "--matrix",
         action="store_true",
         help="consolidated results: matrix.yaml (verdict + deployed identity per model x backend)",
     )
     args = ap.parse_args()
 
-    if args.migrate_run_ids:
-        plat = (load_targets(args.targets).get("platform") or {}).get("name") or "h20_sm90"
-        st = migrate_run_ids(ROOT, plat, apply=args.apply)
-        print(json.dumps({"platform": plat, **st}))
-        if not args.apply:
-            print("dry run — add --apply to rename")
-        return
     if args.records:
         build_records()
         return

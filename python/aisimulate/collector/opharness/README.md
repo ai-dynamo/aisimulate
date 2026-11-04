@@ -159,9 +159,7 @@ The workspace may live outside the checkout (`AIS_PROBE_WORKSPACE`); the golden
 render runs with the workspace as cwd for that reason.
 
 Run ids include `targets.platform.name` (since 2026-09-30, so two boxes never
-produce the same id for one case). A workspace probed before that is migrated
-once with `probe_driver.py --migrate-run-ids --apply` (dry run without
-`--apply`), then `--records` / `--matrix` as usual. Customizations in
+produce the same id for one case). Customizations in
 `targets.yaml` take an optional `sms: [sm120]`; gated repos without a token fall
 back to the SDK's bundled config with a PROVENANCE note (tokenizer via
 `tokenizer_from`).
