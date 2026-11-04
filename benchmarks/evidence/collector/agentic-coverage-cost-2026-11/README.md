@@ -53,7 +53,7 @@ routes are not repaired by generic long-history metadata. These three families
 remain explicit support/collection gaps, excluded from a claim of complete
 AgentX coverage. Silicon calibration of the Qwen95 or GLM B52 frontier does
 not turn those points into observed workload batches.
-The owner decision withdraws only the new optional Kimi MLA points: the native
+This campaign withdraws only the new optional Kimi MLA points: the native
 NoPE module differs in cache binding, weight processing, forward signature and
 output gating. The c4 evidence snapshot retains the proposed points as
 **historical withdrawn declarations**, not final M coverage or qualified timing.
