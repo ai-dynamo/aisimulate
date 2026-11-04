@@ -85,7 +85,7 @@ pub(crate) struct HostLink {
 pub(crate) struct HostBlockMeta {
     pub(crate) parent: Option<SequenceHash>,
     pub(crate) tokens_hash: u64,
-    /// Absolute zero-based block index within its prompt.
+    /// Absolute zero-based block index within its request.
     pub(crate) position: usize,
     /// Session that triggered this residency; retained for subscriber snapshots.
     pub(crate) session_id: Option<Arc<str>>,

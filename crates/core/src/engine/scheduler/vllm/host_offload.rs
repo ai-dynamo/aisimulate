@@ -109,11 +109,14 @@ impl RestoreRounds {
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
-    /// One key per complete prompt block; `simple_cpu_v0_32` appends the keys
-    /// of blocks completed during decode as it stores them.
-    prompt_keys: Vec<HostBlockKey>,
-    /// Router identities, retained only for `HostPinned` residency events.
-    prompt_meta: Option<Vec<HostBlockMeta>>,
+    /// Complete prompt blocks, the first `prompt_blocks` of `block_keys`.
+    prompt_blocks: usize,
+    /// One key per complete block, by block index: the prompt's, then the
+    /// decode blocks `simple_cpu_v0_32` stores.
+    block_keys: Vec<HostBlockKey>,
+    /// Router identities of `block_keys`, retained only for `HostPinned`
+    /// residency events.
+    block_meta: Option<Vec<HostBlockMeta>>,
     /// Peer rank the router named as holding a prefix of this prompt.
     kv_hint: Option<KvHintSource>,
     /// G3 or KVCR restore rounds; the two are exclusive in v1.
@@ -141,7 +144,7 @@ impl VllmHostRequestState {
         kv_hint: Option<KvHintSource>,
     ) -> Self {
         let prompt_blocks = sequence.num_input_tokens() / block_size;
-        let prompt_keys: Vec<_> = (0..prompt_blocks)
+        let block_keys: Vec<_> = (0..prompt_blocks)
             .map(|index| {
                 HostBlockKey::new(
                     lease
@@ -150,13 +153,13 @@ impl VllmHostRequestState {
                 )
             })
             .collect();
-        let prompt_meta = retain_meta.then(|| {
+        let block_meta = retain_meta.then(|| {
             let session_id = lease.session_id.as_deref().map(Arc::<str>::from);
             (0..prompt_blocks)
                 .map(|index| HostBlockMeta {
                     parent: index
                         .checked_sub(1)
-                        .map(|parent| prompt_keys[parent].sequence_hash()),
+                        .map(|parent| block_keys[parent].sequence_hash()),
                     tokens_hash: lease
                         .local_hash(index)
                         .expect("shared G2 metadata requires retained local hashes"),
@@ -167,8 +170,9 @@ impl VllmHostRequestState {
         });
         Self {
             owner: lease.owner(),
-            prompt_keys,
-            prompt_meta,
+            prompt_blocks,
+            block_keys,
+            block_meta,
             kv_hint,
             restore_rounds: RestoreRounds::default(),
             next_store_block: 0,
@@ -184,25 +188,25 @@ impl VllmHostRequestState {
     /// Append the keys (and router identities) of blocks the lease completed
     /// past the known ones, up to `blocks`.
     fn extend_keys(&mut self, lease: &BlockRequestLease, blocks: usize) {
-        while self.prompt_keys.len() < blocks {
-            let index = self.prompt_keys.len();
+        while self.block_keys.len() < blocks {
+            let index = self.block_keys.len();
             let Some(hash) = lease.sequence_hash(index) else {
                 return;
             };
-            if let Some(meta) = &mut self.prompt_meta {
+            if let Some(meta) = &mut self.block_meta {
                 let Some(tokens_hash) = lease.local_hash(index) else {
                     return;
                 };
                 meta.push(HostBlockMeta {
                     parent: index
                         .checked_sub(1)
-                        .map(|parent| self.prompt_keys[parent].sequence_hash()),
+                        .map(|parent| self.block_keys[parent].sequence_hash()),
                     tokens_hash,
                     position: index,
                     session_id: lease.session_id.as_deref().map(Arc::<str>::from),
                 });
             }
-            self.prompt_keys.push(HostBlockKey::new(hash));
+            self.block_keys.push(HostBlockKey::new(hash));
         }
     }
 
@@ -438,9 +442,9 @@ impl VllmHostOffloadAdapter {
         // prompt blocks, so a preempted request recomputes its stored output
         // blocks, which vLLM reloads.
         let end = if simple {
-            ((sequence.len() - 1) / block_size).min(sequence.num_input_tokens() / block_size)
+            ((sequence.len() - 1) / block_size).min(request.prompt_blocks)
         } else {
-            request.prompt_keys.len()
+            request.prompt_blocks
         };
         let outcome = if base_g1_blocks >= end {
             if let Some(g3) = g3 {
@@ -457,11 +461,11 @@ impl VllmHostOffloadAdapter {
                 host.id(),
                 request.owner,
                 &mut request.restore_rounds,
-                &request.prompt_keys[base_g1_blocks..],
+                &request.block_keys[base_g1_blocks..request.prompt_blocks],
                 request
-                    .prompt_meta
+                    .block_meta
                     .as_deref()
-                    .map(|meta| &meta[base_g1_blocks..]),
+                    .map(|meta| &meta[base_g1_blocks..request.prompt_blocks]),
                 now_ms,
             )
         {
@@ -475,11 +479,11 @@ impl VllmHostOffloadAdapter {
                 request.owner,
                 source,
                 &mut request.restore_rounds,
-                &request.prompt_keys[base_g1_blocks..],
+                &request.block_keys[base_g1_blocks..request.prompt_blocks],
                 request
-                    .prompt_meta
+                    .block_meta
                     .as_deref()
-                    .map(|meta| &meta[base_g1_blocks..]),
+                    .map(|meta| &meta[base_g1_blocks..request.prompt_blocks]),
                 now_ms,
             )
         {
@@ -487,7 +491,7 @@ impl VllmHostOffloadAdapter {
         } else {
             let mut matched = 0usize;
             let mut deferred = false;
-            for key in request.prompt_keys[base_g1_blocks..end].iter().copied() {
+            for key in request.block_keys[base_g1_blocks..end].iter().copied() {
                 match tier.lookup(key) {
                     Lookup::Hit => deferred |= load_by_key.contains_key(&key),
                     // SimpleCPU registers a block only when its store completes.
@@ -497,7 +501,7 @@ impl VllmHostOffloadAdapter {
                 }
                 matched += 1;
             }
-            let keys = &request.prompt_keys[base_g1_blocks..base_g1_blocks + matched];
+            let keys = &request.block_keys[base_g1_blocks..base_g1_blocks + matched];
             if matched == 0 {
                 HostLookup::Miss
             } else if deferred {
@@ -516,7 +520,11 @@ impl VllmHostOffloadAdapter {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
             G2Connector::OffloadingV024 => {
-                for key in request.prompt_keys.iter().rev().copied() {
+                for key in request.block_keys[..request.prompt_blocks]
+                    .iter()
+                    .rev()
+                    .copied()
+                {
                     tier.touch(key);
                 }
             }
@@ -801,9 +809,9 @@ impl VllmHostOffloadAdapter {
             let confirmed_blocks =
                 std::mem::replace(&mut request.confirmed_tokens, computed_tokens) / block_size;
             request.extend_keys(lease, confirmed_blocks);
-            confirmed_blocks.min(request.prompt_keys.len())
+            confirmed_blocks.min(request.block_keys.len())
         } else {
-            (computed_tokens.min(prompt_tokens) / block_size).min(request.prompt_keys.len())
+            (computed_tokens.min(prompt_tokens) / block_size).min(request.prompt_blocks)
         };
         if end <= request.next_store_block {
             return;
@@ -815,13 +823,13 @@ impl VllmHostOffloadAdapter {
             // still being stored, even when the store fails.
             request.accessed_blocks.extend((start..end).filter(|index| {
                 !matches!(
-                    tier.lookup(request.prompt_keys[*index]),
+                    tier.lookup(request.block_keys[*index]),
                     Lookup::Pending { .. }
                 )
             }));
         }
         let mut missing_indices = (start..end)
-            .filter(|index| matches!(tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
+            .filter(|index| matches!(tier.lookup(request.block_keys[*index]), Lookup::Miss))
             .collect::<Vec<_>>();
         let mut resume = end;
         if self.connector == G2Connector::SimpleCpuV032 {
@@ -851,7 +859,7 @@ impl VllmHostOffloadAdapter {
             snapshot
                 .sequence_hashes()
                 .zip(missing_indices.iter().copied())
-                .all(|(hash, index)| HostBlockKey::new(hash) == request.prompt_keys[index])
+                .all(|(hash, index)| HostBlockKey::new(hash) == request.block_keys[index])
         );
         // The offloading connectors protect every block they offer from
         // eviction. SimpleCPU's `get_new_blocks` protects none, so it offers
@@ -861,9 +869,9 @@ impl VllmHostOffloadAdapter {
         let (keys, meta) = if self.connector == G2Connector::SimpleCpuV032 {
             simple_keys = missing_indices
                 .iter()
-                .map(|index| request.prompt_keys[*index])
+                .map(|index| request.block_keys[*index])
                 .collect::<Vec<_>>();
-            simple_meta = request.prompt_meta.as_deref().map(|meta| {
+            simple_meta = request.block_meta.as_deref().map(|meta| {
                 missing_indices
                     .iter()
                     .map(|index| meta[*index].clone())
@@ -872,8 +880,8 @@ impl VllmHostOffloadAdapter {
             (simple_keys.as_slice(), simple_meta.as_deref())
         } else {
             (
-                &request.prompt_keys[start..end],
-                request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
+                &request.block_keys[start..end],
+                request.block_meta.as_deref().map(|meta| &meta[start..end]),
             )
         };
         match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
@@ -894,7 +902,7 @@ impl VllmHostOffloadAdapter {
                     let mappings = missing_indices
                         .iter()
                         .map(|index| HostStoreBlockMapping {
-                            block: request.prompt_keys[*index],
+                            block: request.block_keys[*index],
                             logical_block_index: *index,
                         })
                         .collect::<Vec<_>>();
@@ -911,7 +919,11 @@ impl VllmHostOffloadAdapter {
                 request.next_store_block = resume;
                 // Only vLLM 0.24 touches the prompt after a store.
                 if self.connector == G2Connector::OffloadingV024 {
-                    for key in request.prompt_keys.iter().rev().copied() {
+                    for key in request.block_keys[..request.prompt_blocks]
+                        .iter()
+                        .rev()
+                        .copied()
+                    {
                         tier.touch(key);
                     }
                 }
@@ -953,7 +965,7 @@ impl VllmHostOffloadAdapter {
                 );
                 let mut tier = self.host.lock();
                 for index in request.accessed_blocks.iter().rev() {
-                    tier.touch(request.prompt_keys[*index]);
+                    tier.touch(request.block_keys[*index]);
                 }
             }
             G2Connector::SimpleCpuV032 => {
@@ -1250,7 +1262,7 @@ mod tests {
         // discovering the prefix miss.
         let shared_tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let (_, _, shared_host) = request(Uuid::from_u128(20), shared_tokens.clone());
-        let [x, a] = shared_host.prompt_keys.as_slice() else {
+        let [x, a] = shared_host.block_keys.as_slice() else {
             panic!("shared request must have two prompt blocks")
         };
         let x = *x;
@@ -1314,7 +1326,7 @@ mod tests {
         let destination_id = Uuid::from_u128(1);
         let (destination_sequence, destination_lease, mut destination_host) =
             request(destination_id, vec![1, 2, 3, 4]);
-        let key = destination_host.prompt_keys[0];
+        let key = destination_host.block_keys[0];
         let now_ms = seed_host(&mut adapter, key);
 
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
@@ -1399,7 +1411,7 @@ mod tests {
         let mut adapter = adapter(2);
         let owner = Uuid::from_u128(3);
         let (sequence, mut lease, mut host) = request(owner, vec![1, 2, 3, 4]);
-        let now_ms = seed_host(&mut adapter, host.prompt_keys[0]);
+        let now_ms = seed_host(&mut adapter, host.block_keys[0]);
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
         let HostLookup::Hit(hit) = adapter.lookup(
             &mut host,
@@ -1718,7 +1730,7 @@ mod tests {
         );
         let block = |tokens: &[u32]| {
             let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
-            host.prompt_keys[0].sequence_hash()
+            host.block_keys[0].sequence_hash()
         };
         let (a0, x0, y0) = (block(&a), block(&x), block(&y));
         let host = events
@@ -1765,7 +1777,7 @@ mod tests {
 
         let block = |tokens: &[u32]| {
             let (_, _, host) = request(Uuid::nil(), tokens.to_vec());
-            host.prompt_keys[0].sequence_hash()
+            host.block_keys[0].sequence_hash()
         };
         let (a0, x0, y0) = (block(&a), block(&x), block(&y));
         let residency = |events: &[Vec<KvEvent>], tier: KvEventTier| {
@@ -1825,8 +1837,8 @@ mod tests {
         let mut adapter = adapter(2);
         let owner = Uuid::from_u128(900);
         let (sequence, mut lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        let first = host.prompt_keys[0];
-        let second = host.prompt_keys[1];
+        let first = host.block_keys[0];
+        let second = host.block_keys[1];
         let now = seed_host(&mut adapter, first);
         let registry = G3Tier::new(
             G3OffloadConfig {
@@ -1960,7 +1972,7 @@ mod tests {
         let mut lease = BlockRequestLease::new(owner, identities);
         lease.session_id = Some("restoring-session".into());
         let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true, None);
-        let key = host.prompt_keys[0];
+        let key = host.block_keys[0];
         let registry = G3Tier::new(
             G3OffloadConfig {
                 scope: G3Scope::ClusterShared,
@@ -2028,7 +2040,7 @@ mod tests {
         let mut adapter = adapter(2);
         let owner = Uuid::from_u128(901);
         let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5]);
-        let key = host.prompt_keys[0];
+        let key = host.block_keys[0];
         let registry = G3Tier::new(
             G3OffloadConfig {
                 scope: G3Scope::ClusterShared,
@@ -2134,7 +2146,7 @@ mod tests {
         let owner = Uuid::from_u128(910);
         let tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let (sequence, lease, mut host) = request(owner, tokens.clone());
-        for key in host.prompt_keys.clone() {
+        for key in host.block_keys.clone() {
             seed_host(&mut source, key);
         }
         let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
@@ -2166,7 +2178,7 @@ mod tests {
         let HostLookup::Hit(hit) = target.lookup(&mut host, &sequence, &cost, 4, 3.0) else {
             panic!("the pulled prefix must hit G2");
         };
-        assert_eq!(hit.keys, host.prompt_keys);
+        assert_eq!(hit.keys, host.block_keys);
         assert!(matches!(
             target.start_load(owner, &mut host, &lease, hit, &mut manager, 3.0),
             StartLoad::Queued
@@ -2202,7 +2214,7 @@ mod tests {
         let mut requests =
             [(912, vec![1, 2, 3, 4]), (914, vec![5, 6, 7, 8])].map(|(id, tokens)| {
                 let (sequence, lease, mut host) = request(Uuid::from_u128(id), tokens);
-                for key in host.prompt_keys.clone() {
+                for key in host.block_keys.clone() {
                     seed_host(&mut source, key);
                 }
                 host.kv_hint = Some(ranks[0]);
@@ -2252,7 +2264,7 @@ mod tests {
         let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [4, 4]);
         let owner = Uuid::from_u128(915);
         let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        let [local, pulled] = [host.prompt_keys[0], host.prompt_keys[1]];
+        let [local, pulled] = [host.block_keys[0], host.block_keys[1]];
         let other = HostBlockKey::new(77);
         // `other` is newer than `local`; a lookup would move `local` behind it.
         let t = seed_host(&mut source, pulled)
@@ -2301,7 +2313,7 @@ mod tests {
         let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [2, 2]);
         let owner = Uuid::from_u128(913);
         let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        for key in host.prompt_keys.clone() {
+        for key in host.block_keys.clone() {
             seed_host(&mut source, key);
         }
         host.kv_hint = Some(ranks[0]);
@@ -2329,7 +2341,7 @@ mod tests {
             StartLoad::Retry
         ));
         assert_eq!(registry.lock().unwrap().stats().loaded_blocks, 0);
-        assert_eq!(target.host.lock().take_kvcr_origin(&host.prompt_keys), 1);
+        assert_eq!(target.host.lock().take_kvcr_origin(&host.block_keys), 1);
     }
 
     fn connector_adapter(connector: G2Connector, capacity_blocks: usize) -> VllmHostOffloadAdapter {
@@ -2414,7 +2426,7 @@ mod tests {
         let prompt = (1..=8).collect::<Vec<u32>>();
         let (_, _, host) = request(Uuid::nil(), prompt.clone());
         let prompt_blocks = host
-            .prompt_keys
+            .block_keys
             .iter()
             .map(|key| key.sequence_hash())
             .collect::<Vec<_>>();
@@ -2449,7 +2461,7 @@ mod tests {
                 adapter
                     .host
                     .lock()
-                    .prepare_store(C, writer.owner, &writer.prompt_keys, None, 0.0)
+                    .prepare_store(C, writer.owner, &writer.block_keys, None, 0.0)
             else {
                 panic!("the block was absent")
             };
@@ -2483,7 +2495,7 @@ mod tests {
         let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
         let id = Uuid::from_u128(1);
         let (sequence, lease, mut host) = request(id, vec![1, 2, 3, 4, 5]);
-        let key = host.prompt_keys[0];
+        let key = host.block_keys[0];
         let now = seed_host(&mut adapter, key);
         let (boundary, boundary_lease, mut boundary_host) = request(id, vec![1, 2, 3, 4]);
         assert!(matches!(
@@ -2528,7 +2540,7 @@ mod tests {
             let mut manager =
                 G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
             let mut requests = [1, 2].map(|id| request(Uuid::from_u128(id), vec![1, 2, 3, 4, 5]));
-            let now = seed_host(&mut adapter, requests[0].2.prompt_keys[0]);
+            let now = seed_host(&mut adapter, requests[0].2.block_keys[0]);
             let outcomes = requests.each_mut().map(|(sequence, lease, host)| {
                 let cost = raw_cost(&manager, sequence, lease);
                 match adapter.lookup(host, sequence, &cost, 4, now) {
@@ -2560,18 +2572,14 @@ mod tests {
         manager.finalize_native_computed_prefix(id, 0, 8, &mut sequence, &mut lease);
         let (_, _, other) = request(Uuid::from_u128(2), (11..=18).collect());
         let mut now = 0.0;
-        for key in [
-            host.prompt_keys[0],
-            other.prompt_keys[0],
-            other.prompt_keys[1],
-        ] {
+        for key in [host.block_keys[0], other.block_keys[0], other.block_keys[1]] {
             now = seed_host(&mut adapter, key);
         }
         let evictions = Arc::new(EvictionCapture::default());
         adapter.set_observer(evictions.clone());
         adapter.on_admitted(&mut host, 8, 4);
         adapter.observe_completed_blocks(id, &mut host, &lease, 8, 8, 4, &mut manager, now);
-        assert_eq!(evictions.take(), [host.prompt_keys[0]]);
+        assert_eq!(evictions.take(), [host.block_keys[0]]);
     }
 
     #[test]
@@ -2591,10 +2599,10 @@ mod tests {
         adapter.finish_request(id, &mut host, &lease, 8, 8, 4, &mut manager, 0.0);
         let tier = adapter.host.lock();
         assert!(matches!(
-            tier.lookup(host.prompt_keys[0]),
+            tier.lookup(host.block_keys[0]),
             Lookup::Pending { .. }
         ));
-        assert_eq!(tier.lookup(host.prompt_keys[1]), Lookup::Miss);
+        assert_eq!(tier.lookup(host.block_keys[1]), Lookup::Miss);
         assert_eq!(host.next_store_block, 1);
     }
 
@@ -2646,7 +2654,7 @@ mod tests {
         let (_, _, a) = request(Uuid::nil(), (1..=8).collect());
         assert_eq!(
             b_admission,
-            Some((Some(4), vec![a.prompt_keys[0].sequence_hash()]))
+            Some((Some(4), vec![a.block_keys[0].sequence_hash()]))
         );
     }
 
@@ -2660,8 +2668,8 @@ mod tests {
         // next owner.
         let (_, _, blocks) = request(Uuid::nil(), (1..=8).collect());
         for (connector, held, evicted) in [
-            (G2Connector::SimpleCpuV032, 2, blocks.prompt_keys[0]),
-            (G2Connector::OffloadingV032, 0, blocks.prompt_keys[1]),
+            (G2Connector::SimpleCpuV032, 2, blocks.block_keys[0]),
+            (G2Connector::OffloadingV032, 0, blocks.block_keys[1]),
         ] {
             let mut args = connector_args(connector);
             args.num_gpu_blocks = 3;
@@ -2732,7 +2740,7 @@ mod tests {
                     adapter
                         .host
                         .lock()
-                        .prepare_store(C, Uuid::nil(), &host.prompt_keys, None, 0.0)
+                        .prepare_store(C, Uuid::nil(), &host.block_keys, None, 0.0)
                 else {
                     panic!("the block was absent")
                 };
@@ -2798,7 +2806,7 @@ mod tests {
             [21, 22, 23, 24, 25],
         );
         let (_, _, a_host) = request(Uuid::nil(), a.to_vec());
-        let [a0, a1] = [0, 1].map(|index| a_host.prompt_keys[index].sequence_hash());
+        let [a0, a1] = [0, 1].map(|index| a_host.block_keys[index].sequence_hash());
         for (connector, evicted) in [
             (G2Connector::OffloadingV032, a1),
             (G2Connector::SimpleCpuV032, a0),
@@ -2859,7 +2867,7 @@ mod tests {
         let (_, _, host) = request(Uuid::nil(), prompt);
         assert_eq!(
             host_stored(pass.kv_events.into_iter().chain(core.drain_kv_events())),
-            host.prompt_keys
+            host.block_keys
                 .iter()
                 .map(|key| key.sequence_hash())
                 .collect::<Vec<_>>()
