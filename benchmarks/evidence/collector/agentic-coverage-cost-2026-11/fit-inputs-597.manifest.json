@@ -1,8 +1,0 @@
-{
-  "archive": "fit-inputs-597.zip",
-  "bytes": 2430452,
-  "sha256": "b46d5364b3c294e71ee6f66a774395dcb0218a8a943967f6142da4d6efe7218c",
-  "files": 2130,
-  "sample_sha256": "31708ed32a50301008c41578e20c3fb25ed2f3d842b6e6d549e89dd7a453142f",
-  "scope": "Frozen597 fit inputs and contemporaneous fetched native/wrapper/log/perf/image receipts, plus reused C44 evidence. Producer bytes preserved for audit; local paths describe the campaign workspace, not a general CLI. No model weights or container images included."
-}

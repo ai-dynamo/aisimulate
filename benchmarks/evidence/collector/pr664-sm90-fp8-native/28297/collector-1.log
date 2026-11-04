@@ -1,3 +1,0 @@
-_: line 1: /usr/bin/time: No such file or directory
-srun.real: error: pool0-0002: task 0: Exited with exit code 127
-srun.real: Terminating StepId=28297.0

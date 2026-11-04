@@ -807,11 +807,9 @@ total**, not 750 additional hours. These reserves are budget choices, not measur
 rates, statistical intervals or guarantees of successful coverage. No RTX PRO
 estimate is included in this eight-SKU budget.
 
-The [planning calculation and assumptions](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/provisional-planning-estimate.json)
-retain the unrounded per-framework values, case counts, native/proxy distinctions
-and source hashes. The [calculation sources](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/provisional-calculation-sources.zip)
-preserve the environment-specific scratch calculations. The separate
-[strict audit](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/cost-summary.md)
+The supporting planning calculations, unrounded per-framework values, case
+counts, native/proxy distinctions, source hashes and scratch calculations are
+retained as local campaign artifacts outside this PR. The separate strict audit
 keeps unqualified full totals unknown; these planning figures do not change its
 validation results. Deferred native Kimi coverage is not priced as zero or counted
 as equivalent-coverage savings.
@@ -837,8 +835,8 @@ timings are whole CI-job durations, GPU participation varies, and collector-exit
 grace can include idle time. Summing those fields or multiplying all of them by
 eight would mix collection, waiting and recovery clocks.
 
-The [baseline research and source references](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/baseline-cost-research.json)
-therefore record the current full-collection cost as **unknown**. Recovering it
+The baseline research, retained with the local campaign artifacts, therefore
+records the current full-collection cost as **unknown**. Recovering it
 requires distinct collector/worker spans and actual GPU participation for each
 attempt, including resumes and retries, with allocation and idle time excluded.
 No baseline-plus-expansion total or percentage increase is claimed here.

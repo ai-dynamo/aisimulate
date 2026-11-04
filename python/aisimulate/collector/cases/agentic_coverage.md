@@ -29,10 +29,10 @@ additional joint tuples are explicit interpolation/coverage choices, not
 claimed observed forwards. AgentX seeds checked-in declarations; the collector
 has no live dependency on AgentX.
 
-The detailed workload evidence and eventual per-system cost report belong in
-`benchmarks/evidence/collector/`, outside implementation documentation. The
-campaign records exact manifests, signed collector/runtime revisions, source
-URLs and artifact hashes there. Do not substitute another model or checkpoint
+Detailed workload evidence and per-system cost reports are retained locally
+under `benchmarks/evidence/collector/`, outside this PR. The campaign records
+exact manifests, signed collector/runtime revisions, source URLs and artifact
+hashes there. Do not substitute another model or checkpoint
 when an identity cannot be resolved.
 
 ## Model-owned history policy
