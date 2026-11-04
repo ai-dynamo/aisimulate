@@ -1,10 +1,18 @@
 {
-  "timestamp_utc": "2026-11-04T07:02:26.233699+00:00",
+  "timestamp_utc": "2026-11-04T09:01:14.636473+00:00",
   "budget_gpu_hours": {
-    "audit": 11,
-    "correctness": 1,
+    "audit": 11.5,
+    "correctness": 0.5,
     "per_system_anchor": 1,
-    "per_system_validation": 0.375
+    "per_system_validation": 0.375,
+    "validation_overrides": {
+      "b300_sxm": 1.875,
+      "h100_sxm": 0.75
+    },
+    "closed_systems": {
+      "a100_sxm": 0
+    },
+    "reallocation_evidence": "C seven jobs administrative upper bound1711GPU-seconds<1800, C hard cap0.5h; A100 unstarted jobs canceled with zero elapsed, its1.375h reassigned B300validation+1h and H100validation+.375h; allocation bounds are not collection cost."
   },
   "clusters": [
     {
@@ -330,11 +338,7 @@
                 "run_id": "b300_sxm-nccl-r8-1024609",
                 "gpu_seconds": 480.58664067229256
               }
-            ],
-            "finished_gpu_seconds": 3296.5377024989575,
-            "open_reserved_gpu_seconds": 65,
-            "charged_gpu_seconds": 3361.5377024989575,
-            "remaining_gpu_seconds": 238.46229750104249
+            ]
           },
           "b300_sxm/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b300_sxm-validation-budget.jsonl",
@@ -519,15 +523,446 @@
                 "event": "finished",
                 "run_id": "b300_sxm-sglang-repeat-moe-expanded-r3-b300_sxm-sglang-repeat-1024587",
                 "gpu_seconds": 89.11250265268609
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-prefill-mla_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-prefill-mla_context-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-prefill-mla_context-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-prefill-mla_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 45.48888476891443
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-prefill-mla_generation_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-prefill-mla_generation_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 18.47046559629962
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-prefill-dsa_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-prefill-mla_context-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 150.40764236496761
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-prefill-dsa_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 62.938798988237984
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-prefill-mla_generation-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-prefill-msa_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-prefill-mla_generation-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-prefill-mla_generation-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 15.965940844733266
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-prefill-mla_generation-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 24.735203547868878
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-prefill-dsa_context_module-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-prefill-dsa_context_module-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-prefill-msa_context_module-b300_sxm-vllm-prefill-1024896",
+                "gpu_seconds": 77.76319285435602
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-prefill-dsa_context_module-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 55.766332258004695
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r1-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-prefill-dsa_context_module-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 84.4833223419264
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r1-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 30.35195013089105
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-prefill-msa_context_module-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-prefill-msa_context_module-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r2-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r2-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 23.935686259996146
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r3-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-prefill-msa_context_module-b300_sxm-trtllm-prefill-1024898",
+                "gpu_seconds": 69.14051511511207
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-qwen-refine-qwen-context-r3-b300_sxm-vllm-qwen-refine-1024927",
+                "gpu_seconds": 24.33950737887062
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-prefill-msa_context_module-b300_sxm-sglang-prefill-1024897",
+                "gpu_seconds": 93.55438758200034
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r1-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r1-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r1-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 20.42659784690477
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r1-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 45.39333249209449
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r2-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r2-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 19.976107158930972
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r2-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r3-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r2-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 45.35170958098024
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-qwen-refine-qwen-context-r3-b300_sxm-trtllm-qwen-refine-1024925",
+                "gpu_seconds": 19.27398686716333
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r3-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 50
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-qwen-refine-qwen-context-r3-b300_sxm-sglang-qwen-refine-1024926",
+                "gpu_seconds": 45.38424089318141
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-smoke-observer-smoke-b300_sxm-vllm-features-smoke-1025667",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-smoke-observer-smoke-b300_sxm-trtllm-features-smoke-1025666",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-smoke-observer-smoke-b300_sxm-sglang-features-smoke-1025665",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-smoke-observer-smoke-b300_sxm-vllm-features-smoke-1025667",
+                "gpu_seconds": 27.48863672099833
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-smoke-observer-smoke-b300_sxm-trtllm-features-smoke-1025666",
+                "gpu_seconds": 15.357758003010531
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-smoke-observer-smoke-b300_sxm-sglang-features-smoke-1025665",
+                "gpu_seconds": 23.783652290003374
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep1-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep1-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep1-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep1-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 32.84821759117767
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep1-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 24.981313345953822
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep1-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 32.54966165404767
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep2-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep2-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep2-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 27.485024149995297
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep2-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep2-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 24.3777381288819
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep3-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep2-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 31.346714573912323
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_context-rep3-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 25.528184940107167
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep3-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep3-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep1-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_context-rep3-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 37.80890591535717
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep1-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 24.876744556240737
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_context-rep3-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 36.75993062881753
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep2-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep1-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep2-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 23.074962496757507
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep1-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep1-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 26.844198759179562
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep3-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-vllm-features-attention_generation-rep3-b300_sxm-vllm-features-1025817",
+                "gpu_seconds": 23.877852317411453
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep1-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 71.49386420799419
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep2-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep2-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep2-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 26.754541091620922
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep2-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 18.56831552181393
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep3-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep3-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-features-attention_generation-rep3-b300_sxm-sglang-features-1025818",
+                "gpu_seconds": 25.135592131875455
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-trtllm-features-attention_generation-rep3-b300_sxm-trtllm-features-1025819",
+                "gpu_seconds": 17.723012483678758
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-nvglm-indexer-b300_sxm-sglang-nvglm-1025956",
+                "gpu_seconds": 455
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-nvglm-indexer-b300_sxm-sglang-nvglm-1025956",
+                "gpu_seconds": 187.62833988806233
+              },
+              {
+                "event": "reserved",
+                "run_id": "b300_sxm-sglang-nvglm-skip_indexer-b300_sxm-sglang-nvglm-1025956",
+                "gpu_seconds": 455
+              },
+              {
+                "event": "finished",
+                "run_id": "b300_sxm-sglang-nvglm-skip_indexer-b300_sxm-sglang-nvglm-1025956",
+                "gpu_seconds": 186.14401732571423
               }
-            ],
-            "finished_gpu_seconds": 1239.4356617085868,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 1239.4356617085868,
-            "remaining_gpu_seconds": 110.56433829141315
+            ]
           }
         },
-        "scheduler": "1024416|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.batch|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.extern|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.0|COMPLETED|0:0|00:00:25|pool0-0231\n1024417|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.batch|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.extern|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.0|COMPLETED|0:0|00:01:54|pool0-0025\n1024418|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.batch|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.extern|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.0|COMPLETED|0:0|00:00:41|pool0-0025\n1024497|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.batch|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.extern|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.0|COMPLETED|0:0|00:01:55|pool0-0231\n1024497.1|COMPLETED|0:0|00:01:47|pool0-0231\n1024498|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.batch|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.extern|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.0|COMPLETED|0:0|00:01:05|pool0-0139\n1024498.1|COMPLETED|0:0|00:00:52|pool0-0139\n1024498.2|CANCELLED by 141787|0:9|00:01:26|pool0-0139\n1024498.3|COMPLETED|0:0|00:00:56|pool0-0139\n1024498.4|COMPLETED|0:0|00:00:54|pool0-0139\n1024499|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.batch|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.extern|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.0|COMPLETED|0:0|00:02:01|pool0-0139\n1024499.1|COMPLETED|0:0|00:01:45|pool0-0139\n1024499.2|COMPLETED|0:0|00:00:58|pool0-0139\n1024499.3|COMPLETED|0:0|00:01:26|pool0-0139\n1024499.4|COMPLETED|0:0|00:00:46|pool0-0139\n1024560|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.batch|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.extern|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.0|COMPLETED|0:0|00:01:06|pool0-0231\n1024560.1|COMPLETED|0:0|00:00:53|pool0-0231\n1024561|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.batch|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.extern|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024561.1|COMPLETED|0:0|00:01:40|pool0-0139\n1024562|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.batch|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.extern|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024562.1|COMPLETED|0:0|00:01:47|pool0-0139\n1024584|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.batch|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.extern|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.0|COMPLETED|0:0|00:01:00|pool0-0231\n1024584.1|COMPLETED|0:0|00:00:40|pool0-0231\n1024584.2|COMPLETED|0:0|00:00:40|pool0-0231\n1024584.3|COMPLETED|0:0|00:00:41|pool0-0231\n1024586|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.batch|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.extern|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.0|COMPLETED|0:0|00:01:38|pool0-0003\n1024586.1|COMPLETED|0:0|00:01:38|pool0-0003\n1024586.2|COMPLETED|0:0|00:01:35|pool0-0003\n1024586.3|COMPLETED|0:0|00:01:34|pool0-0003\n1024587|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.batch|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.extern|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024587.1|COMPLETED|0:0|00:02:09|pool0-0139\n1024587.2|COMPLETED|0:0|00:02:14|pool0-0139\n1024587.3|COMPLETED|0:0|00:01:53|pool0-0139\n1024609|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.batch|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.extern|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.0|COMPLETED|0:0|00:01:17|pool0-0145\n1024609.1|COMPLETED|0:0|00:01:27|pool0-0145\n1024609.2|COMPLETED|0:0|00:01:33|pool0-0145\n1024613|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.batch|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.extern|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.0|COMPLETED|0:0|00:00:44|pool0-0231\n1024613.1|COMPLETED|0:0|00:00:37|pool0-0231\n1024613.2|COMPLETED|0:0|00:00:48|pool0-0231\n1024614|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.batch|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.extern|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.0|COMPLETED|0:0|00:00:51|pool0-0139\n1024614.1|COMPLETED|0:0|00:00:51|pool0-0139\n1024614.2|COMPLETED|0:0|00:00:33|pool0-0139\n1024615|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.batch|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.extern|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.0|COMPLETED|0:0|00:01:35|pool0-0343\n1024615.1|COMPLETED|0:0|00:00:38|pool0-0343\n"
+        "scheduler": "1024416|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.batch|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.extern|COMPLETED|0:0|00:00:52|pool0-0231\n1024416.0|COMPLETED|0:0|00:00:25|pool0-0231\n1024417|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.batch|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.extern|COMPLETED|0:0|00:02:29|pool0-0025\n1024417.0|COMPLETED|0:0|00:01:54|pool0-0025\n1024418|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.batch|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.extern|COMPLETED|0:0|00:01:16|pool0-0025\n1024418.0|COMPLETED|0:0|00:00:41|pool0-0025\n1024497|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.batch|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.extern|COMPLETED|0:0|00:04:43|pool0-0231\n1024497.0|COMPLETED|0:0|00:01:55|pool0-0231\n1024497.1|COMPLETED|0:0|00:01:47|pool0-0231\n1024498|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.batch|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.extern|COMPLETED|0:0|00:07:11|pool0-0139\n1024498.0|COMPLETED|0:0|00:01:05|pool0-0139\n1024498.1|COMPLETED|0:0|00:00:52|pool0-0139\n1024498.2|CANCELLED by 141787|0:9|00:01:26|pool0-0139\n1024498.3|COMPLETED|0:0|00:00:56|pool0-0139\n1024498.4|COMPLETED|0:0|00:00:54|pool0-0139\n1024499|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.batch|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.extern|COMPLETED|0:0|00:08:27|pool0-0139\n1024499.0|COMPLETED|0:0|00:02:01|pool0-0139\n1024499.1|COMPLETED|0:0|00:01:45|pool0-0139\n1024499.2|COMPLETED|0:0|00:00:58|pool0-0139\n1024499.3|COMPLETED|0:0|00:01:26|pool0-0139\n1024499.4|COMPLETED|0:0|00:00:46|pool0-0139\n1024560|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.batch|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.extern|COMPLETED|0:0|00:02:54|pool0-0231\n1024560.0|COMPLETED|0:0|00:01:06|pool0-0231\n1024560.1|COMPLETED|0:0|00:00:53|pool0-0231\n1024561|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.batch|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.extern|COMPLETED|0:0|00:04:17|pool0-0139\n1024561.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024561.1|COMPLETED|0:0|00:01:40|pool0-0139\n1024562|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.batch|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.extern|COMPLETED|0:0|00:04:46|pool0-0139\n1024562.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024562.1|COMPLETED|0:0|00:01:47|pool0-0139\n1024584|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.batch|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.extern|COMPLETED|0:0|00:04:36|pool0-0231\n1024584.0|COMPLETED|0:0|00:01:00|pool0-0231\n1024584.1|COMPLETED|0:0|00:00:40|pool0-0231\n1024584.2|COMPLETED|0:0|00:00:40|pool0-0231\n1024584.3|COMPLETED|0:0|00:00:41|pool0-0231\n1024586|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.batch|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.extern|COMPLETED|0:0|00:07:40|pool0-0003\n1024586.0|COMPLETED|0:0|00:01:38|pool0-0003\n1024586.1|COMPLETED|0:0|00:01:38|pool0-0003\n1024586.2|COMPLETED|0:0|00:01:35|pool0-0003\n1024586.3|COMPLETED|0:0|00:01:34|pool0-0003\n1024587|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.batch|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.extern|COMPLETED|0:0|00:09:58|pool0-0139\n1024587.0|COMPLETED|0:0|00:01:56|pool0-0139\n1024587.1|COMPLETED|0:0|00:02:09|pool0-0139\n1024587.2|COMPLETED|0:0|00:02:14|pool0-0139\n1024587.3|COMPLETED|0:0|00:01:53|pool0-0139\n1024609|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.batch|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.extern|COMPLETED|0:0|00:04:23|pool0-0145\n1024609.0|COMPLETED|0:0|00:01:17|pool0-0145\n1024609.1|COMPLETED|0:0|00:01:27|pool0-0145\n1024609.2|COMPLETED|0:0|00:01:33|pool0-0145\n1024613|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.batch|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.extern|COMPLETED|0:0|00:03:10|pool0-0231\n1024613.0|COMPLETED|0:0|00:00:44|pool0-0231\n1024613.1|COMPLETED|0:0|00:00:37|pool0-0231\n1024613.2|COMPLETED|0:0|00:00:48|pool0-0231\n1024614|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.batch|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.extern|COMPLETED|0:0|00:03:36|pool0-0139\n1024614.0|COMPLETED|0:0|00:00:51|pool0-0139\n1024614.1|COMPLETED|0:0|00:00:51|pool0-0139\n1024614.2|COMPLETED|0:0|00:00:33|pool0-0139\n1024615|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.batch|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.extern|COMPLETED|0:0|00:03:05|pool0-0343\n1024615.0|COMPLETED|0:0|00:01:35|pool0-0343\n1024615.1|COMPLETED|0:0|00:00:38|pool0-0343\n1024896|COMPLETED|0:0|00:05:41|pool0-0047\n1024896.batch|COMPLETED|0:0|00:05:41|pool0-0047\n1024896.extern|COMPLETED|0:0|00:05:41|pool0-0047\n1024896.0|COMPLETED|0:0|00:01:03|pool0-0047\n1024896.1|COMPLETED|0:0|00:00:31|pool0-0047\n1024896.2|COMPLETED|0:0|00:01:17|pool0-0047\n1024896.3|COMPLETED|0:0|00:01:33|pool0-0047\n1024897|COMPLETED|0:0|00:08:54|pool0-0047\n1024897.batch|COMPLETED|0:0|00:08:54|pool0-0047\n1024897.extern|COMPLETED|0:0|00:08:54|pool0-0047\n1024897.0|COMPLETED|0:0|00:02:54|pool0-0047\n1024897.1|COMPLETED|0:0|00:00:48|pool0-0047\n1024897.2|COMPLETED|0:0|00:01:17|pool0-0047\n1024897.3|COMPLETED|0:0|00:01:57|pool0-0047\n1024898|COMPLETED|0:0|00:08:43|pool0-0047\n1024898.batch|COMPLETED|0:0|00:08:43|pool0-0047\n1024898.extern|COMPLETED|0:0|00:08:43|pool0-0047\n1024898.0|CANCELLED by 141787|0:9|00:03:01|pool0-0047\n1024898.1|COMPLETED|0:0|00:00:40|pool0-0047\n1024898.2|COMPLETED|0:0|00:01:49|pool0-0047\n1024898.3|COMPLETED|0:0|00:01:34|pool0-0047\n1024925|COMPLETED|0:0|00:03:27|pool0-0003\n1024925.batch|COMPLETED|0:0|00:03:27|pool0-0003\n1024925.extern|COMPLETED|0:0|00:03:27|pool0-0003\n1024925.0|COMPLETED|0:0|00:00:46|pool0-0003\n1024925.1|COMPLETED|0:0|00:00:45|pool0-0003\n1024925.2|COMPLETED|0:0|00:00:45|pool0-0003\n1024926|COMPLETED|0:0|00:04:50|pool0-0025\n1024926.batch|COMPLETED|0:0|00:04:50|pool0-0025\n1024926.extern|COMPLETED|0:0|00:04:50|pool0-0025\n1024926.0|COMPLETED|0:0|00:01:08|pool0-0025\n1024926.1|COMPLETED|0:0|00:01:08|pool0-0025\n1024926.2|COMPLETED|0:0|00:01:09|pool0-0025\n1024927|COMPLETED|0:0|00:03:00|pool0-0003\n1024927.batch|COMPLETED|0:0|00:03:00|pool0-0003\n1024927.extern|COMPLETED|0:0|00:03:01|pool0-0003\n1024927.0|COMPLETED|0:0|00:00:45|pool0-0003\n1024927.1|COMPLETED|0:0|00:00:38|pool0-0003\n1024927.2|COMPLETED|0:0|00:00:40|pool0-0003\n1025817|COMPLETED|0:0|00:05:50|pool0-0065\n1025817.batch|COMPLETED|0:0|00:05:50|pool0-0065\n1025817.extern|COMPLETED|0:0|00:05:51|pool0-0065\n1025817.0|COMPLETED|0:0|00:00:47|pool0-0065\n1025817.1|COMPLETED|0:0|00:00:42|pool0-0065\n1025817.2|COMPLETED|0:0|00:00:38|pool0-0065\n1025817.3|COMPLETED|0:0|00:00:39|pool0-0065\n1025817.4|COMPLETED|0:0|00:00:40|pool0-0065\n1025817.5|COMPLETED|0:0|00:00:38|pool0-0065\n1025818|COMPLETED|0:0|00:07:53|pool0-0065\n1025818.batch|COMPLETED|0:0|00:07:53|pool0-0065\n1025818.extern|COMPLETED|0:0|00:07:53|pool0-0065\n1025818.0|COMPLETED|0:0|00:00:55|pool0-0065\n1025818.1|COMPLETED|0:0|00:00:53|pool0-0065\n1025818.2|COMPLETED|0:0|00:00:59|pool0-0065\n1025818.3|COMPLETED|0:0|00:00:52|pool0-0065\n1025818.4|COMPLETED|0:0|00:00:51|pool0-0065\n1025818.5|COMPLETED|0:0|00:00:46|pool0-0065\n1025819|COMPLETED|0:0|00:08:04|pool0-0065\n1025819.batch|COMPLETED|0:0|00:08:04|pool0-0065\n1025819.extern|COMPLETED|0:0|00:08:04|pool0-0065\n1025819.0|COMPLETED|0:0|00:00:49|pool0-0065\n1025819.1|COMPLETED|0:0|00:00:49|pool0-0065\n1025819.2|COMPLETED|0:0|00:01:01|pool0-0065\n1025819.3|COMPLETED|0:0|00:01:38|pool0-0065\n1025819.4|COMPLETED|0:0|00:00:42|pool0-0065\n1025819.5|COMPLETED|0:0|00:00:42|pool0-0065\n"
       },
       "error": ""
     },
@@ -773,12 +1208,173 @@
                 "event": "finished",
                 "run_id": "h100_sxm-vllm-followup-msa-expanded-h100_sxm-vllm-followup-28319",
                 "gpu_seconds": 54.068039786070585
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-followup-dsa-expanded-h100_sxm-trtllm-followup-28320",
+                "gpu_seconds": 27.72388917207718
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-followup-msa-expanded-h100_sxm-trtllm-followup-28320",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-followup-msa-expanded-h100_sxm-trtllm-followup-28320",
+                "gpu_seconds": 133.25298185832798
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-nccl-r2-28341",
+                "gpu_seconds": 130
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-nccl-r2-28341",
+                "gpu_seconds": 87.09573264047503
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-nccl-r4-28341",
+                "gpu_seconds": 260
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-nccl-r4-28341",
+                "gpu_seconds": 240.24774008803067
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-nccl-r8-28341",
+                "gpu_seconds": 520
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-nccl-r8-28341",
+                "gpu_seconds": 480.6205172985792
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-prefill-mla_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-prefill-mla_context-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-prefill-mla_context-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-prefill-mla_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 40.60139382723719
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-prefill-mla_context-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 20.66191807575524
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-prefill-mla_context-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 48.40009263064712
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-prefill-mla_generation_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-prefill-mla_generation_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 25.918612553738058
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-prefill-mla_generation-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-prefill-mla_generation-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-prefill-mla_generation-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 18.712809085845947
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-prefill-dsa_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-prefill-mla_generation-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 25.512768927030265
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-prefill-dsa_context_module-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-prefill-dsa_context_module-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-prefill-dsa_context_module-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 16.097014578059316
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-prefill-dsa_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 95.89814966544509
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-prefill-msa_context_module-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-prefill-msa_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-prefill-dsa_context_module-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 82.92051540315151
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-prefill-msa_context_module-h100_sxm-sglang-prefill-28383",
+                "gpu_seconds": 14.896505194716157
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-prefill-msa_context_module-h100_sxm-vllm-prefill-28382",
+                "gpu_seconds": 63.430256984196596
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-prefill-msa_context_module-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-prefill-msa_context_module-h100_sxm-trtllm-prefill-28384",
+                "gpu_seconds": 71.28255913686007
               }
-            ],
-            "finished_gpu_seconds": 1235.4060767525807,
-            "open_reserved_gpu_seconds": 305,
-            "charged_gpu_seconds": 1540.4060767525807,
-            "remaining_gpu_seconds": 2059.5939232474193
+            ]
           },
           "h100_sxm/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h100_sxm-validation-budget.jsonl",
@@ -843,15 +1439,341 @@
                 "event": "finished",
                 "run_id": "h100_sxm-sglang-repeat-moe-expanded-r3-h100_sxm-sglang-repeat-28338",
                 "gpu_seconds": 36.22837710008025
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-validation-moe-baseline-h100_sxm-vllm-validation-28331",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-validation-moe-baseline-h100_sxm-vllm-validation-28331",
+                "gpu_seconds": 30.734278718940914
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-validation-moe-expanded-h100_sxm-vllm-validation-28331",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-validation-moe-expanded-h100_sxm-vllm-validation-28331",
+                "gpu_seconds": 30.07454334199429
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-repeat-moe-baseline-r2-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-repeat-moe-baseline-r2-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 29.672592406161133
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-repeat-moe-expanded-r2-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-repeat-moe-expanded-r2-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 29.622274079360068
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-validation-moe-baseline-h100_sxm-trtllm-validation-28330",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-validation-moe-baseline-h100_sxm-trtllm-validation-28330",
+                "gpu_seconds": 27.064922702498734
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-repeat-moe-baseline-r3-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-repeat-moe-baseline-r3-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 29.62049649376422
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-validation-moe-expanded-h100_sxm-trtllm-validation-28330",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-repeat-moe-expanded-r3-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-validation-moe-expanded-h100_sxm-trtllm-validation-28330",
+                "gpu_seconds": 24.71134542953223
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-repeat-moe-expanded-r3-h100_sxm-vllm-repeat-28337",
+                "gpu_seconds": 29.87089034449309
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-repeat-moe-baseline-r2-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-repeat-moe-baseline-r2-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 27.068511025980115
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-repeat-moe-expanded-r2-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-repeat-moe-expanded-r2-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 25.112171040847898
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-repeat-moe-baseline-r3-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-repeat-moe-baseline-r3-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 23.910049302503467
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-repeat-moe-expanded-r3-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-repeat-moe-expanded-r3-h100_sxm-trtllm-repeat-28336",
+                "gpu_seconds": 24.361189712770283
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-smoke-observer-smoke-h100_sxm-vllm-features-smoke-28435",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-smoke-observer-smoke-h100_sxm-sglang-features-smoke-28436",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-smoke-observer-smoke-h100_sxm-trtllm-features-smoke-28437",
+                "gpu_seconds": 65
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-smoke-observer-smoke-h100_sxm-vllm-features-smoke-28435",
+                "gpu_seconds": 36.283327378798276
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-smoke-observer-smoke-h100_sxm-trtllm-features-smoke-28437",
+                "gpu_seconds": 20.608621309977025
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-smoke-observer-smoke-h100_sxm-sglang-features-smoke-28436",
+                "gpu_seconds": 33.62564853904769
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep1-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep1-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep1-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep1-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 44.3489153739647
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep1-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 42.69256753497757
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep1-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 51.16217142401729
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep2-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep2-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 35.038220572983846
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep2-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep2-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep3-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep2-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 37.783538629009854
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep2-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 44.55086310900515
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_context-rep3-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 34.12594886100851
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep1-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep3-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep3-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep1-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 28.568202279973775
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_context-rep3-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 37.535109028976876
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_context-rep3-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 44.196890864986926
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep2-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep2-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 30.523388513014652
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep1-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep1-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep1-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 22.2633096309728
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep3-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep1-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 30.627096261014234
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-vllm-features-attention_generation-rep3-h100_sxm-vllm-features-28446",
+                "gpu_seconds": 30.47287093795603
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep2-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep2-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep2-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 22.60949120199075
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep2-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 29.11731682100799
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep3-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep3-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-trtllm-features-attention_generation-rep3-h100_sxm-trtllm-features-28447",
+                "gpu_seconds": 22.611141601984855
+              },
+              {
+                "event": "finished",
+                "run_id": "h100_sxm-sglang-features-attention_generation-rep3-h100_sxm-sglang-features-28448",
+                "gpu_seconds": 28.865669456019535
               }
-            ],
-            "finished_gpu_seconds": 208.806543960236,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 208.806543960236,
-            "remaining_gpu_seconds": 1141.193456039764
+            ]
           }
         },
-        "scheduler": "28306|COMPLETED|0:0|00:00:59|pool0-0006\n28306.batch|COMPLETED|0:0|00:00:59|pool0-0006\n28306.extern|COMPLETED|0:0|00:00:59|pool0-0006\n28306.0|COMPLETED|0:0|00:00:40|pool0-0006\n28307|COMPLETED|0:0|00:01:59|pool0-0001\n28307.batch|COMPLETED|0:0|00:01:59|pool0-0001\n28307.extern|COMPLETED|0:0|00:01:59|pool0-0001\n28307.0|COMPLETED|0:0|00:01:39|pool0-0001\n28308|COMPLETED|0:0|00:01:27|pool0-0006\n28308.batch|COMPLETED|0:0|00:01:27|pool0-0006\n28308.extern|COMPLETED|0:0|00:01:27|pool0-0006\n28308.0|COMPLETED|0:0|00:01:08|pool0-0006\n28318|COMPLETED|0:0|00:12:25|pool0-0006\n28318.batch|COMPLETED|0:0|00:12:25|pool0-0006\n28318.extern|COMPLETED|0:0|00:12:25|pool0-0006\n28318.0|COMPLETED|0:0|00:01:24|pool0-0006\n28318.1|COMPLETED|0:0|00:02:10|pool0-0006\n28318.2|COMPLETED|0:0|00:05:39|pool0-0006\n28318.3|COMPLETED|0:0|00:02:24|pool0-0006\n28319|RUNNING|0:0|00:06:37|pool0-0006\n28319.batch|RUNNING|0:0|00:06:37|pool0-0006\n28319.extern|RUNNING|0:0|00:06:37|pool0-0006\n28319.0|COMPLETED|0:0|00:01:04|pool0-0006\n28319.1|COMPLETED|0:0|00:00:55|pool0-0006\n28319.2|COMPLETED|0:0|00:01:11|pool0-0006\n28319.3|COMPLETED|0:0|00:01:36|pool0-0006\n28319.4|RUNNING|0:0|00:01:13|pool0-0006\n28320|RUNNING|0:0|00:05:59|pool0-0006\n28320.batch|RUNNING|0:0|00:05:59|pool0-0006\n28320.extern|RUNNING|0:0|00:05:59|pool0-0006\n28320.0|COMPLETED|0:0|00:01:14|pool0-0006\n28320.1|COMPLETED|0:0|00:01:08|pool0-0006\n28320.2|COMPLETED|0:0|00:01:59|pool0-0006\n28320.3|RUNNING|0:0|00:00:50|pool0-0006\n28329|COMPLETED|0:0|00:02:57|pool0-0006\n28329.batch|COMPLETED|0:0|00:02:57|pool0-0006\n28329.extern|COMPLETED|0:0|00:02:58|pool0-0006\n28329.0|COMPLETED|0:0|00:01:12|pool0-0006\n28329.1|COMPLETED|0:0|00:01:17|pool0-0006\n28330|PENDING|0:0|00:00:00|None assigned\n28331|PENDING|0:0|00:00:00|None assigned\n28336|PENDING|0:0|00:00:00|None assigned\n28337|PENDING|0:0|00:00:00|None assigned\n28338|COMPLETED|0:0|00:05:35|pool0-0006\n28338.batch|COMPLETED|0:0|00:05:35|pool0-0006\n28338.extern|COMPLETED|0:0|00:05:35|pool0-0006\n28338.0|COMPLETED|0:0|00:01:11|pool0-0006\n28338.1|COMPLETED|0:0|00:01:13|pool0-0006\n28338.2|COMPLETED|0:0|00:01:10|pool0-0006\n28338.3|COMPLETED|0:0|00:01:15|pool0-0006\n28341|PENDING|0:0|00:00:00|None assigned\n28342|COMPLETED|0:0|00:03:39|pool0-0006\n28342.batch|COMPLETED|0:0|00:03:39|pool0-0006\n28342.extern|COMPLETED|0:0|00:03:39|pool0-0006\n28342.0|COMPLETED|0:0|00:01:06|pool0-0006\n28342.1|COMPLETED|0:0|00:00:53|pool0-0006\n28342.2|COMPLETED|0:0|00:01:07|pool0-0006\n28343|COMPLETED|0:0|00:04:07|pool0-0006\n28343.batch|COMPLETED|0:0|00:04:07|pool0-0006\n28343.extern|COMPLETED|0:0|00:04:07|pool0-0006\n28343.0|COMPLETED|0:0|00:01:21|pool0-0006\n28343.1|COMPLETED|0:0|00:01:09|pool0-0006\n28343.2|COMPLETED|0:0|00:00:58|pool0-0006\n28344|COMPLETED|0:0|00:02:53|pool0-0006\n28344.batch|COMPLETED|0:0|00:02:53|pool0-0006\n28344.extern|COMPLETED|0:0|00:02:53|pool0-0006\n28344.0|COMPLETED|0:0|00:01:11|pool0-0006\n28344.1|COMPLETED|0:0|00:01:05|pool0-0006\n"
+        "scheduler": "28306|COMPLETED|0:0|00:00:59|pool0-0006\n28306.batch|COMPLETED|0:0|00:00:59|pool0-0006\n28306.extern|COMPLETED|0:0|00:00:59|pool0-0006\n28306.0|COMPLETED|0:0|00:00:40|pool0-0006\n28307|COMPLETED|0:0|00:01:59|pool0-0001\n28307.batch|COMPLETED|0:0|00:01:59|pool0-0001\n28307.extern|COMPLETED|0:0|00:01:59|pool0-0001\n28307.0|COMPLETED|0:0|00:01:39|pool0-0001\n28308|COMPLETED|0:0|00:01:27|pool0-0006\n28308.batch|COMPLETED|0:0|00:01:27|pool0-0006\n28308.extern|COMPLETED|0:0|00:01:27|pool0-0006\n28308.0|COMPLETED|0:0|00:01:08|pool0-0006\n28318|COMPLETED|0:0|00:12:25|pool0-0006\n28318.batch|COMPLETED|0:0|00:12:25|pool0-0006\n28318.extern|COMPLETED|0:0|00:12:25|pool0-0006\n28318.0|COMPLETED|0:0|00:01:24|pool0-0006\n28318.1|COMPLETED|0:0|00:02:10|pool0-0006\n28318.2|COMPLETED|0:0|00:05:39|pool0-0006\n28318.3|COMPLETED|0:0|00:02:24|pool0-0006\n28319|COMPLETED|0:0|00:06:40|pool0-0006\n28319.batch|COMPLETED|0:0|00:06:40|pool0-0006\n28319.extern|COMPLETED|0:0|00:06:40|pool0-0006\n28319.0|COMPLETED|0:0|00:01:04|pool0-0006\n28319.1|COMPLETED|0:0|00:00:55|pool0-0006\n28319.2|COMPLETED|0:0|00:01:11|pool0-0006\n28319.3|COMPLETED|0:0|00:01:36|pool0-0006\n28319.4|COMPLETED|0:0|00:01:16|pool0-0006\n28320|COMPLETED|0:0|00:09:26|pool0-0006\n28320.batch|COMPLETED|0:0|00:09:26|pool0-0006\n28320.extern|COMPLETED|0:0|00:09:26|pool0-0006\n28320.0|COMPLETED|0:0|00:01:14|pool0-0006\n28320.1|COMPLETED|0:0|00:01:08|pool0-0006\n28320.2|COMPLETED|0:0|00:01:59|pool0-0006\n28320.3|COMPLETED|0:0|00:01:12|pool0-0006\n28320.4|COMPLETED|0:0|00:02:55|pool0-0006\n28329|COMPLETED|0:0|00:02:57|pool0-0006\n28329.batch|COMPLETED|0:0|00:02:57|pool0-0006\n28329.extern|COMPLETED|0:0|00:02:58|pool0-0006\n28329.0|COMPLETED|0:0|00:01:12|pool0-0006\n28329.1|COMPLETED|0:0|00:01:17|pool0-0006\n28330|COMPLETED|0:0|00:02:48|pool0-0006\n28330.batch|COMPLETED|0:0|00:02:48|pool0-0006\n28330.extern|COMPLETED|0:0|00:02:48|pool0-0006\n28330.0|COMPLETED|0:0|00:01:11|pool0-0006\n28330.1|COMPLETED|0:0|00:01:10|pool0-0006\n28331|COMPLETED|0:0|00:02:16|pool0-0006\n28331.batch|COMPLETED|0:0|00:02:16|pool0-0006\n28331.extern|COMPLETED|0:0|00:02:16|pool0-0006\n28331.0|COMPLETED|0:0|00:00:54|pool0-0006\n28331.1|COMPLETED|0:0|00:01:00|pool0-0006\n28336|COMPLETED|0:0|00:05:16|pool0-0006\n28336.batch|COMPLETED|0:0|00:05:16|pool0-0006\n28336.extern|COMPLETED|0:0|00:05:17|pool0-0006\n28336.0|COMPLETED|0:0|00:01:09|pool0-0006\n28336.1|COMPLETED|0:0|00:01:07|pool0-0006\n28336.2|COMPLETED|0:0|00:01:06|pool0-0006\n28336.3|COMPLETED|0:0|00:01:06|pool0-0006\n28337|COMPLETED|0:0|00:04:06|pool0-0006\n28337.batch|COMPLETED|0:0|00:04:06|pool0-0006\n28337.extern|COMPLETED|0:0|00:04:06|pool0-0006\n28337.0|COMPLETED|0:0|00:00:53|pool0-0006\n28337.1|COMPLETED|0:0|00:00:53|pool0-0006\n28337.2|COMPLETED|0:0|00:00:53|pool0-0006\n28337.3|COMPLETED|0:0|00:00:55|pool0-0006\n28338|COMPLETED|0:0|00:05:35|pool0-0006\n28338.batch|COMPLETED|0:0|00:05:35|pool0-0006\n28338.extern|COMPLETED|0:0|00:05:35|pool0-0006\n28338.0|COMPLETED|0:0|00:01:11|pool0-0006\n28338.1|COMPLETED|0:0|00:01:13|pool0-0006\n28338.2|COMPLETED|0:0|00:01:10|pool0-0006\n28338.3|COMPLETED|0:0|00:01:15|pool0-0006\n28341|COMPLETED|0:0|00:05:15|pool0-0001\n28341.batch|COMPLETED|0:0|00:05:15|pool0-0001\n28341.extern|COMPLETED|0:0|00:05:15|pool0-0001\n28341.0|COMPLETED|0:0|00:01:33|pool0-0001\n28341.1|COMPLETED|0:0|00:01:48|pool0-0001\n28341.2|COMPLETED|0:0|00:01:47|pool0-0001\n28342|COMPLETED|0:0|00:03:39|pool0-0006\n28342.batch|COMPLETED|0:0|00:03:39|pool0-0006\n28342.extern|COMPLETED|0:0|00:03:39|pool0-0006\n28342.0|COMPLETED|0:0|00:01:06|pool0-0006\n28342.1|COMPLETED|0:0|00:00:53|pool0-0006\n28342.2|COMPLETED|0:0|00:01:07|pool0-0006\n28343|COMPLETED|0:0|00:04:07|pool0-0006\n28343.batch|COMPLETED|0:0|00:04:07|pool0-0006\n28343.extern|COMPLETED|0:0|00:04:07|pool0-0006\n28343.0|COMPLETED|0:0|00:01:21|pool0-0006\n28343.1|COMPLETED|0:0|00:01:09|pool0-0006\n28343.2|COMPLETED|0:0|00:00:58|pool0-0006\n28344|COMPLETED|0:0|00:02:53|pool0-0006\n28344.batch|COMPLETED|0:0|00:02:53|pool0-0006\n28344.extern|COMPLETED|0:0|00:02:53|pool0-0006\n28344.0|COMPLETED|0:0|00:01:11|pool0-0006\n28344.1|COMPLETED|0:0|00:01:05|pool0-0006\n28382|COMPLETED|0:0|00:05:53|pool0-0006\n28382.batch|COMPLETED|0:0|00:05:53|pool0-0006\n28382.extern|COMPLETED|0:0|00:05:53|pool0-0006\n28382.0|COMPLETED|0:0|00:01:04|pool0-0006\n28382.1|COMPLETED|0:0|00:00:50|pool0-0006\n28382.2|COMPLETED|0:0|00:01:58|pool0-0006\n28382.3|COMPLETED|0:0|00:01:25|pool0-0006\n28383|COMPLETED|0:0|00:05:08|pool0-0006\n28383.batch|COMPLETED|0:0|00:05:08|pool0-0006\n28383.extern|COMPLETED|0:0|00:05:09|pool0-0006\n28383.0|COMPLETED|0:0|00:01:27|pool0-0006\n28383.1|COMPLETED|0:0|00:01:04|pool0-0006\n28383.2|COMPLETED|0:0|00:00:52|pool0-0006\n28383.3|COMPLETED|0:0|00:00:55|pool0-0006\n28384|COMPLETED|0:0|00:06:58|pool0-0006\n28384.batch|COMPLETED|0:0|00:06:58|pool0-0006\n28384.extern|COMPLETED|0:0|00:06:58|pool0-0006\n28384.0|COMPLETED|0:0|00:01:04|pool0-0006\n28384.1|COMPLETED|0:0|00:01:02|pool0-0006\n28384.2|COMPLETED|0:0|00:02:07|pool0-0006\n28384.3|COMPLETED|0:0|00:01:55|pool0-0006\n28446|COMPLETED|0:0|00:06:28|pool0-0007\n28446.batch|COMPLETED|0:0|00:06:28|pool0-0007\n28446.extern|COMPLETED|0:0|00:06:29|pool0-0007\n28446.0|COMPLETED|0:0|00:01:07|pool0-0007\n28446.1|COMPLETED|0:0|00:00:57|pool0-0007\n28446.2|COMPLETED|0:0|00:00:56|pool0-0007\n28446.3|COMPLETED|0:0|00:00:51|pool0-0007\n28446.4|COMPLETED|0:0|00:00:53|pool0-0007\n28446.5|COMPLETED|0:0|00:00:54|pool0-0007\n28447|COMPLETED|0:0|00:08:28|pool0-0007\n28447.batch|COMPLETED|0:0|00:08:28|pool0-0007\n28447.extern|COMPLETED|0:0|00:08:28|pool0-0007\n28447.0|COMPLETED|0:0|00:01:25|pool0-0007\n28447.1|COMPLETED|0:0|00:01:21|pool0-0007\n28447.2|COMPLETED|0:0|00:01:21|pool0-0007\n28447.3|COMPLETED|0:0|00:01:05|pool0-0007\n28447.4|COMPLETED|0:0|00:01:05|pool0-0007\n28447.5|COMPLETED|0:0|00:01:04|pool0-0007\n28448|COMPLETED|0:0|00:08:39|pool0-0007\n28448.batch|COMPLETED|0:0|00:08:39|pool0-0007\n28448.extern|COMPLETED|0:0|00:08:39|pool0-0007\n28448.0|COMPLETED|0:0|00:01:29|pool0-0007\n28448.1|COMPLETED|0:0|00:01:20|pool0-0007\n28448.2|COMPLETED|0:0|00:01:22|pool0-0007\n28448.3|COMPLETED|0:0|00:01:07|pool0-0007\n28448.4|COMPLETED|0:0|00:01:06|pool0-0007\n28448.5|COMPLETED|0:0|00:01:06|pool0-0007\n"
       },
       "error": ""
     },
@@ -1032,12 +1954,228 @@
                 "event": "finished",
                 "run_id": "h200_sxm-sglang-direct-kda-h200_sxm-sglang-direct-41646",
                 "gpu_seconds": 15.354330136906356
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-followup-moe-baseline-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-followup-moe-baseline-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 21.87288454384543
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-followup-moe-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-followup-moe-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 18.815548959886655
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-direct-attention_context-h200_sxm-trtllm-direct-41652",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-direct-attention_context-h200_sxm-trtllm-direct-41652",
+                "gpu_seconds": 18.769930724985898
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-followup-dsa-baseline-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-followup-dsa-baseline-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 54.65237256092951
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-direct-attention_generation-h200_sxm-trtllm-direct-41652",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-direct-attention_generation-h200_sxm-trtllm-direct-41652",
+                "gpu_seconds": 15.206047541927544
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-followup-dsa-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-followup-dsa-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 22.784527781885117
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-followup-msa-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-followup-msa-expanded-h200_sxm-trtllm-followup-41649",
+                "gpu_seconds": 124.39872268587351
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-nccl-r2-41651",
+                "gpu_seconds": 130
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-nccl-r2-41651",
+                "gpu_seconds": 76.90437232004479
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-nccl-r4-41651",
+                "gpu_seconds": 260
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-nccl-r4-41651",
+                "gpu_seconds": 240.24881215207276
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-nccl-r8-41651",
+                "gpu_seconds": 520
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-nccl-r8-41651",
+                "gpu_seconds": 480.549684016034
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-prefill-mla_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-prefill-mla_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 34.24690911988728
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-prefill-mla_context-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-prefill-mla_context-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-prefill-mla_context-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 19.2808133631479
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-prefill-mla_generation_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-prefill-mla_generation_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 21.267453152919188
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-prefill-mla_context-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 46.17608488397673
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-prefill-dsa_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-prefill-mla_generation-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-prefill-mla_generation-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 14.415886144852264
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-prefill-dsa_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 87.5002341940999
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-prefill-mla_generation-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-prefill-mla_generation-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 25.386750015895814
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-vllm-prefill-msa_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-vllm-prefill-msa_context_module-h200_sxm-vllm-prefill-41658",
+                "gpu_seconds": 53.82531193108298
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-prefill-dsa_context_module-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-prefill-dsa_context_module-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 65.8800555979833
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-prefill-dsa_context_module-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-prefill-dsa_context_module-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 14.911136809037998
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-prefill-msa_context_module-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-prefill-msa_context_module-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-prefill-msa_context_module-h200_sxm-sglang-prefill-41659",
+                "gpu_seconds": 13.956117803929374
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-prefill-msa_context_module-h200_sxm-trtllm-prefill-41660",
+                "gpu_seconds": 60.054185863118626
               }
-            ],
-            "finished_gpu_seconds": 932.5843921678606,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 932.5843921678606,
-            "remaining_gpu_seconds": 2667.4156078321394
+            ]
           },
           "h200_sxm/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-cost-20261103/h200_sxm-validation-budget.jsonl",
@@ -1122,15 +2260,111 @@
                 "event": "finished",
                 "run_id": "h200_sxm-sglang-validation-moe-expanded-h200_sxm-sglang-validation-41635",
                 "gpu_seconds": 32.74923425912857
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-repeat-moe-baseline-r2-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-repeat-moe-baseline-r2-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 28.28008263604715
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-repeat-moe-expanded-r2-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-repeat-moe-expanded-r2-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 31.989044686080888
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-repeat-moe-baseline-r3-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-repeat-moe-baseline-r3-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 28.683508988004178
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-sglang-repeat-moe-expanded-r3-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-sglang-repeat-moe-expanded-r3-h200_sxm-sglang-repeat-41640",
+                "gpu_seconds": 34.031545237172395
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-validation-moe-baseline-h200_sxm-trtllm-validation-41653",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-validation-moe-baseline-h200_sxm-trtllm-validation-41653",
+                "gpu_seconds": 21.11452264804393
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-validation-moe-expanded-h200_sxm-trtllm-validation-41653",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-validation-moe-expanded-h200_sxm-trtllm-validation-41653",
+                "gpu_seconds": 19.767293191049248
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-repeat-moe-baseline-r2-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-repeat-moe-baseline-r2-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 23.975859481142834
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-repeat-moe-expanded-r2-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-repeat-moe-expanded-r2-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 19.505341870011762
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-repeat-moe-baseline-r3-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-repeat-moe-baseline-r3-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 19.66339973709546
+              },
+              {
+                "event": "reserved",
+                "run_id": "h200_sxm-trtllm-repeat-moe-expanded-r3-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "h200_sxm-trtllm-repeat-moe-expanded-r3-h200_sxm-trtllm-repeat-41654",
+                "gpu_seconds": 18.655269274953753
               }
-            ],
-            "finished_gpu_seconds": 228.53806925797835,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 228.53806925797835,
-            "remaining_gpu_seconds": 1121.4619307420217
+            ]
           }
         },
-        "scheduler": "41624|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.batch|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.extern|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.0|COMPLETED|0:0|00:01:35|neb-cdg-slurm-1-gpu-5\n41625|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.batch|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.extern|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.0|COMPLETED|0:0|00:02:42|neb-cdg-slurm-1-gpu-5\n41626|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.batch|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.extern|COMPLETED|0:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41628|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.batch|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.extern|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.0|COMPLETED|0:0|00:01:15|neb-cdg-slurm-1-gpu-5\n41628.1|COMPLETED|0:0|00:01:44|neb-cdg-slurm-1-gpu-5\n41628.2|COMPLETED|0:0|00:01:21|neb-cdg-slurm-1-gpu-5\n41628.3|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41628.4|COMPLETED|0:0|00:01:53|neb-cdg-slurm-1-gpu-5\n41629|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.batch|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.extern|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.0|COMPLETED|0:0|00:02:22|neb-cdg-slurm-1-gpu-5\n41629.1|COMPLETED|0:0|00:03:13|neb-cdg-slurm-1-gpu-5\n41629.2|COMPLETED|0:0|00:06:04|neb-cdg-slurm-1-gpu-5\n41629.3|COMPLETED|0:0|00:03:19|neb-cdg-slurm-1-gpu-5\n41630|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.batch|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.extern|COMPLETED|0:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41635|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.batch|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.extern|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.0|COMPLETED|0:0|00:03:51|neb-cdg-slurm-1-gpu-5\n41635.1|COMPLETED|0:0|00:03:07|neb-cdg-slurm-1-gpu-5\n41636|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.batch|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.extern|COMPLETED|0:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41637|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41637.batch|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41637.extern|COMPLETED|0:0|00:02:36|neb-cdg-slurm-1-gpu-5\n41637.0|COMPLETED|0:0|00:01:05|neb-cdg-slurm-1-gpu-5\n41637.1|COMPLETED|0:0|00:01:05|neb-cdg-slurm-1-gpu-5\n41638|FAILED|1:0|00:00:10|neb-cdg-slurm-1-gpu-5\n41638.batch|FAILED|1:0|00:00:10|neb-cdg-slurm-1-gpu-5\n41638.extern|COMPLETED|0:0|00:00:11|neb-cdg-slurm-1-gpu-5\n41639|COMPLETED|0:0|00:06:54|neb-cdg-slurm-1-gpu-5\n41639.batch|COMPLETED|0:0|00:06:54|neb-cdg-slurm-1-gpu-5\n41639.extern|COMPLETED|0:0|00:06:55|neb-cdg-slurm-1-gpu-5\n41639.0|COMPLETED|0:0|00:01:07|neb-cdg-slurm-1-gpu-5\n41639.1|COMPLETED|0:0|00:01:37|neb-cdg-slurm-1-gpu-5\n41639.2|COMPLETED|0:0|00:01:07|neb-cdg-slurm-1-gpu-5\n41639.3|COMPLETED|0:0|00:02:23|neb-cdg-slurm-1-gpu-5\n41640|RUNNING|0:0|00:01:36|neb-cdg-slurm-1-gpu-5\n41640.batch|RUNNING|0:0|00:01:36|neb-cdg-slurm-1-gpu-5\n41640.extern|RUNNING|0:0|00:01:36|neb-cdg-slurm-1-gpu-5\n41640.0|RUNNING|0:0|00:01:14|neb-cdg-slurm-1-gpu-5\n41643|CANCELLED|0:0|00:00:00|None assigned\n41644|CANCELLED|0:0|00:00:00|None assigned\n41645|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.batch|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.extern|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.0|COMPLETED|0:0|00:02:25|neb-cdg-slurm-1-gpu-5\n41645.1|COMPLETED|0:0|00:02:15|neb-cdg-slurm-1-gpu-5\n41645.2|COMPLETED|0:0|00:02:19|neb-cdg-slurm-1-gpu-5\n41646|COMPLETED|0:0|00:09:09|neb-cdg-slurm-1-gpu-5\n41646.batch|COMPLETED|0:0|00:09:09|neb-cdg-slurm-1-gpu-5\n41646.extern|COMPLETED|0:0|00:09:10|neb-cdg-slurm-1-gpu-5\n41646.0|COMPLETED|0:0|00:03:48|neb-cdg-slurm-1-gpu-5\n41646.1|COMPLETED|0:0|00:03:05|neb-cdg-slurm-1-gpu-5\n41646.2|COMPLETED|0:0|00:01:36|neb-cdg-slurm-1-gpu-5\n"
+        "scheduler": "41624|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.batch|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.extern|COMPLETED|0:0|00:02:05|neb-cdg-slurm-1-gpu-5\n41624.0|COMPLETED|0:0|00:01:35|neb-cdg-slurm-1-gpu-5\n41625|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.batch|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.extern|COMPLETED|0:0|00:03:08|neb-cdg-slurm-1-gpu-5\n41625.0|COMPLETED|0:0|00:02:42|neb-cdg-slurm-1-gpu-5\n41626|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.batch|FAILED|1:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41626.extern|COMPLETED|0:0|00:00:14|neb-cdg-slurm-1-gpu-5\n41628|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.batch|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.extern|COMPLETED|0:0|00:09:35|neb-cdg-slurm-1-gpu-5\n41628.0|COMPLETED|0:0|00:01:15|neb-cdg-slurm-1-gpu-5\n41628.1|COMPLETED|0:0|00:01:44|neb-cdg-slurm-1-gpu-5\n41628.2|COMPLETED|0:0|00:01:21|neb-cdg-slurm-1-gpu-5\n41628.3|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41628.4|COMPLETED|0:0|00:01:53|neb-cdg-slurm-1-gpu-5\n41629|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.batch|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.extern|COMPLETED|0:0|00:15:51|neb-cdg-slurm-1-gpu-5\n41629.0|COMPLETED|0:0|00:02:22|neb-cdg-slurm-1-gpu-5\n41629.1|COMPLETED|0:0|00:03:13|neb-cdg-slurm-1-gpu-5\n41629.2|COMPLETED|0:0|00:06:04|neb-cdg-slurm-1-gpu-5\n41629.3|COMPLETED|0:0|00:03:19|neb-cdg-slurm-1-gpu-5\n41630|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.batch|FAILED|1:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41630.extern|COMPLETED|0:0|00:00:12|neb-cdg-slurm-1-gpu-5\n41635|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.batch|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.extern|COMPLETED|0:0|00:07:32|neb-cdg-slurm-1-gpu-5\n41635.0|COMPLETED|0:0|00:03:51|neb-cdg-slurm-1-gpu-5\n41635.1|COMPLETED|0:0|00:03:07|neb-cdg-slurm-1-gpu-5\n41636|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.batch|FAILED|1:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41636.extern|COMPLETED|0:0|00:00:13|neb-cdg-slurm-1-gpu-5\n41637|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41637.batch|COMPLETED|0:0|00:02:35|neb-cdg-slurm-1-gpu-5\n41637.extern|COMPLETED|0:0|00:02:36|neb-cdg-slurm-1-gpu-5\n41637.0|COMPLETED|0:0|00:01:05|neb-cdg-slurm-1-gpu-5\n41637.1|COMPLETED|0:0|00:01:05|neb-cdg-slurm-1-gpu-5\n41638|FAILED|1:0|00:00:10|neb-cdg-slurm-1-gpu-5\n41638.batch|FAILED|1:0|00:00:10|neb-cdg-slurm-1-gpu-5\n41638.extern|COMPLETED|0:0|00:00:11|neb-cdg-slurm-1-gpu-5\n41639|COMPLETED|0:0|00:06:54|neb-cdg-slurm-1-gpu-5\n41639.batch|COMPLETED|0:0|00:06:54|neb-cdg-slurm-1-gpu-5\n41639.extern|COMPLETED|0:0|00:06:55|neb-cdg-slurm-1-gpu-5\n41639.0|COMPLETED|0:0|00:01:07|neb-cdg-slurm-1-gpu-5\n41639.1|COMPLETED|0:0|00:01:37|neb-cdg-slurm-1-gpu-5\n41639.2|COMPLETED|0:0|00:01:07|neb-cdg-slurm-1-gpu-5\n41639.3|COMPLETED|0:0|00:02:23|neb-cdg-slurm-1-gpu-5\n41640|COMPLETED|0:0|00:08:04|neb-cdg-slurm-1-gpu-5\n41640.batch|COMPLETED|0:0|00:08:04|neb-cdg-slurm-1-gpu-5\n41640.extern|COMPLETED|0:0|00:08:04|neb-cdg-slurm-1-gpu-5\n41640.0|COMPLETED|0:0|00:02:02|neb-cdg-slurm-1-gpu-5\n41640.1|COMPLETED|0:0|00:01:43|neb-cdg-slurm-1-gpu-5\n41640.2|COMPLETED|0:0|00:01:38|neb-cdg-slurm-1-gpu-5\n41640.3|COMPLETED|0:0|00:01:45|neb-cdg-slurm-1-gpu-5\n41643|CANCELLED|0:0|00:00:00|None assigned\n41644|CANCELLED|0:0|00:00:00|None assigned\n41645|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.batch|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.extern|COMPLETED|0:0|00:07:34|neb-cdg-slurm-1-gpu-5\n41645.0|COMPLETED|0:0|00:02:25|neb-cdg-slurm-1-gpu-5\n41645.1|COMPLETED|0:0|00:02:15|neb-cdg-slurm-1-gpu-5\n41645.2|COMPLETED|0:0|00:02:19|neb-cdg-slurm-1-gpu-5\n41646|COMPLETED|0:0|00:09:09|neb-cdg-slurm-1-gpu-5\n41646.batch|COMPLETED|0:0|00:09:09|neb-cdg-slurm-1-gpu-5\n41646.extern|COMPLETED|0:0|00:09:10|neb-cdg-slurm-1-gpu-5\n41646.0|COMPLETED|0:0|00:03:48|neb-cdg-slurm-1-gpu-5\n41646.1|COMPLETED|0:0|00:03:05|neb-cdg-slurm-1-gpu-5\n41646.2|COMPLETED|0:0|00:01:36|neb-cdg-slurm-1-gpu-5\n41651|COMPLETED|0:0|00:06:06|neb-cdg-slurm-1-gpu-5\n41651.batch|COMPLETED|0:0|00:06:06|neb-cdg-slurm-1-gpu-5\n41651.extern|COMPLETED|0:0|00:06:06|neb-cdg-slurm-1-gpu-5\n41651.0|COMPLETED|0:0|00:01:43|neb-cdg-slurm-1-gpu-5\n41651.1|COMPLETED|0:0|00:02:06|neb-cdg-slurm-1-gpu-5\n41651.2|COMPLETED|0:0|00:02:09|neb-cdg-slurm-1-gpu-5\n41652|COMPLETED|0:0|00:04:46|neb-cdg-slurm-1-gpu-5\n41652.batch|COMPLETED|0:0|00:04:46|neb-cdg-slurm-1-gpu-5\n41652.extern|COMPLETED|0:0|00:04:46|neb-cdg-slurm-1-gpu-5\n41652.0|COMPLETED|0:0|00:02:15|neb-cdg-slurm-1-gpu-5\n41652.1|COMPLETED|0:0|00:01:57|neb-cdg-slurm-1-gpu-5\n41653|COMPLETED|0:0|00:05:40|neb-cdg-slurm-1-gpu-5\n41653.batch|COMPLETED|0:0|00:05:40|neb-cdg-slurm-1-gpu-5\n41653.extern|COMPLETED|0:0|00:05:40|neb-cdg-slurm-1-gpu-5\n41653.0|COMPLETED|0:0|00:01:25|neb-cdg-slurm-1-gpu-5\n41653.1|COMPLETED|0:0|00:03:43|neb-cdg-slurm-1-gpu-5\n41654|COMPLETED|0:0|00:12:28|neb-cdg-slurm-1-gpu-5\n41654.batch|COMPLETED|0:0|00:12:28|neb-cdg-slurm-1-gpu-5\n41654.extern|COMPLETED|0:0|00:12:28|neb-cdg-slurm-1-gpu-5\n41654.0|COMPLETED|0:0|00:03:32|neb-cdg-slurm-1-gpu-5\n41654.1|COMPLETED|0:0|00:03:24|neb-cdg-slurm-1-gpu-5\n41654.2|COMPLETED|0:0|00:02:16|neb-cdg-slurm-1-gpu-5\n41654.3|COMPLETED|0:0|00:02:21|neb-cdg-slurm-1-gpu-5\n41658|COMPLETED|0:0|00:10:18|neb-cdg-slurm-1-gpu-5\n41658.batch|COMPLETED|0:0|00:10:18|neb-cdg-slurm-1-gpu-5\n41658.extern|COMPLETED|0:0|00:10:18|neb-cdg-slurm-1-gpu-5\n41658.0|COMPLETED|0:0|00:01:51|neb-cdg-slurm-1-gpu-5\n41658.1|COMPLETED|0:0|00:02:27|neb-cdg-slurm-1-gpu-5\n41658.2|COMPLETED|0:0|00:03:09|neb-cdg-slurm-1-gpu-5\n41658.3|COMPLETED|0:0|00:02:11|neb-cdg-slurm-1-gpu-5\n41659|COMPLETED|0:0|00:15:34|neb-cdg-slurm-1-gpu-5\n41659.batch|COMPLETED|0:0|00:15:34|neb-cdg-slurm-1-gpu-5\n41659.extern|COMPLETED|0:0|00:15:34|neb-cdg-slurm-1-gpu-5\n41659.0|COMPLETED|0:0|00:04:18|neb-cdg-slurm-1-gpu-5\n41659.1|COMPLETED|0:0|00:03:47|neb-cdg-slurm-1-gpu-5\n41659.2|COMPLETED|0:0|00:03:32|neb-cdg-slurm-1-gpu-5\n41659.3|COMPLETED|0:0|00:02:52|neb-cdg-slurm-1-gpu-5\n41660|COMPLETED|0:0|00:15:55|neb-cdg-slurm-1-gpu-5\n41660.batch|COMPLETED|0:0|00:15:55|neb-cdg-slurm-1-gpu-5\n41660.extern|COMPLETED|0:0|00:15:55|neb-cdg-slurm-1-gpu-5\n41660.0|COMPLETED|0:0|00:03:54|neb-cdg-slurm-1-gpu-5\n41660.1|COMPLETED|0:0|00:03:22|neb-cdg-slurm-1-gpu-5\n41660.2|COMPLETED|0:0|00:04:07|neb-cdg-slurm-1-gpu-5\n41660.3|COMPLETED|0:0|00:03:36|neb-cdg-slurm-1-gpu-5\n"
       },
       "error": ""
     },
@@ -1421,12 +2655,128 @@
                 "event": "finished",
                 "run_id": "b200_sxm-nccl-r8-2488961",
                 "gpu_seconds": 480.48356217145925
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-prefill-mla_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-prefill-mla_context-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-prefill-mla_context-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-prefill-mla_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 34.91136083006859
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-prefill-mla_generation_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-prefill-mla_generation_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 18.26353950612247
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-prefill-dsa_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-prefill-dsa_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 59.7626693006605
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-prefill-mla_context-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 150.737558061257
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-prefill-mla_context-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 150.53408212214708
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-vllm-prefill-msa_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-prefill-mla_generation-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-prefill-mla_generation-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 15.459001484327018
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-prefill-mla_generation-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-vllm-prefill-msa_context_module-b200_sxm-vllm-prefill-2489241",
+                "gpu_seconds": 74.89634689316154
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-prefill-dsa_context_module-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-prefill-mla_generation-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 103.17392684612423
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-prefill-dsa_context_module-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 115.96255272999404
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-prefill-dsa_context_module-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-trtllm-prefill-msa_context_module-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-prefill-dsa_context_module-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 74.76356237847358
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-trtllm-prefill-msa_context_module-b200_sxm-trtllm-prefill-2489243",
+                "gpu_seconds": 79.43394711334258
+              },
+              {
+                "event": "reserved",
+                "run_id": "b200_sxm-sglang-prefill-msa_context_module-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "b200_sxm-sglang-prefill-msa_context_module-b200_sxm-sglang-prefill-2489242",
+                "gpu_seconds": 112.34584084805101
               }
-            ],
-            "finished_gpu_seconds": 2244.149585301988,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 2244.149585301988,
-            "remaining_gpu_seconds": 1355.8504146980122
+            ]
           },
           "b200_sxm/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/b200_sxm-validation-budget.jsonl",
@@ -1612,14 +2962,10 @@
                 "run_id": "b200_sxm-sglang-repeat-moe-expanded-r3-b200_sxm-sglang-repeat-2488894",
                 "gpu_seconds": 72.50121521763504
               }
-            ],
-            "finished_gpu_seconds": 1045.7669469758403,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 1045.7669469758403,
-            "remaining_gpu_seconds": 304.23305302415974
+            ]
           }
         },
-        "scheduler": "2488684|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.batch|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.extern|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.0|COMPLETED|0:0|00:00:31|nsc-svg-slurm-1-gpu-74\n2488685|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.batch|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.extern|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.0|COMPLETED|0:0|00:01:52|nsc-svg-slurm-1-gpu-74\n2488686|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.batch|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.extern|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.0|COMPLETED|0:0|00:01:19|nsc-svg-slurm-1-gpu-74\n2488752|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.batch|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.extern|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.0|COMPLETED|0:0|00:01:37|nsc-svg-slurm-1-gpu-74\n2488752.1|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488752.2|COMPLETED|0:0|00:00:57|nsc-svg-slurm-1-gpu-74\n2488752.3|COMPLETED|0:0|00:01:25|nsc-svg-slurm-1-gpu-74\n2488752.4|COMPLETED|0:0|00:00:49|nsc-svg-slurm-1-gpu-74\n2488753|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.batch|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.extern|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.0|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-74\n2488753.1|COMPLETED|0:0|00:01:59|nsc-svg-slurm-1-gpu-74\n2488753.2|COMPLETED|0:0|00:04:12|nsc-svg-slurm-1-gpu-74\n2488753.3|COMPLETED|0:0|00:01:49|nsc-svg-slurm-1-gpu-74\n2488754|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.batch|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.extern|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.0|COMPLETED|0:0|00:01:10|nsc-svg-slurm-1-gpu-74\n2488754.1|COMPLETED|0:0|00:00:52|nsc-svg-slurm-1-gpu-74\n2488754.2|COMPLETED|0:0|00:02:06|nsc-svg-slurm-1-gpu-74\n2488754.3|COMPLETED|0:0|00:01:31|nsc-svg-slurm-1-gpu-74\n2488754.4|COMPLETED|0:0|00:02:21|nsc-svg-slurm-1-gpu-74\n2488828|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.batch|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.extern|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.0|COMPLETED|0:0|00:01:36|nsc-svg-slurm-1-gpu-74\n2488828.1|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-74\n2488829|COMPLETED|0:0|00:04:00|nsc-svg-slurm-1-gpu-74\n2488829.batch|COMPLETED|0:0|00:04:00|nsc-svg-slurm-1-gpu-74\n2488829.extern|COMPLETED|0:0|00:04:01|nsc-svg-slurm-1-gpu-74\n2488829.0|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-74\n2488829.1|COMPLETED|0:0|00:01:46|nsc-svg-slurm-1-gpu-74\n2488830|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.batch|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.extern|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.0|COMPLETED|0:0|00:01:01|nsc-svg-slurm-1-gpu-133\n2488830.1|COMPLETED|0:0|00:00:50|nsc-svg-slurm-1-gpu-133\n2488893|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.batch|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.extern|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.0|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-133\n2488893.1|COMPLETED|0:0|00:01:37|nsc-svg-slurm-1-gpu-133\n2488893.2|COMPLETED|0:0|00:01:38|nsc-svg-slurm-1-gpu-133\n2488893.3|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-133\n2488894|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.batch|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.extern|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.0|COMPLETED|0:0|00:01:45|nsc-svg-slurm-1-gpu-187\n2488894.1|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-187\n2488894.2|COMPLETED|0:0|00:01:54|nsc-svg-slurm-1-gpu-187\n2488894.3|COMPLETED|0:0|00:01:43|nsc-svg-slurm-1-gpu-187\n2488895|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.batch|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.extern|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.0|COMPLETED|0:0|00:01:03|nsc-svg-slurm-1-gpu-54\n2488895.1|COMPLETED|0:0|00:00:56|nsc-svg-slurm-1-gpu-54\n2488895.2|COMPLETED|0:0|00:00:52|nsc-svg-slurm-1-gpu-54\n2488895.3|COMPLETED|0:0|00:00:51|nsc-svg-slurm-1-gpu-54\n2488961|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.batch|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.extern|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.0|COMPLETED|0:0|00:01:18|nsc-svg-slurm-1-gpu-44\n2488961.1|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-44\n2488961.2|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-44\n2488963|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.batch|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.extern|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.0|COMPLETED|0:0|00:00:51|nsc-svg-slurm-1-gpu-152\n2488963.1|COMPLETED|0:0|00:00:44|nsc-svg-slurm-1-gpu-152\n2488963.2|COMPLETED|0:0|00:00:54|nsc-svg-slurm-1-gpu-152\n2488964|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.batch|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.extern|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.0|COMPLETED|0:0|00:02:04|nsc-svg-slurm-1-gpu-152\n2488964.1|COMPLETED|0:0|00:00:59|nsc-svg-slurm-1-gpu-152\n2488965|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.batch|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.extern|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.0|COMPLETED|0:0|00:01:04|nsc-svg-slurm-1-gpu-152\n2488965.1|COMPLETED|0:0|00:00:59|nsc-svg-slurm-1-gpu-152\n2488965.2|COMPLETED|0:0|00:00:43|nsc-svg-slurm-1-gpu-152\n"
+        "scheduler": "2488684|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.batch|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.extern|COMPLETED|0:0|00:00:47|nsc-svg-slurm-1-gpu-74\n2488684.0|COMPLETED|0:0|00:00:31|nsc-svg-slurm-1-gpu-74\n2488685|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.batch|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.extern|COMPLETED|0:0|00:02:17|nsc-svg-slurm-1-gpu-74\n2488685.0|COMPLETED|0:0|00:01:52|nsc-svg-slurm-1-gpu-74\n2488686|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.batch|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.extern|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488686.0|COMPLETED|0:0|00:01:19|nsc-svg-slurm-1-gpu-74\n2488752|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.batch|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.extern|COMPLETED|0:0|00:07:06|nsc-svg-slurm-1-gpu-74\n2488752.0|COMPLETED|0:0|00:01:37|nsc-svg-slurm-1-gpu-74\n2488752.1|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-74\n2488752.2|COMPLETED|0:0|00:00:57|nsc-svg-slurm-1-gpu-74\n2488752.3|COMPLETED|0:0|00:01:25|nsc-svg-slurm-1-gpu-74\n2488752.4|COMPLETED|0:0|00:00:49|nsc-svg-slurm-1-gpu-74\n2488753|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.batch|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.extern|COMPLETED|0:0|00:10:32|nsc-svg-slurm-1-gpu-74\n2488753.0|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-74\n2488753.1|COMPLETED|0:0|00:01:59|nsc-svg-slurm-1-gpu-74\n2488753.2|COMPLETED|0:0|00:04:12|nsc-svg-slurm-1-gpu-74\n2488753.3|COMPLETED|0:0|00:01:49|nsc-svg-slurm-1-gpu-74\n2488754|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.batch|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.extern|COMPLETED|0:0|00:08:50|nsc-svg-slurm-1-gpu-74\n2488754.0|COMPLETED|0:0|00:01:10|nsc-svg-slurm-1-gpu-74\n2488754.1|COMPLETED|0:0|00:00:52|nsc-svg-slurm-1-gpu-74\n2488754.2|COMPLETED|0:0|00:02:06|nsc-svg-slurm-1-gpu-74\n2488754.3|COMPLETED|0:0|00:01:31|nsc-svg-slurm-1-gpu-74\n2488754.4|COMPLETED|0:0|00:02:21|nsc-svg-slurm-1-gpu-74\n2488828|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.batch|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.extern|COMPLETED|0:0|00:03:35|nsc-svg-slurm-1-gpu-74\n2488828.0|COMPLETED|0:0|00:01:36|nsc-svg-slurm-1-gpu-74\n2488828.1|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-74\n2488829|COMPLETED|0:0|00:04:00|nsc-svg-slurm-1-gpu-74\n2488829.batch|COMPLETED|0:0|00:04:00|nsc-svg-slurm-1-gpu-74\n2488829.extern|COMPLETED|0:0|00:04:01|nsc-svg-slurm-1-gpu-74\n2488829.0|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-74\n2488829.1|COMPLETED|0:0|00:01:46|nsc-svg-slurm-1-gpu-74\n2488830|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.batch|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.extern|COMPLETED|0:0|00:02:19|nsc-svg-slurm-1-gpu-133\n2488830.0|COMPLETED|0:0|00:01:01|nsc-svg-slurm-1-gpu-133\n2488830.1|COMPLETED|0:0|00:00:50|nsc-svg-slurm-1-gpu-133\n2488893|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.batch|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.extern|COMPLETED|0:0|00:07:02|nsc-svg-slurm-1-gpu-133\n2488893.0|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-133\n2488893.1|COMPLETED|0:0|00:01:37|nsc-svg-slurm-1-gpu-133\n2488893.2|COMPLETED|0:0|00:01:38|nsc-svg-slurm-1-gpu-133\n2488893.3|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-133\n2488894|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.batch|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.extern|COMPLETED|0:0|00:07:56|nsc-svg-slurm-1-gpu-187\n2488894.0|COMPLETED|0:0|00:01:45|nsc-svg-slurm-1-gpu-187\n2488894.1|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-187\n2488894.2|COMPLETED|0:0|00:01:54|nsc-svg-slurm-1-gpu-187\n2488894.3|COMPLETED|0:0|00:01:43|nsc-svg-slurm-1-gpu-187\n2488895|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.batch|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.extern|COMPLETED|0:0|00:04:27|nsc-svg-slurm-1-gpu-54\n2488895.0|COMPLETED|0:0|00:01:03|nsc-svg-slurm-1-gpu-54\n2488895.1|COMPLETED|0:0|00:00:56|nsc-svg-slurm-1-gpu-54\n2488895.2|COMPLETED|0:0|00:00:52|nsc-svg-slurm-1-gpu-54\n2488895.3|COMPLETED|0:0|00:00:51|nsc-svg-slurm-1-gpu-54\n2488961|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.batch|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.extern|COMPLETED|0:0|00:04:39|nsc-svg-slurm-1-gpu-44\n2488961.0|COMPLETED|0:0|00:01:18|nsc-svg-slurm-1-gpu-44\n2488961.1|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-44\n2488961.2|COMPLETED|0:0|00:01:40|nsc-svg-slurm-1-gpu-44\n2488963|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.batch|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.extern|COMPLETED|0:0|00:02:58|nsc-svg-slurm-1-gpu-152\n2488963.0|COMPLETED|0:0|00:00:51|nsc-svg-slurm-1-gpu-152\n2488963.1|COMPLETED|0:0|00:00:44|nsc-svg-slurm-1-gpu-152\n2488963.2|COMPLETED|0:0|00:00:54|nsc-svg-slurm-1-gpu-152\n2488964|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.batch|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.extern|COMPLETED|0:0|00:03:33|nsc-svg-slurm-1-gpu-152\n2488964.0|COMPLETED|0:0|00:02:04|nsc-svg-slurm-1-gpu-152\n2488964.1|COMPLETED|0:0|00:00:59|nsc-svg-slurm-1-gpu-152\n2488965|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.batch|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.extern|COMPLETED|0:0|00:03:20|nsc-svg-slurm-1-gpu-152\n2488965.0|COMPLETED|0:0|00:01:04|nsc-svg-slurm-1-gpu-152\n2488965.1|COMPLETED|0:0|00:00:59|nsc-svg-slurm-1-gpu-152\n2488965.2|COMPLETED|0:0|00:00:43|nsc-svg-slurm-1-gpu-152\n2489241|COMPLETED|0:0|00:04:55|nsc-svg-slurm-1-gpu-2\n2489241.batch|COMPLETED|0:0|00:04:55|nsc-svg-slurm-1-gpu-2\n2489241.extern|COMPLETED|0:0|00:04:55|nsc-svg-slurm-1-gpu-2\n2489241.0|COMPLETED|0:0|00:00:55|nsc-svg-slurm-1-gpu-2\n2489241.1|COMPLETED|0:0|00:00:37|nsc-svg-slurm-1-gpu-2\n2489241.2|COMPLETED|0:0|00:01:19|nsc-svg-slurm-1-gpu-2\n2489241.3|COMPLETED|0:0|00:01:35|nsc-svg-slurm-1-gpu-2\n2489242|COMPLETED|0:0|00:11:24|nsc-svg-slurm-1-gpu-178\n2489242.batch|COMPLETED|0:0|00:11:24|nsc-svg-slurm-1-gpu-178\n2489242.extern|COMPLETED|0:0|00:11:24|nsc-svg-slurm-1-gpu-178\n2489242.0|COMPLETED|0:0|00:03:17|nsc-svg-slurm-1-gpu-178\n2489242.1|COMPLETED|0:0|00:02:29|nsc-svg-slurm-1-gpu-178\n2489242.2|COMPLETED|0:0|00:02:04|nsc-svg-slurm-1-gpu-178\n2489242.3|COMPLETED|0:0|00:02:35|nsc-svg-slurm-1-gpu-178\n2489243|COMPLETED|0:0|00:08:57|nsc-svg-slurm-1-gpu-185\n2489243.batch|COMPLETED|0:0|00:08:57|nsc-svg-slurm-1-gpu-185\n2489243.extern|COMPLETED|0:0|00:08:57|nsc-svg-slurm-1-gpu-185\n2489243.0|COMPLETED|0:0|00:03:03|nsc-svg-slurm-1-gpu-185\n2489243.1|COMPLETED|0:0|00:00:48|nsc-svg-slurm-1-gpu-185\n2489243.2|COMPLETED|0:0|00:02:30|nsc-svg-slurm-1-gpu-185\n2489243.3|COMPLETED|0:0|00:01:51|nsc-svg-slurm-1-gpu-185\n"
       },
       "error": ""
     },
@@ -1630,41 +2976,447 @@
           "a100_sxm/anchor": {
             "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/a100_sxm-anchor-budget.jsonl",
             "exists": false,
-            "events": [],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 0,
-            "remaining_gpu_seconds": 3600
+            "events": []
           },
           "a100_sxm/validation": {
             "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/a100_sxm-validation-budget.jsonl",
             "exists": false,
-            "events": [],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 0,
-            "remaining_gpu_seconds": 1350
+            "events": []
           },
           "l40s/anchor": {
             "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/l40s-anchor-budget.jsonl",
-            "exists": false,
-            "events": [],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 0,
-            "remaining_gpu_seconds": 3600
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-primary2-moe-baseline-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-primary2-moe-baseline-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 33.613522967998506
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-primary2-moe-expanded-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-direct2-attention_context-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-primary2-moe-expanded-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 30.212848255001518
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-prefill-mla_context_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-direct2-attention_context-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 33.674338247998094
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-primary2-moe-baseline-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-prefill-mla_context_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 34.6248215699743
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-primary2-moe-baseline-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 185
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-direct2-attention_generation-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-primary2-moe-baseline-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 25.509250236000298
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-direct2-attention_context-l40s-trtllm-direct2-5600263",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-prefill-msa_context_module-l40s-trtllm-prefill-5600259",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-prefill-mla_context-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-prefill-mla_generation_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-direct2-attention_generation-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 23.55653670799802
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-direct2-attention_context-l40s-trtllm-direct2-5600263",
+                "gpu_seconds": 23.356885310000507
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-prefill-mla_generation_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 20.44958310201764
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-primary2-msa-expanded-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-direct2-kda-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-primary2-moe-baseline-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 68.1729216599997
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-primary2-moe-expanded-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-prefill-msa_context_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-primary2-moe-expanded-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 26.353107242000988
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-primary2-msa-expanded-l40s-vllm-primary2-5600231",
+                "gpu_seconds": 45.93868420199942
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-direct2-kda-l40s-vllm-direct2-5600246",
+                "gpu_seconds": 32.070513933002076
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-direct2-attention_generation-l40s-trtllm-direct2-5600263",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-direct2-attention_context-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-direct2-attention_generation-l40s-trtllm-direct2-5600263",
+                "gpu_seconds": 15.595143456001098
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-primary2-moe-expanded-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-prefill-msa_context_module-l40s-vllm-prefill-5600255",
+                "gpu_seconds": 58.90941357699922
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-prefill-mla_context-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 122.61913436800022
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-prefill-msa_context_module-l40s-trtllm-prefill-5600259",
+                "gpu_seconds": 129.90343606199997
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-primary2-msa-expanded-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-direct2-attention_context-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 35.11864578799998
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-primary2-msa-expanded-l40s-trtllm-primary2-5600250",
+                "gpu_seconds": 24.611658324000018
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-primary2-moe-expanded-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 69.71328942699984
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-prefill-mla_generation-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-direct2-attention_generation-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-direct2-attention_generation-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 23.65821364700014
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-prefill-mla_generation-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 24.55824082700019
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-primary2-msa-expanded-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-primary2-msa-expanded-l40s-sglang-primary2-5600247",
+                "gpu_seconds": 30.51566902500053
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-prefill-msa_context_module-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-direct2-kda-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-prefill-msa_context_module-l40s-sglang-prefill-5600261",
+                "gpu_seconds": 9.78293057999963
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-direct2-kda-l40s-sglang-direct2-5600265",
+                "gpu_seconds": 15.492400963000136
+              }
+            ]
           },
           "l40s/validation": {
             "path": "/home/scratch.simonec_gpu/results/pr664-cost-20261103/l40s-validation-budget.jsonl",
-            "exists": false,
-            "events": [],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 0,
-            "remaining_gpu_seconds": 1350
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-validate2-moe-baseline-l40s-vllm-validate2-5600238",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-validate2-moe-baseline-l40s-vllm-validate2-5600238",
+                "gpu_seconds": 28.063263631000154
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-validate2-moe-expanded-l40s-vllm-validate2-5600238",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-validate2-moe-expanded-l40s-vllm-validate2-5600238",
+                "gpu_seconds": 29.26504477299932
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-repeat2-moe-baseline-r2-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-repeat2-moe-baseline-r2-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 28.710452167000764
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-validate2-moe-baseline-l40s-trtllm-validate2-5600253",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-repeat2-moe-expanded-r2-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-validate2-moe-baseline-l40s-trtllm-validate2-5600253",
+                "gpu_seconds": 24.707788244995754
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-validate2-moe-baseline-l40s-sglang-validate2-5600249",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-repeat2-moe-expanded-r2-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 29.109449801999293
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-repeat2-moe-baseline-r3-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-validate2-moe-expanded-l40s-trtllm-validate2-5600253",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-validate2-moe-baseline-l40s-sglang-validate2-5600249",
+                "gpu_seconds": 54.45276062900666
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-repeat2-moe-baseline-r3-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 27.71308051000051
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-validate2-moe-expanded-l40s-trtllm-validate2-5600253",
+                "gpu_seconds": 26.46109522200277
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-validate2-moe-expanded-l40s-sglang-validate2-5600249",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-vllm-repeat2-moe-expanded-r3-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-vllm-repeat2-moe-expanded-r3-l40s-vllm-repeat2-5600241",
+                "gpu_seconds": 29.06100548199902
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-repeat2-moe-baseline-r2-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-repeat2-moe-baseline-r2-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 25.20066001699888
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-validate2-moe-expanded-l40s-sglang-validate2-5600249",
+                "gpu_seconds": 69.77988839198952
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-repeat2-moe-expanded-r2-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-repeat2-moe-expanded-r2-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 27.05645332900167
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-repeat2-moe-baseline-r3-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-repeat2-moe-baseline-r3-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 18.997669496995513
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-repeat2-moe-baseline-r2-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-trtllm-repeat2-moe-expanded-r3-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-repeat2-moe-baseline-r2-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 54.08579623500009
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-trtllm-repeat2-moe-expanded-r3-l40s-trtllm-repeat2-5600260",
+                "gpu_seconds": 20.402864626004884
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-repeat2-moe-expanded-r2-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-repeat2-moe-expanded-r2-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 69.71006423100152
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-repeat2-moe-baseline-r3-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-repeat2-moe-baseline-r3-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 54.44282336300057
+              },
+              {
+                "event": "reserved",
+                "run_id": "l40s-sglang-repeat2-moe-expanded-r3-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "l40s-sglang-repeat2-moe-expanded-r3-l40s-sglang-repeat2-5600262",
+                "gpu_seconds": 70.06614457700016
+              }
+            ]
           }
         },
-        "scheduler": "5598802|PENDING|0:0|00:00:00|None assigned\n5598807|PENDING|0:0|00:00:00|None assigned\n5598809|PENDING|0:0|00:00:00|None assigned\n5598813|PENDING|0:0|00:00:00|None assigned\n5598814|PENDING|0:0|00:00:00|None assigned\n5598820|PENDING|0:0|00:00:00|None assigned\n5599133|PENDING|0:0|00:00:00|None assigned\n5599134|PENDING|0:0|00:00:00|None assigned\n5599135|PENDING|0:0|00:00:00|None assigned\n5599136|PENDING|0:0|00:00:00|None assigned\n5599137|PENDING|0:0|00:00:00|None assigned\n5599138|PENDING|0:0|00:00:00|None assigned\n5599369|PENDING|0:0|00:00:00|None assigned\n5599370|PENDING|0:0|00:00:00|None assigned\n5599371|PENDING|0:0|00:00:00|None assigned\n5599372|PENDING|0:0|00:00:00|None assigned\n5599373|PENDING|0:0|00:00:00|None assigned\n5599374|PENDING|0:0|00:00:00|None assigned\n5599452|PENDING|0:0|00:00:00|None assigned\n5599453|PENDING|0:0|00:00:00|None assigned\n5599454|PENDING|0:0|00:00:00|None assigned\n5599455|PENDING|0:0|00:00:00|None assigned\n5599456|PENDING|0:0|00:00:00|None assigned\n5599457|PENDING|0:0|00:00:00|None assigned\n5599535|PENDING|0:0|00:00:00|None assigned\n5599545|PENDING|0:0|00:00:00|None assigned\n5599546|PENDING|0:0|00:00:00|None assigned\n5599548|PENDING|0:0|00:00:00|None assigned\n5599549|PENDING|0:0|00:00:00|None assigned\n5599551|PENDING|0:0|00:00:00|None assigned\n"
+        "scheduler": "5598802|CANCELLED by 141787|0:0|00:00:00|None assigned\n5598807|CANCELLED by 141787|0:0|00:00:00|None assigned\n5598809|CANCELLED by 141787|0:0|00:00:00|None assigned\n5598813|CANCELLED by 141787|0:0|00:00:00|None assigned\n5598814|CANCELLED by 141787|0:0|00:00:00|None assigned\n5598820|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599133|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599134|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599135|COMPLETED|0:0|00:04:03|a1u1g-mil-0623\n5599135.batch|COMPLETED|0:0|00:04:03|a1u1g-mil-0623\n5599135.extern|COMPLETED|0:0|00:04:03|a1u1g-mil-0623\n5599135.0|FAILED|13:0|00:00:20|a1u1g-mil-0623\n5599135.1|FAILED|13:0|00:00:22|a1u1g-mil-0623\n5599135.2|FAILED|13:0|00:00:21|a1u1g-mil-0623\n5599136|COMPLETED|0:0|00:04:06|a1u1g-mil-0577\n5599136.batch|COMPLETED|0:0|00:04:06|a1u1g-mil-0577\n5599136.extern|COMPLETED|0:0|00:04:06|a1u1g-mil-0577\n5599136.0|FAILED|13:0|00:00:35|a1u1g-mil-0577\n5599136.1|FAILED|13:0|00:00:34|a1u1g-mil-0577\n5599136.2|FAILED|13:0|00:00:35|a1u1g-mil-0577\n5599137|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599138|COMPLETED|0:0|00:04:49|a1u1g-mil-0629\n5599138.batch|COMPLETED|0:0|00:04:49|a1u1g-mil-0629\n5599138.extern|COMPLETED|0:0|00:04:49|a1u1g-mil-0629\n5599138.0|FAILED|13:0|00:00:36|a1u1g-mil-0629\n5599138.1|FAILED|13:0|00:00:38|a1u1g-mil-0629\n5599138.2|FAILED|13:0|00:00:34|a1u1g-mil-0629\n5599369|CANCELLED by 141787|0:0|00:01:12|a1u1g-mil-0649\n5599369.batch|CANCELLED|0:15|00:01:14|a1u1g-mil-0649\n5599369.extern|COMPLETED|0:0|00:01:14|a1u1g-mil-0649\n5599370|COMPLETED|0:0|00:01:14|a1u1g-mil-0628\n5599370.batch|COMPLETED|0:0|00:01:14|a1u1g-mil-0628\n5599370.extern|COMPLETED|0:0|00:01:14|a1u1g-mil-0628\n5599370.0|FAILED|13:0|00:00:21|a1u1g-mil-0628\n5599370.1|FAILED|13:0|00:00:21|a1u1g-mil-0628\n5599371|COMPLETED|0:0|00:01:48|a1u1g-mil-0581\n5599371.batch|COMPLETED|0:0|00:01:48|a1u1g-mil-0581\n5599371.extern|COMPLETED|0:0|00:01:48|a1u1g-mil-0581\n5599371.0|FAILED|13:0|00:00:33|a1u1g-mil-0581\n5599371.1|FAILED|13:0|00:00:34|a1u1g-mil-0581\n5599372|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599373|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599374|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599452|CANCELLED by 141787|0:0|00:00:34|a1u1g-mil-0628\n5599452.batch|CANCELLED|0:15|00:00:36|a1u1g-mil-0628\n5599452.extern|COMPLETED|0:0|00:00:44|a1u1g-mil-0628\n5599452.0|FAILED|13:0|00:00:27|a1u1g-mil-0628\n5599453|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599454|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599455|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599456|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599457|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599535|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599545|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599546|COMPLETED|0:0|00:02:59|a1u1g-mil-0628\n5599546.batch|COMPLETED|0:0|00:02:59|a1u1g-mil-0628\n5599546.extern|COMPLETED|0:0|00:02:59|a1u1g-mil-0628\n5599546.0|FAILED|13:0|00:00:21|a1u1g-mil-0628\n5599546.1|FAILED|13:0|00:00:21|a1u1g-mil-0628\n5599546.2|FAILED|13:0|00:00:28|a1u1g-mil-0628\n5599548|COMPLETED|0:0|00:04:49|a1u1g-mil-0572\n5599548.batch|COMPLETED|0:0|00:04:49|a1u1g-mil-0572\n5599548.extern|COMPLETED|0:0|00:04:49|a1u1g-mil-0572\n5599548.0|FAILED|13:0|00:00:43|a1u1g-mil-0572\n5599548.1|FAILED|13:0|00:00:41|a1u1g-mil-0572\n5599548.2|FAILED|13:0|00:00:38|a1u1g-mil-0572\n5599549|CANCELLED by 141787|0:0|00:00:00|None assigned\n5599551|COMPLETED|0:0|00:03:23|a1u1g-mil-0581\n5599551.batch|COMPLETED|0:0|00:03:23|a1u1g-mil-0581\n5599551.extern|COMPLETED|0:0|00:03:23|a1u1g-mil-0581\n5599551.0|FAILED|13:0|00:00:38|a1u1g-mil-0581\n5599551.1|FAILED|13:0|00:00:38|a1u1g-mil-0581\n5600254|CANCELLED by 141787|0:0|00:00:00|None assigned\n5600255|COMPLETED|0:0|00:04:57|a1u1g-mil-0629\n5600255.batch|COMPLETED|0:0|00:04:57|a1u1g-mil-0629\n5600255.extern|COMPLETED|0:0|00:04:57|a1u1g-mil-0629\n5600255.0|COMPLETED|0:0|00:00:55|a1u1g-mil-0629\n5600255.1|COMPLETED|0:0|00:00:40|a1u1g-mil-0629\n5600255.2|COMPLETED|0:0|00:01:19|a1u1g-mil-0629\n5600256|CANCELLED by 141787|0:0|00:00:00|None assigned\n5600257|CANCELLED by 141787|0:0|00:00:00|None assigned\n5600259|COMPLETED|0:0|00:05:10|a1u1g-mil-0570\n5600259.batch|COMPLETED|0:0|00:05:10|a1u1g-mil-0570\n5600259.extern|COMPLETED|0:0|00:05:10|a1u1g-mil-0570\n5600259.0|COMPLETED|0:0|00:02:53|a1u1g-mil-0570\n5600261|COMPLETED|0:0|00:08:04|a1u1g-mil-0577\n5600261.batch|COMPLETED|0:0|00:08:04|a1u1g-mil-0577\n5600261.extern|COMPLETED|0:0|00:08:04|a1u1g-mil-0577\n5600261.0|COMPLETED|0:0|00:02:40|a1u1g-mil-0577\n5600261.1|COMPLETED|0:0|00:01:12|a1u1g-mil-0577\n5600261.2|COMPLETED|0:0|00:00:57|a1u1g-mil-0577\n"
       },
       "error": ""
     },
@@ -1860,24 +3612,402 @@
                 "event": "finished",
                 "run_id": "gb200-sglang-remaining-msa-expanded-gb200-sglang-remaining-8611443",
                 "gpu_seconds": 80.89405977679417
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-direct-attention_context-gb200-sglang-direct-8611999",
+                "gpu_seconds": 31.617264092899855
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-remaining-dsa-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 305
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-direct-attention_generation-gb200-vllm-direct-8611999",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-remaining-dsa-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 30.928603021893654
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-direct-attention_generation-gb200-vllm-direct-8611999",
+                "gpu_seconds": 24.01108277309686
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-remaining-msa-expanded-gb200-vllm-remaining-8611443",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-direct-attention_generation-gb200-trtllm-direct-8611999",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-direct-attention_generation-gb200-trtllm-direct-8611999",
+                "gpu_seconds": 18.152750338893384
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-remaining-msa-expanded-gb200-vllm-remaining-8611443",
+                "gpu_seconds": 50.306274419184774
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-direct-attention_generation-gb200-sglang-direct-8611999",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-remaining-msa-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 245
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-direct-attention_generation-gb200-sglang-direct-8611999",
+                "gpu_seconds": 24.121520553715527
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-remaining-msa-expanded-gb200-trtllm-remaining-8611443",
+                "gpu_seconds": 27.523424277547747
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-direct-kda-gb200-vllm-direct-8611999",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-direct-kda-gb200-vllm-direct-8611999",
+                "gpu_seconds": 31.966794243082404
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-direct-kda-gb200-sglang-direct-8611999",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-direct-kda-gb200-sglang-direct-8611999",
+                "gpu_seconds": 8.292271244805306
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-prefill-mla_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-prefill-mla_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 37.426869861999876
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-prefill-mla_context-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-prefill-mla_context-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 150.26838559300813
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-prefill-mla_context-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-prefill-mla_context-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 150.3422699530056
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-prefill-mla_generation-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-prefill-mla_generation-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 29.823379338005907
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-prefill-mla_generation_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-prefill-mla_generation_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 21.6531261659984
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-prefill-mla_generation-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-prefill-mla_generation-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 15.55741308099823
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-prefill-dsa_context_module-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-prefill-dsa_context_module-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 63.12370776300668
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-prefill-dsa_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-prefill-dsa_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 65.77233859199623
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-prefill-dsa_context_module-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-prefill-dsa_context_module-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 81.08533880900359
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-prefill-msa_context_module-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-prefill-msa_context_module-gb200-sglang-prefill-8612823",
+                "gpu_seconds": 97.64425317800487
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-prefill-msa_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-prefill-msa_context_module-gb200-vllm-prefill-8612823",
+                "gpu_seconds": 78.37316729799204
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-prefill-msa_context_module-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-prefill-msa_context_module-gb200-trtllm-prefill-8612823",
+                "gpu_seconds": 69.66412991100515
               }
-            ],
-            "finished_gpu_seconds": 1522.4431087800767,
-            "open_reserved_gpu_seconds": 95,
-            "charged_gpu_seconds": 1617.4431087800767,
-            "remaining_gpu_seconds": 1982.5568912199233
+            ]
           },
           "gb200/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb200-validation-budget.jsonl",
-            "exists": false,
-            "events": [],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 0,
-            "remaining_gpu_seconds": 1350
+            "exists": true,
+            "events": [
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-validation-moe-baseline-gb200-vllm-validation-8611755",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-validation-moe-baseline-gb200-vllm-validation-8611755",
+                "gpu_seconds": 80.68916846998036
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-validation-moe-baseline-gb200-trtllm-validation-8611755",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-validation-moe-baseline-gb200-trtllm-validation-8611755",
+                "gpu_seconds": 26.41411076602526
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-validation-moe-baseline-gb200-sglang-validation-8611755",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-validation-moe-baseline-gb200-sglang-validation-8611755",
+                "gpu_seconds": 85.1843447079882
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-validation-moe-expanded-gb200-vllm-validation-8611755",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-validation-moe-expanded-gb200-vllm-validation-8611755",
+                "gpu_seconds": 81.38011547387578
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-validation-moe-expanded-gb200-trtllm-validation-8611755",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-validation-moe-expanded-gb200-trtllm-validation-8611755",
+                "gpu_seconds": 16.95061185094528
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-validation-moe-expanded-gb200-sglang-validation-8611755",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-validation-moe-expanded-gb200-sglang-validation-8611755",
+                "gpu_seconds": 86.90084287780337
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-repeat-moe-baseline-r2-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-repeat-moe-baseline-r2-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 81.82610812003259
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-repeat-moe-baseline-r2-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-repeat-moe-baseline-r2-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 26.700845820945688
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-repeat-moe-baseline-r2-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-repeat-moe-baseline-r2-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 87.02910467004403
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-repeat-moe-expanded-r2-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-repeat-moe-expanded-r2-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 82.43534901109524
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-repeat-moe-expanded-r2-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-repeat-moe-expanded-r2-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 21.20400502497796
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-repeat-moe-expanded-r2-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-repeat-moe-expanded-r2-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 88.73545881093014
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-repeat-moe-baseline-r3-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-repeat-moe-baseline-r3-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 81.32859098608606
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-repeat-moe-baseline-r3-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-repeat-moe-baseline-r3-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 18.353354739025235
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-repeat-moe-baseline-r3-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-repeat-moe-baseline-r3-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 87.37756465398706
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-vllm-repeat-moe-expanded-r3-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-vllm-repeat-moe-expanded-r3-gb200-vllm-repeat-8611874",
+                "gpu_seconds": 81.78648021898698
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-trtllm-repeat-moe-expanded-r3-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-trtllm-repeat-moe-expanded-r3-gb200-trtllm-repeat-8611874",
+                "gpu_seconds": 17.70061858498957
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb200-sglang-repeat-moe-expanded-r3-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb200-sglang-repeat-moe-expanded-r3-gb200-sglang-repeat-8611874",
+                "gpu_seconds": 88.7874215709744
+              }
+            ]
           }
         },
-        "scheduler": "8611346|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.batch|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.extern|COMPLETED|0:0|00:05:07|nvl72118-T18\n8611346.0|COMPLETED|0:0|00:00:45|nvl72118-T18\n8611346.1|COMPLETED|0:0|00:01:28|nvl72118-T18\n8611346.2|COMPLETED|0:0|00:02:28|nvl72118-T18\n8611443|RUNNING|0:0|00:24:46|nvl72077-T09\n8611443.batch|RUNNING|0:0|00:24:46|nvl72077-T09\n8611443.extern|RUNNING|0:0|00:24:46|nvl72077-T09\n8611443.0|COMPLETED|0:0|00:01:54|nvl72077-T09\n8611443.1|COMPLETED|0:0|00:01:26|nvl72077-T09\n8611443.2|COMPLETED|0:0|00:02:18|nvl72077-T09\n8611443.3|COMPLETED|0:0|00:01:18|nvl72077-T09\n8611443.4|COMPLETED|0:0|00:01:56|nvl72077-T09\n8611443.5|COMPLETED|0:0|00:02:17|nvl72077-T09\n8611443.6|COMPLETED|0:0|00:01:13|nvl72077-T09\n8611443.7|COMPLETED|0:0|00:01:57|nvl72077-T09\n8611443.8|COMPLETED|0:0|00:05:48|nvl72077-T09\n8611443.9|COMPLETED|0:0|00:02:16|nvl72077-T09\n8611443.10|RUNNING|0:0|00:01:56|nvl72077-T09\n8611755|PENDING|0:0|00:00:00|None assigned\n8611874|PENDING|0:0|00:00:00|None assigned\n8611930|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.batch|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.extern|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.0|COMPLETED|0:0|00:01:35|nvl72018-T10\n8611930.1|COMPLETED|0:0|00:02:03|nvl72018-T10\n8611999|RUNNING|0:0|00:04:45|nvl72176-T01\n8611999.batch|RUNNING|0:0|00:04:45|nvl72176-T01\n8611999.extern|RUNNING|0:0|00:04:45|nvl72176-T01\n8611999.0|COMPLETED|0:0|00:01:07|nvl72176-T01\n8611999.1|COMPLETED|0:0|00:02:17|nvl72176-T01\n8611999.2|RUNNING|0:0|00:00:54|nvl72176-T01\n"
+        "scheduler": "8611346|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.batch|FAILED|1:0|00:05:07|nvl72118-T18\n8611346.extern|COMPLETED|0:0|00:05:07|nvl72118-T18\n8611346.0|COMPLETED|0:0|00:00:45|nvl72118-T18\n8611346.1|COMPLETED|0:0|00:01:28|nvl72118-T18\n8611346.2|COMPLETED|0:0|00:02:28|nvl72118-T18\n8611443|COMPLETED|0:0|00:29:10|nvl72077-T09\n8611443.batch|COMPLETED|0:0|00:29:10|nvl72077-T09\n8611443.extern|COMPLETED|0:0|00:29:10|nvl72077-T09\n8611443.0|COMPLETED|0:0|00:01:54|nvl72077-T09\n8611443.1|COMPLETED|0:0|00:01:26|nvl72077-T09\n8611443.2|COMPLETED|0:0|00:02:18|nvl72077-T09\n8611443.3|COMPLETED|0:0|00:01:18|nvl72077-T09\n8611443.4|COMPLETED|0:0|00:01:56|nvl72077-T09\n8611443.5|COMPLETED|0:0|00:02:17|nvl72077-T09\n8611443.6|COMPLETED|0:0|00:01:13|nvl72077-T09\n8611443.7|COMPLETED|0:0|00:01:57|nvl72077-T09\n8611443.8|COMPLETED|0:0|00:05:48|nvl72077-T09\n8611443.9|COMPLETED|0:0|00:02:16|nvl72077-T09\n8611443.10|COMPLETED|0:0|00:02:09|nvl72077-T09\n8611443.11|COMPLETED|0:0|00:01:28|nvl72077-T09\n8611443.12|COMPLETED|0:0|00:01:18|nvl72077-T09\n8611443.13|COMPLETED|0:0|00:01:25|nvl72077-T09\n8611755|COMPLETED|0:0|00:11:57|nvl72173-T02\n8611755.batch|COMPLETED|0:0|00:11:57|nvl72173-T02\n8611755.extern|COMPLETED|0:0|00:11:57|nvl72173-T02\n8611755.0|COMPLETED|0:0|00:01:55|nvl72173-T02\n8611755.1|COMPLETED|0:0|00:01:33|nvl72173-T02\n8611755.2|COMPLETED|0:0|00:02:20|nvl72173-T02\n8611755.3|COMPLETED|0:0|00:01:54|nvl72173-T02\n8611755.4|COMPLETED|0:0|00:01:23|nvl72173-T02\n8611755.5|COMPLETED|0:0|00:02:22|nvl72173-T02\n8611874|COMPLETED|0:0|00:23:57|nvl72113-T12\n8611874.batch|COMPLETED|0:0|00:23:57|nvl72113-T12\n8611874.extern|COMPLETED|0:0|00:23:57|nvl72113-T12\n8611874.0|COMPLETED|0:0|00:01:58|nvl72113-T12\n8611874.1|COMPLETED|0:0|00:01:37|nvl72113-T12\n8611874.2|COMPLETED|0:0|00:02:23|nvl72113-T12\n8611874.3|COMPLETED|0:0|00:01:58|nvl72113-T12\n8611874.4|COMPLETED|0:0|00:01:30|nvl72113-T12\n8611874.5|COMPLETED|0:0|00:02:25|nvl72113-T12\n8611874.6|COMPLETED|0:0|00:01:56|nvl72113-T12\n8611874.7|COMPLETED|0:0|00:01:29|nvl72113-T12\n8611874.8|COMPLETED|0:0|00:02:24|nvl72113-T12\n8611874.9|COMPLETED|0:0|00:01:56|nvl72113-T12\n8611874.10|COMPLETED|0:0|00:01:28|nvl72113-T12\n8611874.11|COMPLETED|0:0|00:02:26|nvl72113-T12\n8611930|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.batch|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.extern|COMPLETED|0:0|00:03:59|nvl72018-T10\n8611930.0|COMPLETED|0:0|00:01:35|nvl72018-T10\n8611930.1|COMPLETED|0:0|00:02:03|nvl72018-T10\n8611999|COMPLETED|0:0|00:11:12|nvl72176-T01\n8611999.batch|COMPLETED|0:0|00:11:12|nvl72176-T01\n8611999.extern|COMPLETED|0:0|00:11:12|nvl72176-T01\n8611999.0|COMPLETED|0:0|00:01:07|nvl72176-T01\n8611999.1|COMPLETED|0:0|00:02:17|nvl72176-T01\n8611999.2|COMPLETED|0:0|00:01:27|nvl72176-T01\n8611999.3|COMPLETED|0:0|00:00:59|nvl72176-T01\n8611999.4|COMPLETED|0:0|00:01:24|nvl72176-T01\n8611999.5|COMPLETED|0:0|00:01:20|nvl72176-T01\n8611999.6|COMPLETED|0:0|00:01:07|nvl72176-T01\n8611999.7|COMPLETED|0:0|00:01:03|nvl72176-T01\n"
       },
       "error": ""
     },
@@ -2008,12 +4138,208 @@
                 "event": "finished",
                 "run_id": "gb300-nccl-r2-1538429",
                 "gpu_seconds": 57.616141027770944
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-direct-attention_context-gb300-trtllm-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-nccl-r4-1538429",
+                "gpu_seconds": 260
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-nccl-r4-1538429",
+                "gpu_seconds": 194.54728204756975
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-direct-attention_context-gb300-trtllm-direct-1538448",
+                "gpu_seconds": 75.46643389505334
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-direct-attention_context-gb300-sglang-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-direct-attention_context-gb300-sglang-direct-1538448",
+                "gpu_seconds": 30.807769858045503
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-direct-attention_generation-gb300-vllm-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-direct-attention_generation-gb300-vllm-direct-1538448",
+                "gpu_seconds": 22.950588054023683
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-direct-attention_generation-gb300-trtllm-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-direct-attention_generation-gb300-trtllm-direct-1538448",
+                "gpu_seconds": 16.692150266142562
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-direct-attention_generation-gb300-sglang-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-direct-attention_generation-gb300-sglang-direct-1538448",
+                "gpu_seconds": 27.253618243150413
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-direct-kda-gb300-vllm-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-direct-kda-gb300-vllm-direct-1538448",
+                "gpu_seconds": 29.964611171046272
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-direct-kda-gb300-sglang-direct-1538448",
+                "gpu_seconds": 95
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-direct-kda-gb300-sglang-direct-1538448",
+                "gpu_seconds": 7.978939634980634
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-prefill-mla_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-prefill-mla_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 36.844654731219634
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-prefill-mla_context-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-prefill-mla_context-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 150.27202339400537
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-prefill-mla_context-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-prefill-mla_context-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 150.21290074288845
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-prefill-mla_generation-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-prefill-mla_generation-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 23.16993521200493
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-prefill-mla_generation_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-prefill-mla_generation_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 20.405100821051747
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-prefill-mla_generation-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-prefill-mla_generation-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 34.56158633599989
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-prefill-dsa_context_module-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-prefill-dsa_context_module-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 86.32724377186969
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-prefill-dsa_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-prefill-dsa_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 63.956123327836394
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-prefill-dsa_context_module-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-prefill-dsa_context_module-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 108.25503885000944
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-prefill-msa_context_module-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-prefill-msa_context_module-gb300-trtllm-prefill-1539021",
+                "gpu_seconds": 67.00322029995732
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-prefill-msa_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-prefill-msa_context_module-gb300-vllm-prefill-1539021",
+                "gpu_seconds": 76.45759406709112
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-prefill-msa_context_module-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-prefill-msa_context_module-gb300-sglang-prefill-1539021",
+                "gpu_seconds": 103.20310014090501
               }
-            ],
-            "finished_gpu_seconds": 656.4290306586772,
-            "open_reserved_gpu_seconds": 0,
-            "charged_gpu_seconds": 656.4290306586772,
-            "remaining_gpu_seconds": 2943.570969341323
+            ]
           },
           "gb300/validation": {
             "path": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/pr664-cost-20261103/gb300-validation-budget.jsonl",
@@ -2023,15 +4349,186 @@
                 "event": "reserved",
                 "run_id": "gb300-vllm-validation-moe-baseline-gb300-vllm-validation-1538251",
                 "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-validation-moe-baseline-gb300-vllm-validation-1538251",
+                "gpu_seconds": 76.28765971190296
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-validation-moe-baseline-gb300-trtllm-validation-1538251",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-validation-moe-baseline-gb300-trtllm-validation-1538251",
+                "gpu_seconds": 36.19020486390218
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-validation-moe-baseline-gb300-sglang-validation-1538251",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-validation-moe-baseline-gb300-sglang-validation-1538251",
+                "gpu_seconds": 86.38710230402648
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-validation-moe-expanded-gb300-vllm-validation-1538251",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-validation-moe-expanded-gb300-vllm-validation-1538251",
+                "gpu_seconds": 75.16646604798734
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-validation-moe-expanded-gb300-trtllm-validation-1538251",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-validation-moe-expanded-gb300-trtllm-validation-1538251",
+                "gpu_seconds": 22.94770268793218
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-validation-moe-expanded-gb300-sglang-validation-1538251",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-validation-moe-expanded-gb300-sglang-validation-1538251",
+                "gpu_seconds": 79.19979926408269
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-repeat-moe-baseline-r2-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-repeat-moe-baseline-r2-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 76.12053509103134
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-repeat-moe-baseline-r2-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-repeat-moe-baseline-r2-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 34.313588795019314
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-repeat-moe-expanded-r2-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-repeat-moe-expanded-r2-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 76.16264422982931
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-repeat-moe-baseline-r2-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-repeat-moe-baseline-r2-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 79.36602890398353
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-repeat-moe-expanded-r2-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-repeat-moe-expanded-r2-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 14.987548848846926
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-repeat-moe-baseline-r3-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-repeat-moe-baseline-r3-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 74.41078477399424
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-repeat-moe-baseline-r3-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-repeat-moe-baseline-r3-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 14.837995969923213
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-repeat-moe-expanded-r2-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-repeat-moe-expanded-r2-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 79.46065024612471
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-vllm-repeat-moe-expanded-r3-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-vllm-repeat-moe-expanded-r3-gb300-vllm-repeat-1538371",
+                "gpu_seconds": 75.26557659986429
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-repeat-moe-baseline-r3-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 125
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-repeat-moe-baseline-r3-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 78.26561105297878
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-trtllm-repeat-moe-expanded-r3-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-trtllm-repeat-moe-expanded-r3-gb300-trtllm-repeat-1538371",
+                "gpu_seconds": 15.539731995901093
+              },
+              {
+                "event": "reserved",
+                "run_id": "gb300-sglang-repeat-moe-expanded-r3-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 155
+              },
+              {
+                "event": "finished",
+                "run_id": "gb300-sglang-repeat-moe-expanded-r3-gb300-sglang-repeat-1538371",
+                "gpu_seconds": 78.81221894989721
               }
-            ],
-            "finished_gpu_seconds": 0,
-            "open_reserved_gpu_seconds": 125,
-            "charged_gpu_seconds": 125,
-            "remaining_gpu_seconds": 1225
+            ]
           }
         },
-        "scheduler": "1538129|FAILED|1:0|00:13:47|nvl72d409-T03\n1538129.batch|FAILED|1:0|00:13:47|nvl72d409-T03\n1538129.extern|COMPLETED|0:0|00:13:47|nvl72d409-T03\n1538129.0|COMPLETED|0:0|00:01:55|nvl72d409-T03\n1538129.1|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.2|COMPLETED|0:0|00:01:32|nvl72d409-T03\n1538129.3|COMPLETED|0:0|00:00:54|nvl72d409-T03\n1538129.4|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.5|COMPLETED|0:0|00:01:46|nvl72d409-T03\n1538129.6|COMPLETED|0:0|00:02:02|nvl72d409-T03\n1538129.7|COMPLETED|0:0|00:01:01|nvl72d409-T03\n1538129.8|COMPLETED|0:0|00:01:02|nvl72d409-T03\n1538129.9|COMPLETED|0:0|00:00:53|nvl72d409-T03\n1538251|RUNNING|0:0|00:01:45|nvl72d396-T12\n1538251.batch|RUNNING|0:0|00:01:45|nvl72d396-T12\n1538251.extern|RUNNING|0:0|00:01:45|nvl72d396-T12\n1538251.0|RUNNING|0:0|00:01:18|nvl72d396-T12\n1538371|PENDING|0:0|00:00:00|None assigned\n1538429|RUNNING|0:0|00:01:36|nvl72d363-T18\n1538429.batch|RUNNING|0:0|00:01:36|nvl72d363-T18\n1538429.extern|RUNNING|0:0|00:01:36|nvl72d363-T18\n1538429.0|RUNNING|0:0|00:01:10|nvl72d363-T18\n1538448|RUNNING|0:0|00:01:36|nvl72d362-T09\n1538448.batch|RUNNING|0:0|00:01:36|nvl72d362-T09\n1538448.extern|RUNNING|0:0|00:01:36|nvl72d362-T09\n1538448.0|COMPLETED|0:0|00:00:55|nvl72d362-T09\n1538448.1|RUNNING|0:0|00:00:07|nvl72d362-T09\n"
+        "scheduler": "1538129|FAILED|1:0|00:13:47|nvl72d409-T03\n1538129.batch|FAILED|1:0|00:13:47|nvl72d409-T03\n1538129.extern|COMPLETED|0:0|00:13:47|nvl72d409-T03\n1538129.0|COMPLETED|0:0|00:01:55|nvl72d409-T03\n1538129.1|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.2|COMPLETED|0:0|00:01:32|nvl72d409-T03\n1538129.3|COMPLETED|0:0|00:00:54|nvl72d409-T03\n1538129.4|COMPLETED|0:0|00:01:04|nvl72d409-T03\n1538129.5|COMPLETED|0:0|00:01:46|nvl72d409-T03\n1538129.6|COMPLETED|0:0|00:02:02|nvl72d409-T03\n1538129.7|COMPLETED|0:0|00:01:01|nvl72d409-T03\n1538129.8|COMPLETED|0:0|00:01:02|nvl72d409-T03\n1538129.9|COMPLETED|0:0|00:00:53|nvl72d409-T03\n1538251|COMPLETED|0:0|00:10:12|nvl72d396-T12\n1538251.batch|COMPLETED|0:0|00:10:12|nvl72d396-T12\n1538251.extern|COMPLETED|0:0|00:10:12|nvl72d396-T12\n1538251.0|COMPLETED|0:0|00:01:39|nvl72d396-T12\n1538251.1|COMPLETED|0:0|00:01:22|nvl72d396-T12\n1538251.2|COMPLETED|0:0|00:02:01|nvl72d396-T12\n1538251.3|COMPLETED|0:0|00:01:36|nvl72d396-T12\n1538251.4|COMPLETED|0:0|00:01:07|nvl72d396-T12\n1538251.5|COMPLETED|0:0|00:01:53|nvl72d396-T12\n1538371|COMPLETED|0:0|00:18:11|nvl72d292-T11\n1538371.batch|COMPLETED|0:0|00:18:11|nvl72d292-T11\n1538371.extern|COMPLETED|0:0|00:18:11|nvl72d292-T11\n1538371.0|COMPLETED|0:0|00:01:37|nvl72d292-T11\n1538371.1|COMPLETED|0:0|00:01:11|nvl72d292-T11\n1538371.2|COMPLETED|0:0|00:01:37|nvl72d292-T11\n1538371.3|COMPLETED|0:0|00:01:51|nvl72d292-T11\n1538371.4|COMPLETED|0:0|00:00:53|nvl72d292-T11\n1538371.5|COMPLETED|0:0|00:01:34|nvl72d292-T11\n1538371.6|COMPLETED|0:0|00:00:53|nvl72d292-T11\n1538371.7|COMPLETED|0:0|00:01:52|nvl72d292-T11\n1538371.8|COMPLETED|0:0|00:01:35|nvl72d292-T11\n1538371.9|COMPLETED|0:0|00:01:50|nvl72d292-T11\n1538371.10|COMPLETED|0:0|00:00:54|nvl72d292-T11\n1538371.11|COMPLETED|0:0|00:01:51|nvl72d292-T11\n1538429|COMPLETED|0:0|00:03:19|nvl72d363-T18\n1538429.batch|COMPLETED|0:0|00:03:19|nvl72d363-T18\n1538429.extern|COMPLETED|0:0|00:03:19|nvl72d363-T18\n1538429.0|COMPLETED|0:0|00:01:19|nvl72d363-T18\n1538429.1|COMPLETED|0:0|00:01:34|nvl72d363-T18\n1538448|COMPLETED|0:0|00:09:07|nvl72d362-T09\n1538448.batch|COMPLETED|0:0|00:09:07|nvl72d362-T09\n1538448.extern|COMPLETED|0:0|00:09:07|nvl72d362-T09\n1538448.0|COMPLETED|0:0|00:00:55|nvl72d362-T09\n1538448.1|COMPLETED|0:0|00:01:59|nvl72d362-T09\n1538448.2|COMPLETED|0:0|00:01:07|nvl72d362-T09\n1538448.3|COMPLETED|0:0|00:00:49|nvl72d362-T09\n1538448.4|COMPLETED|0:0|00:01:00|nvl72d362-T09\n1538448.5|COMPLETED|0:0|00:01:04|nvl72d362-T09\n1538448.6|COMPLETED|0:0|00:00:54|nvl72d362-T09\n1538448.7|COMPLETED|0:0|00:00:45|nvl72d362-T09\n"
       },
       "error": ""
     }

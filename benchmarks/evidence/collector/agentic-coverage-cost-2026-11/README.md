@@ -334,7 +334,7 @@ worker output, remain in the report; only passed observations fit timings.
 Physical point anchors may support shared and model-owned deltas alike when
 native case semantics match; scenario labels remain binding for paired group
 setup comparisons. Full and reused-indexer DSA operations remain separate.
-The interim actual native measurements are preserved in
+The final ordinary one-pass native measurements are preserved in
 [`measured-samples.jsonl`](measured-samples.jsonl), with inclusive worker clocks,
 per-point clocks where available, forward latency, native phases and failures.
 [`timing-receipts.json`](timing-receipts.json) preserves the underlying native
@@ -372,7 +372,7 @@ Across all24 lanes and every inventoried operation, both B→S and B→M have
 zero removed physical cells. Previous pre-union S removal counts are
 superseded; no deletion is priced as reduced collection work.
 
-The refreshed raw snapshot contains407 sample records. Observed direct dense
+The earlier407-record snapshot is superseded by the final1018-record file. Observed direct dense
 benchmark counts and phases are retained; older52 dense source95 points have
 no observed count. For a one-benchmark-per-call direct point, execution is the
 sum of the helper’s five disjoint warm-up/capture/timed/cleanup phases and
@@ -532,3 +532,36 @@ third geometry held out across every replicate. Actual cache storage, input
 storage, native phase clocks, repetitions, runtime versions and signed audit
 payloads are retained. These two-pass groups are excluded from the ordinary
 one-pass fleet report; a separately gated component fit uses subsequent passes.
+
+
+The completed campaign is frozen in
+[`fit-inputs-1018-final.zip`](fit-inputs-1018-final.zip), with per-member hashes
+and archive identity in [`fit-inputs-1018-final.manifest.json`](fit-inputs-1018-final.manifest.json).
+This final input replaces the407/597 interim datasets. It contains the original
+collector source archive, exact selected cases, native results/logs/latencies,
+actual image hashes, signed audit tooling and source-equivalence proofs.
+The separately archived876-point tensor study is excluded from the ordinary
+one-pass input. All seven cluster queues are empty in
+[`final-queue-receipt.json`](final-queue-receipt.json); A100 remains unmeasured.
+
+Independent review verified all final1018 physical case identities and phase
+partitions. Sparse prefill points use actual call-index/precision/prefix identity,
+with native CSV `isl` as query length and `step` as prefix. Sixteen historical
+TRT DSA phase partitions now count the separately marked dry-run forward as
+execution; inclusive point times and selected cases are unchanged. Native
+`bench_*` subphases are never added again to their enclosing `bench`.
+
+[`final-budget-summary.json`](final-budget-summary.json) reports7.263664 measured
+audit GPU-hours and7.324775 conservatively charged GPU-hours, including two
+unclosed historical reservations totaling220GPU-seconds. Adding correctness's
+separate administrative upper bound gives7.800053GPU-hours, below the12-hour
+cap. Allocation and idle reservation time are excluded from collection cost.
+The final leases remain11.5audit/0.5correctness; no further GPU jobs will launch.
+
+The final NVFP4 GLM control uses B1/B32 at six exact generated histories per
+full/skip-indexer variant. All12points passed. Each variant spends about156seconds
+inside points plus30–32seconds in worker setup/overhead. History preparation
+accounts for147–148seconds per variant; timed-forward benchmark phases are small.
+These chosen calibration points are separate from canonical BF16 coverage and
+observed per-rank demand. They establish actual collection components without
+qualifying a transfer to other checkpoints, frameworks or the whole fleet.

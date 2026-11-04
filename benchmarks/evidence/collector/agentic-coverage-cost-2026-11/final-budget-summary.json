@@ -1,0 +1,178 @@
+{
+  "timestamp_utc": "2026-11-04T09:01:14.636473+00:00",
+  "allocation_included": false,
+  "audit_quota_gpu_hours": 11.5,
+  "correctness_quota_gpu_hours": 0.5,
+  "global_quota_gpu_hours": 12,
+  "finished_audit_collection_gpu_hours": 7.263664153059219,
+  "charged_audit_upper_bound_gpu_hours": 7.32477526417033,
+  "correctness_administrative_upper_bound_gpu_hours": 0.4752777777777778,
+  "combined_conservative_upper_bound_gpu_hours": 7.800053041948108,
+  "qualification": "Administrative C upper bound is not collection cost. Unclosed B reservations conservatively charged full; no allocation/idle hours substituted. No further GPU jobs planned.",
+  "lanes": [
+    {
+      "system": "b300_sxm",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 3296.5377024989575,
+      "unclosed_reservation_upper_bound_gpu_seconds": 65,
+      "unclosed_reservations": {
+        "b300_sxm-trtllm-followup-dsa-baseline-b300_sxm-trtllm-followup-1024498": 65
+      },
+      "charged_upper_bound_gpu_hours": 0.9337604729163771,
+      "remaining_gpu_hours": 0.0662395270836229
+    },
+    {
+      "system": "b300_sxm",
+      "role": "validation",
+      "quota_gpu_hours": 1.875,
+      "finished_collection_gpu_seconds": 3185.020645302633,
+      "unclosed_reservation_upper_bound_gpu_seconds": 155,
+      "unclosed_reservations": {
+        "b300_sxm-trtllm-prefill-mla_context-b300_sxm-trtllm-prefill-1024898": 155
+      },
+      "charged_upper_bound_gpu_hours": 0.9277835125840648,
+      "remaining_gpu_hours": 0.9472164874159352
+    },
+    {
+      "system": "h100_sxm",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 2728.6795338727534,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.7579665371868759,
+      "remaining_gpu_hours": 0.2420334628131241
+    },
+    {
+      "system": "h100_sxm",
+      "role": "validation",
+      "quota_gpu_hours": 0.75,
+      "finished_collection_gpu_seconds": 1248.2401178897708,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.3467333660804919,
+      "remaining_gpu_hours": 0.4032666339195081
+    },
+    {
+      "system": "h200_sxm",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 2463.6882343352772,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.6843578428709104,
+      "remaining_gpu_hours": 0.3156421571290896
+    },
+    {
+      "system": "h200_sxm",
+      "role": "validation",
+      "quota_gpu_hours": 0.375,
+      "finished_collection_gpu_seconds": 474.20393700757995,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.13172331583543886,
+      "remaining_gpu_hours": 0.24327668416456114
+    },
+    {
+      "system": "b200_sxm",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 3234.3939734157175,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.8984427703932548,
+      "remaining_gpu_hours": 0.10155722960674518
+    },
+    {
+      "system": "b200_sxm",
+      "role": "validation",
+      "quota_gpu_hours": 0.375,
+      "finished_collection_gpu_seconds": 1045.7669469758403,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.29049081860440007,
+      "remaining_gpu_hours": 0.08450918139559993
+    },
+    {
+      "system": "a100_sxm",
+      "role": "anchor",
+      "quota_gpu_hours": 0,
+      "finished_collection_gpu_seconds": 0,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.0,
+      "remaining_gpu_hours": 0.0
+    },
+    {
+      "system": "a100_sxm",
+      "role": "validation",
+      "quota_gpu_hours": 0,
+      "finished_collection_gpu_seconds": 0,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.0,
+      "remaining_gpu_hours": 0.0
+    },
+    {
+      "system": "l40s",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 958.011189477992,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.26611421929944223,
+      "remaining_gpu_hours": 0.7338857807005578
+    },
+    {
+      "system": "l40s",
+      "role": "validation",
+      "quota_gpu_hours": 0.375,
+      "finished_collection_gpu_seconds": 687.286304727997,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.19091286242444364,
+      "remaining_gpu_hours": 0.18408713757555636
+    },
+    {
+      "system": "gb200",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 2630.097473289221,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.7305826314692281,
+      "remaining_gpu_hours": 0.2694173685307719
+    },
+    {
+      "system": "gb200",
+      "role": "validation",
+      "quota_gpu_hours": 0.375,
+      "finished_collection_gpu_seconds": 1140.7840963586932,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.3168844712107481,
+      "remaining_gpu_hours": 0.05811552878925191
+    },
+    {
+      "system": "gb300",
+      "role": "anchor",
+      "quota_gpu_hours": 1,
+      "finished_collection_gpu_seconds": 1982.7589455235284,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.5507663737565357,
+      "remaining_gpu_hours": 0.4492336262434643
+    },
+    {
+      "system": "gb300",
+      "role": "validation",
+      "quota_gpu_hours": 0.375,
+      "finished_collection_gpu_seconds": 1073.7218503372278,
+      "unclosed_reservation_upper_bound_gpu_seconds": 0,
+      "unclosed_reservations": {},
+      "charged_upper_bound_gpu_hours": 0.29825606953811884,
+      "remaining_gpu_hours": 0.07674393046188116
+    }
+  ]
+}
