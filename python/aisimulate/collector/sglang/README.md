@@ -180,5 +180,12 @@ sidecar, and the campaign's B300 capacity. Current defaults may generate a
 different plan. See collection jobs
 [full-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211485)
 and [skip-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211486).
-The packaged 0.5.21 table preserves previous rows and appends both collection
-events with their original source revision and plan hashes.
+The packaged 0.5.21 table retains 5,812 earlier rows and all 500 new rows.
+At 308 overlapping physical coordinates it keeps the newer measurements,
+which include native QKV projection and fresh inputs as serving does; 192
+coordinates are new. Original source revisions and plan hashes are preserved.
+The unmodified 6,620-row append, paired timing evidence, normalization checks
+and the unisolated residual indexer difference are documented in
+[`benchmarks/evidence/collector/pr665-b300-dsa-boundary`](../../../../benchmarks/evidence/collector/pr665-b300-dsa-boundary/README.md).
+Batch-52 historical rows are exact-shape graphs, not qualified padded-serving
+measurements; the coordinated collector/serving fix is a merge prerequisite.

@@ -37,7 +37,7 @@ tables:
       rows: 19710
       status: complete
   dsa_generation_module_perf:
-    rows: 6620
+    rows: 6312
     status: complete
     collections:
     - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
@@ -50,8 +50,10 @@ tables:
       collector_hash: sha256:006e8f2e47e96526ffa152d6d43cd90b59ceb61bafce1ae54fcf4e5378d084a4
       case_plan_hash: sha256:1804fb4170786a567c423a7bd3ef7936256b69c99f2af7892fd4c5fbd02b2f91
       collected_at: '2026-10-08'
-      rows: 2464
+      rows: 2156
       status: complete
+      # 308 physical coordinates superseded by native-QKV rows below; original
+      # event and unmodified rows archived in benchmarks/evidence/collector/pr665-b300-dsa-boundary.
     - collector_ref: 0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04
       collector_hash: sha256:da3ffe2ecaf850e18c082c3f0e7a218ae93150ac9e2b6ef2942e3c4365dee4e6
       case_plan_hash: sha256:9657dad4b6bda474f3e6eb0bd463ccc54b8d3870d43f31a47414e0128c0813bc

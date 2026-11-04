@@ -1,0 +1,22 @@
+{
+  "original_rows": 6620,
+  "retained_rows": 6312,
+  "superseded_rows": 308,
+  "added_rows_retained": 500,
+  "new_physical_coordinates": 192,
+  "physical_key": [
+    "kernel_source",
+    "architecture",
+    "mla_dtype",
+    "kv_cache_dtype",
+    "gemm_type",
+    "num_heads",
+    "batch_size",
+    "isl",
+    "tp_size",
+    "step"
+  ],
+  "original_sha256": "287367dcd1b321a7b5ee15422b5b36b75268e76663c7f814a53d7151ee8d9c88",
+  "normalized_sha256": "0bb63735027bc9da25f48090f815ddd09b37a874cf7f5ce75d60fd1066cd85d6",
+  "decision": "Retain native-QKV measurements at overlapping physical keys; no global loader precedence change."
+}

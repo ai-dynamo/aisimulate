@@ -1,0 +1,24 @@
+{
+  "refs": {
+    "baseline": "ee219cc60e13e9f60db50b63f13bab536c598781",
+    "collected": "0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04",
+    "current": "2579763d1882b3259843c7d2ee4084b8b95d1ef5"
+  },
+  "publish_eligible": false,
+  "image_amd64_digest": "sha256:2dbe4c7f53230b09aaa8fa41891c13c51d9d2e253f486a70822aaf08783fff75",
+  "image_sha256": "092f0f8ffc16b219579f463a60821ee102fe57a8e36513484c9669cb69d922e6",
+  "source_archives": {
+    "baseline": {
+      "sha256": "db40ee1bd5e0050894a01e62eb6423b8c78661765559adc62b4206acd19ebb9b",
+      "bytes": 1526170
+    },
+    "collected": {
+      "sha256": "da7a658d581f8fedf5e9b7232824dfc74a7c5318d4913c256ceec06d23d8afb5",
+      "bytes": 1735275
+    },
+    "current": {
+      "sha256": "c25d4470b8c9e0c78ea6eac3ccd6c0a1a7225ca70766df3a11848ebd9733fe70",
+      "bytes": 1765506
+    }
+  }
+}
