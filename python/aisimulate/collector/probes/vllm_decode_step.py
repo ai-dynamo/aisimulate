@@ -91,7 +91,8 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
                         "ms": (b["step_ms"] - a["step_ms"]) / (hi - lo),
                     }
                 )
-    return {"runs": runs, "per_layer_ms": per_layer, "failed": not per_layer}
+    # every requested (mode, point) must yield a per-layer value: the probe exists to compare them
+    return {"runs": runs, "per_layer_ms": per_layer, "failed": len(per_layer) < len(modes) * len(points)}
 
 
 def _engine(spec: dict) -> dict:
@@ -101,10 +102,25 @@ def _engine(spec: dict) -> dict:
         spec_path.write_text(json.dumps({**spec, "workdir": tmp}))
         cmd = [sys.executable, "-m", "collector.probes.vllm_decode_step", str(spec_path), str(out_path)]
         cwd = Path(__file__).resolve().parents[2]  # python/aisimulate: `collector` is importable
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=_CHILD_TIMEOUT_S)
+        try:
+            proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=_CHILD_TIMEOUT_S)
+        except subprocess.TimeoutExpired as exc:  # keep the engines that finished; record this one's failure
+            return {
+                **spec,
+                "points": [],
+                "error": f"child timed out after {_CHILD_TIMEOUT_S}s: {str(exc.stderr)[-2000:]}",
+            }
         if out_path.exists():
             return json.loads(out_path.read_text())
         return {**spec, "points": [], "error": f"child exit {proc.returncode}: {proc.stderr[-2000:]}"}
+
+
+def _vocab_size(config: dict) -> int:
+    text = config.get("text_config") or config
+    size = text.get("vocab_size") or config.get("vocab_size")
+    if not size:
+        raise ValueError("the packaged config declares no vocab_size; the probe cannot draw valid token ids")
+    return int(size)
 
 
 def _model_dir(model: str, layers: int, workdir: str) -> tuple[str, bool]:
@@ -153,9 +169,10 @@ def _child(spec: dict) -> dict:
         "points": [],
     }
     rng = random.Random(0)
+    vocab = _vocab_size(json.loads((Path(model_dir) / "config.json").read_text()))
 
     def timed(batch: int, kv_len: int, tokens: int) -> float:
-        prompts = [{"prompt_token_ids": [rng.randrange(1000, 120000) for _ in range(kv_len)]} for _ in range(batch)]
+        prompts = [{"prompt_token_ids": [rng.randrange(vocab) for _ in range(kv_len)]} for _ in range(batch)]
         params = SamplingParams(
             max_tokens=tokens, min_tokens=tokens, ignore_eos=True, temperature=0.0, detokenize=False
         )

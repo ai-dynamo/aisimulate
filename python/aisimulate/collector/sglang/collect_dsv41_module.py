@@ -15,7 +15,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from collector.helper import get_sm_version, trace_child_argv
+from collector.helper import TRACE_CHILD_DIR_ENV, get_sm_version
 from collector.op_plans import plan_cases
 from collector.sglang.dsv41_contract import build_manifest, canonical_json, validate_row
 
@@ -433,12 +433,16 @@ def run_dsv41_module_worker(
     if execution_profile == "decoder_bounded":
         command.append("--enable-decoder-swa-bounded-replay")
     # The generic executor assigns one worker per GPU. A native TP invocation
+    if os.environ.get(TRACE_CHILD_DIR_ENV):
+        # its TP ranks run in sglang bench processes the runner spawns; probe.trace_case would
+        # record only the wrapper and report a partial kernel set as the case's path
+        raise RuntimeError("probe.trace_case cannot trace the DSV4.1 native runner: its TP ranks are spawned processes")
     # owns the visible GPU group, so serialize these grouped workers locally.
     with (Path(perf_filename).parent / ".dsv41-native-gpus.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         bind_output_profile(perf_filename, execution_profile)
         with (output / "native.log").open("w") as log:
-            subprocess.run(trace_child_argv(command), check=True, stdout=log, stderr=subprocess.STDOUT)
+            subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
     if not (output / "COMPLETE").is_file():
         raise RuntimeError("fresh native attempt did not produce completion receipt")
     rows = aggregate_rank_records(sorted(output.glob("rank-*.jsonl")), tp_size)

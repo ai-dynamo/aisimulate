@@ -52,6 +52,8 @@ def main() -> None:
                 runpy.run_module(target, run_name="__main__", alter_sys=True)
         except SystemExit as exc:
             status = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+            if isinstance(exc.code, str):  # what Python prints for sys.exit("message"); the parent logs stderr
+                print(exc.code, file=sys.stderr)
         except BaseException as exc:  # recorded below, then re-raised so the parent sees the failure
             failure = exc
         if torch.cuda.is_available():
