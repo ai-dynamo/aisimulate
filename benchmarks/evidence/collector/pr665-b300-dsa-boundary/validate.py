@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,14 @@ TABLE = (
 
 
 def main():
+    for hashes_path in [HERE / "artifact-hashes.json", *HERE.glob("recollection/artifact-hashes.json")]:
+        artifact_hashes = json.loads(hashes_path.read_text())
+        with zipfile.ZipFile(hashes_path.parent / artifact_hashes["archive"]) as archive:
+            for name, hashes in artifact_hashes["files"].items():
+                assert hashlib.sha256(archive.read(name)).hexdigest() == hashes["executed_sha256"]
+                assert (
+                    hashlib.sha256((hashes_path.parent / name).read_bytes()).hexdigest() == hashes["published_sha256"]
+                )
     report = json.loads((HERE / "normalization.json").read_text())
     archived = HERE / "original-append.parquet"
     assert hashlib.sha256(archived.read_bytes()).hexdigest() == report["original_sha256"]
@@ -33,13 +42,27 @@ def main():
     assert len(original) == 6620 and len(shipped) == 6312
     assert not shipped.duplicated(keys).any()
     expected = original.drop_duplicates(keys, keep="last").reset_index(drop=True)
-    pd.testing.assert_frame_equal(shipped.reset_index(drop=True), expected)
-    new = original[original.model == "nvidia/GLM-5.2-NVFP4"]
+    replacements = pd.DataFrame(columns=original.columns)
+    if report.get("recollected_tables"):
+        replacements = pd.concat([pd.read_csv(HERE / path) for path in report["recollected_tables"]], ignore_index=True)
+        assert len(replacements) == report["recollected_rows"] == 44
+        assert replacements.batch_size.eq(52).all()
+        assert not replacements.duplicated(keys).any()
+        replace_keys = pd.MultiIndex.from_frame(replacements[keys])
+        expected = expected[~pd.MultiIndex.from_frame(expected[keys]).isin(replace_keys)]
+        expected = pd.concat([expected, replacements], ignore_index=True)
     pd.testing.assert_frame_equal(
-        shipped[shipped.model == "nvidia/GLM-5.2-NVFP4"].reset_index(drop=True),
-        new.reset_index(drop=True),
+        shipped.sort_values(keys).reset_index(drop=True), expected.sort_values(keys).reset_index(drop=True)
     )
-    assert len(new) == 500
+    new = original[original.model == "nvidia/GLM-5.2-NVFP4"]
+    retained = shipped[shipped.model == "nvidia/GLM-5.2-NVFP4"]
+    if len(replacements):
+        retained = retained[retained.batch_size != 52]
+        new = new[new.batch_size != 52]
+    pd.testing.assert_frame_equal(
+        retained.sort_values(keys).reset_index(drop=True), new.sort_values(keys).reset_index(drop=True)
+    )
+    assert len(new) == 500 - len(replacements)
     assert len(original) - len(shipped) == 308
     db = get_database_view(
         "b300_sxm",
@@ -54,7 +77,10 @@ def main():
     checked = 0
     for model in ["nvidia/GLM-5.2-NVFP4", "zai-org/GLM-5.2"]:
         group = shipped[(shipped.model == model) & (shipped.num_heads == 8)]
-        for _, row in group.groupby("op_name", sort=True).head(2).iterrows():
+        samples = pd.concat(
+            [group.groupby("op_name", sort=True).head(2), group[group.batch_size == 52].groupby("op_name").tail(2)]
+        ).drop_duplicates(keys)
+        for _, row in samples.iterrows():
             full_fraction = 0.0 if "skip_indexer" in row.op_name else 1.0
             op = {
                 "DsaGeneration": {
@@ -82,7 +108,10 @@ def main():
             checked += 1
     assert checked >= 4
     print(f"PASS: Rust consumer reproduced {checked} exact full/skip added and unchanged coordinates")
-    print("PASS: 6312 unique physical rows; 500 new rows unchanged; 308 superseded rows archived")
+    print(
+        f"PASS: 6312 unique physical rows; {len(new)} historical additions unchanged; "
+        f"{len(replacements)} B52 rows recollected; 308 superseded rows archived"
+    )
 
 
 if __name__ == "__main__":

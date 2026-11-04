@@ -1,0 +1,282 @@
+{
+  "publish_eligible": true,
+  "collection_scope": "canonical plan subset, 22 B52 points, one indexer mode",
+  "collector_ref": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+  "collector_hash": "sha256:fe9272155e52911c1cb843d005d6b05a83a09cde542d9b5b1b989f063e235e4a",
+  "case_plan_hash": "sha256:e95521e1bbfd9df077924c848d27276b77a8b3c1e211b36e6b2aa57be627bc05",
+  "attempted_executor_row_ids": [
+    "sglang.dsa_generation_module:run_mla_module_worker:[0, 0, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm', [[52, 1, 0], [52, 4, 0], [52, 8, 0], [52, 16, 0], [52, 32, 0], [52, 64, 0], [52, 128, 0], [52, 256, 0], [52, 512, 0], [52, 1024, 0], [52, 2048, 0], [52, 4096, 0], [52, 8192, 0], [52, 16384, 0], [52, 32768, 0], [52, 65536, 0], [52, 131072, 0], [52, 262144, 0], [52, 393216, 0], [52, 524288, 0], [52, 655360, 0], [52, 720896, 0]]]"
+  ],
+  "requested_physical_case_ids": [
+    "sglang.dsa_generation_module:dsa_generation_module:[1, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[4, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[8, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[16, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[32, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[64, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[128, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[256, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[512, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[1024, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[2048, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[4096, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[8192, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[16384, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[32768, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[65536, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[131072, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[262144, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[393216, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[524288, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[655360, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]",
+    "sglang.dsa_generation_module:dsa_generation_module:[720896, 52, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 0]"
+  ],
+  "requested_points": [
+    [
+      52,
+      1,
+      0
+    ],
+    [
+      52,
+      4,
+      0
+    ],
+    [
+      52,
+      8,
+      0
+    ],
+    [
+      52,
+      16,
+      0
+    ],
+    [
+      52,
+      32,
+      0
+    ],
+    [
+      52,
+      64,
+      0
+    ],
+    [
+      52,
+      128,
+      0
+    ],
+    [
+      52,
+      256,
+      0
+    ],
+    [
+      52,
+      512,
+      0
+    ],
+    [
+      52,
+      1024,
+      0
+    ],
+    [
+      52,
+      2048,
+      0
+    ],
+    [
+      52,
+      4096,
+      0
+    ],
+    [
+      52,
+      8192,
+      0
+    ],
+    [
+      52,
+      16384,
+      0
+    ],
+    [
+      52,
+      32768,
+      0
+    ],
+    [
+      52,
+      65536,
+      0
+    ],
+    [
+      52,
+      131072,
+      0
+    ],
+    [
+      52,
+      262144,
+      0
+    ],
+    [
+      52,
+      393216,
+      0
+    ],
+    [
+      52,
+      524288,
+      0
+    ],
+    [
+      52,
+      655360,
+      0
+    ],
+    [
+      52,
+      720896,
+      0
+    ]
+  ],
+  "worker_row": [
+    0,
+    0,
+    8,
+    "fp8",
+    "bfloat16",
+    "bfloat16",
+    "nvidia/GLM-5.2-NVFP4",
+    "dsa",
+    null,
+    8,
+    "trtllm",
+    [
+      [
+        52,
+        1,
+        0
+      ],
+      [
+        52,
+        4,
+        0
+      ],
+      [
+        52,
+        8,
+        0
+      ],
+      [
+        52,
+        16,
+        0
+      ],
+      [
+        52,
+        32,
+        0
+      ],
+      [
+        52,
+        64,
+        0
+      ],
+      [
+        52,
+        128,
+        0
+      ],
+      [
+        52,
+        256,
+        0
+      ],
+      [
+        52,
+        512,
+        0
+      ],
+      [
+        52,
+        1024,
+        0
+      ],
+      [
+        52,
+        2048,
+        0
+      ],
+      [
+        52,
+        4096,
+        0
+      ],
+      [
+        52,
+        8192,
+        0
+      ],
+      [
+        52,
+        16384,
+        0
+      ],
+      [
+        52,
+        32768,
+        0
+      ],
+      [
+        52,
+        65536,
+        0
+      ],
+      [
+        52,
+        131072,
+        0
+      ],
+      [
+        52,
+        262144,
+        0
+      ],
+      [
+        52,
+        393216,
+        0
+      ],
+      [
+        52,
+        524288,
+        0
+      ],
+      [
+        52,
+        655360,
+        0
+      ],
+      [
+        52,
+        720896,
+        0
+      ]
+    ]
+  ],
+  "model_path": "nvidia/GLM-5.2-NVFP4",
+  "op": "dsa_generation_module",
+  "mode": "indexer",
+  "runtime": {
+    "framework": "sglang",
+    "version": "0.5.21",
+    "image": "lmsysorg/sglang:v0.5.21",
+    "image_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+  },
+  "harness_sha256": "f1960e1bce5519f4e7af76b29b4fa35edcf72add7c3af3b290443a30e04ae1d0",
+  "status": "running"
+}

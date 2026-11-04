@@ -1,0 +1,182 @@
+
+============================================================
+DSA Module Generation: model=nvidia/GLM-5.2-NVFP4, heads=8, target_tp=8, kv=fp8, compute=bfloat16, gemm=bfloat16, backend=auto, batch=all, points=22, GPU=0
+============================================================
+
+============================================================
+DSA Module Generation: model=nvidia/GLM-5.2-NVFP4, backend=dsa, head_num=8, target_tp=8, kv=fp8, compute=bfloat16, gemm=bfloat16, GPU=0
+Test cases: 22
+============================================================
+[DSA] SGLang max_total_tokens capped for collector at 39364416
+Using attention backend: dsa, kv_cache_dtype: fp8_e4m3, gpu_id: 0, chunked_prefill_size=None, max_prefill_tokens=16384, max_total_tokens=39364416
+[2026-11-03 21:57:29] Setting page size to 64 for DeepSeek DSA.
+[2026-11-03 21:57:29] Set dense attention kv len threshold to model index_topk=2048 for DeepSeek with DSA.
+[2026-11-03 21:57:29] Set DSA backends for fp8_e4m3 KV Cache: prefill=trtllm, decode=trtllm.
+[2026-11-03 21:57:29] FlashInfer TRTLLM MoE is enabled. --disable-shared-experts-fusion is automatically set.
+[2026-11-03 21:57:32] Using FP8 KV cache but no scaling factors provided. Defaulting to scaling factors of 1.0.
+Patched rope contiguity for layer DeepseekV2DecoderLayer(
+  (self_attn): DeepseekV2AttentionMLA(
+    (fused_qkv_a_proj_with_mqa): ReplicatedLinear(in_features=6144, output_features=2624, bias=False)
+    (q_a_layernorm): RMSNorm()
+    (q_b_proj): ColumnParallelLinear(in_features=2048, output_features=2048, bias=False, tp_size=1, gather_output=False)
+    (indexer): Indexer(
+      (wq_b): ReplicatedLinear(in_features=2048, output_features=4096, bias=False)
+      (wk_weights_proj): ReplicatedLinear(in_features=6144, output_features=160, bias=False)
+      (k_norm): LayerNorm()
+      (rotary_emb): RotaryEmbedding(head_size=64, rotary_dim=64, max_position_embeddings=1048576, base=8000000, is_neox_style=False)
+    )
+    (kv_b_proj): ColumnParallelLinear(in_features=512, output_features=3584, bias=False, tp_size=1, gather_output=False)
+    (o_proj): RowParallelLinear(input_features=2048, output_features=6144, bias=False, tp_size=1, reduce_results=False)
+    (kv_a_layernorm): RMSNorm()
+    (rotary_emb): RotaryEmbedding(head_size=64, rotary_dim=64, max_position_embeddings=1048576, base=8000000, is_neox_style=False)
+    (attn_mqa): RadixAttention()
+    (attn_mha): RadixAttention()
+  )
+  (mlp): DeepseekV2MLP(
+    (gate_up_proj): MergedColumnParallelLinear(in_features=6144, output_features=24576, bias=False, tp_size=1, gather_output=False)
+    (down_proj): RowParallelLinear(input_features=12288, output_features=6144, bias=False, tp_size=1, reduce_results=True)
+    (act_fn): SiluAndMul()
+  )
+  (input_layernorm): RMSNorm()
+  (post_attention_layernorm): RMSNorm()
+)
+Patched rope contiguity for layer DeepseekV2DecoderLayer(
+  (self_attn): DeepseekV2AttentionMLA(
+    (fused_qkv_a_proj_with_mqa): ReplicatedLinear(in_features=6144, output_features=2624, bias=False)
+    (q_a_layernorm): RMSNorm()
+    (q_b_proj): ColumnParallelLinear(in_features=2048, output_features=2048, bias=False, tp_size=1, gather_output=False)
+    (indexer): Indexer(
+      (wq_b): ReplicatedLinear(in_features=2048, output_features=4096, bias=False)
+      (wk_weights_proj): ReplicatedLinear(in_features=6144, output_features=160, bias=False)
+      (k_norm): LayerNorm()
+      (rotary_emb): RotaryEmbedding(head_size=64, rotary_dim=64, max_position_embeddings=1048576, base=8000000, is_neox_style=False)
+    )
+    (kv_b_proj): ColumnParallelLinear(in_features=512, output_features=3584, bias=False, tp_size=1, gather_output=False)
+    (o_proj): RowParallelLinear(input_features=2048, output_features=6144, bias=False, tp_size=1, reduce_results=False)
+    (kv_a_layernorm): RMSNorm()
+    (rotary_emb): RotaryEmbedding(head_size=64, rotary_dim=64, max_position_embeddings=1048576, base=8000000, is_neox_style=False)
+    (attn_mqa): RadixAttention()
+    (attn_mha): RadixAttention()
+  )
+  (mlp): DeepseekV2MLP(
+    (gate_up_proj): MergedColumnParallelLinear(in_features=6144, output_features=24576, bias=False, tp_size=1, gather_output=False)
+    (down_proj): RowParallelLinear(input_features=12288, output_features=6144, bias=False, tp_size=1, reduce_results=True)
+    (act_fn): SiluAndMul()
+  )
+  (input_layernorm): RMSNorm()
+  (post_attention_layernorm): RMSNorm()
+)
+
+Decode: batch_size=52, kv_cache_length=1
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=1: reqs=0.00s batch=0.50s metadata=0.15s history=0.02s inputs=0.03s prewarm=0.80s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.04s total=1.56s
+
+Decode: batch_size=52, kv_cache_length=4
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=4: reqs=0.00s batch=0.00s metadata=0.00s history=0.00s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.05s
+
+Decode: batch_size=52, kv_cache_length=8
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=8: reqs=0.00s batch=0.00s metadata=0.00s history=0.00s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.05s
+
+Decode: batch_size=52, kv_cache_length=16
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=16: reqs=0.00s batch=0.00s metadata=0.00s history=0.00s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.05s
+
+Decode: batch_size=52, kv_cache_length=32
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=32: reqs=0.00s batch=0.00s metadata=0.00s history=0.00s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.05s
+
+Decode: batch_size=52, kv_cache_length=64
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.037 ms
+  [DSA point timing] decode b=52, kv=64: reqs=0.00s batch=0.00s metadata=0.00s history=0.01s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.06s
+
+Decode: batch_size=52, kv_cache_length=128
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.039 ms
+  [DSA point timing] decode b=52, kv=128: reqs=0.00s batch=0.00s metadata=0.00s history=0.01s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.06s
+
+Decode: batch_size=52, kv_cache_length=256
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.044 ms
+  [DSA point timing] decode b=52, kv=256: reqs=0.00s batch=0.00s metadata=0.00s history=0.03s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.07s
+
+Decode: batch_size=52, kv_cache_length=512
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.047 ms
+  [DSA point timing] decode b=52, kv=512: reqs=0.00s batch=0.00s metadata=0.00s history=0.06s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=0.10s
+
+Decode: batch_size=52, kv_cache_length=1024
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.051 ms
+  [DSA point timing] decode b=52, kv=1024: reqs=0.00s batch=0.00s metadata=0.00s history=0.11s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.05s total=0.18s
+
+Decode: batch_size=52, kv_cache_length=2048
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=2048: reqs=0.00s batch=0.00s metadata=0.00s history=0.22s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.04s total=0.28s
+
+Decode: batch_size=52, kv_cache_length=4096
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=4096: reqs=0.01s batch=0.00s metadata=0.00s history=0.45s inputs=0.00s prewarm=0.00s bench=0.02s bench_eager_warmup=0.01s bench_capture=0.02s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.04s total=0.53s
+
+Decode: batch_size=52, kv_cache_length=8192
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=8192: reqs=0.02s batch=0.01s metadata=0.00s history=0.89s inputs=0.00s prewarm=0.00s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.05s total=0.98s
+
+Decode: batch_size=52, kv_cache_length=16384
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.061 ms
+  [DSA point timing] decode b=52, kv=16384: reqs=0.03s batch=0.01s metadata=0.00s history=1.82s inputs=0.00s prewarm=0.03s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.07s total=1.97s
+
+Decode: batch_size=52, kv_cache_length=32768
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=32768: reqs=0.07s batch=0.02s metadata=0.00s history=3.59s inputs=0.00s prewarm=0.01s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.09s total=3.79s
+
+Decode: batch_size=52, kv_cache_length=65536
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=65536: reqs=0.13s batch=0.04s metadata=0.00s history=7.17s inputs=0.00s prewarm=0.01s bench=0.01s bench_eager_warmup=0.01s bench_capture=0.01s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.18s total=7.54s
+
+Decode: batch_size=52, kv_cache_length=131072
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=131072: reqs=0.31s batch=0.08s metadata=0.00s history=14.36s inputs=0.00s prewarm=0.01s bench=0.02s bench_eager_warmup=0.01s bench_capture=0.01s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.08s total=14.84s
+
+Decode: batch_size=52, kv_cache_length=262144
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=262144: reqs=0.62s batch=0.17s metadata=0.00s history=28.69s inputs=0.00s prewarm=0.01s bench=0.02s bench_eager_warmup=0.01s bench_capture=0.02s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=29.54s
+
+Decode: batch_size=52, kv_cache_length=393216
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=393216: reqs=0.97s batch=0.26s metadata=0.00s history=43.68s inputs=0.00s prewarm=0.01s bench=0.03s bench_eager_warmup=0.01s bench_capture=0.03s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=44.98s
+
+Decode: batch_size=52, kv_cache_length=524288
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=524288: reqs=1.29s batch=0.29s metadata=0.00s history=57.79s inputs=0.00s prewarm=0.02s bench=0.04s bench_eager_warmup=0.01s bench_capture=0.03s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=59.46s
+
+Decode: batch_size=52, kv_cache_length=655360
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=655360: reqs=1.67s batch=0.44s metadata=0.00s history=72.67s inputs=0.01s prewarm=0.01s bench=0.05s bench_eager_warmup=0.01s bench_capture=0.05s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.04s total=74.90s
+
+Decode: batch_size=52, kv_cache_length=720896
+  Decode module CUDA graph: True (real_tokens=52, graph_tokens=56)
+  Decode: 0.060 ms
+  [DSA point timing] decode b=52, kv=720896: reqs=1.81s batch=0.48s metadata=0.00s history=78.99s inputs=0.00s prewarm=0.01s bench=0.06s bench_eager_warmup=0.01s bench_capture=0.06s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.03s total=81.38s
+[DSA] generation ok=22 error=0 refused=0 total=22
+[DSA timing] generation: 22 point(s): reqs=7.0s batch=2.3s metadata=0.2s history=310.6s inputs=0.1s prewarm=1.0s bench=0.4s bench_eager_warmup=0.1s bench_capture=0.2s bench_graph_warmup=0.0s bench_timed=0.0s bench_cleanup=0.0s cleanup=1.0s total=322.4s
+[rank0]:[W1103 22:02:58.738448526 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+

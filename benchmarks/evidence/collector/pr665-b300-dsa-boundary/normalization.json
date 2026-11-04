@@ -17,6 +17,14 @@
     "step"
   ],
   "original_sha256": "287367dcd1b321a7b5ee15422b5b36b75268e76663c7f814a53d7151ee8d9c88",
-  "normalized_sha256": "0bb63735027bc9da25f48090f815ddd09b37a874cf7f5ce75d60fd1066cd85d6",
-  "decision": "Retain native-QKV measurements at overlapping physical keys; no global loader precedence change."
+  "normalized_sha256": "67df1414e397180d2f529d8517465457d2a643071321319e254b805c90c42005",
+  "decision": "Retain native-QKV measurements at overlapping physical keys; no global loader precedence change.",
+  "recollected_rows": 44,
+  "recollected_tables": [
+    "recollection/cases/indexer/dsa_generation_module_perf.txt",
+    "recollection/cases/skip_indexer/dsa_generation_module_perf.txt"
+  ],
+  "unchanged_original_additions": 456,
+  "recollection_collector_ref": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+  "recollection_job_id": 1024142
 }

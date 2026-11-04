@@ -181,12 +181,16 @@ sidecar, and the campaign's B300 capacity. Current defaults may generate a
 different plan. See collection jobs
 [full-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211485)
 and [skip-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211486).
-The packaged 0.5.21 table retains 5,812 earlier rows and all 500 new rows.
+The packaged 0.5.21 table retains 5,812 earlier rows, 456 November 2 additions
+and 44 batch-52 rows freshly recollected from signed collector
+`c4b44d81f526b3c5299f7c15ccafe02d90b39229`.
 At 308 overlapping physical coordinates it keeps the newer measurements,
 which include native QKV projection and fresh inputs as serving does; 192
 coordinates are new. Original source revisions and plan hashes are preserved.
 The unmodified 6,620-row append, paired timing evidence, normalization checks
 and the unisolated residual indexer difference are documented in
 [`benchmarks/evidence/collector/pr665-b300-dsa-boundary`](../../../../benchmarks/evidence/collector/pr665-b300-dsa-boundary/README.md).
-Batch-52 historical rows are exact-shape graphs, not qualified padded-serving
-measurements; the coordinated collector/serving fix is a merge prerequisite.
+The archived historical batch-52 rows were exact-shape graphs. Their 44
+replacements use the collector's native serving-padding path and retain their
+actual source revision and exact requested-subset hashes. Merge depends on
+the coordinated collector fix.

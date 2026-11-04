@@ -60,8 +60,10 @@ tables:
       collector_hash: sha256:da3ffe2ecaf850e18c082c3f0e7a218ae93150ac9e2b6ef2942e3c4365dee4e6
       case_plan_hash: sha256:9657dad4b6bda474f3e6eb0bd463ccc54b8d3870d43f31a47414e0128c0813bc
       collected_at: '2026-11-02'
-      rows: 250
+      rows: 228
       status: complete
+      source_campaign_rows: 250
+      source_campaign_status: complete
       runtime:
         framework: sglang
         version: 0.5.21
@@ -71,13 +73,38 @@ tables:
       collector_hash: sha256:da3ffe2ecaf850e18c082c3f0e7a218ae93150ac9e2b6ef2942e3c4365dee4e6
       case_plan_hash: sha256:4c84107fcf115fd4099931bbad0cfb1bbc5dc69430e60f3cebc6d38ef594ad99
       collected_at: '2026-11-02'
-      rows: 250
+      rows: 228
+      status: complete
+      source_campaign_rows: 250
+      source_campaign_status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    - collector_ref: c4b44d81f526b3c5299f7c15ccafe02d90b39229
+      collector_hash: sha256:fe9272155e52911c1cb843d005d6b05a83a09cde542d9b5b1b989f063e235e4a
+      case_plan_hash: sha256:e95521e1bbfd9df077924c848d27276b77a8b3c1e211b36e6b2aa57be627bc05
+      collected_at: '2026-11-03'
+      rows: 22
       status: complete
       runtime:
         framework: sglang
         version: 0.5.21
         image: lmsysorg/sglang:v0.5.21
         image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    - collector_ref: c4b44d81f526b3c5299f7c15ccafe02d90b39229
+      collector_hash: sha256:fe9272155e52911c1cb843d005d6b05a83a09cde542d9b5b1b989f063e235e4a
+      case_plan_hash: sha256:d11cded3e547ac2c3104cee2793cd3398083ebb4f56adfc9b375fe89f4c70a9c
+      collected_at: '2026-11-03'
+      rows: 22
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+
   dsv4_csa_context_module_perf:
     rows: 47456
     status: complete

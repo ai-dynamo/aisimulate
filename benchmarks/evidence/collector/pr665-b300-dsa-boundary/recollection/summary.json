@@ -1,0 +1,14 @@
+{
+  "job_id": 1024142,
+  "requested_rows": 44,
+  "passed_rows": 44,
+  "failed_rows": 0,
+  "refused_rows": 0,
+  "collector_ref": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+  "collector_hash": "sha256:fe9272155e52911c1cb843d005d6b05a83a09cde542d9b5b1b989f063e235e4a",
+  "collection_worker_seconds": 703.8846102169991,
+  "gpu_hours": 0.1955235028380553,
+  "boundary": "run_mla_module_worker calls, including child startup/imports/model initialization/preparation/warmup/forwards; parent bootstrap and CPU plan generation before the calls unmeasured; allocation excluded",
+  "published_rows": 6312,
+  "retained_original_additions": 456
+}
