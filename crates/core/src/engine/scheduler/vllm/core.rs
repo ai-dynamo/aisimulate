@@ -720,6 +720,16 @@ impl DecodeBatch {
     fn total_length(&self) -> usize {
         self.lengths.iter().sum()
     }
+
+    /// Add one request's context length. The first push reserves `max`, the
+    /// most the pass can add, so a pass allocates once, or not at all without
+    /// decode work.
+    fn push(&mut self, length: usize, max: usize) {
+        if self.lengths.capacity() == 0 {
+            self.lengths.reserve_exact(max);
+        }
+        self.lengths.push(length);
+    }
 }
 
 struct HeldVllmPrefill {
@@ -3192,13 +3202,15 @@ impl VllmCore {
     ) -> bool {
         // The final prefill forward already includes the output head. First
         // tokens sampled from it do not require a second full forward pass.
-        self.args.worker_type == WorkerType::Aggregated
-            && policy::first_token_uses_prefill_forward(
-                self.args.scheduling_policy(),
-                self.speculative_sampler.is_some(),
-            )
-            && request.sequence.generated_tokens() == 0
-            && work.is_some_and(|work| work.prompt_tokens > 0)
+        // A prefill worker's tokens all come from its prefill forward.
+        self.args.worker_type == WorkerType::Prefill
+            || (self.args.worker_type == WorkerType::Aggregated
+                && policy::first_token_uses_prefill_forward(
+                    self.args.scheduling_policy(),
+                    self.speculative_sampler.is_some(),
+                )
+                && request.sequence.generated_tokens() == 0
+                && work.is_some_and(|work| work.prompt_tokens > 0))
     }
 
     /// Emit the tokens of the requests ready to decode, returning the decode
@@ -3234,7 +3246,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode.lengths.push(request.sequence.len());
+                decode.push(request.sequence.len(), self.state.running.len());
             }
         }
 
@@ -3285,14 +3297,6 @@ impl VllmCore {
             )?;
             output_signals.append(&mut speculative_signals);
             return Ok((decode, output_signals));
-        }
-
-        // For prefill workers, the first decode token is produced as part of
-        // the prefill forward pass — no separate decode iteration needed.
-        // All signals remain visible at the common pass boundary, including
-        // first tokens when ongoing decoders add work to a mixed pass.
-        if self.args.worker_type == WorkerType::Prefill {
-            decode.lengths.clear();
         }
 
         let mut running_changed = !output_signals.is_empty();
@@ -3485,16 +3489,10 @@ impl VllmCore {
             }
         };
 
-        let decode = DecodeBatch {
-            lengths: if worker_type == WorkerType::Prefill {
-                Vec::new()
-            } else {
-                bursts
-                    .iter()
-                    .filter_map(|burst| burst.decode_length)
-                    .collect()
-            },
-        };
+        let mut decode = DecodeBatch::default();
+        for length in bursts.iter().filter_map(|burst| burst.decode_length) {
+            decode.push(length, bursts.len());
+        }
 
         let sampler = self
             .speculative_sampler
