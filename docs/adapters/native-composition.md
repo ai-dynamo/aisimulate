@@ -62,6 +62,18 @@ For custom Rust composition, use `RoundRobinComposition::default()` or set its
   `prefill_completed(request_id, now_ms)`, returning newly releasable placements.
   Terminal notifications discard all request state, including tentative state
   when cancellation precedes dispatch.
+- `prefill_started(request_id, reused_input_tokens, now_ms)` (default no-op)
+  reports the first admission of a request into a forward pass on the engine
+  that prefills it: the aggregated worker, or the prefill-pool worker in P/D
+  mode. A router can use it to track in-flight prefill work between dispatch
+  and `prefill_completed`. It fires at most once per request, like
+  `prefill_completed`, and not again on readmission after a preemption or
+  retraction. `now_ms` and `reused_input_tokens` match the request's
+  `first_admit_ms` and `first_admission_reused_input_tokens` in
+  `per_request`. It precedes `prefill_completed`; a request that ends first,
+  or an aggregated request whose first output ends it, gets
+  `request_terminal` without `prefill_completed`. Replay dispatches the
+  placements it returns like those from `prefill_completed`.
 - `dispatch_committed(request_id, now_ms)` confirms engine acceptance:
   aggregated/prefill submission after tokenization, or P/D decode destination
   reservation. `dispatch_aborted` discards tentative state on rejection or failed
