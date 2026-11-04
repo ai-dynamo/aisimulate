@@ -1,0 +1,32 @@
+JobId=28269 JobName=aisim664-moe-capacity
+   UserId=simonec(141787) GroupId=dip(30) MCS_label=N/A
+   Priority=125316 Nice=0 Account=coreai_comparch_lights-out-inf QOS=normal WCKey=*
+   JobState=RUNNING Reason=None Dependency=(null)
+   Requeue=1 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:00:35 TimeLimit=00:20:00 TimeMin=N/A
+   SubmitTime=2026-11-03T21:53:23 EligibleTime=2026-11-03T21:53:23
+   AccrueTime=2026-11-03T21:53:23
+   StartTime=2026-11-03T21:53:23 EndTime=2026-11-03T22:13:23 Deadline=N/A
+   PreemptEligibleTime=2026-11-04T01:58:23 PreemptTime=None
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-03T21:53:23 Scheduler=Main
+   Partition=batch AllocNode:Sid=aws-iad-slurm-2-login-02:67637
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=pool0-0006
+   BatchHost=pool0-0006
+   NumNodes=1 NumCPUs=16 NumTasks=1 CPUs/Task=16 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=16,mem=128G,node=1,billing=1,gres/gpu=1
+   AllocTRES=cpu=16,mem=128G,node=1,billing=1,gres/gpu=1
+   Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=*
+   MinCPUsNode=16 MinMemoryTRES=249742M MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=OK Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/tmp/sbatch-simonec/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/jobs/pr664-capacity-20261103/capacity-final.sbatch
+   SubmitLine=/usr/bin/sbatch.real --output=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/logs/pr664-capacity-20261103/%j.log /tmp/sbatch-simonec/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/jobs/pr664-capacity-20261103/capacity-final.sbatch
+   WorkDir=/home/simonec
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/logs/pr664-capacity-20261103/28269.log
+   MemPerTres=gpu:249742
+   TresPerNode=gres/gpu:1
+   TresPerTask=cpu=16
+
