@@ -158,6 +158,11 @@ class CheckpointPrecision:
         return rows
 
     @cached_property
+    def algos(self) -> set[str]:
+        """Every algorithm the checkpoint lists or targets."""
+        return {*self.exact.values(), *(algo for _, algo in self.patterns)}
+
+    @cached_property
     def targets_only(self) -> bool:
         return self.listed and modelopt_mixed_precision_targets(self.raw) is not None
 
@@ -311,27 +316,6 @@ def moe_modes(
         )
     )
     return {} if set(resolved) <= {default} else dict(resolved)
-
-
-def moe_modes_by_kind(
-    checkpoint: CheckpointPrecision,
-    layer_kinds: Sequence,
-    expert_modules: Mapping,
-    layer_paths: LayerPaths,
-    default: common.MoEQuantMode,
-    system: str | None = None,
-    execution_mode: Callable = lambda mode: mode,
-) -> dict:
-    """``{kind: {mode: number of MoE layers}}`` for families whose ops are grouped by layer kind.
-
-    A kind whose MoE layers all resolve to ``default`` maps to ``{}`` (one op on the global mode).
-    """
-    by_kind: dict = {}
-    for _, kind, mode in layer_moe_modes(
-        checkpoint, layer_kinds, expert_modules, layer_paths, default, system, execution_mode
-    ):
-        by_kind.setdefault(kind, Counter())[mode] += 1
-    return {kind: ({} if set(counts) <= {default} else dict(counts)) for kind, counts in by_kind.items()}
 
 
 def bucket_gemms(name: str, count, n: int, k: int, quant_mode, buckets: Mapping | None, **kwargs) -> list:

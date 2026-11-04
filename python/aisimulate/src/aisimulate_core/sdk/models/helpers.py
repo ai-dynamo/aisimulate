@@ -219,18 +219,6 @@ def _hf_quant_section(raw_config: dict) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def _is_modelopt_checkpoint(raw_config: dict | None) -> bool:
-    """Whether a ModelOpt export: an ``hf_quant_config.json`` quantization section or a ``modelopt*`` quant_method.
-
-    The prefix matches vLLM's ModelOpt method family (``modelopt``, ``modelopt_fp4``, ``modelopt_mixed``).
-    """
-    if not isinstance(raw_config, dict):
-        return False
-    return bool(_hf_quant_section(raw_config)) or (
-        str(_language_quant_config(raw_config).get("quant_method", "")).lower().startswith("modelopt")
-    )
-
-
 def _language_quant_config(raw_config: dict) -> dict:
     quant_config = _get_language_quantization_config(raw_config)
     return quant_config if isinstance(quant_config, dict) else {}
@@ -776,9 +764,6 @@ def _infer_mixed_precision_group_algo(group: dict) -> str | None:
         # guard for config_groups-style exports.
         if weights.get("group_size") == 32:
             return "mxfp8"
-        # Block-scaled FP8 (compressed-tensors strategy=block), as sdk/utils.py reads the global mode.
-        if str(weights.get("strategy", "")).lower() == "block" or weights.get("block_structure"):
-            return "fp8_block"
         return "fp8"
     if num_bits == 4 and "float" in weight_type:
         return "nvfp4"
@@ -828,12 +813,12 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
 # Coarse GEMM-lane priority over the non-expert algorithms a mixed-precision
 # checkpoint lists (rationale at the use site in
 # _infer_mixed_precision_quant_modes).
-_MIXED_PRECISION_GEMM_ALGO_PRIORITY = ("mxfp8", "fp8_block", "fp8", "w4a16_nvfp4", "nvfp4")
+_MIXED_PRECISION_GEMM_ALGO_PRIORITY = ("mxfp8", "fp8", "w4a16_nvfp4", "nvfp4")
 
 
 def _mixed_precision_algo_gemm_mode(algo: str | None, quant_dynamic: bool | None) -> common.GEMMQuantMode | None:
     """SDK GEMM mode of one normalized non-expert mixed-precision algorithm."""
-    if algo in ("mxfp8", "fp8_block"):
+    if algo == "mxfp8":
         return common.GEMMQuantMode.fp8_block
     if algo == "fp8":
         return common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
@@ -863,7 +848,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
             common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
         )
     # Otherwise the listed non-expert algorithms pick the lane in
-    # _MIXED_PRECISION_GEMM_ALGO_PRIORITY order (mxfp8, fp8_block, fp8, w4a16_nvfp4, nvfp4).
+    # _MIXED_PRECISION_GEMM_ALGO_PRIORITY order (mxfp8, fp8, w4a16_nvfp4, nvfp4).
     # MXFP8 -> fp8_block approximation (owner decision 2026-08-09): MXFP8 is
     # 32-element block-scaled FP8, i.e. the same 1 B/elem weights and the same
     # FP8 tensor-core throughput class as fp8_block; only the scale
@@ -889,7 +874,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a16_nvfp4
     elif "nvfp4" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.nvfp4
-    elif "mxfp8" in moe_algos or "fp8_block" in moe_algos:
+    elif "mxfp8" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.fp8_block
     elif "fp8" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.fp8
@@ -994,7 +979,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
 
 
 # Architectures whose vLLM MoE dispatch is PROVEN w4a4 for W4A16_NVFP4-labeled
-# non-ModelOpt checkpoints: the collected kernel_source is
+# checkpoints: the collected kernel_source is
 # ``vllm_compressedtensorsw4a4nvfp4moe_*`` (activations quantized at run time,
 # FP4 tensor cores), so the storage label misdescribes the execution lane.
 # Scoped per-architecture deliberately: Qwen3.6-style checkpoints stay on the
@@ -1008,7 +993,6 @@ def resolve_vllm_moe_execution_mode(
     moe_quant_mode: common.MoEQuantMode | None,
     backend_name: str | None,
     architecture: str | None,
-    raw_config: dict | None = None,
 ) -> common.MoEQuantMode | None:
     """Map an HF/label-derived MoE mode to the lane vLLM actually executes.
 
@@ -1022,16 +1006,11 @@ def resolve_vllm_moe_execution_mode(
     HYBRID XPROFILE relation by design). Callers apply this to HF-DERIVED
     modes only — a truly explicit user mode must bypass it
     (AIC-1748/AIC-1743).
-
-    A ModelOpt export keeps ``w4a16_nvfp4``: vLLM 0.24.0, 0.30.0 and 0.31.0
-    build ``ModelOptNvFp4FusedMoE`` with ``use_a16`` for ``W4A16_NVFP4``
-    experts, and only the Marlin weight-only backend accepts that scheme.
     """
     if (
         backend_name == "vllm"
         and architecture in _VLLM_W4A4_MOE_ARCHITECTURES
         and moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
-        and not _is_modelopt_checkpoint(raw_config)
     ):
         return common.MoEQuantMode.nvfp4
     return moe_quant_mode
@@ -1100,7 +1079,7 @@ def _apply_model_quant_defaults(
     # explicit-is-the-user's-contract doctrine.
     if moe_was_unset:
         model_config.moe_quant_mode = resolve_vllm_moe_execution_mode(
-            model_config.moe_quant_mode, backend_name, architecture, raw_config
+            model_config.moe_quant_mode, backend_name, architecture
         )
 
     # Only log if model_config was modified
@@ -1270,9 +1249,7 @@ def resolve_nvfp4_for_system(
         if gemm_q is None:
             gemm_q = inferred.get("gemm_quant_mode")
         if moe_q is None:
-            moe_q = resolve_vllm_moe_execution_mode(
-                inferred.get("moe_quant_mode"), backend_name, architecture, info.get("raw_config", {})
-            )
+            moe_q = resolve_vllm_moe_execution_mode(inferred.get("moe_quant_mode"), backend_name, architecture)
 
     if gemm_q == common.GEMMQuantMode.nvfp4:
         model_config.gemm_quant_mode = common.GEMMQuantMode.nvfp4_wo

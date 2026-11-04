@@ -11,7 +11,6 @@ from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import ModelConfig
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.checkpoint_precision import checkpoint_precision as _checkpoint_precision
-from aisimulate_core.sdk.models.helpers import resolve_vllm_moe_execution_mode
 from aisimulate_core.sdk.models.nemotron_h import _moe_modes, _projection_modes
 
 pytestmark = pytest.mark.unit
@@ -302,18 +301,16 @@ def test_model_uses_checkpoint_projection_precision_and_preserves_override(check
 
 
 @pytest.mark.parametrize(("backend", "system"), [("vllm", "gb200"), ("vllm", "h200_sxm"), ("trtllm", "gb200")])
-def test_non_latent_nemotron_prices_its_listed_projections(backend, system):
+def test_w4a16_nvfp4_checkpoint_keeps_the_global_modes(backend, system):
     model = get_model(
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
         ModelConfig(moe_tp_size=1, system=system),
         backend_name=backend,
     )
-    by_name = {op._name: op._quant_mode for op in model.context_ops if hasattr(op, "_quant_mode")}
-    # Shared experts are listed W4A16_NVFP4 and run weight-only on every backend and system
-    # (vLLM: FP4 Marlin with BF16 activations); attention is unlisted in the targets-only export.
-    w4a16 = common.GEMMQuantMode.w4a16_nvfp4
-    assert by_name["context_shared_up_gemm"] == by_name["context_shared_down_gemm"] == w4a16
-    assert by_name["context_qkv_gemm"] == by_name["context_proj_gemm"] == BF16
+    # Lightning lists W4A16_NVFP4 shared experts and routed experts, which no packaged table
+    # measures yet, so it is not priced per layer.
+    assert model._projection_quant_modes == {}
+    assert model._moe_quant_modes == {}
 
 
 @pytest.mark.parametrize(
@@ -666,40 +663,6 @@ def test_parent_module_exclusion_covers_its_projections():
     }
 
 
-def test_modelopt_w4a16_and_nvfp4_experts_keep_distinct_vllm_buckets():
-    w4a16 = common.MoEQuantMode.w4a16_nvfp4
-    raw = _expert_listing({1: "W4A16_NVFP4", 3: "NVFP4", 5: "FP8"})
-
-    def vllm(mode):
-        return resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM", raw)
-
-    # vLLM runs ModelOpt W4A16_NVFP4 experts weight-only on Marlin, unlike W4A4 NVFP4 layers.
-    assert _moe_modes(raw, "MEMEME", w4a16, "gb200", execution_mode=vllm) == {
-        w4a16: 1,
-        common.MoEQuantMode.nvfp4: 1,
-        common.MoEQuantMode.fp8: 1,
-    }
-
-
-def test_model_prices_w4a16_and_nvfp4_expert_layers_apart(tmp_path):
-    path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
-    data = json.loads(path.read_text())
-    e_layers = [i for i, kind in enumerate(data["hybrid_override_pattern"]) if kind == "E"]
-    listing = _expert_listing({layer: "W4A16_NVFP4" if n < 10 else "NVFP4" for n, layer in enumerate(e_layers)})
-    data["quantization_config"] = listing["hf_quant_config"]["quantization"]
-    (tmp_path / "config.json").write_text(json.dumps(data))
-    (tmp_path / "hf_quant_config.json").write_text(json.dumps(listing["hf_quant_config"]))
-    model = get_model(str(tmp_path), ModelConfig(tp_size=2, moe_tp_size=2, system="gb200"), backend_name="vllm")
-    mtp = model._mtp_scale_factor
-    for pipeline, scale in ((model.context_ops, 1), (model.generation_ops, mtp)):
-        moe = {op._quant_mode: op._scale_factor for op in pipeline if op._name.split("_", 1)[1] == "moe"}
-        assert moe == pytest.approx(
-            {common.MoEQuantMode.w4a16_nvfp4: 10 * scale, common.MoEQuantMode.nvfp4: 30 * scale}
-        )
-        dispatch = {op._quant_mode for op in pipeline if "moe_pre_dispatch" in op._name}
-        assert dispatch == {common.MoEQuantMode.w4a16_nvfp4, common.MoEQuantMode.nvfp4}
-
-
 def test_untargeted_routed_experts_keep_the_global_mode():
     def group(num_bits, layer):
         return {
@@ -731,48 +694,6 @@ def test_excluded_routed_experts_are_bf16_in_a_group_checkpoint(ignore, expected
     }
     # An exclusion is explicit BF16, unlike an untargeted layer; a full exclusion overrides the FP8 global mode.
     assert _moe_modes(raw, "MEMEME", common.MoEQuantMode.fp8, "gb200") == expected
-
-
-@pytest.mark.parametrize(
-    ("algos", "expected"),
-    [
-        ("W4A16_NVFP4", {common.MoEQuantMode.w4a16_nvfp4}),
-        ("mixed", {common.MoEQuantMode.w4a16_nvfp4, common.MoEQuantMode.nvfp4}),
-    ],
-)
-def test_config_only_modelopt_mixed_keeps_w4a16_experts(monkeypatch, tmp_path, algos, expected):
-    from aisimulate.sdk.task_v2 import Task
-
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
-    data = json.loads(path.read_text())
-    e_layers = [i for i, kind in enumerate(data["hybrid_override_pattern"]) if kind == "E"]
-    layer_algos = {
-        layer: "W4A16_NVFP4" if algos == "W4A16_NVFP4" or n < 10 else "NVFP4" for n, layer in enumerate(e_layers)
-    }
-    # Self-contained config.json: no hf_quant_config.json companion, quant_method modelopt_mixed.
-    data["quantization_config"] = {
-        "quant_method": "modelopt_mixed",
-        **_expert_listing(layer_algos)["hf_quant_config"]["quantization"],
-    }
-    (tmp_path / "config.json").write_text(json.dumps(data))
-    model_path = str(tmp_path)
-
-    model = get_model(model_path, ModelConfig(tp_size=2, moe_tp_size=2, system="gb200"), backend_name="vllm")
-    assert {op._quant_mode for op in model.context_ops if op._name == "context_moe"} == expected
-
-    task = Task(
-        serving_mode="agg",
-        model_path=model_path,
-        system_name="gb200",
-        backend_name="vllm",
-        backend_version="0.31.0",
-        database_mode="SOL",
-    )
-    model_config = task.build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1))
-    assert model_config.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
-    model = get_model(model_path, model_config, "vllm")
-    assert {op._quant_mode for op in model.context_ops if op._name == "context_moe"} == expected
 
 
 def test_config_only_modelopt_mixed_partial_listing_prices_unlisted_layers_bf16(monkeypatch, tmp_path):
@@ -958,3 +879,36 @@ def test_canonical_and_task_paths_agree_on_inferred_expert_lanes(monkeypatch, tm
         assert model.static_phase_diagnostics(batch_size=8, context_length=1024, prefill=False)
     finally:
         model.close()
+
+
+def test_listed_descendants_declare_their_module_precision():
+    from aisimulate_core.sdk.models.checkpoint_precision import CheckpointPrecision, decoder_paths
+
+    paths = decoder_paths("mixer")
+    listing = {
+        "backbone.layers.0.mixer.in_proj.weight": {"quant_algo": "FP8"},
+        "backbone.layers.0.mixer.experts.0.up_proj": {"quant_algo": "NVFP4"},
+        "backbone.layers.0.mixer.experts.1.up_proj": {"quant_algo": "NVFP4"},
+        "backbone.layers.0.mixer.out_proj": {"quant_algo": "FP8"},
+        "backbone.layers.0.mixer.out_proj.weight": {"quant_algo": "NVFP4"},
+        "backbone.layers.1.mixer.experts.0.up_proj": {"quant_algo": "NVFP4"},
+        "backbone.layers.1.mixer.experts.1.up_proj": {"quant_algo": "FP8"},
+    }
+    checkpoint = CheckpointPrecision(
+        {"quantization_config": {"quant_algo": "MIXED_PRECISION", "quantized_layers": listing}}
+    )
+    assert checkpoint.module(paths(0, "in_proj")) == (False, {"fp8"})
+    assert checkpoint.module(paths(0, "experts")) == (False, {"nvfp4"})
+    # An exact listing wins over its descendants.
+    assert checkpoint.module(paths(0, "out_proj")) == (False, {"fp8"})
+    # A module is not covered by an ancestor's listing.
+    assert checkpoint.module(paths(0, "in_proj.weight.extra")) == (False, set())
+    # Descendants that disagree are a conflict, as for any module.
+    assert checkpoint.module(paths(1, "experts"))[1] == {"nvfp4", "fp8"}
+
+
+def test_descendant_listed_projection_is_priced_through_model_construction():
+    listing = {f"backbone.layers.0.mixer.{p}.weight": {"quant_algo": "FP8"} for p in ("in_proj", "out_proj")}
+    raw = {"hf_quant_config": {"quantization": {"quant_algo": "MIXED_PRECISION", "quantized_layers": listing}}}
+    modes = _projection_modes(raw, "M", common.GEMMQuantMode.nvfp4)
+    assert modes == {"in_proj": {common.GEMMQuantMode.fp8_static: 1}, "out_proj": {common.GEMMQuantMode.fp8_static: 1}}
