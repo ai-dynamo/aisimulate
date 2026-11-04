@@ -4147,3 +4147,74 @@ def test_wheel_identity_rejects_missing_and_mixed_product_builds(tmp_path, packa
     (tmp_path / f"{other}-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl").write_bytes(b"stale build")
     with pytest.raises(ValueError, match="exactly one"):
         single_wheel(tmp_path)
+
+
+@pytest.mark.parametrize("package,alias", [("aisim", True), ("aisimulate", False), ("aisimulate", True)])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "name",
+        "version",
+        "duplicate-name",
+        "dist-info",
+        "missing-metadata",
+        "extra-metadata",
+        "missing-entry-points",
+        "wrong-entry-root",
+        "missing-command",
+        "alias",
+        "wrong-target",
+        "extra-script",
+    ],
+)
+def test_release_output_checks_embedded_identity_and_scripts(tmp_path, monkeypatch, package, alias, failure):
+    version = "0.14.0" if package == "aisim" else "0.13.0"
+    monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
+    monkeypatch.setattr(release_artifacts, "PYTHON_PACKAGE", package)
+    monkeypatch.setattr(release_artifacts, "CRATE_PACKAGE", f"{package}-core")
+    monkeypatch.setattr(release_artifacts, "REQUIRE_CLI_ALIAS", alias)
+    output = tmp_path / "dist"
+    output.mkdir()
+    (output / f"{package}-core-{version}.crate").write_bytes(b"crate fixture")
+    for name in release_artifacts.LEGAL_FILES:
+        (tmp_path / name).write_text(f"fixture legal text for {name}\n")
+    scripts = {"aiconfigurator": "aisimulate.legacy_cli.entrypoint:main", "aisimulate": "aisimulate.supervision:main"}
+    if alias:
+        scripts["aisim"] = "aisimulate.supervision:main"
+    if failure == "missing-command":
+        del scripts["aisimulate"]
+    elif failure == "alias":
+        if alias:
+            del scripts["aisim"]
+        else:
+            scripts["aisim"] = "aisimulate.supervision:main"
+    elif failure == "wrong-target":
+        scripts["aisimulate"] = "wrong.module:main"
+    elif failure == "extra-script":
+        scripts["unexpected"] = "aisimulate.supervision:main"
+    embedded_name = "other-product" if failure == "name" else package
+    embedded_version = "0.0.1" if failure == "version" else version
+    metadata = f"Metadata-Version: 2.1\nName: {embedded_name}\nVersion: {embedded_version}\n"
+    if failure == "duplicate-name":
+        metadata += f"Name: {package}\n"
+    dist_info = "other.dist-info" if failure == "dist-info" else f"{package}-{version}.dist-info"
+    wheel = output / f"{package}-{version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        if failure != "missing-metadata":
+            archive.writestr(f"{dist_info}/METADATA", metadata)
+        if failure == "extra-metadata":
+            archive.writestr("extra.dist-info/METADATA", metadata)
+        if failure != "missing-entry-points":
+            entry_root = "other.dist-info" if failure == "wrong-entry-root" else dist_info
+            archive.writestr(
+                f"{entry_root}/entry_points.txt",
+                "[console_scripts]\n" + "".join(f"{name} = {target}\n" for name, target in scripts.items()),
+            )
+        for name in release_artifacts.LEGAL_FILES:
+            archive.writestr(f"{dist_info}/licenses/{name}", (tmp_path / name).read_bytes())
+    if failure is None:
+        release_artifacts.verify_output(output, version, version)
+    else:
+        with pytest.raises(AssertionError):
+            release_artifacts.verify_output(output, version, version)

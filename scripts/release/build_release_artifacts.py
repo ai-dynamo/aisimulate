@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import tomllib
 import zipfile
+from email import message_from_bytes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +45,16 @@ def _toml(path: Path) -> dict[str, object]:
 
 def _is_source_manifest(path: Path) -> bool:
     return not IGNORED_DISCOVERY_DIRS.intersection(path.relative_to(ROOT).parts)
+
+
+def _expected_scripts() -> dict[str, str]:
+    scripts = {
+        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisimulate": "aisimulate.supervision:main",
+    }
+    if REQUIRE_CLI_ALIAS:
+        scripts["aisim"] = "aisimulate.supervision:main"
+    return scripts
 
 
 def check_manifests() -> tuple[str, str]:
@@ -95,13 +107,7 @@ def check_manifests() -> tuple[str, str]:
         str(dep).lower().startswith(("aisim-core", "aisimulate-core", "aiconfigurator")) for dep in dependencies
     )
     assert not any(str(dep).lower().startswith(("dynamo", "ai-dynamo")) for dep in dependencies)
-    expected_scripts = {
-        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
-        "aisimulate": "aisimulate.supervision:main",
-    }
-    if REQUIRE_CLI_ALIAS:
-        expected_scripts["aisim"] = "aisimulate.supervision:main"
-    assert app["scripts"] == expected_scripts
+    assert app["scripts"] == _expected_scripts()
     return py_version, crate_version
 
 
@@ -171,6 +177,23 @@ def verify_output(output: Path, py_version: str, crate_version: str) -> None:
     assert expected_crate in names, f"missing {expected_crate}: {names}"
     wheel_path = output / app_wheels[0]
     with zipfile.ZipFile(wheel_path) as wheel:
+        metadata_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+        dist_info = f"{PYTHON_PACKAGE}-{py_version}.dist-info"
+        assert metadata_paths == [f"{dist_info}/METADATA"], (
+            f"expected one matching wheel METADATA file, found {metadata_paths}"
+        )
+        metadata = message_from_bytes(wheel.read(metadata_paths[0]))
+        assert metadata.get_all("Name") == [PYTHON_PACKAGE], "wheel metadata Name does not match selected source"
+        assert metadata.get_all("Version") == [py_version], "wheel metadata Version does not match selected source"
+        entry_point_paths = [name for name in wheel.namelist() if name.endswith(".dist-info/entry_points.txt")]
+        assert entry_point_paths == [f"{dist_info}/entry_points.txt"], (
+            f"expected one matching wheel entry_points.txt, found {entry_point_paths}"
+        )
+        entry_points = configparser.RawConfigParser()
+        entry_points.optionxform = str
+        entry_points.read_string(wheel.read(entry_point_paths[0]).decode("utf-8"))
+        scripts = dict(entry_points.items("console_scripts")) if entry_points.has_section("console_scripts") else {}
+        assert scripts == _expected_scripts(), "wheel console scripts do not match selected source"
         for legal_file in LEGAL_FILES:
             matches = [name for name in wheel.namelist() if name.endswith(f".dist-info/licenses/{legal_file}")]
             assert len(matches) == 1, f"expected one packaged {legal_file}, found {matches}"

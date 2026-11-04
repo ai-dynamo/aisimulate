@@ -151,7 +151,7 @@ Verify the recorded source revision and wheel SHA-256, then install that exact
 downloaded file:
 
 ```bash
-python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl
+python -m pip install /absolute/path/to/downloaded/aisim-VERSION-PLATFORM.whl
 ```
 
 Replace that illustrative filename with the actual wheel filename. Retain the
