@@ -54,6 +54,17 @@ def accepted(samples):
     return [s for s in samples if s["status"] == "passed" and positive(s.get("collection_seconds"))]
 
 
+def point_fit_samples(samples):
+    """A returned call clock without observed forwards is diagnostic spend only."""
+    return [
+        s
+        for s in accepted(samples)
+        if positive(s.get("forward_latency_ms"))
+        or s.get("native_forward_rows")
+        or s.get("direct_benchmark_measurements")
+    ]
+
+
 def measured_cost(samples):
     """Inclusive point times plus explicitly separate setup once per group.
 
@@ -85,7 +96,7 @@ def predict(case, samples, component=None):
     Returns an empirical repeated-observation range, not a confidence interval.
     """
     case = clean_case(case)
-    matched = [s for s in accepted(samples) if geometry(s["case"]) == geometry(case)]
+    matched = [s for s in point_fit_samples(samples) if geometry(s["case"]) == geometry(case)]
     if len({s["source_commit"] for s in matched}) > 1 or len({identity(s) for s in matched}) > 1:
         return None
     full_causal = bool(matched) and matched[0]["operation"] == "attention_context" and case.get("window_size") == "0"
@@ -152,7 +163,7 @@ def validation(samples):
     errors = []
     for sample in holdouts:
         estimate = predict(sample["case"], fit)
-        if sample["status"] != "passed" or estimate is None or not positive(sample.get("collection_seconds")):
+        if sample not in point_fit_samples([sample]) or estimate is None:
             return {"passed": False, "reason": "uncovered_or_failed_holdout", "max_relative_error": None}
         actual = sample["collection_seconds"]
         error = abs(statistics.mean(estimate) - actual) / max(actual, 1e-12)
@@ -428,7 +439,7 @@ def report_lane(
             for bucket in matches:
                 point_samples = [s for s in bucket if s["measurement_scope"] == "point"]
                 estimate = predict(case, point_samples)
-                exact = any(clean_case(s["case"]) == clean_case(case) for s in accepted(point_samples))
+                exact = any(clean_case(s["case"]) == clean_case(case) for s in point_fit_samples(point_samples))
                 if estimate is not None and (exact or validation(bucket)["passed"]):
                     estimates.append(estimate)
             estimate = (min(e[0] for e in estimates), max(e[1] for e in estimates)) if estimates else None
