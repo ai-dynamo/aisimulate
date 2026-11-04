@@ -1,0 +1,462 @@
+{
+  "scope": "Historical isolated probes, not new paired incremental measurements",
+  "anchors": [
+    {
+      "case": {
+        "name": "gqa_prefill_256k_b4",
+        "family": "dense",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "shape": [
+          4,
+          262144,
+          4,
+          1,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "977900ea74e7b4fe9c754968d8e1a21e5c416d500a948342d66e81f3f1063db0",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 7.865654999855906,
+      "native_call_seconds": 5.985174811910838,
+      "instrumented_worker_seconds": 13.851805100683123,
+      "forward_latency_ms": [
+        193.2036865234375
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/sglang-996180/cases/gqa_prefill_256k_b4/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "mha_prefill_1m",
+        "family": "dense",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "shape": [
+          1,
+          1048576,
+          4,
+          4,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "e8bd5b5e897dff5f0d7e04d9e5e72cb0187a0d6f656e368d07915b5ceea973eb",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 17.546772595029324,
+      "native_call_seconds": 21.63178598182276,
+      "instrumented_worker_seconds": 39.18022426776588,
+      "forward_latency_ms": [
+        777.678466796875
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/sglang-996180/cases/mha_prefill_1m/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "gqa_prefill_256k_b4",
+        "family": "dense",
+        "backend": "trtllm",
+        "package_version": "1.3.0rc29",
+        "shape": [
+          4,
+          262144,
+          4,
+          1,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "fc3e6483d08b3c27e70c724e4be69e47e610d5a3b517a613e88c5f55a3000319",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 9.468861262081191,
+      "native_call_seconds": 7.0661659019533545,
+      "instrumented_worker_seconds": 16.536203287076205,
+      "forward_latency_ms": [
+        200.1711222330729
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/trtllm-996181/cases/gqa_prefill_256k_b4/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "mha_prefill_1m",
+        "family": "dense",
+        "backend": "trtllm",
+        "package_version": "1.3.0rc29",
+        "shape": [
+          1,
+          1048576,
+          4,
+          4,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "8ef239527e364fc2090a2d068116be77f27e2b60e01573ba2b57857f2fe02fb2",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 10.282185912132263,
+      "native_call_seconds": 25.01684397086501,
+      "instrumented_worker_seconds": 35.30064177792519,
+      "forward_latency_ms": [
+        799.74267578125
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/trtllm-996181/cases/mha_prefill_1m/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "standalone_context_1m",
+        "family": "standalone",
+        "backend": "trtllm",
+        "package_version": "1.3.0rc29",
+        "input_len": 1048576,
+        "batch": 1,
+        "local_heads": 1,
+        "context": true,
+        "fp8": false
+      },
+      "source_sha256": "bb5741b7c3d4504b5e062847855a8f2b31ec295e970786c8406a23b066215f3c",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 8.478878297843039,
+      "native_call_seconds": 8.617438908200711,
+      "instrumented_worker_seconds": 17.0979384300299,
+      "forward_latency_ms": [
+        256.33217366536456
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/trtllm-996181/cases/standalone_context_1m/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "standalone_decode_1m_bf16",
+        "family": "standalone",
+        "backend": "trtllm",
+        "package_version": "1.3.0rc29",
+        "input_len": 1048575,
+        "batch": 1,
+        "local_heads": 16,
+        "context": false,
+        "fp8": false
+      },
+      "source_sha256": "022b9e4b95b54ec0b0bf4073be56476cabebc26112a2920cabd2110921c73d75",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 8.403107763035223,
+      "native_call_seconds": 2.807849114993587,
+      "instrumented_worker_seconds": 11.212150179082528,
+      "forward_latency_ms": [
+        0.3459893465042114
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/trtllm-996181/cases/standalone_decode_1m_bf16/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "standalone_decode_1m_fp8",
+        "family": "standalone",
+        "backend": "trtllm",
+        "package_version": "1.3.0rc29",
+        "input_len": 1048575,
+        "batch": 1,
+        "local_heads": 16,
+        "context": false,
+        "fp8": true
+      },
+      "source_sha256": "017708364baf76ba779b9b89d847bb6ef3c63ba28d9d7332444226f5bfc22de5",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 8.343334604986012,
+      "native_call_seconds": 10.77707103593275,
+      "instrumented_worker_seconds": 19.12210923107341,
+      "forward_latency_ms": [
+        0.1232373317082723
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/trtllm-996181/cases/standalone_decode_1m_fp8/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "gqa_prefill_256k_b4",
+        "family": "dense",
+        "backend": "vllm",
+        "package_version": "0.31.0",
+        "shape": [
+          4,
+          262144,
+          4,
+          1,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "b0ce3bdce8aa6e18c16472030ad4f74ab01036478b6319d110bb5f62e689b50d",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 7.86081122700125,
+      "native_call_seconds": 2.916585281956941,
+      "instrumented_worker_seconds": 10.779356227256358,
+      "forward_latency_ms": [
+        200.84246826171875
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/vllm-996179/cases/gqa_prefill_256k_b4/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "mha_prefill_1m",
+        "family": "dense",
+        "backend": "vllm",
+        "package_version": "0.31.0",
+        "shape": [
+          1,
+          1048576,
+          4,
+          4,
+          128
+        ],
+        "fp8": false,
+        "context": true
+      },
+      "source_sha256": "f68f22b4ab1f337c71dad0b735e85036ed7928d4fa08b405b666f0f302658792",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 23.017934133298695,
+      "native_call_seconds": 10.779829419218004,
+      "instrumented_worker_seconds": 33.799389236140996,
+      "forward_latency_ms": [
+        815.87939453125
+      ],
+      "point_timing_log": [],
+      "source_artifact": "dense-qualification/results/vllm-996179/cases/mha_prefill_1m/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "sglang-dsa-query32k-batch4",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "attention_type": "dsa",
+        "context": true,
+        "sequence": 32768,
+        "prefix": 262144,
+        "heads": 8,
+        "kv": "fp8",
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "batch": 4,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "9a697e579d382b1dfe2fedbcd3d7a24848960f5425f381448828271bafe4949e",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 1.4036098219949054,
+      "native_call_seconds": 22.641576591995545,
+      "instrumented_worker_seconds": 24.052638071996626,
+      "forward_latency_ms": [
+        332.6507
+      ],
+      "point_timing_log": [
+        "[DSA point timing] prefill b=4, s=32768, prefix=262144: reqs=0.65s batch=0.02s metadata=0.26s history=2.23s setup=0.01s warmup=3.89s capture=0.00s timed=3.33s cleanup=0.04s total=10.43s"
+      ],
+      "source_artifact": "module-qualification/results/sglang-996192/cases/sglang-dsa-query32k-batch4/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "sglang-dsa-query32k-prefix256k",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "attention_type": "dsa",
+        "context": true,
+        "sequence": 32768,
+        "prefix": 262144,
+        "heads": 8,
+        "kv": "fp8",
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "batch": 1,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "5ff97c69299d916d6be74a322da41117bb8c391a2fa4a442b7de8114d4b11fff",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 2.969278075004695,
+      "native_call_seconds": 31.67836843999976,
+      "instrumented_worker_seconds": 34.65302564299782,
+      "forward_latency_ms": [
+        76.8592
+      ],
+      "point_timing_log": [
+        "[DSA point timing] prefill b=1, s=32768, prefix=262144: reqs=0.62s batch=0.22s metadata=0.48s history=0.65s setup=0.01s warmup=2.17s capture=0.00s timed=0.77s cleanup=0.09s total=5.01s"
+      ],
+      "source_artifact": "module-qualification/results/sglang-996192/cases/sglang-dsa-query32k-prefix256k/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "sglang-msa-query32k-prefix256k",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "attention_type": "msa",
+        "context": true,
+        "sequence": 32768,
+        "prefix": 262144,
+        "heads": 8,
+        "kv": "bfloat16",
+        "model": "MiniMaxAI/MiniMax-M3",
+        "batch": 1,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "a777f5b925d4c6dccc40217645932901b6d479851d1b27f037181b8893d785c5",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 1.3948714529979043,
+      "native_call_seconds": 45.52447376299824,
+      "instrumented_worker_seconds": 46.926597589001176,
+      "forward_latency_ms": [
+        15.9362
+      ],
+      "point_timing_log": [
+        "[MSA point timing] context b=1, s=32768, prefix=262144: batch=0.59s metadata=0.16s inputs=0.01s bench=33.13s bench_eager_warmup=32.97s bench_capture=0.00s bench_graph_warmup=0.00s bench_timed=0.16s bench_cleanup=0.00s cleanup=0.00s total=33.89s"
+      ],
+      "source_artifact": "module-qualification/results/sglang-996192/cases/sglang-msa-query32k-prefix256k/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "sglang-dsa-decode-near1m-batch32",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "attention_type": "dsa",
+        "context": false,
+        "sequence": 1048575,
+        "prefix": 0,
+        "heads": 8,
+        "kv": "fp8",
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "batch": 32,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "2026bfb771d439d469fe0abfada41fa8def51b359b123f0116071dcad95446ab",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 3.1008277390064904,
+      "native_call_seconds": 102.34838603899698,
+      "instrumented_worker_seconds": 105.45720327401068,
+      "forward_latency_ms": [
+        0.7897
+      ],
+      "point_timing_log": [
+        "[DSA point timing] decode b=32, kv=1048575: reqs=1.70s batch=1.48s metadata=0.44s history=70.91s inputs=0.01s prewarm=0.80s bench=0.05s bench_eager_warmup=0.01s bench_capture=0.03s bench_graph_warmup=0.01s bench_timed=0.01s bench_cleanup=0.00s cleanup=0.04s total=75.43s"
+      ],
+      "source_artifact": "module-qualification/results/sglang-996193/cases/sglang-dsa-decode-near1m-batch32/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "sglang-msa-decode-896k",
+        "backend": "sglang",
+        "package_version": "0.5.21",
+        "attention_type": "msa",
+        "context": false,
+        "sequence": 917504,
+        "prefix": 0,
+        "heads": 8,
+        "kv": "bfloat16",
+        "model": "MiniMaxAI/MiniMax-M3",
+        "batch": 1,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "cbb9754f2787c87920e316f40681512d5ba2249ae1ccfb5e73a1c1904f153522",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 1.4184978379926179,
+      "native_call_seconds": 44.76188003900461,
+      "instrumented_worker_seconds": 46.186700352001935,
+      "forward_latency_ms": [
+        0.0997
+      ],
+      "point_timing_log": [
+        "[MSA point timing] generation b=1, kv=917504: batch=1.01s metadata=0.05s inputs=0.01s bench=31.90s bench_eager_warmup=31.89s bench_capture=0.01s bench_graph_warmup=0.00s bench_timed=0.00s bench_cleanup=0.00s cleanup=0.00s total=32.96s"
+      ],
+      "source_artifact": "module-qualification/results/sglang-996193/cases/sglang-msa-decode-896k/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "vllm-dsa-query16k-batch2-prefix256k",
+        "backend": "vllm",
+        "package_version": "0.30.0",
+        "attention_type": "dsa",
+        "context": true,
+        "sequence": 16384,
+        "prefix": 262144,
+        "heads": 8,
+        "kv": "fp8",
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "batch": 2,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "30810152c3b5f0b432903b58ad73339532e76b252635011da018f0608e4a2a35",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 5.485390796995489,
+      "native_call_seconds": 7.647032882989151,
+      "instrumented_worker_seconds": 13.1394040449959,
+      "forward_latency_ms": [
+        63.8646,
+        6.942
+      ],
+      "point_timing_log": [],
+      "source_artifact": "module-qualification/results/vllm-996194/cases/vllm-dsa-query16k-batch2-prefix256k/result.json",
+      "allocation_seconds_included": false
+    },
+    {
+      "case": {
+        "name": "vllm-dsa-query32k-prefix256k",
+        "backend": "vllm",
+        "package_version": "0.30.0",
+        "attention_type": "dsa",
+        "context": true,
+        "sequence": 32768,
+        "prefix": 262144,
+        "heads": 8,
+        "kv": "fp8",
+        "model": "nvidia/GLM-5.2-NVFP4",
+        "batch": 1,
+        "gemm": "bfloat16"
+      },
+      "source_sha256": "9875e5b8a9bd2ccf7b51841283f647619a47edfb4c81e8149466a7b887e1f6e4",
+      "collector_commit": "f7cd581b0005e9084ef51dc2e330d941fc00fdd4",
+      "status": "passed",
+      "planning_seconds": 13.04745446400193,
+      "native_call_seconds": 24.007728932992904,
+      "instrumented_worker_seconds": 37.0629087210109,
+      "forward_latency_ms": [
+        68.0513,
+        6.9437
+      ],
+      "point_timing_log": [],
+      "source_artifact": "module-qualification/results/vllm-996194/cases/vllm-dsa-query32k-prefix256k/result.json",
+      "allocation_seconds_included": false
+    }
+  ]
+}
