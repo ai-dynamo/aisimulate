@@ -145,6 +145,15 @@ def test_cases_sharing_a_module_build_are_contiguous(op):
             previous = group
 
 
+def test_op_plan_defaults_come_from_factories():
+    """A mappingproxy default is rejected by dataclasses on Python 3.11, where it is unhashable."""
+    import dataclasses
+
+    for field in dataclasses.fields(OpPlan):
+        assert field.default is dataclasses.MISSING, field.name
+    assert dict(OpPlan.__dataclass_fields__["dispatch"].default_factory()) == {}
+
+
 def test_rows_may_not_drop_a_case(monkeypatch):
     dropping = OpPlan(
         GemmCase,
