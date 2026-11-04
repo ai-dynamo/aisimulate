@@ -178,12 +178,16 @@ def run(spec: dict, output: Path) -> dict:
             "image_squashfs_sha256_observed": image_receipt.read_text().split()[0] if image_receipt.exists() else None,
             "gpu_uuid_observed": str(getattr(properties, "uuid", "unavailable")),
             "host_concurrent_workers_observed": None,
+            "allocation_observation_enabled": bool(spec.get("observe_allocations")),
+            "native_passes_requested": int(spec.get("native_passes", 1)),
         }
         result["allocation_observations"] = []
-        current_call = {"index": None}
+        current_call = {"index": None, "pass_index": None}
 
         def record_allocation(record):
-            event = {"native_call_index": current_call["index"], **record}
+            event = {
+                "native_call_index": current_call["index"], "native_pass_index": current_call["pass_index"], **record
+            }
             result["allocation_observations"].append(event)
             print(json.dumps({"event": "allocation_observation", **event}), flush=True)
 
@@ -207,6 +211,8 @@ def run(spec: dict, output: Path) -> dict:
                 yield measured
             measurements.append(
                 {
+                    "native_call_index": current_call["index"],
+                    "native_pass_index": current_call["pass_index"],
                     "forward_latency_ms": measured.get("latency_ms"),
                     "num_runs_executed": measured.get("num_runs_executed"),
                     "requested_warmups": kwargs.get("num_warmups", 3),
@@ -227,15 +233,20 @@ def run(spec: dict, output: Path) -> dict:
             options = {"include_long_history": True} if spec["scenario"] == "model" else {}
             selected = select_plan(plans.plan(spec["op"], spec["backend"], spec["sm"], **options), spec["cases"])
             rows = selected.rows
+            passes = int(spec.get("native_passes", 1))
+            if passes not in (1, 2):
+                raise ValueError("native_passes must be one or two for bounded cold/warm observations")
+            execution_rows = rows * passes
+            result["native_calls_requested"] = len(execution_rows)
             result["planned_cases"] = len(selected.cases)
             result["native_groups"] = len(rows)
             result["initialization_and_planning_seconds"] = time.perf_counter() - started
             perf = output / str(entry.perf_filename)
-            for index, row in enumerate(rows):
+            for index, row in enumerate(execution_rows):
                 params = row["params"] if isinstance(row, dict) and "params" in row else row
                 call_started = time.perf_counter()
-                call = {"index": index, "row": str(row)}
-                current_call["index"] = index
+                call = {"index": index, "row": str(row), "native_pass_index": index // len(rows) + 1}
+                current_call.update(index=index, pass_index=call["native_pass_index"])
                 rows_before = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
                 result["pending_call"] = {
                     **call,
@@ -267,7 +278,7 @@ def run(spec: dict, output: Path) -> dict:
                     result["worker_recycle_reason"] = (
                         "normal_executor_restart" if expected else "unexpected_worker_exit"
                     )
-                    result["unattempted_rows"] = [str(pending) for pending in rows[index + 1 :]]
+                    result["unattempted_rows"] = [str(pending) for pending in execution_rows[index + 1 :]]
                 except Exception as error:
                     call.update(status="failed", error=str(error), traceback=traceback.format_exc())
                     traceback.print_exc()
@@ -276,7 +287,7 @@ def run(spec: dict, output: Path) -> dict:
                     if fatal or context_error is not None:
                         call["cuda_context_error"] = context_error
                         result["worker_recycle_required"] = True
-                        result["unattempted_rows"] = [str(pending) for pending in rows[index + 1 :]]
+                        result["unattempted_rows"] = [str(pending) for pending in execution_rows[index + 1 :]]
                 call["native_call_seconds"] = time.perf_counter() - call_started
                 result["calls"].append(call)
                 result.pop("pending_call", None)
