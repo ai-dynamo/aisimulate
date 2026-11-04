@@ -839,8 +839,9 @@ estimate already includes drafting and verification, as a measured
 speculative-round profile's does. Replay times such a role only at that depth:
 the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
 decode request counts once in the totals with its past KV, as in the
-telemetry; only its `extend_lengths` entry carries the verification width. No
-`draft_length` scaling applies.
+telemetry; only its `extend_lengths` entry carries the tokens it verifies: one
+plus the drafts the scheduler gave it, fewer than `nextn` when the token budget
+or the context limit cuts the round short. No `draft_length` scaling applies.
 
 Construction checks that the role's workload stores are ready: pure prefill
 for a prefill worker, pure decode for a decode worker, and pure prefill and

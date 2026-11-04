@@ -710,6 +710,8 @@ struct ForwardWork {
 struct DecodeBatch {
     /// Context length of each request priced as decode work.
     lengths: Vec<usize>,
+    /// Tokens each of those requests verifies: one plus its scheduled drafts.
+    widths: Vec<usize>,
 }
 
 impl DecodeBatch {
@@ -2560,6 +2562,7 @@ impl VllmCore {
                 mean_context_length: forward.total_length / forward.decode_count,
                 kv_bound_tokens: self.decode_kv_context_bound(forward.total_length),
                 lengths: decode.lengths,
+                widths: decode.widths,
                 verify_width,
             }),
         };
@@ -3235,6 +3238,7 @@ impl VllmCore {
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
                 decode.lengths.push(request.sequence.len());
+                decode.widths.push(1);
             }
         }
 
@@ -3293,6 +3297,7 @@ impl VllmCore {
         // first tokens when ongoing decoders add work to a mixed pass.
         if self.args.worker_type == WorkerType::Prefill {
             decode.lengths.clear();
+            decode.widths.clear();
         }
 
         let mut running_changed = !output_signals.is_empty();
@@ -3485,16 +3490,16 @@ impl VllmCore {
             }
         };
 
-        let decode = DecodeBatch {
-            lengths: if worker_type == WorkerType::Prefill {
-                Vec::new()
-            } else {
-                bursts
-                    .iter()
-                    .filter_map(|burst| burst.decode_length)
-                    .collect()
-            },
-        };
+        let mut decode = DecodeBatch::default();
+        if worker_type != WorkerType::Prefill {
+            // A burst's limit is the round's verification width.
+            for burst in &bursts {
+                if let Some(length) = burst.decode_length {
+                    decode.lengths.push(length);
+                    decode.widths.push(burst.limit);
+                }
+            }
+        }
 
         let sampler = self
             .speculative_sampler
