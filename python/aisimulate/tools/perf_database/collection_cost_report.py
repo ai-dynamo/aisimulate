@@ -14,9 +14,10 @@ import math
 import statistics
 import subprocess
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
-from tools.perf_database.collection_cost import case_key, compare
+from tools.perf_database.collection_cost import case_key, load_tables
 
 # These are workload axes, never geometry, precision, checkpoint or dispatch.
 AXES = {
@@ -163,7 +164,7 @@ def validation(samples):
     }
 
 
-def group_validation(samples):
+def phase_accounting_check(samples):
     """Validate reconstructed point+setup totals against independent group clocks."""
     errors = []
     for group in accepted(samples):
@@ -187,46 +188,171 @@ def group_validation(samples):
     }
 
 
-def paired_groups(samples, scenario, added, removed, baseline_scenario="baseline"):
-    """Exact native old/new group differences, including changed initialization.
+def member_keys(sample):
+    return frozenset(case_key(clean_case(case)) for case in sample.get("group_member_cases", []))
 
-    Only explicit member manifests can assign a measured group to inventory
-    changes. Repeated pairs form an empirical range; missing pairs stay unknown.
+
+def controlled_protocol(sample):
+    """Unproven cold/cache state cannot qualify a marginal setup estimate."""
+    scope = sample.get("cache_scope_declared", "")
+    if (
+        sample.get("pilot_splits_same_cache_proven") is not True
+        or not scope
+        or not (sample.get("predecessor_cache_warmed") is True or "already-warmed" in scope)
+    ):
+        return None
+    ranks = sample.get("participating_gpus")
+    if not isinstance(ranks, int) or ranks <= 0:
+        return None
+    observed = sample.get("direct_benchmark_measurements", [])
+    repetitions = sorted(
+        {(m.get("num_runs_executed"), m.get("requested_warmups"), m.get("repeat_n")) for m in observed}, key=str
+    )
+    return (
+        identity(sample),
+        sample.get("_qualified_runtime_source", sample["source_commit"]),
+        ranks,
+        sample["cache_scope_declared"],
+        json.dumps(sample.get("runtime_protocol"), sort_keys=True),
+        json.dumps(repetitions),
+    )
+
+
+def independent_group_check(groups):
+    """Two independent training repeats predict a third native group clock.
+
+    Same-group point clocks plus their residual setup are only an accounting
+    identity. They cannot establish forecast accuracy.
+    """
+    if len(groups) < 3 or len({s["group_id"] for s in groups}) != len(groups):
+        return {"passed": False, "reason": "fewer_than_three_controlled_repeats", "max_relative_error": None}
+    ordered = sorted(groups, key=lambda sample: (sample.get("paired_group_id", ""), sample["sample_id"]))
+    train, holdout = ordered[:-1], ordered[-1]
+    prediction = statistics.mean(s["collection_seconds"] for s in train)
+    error = abs(prediction - holdout["collection_seconds"]) / max(holdout["collection_seconds"], 1e-12)
+    return {
+        "passed": error <= 0.15,
+        "reason": "independent_repeat_15_percent",
+        "max_relative_error": error,
+        "training_sample_ids": [s["sample_id"] for s in train],
+        "holdout_sample_id": holdout["sample_id"],
+    }
+
+
+def group_validation(samples):
+    pools = defaultdict(list)
+    for sample in accepted(samples):
+        protocol = controlled_protocol(sample)
+        if sample["measurement_scope"] == "group" and protocol is not None and member_keys(sample):
+            pools[(protocol, member_keys(sample))].append(sample)
+    checks = [independent_group_check(group) for group in pools.values()]
+    errors = [check["max_relative_error"] for check in checks if check["max_relative_error"] is not None]
+    return {
+        "passed": bool(checks) and all(check["passed"] for check in checks),
+        "reason": "independent_repeat_15_percent" if checks else "no_controlled_group_repeats",
+        "max_relative_error": max(errors) if errors else None,
+        "checks": checks,
+    }
+
+
+def paired_groups(samples, scenario, added, removed, baseline_scenario="baseline"):
+    """Fold controlled physical-manifest repeats once; never multiply coverage.
+
+    Source eligibility is attached by report_lane before this function runs.
+    A pair ID alone proves neither runtime equivalence nor cache/rank equality.
     """
     groups = defaultdict(list)
     for sample in accepted(samples):
         if sample["measurement_scope"] == "group" and sample.get("paired_group_id"):
             groups[sample["paired_group_id"]].append(sample)
-    additions, removals, low, high = set(), set(), 0.0, 0.0
-    for group in groups.values():
+    pools = defaultdict(list)
+    excluded = []
+    for pair_id, group in groups.items():
         before = [s for s in group if s.get("scenario") == baseline_scenario]
         after = [s for s in group if s.get("scenario") == scenario]
-        if not before or not after or any(not s.get("group_member_cases") for s in before + after):
+        if len(before) > 1 or len(after) > 1:
+            excluded.append({"pair_id": pair_id, "reason": "ambiguous_pair_id_collision"})
             continue
-        old_sets = [{case_key(clean_case(c)) for c in s["group_member_cases"]} for s in before]
-        new_sets = [{case_key(clean_case(c)) for c in s["group_member_cases"]} for s in after]
-        if any(keys != old_sets[0] for keys in old_sets) or any(keys != new_sets[0] for keys in new_sets):
-            raise ValueError("paired group repeat changed member manifest")
-        new, old = new_sets[0] - old_sets[0], old_sets[0] - new_sets[0]
-        if not new and not old:
+        if not before or not after:
             continue
-        if not new <= added or not old <= removed:
+        before, after = before[0], after[0]
+        protocol = controlled_protocol(before)
+        if protocol is None or controlled_protocol(after) != protocol:
+            excluded.append({"pair_id": pair_id, "reason": "uncontrolled_or_incompatible_source_protocol_ranks"})
             continue
-        if new & additions or old & removals:
-            raise ValueError("overlapping paired groups double-charge physical cells")
-        additions.update(new)
-        removals.update(old)
-        low += min(s["collection_seconds"] * s.get("participating_gpus", 1) for s in after) - max(
-            s["collection_seconds"] * s.get("participating_gpus", 1) for s in before
+        old, new = member_keys(before), member_keys(after)
+        if not old or not new:
+            continue
+        old_geometry = {geometry(c) for c in before["group_member_cases"]}
+        new_geometry = {geometry(c) for c in after["group_member_cases"]}
+        if old_geometry != new_geometry:
+            excluded.append({"pair_id": pair_id, "reason": "incompatible_physical_geometry"})
+            continue
+        additions, removals = new - old, old - new
+        if not additions and not removals:
+            continue
+        if not additions <= added or not removals <= removed:
+            continue
+        pools[(protocol, old, new)].append((before, after))
+    additions, removals, low, high = set(), set(), 0.0, 0.0
+    details = []
+    for (protocol, old, new), repeats in pools.items():
+        new_keys, old_keys = new - old, old - new
+        if additions & new_keys or removals & old_keys:
+            excluded.append({"reason": "overlapping_incompatible_physical_pools"})
+            continue
+        additions.update(new_keys)
+        removals.update(old_keys)
+        deltas = [
+            (after["collection_seconds"] - before["collection_seconds"]) * protocol[2] for before, after in repeats
+        ]
+        low += min(deltas)
+        high += max(deltas)
+        before_check = independent_group_check([before for before, _after in repeats])
+        after_check = independent_group_check([after for _before, after in repeats])
+        details.append(
+            {
+                "pair_ids": [before["paired_group_id"] for before, _after in repeats],
+                "repeat_count": len(repeats),
+                "gpu_seconds_range": [min(deltas), max(deltas)],
+                "independent_validation": {
+                    "passed": before_check["passed"] and after_check["passed"],
+                    "baseline": before_check,
+                    "candidate": after_check,
+                },
+            }
         )
-        high += max(s["collection_seconds"] * s.get("participating_gpus", 1) for s in after) - min(
-            s["collection_seconds"] * s.get("participating_gpus", 1) for s in before
-        )
+    inventory_complete = additions == added and removals == removed
+    qualified = all(pool["independent_validation"]["passed"] for pool in details)
     return {
         "covered_added_points": len(additions),
         "covered_removed_points": len(removals),
         "gpu_seconds_range": [low, high],
-        "complete": additions == added and removals == removed,
+        "inventory_complete": inventory_complete,
+        "complete": inventory_complete and qualified,
+        "repeat_pools": details,
+        "excluded_pairs": excluded,
+    }
+
+
+@lru_cache(maxsize=3)
+def frozen_tables(directory):
+    """Bounded per-lane cache; CLI inputs are frozen inventory directories."""
+    return load_tables(Path(directory))
+
+
+def inventory_difference(baseline, candidate):
+    before, after = frozen_tables(str(baseline)), frozen_tables(str(candidate))
+    if before.keys() != after.keys():
+        raise ValueError("baseline and candidate must contain the same operation tables")
+    return {
+        name: {
+            "baseline": len(old),
+            "candidate": len(after[name]),
+            "added": [after[name][key] for key in sorted(after[name].keys() - old.keys())],
+            "removed": [old[key] for key in sorted(old.keys() - after[name].keys())],
+        }
+        for name, old in before.items()
     }
 
 
@@ -242,18 +368,27 @@ def report_lane(
     equivalents=frozenset(),
 ):
     result = {}
-    for table, delta in compare(baseline, candidate).items():
+    for table, delta in inventory_difference(baseline, candidate).items():
         operation = table.split("_", 2)[2]
-        lane = [s for s in samples if identity(s) == (system, backend, operation)]
-        buckets = defaultdict(list)
-        for sample in lane:
-            if (
+        lane = []
+        for sample in samples:
+            if identity(sample) != (system, backend, operation):
+                continue
+            models = {case.get("model_path") for case in sample.get("group_member_cases", [sample["case"]])}
+            eligible = (
                 source_commit is None
                 or sample["source_commit"] == source_commit
                 or (sample["source_commit"], backend, operation) in equivalents
-                or (sample["source_commit"], backend, operation, sample["case"].get("model_path")) in equivalents
-            ):
-                buckets[(geometry(sample["case"]), sample["source_commit"])].append(sample)
+                or (
+                    bool(models)
+                    and all((sample["source_commit"], backend, operation, model) in equivalents for model in models)
+                )
+            )
+            if eligible:
+                lane.append({**sample, "_qualified_runtime_source": source_commit or sample["source_commit"]})
+        buckets = defaultdict(list)
+        for sample in lane:
+            buckets[(geometry(sample["case"]), sample["source_commit"])].append(sample)
         covered = 0
         low = high = 0.0
         gaps = defaultdict(int)
@@ -293,12 +428,14 @@ def report_lane(
             "covered_point_seconds_range": [low, high],
             "uncovered_reasons": dict(gaps),
             "group_validation": validations,
+            "phase_accounting_check": phase_accounting_check(lane),
             "strata": [
                 {
                     "geometry": dict(shape),
                     "source_commit": commit,
                     "point_validation": validation(bucket),
                     "group_validation": group_validation(bucket),
+                    "phase_accounting_check": phase_accounting_check(bucket),
                 }
                 for (shape, commit), bucket in buckets.items()
             ],
@@ -423,6 +560,7 @@ def main():
             source_commit=args.source_commit,
             equivalents=equivalents,
         )
+        frozen_tables.cache_clear()
     result["samples"] = samples
     result["phase_accounting"] = (
         "phase_seconds are supporting diagnostics, may be nested, and are never added to inclusive collection clocks"

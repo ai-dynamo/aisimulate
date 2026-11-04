@@ -24,6 +24,9 @@ def sample(length=1, seconds=2, **extra):
         "setup_seconds": None,
         "forward_latency_ms": 999,
         "source_commit": "abc",
+        "participating_gpus": 1,
+        "pilot_splits_same_cache_proven": True,
+        "cache_scope_declared": "both fresh workers share predecessor already-warmed cache",
         "status": "passed",
         **extra,
     }
@@ -62,10 +65,10 @@ def test_group_fifteen_percent_gate_and_missing_setup():
         sample(2, 3, setup_seconds=5),
         sample(seconds=10, measurement_scope="group", role="holdout"),
     ]
-    assert report.group_validation(rows)["passed"]
+    assert report.phase_accounting_check(rows)["passed"]
     rows[-1]["collection_seconds"] = 20
-    assert not report.group_validation(rows)["passed"]
-    assert not report.group_validation([sample(), rows[-1]])["passed"]
+    assert not report.phase_accounting_check(rows)["passed"]
+    assert not report.phase_accounting_check([sample(), rows[-1]])["passed"]
 
 
 def test_exact_paired_groups_include_setup_growth_once():
@@ -85,7 +88,7 @@ def test_exact_paired_groups_include_setup_growth_once():
     )
     added = {report.case_key(report.clean_case(sample(2)["case"]))}
     result = report.paired_groups([before, after], "model", added, set())
-    assert result["complete"] and result["gpu_seconds_range"] == [6, 6]
+    assert result["inventory_complete"] and not result["complete"] and result["gpu_seconds_range"] == [6, 6]
     assert not report.paired_groups([after], "model", added, set())["complete"]
     after["status"] = "timeout"
     assert not report.paired_groups([before, after], "model", added, set())["complete"]
@@ -210,3 +213,88 @@ def test_shared_point_anchor_can_cover_identical_model_delta(tmp_path):
     )
     assert lane["attention_context"]["covered_added_points"] == 1
     assert lane["attention_context"]["extra_gpu_hours_range"] is None
+
+
+def repeat_pairs():
+    records = []
+    for i, (old, new) in enumerate(((10, 16), (11, 18), (10.5, 17)), 1):
+        for scenario, seconds, members in (
+            ("baseline", old, [sample(1)["case"]]),
+            ("model", new, [sample(1)["case"], sample(2)["case"]]),
+        ):
+            records.append(
+                sample(
+                    seconds=seconds,
+                    measurement_scope="group",
+                    scenario=scenario,
+                    sample_id=f"repeat-{i}-{scenario}",
+                    group_id=f"repeat-{i}-{scenario}",
+                    paired_group_id=f"validation-r{i}",
+                    group_member_cases=members,
+                )
+            )
+    return records
+
+
+def test_three_repeat_pair_ids_fold_once_with_independent_gate():
+    added = {report.case_key(report.clean_case(sample(2)["case"]))}
+    result = report.paired_groups(repeat_pairs(), "model", added, set())
+    assert result["complete"] and result["covered_added_points"] == 1
+    assert result["gpu_seconds_range"] == [6, 7]
+    assert result["repeat_pools"][0]["repeat_count"] == 3
+
+
+def test_pair_ids_do_not_prove_source_rank_or_cache_compatibility():
+    added = {report.case_key(report.clean_case(sample(2)["case"]))}
+    for changes in (
+        {"source_commit": "unknown"},
+        {"participating_gpus": 2},
+        {"cache_scope_declared": "cold first-run cache"},
+        {"pilot_splits_same_cache_proven": False},
+    ):
+        records = repeat_pairs()[:2]
+        records[1].update(changes)
+        assert report.paired_groups(records, "model", added, set())["covered_added_points"] == 0
+    records = repeat_pairs()[:2]
+    records.append({**records[1], "sample_id": "collision", "participating_gpus": 8})
+    result = report.paired_groups(records, "model", added, set())
+    assert not result["complete"] and result["excluded_pairs"][0]["reason"] == "ambiguous_pair_id_collision"
+
+
+def test_conservation_is_not_independent_group_forecast():
+    rows = []
+    for i, seconds in enumerate((10, 10, 100), 1):
+        rows.extend(
+            [
+                sample(seconds=4, setup_seconds=seconds - 4, group_id=f"g{i}", sample_id=f"p{i}"),
+                sample(
+                    seconds=seconds,
+                    measurement_scope="group",
+                    role="holdout",
+                    group_id=f"g{i}",
+                    sample_id=f"g{i}",
+                    group_member_cases=[sample()["case"]],
+                ),
+            ]
+        )
+    assert report.phase_accounting_check(rows)["passed"]
+    assert not report.group_validation(rows)["passed"]
+    assert report.group_validation(rows)["max_relative_error"] == 0.9
+
+
+def test_report_rejects_unsupported_source_pairs(tmp_path):
+    case = sample()["case"]
+    for name, rows in (("baseline", [case]), ("model", [case, sample(2)["case"]])):
+        directory = tmp_path / name
+        directory.mkdir()
+        with (directory / "vllm_sm103_attention_context.csv").open("w") as handle:
+            writer = csv.DictWriter(handle, fieldnames=case)
+            writer.writeheader()
+            writer.writerows(rows)
+    records = repeat_pairs()
+    lane = report.report_lane(
+        tmp_path / "baseline", tmp_path / "model", records, "b300_sxm", "vllm", source_commit="supported"
+    )
+    operation = lane["attention_context"]
+    assert operation["paired_group_measurement"]["covered_added_points"] == 0
+    assert operation["extra_gpu_hours_range"] is None
