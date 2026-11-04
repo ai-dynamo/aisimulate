@@ -339,7 +339,7 @@ def _run_moe_case(
     model_config = ModelConfig(pretrained_config=pretrained_config)
     model_config.mapping = mapping
     model_config.quant_config = quant_config
-    model_config.moe_max_num_tokens = num_tokens_lists[-1]  # to avoid multi-chunk auxi stream in cuda-graph mode.
+    model_config.moe_max_num_tokens = max(num_tokens_lists)  # to avoid multi-chunk auxi stream in cuda-graph mode.
     is_gpt_oss = model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
     swiglu_alpha = None
     swiglu_beta = None
@@ -632,30 +632,18 @@ def _run_moe_case(
             weights[f"{expert_id}.w3.bias"] = w3_bias[expert_id]
         moe.load_weights([weights])
 
-    # dry run
+    max_tokens = max(num_tokens_lists)
+    # A queued task owns its entire token sweep; failures must not shrink it.
     torch.cuda.synchronize()
-    max_tokens = num_tokens_lists[-1]
-    for i in range(len(num_tokens_lists)):
-        max_tokens = num_tokens_lists[-i - 1]
-        try:
-            hidden_states_max_tokens = torch.randn([max_tokens, hidden_size]).bfloat16().to(torch.device(device))
-            logits_max_tokens = balanced_logits(max_tokens, num_experts, topk).to(router_logits_dtype)
-            moe.forward(hidden_states_max_tokens, logits_max_tokens, do_finalize=not min_latency_mode)
-            torch.cuda.synchronize()
-            if aic_debug == 1:
-                print(f"Successfully dry run for {max_tokens} tokens")
-            break
-        except Exception as e:
-            accelerator_error = getattr(torch, "AcceleratorError", None)
-            if accelerator_error is not None and isinstance(e, accelerator_error):
-                raise
-            if i == len(num_tokens_lists) - 1:
-                raise RuntimeError(f"dry run failed for {max_tokens} tokens: {e}") from e
-            else:
-                continue
+    hidden_states_max_tokens = torch.randn([max_tokens, hidden_size]).bfloat16().to(torch.device(device))
+    logits_max_tokens = balanced_logits(max_tokens, num_experts, topk).to(router_logits_dtype)
+    moe.forward(hidden_states_max_tokens, logits_max_tokens, do_finalize=not min_latency_mode)
+    torch.cuda.synchronize()
+    if aic_debug == 1:
+        print(f"Successfully dry run for {max_tokens} tokens")
 
     # TRTLLMGen MXFP4 must warm its tactic cache just like serving:
-    # model_engine.py:827-842 (93cb6518). A B200 GPT-OSS
+    # model_engine.py:827-842@1.3.0rc14 (93cb6518). A B200 GPT-OSS
     # TP1/256-token graph measurement drops 26% after explicit tuning. Keep the
     # separate Triton/CUTLASS MXFP4 tuning behavior unchanged.
     if moe_type != "w4a16_mxfp4" or model_config.moe_backend == "trtllm":
@@ -663,10 +651,10 @@ def _run_moe_case(
         # The tuned-tactic cache MUST be SM-scoped: tactic indices are positions
         # in the runner's per-arch config table, and replaying another arch's
         # indices overruns the table (hardware-observed on RTX PRO 6000
-        # SM100-tuned fp8 cache replayed on SM120 →
+        # 2026-07-25: SM100-tuned fp8 cache replayed on SM120 →
         # "vector::_M_range_check: __n (which is 29) >= this->size() (which is
         # 21)" in FusedMoeRunner.run_moe; same failure family as the wideep
-        # collector's fix in collect_moe_compute.py). Pre-fix cache
+        # collector's 2026-07-19 fix in collect_moe_compute.py). Pre-fix cache
         # files without the sm prefix are dead — their tuning SM is not
         # recorded, so they are never trusted again.
         cache_path = (
@@ -691,40 +679,23 @@ def _run_moe_case(
 
         if not cache_loaded:
             torch.cuda.synchronize()
-            tuning_succeeded = False
-            last_tuning_error = None
-            for i in range(len(num_tokens_lists)):
-                max_tokens_for_tuning = num_tokens_lists[-i - 1]
-                if max_tokens_for_tuning > max_tokens:
-                    continue
-                else:
-                    try:
-                        # Check which autotune() kwargs are accepted. These
-                        # moved across TRT-LLM torch-flow releases.
-                        autotune_params = inspect.signature(autotune).parameters
-                        autotune_kwargs = {}
-                        if "cache_path" in autotune_params:
-                            autotune_kwargs["cache_path"] = cache_path
-                        if "rank" in autotune_params:
-                            autotune_kwargs["rank"] = torch.device(device).index
+            for max_tokens_for_tuning in reversed(num_tokens_lists):
+                # Check which autotune() kwargs are accepted. These
+                # moved across TRT-LLM torch-flow releases.
+                autotune_params = inspect.signature(autotune).parameters
+                autotune_kwargs = {}
+                if "cache_path" in autotune_params:
+                    autotune_kwargs["cache_path"] = cache_path
+                if "rank" in autotune_params:
+                    autotune_kwargs["rank"] = torch.device(device).index
 
-                        with torch.inference_mode(), autotune(**autotune_kwargs):
-                            moe.forward(
-                                hidden_states_max_tokens[:max_tokens_for_tuning],
-                                logits_max_tokens[:max_tokens_for_tuning],
-                                do_finalize=not min_latency_mode,
-                            )
-                        torch.cuda.synchronize()
-                        tuning_succeeded = True
-                    except Exception as e:
-                        accelerator_error = getattr(torch, "AcceleratorError", None)
-                        if accelerator_error is not None and isinstance(e, accelerator_error):
-                            raise
-                        last_tuning_error = e
-                        print(f"tune failed for {max_tokens_for_tuning} tokens: {e}, trying smaller tokens")
-                        continue
-            if not tuning_succeeded:
-                raise RuntimeError("MoE autotuning did not succeed for any eligible token count") from last_tuning_error
+                with torch.inference_mode(), autotune(**autotune_kwargs):
+                    moe.forward(
+                        hidden_states_max_tokens[:max_tokens_for_tuning],
+                        logits_max_tokens[:max_tokens_for_tuning],
+                        do_finalize=not min_latency_mode,
+                    )
+                torch.cuda.synchronize()
 
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":

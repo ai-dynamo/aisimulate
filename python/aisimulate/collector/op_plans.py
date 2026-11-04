@@ -45,7 +45,9 @@ from collector.case_generator import (
     AttentionOwner,
     Dsv4Sweep,
     MoeCommonTestCase,
+    _attention_profile_shapes,
     _framework_specific_model_case_values,
+    _model_case_values,
     get_attention_encoder_head_configs,
     get_attention_shapes,
     get_base_common_case_values,
@@ -73,6 +75,7 @@ from collector.case_generator import (
     moe_planned_modes,
     without_models,
 )
+from collector.coverage import history_points, includes_long_history, long_history_coverage
 from collector.helper import _AIC_MODEL_CONFIG_DIR
 
 # Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
@@ -153,6 +156,7 @@ class Plan:
     where: str = ""
     # The model rows the plan left out; rows read the model profiles without them.
     skipped_models: frozenset[str] = frozenset()
+    include_long_history: bool = False
 
     @property
     def by_dispatch(self) -> dict[str, int]:
@@ -161,7 +165,11 @@ class Plan:
 
     @property
     def rows(self) -> list:
-        """What the getter queues: the cases, or the backend's rows for them."""
+        """What the getter queues, retaining the coverage selected when this plan was built."""
+        with long_history_coverage(self.include_long_history):
+            return self._rows()
+
+    def _rows(self) -> list:
         if self.to_batch_rows is not None:
             units = self.cases
             if self.dispatches:
@@ -201,7 +209,14 @@ class _Run(NamedTuple):
         return getattr(self.case, name)
 
 
-def plan(op: str, backend: str, sm_version: int | None) -> Plan:
+def plan(op: str, backend: str, sm_version: int | None, *, include_long_history: bool | None = None) -> Plan:
+    """Plan ordinary coverage, optionally unioned with declared model-owned history points."""
+    enabled = includes_long_history() if include_long_history is None else include_long_history
+    with long_history_coverage(enabled):
+        return _plan(op, backend, sm_version)
+
+
+def _plan(op: str, backend: str, sm_version: int | None) -> Plan:
     """Expand an op's shared cases and leave out what ``skips.SKIPS`` skips for this backend on this SM.
 
     A ``model`` entry drops the model's rows before cases are merged, so a case
@@ -259,6 +274,7 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         sm_version=sm_version,
         where=f"{backend} {op}",
         skipped_models=skipped_models,
+        include_long_history=includes_long_history(),
     )
 
 
@@ -1089,7 +1105,7 @@ def _mla_module_expand(phase: str) -> Callable[[], list[ModuleCase]]:
                                     model.model_path,
                                 )
                             )
-        return cases
+        return _with_history_module_cases(cases, "mla", phase, sweep)
 
     return expand
 
@@ -1312,9 +1328,80 @@ def _sparse_module_expand(
                         )
                         for batch, length, prefix in points
                     ]
-        return cases
+        return _with_history_module_cases(cases, attention_type, phase, sweep, shared_index_only=shared_index_only)
 
     return expand
+
+
+def _history_config(model_path: str) -> dict:
+    config = _packaged_config(model_path)
+    return config.get("text_config") or config
+
+
+def _history_limit(model_path: str) -> int:
+    limit = _history_config(model_path).get("max_position_embeddings")
+    if type(limit) is not int or limit <= 0:
+        raise ValueError(f"long-history model {model_path} has no valid max_position_embeddings")
+    return limit
+
+
+def _history_runtime_signature(model_path: str) -> str:
+    # Conservative equivalence: a consumer key alone does not identify model
+    # weights, RoPE or sparse/indexer geometry. Only exact config equivalence
+    # (apart from labels and routed-expert quantization) shares an owner.
+    config = dict(_history_config(model_path))
+    for label in ("_name_or_path", "_commit_hash", "transformers_version", "quantization_config"):
+        config.pop(label, None)
+    return json.dumps(config, sort_keys=True)
+
+
+def _with_history_module_cases(
+    cases: list[ModuleCase], attention_type: str, phase: str, sweep, *, shared_index_only: bool = False
+) -> list[ModuleCase]:
+    """Union exact model points before deduplicating consumer keys; keep ordinary owners first."""
+    if not includes_long_history():
+        return cases
+    profiles = _model_case_values("mla_module")
+    for backend in ("vllm", "sglang", "trtllm"):
+        profiles += _framework_specific_model_case_values("mla_module", backend)
+    precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type=attention_type)
+    for profile in profiles:
+        if profile.get("attention_type") != attention_type or not profile.get("long_history_cases"):
+            continue
+        model_path = profile["model_path"]
+        if shared_index_only and not _shares_dsa_index(model_path):
+            continue
+        points = history_points(profile, phase, _history_limit(model_path))
+        native_heads = int(profile["native_num_heads"])
+        shards = profile.get("long_history_tensor_parallel_sizes", profile.get("tensor_parallel_sizes"))
+        if not shards or any(type(tp) is not int or tp <= 0 or native_heads % tp for tp in shards):
+            raise ValueError(f"long-history module {model_path} requires valid tensor_parallel_sizes")
+        heads = sorted({native_heads // tp for tp in shards}, reverse=True)
+        # A checkpoint contributes only its actual projection precision, instead
+        # of crossing new history points with unrelated checkpoint GEMMs.
+        for precision in precisions:
+            if precision.gemm_type != _projection_gemm(model_path):
+                continue
+            for num_heads in heads:
+                for batch, length, prefix in points:
+                    cases.append(
+                        ModuleCase(
+                            length,
+                            batch,
+                            num_heads,
+                            precision.kv_cache_dtype,
+                            precision.compute_dtype,
+                            precision.gemm_type,
+                            model_path,
+                            prefix,
+                        )
+                    )
+    physical = {}
+    for case in cases:
+        signature = _history_runtime_signature(case.model_path)
+        key = (*case[:6], signature, case.prefix_len)
+        physical.setdefault(key, case)
+    return list(physical.values())
 
 
 def _sglang_dsa_backend(phase: str) -> Callable[[ModuleCase, int | None], str]:
@@ -1929,7 +2016,33 @@ def _attention_expand(phase: str) -> Callable[[], list[AttentionCase]]:
                             "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
                         )
                     )
-        return cases
+        if includes_long_history():
+            for profile in _model_case_values("attention"):
+                if not profile.get("long_history_cases"):
+                    continue
+                points = history_points(profile, phase, _history_limit(profile["model_path"]))
+                if any(prefix for _batch, _length, prefix in points):
+                    raise ValueError("dense long_history_cases use full lookup sequence with prefix=0")
+                for num_heads, num_kv_heads, head_dim, window_size in _attention_profile_shapes(profile, sweep, phase):
+                    for batch, length, _prefix in points:
+                        # Preserve the existing universal native indexing bound.
+                        sequence = length if phase == "context" else length + 1
+                        if batch * sequence * num_kv_heads * head_dim * 2 >= 2**31 - 1:
+                            continue
+                        for precision in sweep["precision_cases"]:
+                            cases.append(
+                                AttentionCase(
+                                    batch,
+                                    length,
+                                    num_heads,
+                                    num_kv_heads,
+                                    head_dim,
+                                    window_size,
+                                    "fp8" if precision["fp8_kv_cache"] else "bfloat16",
+                                    "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
+                                )
+                            )
+        return list(dict.fromkeys(cases))
 
     return expand
 

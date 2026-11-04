@@ -201,6 +201,41 @@ model_case_values:
       # 96/48/24/12 entries are not GLM-5.x shards.
       tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
+    # Additive AgentX points belong only to the audited long-context artifacts;
+    # the normal GLM rows and shared grid above remain unchanged.
+    - model_paths:
+        - zai-org/GLM-5.2
+        - zai-org/GLM-5.2-FP8
+        - nvidia/GLM-5.2-NVFP4
+        - zai-org/GLM-5.3-BF16
+        - zai-org/GLM-5.3
+        - nvidia/GLM-5.3-NVFP4
+      attention_type: dsa
+      native_num_heads: 64
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+      long_history_cases:
+        context:
+          - [1, 512, 786432]
+          - [1, 16384, 786432]
+          - [1, 512, 917504]
+          - [1, 16384, 917504]
+          - [1, 32768, 262144]
+          - [1, 32768, 917504]
+        generation:
+          - [1, 786432, 0]
+          - [4, 786432, 0]
+          - [8, 786432, 0]
+          - [16, 786432, 0]
+          - [32, 786432, 0]
+          - [1, 917504, 0]
+          - [4, 917504, 0]
+          - [8, 917504, 0]
+          - [16, 917504, 0]
+          - [32, 917504, 0]
+          - [8, 1048575, 0]
+          - [16, 1048575, 0]
+          - [32, 1048575, 0]
+
 framework_specific_model_case_values:
   vllm:
     mla_module:

@@ -43,6 +43,27 @@ model_case_values:
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
     - id: qwen35_397b_attention
       model_path: Qwen/Qwen3.5-397B-A17B
+      # Audited AgentX history range; exact points are coverage choices, not
+      # claims of observed per-rank forwards. See agentic_coverage.md.
+      long_history_cases:
+        context:
+          - [1, 24576, 0]
+          - [1, 32768, 0]
+          - [1, 40960, 0]
+          - [1, 65536, 0]
+          - [2, 65536, 0]
+          - [4, 65536, 0]
+          - [1, 131072, 0]
+          - [2, 131072, 0]
+          - [4, 131072, 0]
+          - [1, 262144, 0]
+          - [2, 262144, 0]
+          - [4, 262144, 0]
+        generation:
+          - [1, 262143, 0]
+          - [2, 262143, 0]
+          - [4, 262143, 0]
+          - [8, 262143, 0]
       model_aliases:
         - nvidia/Qwen3.5-397B-A17B-NVFP4
       num_attention_heads: 32

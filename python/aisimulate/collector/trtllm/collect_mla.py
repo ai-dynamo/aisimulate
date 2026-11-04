@@ -147,7 +147,15 @@ def run_mla(
     # collector/skips.py leaves SM80-89 out: AttentionOp aborts there on every case.
     if get_sm_version() < 90:
         raise ValueError("FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)")
-    scenario = Scenario()
+    num_generation_steps = 0 if is_context_phase else 1
+    # Synthetic table capacity, not a checkpoint context-limit override. rc29
+    # c76f4a856: attention/backends/interface.py:717,783 separates table length
+    # from YaRN scaling; trtllm.py:285,1910 grows it to the cache-manager limit.
+    scenario = Scenario(
+        max_position_embeddings=max(
+            Scenario.max_position_embeddings, input_len + (num_generation_steps + 1) * output_len
+        )
+    )
     q_lora_rank = scenario.q_lora_rank
     kv_lora_rank = scenario.kv_lora_rank
     qk_nope_head_dim = scenario.qk_nope_head_dim
@@ -178,8 +186,6 @@ def run_mla(
     num_heads = num_heads // tp_size
     num_kv_heads = num_heads
     context_sequence_lengths = [input_len for _ in range(batch_size)]
-
-    num_generation_steps = 0 if is_context_phase else 1
 
     _run_attn_for_backend(
         "TRTLLM",
