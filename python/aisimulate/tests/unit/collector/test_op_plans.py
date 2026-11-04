@@ -459,11 +459,11 @@ def test_module_skips_remove_points_per_backend():
 @pytest.mark.parametrize(
     ("sm", "dtypes"),
     [
-        (80, ["bfloat16"]),
-        (89, ["bfloat16", "fp8", "fp8_block"]),
-        (90, ["bfloat16", "fp8", "fp8_block"]),
-        (100, ["bfloat16", "fp8", "fp8_block", "nvfp4"]),
-        (120, ["bfloat16", "fp8", "fp8_block", "nvfp4"]),
+        (80, ["bfloat16", "w4a16_nvfp4"]),
+        (89, ["bfloat16", "fp8", "fp8_block", "w4a16_nvfp4"]),
+        (90, ["bfloat16", "fp8", "fp8_block", "w4a16_nvfp4"]),
+        (100, ["bfloat16", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4"]),
+        (120, ["bfloat16", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4"]),
     ],
 )
 def test_gemm_floors_remove_whole_dtypes(sm, dtypes):
@@ -489,7 +489,8 @@ def test_summary_counts_per_dtype_and_hashes_the_planned_ids():
     assert summary["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "nvfp4": shapes}
     assert summary["groups"] == len({(case.gemm_type, case.n, case.k) for case in op_plan.cases})
     assert summary["removed"] == [
-        {"region": "dtype=fp8_block", "cases": shapes, "reason": repr(_entry(backend="sglang", op="gemm"))}
+        {"region": "dtype=fp8_block", "cases": shapes, "reason": repr(_entry(backend="sglang", op="gemm"))},
+        {"region": "dtype=w4a16_nvfp4", "cases": shapes, "reason": repr(_entry(dtype="w4a16_nvfp4"))},
     ]
     assert summary["plan_hash"] == case_plan_hash([f"sglang.gemm:run_gemm:{case}" for case in op_plan.cases])
     assert "rows" not in summary
@@ -517,7 +518,7 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path, monkeypatch):
     assert set(plans) == set(_registered_ops("vllm"))
     gemm = plans["gemm"]
     shapes = gemm["by_dtype"]["bfloat16"]
-    assert gemm["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes}
+    assert gemm["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes, "w4a16_nvfp4": shapes}
     nvfp4 = repr(_entry(dtype=["nvfp4", "w4a8_mxfp4_mxfp8"]))
     assert gemm["removed"] == [{"region": "dtype=nvfp4", "cases": shapes, "reason": nvfp4}]
     rows = (tmp_path / "vllm_sm89_gemm.csv").read_text().splitlines()
