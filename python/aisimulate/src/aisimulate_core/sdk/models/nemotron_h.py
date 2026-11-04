@@ -96,7 +96,7 @@ class NemotronHModel(BaseModel):
         pattern = model_info["extra_params"].hybrid_override_pattern
         checkpoint = checkpoint_precision(raw)
         # shortcut: a checkpoint with W4A16_NVFP4 layers (Nemotron 3.5 Lightning) keeps the global
-        # modes, because no packaged table has w4a16_nvfp4 rows. Remove once those tables exist.
+        # modes, because no packaged table has w4a16_nvfp4 MoE rows. Remove once those tables exist.
         per_layer = "w4a16_nvfp4" not in checkpoint.algos
         if per_layer and not model_info["gemm_quant_mode_is_explicit"]:
             model._projection_quant_modes = _projection_modes(

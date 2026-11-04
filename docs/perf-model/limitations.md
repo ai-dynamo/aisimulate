@@ -65,8 +65,9 @@ projections. It also prices its routed experts per layer.
 - On non-Blackwell systems, an NVFP4 projection or expert runs weight-only
   (`nvfp4_wo`), as the global NVFP4 mode does.
 - A checkpoint that lists `W4A16_NVFP4` layers, such as Nemotron 3.5
-  Lightning, keeps the global modes, because no packaged table has
-  `w4a16_nvfp4` rows yet.
+  Lightning, keeps the global modes. No packaged table has `w4a16_nvfp4` MoE
+  rows yet, and only the vLLM 0.30.0 b200 and gb200 tables have
+  `w4a16_nvfp4` GEMM rows.
 
 If layers give a projection or the routed experts different precisions, the
 SDK prices each precision for its own count of layers. The MoE dispatch ops
