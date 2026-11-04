@@ -5864,5 +5864,289 @@
       "reason": "outside subsequent-in-worker pass-2 scope"
     }
   ],
-  "input_sha256": "7af4e6b71f2fdca1f5eec5b596e446d0f7727995bf8ec114e1dd96743490be8e"
+  "input_sha256": "7af4e6b71f2fdca1f5eec5b596e446d0f7727995bf8ec114e1dd96743490be8e",
+  "qualified_incremental_execution_component": {
+    "scope": "H100/TRT context native pass 2 execution component only; six new physical points in replicate 3 counted once",
+    "participating_gpus": 1,
+    "tp_metadata_is_not_gpu_multiplicity": true,
+    "not_additive_to_inclusive_point_costs": true,
+    "overlap_note": "Execution is nested in inclusive native point costs wherever the same points are observed; never add forward or execution again.",
+    "comparisons_are_alternatives_not_additive": true,
+    "shared_model_new_case_overlap": 6,
+    "S_minus_M_savings": null,
+    "validation_scope": "unchanged full 12-point replicate-3 component and whole Q16/KV1 holdouts",
+    "full_geometry_max_error": 0.03583105071823248,
+    "full_third_component_error": 0.0037610670716822603,
+    "comparisons": {
+      "S_minus_B": {
+        "new_physical_case_count": 6,
+        "retained_control_count": 6,
+        "new_actual_execution_gpu_hours": 0.0018399148849776894,
+        "new_predicted_execution_gpu_hours": 0.0018513903845208783,
+        "new_points": [
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:18",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.8107073410064913,
+            "predicted_seconds": 0.8219459049643888,
+            "relative_error": 0.013862664600945651,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "32",
+              "num_kv_heads": "2",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:19",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 3.258443890954368,
+            "predicted_seconds": 3.268999958360382,
+            "relative_error": 0.003239603859780615,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "32",
+              "num_kv_heads": "2",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:20",
+            "replicate": 3,
+            "geometry_role": "whole_geometry_holdout",
+            "actual_seconds": 0.40361602598568425,
+            "predicted_seconds": 0.4141035627317232,
+            "relative_error": 0.025983945311455377,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "16",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:21",
+            "replicate": 3,
+            "geometry_role": "whole_geometry_holdout",
+            "actual_seconds": 1.6455715729971416,
+            "predicted_seconds": 1.63763058942972,
+            "relative_error": 0.004825668902968683,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "16",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:22",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.10833022597944364,
+            "predicted_seconds": 0.10822180605722403,
+            "relative_error": 0.001000827989043225,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "4",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:23",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.39702452899655327,
+            "predicted_seconds": 0.4141035627317232,
+            "relative_error": 0.04301757822957638,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "4",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          }
+        ],
+        "retained_control_sample_ids": [
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:12",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:13",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:14",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:15",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:16",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:17"
+        ]
+      },
+      "M_minus_B": {
+        "new_physical_case_count": 6,
+        "retained_control_count": 6,
+        "new_actual_execution_gpu_hours": 0.0018399148849776894,
+        "new_predicted_execution_gpu_hours": 0.0018513903845208783,
+        "new_points": [
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:18",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.8107073410064913,
+            "predicted_seconds": 0.8219459049643888,
+            "relative_error": 0.013862664600945651,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "32",
+              "num_kv_heads": "2",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:19",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 3.258443890954368,
+            "predicted_seconds": 3.268999958360382,
+            "relative_error": 0.003239603859780615,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "32",
+              "num_kv_heads": "2",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:20",
+            "replicate": 3,
+            "geometry_role": "whole_geometry_holdout",
+            "actual_seconds": 0.40361602598568425,
+            "predicted_seconds": 0.4141035627317232,
+            "relative_error": 0.025983945311455377,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "16",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:21",
+            "replicate": 3,
+            "geometry_role": "whole_geometry_holdout",
+            "actual_seconds": 1.6455715729971416,
+            "predicted_seconds": 1.63763058942972,
+            "relative_error": 0.004825668902968683,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "16",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:22",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.10833022597944364,
+            "predicted_seconds": 0.10822180605722403,
+            "relative_error": 0.001000827989043225,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "1",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "4",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          },
+          {
+            "sample_id": "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:23",
+            "replicate": 3,
+            "geometry_role": "fit",
+            "actual_seconds": 0.39702452899655327,
+            "predicted_seconds": 0.4141035627317232,
+            "relative_error": 0.04301757822957638,
+            "physical_case": {
+              "attn_dtype": "bfloat16",
+              "batch_size": "4",
+              "dispatch": "",
+              "head_dim": "256",
+              "input_len": "32768",
+              "kv_cache_dtype": "bfloat16",
+              "num_heads": "4",
+              "num_kv_heads": "1",
+              "window_size": "0"
+            }
+          }
+        ],
+        "retained_control_sample_ids": [
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:12",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:13",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:14",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:15",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:16",
+          "h100_sxm-trtllm-features-28447:native-attention_context-rep3:point:17"
+        ]
+      }
+    },
+    "inventory_csv_sha256": {
+      "B": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8",
+      "S": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce",
+      "M": "5ebf25780832c72a6f8d8a48cfad63e597c481649e872f64dd5ce7a1bd76b507"
+    },
+    "preparation_gpu_hours": null,
+    "cold_setup_gpu_hours": null,
+    "whole_worker_gpu_hours": null,
+    "fleet_gpu_hours": null
+  }
 }

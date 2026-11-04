@@ -91,13 +91,38 @@ Total warmup/capture forward invocation counts remain unknown; the timed-work fe
 an empirical proxy for the resolved five-phase execution clock. Preparation remains unqualified,
 so no total point, one-pass worker, cold/setup or fleet forecast follows from this pass.
 
+## Added-point execution component
+
+Intersecting the unchanged third-replicate predictions with the frozen B/S/M
+physical case keys identifies **six added points and six retained controls**.
+Only the six added points are priced below, once each; training repeats and
+retained controls are not extra collection work. They are the B1/4, length-32768
+cases across the three recorded Q/KV geometries.
+
+| Comparison | Added points | Retained controls excluded | Observed execution GPUh | Predicted execution GPUh |
+|---|---:|---:|---:|---:|
+| M−B | 6 | 6 | 0.001839915 | 0.001851390 |
+| S−B | 6 | 6 | 0.001839915 | 0.001851390 |
+
+These are **conditional pass-2 execution components**, not full point costs.
+The original 12-point independent validation is unchanged. Preparation, cold
+initialization, normal one-pass worker and fleet totals remain unknown. Each
+operator benchmark uses one GPU; TP metadata describes local geometry and does
+not multiply collection GPU-hours. Actual NCCL ranks are accounted separately.
+
+The same six new cases occur in S and M, so this evidence establishes no S−M
+savings. **Execution is already part of an inclusive point clock wherever that
+point is observed: do not add this subtotal to the strict report's inclusive
+point components, or charge S and M together.** The JSON preserves the six
+physical keys, source sample IDs and exact inventory hashes.
+
 ## Frozen provenance
 
 - Inputs: [dense-feature-study.zip](dense-feature-study.zip) and [manifest](dense-feature-study.manifest.json).
 - Input member: `dense-feature-samples-876-frozen.jsonl`.
 - Input SHA256: `7af4e6b71f2fdca1f5eec5b596e446d0f7727995bf8ec114e1dd96743490be8e`.
 - Archive SHA256: `b38c9e9ff5ba9c254fb68776aa959a063bb9e17d4252b1885d8f92deca2978ec`.
-- Fit JSON SHA256: `010613c8c5184333254607be4a4df64aaabbee4a7ac3d039a768c08d4370fc08`.
+- Fit JSON SHA256: `45dfd037ece9eb7bc1bb02619534175804712e523f3cd31c228a320d30c1e0e6`.
 - Fitter: `a8ba2dc16b6a057b3754435c5dbdb9e48df6b667` (public byte-identical equivalent `8666fe23e5d6df47f4113c1c614a6d7460e1b0a3`).
 - Fitter source SHA256: `fd9c2f120c23aa1ca71ba728476e81c4d80f99d0dae14d62ad96ca451c13818a`.
 - CPU fit used NumPy `2.4.6`; source code and unchanged gates define reproduction.
