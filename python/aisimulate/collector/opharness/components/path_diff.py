@@ -5,14 +5,10 @@
 PROFILER-MEASURED ON BOTH SIDES (owner rule 2026-09-19: selector/class names
 are leads, never the verdict; only captured kernels count).
 
-Two modes:
-
-  --capture   (runs INSIDE the framework container, same interpreter as the
-              collector) Execute a collector command under torch.profiler and
-              dump the executed CUDA kernel names to JSON. torch.profiler is
-              chosen because it is what the serving probes use — same capture,
-              same normalization, so the two sides are directly comparable.
-              nsys is the escalation tool for cases torch.profiler cannot see.
+The collector side is the result of `collect.py --ops probe.trace_case` (one planned
+case run under torch.profiler, the same capture the serving probes use; nsys is the
+escalation tool for cases torch.profiler cannot see). components/gates.py schedules
+those probes and calls diff() for every gate.
 
   --diff      (host) Translate BOTH kernel sets — the collector capture and
               the serving probe's records.jsonl entry — through the ONE
@@ -30,13 +26,9 @@ Two modes:
                           kernel-NAME overlap inside those families instead.
                 invalid-capture  the capture command itself failed
 
-Usage (capture, in-container):
-  python3 path_diff.py --capture --out /out/cap.json -- \
-      python3 collector/vllm/collect_mla_module.py --mode context ...
-
-Usage (diff, host):
+Usage (host):
   AIS_PROBE_WORKSPACE=<ws> python3 path_diff.py --diff \
-      --capture-file facts/pathdiff/cap.json --repo deepseek-ai/DeepSeek-V3.2 \
+      --capture-file <shard>/probe_trace_case.json --repo deepseek-ai/DeepSeek-V3.2 \
       --framework vllm --version 0.29.0 [--op-hint 'attn|mla|sparse']
 """
 
@@ -56,53 +48,6 @@ ROOT = Path(
     or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
     or Path.cwd()
 )
-
-
-# --------------------------------------------------------------------------
-# capture (in-container; only stdlib + torch)
-
-
-def capture(argv: list[str], out: str) -> int:
-    import runpy
-
-    import torch
-    from torch.profiler import ProfilerActivity, profile
-
-    # Cell selection: a capture names ONE planned case (op_smoke.run_planned /
-    # planned_row); a whole-sweep capture unions every length/prefix-conditional
-    # path and matches no serving record. Any AIC_/AIS_ variable still set is
-    # recorded so the verdict shows it (V4 rule 5: rows never depend on one).
-    cell_env = {
-        k: v
-        for k, v in os.environ.items()
-        if k.startswith(("AIC_", "AIS_")) and k not in ("AIS_PROBE_WORKSPACE", "AIS_GENERATOR_SRC", "AIC_GENERATOR_SRC")
-    }
-    script, args = argv[0], argv[1:]
-    sys.argv = [script] + args
-    err = None
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        try:
-            runpy.run_path(script, run_name="__main__")
-        except SystemExit as e:
-            # 10 is collector.helper.EXIT_CODE_RESTART: the collector asks the
-            # executor to recycle its worker AFTER the case ran — a protocol
-            # signal, not a failure (trtllm collect_moe.py:830).
-            if e.code not in (0, None, 10):
-                err = f"exit={e.code}"
-        except Exception as e:  # capture is still evidence on failure
-            err = f"{type(e).__name__}: {e}"
-        torch.cuda.synchronize()
-    kernels = sorted(
-        {
-            ev.key
-            for ev in prof.key_averages()
-            if (getattr(ev, "self_device_time_total", 0) or getattr(ev, "self_cuda_time_total", 0)) > 0
-            and not ev.key.startswith(("aten::", "Memcpy", "Memset", "cuda", "Cuda"))
-        }
-    )
-    Path(out).write_text(json.dumps({"cmd": argv, "env": cell_env or None, "error": err, "kernels": kernels}, indent=1))
-    print(f"path_diff capture: {len(kernels)} kernels -> {out}" + (f" (RUN ERROR: {err})" if err else ""))
-    return 0
 
 
 # --------------------------------------------------------------------------
@@ -350,8 +295,31 @@ def select_serving(record: dict, phase: str | None, op_hint: str | None, is_laun
     return {k for k in kernels if not is_launcher(k)}, scoped
 
 
+def load_collector_side(files) -> dict:
+    """The collector side of a gate from one or more files: a ``probe.trace_case`` result
+    (``{"result": {"kernels", "error", "env", "row", ...}}``) or a legacy capture
+    (``{"kernels", "error", "cmd", "env"}``). Several files (a gate's ``also`` cases) union
+    their kernels; the first error wins."""
+    files = [files] if isinstance(files, (str, Path)) else list(files)
+    kernels, errors, cmds, envs = set(), [], [], {}
+    for f in files:
+        doc = json.loads(Path(f).read_text())
+        part = doc.get("result") or {}
+        if "result" in doc or "probe" in doc:
+            errors.append(doc.get("error") or part.get("error"))
+            cmds.append(f"probe.{doc.get('probe')} {part.get('op')} {part.get('row')}")
+            envs.update(part.get("env") or {})
+            kernels.update(part.get("kernels") or [])
+        else:
+            errors.append(doc.get("error"))
+            cmds.append(doc.get("cmd"))
+            envs.update(doc.get("env") or {})
+            kernels.update(doc.get("kernels") or [])
+    return {"kernels": sorted(kernels), "error": next((e for e in errors if e), None), "cmd": cmds, "env": envs or None}
+
+
 def diff(
-    capture_file: str,
+    capture_file,
     repo: str,
     framework: str,
     version: str,
@@ -370,7 +338,7 @@ def diff(
     inferred_roles, inferred_phase = infer_target(gate_name or (Path(save).stem if save else None))
     target_roles = target_roles or inferred_roles
     phase = phase or inferred_phase
-    cap = json.loads(Path(capture_file).read_text())
+    cap = load_collector_side(capture_file)
     # custom-op LAUNCHERS shadow their kernels under a second name
     # (_vllm_fa3_C::fwd wraps flash::FlashAttnFwdSm90) — same exclusion
     # build_ops applies to serving orphans, applied here to both sides
@@ -456,7 +424,7 @@ def diff(
         "version": version,
         # reproducibility: a verdict must name both inputs and the scoping it
         # was computed under, or it cannot be re-derived after a taxonomy change
-        "capture_file": str(capture_file),
+        "capture_file": str(capture_file) if isinstance(capture_file, (str, Path)) else [str(f) for f in capture_file],
         "capture_cmd": cap.get("cmd"),
         "capture_env": cap.get("env"),  # the collector cell filters the capture ran under
         "capture_run_error": cap.get("error"),
@@ -493,7 +461,11 @@ def diff(
         "model. Graded on the target roles only: every collector kernel of a target "
         "role must name-match a serving kernel of that role in the selected phase.",
     }
-    report["capture_sha256"] = hashlib.sha256(Path(capture_file).read_bytes()).hexdigest()[:16]
+    report["capture_sha256"] = hashlib.sha256(
+        b"".join(
+            Path(f).read_bytes() for f in ([capture_file] if isinstance(capture_file, (str, Path)) else capture_file)
+        )
+    ).hexdigest()[:16]
     report["serving_record"]["exec_fingerprint"] = serving.get("exec_fingerprint")
     report["serving_record"]["evidence_status"] = serving.get("evidence_status")
     print(json.dumps(report, indent=1, ensure_ascii=False))
@@ -551,10 +523,8 @@ def summarize_report(report: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--capture", action="store_true")
     ap.add_argument("--diff", action="store_true")
-    ap.add_argument("--out", help="capture output json")
-    ap.add_argument("--capture-file")
+    ap.add_argument("--capture-file", action="append", help="probe.trace_case result (repeat for a gate's also cases)")
     ap.add_argument("--repo")
     ap.add_argument("--framework", default="vllm")
     ap.add_argument("--version")
@@ -592,13 +562,7 @@ def main() -> int:
         choices=["prefill", "decode", "profile_run"],
         help="select serving evidence from this execution phase only",
     )
-    ap.add_argument("cmd", nargs="*", help="capture mode: script + args (after --)")
     args = ap.parse_args()
-    if args.capture:
-        cmd = args.cmd
-        if cmd and cmd[0] == "python3":
-            cmd = cmd[1:]
-        return capture(cmd, args.out)
     if args.diff:
         return diff(
             args.capture_file,
@@ -614,7 +578,7 @@ def main() -> int:
             tuple(args.target_roles.split(",")) if args.target_roles else None,
             args.phase,
         )
-    ap.error("pass --capture or --diff")
+    ap.error("pass --diff")
 
 
 if __name__ == "__main__":

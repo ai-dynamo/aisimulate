@@ -19,25 +19,31 @@ COMPONENTS = Path(__file__).resolve().parents[4] / "collector" / "opharness" / "
 
 @pytest.fixture()
 def wc(tmp_path, monkeypatch):
-    """A scratch harness dir (results, captures, workflows) beside a scratch collector dir."""
+    """A scratch harness dir (results, workflows) and gates table beside a scratch collector dir."""
     spec = importlib.util.spec_from_file_location("workflow_check_t", COMPONENTS / "workflow_check.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["workflow_check_t"] = mod
     spec.loader.exec_module(mod)
     harness = tmp_path / "harness"
-    (harness / "components" / "captures").mkdir(parents=True)
+    (harness / "components").mkdir(parents=True)
     (harness / "results" / "sm90" / "pathdiff").mkdir(parents=True)
     (harness / "workflows").mkdir()
     monkeypatch.setattr(mod, "HARNESS", harness)
+    monkeypatch.setattr(mod, "GATES_TABLE", tmp_path / "gates.yaml")
     return mod
 
 
-def _gates_script(wc, gates):
-    (wc.HARNESS / "components" / "captures" / "verdicts_all.sh").write_text(
-        "run() { python3 $PD --diff --framework vllm --version 0.29.0 --save-verdict $OUT/$2.json; }\n"
-        + "".join(f"run cap_{g} {g} org/m auto hint\n" for g in gates)
-        + "# run cap_x explained_x org/m auto hint\n"
-    )
+def _gates_table(wc, rows, planned=None):
+    """A scratch gates.yaml for backend vllm. ``planned`` maps SM -> gate names whose case the
+    plan holds there (default: every gate on every SM); it stands in for the op plan."""
+    doc = {"hints": {"vllm": {"H": "x"}}, "gates": []}
+    for row in rows:
+        row = {"gate": row} if isinstance(row, str) else row
+        base = {"backend": "vllm", "op": "gemm", "select": {"_gate": row["gate"]}, "repo": "org/m", "kv": "auto"}
+        doc["gates"].append({**base, "hint": "H", **row})
+    wc.GATES_TABLE.write_text(yaml.safe_dump(doc))
+    names = {g["gate"] for g in doc["gates"]}
+    wc._gates_module()._matches = lambda backend, op, sm, select: select["_gate"] in (planned or {}).get(sm, names)
 
 
 def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0"):
@@ -56,7 +62,7 @@ P = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
 
 
 def test_one_identity_free_verdict_does_not_satisfy_the_declared_gates(wc):
-    _gates_script(wc, ["gemm_fp8_M", "attn_ctx_M"])
+    _gates_table(wc, ["gemm_fp8_M", "attn_ctx_M"])
     _verdict(wc, "gemm_fp8_M")
     ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "1/2 declared gates without a verdict" in reason
@@ -69,17 +75,18 @@ def test_one_identity_free_verdict_does_not_satisfy_the_declared_gates(wc):
     assert ok is False and "attn_ctx_M=diverged" in reason
     _verdict(wc, "attn_ctx_M")
     assert wc.pred_gates_aligned(P) == (True, "2 gates in scope, all aligned")
-    assert wc.declared_gates("vllm", "0.29.0") == {"gemm_fp8_M", "attn_ctx_M"}  # commented lines are not gates
+    assert wc.declared_gates("vllm", "0.29.0") == {"gemm_fp8_M", "attn_ctx_M"}
 
 
 def test_no_declared_gates_is_not_aligned(wc):
+    _gates_table(wc, [])
     ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "no gates declared" in reason
 
 
 def test_repo_and_family_narrow_the_gates_in_scope(wc):
     """onboard_model passes repo=, new_op_collector passes family=: the same check, scoped."""
-    _gates_script(wc, ["gemm_fp8_M", "attn_ctx_M"])
+    _gates_table(wc, ["gemm_fp8_M", "attn_ctx_M"])
     _verdict(wc, "gemm_fp8_M", repo="org/new")
     assert wc.pred_gates_aligned({**P, "family": "gemm"}) == (True, "1 gates in scope, all aligned")
     assert wc.pred_gates_aligned({**P, "family": "moe"})[0] is False
@@ -117,7 +124,7 @@ def test_evaluate_names_the_first_todo_and_flags_unknown_checks(wc):
     assert "unknown check" in state["steps"][1]["reason"]
 
 
-def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_path):
+def test_gate_coverage_is_checked_against_the_registry_not_the_table(wc, tmp_path):
     """Review 2026-09-29: the 0.30 gate rebuild kept 19 of 32 gates and
     the path check reported 19/19. gates_aligned without a repo/family filter requires
     a declared gate family for every registry op (or a recorded gate-free reason)."""
@@ -126,17 +133,10 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_pa
         'REGISTRY = [OpEntry(op="gemm"), OpEntry(op="gdn"), '
         'OpEntry(op="compute_scale"), OpEntry(op="msa_context_module")]\n'
     )
-    sh = wc.HARNESS / "components" / "captures" / "verdicts_vllm_0300.sh"
-    sh.write_text(
-        "python3 $PD --diff --framework vllm --version 0.30.0 \n"
-        "run gemm_bf16 gemm_bf16_Llama meta-llama/Llama auto ''\n"
-        "run gdn_ctx gdn_ctx_Qwen Qwen/Q auto ''\n"
-    )
+    _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen"])
     ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
     assert not ok and "gdn:^gdn_gen" in reason and "msa_context_module" in reason
-    sh.write_text(
-        sh.read_text() + "run gdn_gen gdn_gen_Qwen Qwen/Q auto ''\nrun msa_ctx msa_ctx_M3 MiniMaxAI/M3 auto ''\n"
-    )
+    _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen", "gdn_gen_Qwen", "msa_ctx_M3"])
     ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
     assert not ok and "without a verdict" in reason  # covered now; the verdicts are still missing
     # an op the table does not know is a finding, never silently gate-free
@@ -145,43 +145,22 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_pa
     assert not ok and "brand_new_op" in reason
 
 
-def test_platform_floor_gates_are_declared_coverage_but_not_expected_on_that_sm(wc):
-    """A gate marked FLOOR_SM=<sm> has no serving instance on that SM by framework
-    fact (sm120 fp8-KV dense MLA): coverage still counts it, path_aligned on that
-    SM does not wait for a verdict, other SMs grade it normally."""
-    sh = wc.HARNESS / "components" / "captures" / "verdicts_vllm_0300.sh"
-    sh.write_text(
-        "python3 $PD --diff --framework vllm --version 0.30.0 \n"
-        'run mla_ctx_bf16 mla_ctx_bf16_DeepSeek-V3 deepseek-ai/DeepSeek-V3 auto "$MLA"\n'
-        'FLOOR_SM=sm120 FLOOR_NOTE="TRITON_MLA fp8-KV smem" '
-        'run mla_ctx_fp8 mla_ctx_fp8_DeepSeek-R1 deepseek-ai/DeepSeek-R1 fp8 "$MLA"\n'
-        'SERVING_RAW=facts/x.json run dsa_ctx_fp8 dsa_ctx_fp8_s512 deepseek-ai/DeepSeek-V3.2 fp8 "$DSA"\n'
-    )
-    assert wc.declared_gates("vllm", "0.30.0") == {
+def test_the_plan_and_no_serving_floors_decide_the_gates_on_an_sm(wc):
+    """A gate exists on an SM only where its case is planned; a no_serving floor (the model cannot
+    be served on that SM's probe box) keeps it out of path_aligned there while coverage counts it."""
+    rows = [
         "mla_ctx_bf16_DeepSeek-V3",
-        "mla_ctx_fp8_DeepSeek-R1",
+        {"gate": "mla_ctx_fp8_DeepSeek-R1", "no_serving": {"sm120": "TRITON_MLA fp8-KV smem", "sm89": "capacity"}},
         "dsa_ctx_fp8_s512",
-    }
+    ]
+    _gates_table(wc, rows, planned={100: {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1"}})
+    full = {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.30.0") == full
     assert wc.declared_gates("vllm", "0.30.0", "sm120") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
-    assert wc.declared_gates("vllm", "0.30.0", "sm90") == wc.declared_gates("vllm", "0.30.0")
-
-
-def test_floor_sm_accepts_a_comma_list():
-    """FLOOR_SM=sm120,sm89 declares one platform floor for both SMs; an SM not in the list still owns the gate."""
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    comp = Path(__file__).resolve().parents[4] / "collector" / "opharness" / "components"
-    spec = importlib.util.spec_from_file_location("wfc_floor", comp / "workflow_check.py")
-    wfc = importlib.util.module_from_spec(spec)
-    sys.modules["wfc_floor"] = wfc
-    spec.loader.exec_module(wfc)
-    full = wfc.declared_gates("vllm", "0.30.0")
-    assert "mla_ctx_fp8_DeepSeek-R1" in full
-    for sm in ("sm120", "sm89"):
-        assert "mla_ctx_fp8_DeepSeek-R1" not in wfc.declared_gates("vllm", "0.30.0", sm)
-    assert "mla_ctx_fp8_DeepSeek-R1" in wfc.declared_gates("vllm", "0.30.0", "sm90")
+    assert wc.declared_gates("vllm", "0.30.0", "sm89") == {"mla_ctx_bf16_DeepSeek-V3", "dsa_ctx_fp8_s512"}
+    assert wc.declared_gates("vllm", "0.30.0", "sm90") == full
+    # on SM100 the plan holds only the two MLA cases: the DSA gate is not a gate there
+    assert wc.declared_gates("vllm", "0.30.0", "sm100") == {"mla_ctx_bf16_DeepSeek-V3", "mla_ctx_fp8_DeepSeek-R1"}
 
 
 def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):

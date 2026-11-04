@@ -15,7 +15,7 @@ collector overview's "Every pin bump" row; this table adds the serving side.
 | 3 | Source check | AI | diff the framework between the two pins for the family's selector, kernels and metadata on every SM in scope; cite file and symbol for anything the collector replicates |
 | 4 | Serving identity | script | `probe_driver.py --plan --only <representative models>` -> `--emit-queues` -> `--records` -> `--matrix`: a new `results/<sm>/<fw>-<ver>.yaml`; its diff against the old one is the identity report |
 | 5 | Smoke | script | `collect.py --smoke` / `--limit` / `--case-filter` for the family's ops through the collection pipeline, on one system per SM generation |
-| 6 | Path alignment | script | `components/path_diff.py` for the family's gates; a capture names its cell with `run_planned`. Check: `gates_aligned` |
+| 6 | Path alignment | script | `components/gates.py plan` -> the collection pipeline -> `gates.py grade`: each gate's planned case traced by `probe.trace_case` vs the serving records. Check: `gates_aligned` |
 | 7 | Triage | AI | new fails vs the previous run of the same (backend, version). A model the backend cannot serve or a block that cannot run -> a `collector/skips.py` entry with its reason; a collector bug -> a fix; a path the table measures differently -> a deviation note at that code |
 | 8 | Re-check skips and notes | AI | rule 7: `components/case_inventory.py --fw --skips [--ops]` prints the record skeleton; every in-scope entry is kept by a source check or a run, or deleted -> `results/<sm>/rechecks/<fw>-<ver>.yaml`. Check: `skips_rechecked` |
 | 9 | Collect | script | recollect the families whose kernels changed; declare reuse (`reuse.yaml` with `approved_by`) for the rest |

@@ -1,0 +1,749 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Path gates: each names ONE planned collector case, traced on a GPU by
+#   collect.py --ops probe.trace_case --case-filter backend=..,op=..,<select>
+# and graded by path_diff against the serving record of `repo` at kv `kv`, scoped by the
+# backend's `hint` regex. A gate whose select matches no planned case on an SM is not a gate
+# there (the plan decides). `no_serving` names SMs where serving cannot run the model at all
+# (a probe-box fact, not a plan fact); `also` traces further planned cases into the same
+# verdict; `env` is a capture-only switch the collector reads; `serving_raw` grades against
+# a dedicated probe raw. The version graded is the manifest's framework default.
+hints:
+  vllm: {GEMM: gemm|linear|proj|nvjet|gemvx|cublas|deepgemm|scaled_mm|quant|cutlass, MOE: moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant,
+    GDN: gdn|delta|conv1d|linear|mamba|gated|recurrent, DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant, ATTN: attn|attention|flash|fwd|unified,
+    ENC: vision|vit|patch|encoder|flash|attn, DSA: mla|dsa|attn|indexer|flash|mqa|sparse|gemm|proj|deepgemm|quant, GEMM_M1: gemm|linear|proj|nvjet|gemvx|cublas|cutlass|skinny,
+    KDA: kda|delta|conv1d|linear|attn_res|gated|recurr, MSA: attn|sparse|msa|topk|index|score|merge}
+  sglang: {ATT: attn|attention|flash|fwd|triton, DSA: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk, MSA: attn|sparse|msa|topk|index|score|merge|block,
+    GEMM: gemm|linear|proj|deepgemm|cutlass|cublas|quant, MOE: moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_, GDN: gdn|delta|conv1d|linear|mamba|gated|recurr,
+    DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant, GLM5: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk,
+    KDA: kda|delta|conv1d|linear|attn_res|gated|recurr, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant, ENC: vision|vit|patch|encoder|flash|attn}
+  trtllm: {ATT: attn|attention|fmha|mha|flash|xqa, DSA: mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha, GEMM: gemm|linear|proj|deepgemm|cutlass|cublas|quant,
+    MOE: moe|expert|grouped|fused_moe|deepgemm|topk|routing|cutlass, GDN: gdn|delta|conv1d|linear|mamba|gated|recurr, DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant|fmha,
+    ENC: vision|vit|patch|encoder|flash|attn|fmha, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant|nvjet|cublas, MAMBA: mamba|ssm|chunk|scan|conv1d|selective|causal|state,
+    MSA: attn|sparse|msa|topk|index|score|merge|block}
+gates:
+- gate: gemm_fp8block_DeepSeek-V3.2
+  backend: vllm
+  op: gemm
+  select: {gemm_type: fp8_block, m: 4096, n: 7168, k: 16384}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: GEMM
+- gate: gemm_bf16_Llama-3.1-8B
+  backend: vllm
+  op: gemm
+  select: {gemm_type: bfloat16, m: 4096, n: 4096, k: 4096}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: GEMM
+- gate: moe_fp8block_DeepSeek-V3.2
+  backend: vllm
+  op: moe
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: MOE
+- gate: moe_bf16_gemma4-26B-A4B
+  backend: vllm
+  op: moe
+  select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced}
+  repo: google/gemma-4-26B-A4B
+  kv: auto
+  hint: MOE
+- gate: moe_mxfp4_gpt-oss-120b
+  backend: vllm
+  op: moe
+  select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced}
+  repo: openai/gpt-oss-120b
+  kv: auto
+  hint: MOE
+- gate: mla_ctx_bf16_DeepSeek-V3
+  backend: vllm
+  op: mla_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
+    prefix_len: 0}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
+- gate: mla_ctx_fp8_DeepSeek-R1
+  backend: vllm
+  op: mla_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm120: 'CC 12.0 / 8.9: the only dense-MLA backend TRITON_MLA needs 102400 B smem for fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem,
+      sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist', sm89: 'CC 12.0 / 8.9: the only dense-MLA backend TRITON_MLA needs 102400 B smem for
+      fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem, sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist'}
+  repo: deepseek-ai/DeepSeek-R1
+  kv: fp8
+  hint: MLA
+- gate: mla_gen_fp8_DeepSeek-R1
+  backend: vllm
+  op: mla_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm120: 'CC 12.0 / 8.9: the only dense-MLA backend TRITON_MLA needs 102400 B smem for fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem,
+      sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist', sm89: 'CC 12.0 / 8.9: the only dense-MLA backend TRITON_MLA needs 102400 B smem for
+      fp8-KV decode, the card allows 101376 B (findings sm120_triton_mla_fp8kv_smem, sm89_vllm_0300_probe_2026_10_04); no fp8-KV MLA serving record can exist'}
+  repo: deepseek-ai/DeepSeek-R1
+  kv: fp8
+  hint: MLA
+- gate: mla_bmm_gen_DeepSeek-V3
+  backend: vllm
+  op: mla_bmm_gen_pre
+  select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  also:
+  - op: mla_bmm_gen_post
+    select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
+- gate: gdn_ctx_Qwen3.5-0.8B
+  backend: vllm
+  op: gdn
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: gdn_gen_Qwen3.5-0.8B
+  backend: vllm
+  op: gdn
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
+  backend: vllm
+  op: dsv4_csa_context_module
+  select: {seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, model_path: sgl-project/DeepSeek-V4-Flash-FP8, attn_kind: csa, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture);
+      no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: fp8
+  hint: DSV4
+- gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
+  backend: vllm
+  op: dsv4_csa_generation_module
+  select: {seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, model_path: sgl-project/DeepSeek-V4-Flash-FP8, attn_kind: csa, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture);
+      no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: fp8
+  hint: DSV4
+- gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
+  backend: vllm
+  op: dsv4_hca_context_module
+  select: {seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, model_path: sgl-project/DeepSeek-V4-Flash-FP8, attn_kind: hca, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture);
+      no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: fp8
+  hint: DSV4
+- gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
+  backend: vllm
+  op: dsv4_hca_generation_module
+  select: {seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, model_path: sgl-project/DeepSeek-V4-Flash-FP8, attn_kind: hca, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture);
+      no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: fp8
+  hint: DSV4
+- gate: dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8
+  backend: vllm
+  op: dsv4_paged_mqa_logits_module
+  select: {batch_size: 1, seq_len: 4096, prefix_len: 0, tp_size: 1, kernel: paged_mqa_logits, model_path: sgl-project/DeepSeek-V4-Flash-FP8}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 hyperconnection / sparse-attention kernels are DeepGEMM SM90+/SM10x only (vLLM 0.30.0: hyperconnection.hpp:56 Unsupported architecture);
+      no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: fp8
+  hint: DSV4
+- gate: attn_ctx_Llama-3.1-8B
+  backend: vllm
+  op: attention_context
+  select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATTN
+- gate: attn_gen_Llama-3.1-8B
+  backend: vllm
+  op: attention_generation
+  select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATTN
+- gate: encoder_attn_Qwen3-VL-2B
+  backend: vllm
+  op: encoder_attention
+  select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
+  repo: Qwen/Qwen3-VL-2B-Instruct
+  kv: auto
+  hint: ENC
+- gate: dsa_ctx_bf16_DeepSeek-V3.2
+  backend: vllm
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 512, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: dsa_ctx_bf16_s4096_DeepSeek-V3.2
+  backend: vllm
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: dsa_ctx_fp8_s512_DeepSeek-V3.2
+  backend: vllm
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 512, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  serving_raw: facts/reprobe_nopc/04cea4da0eff_isl512.json
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: DSA
+- gate: dsa_ctx_fp8_s4096_DeepSeek-V3.2
+  backend: vllm
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: DSA
+- gate: dsa_gen_fp8_DeepSeek-V3.2
+  backend: vllm
+  op: dsa_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: DSA
+- gate: gemm_bf16_m1_Llama-3.1-8B
+  backend: vllm
+  op: gemm
+  select: {gemm_type: bfloat16, m: 1, n: 4096, k: 4096}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: GEMM_M1
+- gate: gemm_fp8block_m1_DeepSeek-V3.2
+  backend: vllm
+  op: gemm
+  select: {gemm_type: fp8_block, m: 1, n: 7168, k: 16384}
+  no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
+      fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: GEMM_M1
+- gate: kda_gen_Kimi-K3
+  backend: vllm
+  op: kda
+  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  env: {AIS_KDA_DECODE_PATHS: fused}
+  no_serving: {sm89: 'capacity: Kimi-K3 has no faithful dummy cut that fits one 44 GiB L40 (CUDA OOM at load, kimi-k3 vllm 0.30.0 probe); no KDA serving record can
+      exist on this box'}
+  repo: moonshotai/Kimi-K3
+  kv: auto
+  hint: KDA
+- gate: msa_ctx_MiniMax-M3
+  backend: vllm
+  op: msa_context_module
+  select: {seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16, model_path: MiniMaxAI/MiniMax-M3,
+    prefix_len: 0}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA
+- gate: msa_gen_MiniMax-M3
+  backend: vllm
+  op: msa_generation_module
+  select: {seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16, model_path: MiniMaxAI/MiniMax-M3,
+    prefix_len: 0}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA
+- gate: kda_ctx_Kimi-K3
+  backend: vllm
+  op: kda
+  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  no_serving: {sm89: 'capacity: Kimi-K3 has no faithful dummy cut that fits one 44 GiB L40 (CUDA OOM at load, kimi-k3 vllm 0.30.0 probe); no KDA serving record can
+      exist on this box'}
+  repo: moonshotai/Kimi-K3
+  kv: auto
+  hint: KDA
+- gate: attn_ctx_Llama-3.1-8B
+  backend: sglang
+  op: attention_context
+  select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATT
+- gate: attn_gen_Llama-3.1-8B
+  backend: sglang
+  op: attention_generation
+  select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATT
+- gate: attn_ctx_hd512_gemma-4-26B-A4B
+  backend: sglang
+  op: attention_context
+  select: {batch_size: 1, input_len: 4096, num_heads: 16, num_kv_heads: 2, head_dim: 512, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
+  repo: google/gemma-4-26B-A4B
+  kv: auto
+  hint: ATT
+- gate: dsa_ctx_bf16_DeepSeek-V3.2
+  backend: sglang
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: sparse (DSA) MLA kernels are SM90+/SM10x only (sglang 0.5.21: ''Sparse Attention Forward Kernel is only supported on SM90/SM100''); DeepSeek-V3.2
+      / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: dsa_gen_bf16_DeepSeek-V3.2
+  backend: sglang
+  op: dsa_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, compute_dtype: bfloat16, gemm_type: fp8_block, num_heads: 128, batch_size: 1, kv_cache_dtype: bfloat16, seq_len: 4096}
+  no_serving: {sm89: 'Ada: sparse (DSA) MLA kernels are SM90+/SM10x only (sglang 0.5.21: ''Sparse Attention Forward Kernel is only supported on SM90/SM100''); DeepSeek-V3.2
+      / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: dsa_ctx_fp8_DeepSeek-V3.2
+  backend: sglang
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, compute_dtype: bfloat16, gemm_type: fp8_block, num_heads: 128, batch_size: 1, kv_cache_dtype: fp8, seq_len: 4096,
+    prefix_len: 0}
+  no_serving: {sm89: 'Ada: sparse (DSA) MLA kernels are SM90+/SM10x only (sglang 0.5.21: ''Sparse Attention Forward Kernel is only supported on SM90/SM100''); DeepSeek-V3.2
+      / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: DSA
+- gate: dsa_gen_fp8_DeepSeek-V3.2
+  backend: sglang
+  op: dsa_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, compute_dtype: bfloat16, gemm_type: fp8_block, num_heads: 128, batch_size: 1, kv_cache_dtype: fp8, seq_len: 4096}
+  no_serving: {sm89: 'Ada: sparse (DSA) MLA kernels are SM90+/SM10x only (sglang 0.5.21: ''Sparse Attention Forward Kernel is only supported on SM90/SM100''); DeepSeek-V3.2
+      / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: fp8
+  hint: DSA
+- gate: msa_ctx_MiniMax-M3
+  backend: sglang
+  op: msa_context_module
+  select: {model_path: MiniMaxAI/MiniMax-M3, seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
+    prefix_len: 0}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA
+- gate: msa_gen_MiniMax-M3
+  backend: sglang
+  op: msa_generation_module
+  select: {model_path: MiniMaxAI/MiniMax-M3, seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
+    prefix_len: 0}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA
+- gate: mla_ctx_DeepSeek-V3
+  backend: sglang
+  op: mla_context
+  select: {input_len: 4096, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: DSA
+- gate: mla_gen_DeepSeek-V3
+  backend: sglang
+  op: mla_generation
+  select: {input_len: 4095, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: DSA
+- gate: gemm_fp8block_DeepSeek-V3
+  backend: sglang
+  op: gemm
+  select: {gemm_type: fp8_block, m: 4096, n: 7168, k: 16384}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: GEMM
+- gate: moe_fp8block_DeepSeek-V3
+  backend: sglang
+  op: moe
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MOE
+- gate: gdn_ctx_Qwen3.5-0.8B
+  backend: sglang
+  op: gdn
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: gdn_gen_Qwen3.5-0.8B
+  backend: sglang
+  op: gdn
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
+  backend: sglang
+  op: dsv4_csa_context_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph
+      capture); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
+  backend: sglang
+  op: dsv4_csa_generation_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph
+      capture); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
+  backend: sglang
+  op: dsv4_hca_context_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, prefix_len: 0}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph
+      capture); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
+  backend: sglang
+  op: dsv4_hca_generation_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph
+      capture); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8
+  backend: sglang
+  op: dsv4_paged_mqa_logits_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, tp_size: 1, batch_size: 1, seq_len: 1, prefix_len: 4096}
+  no_serving: {sm89: 'Ada: DeepSeek-V4 sparse decode needs DeepGEMM attention kernels for arch_major 9/10/12 only (sglang 0.5.21: attention.hpp:496 assertion at CUDA-graph
+      capture); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: glm5_dsa_attn_GLM-5
+  backend: sglang
+  op: glm5_dsa_attn_module
+  select: {batch_size: 1, seq_len: 4096, prefix_len: 0, model_path: zai-org/GLM-5}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: zai-org/GLM-5
+  kv: auto
+  hint: GLM5
+- gate: glm5_mqa_logits_GLM-5
+  backend: sglang
+  op: glm5_mqa_logits_module
+  select: {batch_size: 1, seq_len: 4096, prefix_len: 0, model_path: zai-org/GLM-5}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: zai-org/GLM-5
+  kv: auto
+  hint: GLM5
+- gate: glm5_topk_GLM-5
+  backend: sglang
+  op: glm5_topk_module
+  select: {batch_size: 1, seq_len: 4096, prefix_len: 0, model_path: zai-org/GLM-5}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: zai-org/GLM-5
+  kv: auto
+  hint: GLM5
+- gate: kda_ctx_Kimi-K3
+  backend: sglang
+  op: kda
+  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: moonshotai/Kimi-K3
+  kv: auto
+  hint: KDA
+- gate: kda_gen_Kimi-K3
+  backend: sglang
+  op: kda
+  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: moonshotai/Kimi-K3
+  kv: auto
+  hint: KDA
+- gate: mla_bmm_gen_DeepSeek-V3
+  backend: sglang
+  op: mla_bmm_gen_pre
+  select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  also:
+  - op: mla_bmm_gen_post
+    select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
+      serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
+- gate: encoder_attn_Qwen3-VL-2B
+  backend: sglang
+  op: encoder_attention
+  select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
+  repo: Qwen/Qwen3-VL-2B-Instruct
+  kv: auto
+  hint: ENC
+- gate: attn_ctx_Llama-3.1-8B
+  backend: trtllm
+  op: attention_context
+  select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: bfloat16, attn_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATT
+- gate: attn_gen_Llama-3.1-8B
+  backend: trtllm
+  op: attention_generation
+  select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+  hint: ATT
+- gate: dsa_ctx_bf16_DeepSeek-V3.2
+  backend: trtllm
+  op: dsa_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3.2 sparse MLA needs DeepGEMM SM90+/SM10x attention kernels (attention.hpp arch assert) on top of the V3
+      MoE/MLA floors; no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: dsa_gen_bf16_DeepSeek-V3.2
+  backend: trtllm
+  op: dsa_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3.2 sparse MLA needs DeepGEMM SM90+/SM10x attention kernels (attention.hpp arch assert) on top of the V3
+      MoE/MLA floors; no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3.2
+  kv: auto
+  hint: DSA
+- gate: mla_ctx_bf16_DeepSeek-V3
+  backend: trtllm
+  op: mla_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: DSA
+- gate: mla_gen_bf16_DeepSeek-V3
+  backend: trtllm
+  op: mla_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: DSA
+- gate: gemm_fp8block_DeepSeek-V3
+  backend: trtllm
+  op: gemm
+  select: {gemm_type: fp8_block, m: 4096, n: 7168, k: 16384}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: GEMM
+- gate: moe_fp8block_DeepSeek-V3
+  backend: trtllm
+  op: moe
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MOE
+- gate: gdn_ctx_Qwen3.5-0.8B
+  backend: trtllm
+  op: gdn
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: attn_ctx_fp8_Llama-3.1-8B
+  backend: trtllm
+  op: attention_context
+  select: {batch_size: 1, input_len: 4096, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, kv_cache_dtype: fp8, attn_dtype: bfloat16}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: fp8
+  hint: ATT
+- gate: attn_gen_fp8_Llama-3.1-8B
+  backend: trtllm
+  op: attention_generation
+  select: {batch_size: 1, input_len: 4095, num_heads: 32, num_kv_heads: 8, head_dim: 128, window_size: 0, attn_dtype: bfloat16, kv_cache_dtype: fp8}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: fp8
+  hint: ATT
+- gate: mla_ctx_fp8_DeepSeek-V3
+  backend: trtllm
+  op: mla_context_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: fp8
+  hint: DSA
+- gate: mla_gen_fp8_DeepSeek-V3
+  backend: trtllm
+  op: mla_generation_module
+  select: {model_path: deepseek-ai/DeepSeek-V3, seq_len: 4096, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
+    prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: fp8
+  hint: DSA
+- gate: dsv4_csa_ctx_DeepSeek-V4-Flash-FP8
+  backend: trtllm
+  op: dsv4_csa_context_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_csa_gen_DeepSeek-V4-Flash-FP8
+  backend: trtllm
+  op: dsv4_csa_generation_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_hca_ctx_DeepSeek-V4-Flash-FP8
+  backend: trtllm
+  op: dsv4_hca_context_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block, prefix_len: 0}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: dsv4_hca_gen_DeepSeek-V4-Flash-FP8
+  backend: trtllm
+  op: dsv4_hca_generation_module
+  select: {model_path: sgl-project/DeepSeek-V4-Flash-FP8, seq_len: 4096, batch_size: 1, tp_size: 1, gemm_type: fp8_block}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: ''DeepSeek-V4 requires Hopper or newer GPUs'' (model init RuntimeError); no serving record can exist'}
+  repo: sgl-project/DeepSeek-V4-Flash-FP8
+  kv: auto
+  hint: DSV4
+- gate: encoder_attn_Qwen3-VL-2B
+  backend: trtllm
+  op: encoder_attention
+  select: {batch_size: 1, seq_len: 1024, num_heads: 16, head_dim: 64}
+  repo: Qwen/Qwen3-VL-2B-Instruct
+  kv: auto
+  hint: ENC
+- gate: gdn_gen_Qwen3.5-0.8B
+  backend: trtllm
+  op: gdn
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  repo: Qwen/Qwen3.5-0.8B
+  kv: auto
+  hint: GDN
+- gate: mla_bmm_gen_DeepSeek-V3
+  backend: trtllm
+  op: mla_bmm_gen_pre
+  select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  also:
+  - op: mla_bmm_gen_post
+    select: {num_tokens: 1, num_heads: 128, dtype: bfloat16, num_warmups: 2, num_runs: 10}
+  no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
+      TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
+      no serving record can exist'}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
+- gate: mamba2_ctx_Nemotron-H-56B
+  backend: trtllm
+  op: mamba2
+  select: {phase: context, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128}
+  repo: nvidia/Nemotron-H-56B-Base-8K
+  kv: auto
+  hint: MAMBA
+- gate: mamba2_gen_Nemotron-H-56B
+  backend: trtllm
+  op: mamba2
+  select: {phase: generation, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128}
+  repo: nvidia/Nemotron-H-56B-Base-8K
+  kv: auto
+  hint: MAMBA
+- gate: msa_ctx_MiniMax-M3
+  backend: trtllm
+  op: msa_context_module
+  select: {model_path: MiniMaxAI/MiniMax-M3, seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
+    prefix_len: 0}
+  no_serving: {sm90: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache manager allocates
+      index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the
+      fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real', sm100: 'no serving record on this SM yet:
+      its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache manager allocates index-K for layers 3..N by checkpoint convention
+      while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer)
+      and drop this SM from the list; sm89 already grades for real', sm103: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy,
+      which cannot boot on trtllm (the KV cache manager allocates index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings
+      minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already
+      grades for real', sm120: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache
+      manager allocates index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05)
+      — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real'}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA
+- gate: msa_gen_MiniMax-M3
+  backend: trtllm
+  op: msa_generation_module
+  select: {model_path: MiniMaxAI/MiniMax-M3, seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
+    prefix_len: 0}
+  no_serving: {sm90: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache manager allocates
+      index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the
+      fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real', sm100: 'no serving record on this SM yet:
+      its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache manager allocates index-K for layers 3..N by checkpoint convention
+      while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer)
+      and drop this SM from the list; sm89 already grades for real', sm103: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy,
+      which cannot boot on trtllm (the KV cache manager allocates index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings
+      minimax_m3_dummy_dense_head_2026_10_05) — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already
+      grades for real', sm120: 'no serving record on this SM yet: its MiniMax-M3 probes ran on the 2-sparse-layer dummy, which cannot boot on trtllm (the KV cache
+      manager allocates index-K for layers 3..N by checkpoint convention while the model follows the cut config; findings minimax_m3_dummy_dense_head_2026_10_05)
+      — re-probe with the fixed m3 dummy (3-layer dense head + 1 sparse layer) and drop this SM from the list; sm89 already grades for real'}
+  repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+  hint: MSA

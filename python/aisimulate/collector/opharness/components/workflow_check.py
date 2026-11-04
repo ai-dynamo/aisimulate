@@ -130,32 +130,28 @@ def _case_inventory_module():
     return mod
 
 
-_GATE_LINE = re.compile(r'^(?:(?:SERVING_RAW|FLOOR_SM|FLOOR_NOTE)=(?:"[^"]*"|\S+)\s+)*run\s+(\S+)\s+(\S+)')
+GATES_TABLE = HERE / "gates.yaml"
+
+
+@functools.cache
+def _gates_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gates_wc", HERE / "gates.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
-    """Gate names the verdict scripts (components/captures/verdicts_*.sh)
-    declare for this (fw, version): every `run <capture> <gate> ...` line whose
-    script grades --framework fw --version version and whose output dir is the
-    gate dir (explained deviations write elsewhere and are not gates). Leading
-    SERVING_RAW= / FLOOR_SM= / FLOOR_NOTE= assignments still declare a gate;
-    with ``sm`` given, gates declared as a platform floor FOR THAT SM are left
-    out (they have no serving instance there by framework fact and carry a
-    platform-floor verdict file instead) — coverage checks pass sm=None."""
-    gates = set()
-    for sh in sorted((HARNESS / "components" / "captures").glob("verdicts_*.sh")):
-        text = sh.read_text()
-        if f"--framework {fw} " not in text or f"--version {version} " not in text:
-            continue
-        for line in text.splitlines():
-            m = _GATE_LINE.match(line)
-            if not m:
-                continue
-            floor = re.match(r"^FLOOR_SM=(\S+)", line)
-            if sm is not None and floor and sm in floor.group(1).split(","):  # FLOOR_SM=sm120,sm89
-                continue
-            gates.add(m.group(2))
-    return gates
+    """Gate names gates.yaml declares for backend ``fw`` (the version graded is the manifest's;
+    ``version`` names the verdict directory). With ``sm``, only gates whose case is planned on
+    that SM and that SM is not a ``no_serving`` floor for: the plan decides where a gate exists,
+    and a floor gets a platform-floor verdict instead. Coverage checks pass sm=None."""
+    rows = _gates_module().gates_in_scope(fw, sm, GATES_TABLE)
+    if sm is not None:
+        rows = [g for g in rows if sm not in (g.get("no_serving") or {})]
+    return {g["gate"] for g in rows}
 
 
 # Which gate-name families must exist for a backend registry op before the
@@ -237,7 +233,7 @@ def pred_gates_aligned(p):
     if p.get("family"):
         expected = {g for g in expected if g.startswith(p["family"])}
     if not expected:
-        return False, f"no gates declared in scope for {fw} {version} in components/captures/verdicts_*.sh"
+        return False, f"no gates declared in scope for {fw} {version} in components/gates.yaml"
     vd = HARNESS / "results" / "pathdiff" / sm / f"{fw}-{version}"
     missing, bad, foreign, named = [], [], [], 0
     for g in sorted(expected):

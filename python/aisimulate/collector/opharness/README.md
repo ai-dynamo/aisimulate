@@ -17,8 +17,8 @@ already answers (`collect.py --plan-only`, `--smoke`, `--case-filter`,
 | `components/probes/` | in-container probes: in-process for tp1, the real server (`probe_*_server.py`) for tp>1 |
 | `components/dummies.py`, `fetch_inputs.py` | depth-cut, width-true dummy checkpoints from fetched configs |
 | `components/kernel_taxonomy.yaml` | kernel name -> backend label and role, one file for every SM (`sms:` scopes a rule) |
-| `components/path_diff.py` + `captures/` | a collector cell's kernels under the profiler vs the serving record; `verdicts_*.sh` declare the gates |
-| `components/op_smoke.py` | `run_planned` / `planned_row`: run the one planned case a capture names, as the collector runs it |
+| `components/gates.yaml` + `gates.py` | the path gates: each names one planned collector case; `gates.py plan` writes the `probe.trace_case` shards the collection pipeline runs, `gates.py grade` grades their kernels against the serving record |
+| `components/path_diff.py` | a collector case's kernels vs the serving record, through the same taxonomy |
 | `components/case_inventory.py` | the CPU plan diff against a base revision; `--skips` lists the entries a pin bump re-checks |
 | `components/workflow_check.py` | the four checks the workflows use |
 | `workflows/` | `upgrade_op`, `onboard_model`, `new_op_collector`: a step table (.md) and its checked steps (.yaml) |
@@ -49,14 +49,13 @@ reads it; otherwise cite the run (pipeline id, system, version) at the code.
   grade another box's evidence. SM103 uses the SM100 rules: every framework
   selects kernels by capability family (`major == 10`, `in (100, 103)`), so
   branch on the family, never on `sm == 100`.
-- **Captures** run inside the framework image with the checkout on
-  `PYTHONPATH`; a capture names one planned case (`run_planned`). A gate with no
-  serving instance on an SM by framework fact carries `FLOOR_SM=<sm>` in its
-  `run` line and writes a `platform-floor` verdict there.
-- **GPU route.** Probes and captures still run on a box with the framework
-  images. The next step moves them onto the collection pipeline through
-  `collect.py` (a per-case kernel trace and a probe entry), after which the
-  verdict scripts become one gate table read from the plan and the manifest.
+- **Gates** run on the collection pipeline: `gates.py plan --fw <fw> --sm <sm> --out <dir>`
+  writes a shard plan of `probe.trace_case` shards (collect.py runs each planned case once
+  under the profiler, its measurement child processes included), and `gates.py grade` reads
+  the unpacked job result. A gate exists on an SM where its case is planned; `no_serving`
+  marks an SM whose probe box cannot serve the model, which gets a `platform-floor` verdict.
+- **Serving probes** (`probe_driver.py`, `probes/`) still run on a box with the
+  framework images.
 
 ## Rules
 
