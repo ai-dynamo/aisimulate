@@ -492,17 +492,29 @@ def test_agentic_g2_runner_capability_remains_explicit(nested_rank, scopes, work
     "scopes,field,value",
     [
         (("dp_rank_local",), "num_workers", 2),
+        (("dp_rank_local", None), "num_prefill_workers", 2),
+        ((None, "cluster_shared"), "num_decode_workers", 3),
+    ],
+)
+def test_agentic_g2_accepts_multiple_replicas(nested_rank, scopes, field, value):
+    spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank)
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: value}))
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize(
+    "scopes,field,value",
+    [
         (("cluster_shared",), "num_workers", 0),
         (("dp_rank_local",), "num_workers", True),
-        (("dp_rank_local", None), "num_prefill_workers", 2),
-        ((None, "cluster_shared"), "num_decode_workers", 2),
         (("dp_rank_local", "cluster_shared"), "num_prefill_workers", 0),
     ],
 )
-def test_agentic_g2_rejects_unqualified_worker_counts(nested_rank, scopes, field, value):
+def test_agentic_g2_rejects_invalid_worker_counts(nested_rank, scopes, field, value):
     spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank)
     spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: value}))
-    with pytest.raises(ValueError, match="one aggregated worker or one prefill and one decode"):
+    with pytest.raises(ValueError, match="at least one worker on every role"):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
