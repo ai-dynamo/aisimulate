@@ -2183,6 +2183,14 @@ ops:
       - {framework: "vllm", version: "0.31.0", system: "h200_sxm", op_name: "gemm", gemm_dtype: "bfloat16", backends: ["cublas"], kernel_sources: ["torch.nn.functional.linear"]}
       - {framework: "vllm", version: "0.31.0", system: "h200_sxm", op_name: "gemm", gemm_dtype: "fp8", backends: ["cutlass"], kernel_sources: ["CutlassFP8ScaledMMLinearKernel"]}
       - {framework: "vllm", version: "0.31.0", system: "h200_sxm", op_name: "gemm", gemm_dtype: "fp8_block", backends: ["cutlass", "deepgemm", "flashinfer"], kernel_sources: ["CutlassFp8BlockScaledMMKernel", "DeepGemmFp8BlockScaledMMKernel", "FlashInferFp8BlockScaledMMKernel"]}
+      # Ascend 950DT (vllm_npu lane, data_backend vllm). Drafted by
+      # tools/perf_database/backend_facts.py from the shipped table, same as the
+      # b60 vllm_default rows: vllm-ascend's dispatch for an unquantized linear
+      # is not traced, so the slice is `unverified` until someone reads the
+      # kernel. The rows behind it are M4 synthetic staging data
+      # (src/aisimulate_core/systems/data/ascend_950dt/gemm/vllm/README.md); M5
+      # re-derives this entry from the device collection.
+      - {framework: "vllm", version: "0.30.0rc2", system: "ascend_950dt", op_name: "gemm", gemm_dtype: "bfloat16", backends: ["unverified"], kernel_sources: ["vllm_default"]}
   - op_file: generation_attention_perf
     family: attention
     axes: [op_name, attn_dtype, kv_cache_dtype]
