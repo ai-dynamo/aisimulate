@@ -264,3 +264,10 @@ Otherwise the report exposes supported point components, uncovered counts and
 null totals. Deferred or undeclared routes, including native Kimi NoPE history,
 remain outside the measured inventory; zero inventory additions do not qualify
 those routes. Fleet forecasts remain null while lanes are unqualified.
+The immutable SGLang 0.5.21 multi-platform index is preserved verbatim in
+[`sglang-0.5.21-index.json`](sglang-0.5.21-index.json). Its payload digest and
+registry response digest both equal `b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469`.
+[`sglang-0.5.21-manifest-proof.json`](sglang-0.5.21-manifest-proof.json)
+records the AMD64 `2dbe4c7f…` and ARM64 `1f176b3a…` child mappings.
+This proves image-index membership; actual imported squashfs hashes remain
+separate run receipts. No registry credentials are retained.
