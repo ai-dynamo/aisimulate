@@ -521,3 +521,14 @@ clock and their small CPU overhead is explicit. The wrapper-minus-point residual
 contains startup, planning, audit I/O and teardown; it is not pure initialization
 or an independently qualified one-pass forecast. Earlier clocks retain their
 original boundary and are not rewritten.
+
+The complete tensor-observed study is frozen in
+[`dense-feature-study.zip`](dense-feature-study.zip), with its archive hash in
+[`dense-feature-study.manifest.json`](dense-feature-study.manifest.json).
+It contains 864 successful point calls from 36 fresh workers across B300/H100,
+three frameworks, context/decode, three replicates and two passes, plus 12 smoke
+calls kept as diagnostics. Each phase uses two training geometries and a whole
+third geometry held out across every replicate. Actual cache storage, input
+storage, native phase clocks, repetitions, runtime versions and signed audit
+payloads are retained. These two-pass groups are excluded from the ordinary
+one-pass fleet report; a separately gated component fit uses subsequent passes.
