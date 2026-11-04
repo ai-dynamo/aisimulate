@@ -11,11 +11,13 @@ there are no replacement kernels or fabricated shapes.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import csv
 import dataclasses
 import importlib
 import importlib.metadata
+import itertools
 import json
 import os
 import sys
@@ -29,27 +31,72 @@ sys.path.insert(0, str(PKG_ROOT))
 
 def select_plan(planned, requested: list[dict]):
     """Select exact generated cases/dispatches; refuse missing or duplicate requests."""
-    wanted = {json.dumps(row, sort_keys=True) for row in requested}
+    wanted = {json.dumps({k: v for k, v in row.items() if not k.startswith("_")}, sort_keys=True) for row in requested}
     if len(wanted) != len(requested):
         raise ValueError("duplicate requested case keys")
     cases, dispatches, found = [], [], set()
     runs = planned.dispatches or [("",)] * len(planned.cases)
     for case, runners in zip(planned.cases, runs, strict=True):
-        kept = []
         for runner in runners:
-            key = json.dumps(
-                {
-                    **{name: "" if value is None else str(value) for name, value in case._asdict().items()},
-                    "dispatch": runner,
-                },
-                sort_keys=True,
-            )
-            if key in wanted:
-                kept.append(runner)
-                found.add(key)
-        if kept:
-            cases.append(case)
-            dispatches.append(tuple(kept))
+            actual = {
+                **{name: "" if value is None else str(value) for name, value in case._asdict().items()},
+                "dispatch": runner,
+            }
+            axes = [
+                name
+                for name in ("num_tokens", "batch_sizes", "seq_lens")
+                if isinstance(getattr(case, name, None), tuple)
+            ]
+            points = set()
+            for request in requested:
+                row = {k: v for k, v in request.items() if not k.startswith("_")}
+                key = json.dumps(row, sort_keys=True)
+                if set(row) != set(actual):
+                    continue
+                if any(row.get(name) != value for name, value in actual.items() if name not in axes):
+                    continue
+                if not axes:
+                    if row == actual:
+                        points.add(())
+                        found.add(key)
+                    continue
+                values = []
+                for name in axes:
+                    raw = row.get(name, "")
+                    parsed = ast.literal_eval(raw) if raw.startswith(("(", "[")) else (int(raw),)
+                    if (
+                        not isinstance(parsed, (tuple, list))
+                        or not parsed
+                        or not set(parsed) <= set(getattr(case, name))
+                    ):
+                        break
+                    values.append(parsed)
+                if len(values) == len(axes):
+                    points.update(itertools.product(*values))
+                    found.add(key)
+            if not points:
+                continue
+            if len(axes) > 2:
+                raise ValueError("unsupported grouped audit axes")
+            if not axes:
+                selected = [case]
+            elif len(axes) == 1:
+                values = tuple(value for value in getattr(case, axes[0]) if (value,) in points)
+                selected = [case._replace(**{axes[0]: values})]
+            else:
+                # Equal second-axis sets can share initialization. Irregular
+                # samples split into rectangles without inventing extra cells.
+                rectangles = {}
+                for first in getattr(case, axes[0]):
+                    seconds = tuple(second for second in getattr(case, axes[1]) if (first, second) in points)
+                    if seconds:
+                        rectangles.setdefault(seconds, []).append(first)
+                selected = [
+                    case._replace(**{axes[0]: tuple(firsts), axes[1]: seconds})
+                    for seconds, firsts in rectangles.items()
+                ]
+            cases.extend(selected)
+            dispatches.extend([(runner,)] * len(selected))
     if found != wanted:
         raise ValueError(f"{len(wanted - found)} requested cases absent from the actual plan")
     return dataclasses.replace(planned, cases=cases, dispatches=dispatches if planned.dispatches else [])
@@ -60,6 +107,16 @@ def run(spec: dict, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     result = {"spec": spec, "publish_eligible": False, "allocation_seconds_included": False, "calls": []}
     try:
+        os.environ["COLLECTOR_MEASURE_POWER"] = "0"
+        if spec.get("model_path"):
+            os.environ["COLLECTOR_MODEL_PATH"] = spec["model_path"]
+        else:
+            os.environ.pop("COLLECTOR_MODEL_PATH", None)
+        result["effective_protocol"] = {
+            "measure_power": False,
+            "model_path": os.environ.get("COLLECTOR_MODEL_PATH"),
+            "coverage_scenario": spec["scenario"],
+        }
         actual_ref = os.environ.get("AISIM_COLLECTOR_REF")
         if actual_ref != spec["collector_commit"]:
             raise ValueError(f"collector revision mismatch: {actual_ref!r}")
@@ -89,6 +146,8 @@ def run(spec: dict, output: Path) -> dict:
         if entry.module is None:
             raise ValueError("version-routed registries require the normal resolver; no fallback is permitted")
         module = importlib.import_module(entry.module)
+        executor = importlib.import_module("collector.collect")
+        helper = importlib.import_module("collector.helper")
         function = getattr(module, entry.run_func)
         # Direct collectors expose their benchmark helper in this module. Native
         # module subprocesses keep their existing point clocks in the raw log.
@@ -136,9 +195,17 @@ def run(spec: dict, output: Path) -> dict:
                 except Exception as error:
                     call.update(status="failed", error=str(error), traceback=traceback.format_exc())
                     traceback.print_exc()
+                    fatal = executor._is_cuda_fatal_exception(error, torch)
+                    context_error = None if fatal else helper.cuda_context_error("cuda:0")
+                    if fatal or context_error is not None:
+                        call["cuda_context_error"] = context_error
+                        result["worker_recycle_required"] = True
+                        result["unattempted_rows"] = [str(pending) for pending in rows[index + 1 :]]
                 call["native_call_seconds"] = time.perf_counter() - call_started
                 result["calls"].append(call)
                 (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+                if result.get("worker_recycle_required"):
+                    break
             result["forward_rows"] = list(csv.DictReader(perf.open())) if perf.exists() else []
             result["direct_benchmark_measurements"] = measurements
             result["subprocess_repetition_policy"] = spec.get("source_checked_subprocess_repetition_policy")

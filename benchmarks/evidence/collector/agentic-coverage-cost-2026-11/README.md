@@ -28,6 +28,32 @@ the audited recipe, never as observations. The existing AgentX audit freezes
 808 NVIDIA configurations on 2 November 2026; it does not prove every future
 serving recipe is covered. Unsupported model architectures remain explicit gaps.
 
+### Per-model declaration evidence
+
+The companion [model evidence](model-declaration-evidence.json) records exact
+profile/config hashes at candidate `c4b44d81f526b3c5299f7c15ccafe02d90b39229`,
+effective TP/DP/precision/backend values with source-log URLs/page hashes,
+profiling/warmup extrema, and the complete declared point lists. Framework
+recipes are source evidence; they are not assumed identical to the separately
+pinned native collection runtime. Resolve attention-DP before deriving local
+heads; global TP/DP flags cannot be substituted for effective attention TP.
+
+| Model family | Geometry/profile evidence | Serving and workload evidence | Declared coverage and classification |
+|---|---|---|---|
+| Qwen3.5-397B | `Qwen3_5MoeForConditionalGeneration` profile and exact Qwen config; 32 query / 2 KV heads, d256 before effective TP | Native Qwen recipes linked in the companion; maximum same-request history 256,582, including both phases | Model dense geometry through 262K; preserve #666's 95-point B/length calibration frontier. Points are interpolation/calibration choices, not observed per-rank forwards. |
+| GLM5.2/5.3 | `GlmMoeDsaForCausalLM` profile and both exact configs; separate full/reused-indexer identity | Effective DSA recipes linked in the companion; maximum history 959,120 | Intermediate 786,432/917,504 history, bounded near-1M batches and B52 × 22-length calibration frontier. Configuration-derived history span; selected joint points are calibration choices. |
+| Kimi-K3 | `KimiK3ForConditionalGeneration` profile and exact Kimi config; MLA local heads from actual TP shards, separate KDA widths | Audited active AgentX lane is vLLM; maximum history 950,779 occurs during warmup | Planned MLA 512K/1M cases remain **unqualified** pending verification that the native factory honors Kimi's `mla_use_nope` semantics. Hold their native pilots; a Kimi model label does not establish the correct kernel. SGLang standalone-tail and dense 1M fallback gaps also remain. |
+| MiniMax-M3.1 | `MiniMaxM3ForCausalLM` profile and bundled M3 geometry, with exact config digest | Effective MSA recipes linked in the companion; maximum history 959,333 | Intermediate history/q32K and legal decode frontier. Core geometry is source-matched; exact M3.1 checkpoint precision policy remains conditional. |
+
+These smaller populations target the selected audited recipes; they do not
+qualify all AgentX models. Muse-Spark must not use Muse-Glimmer geometry. Qwen3.8-Flash-Next's QSA
+route is not bundled Qwen3.8-Max. DeepSeek-V4.1 needs its own native module and
+feature qualification; its short manifest and unqualified speculation/DP/CP
+routes are not repaired by generic long-history metadata. These three families
+remain explicit support/collection gaps, excluded from a claim of complete
+AgentX coverage. Silicon calibration of the Qwen95 or GLM B52 frontier does
+not turn those points into observed workload batches.
+
 ## Comparable inventories
 
 Freeze the #676 base at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`:
@@ -176,3 +202,12 @@ Native pilot specs passed to `collection_cost.py run` contain a unique `run_id`,
 arrays, not shell interpolation. Supply `--ledger` and the fixed system quota
 as `--budget-gpu-hours`. The output contains actual collection duration and
 exit/timeout status; inspect native CSVs and phase logs before qualifying results.
+For grouped MoE/KDA anchors the native driver verifies every requested scalar
+cell against the generated group, then constructs only valid subset axes.
+Irregular KDA samples split into rectangles without introducing extra cells.
+Paired baseline/expanded MoE runs must include changed maximum-size autotuning
+and workspace allocation, not just two extra timed forwards. A poisoned CUDA
+context stops the worker and leaves remaining groups unattempted for a fresh
+worker retry; its fail-fast follow-on times are not independent shape samples.
+NCCL weights each collective by its actual participating 2/4/8-rank group,
+never by the entire reserved node for the whole harness.

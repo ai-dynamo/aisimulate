@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import importlib
 import json
 import subprocess
@@ -181,6 +182,7 @@ def main():
     result = {
         "collector_commit": sha,
         "collector_tree": tree,
+        "audit_tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "system": args.system,
         "backend": args.backend,
         "scenario": args.scenario,
