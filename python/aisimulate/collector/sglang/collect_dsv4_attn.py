@@ -64,6 +64,7 @@ try:
         get_sm_version,
         log_perf,
         render_phase_totals,
+        trace_child_argv,
         worker_heartbeat,
     )
 except ModuleNotFoundError:
@@ -76,6 +77,7 @@ except ModuleNotFoundError:
         get_sm_version,
         log_perf,
         render_phase_totals,
+        trace_child_argv,
         worker_heartbeat,
     )
 
@@ -1595,7 +1597,7 @@ def _run_subprocess(
         attempt_env["AIC_DSV4_NCCL_PORT"] = str(nccl_port)
         with open(log_path, "wb") as logf:
             proc = subprocess.Popen(
-                [sys.executable, "-c", code],
+                trace_child_argv([sys.executable, "-c", code]),
                 env=attempt_env,
                 stdout=logf,
                 stderr=subprocess.STDOUT,

@@ -135,6 +135,21 @@ def _die_with_worker_preexec():
     return _preexec
 
 
+TRACE_CHILD_DIR_ENV = "AIS_TRACE_CHILD_DIR"
+
+
+def trace_child_argv(argv: list[str]) -> list[str]:
+    """``argv`` unchanged, except while probe.trace_case runs (``AIS_TRACE_CHILD_DIR`` set):
+    a ``python -c ...`` / ``python -m ...`` measurement child then runs under
+    collector/probes/_traced_child.py, which records its kernels in that directory. The
+    probe discards the rows of the run, so no table row depends on the variable."""
+    out_dir = os.environ.get(TRACE_CHILD_DIR_ENV)
+    if not out_dir or len(argv) < 3 or argv[1] not in ("-c", "-m"):
+        return list(argv)
+    wrapper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probes", "_traced_child.py")
+    return [argv[0], wrapper, out_dir, *argv[1:]]
+
+
 def run_measurement_subprocess(argv, *, env, cwd, timeout=None, poll_sec: float = 60.0) -> tuple[int, bytes]:
     """Run a measurement child; beat the executor's stall watchdog while it makes progress.
 
@@ -146,6 +161,7 @@ def run_measurement_subprocess(argv, *, env, cwd, timeout=None, poll_sec: float 
     ``subprocess.TimeoutExpired`` (with the output so far) after ``timeout`` seconds.
     """
     env = {**env, "PYTHONUNBUFFERED": "1"}
+    argv = trace_child_argv(argv)
     with tempfile.TemporaryFile() as out:
         proc = subprocess.Popen(
             argv, env=env, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, preexec_fn=_die_with_worker_preexec()

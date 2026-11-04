@@ -13,19 +13,24 @@ decides per SM (a pinned dispatch, a KV pool) is what a collection would run. Th
 once through the backend registry's run function under ``torch.profiler``, binding what
 collect.py binds, with its perf files in a discarded scratch directory. The result lists
 the kernels with device time, minus aten/memcpy/memset/runtime entries: the collector side
-of an opharness path gate. A worker that spawns a subprocess shows no kernels here.
+of an opharness path gate. A collector that times its points in a child process
+(``helper.trace_child_argv``) runs that child under the profiler too, and its kernels are
+included (``measurement_children`` counts them).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
+import os
 import shutil
 import tempfile
 from inspect import signature
 from pathlib import Path
 
-_NOT_KERNELS = ("aten::", "Memcpy", "Memset", "cuda", "Cuda")
+from collector.probes._traced_child import kernel_names
+
 _RESTART_CODE = 10  # collector.helper.EXIT_CODE_RESTART: the worker recycles after the case ran
 
 
@@ -86,22 +91,11 @@ def _run_row(run_func, row, perf_path: str, device: str, extra: dict) -> None:
         run_func(*row, perf_filename=perf_path, device=device, **extra)
 
 
-def kernel_names(prof) -> list[str]:
-    return sorted(
-        {
-            ev.key
-            for ev in prof.key_averages()
-            if (getattr(ev, "self_device_time_total", 0) or getattr(ev, "self_cuda_time_total", 0)) > 0
-            and not ev.key.startswith(_NOT_KERNELS)
-        }
-    )
-
-
 def run(args: dict[str, str], out_dir: Path) -> dict:
     import torch
     from torch.profiler import ProfilerActivity, profile
 
-    from collector.helper import get_sm_version
+    from collector.helper import TRACE_CHILD_DIR_ENV, get_sm_version
 
     select = dict(args)
     backend, op = select.pop("backend"), select.pop("op")
@@ -109,17 +103,15 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
     row = planned_row(backend, op, sm, **select)
     entry, run_func = _resolve(backend, op)
     scratch = Path(tempfile.mkdtemp(prefix="trace_case_"))
+    children = scratch / "children"
+    previous = os.environ.get(TRACE_CHILD_DIR_ENV)
+    os.environ[TRACE_CHILD_DIR_ENV] = str(children)  # a measurement child records its own kernels there
     error = None
     try:
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
             try:
-                _run_row(
-                    run_func,
-                    row,
-                    str(scratch / str(entry.perf_filename)),
-                    "cuda:0",
-                    _bound_kwargs(entry, run_func, scratch),
-                )
+                perf = str(scratch / str(entry.perf_filename))
+                _run_row(run_func, row, perf, "cuda:0", _bound_kwargs(entry, run_func, scratch))
             except SystemExit as exc:
                 if exc.code not in (0, None, _RESTART_CODE):
                     error = f"exit={exc.code}"
@@ -127,9 +119,15 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
                 error = f"{type(exc).__name__}: {exc}"[:500]
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-        kernels = kernel_names(prof)
+        own = kernel_names(prof)
+        child_records = [json.loads(f.read_text()) for f in sorted(children.glob("child_*.json"))]
     finally:
+        if previous is None:
+            os.environ.pop(TRACE_CHILD_DIR_ENV, None)
+        else:
+            os.environ[TRACE_CHILD_DIR_ENV] = previous
         shutil.rmtree(scratch, ignore_errors=True)
+    kernels = sorted(set(own).union(*(r["kernels"] for r in child_records)))
     return {
         "backend": backend,
         "op": op,
@@ -137,6 +135,7 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
         "select": select,
         "row": str(row),
         "kernels": kernels,
+        "measurement_children": len(child_records),
         "error": error,
         "failed": error is not None or not kernels,
     }

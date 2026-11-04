@@ -5,6 +5,7 @@ trace_case probe runs ONE planned case (a batch row cut to that point) under the
 profiler, the collector side of an opharness path gate."""
 
 import json
+import os
 import re
 import sys
 import types
@@ -143,3 +144,54 @@ def test_run_probe_passes_collects_backend(monkeypatch, tmp_path):
     _fake_probe(monkeypatch, lambda args, out_dir: dict(args))
     assert probes.run_probe("fake_probe", ["op=gemm"], tmp_path, backend="trtllm") == 0
     assert json.loads((tmp_path / "probe_fake_probe.json").read_text())["result"] == {"backend": "trtllm", "op": "gemm"}
+
+
+def test_trace_child_argv_wraps_a_measurement_child_only_while_tracing(monkeypatch, tmp_path):
+    from collector import helper
+
+    argv = ["/py", "-c", "print(1)"]
+    monkeypatch.delenv(helper.TRACE_CHILD_DIR_ENV, raising=False)
+    assert helper.trace_child_argv(argv) == argv
+    monkeypatch.setenv(helper.TRACE_CHILD_DIR_ENV, str(tmp_path))
+    wrapped = helper.trace_child_argv(argv)
+    assert (
+        wrapped[0] == "/py"
+        and wrapped[1].endswith("probes/_traced_child.py")
+        and wrapped[2:] == [str(tmp_path), *argv[1:]]
+    )
+    assert helper.trace_child_argv(["/py", "-m", "collector.x", "--a"])[3:] == ["-m", "collector.x", "--a"]
+    assert helper.trace_child_argv(["/py", "script.py"]) == ["/py", "script.py"]
+
+
+def test_traced_child_runs_the_code_and_records_its_kernels(monkeypatch, tmp_path):
+    from collector.probes import _traced_child
+
+    _fake_torch(monkeypatch, [_Event("sparse_mla_kernel", 3.0)])
+    marker = tmp_path / "ran.txt"
+    monkeypatch.setattr(sys, "argv", ["w", str(tmp_path / "kernels"), "-c", f"open({str(marker)!r}, 'w').write('ok')"])
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    with pytest.raises(SystemExit) as done:
+        _traced_child.main()
+    assert done.value.code == 0 and marker.read_text() == "ok"
+    (record,) = [json.loads(p.read_text()) for p in (tmp_path / "kernels").glob("child_*.json")]
+    assert record["kernels"] == ["sparse_mla_kernel"] and record["status"] == 0
+
+
+def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tmp_path):
+    from collector import helper
+
+    _fake_torch(monkeypatch, [_Event("parent_gemm", 1.0)])
+
+    def spawning_run(*row, perf_filename, device):
+        child_dir = Path(os.environ[helper.TRACE_CHILD_DIR_ENV])
+        child_dir.mkdir(parents=True, exist_ok=True)
+        (child_dir / "child_1.json").write_text(json.dumps({"kernels": ["child_attn"], "status": 0}))
+
+    entry = types.SimpleNamespace(perf_filename="mla_perf.txt", extra_perf_filenames=(), run_kwargs=None)
+    monkeypatch.setattr(trace_case, "_resolve", lambda backend, op: (entry, spawning_run))
+    monkeypatch.setattr(trace_case, "planned_row", lambda backend, op, sm, **sel: (1,))
+    monkeypatch.setattr("collector.helper.get_sm_version", lambda: 100)
+    monkeypatch.delenv(helper.TRACE_CHILD_DIR_ENV, raising=False)
+    out = trace_case.run({"backend": "sglang", "op": "mla_context_module"}, tmp_path)
+    assert out["kernels"] == ["child_attn", "parent_gemm"] and out["measurement_children"] == 1
+    assert helper.TRACE_CHILD_DIR_ENV not in os.environ  # restored after the probe
