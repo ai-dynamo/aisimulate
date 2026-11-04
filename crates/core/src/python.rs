@@ -26,8 +26,8 @@ use crate::replay::{
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
-        ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
-        WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
+        ValidatedAgenticGraph, WekaChatTemplate, WekaClient, WekaImportOptions,
+        WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
         load_weka_agentic_graph_cached,
     },
 };
@@ -127,6 +127,8 @@ struct RuntimeTraffic {
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
     #[serde(default)]
     weka_client: Option<WekaClient>,
+    #[serde(default)]
+    weka_chat_template: Option<WekaChatTemplate>,
     /// Keep the loaded Weka graph for later runs in this process (sweeps).
     #[serde(default)]
     trace_graph_cache: bool,
@@ -3963,6 +3965,10 @@ fn build_runtime_input(
             || (traffic.source_type == "trace" && traffic.trace_format.as_deref() == Some("weka")),
         "weka_client requires Weka trace input"
     );
+    ensure!(
+        traffic.source_type == "trace" || traffic.weka_chat_template.is_none(),
+        "weka_chat_template requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
@@ -3971,6 +3977,10 @@ fn build_runtime_input(
         ensure!(
             format == "weka" || traffic.weka_nested_timestamp_basis.is_none(),
             "weka_nested_timestamp_basis requires Weka input"
+        );
+        ensure!(
+            format == "weka" || traffic.weka_chat_template.is_none(),
+            "weka_chat_template requires Weka input"
         );
         ensure!(
             traffic.agentic_lanes != Some(0),
@@ -4032,6 +4042,7 @@ fn build_runtime_input(
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
                     client: traffic.weka_client.unwrap_or_default(),
+                    chat_template: traffic.weka_chat_template,
                 },
                 traffic.trace_graph_cache,
             )?;

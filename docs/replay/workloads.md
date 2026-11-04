@@ -64,6 +64,7 @@ the current SA convention.
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
 | `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
 | `traffic.source.client` | `recorded` | `x` | `-` | `recorded` or `agentx`; Weka only. See [Weka client](#weka-client). |
+| `traffic.source.chat_template` | Unset | `x` | `-` | Optional `request_tokens`, `turn_tokens` and `tail_tokens`, each a nonnegative integer; Weka only. Unset replays the trace's `in` lengths and blocks. See [chat template](#weka-chat-template). |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -252,6 +253,54 @@ AgentX traces are absolute. Set `traffic.source.nested_timestamp_basis` to
 default), AISimulate picks `relative` for the whole corpus if any child request
 is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
 is reported as `weka_nested_timestamp_basis`.
+
+<a id="weka-chat-template"></a>
+
+A Weka `in` counts message content. A chat client also sends the tokens that
+the served model's chat template adds: role headers, end markers and the
+generation prompt. `traffic.source.chat_template` adds them to every prompt:
+
+```yaml
+traffic:
+  source:
+    type: trace
+    format: weka
+    paths:
+      - traces/agentx
+    chat_template:
+      request_tokens: 16
+      turn_tokens: 13
+      tail_tokens: 8
+```
+
+- A stream's first request is `in + request_tokens` long. A stream is a
+  conversation, a detected chain or a subagent thread. Each later request of
+  the stream adds `turn_tokens` for one more assistant and one more user
+  message.
+- A request repeats its stream predecessor's prompt up to the trace content the
+  two share. It does not repeat the rest of that content or the predecessor's
+  last `tail_tokens`, so the shared prefix ends between hash blocks rather than
+  on them. Its remaining blocks are private. A stream's first request keeps the
+  trace's blocks.
+- A forked chain or subagent thread starts a new stream, so its first request
+  is one message, as in AIPerf 0.13. AIPerf versions that include
+  [ai-dynamo/aiperf#1555](https://github.com/ai-dynamo/aiperf/pull/1555) keep
+  the parent's messages in a child's first request, so there a child shares
+  more of its parent's prompt than this models.
+
+Where the shared prefix ends matters for hybrid models whose prefix cache keeps
+recurrent state only at block ends: it decides whether a turn reaches the
+previous prompt's last cached state.
+
+Measure the three values by rendering messages with the model's chat template
+and tokenizer, as AIPerf does to size its prompts:
+
+- `request_tokens`: a one-user-message prompt with the generation prompt, minus
+  its content tokens.
+- `turn_tokens`: the tokens that appending one assistant and one user message
+  adds, minus their content tokens.
+- `tail_tokens`: the tokens after the last user message's content, that is its
+  end marker and the generation prompt.
 
 A Weka corpus can name several source models. Replay runs every request on
 `engine.model` and records the source models and target under

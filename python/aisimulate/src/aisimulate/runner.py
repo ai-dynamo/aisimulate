@@ -64,6 +64,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "trace_block_size",
         "weka_nested_timestamp_basis",
         "weka_client",
+        "weka_chat_template",
         "arrival_speedup_ratio",
         "replay_concurrency",
         "isl",
