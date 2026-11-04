@@ -449,8 +449,15 @@ This frozen fit input is distinct from the earlier407-record rendered sample
 snapshot and from subsequent live campaign receipts. All ZIP CRC/member hashes
 were checked.
 
-The original frozen597 fit is [superseded](fit-inputs-597.disposition.json):
-44 fresh dense-context clocks were attributed by requested order rather than
-recorded execution identity. Native rows/times and the independently checked
-other families remain valid. Keep the historical archive immutable; use the
-corrected input/report revision once published, not its affected point fits.
+**[Attribution correction](fit-inputs-597.disposition.json):** `fit-inputs-597.zip` and its dataset31708… are
+historical and superseded by
+[`fit-inputs-597-corrected.zip`](fit-inputs-597-corrected.zip), datasetfa257fc68a7f25a6333ba4d58244d259f9eb48d7354c8348fc2b8d3d39396b46.
+The planner executes native rows in its own order.44 fresh context samples
+previously attached B1/B32 labels by request index; the corrected producer
+matches actual native arguments, precision/window and dispatch. Measured clocks
+are unchanged, and holdout assignments follow the predeclared physical cases.
+The independent audit checked all140 dense identities and unchanged grouped
+MoE/KDA/module manifests.
+[`normalization-correction-597.json`](normalization-correction-597.json) lists
+every affected sample. The old raw archive remains as provenance and must not
+be used to fit geometry costs.

@@ -1,6 +1,6 @@
 {
   "snapshot": "frozen-597",
-  "state": "superseded_pending_corrected_point_attribution",
+  "state": "superseded_by_corrected_point_attribution",
   "dataset_sha256": "31708ed32a50301008c41578e20c3fb25ed2f3d842b6e6d549e89dd7a453142f",
   "report_sha256": "2ac770bd959f08341bd02f0264e4c877f663c29d2470d5ef12c0327ca531451f",
   "affected_records": {
@@ -20,5 +20,10 @@
     "C44 warm preparation evidence",
     "production data PR665 and PR666"
   ],
-  "replacement": null
+  "replacement": {
+    "archive": "fit-inputs-597-corrected.zip",
+    "archive_sha256": "346b8c15e8d31e7d92dad144cd10c6dd236ee4e77e99a8d738d19a3f0ac3260e",
+    "dataset_sha256": "fa257fc68a7f25a6333ba4d58244d259f9eb48d7354c8348fc2b8d3d39396b46",
+    "report_state": "regeneration pending; do not use the superseded report for affected point fits"
+  }
 }
