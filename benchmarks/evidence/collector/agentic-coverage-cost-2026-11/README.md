@@ -408,3 +408,10 @@ administrative allocation upper bound of1711 GPU-seconds (<1800) and will run
 no more jobs. That bound permits the transfer; it is not substituted for actual
 collection cost in any anchor or estimate. Older timestamped ledger snapshots
 retain their contemporaneous quota history.
+
+[ComputeLab image receipts](compute-lab-image-relay.json) record exact reuse of
+four previously measured AMD64 squashfs images after scratch-filesystem
+whiteout failures blocked fresh imports. CPU job5599744 verified all four
+SHA256 values before publishing them. Transfer, CPU validation and allocation
+wait are excluded from collection GPU-hours; native runtime identity is still
+checked inside each benchmark worker.
