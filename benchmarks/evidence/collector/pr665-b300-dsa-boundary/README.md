@@ -110,3 +110,8 @@ Its AMD64 child is `sha256:2dbe4c7f53230b09aaa8fa41891c13c51d9d2e253f486a70822aa
 matching the native image used by the paired experiment and recollection. The
 packaged sidecar records the index; the harness receipt identifies the executed
 child. Hashing this manifest reproduces the sidecar's index digest.
+
+A read-only post-run check of the reused squashfs reproduced
+`092f0f8ffc16b219579f463a60821ee102fe57a8e36513484c9669cb69d922e6`,
+the image hash in the paired input receipt. This does not substitute an
+allocation duration for collection time.

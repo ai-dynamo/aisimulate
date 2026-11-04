@@ -179,4 +179,3 @@ Decode: batch_size=52, kv_cache_length=720896
 [DSA] generation ok=22 error=0 refused=0 total=22
 [DSA timing] generation: 22 point(s): reqs=7.0s batch=2.3s metadata=0.2s history=310.6s inputs=0.1s prewarm=1.0s bench=0.4s bench_eager_warmup=0.1s bench_capture=0.2s bench_graph_warmup=0.0s bench_timed=0.0s bench_cleanup=0.0s cleanup=1.0s total=322.4s
 [rank0]:[W1103 22:02:58.738448526 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-

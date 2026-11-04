@@ -31,7 +31,7 @@
     },
     "indexer.log": {
       "executed_sha256": "ff7e81f0a9c5e155a119ee0179264b31ad0da9df4f7bc782eca88e7ea1ed3239",
-      "published_sha256": "ff7e81f0a9c5e155a119ee0179264b31ad0da9df4f7bc782eca88e7ea1ed3239"
+      "published_sha256": "7a601510640555220df4666cd3954b4ec9178cdb297cec4980da369a61108004"
     },
     "input-sha256.txt": {
       "executed_sha256": "9ad9bc8ae1aebce03647fe45710cd1e927363d73477554afd1b6f9e5e435d178",
@@ -39,11 +39,11 @@
     },
     "nvidia-smi-after.txt": {
       "executed_sha256": "97fbb5dd0f17d468d41665ab8e32639f44a75f1432e532cd9a9b2ffe699910f0",
-      "published_sha256": "f578f2ab12f8cdf3dfe9175317e803b66de3096fda9a73faa031fe4224ec9462"
+      "published_sha256": "bb51bc2cf156e8180cf5c1997255223758bfd89fb86710e1d196ffe5e9978669"
     },
     "nvidia-smi-before.txt": {
       "executed_sha256": "e928b03e52d8a950d9c631d923fdf7dad7eeefb4b1382161c33088c871d81bb2",
-      "published_sha256": "78ef88de8b407029835ec37ed7478187184a0321d0a0fdef3f787c72dfa19c4e"
+      "published_sha256": "04f2ce78e9538bffab4c4099e321590fdd1ad34cb4d73cb3790c8ae74cd9b575"
     },
     "production.sbatch": {
       "executed_sha256": "00e147cc858d9ee6873f70ed2c779b236f324d40fcaf0aebf80cfc7e4e82779f",
@@ -59,11 +59,11 @@
     },
     "skip_indexer.log": {
       "executed_sha256": "7358ac8cc42a8adca65bd9c1b802f5e58e6767fb2b2e6e0f9186774b7592864a",
-      "published_sha256": "7358ac8cc42a8adca65bd9c1b802f5e58e6767fb2b2e6e0f9186774b7592864a"
+      "published_sha256": "6253bcbf99a871319b365f5a5b8ef434d5922da9d90a3c025524d1b520792971"
     },
     "slurm-job.txt": {
       "executed_sha256": "9f41b1b48af3abd68d86c155901c59837a86e32a6b748140f3b65fa8d794b440",
-      "published_sha256": "9f41b1b48af3abd68d86c155901c59837a86e32a6b748140f3b65fa8d794b440"
+      "published_sha256": "e90823a5e3a541d890d76d86e36d62328771d9360e1533621500436003e4b9dd"
     }
   }
 }

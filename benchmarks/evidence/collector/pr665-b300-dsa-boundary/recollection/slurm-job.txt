@@ -30,4 +30,3 @@ JobId=1024142 JobName=aisim665-b52-recollect
    TresFreq=gpu:high
    TresPerNode=gres/gpu:1
    TresPerTask=cpu=16
-
