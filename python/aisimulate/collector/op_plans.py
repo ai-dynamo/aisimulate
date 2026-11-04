@@ -648,10 +648,8 @@ def _expand_deepep() -> list[DeepepCase]:
     """
     shapes = set()
     for path in Path(_AIC_MODEL_CONFIG_DIR).glob("*_config.json"):
-        try:
-            config = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
+        # A packaged config that does not parse is a packaging error, not a shape to skip.
+        config = json.loads(path.read_text())
         text = config.get("text_config") or {}
         num_experts = (
             config.get("n_routed_experts")
@@ -1151,9 +1149,19 @@ def _mla_module_plan(phase: str) -> OpPlan:
 
 @functools.cache
 def _packaged_config(model_path: str, kind: str = "config") -> dict:
-    """A checkpoint's packaged config.json (kind "config") or hf_quant_config.json, or {} when none ships."""
+    """A checkpoint's packaged config.json (kind "config") or hf_quant_config.json.
+
+    Every planned model ships its config.json; a missing one is a packaging
+    error and raises, since the plan would otherwise read every field as
+    absent and queue a different case set. hf_quant_config.json ships for
+    ModelOpt checkpoints only, so a missing one is {}.
+    """
     path = Path(_AIC_MODEL_CONFIG_DIR) / f"{model_path.replace('/', '--')}_{kind}.json"
-    return json.loads(path.read_text()) if path.exists() else {}
+    if path.exists():
+        return json.loads(path.read_text())
+    if kind == "config":
+        raise FileNotFoundError(f"{model_path} has no packaged config.json: expected {path}")
+    return {}
 
 
 def _max_position(model_path: str) -> int | None:

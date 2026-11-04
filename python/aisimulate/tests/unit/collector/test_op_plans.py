@@ -145,6 +145,42 @@ def test_cases_sharing_a_module_build_are_contiguous(op):
             previous = group
 
 
+def test_every_planned_model_ships_its_config(monkeypatch):
+    """A model a plan reads has a packaged config.json; the planner raises on a missing one
+    rather than planning from an empty config (case_authoring: unresolvable declarations fail)."""
+    from collector import op_plans
+
+    requested: dict[str, set[str]] = defaultdict(set)
+    real = op_plans._packaged_config
+
+    def spy(model_path, kind="config"):
+        requested[kind].add(model_path)
+        return real(model_path, kind)
+
+    monkeypatch.setattr(op_plans, "_packaged_config", spy)
+    for name in OP_PLANS:
+        for backend in ("vllm", "sglang", "trtllm"):
+            plan(name, backend, 100)
+    config_root = Path(op_plans._AIC_MODEL_CONFIG_DIR)
+    assert requested["config"]
+    for model_path in sorted(requested["config"]):
+        assert (config_root / f"{model_path.replace('/', '--')}_config.json").is_file(), model_path
+
+
+def test_packaged_config_fails_loudly_only_for_the_config(monkeypatch, tmp_path):
+    from collector import op_plans
+
+    (tmp_path / "org--model_config.json").write_text('{"max_position_embeddings": 4096}')
+    monkeypatch.setattr(op_plans, "_AIC_MODEL_CONFIG_DIR", str(tmp_path))
+    assert op_plans._max_position("org/model") == 4096
+    assert op_plans._packaged_config("org/model", "hf_quant_config") == {}
+    with pytest.raises(FileNotFoundError, match="org/missing has no packaged config.json"):
+        op_plans._packaged_config("org/missing")
+    (tmp_path / "org--broken_config.json").write_text("{not json")
+    with pytest.raises(ValueError):
+        op_plans._expand_deepep()
+
+
 def test_op_plan_defaults_come_from_factories():
     """A mappingproxy default is rejected by dataclasses on Python 3.11, where it is unhashable."""
     import dataclasses
