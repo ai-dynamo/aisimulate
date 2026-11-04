@@ -83,7 +83,7 @@ model_case_values:
       # TP 16 is the ceiling anyone runs this model at.
       tensor_parallel_sizes: [1, 2, 4, 8, 16]
       # Native MSA, with a 32K new-query anchor and intermediate retained history.
-      long_history_cases:
+      long_context_cases:
         context:
           - [1, 512, 786432]
           - [1, 32768, 786432]

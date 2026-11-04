@@ -76,7 +76,7 @@ from collector.case_generator import (
     moe_planned_modes,
     without_models,
 )
-from collector.coverage import history_points, includes_long_history, long_history_coverage
+from collector.coverage import includes_long_context, long_context_coverage, long_context_points
 from collector.helper import _AIC_MODEL_CONFIG_DIR
 
 # Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
@@ -157,7 +157,7 @@ class Plan:
     where: str = ""
     # The model rows the plan left out; rows read the model profiles without them.
     skipped_models: frozenset[str] = frozenset()
-    include_long_history: bool = False
+    include_long_context: bool = False
 
     @property
     def by_dispatch(self) -> dict[str, int]:
@@ -167,7 +167,7 @@ class Plan:
     @property
     def rows(self) -> list:
         """What the getter queues, retaining the coverage selected when this plan was built."""
-        with long_history_coverage(self.include_long_history):
+        with long_context_coverage(self.include_long_context):
             return self._rows()
 
     def _rows(self) -> list:
@@ -210,10 +210,10 @@ class _Run(NamedTuple):
         return getattr(self.case, name)
 
 
-def plan(op: str, backend: str, sm_version: int | None, *, include_long_history: bool | None = None) -> Plan:
-    """Plan ordinary coverage, optionally unioned with declared model-owned history points."""
-    enabled = includes_long_history() if include_long_history is None else include_long_history
-    with long_history_coverage(enabled):
+def plan(op: str, backend: str, sm_version: int | None, *, include_long_context: bool | None = None) -> Plan:
+    """Plan ordinary coverage, optionally unioned with declared model-owned long-context points."""
+    enabled = includes_long_context() if include_long_context is None else include_long_context
+    with long_context_coverage(enabled):
         return _plan(op, backend, sm_version)
 
 
@@ -275,7 +275,7 @@ def _plan(op: str, backend: str, sm_version: int | None) -> Plan:
         sm_version=sm_version,
         where=f"{backend} {op}",
         skipped_models=skipped_models,
-        include_long_history=includes_long_history(),
+        include_long_context=includes_long_context(),
     )
 
 
@@ -1342,7 +1342,7 @@ def _history_config(model_path: str) -> dict:
 def _history_limit(model_path: str) -> int:
     limit = _history_config(model_path).get("max_position_embeddings")
     if type(limit) is not int or limit <= 0:
-        raise ValueError(f"long-history model {model_path} has no valid max_position_embeddings")
+        raise ValueError(f"long-context model {model_path} has no valid max_position_embeddings")
     return limit
 
 
@@ -1412,7 +1412,7 @@ def _with_history_module_cases(
     cases: list[ModuleCase], attention_type: str, phase: str, sweep, *, shared_index_only: bool = False
 ) -> list[ModuleCase]:
     """Union exact model points before deduplicating consumer keys; keep ordinary owners first."""
-    if not includes_long_history():
+    if not includes_long_context():
         return cases
     # Reuse the pinned planner's representative for an equivalent runtime,
     # even when a newly requested point was absent from its old grid.
@@ -1428,18 +1428,18 @@ def _with_history_module_cases(
         profiles += _framework_specific_model_case_values("mla_module", backend)
     precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type=attention_type)
     for profile in profiles:
-        if profile.get("attention_type") != attention_type or not profile.get("long_history_cases"):
+        if profile.get("attention_type") != attention_type or not profile.get("long_context_cases"):
             continue
         model_path = profile["model_path"]
         if shared_index_only and not _shares_dsa_index(model_path):
             continue
-        points = history_points(profile, phase, _history_limit(model_path))
+        points = long_context_points(profile, phase, _history_limit(model_path))
         signatures.setdefault(model_path, _history_runtime_signature(model_path))
         architecture = None if attention_type == "mla" else tuple(_history_config(model_path).get("architectures", []))
         native_heads = int(profile["native_num_heads"])
-        shards = profile.get("long_history_tensor_parallel_sizes", profile.get("tensor_parallel_sizes"))
+        shards = profile.get("long_context_tensor_parallel_sizes", profile.get("tensor_parallel_sizes"))
         if not shards or any(type(tp) is not int or tp <= 0 or native_heads % tp for tp in shards):
-            raise ValueError(f"long-history module {model_path} requires valid tensor_parallel_sizes")
+            raise ValueError(f"long-context module {model_path} requires valid tensor_parallel_sizes")
         heads = sorted({native_heads // tp for tp in shards}, reverse=True)
         # A checkpoint contributes only its actual projection precision, instead
         # of crossing new history points with unrelated checkpoint GEMMs.
@@ -1472,7 +1472,7 @@ def _with_history_module_cases(
         existing = physical.get(key)
         if existing is not None and signatures[existing.model_path] != signatures[case.model_path]:
             raise ValueError(
-                f"long-history coverage collides at one {attention_type} persisted key with incompatible runtime "
+                f"long-context coverage collides at one {attention_type} persisted key with incompatible runtime "
                 f"semantics: {existing.model_path} versus {case.model_path}; declare a compatible representative"
             )
         physical.setdefault(key, case)
@@ -2091,13 +2091,13 @@ def _attention_expand(phase: str) -> Callable[[], list[AttentionCase]]:
                             "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
                         )
                     )
-        if includes_long_history():
+        if includes_long_context():
             for profile in _model_case_values("attention"):
-                if not profile.get("long_history_cases"):
+                if not profile.get("long_context_cases"):
                     continue
-                points = history_points(profile, phase, _history_limit(profile["model_path"]))
+                points = long_context_points(profile, phase, _history_limit(profile["model_path"]))
                 if any(prefix for _batch, _length, prefix in points):
-                    raise ValueError("dense long_history_cases use full lookup sequence with prefix=0")
+                    raise ValueError("dense long_context_cases use full lookup sequence with prefix=0")
                 for num_heads, num_kv_heads, head_dim, window_size in _attention_profile_shapes(profile, sweep, phase):
                     for batch, length, _prefix in points:
                         # Preserve the existing universal native indexing bound.

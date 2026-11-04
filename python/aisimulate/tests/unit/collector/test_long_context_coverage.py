@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Optional model-owned history coverage preserves the pinned planner baseline."""
+"""Optional model-owned long-context coverage preserves the pinned planner baseline."""
 
 import hashlib
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from collector import case_generator, op_plans
-from collector.coverage import history_points, includes_long_history, long_history_coverage
+from collector.coverage import includes_long_context, long_context_coverage, long_context_points
 from collector.model_cases import build_collection_case_plan
 from collector.op_plans import plan
 
@@ -69,10 +69,10 @@ def test_off_preserves_pinned_676_default_history_population(key):
 @pytest.mark.parametrize("op", sorted({key.split(":")[1] for key in BASELINE}))
 def test_on_is_additive_across_frameworks_and_sms(backend, sm, op):
     normal = plan(op, backend, sm)
-    extended = plan(op, backend, sm, include_long_history=True)
+    extended = plan(op, backend, sm, include_long_context=True)
     assert set(normal.cases) <= set(extended.cases)
     assert len(extended.cases) == len(set(extended.cases))
-    assert not includes_long_history()
+    assert not includes_long_context()
 
 
 def test_qwen_points_use_own_geometry_and_aliases_without_cross_product(monkeypatch):
@@ -80,7 +80,7 @@ def test_qwen_points_use_own_geometry_and_aliases_without_cross_product(monkeypa
     for model in ("Qwen/Qwen3.5-397B-A17B", "nvidia/Qwen3.5-397B-A17B-NVFP4"):
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", model)
         normal = plan("attention_context", "vllm", 103)
-        extra = set(plan("attention_context", "vllm", 103, include_long_history=True).cases) - set(normal.cases)
+        extra = set(plan("attention_context", "vllm", 103, include_long_context=True).cases) - set(normal.cases)
         assert extra
         assert {(case.num_heads, case.num_kv_heads, case.head_dim) for case in extra} <= {
             (32, 2, 256),
@@ -98,8 +98,8 @@ def test_qwen_points_use_own_geometry_and_aliases_without_cross_product(monkeypa
 
 def test_sparse_points_keep_query_prefix_and_decode_past_distinct(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5.2-NVFP4")
-    context = plan("dsa_context_module", "sglang", 103, include_long_history=True)
-    decode = plan("dsa_generation_module", "sglang", 103, include_long_history=True)
+    context = plan("dsa_context_module", "sglang", 103, include_long_context=True)
+    decode = plan("dsa_generation_module", "sglang", 103, include_long_context=True)
     assert any(case.seq_len == 32768 and case.prefix_len == 917504 for case in context.cases)
     assert any(case.batch_size == 32 and case.seq_len == 1048575 for case in decode.cases)
     assert all(case.prefix_len + case.seq_len <= 1048576 for case in context.cases)
@@ -111,9 +111,9 @@ def test_nested_checkpoint_config_limits_are_used(monkeypatch):
         op_plans, "_packaged_config", lambda _path: {"text_config": {"max_position_embeddings": 262144}}
     )
     assert op_plans._history_limit("example/nested") == 262144
-    with long_history_coverage(True), pytest.raises(ValueError, match="exceeding model limit"):
-        history_points(
-            {"model_path": "example/nested", "long_history_cases": {"generation": [[1, 262144, 0]]}},
+    with long_context_coverage(True), pytest.raises(ValueError, match="exceeding model limit"):
+        long_context_points(
+            {"model_path": "example/nested", "long_context_cases": {"generation": [[1, 262144, 0]]}},
             "generation",
             op_plans._history_limit("example/nested"),
         )
@@ -124,9 +124,9 @@ def test_nested_checkpoint_config_limits_are_used(monkeypatch):
 
 @pytest.mark.parametrize("point", [[0, 512, 0], [1, -1, 0], [1, 512, -1], [True, 512, 0], [1, 512], [1, "512", 0]])
 def test_malformed_points_raise_and_coverage_scope_resets(point):
-    with pytest.raises(ValueError), long_history_coverage(True):
-        history_points({"long_history_cases": {"context": [point]}}, "context", 1048576)
-    assert not includes_long_history()
+    with pytest.raises(ValueError), long_context_coverage(True):
+        long_context_points({"long_context_cases": {"context": [point]}}, "context", 1048576)
+    assert not includes_long_context()
 
 
 def test_runtime_geometry_prevents_wrong_cross_model_dedup(monkeypatch):
@@ -139,30 +139,30 @@ def test_runtime_geometry_prevents_wrong_cross_model_dedup(monkeypatch):
     monkeypatch.setattr(op_plans, "_framework_specific_model_case_values", lambda _op, _backend: [])
     monkeypatch.setattr(op_plans, "get_mla_module_precision_specs", lambda *_args, **_kwargs: [])
     cases = [op_plans.ModuleCase(524287, 1, 8, "fp8", "bfloat16", "bfloat16", path) for path in ("a", "b")]
-    with long_history_coverage(True), pytest.raises(ValueError, match="incompatible runtime semantics"):
+    with long_context_coverage(True), pytest.raises(ValueError, match="incompatible runtime semantics"):
         op_plans._with_history_module_cases(cases, "mla", "generation", None)
     configs["b"] = {**configs["a"], "_name_or_path": "b"}
-    with long_history_coverage(True):
+    with long_context_coverage(True):
         assert len(op_plans._with_history_module_cases(cases, "mla", "generation", None)) == 1
 
 
 def test_plan_metadata_records_default_and_opt_in():
     for enabled in (False, True):
         selected = build_collection_case_plan(
-            backend="sglang", model_path="zai-org/GLM-5.2", include_long_history=enabled
+            backend="sglang", model_path="zai-org/GLM-5.2", include_long_context=enabled
         )
-        assert selected.to_log_dict()["include_long_history"] is enabled
+        assert selected.to_log_dict()["include_long_context"] is enabled
 
 
 def test_group_rows_keep_coverage_when_materialized_later(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "zai-org/GLM-5.2")
-    selected = plan("dsa_generation_module", "sglang", 103, include_long_history=True)
-    assert not includes_long_history()
+    selected = plan("dsa_generation_module", "sglang", 103, include_long_context=True)
+    assert not includes_long_context()
     rows = selected.rows
     points = [point for row in rows for point in row[-1]]
     assert [32, 1048575, 0] in points
     assert len(points) == len(selected.cases)
-    assert not includes_long_history()
+    assert not includes_long_context()
 
 
 def test_cli_plan_and_resume_do_not_lose_new_group_points(tmp_path):
@@ -185,11 +185,11 @@ def test_cli_plan_and_resume_do_not_lose_new_group_points(tmp_path):
     ]
     normal = subprocess.run(command, env=env, text=True, capture_output=True, timeout=120)
     extended = subprocess.run(
-        [*command, "--include-long-history"], env=env, text=True, capture_output=True, timeout=120
+        [*command, "--include-long-context"], env=env, text=True, capture_output=True, timeout=120
     )
     assert normal.returncode == extended.returncode == 0, normal.stderr + extended.stderr
     before, after = json.loads(normal.stdout), json.loads(extended.stdout)
-    assert not before["include_long_history"] and after["include_long_history"]
+    assert not before["include_long_context"] and after["include_long_context"]
     assert before["plans"]["dsa_generation_module"]["cases"] < after["plans"]["dsa_generation_module"]["cases"]
     script = """
 from collector.collect import ResumeCheckpoint, _run_case_id
@@ -199,7 +199,7 @@ import collector.collect as collect
 collect.logger = logging.getLogger("coverage-resume")
 checkpoint = ResumeCheckpoint("sglang", "sglang.dsa_generation_module", "run", sys.argv[1])
 normal = plan("dsa_generation_module", "sglang", 103)
-expanded = plan("dsa_generation_module", "sglang", 103, include_long_history=True)
+expanded = plan("dsa_generation_module", "sglang", 103, include_long_context=True)
 old_ids = {_run_case_id(row, "run", "sglang.dsa_generation_module") for row in normal.rows}
 for case_id in old_ids: checkpoint.mark_passed(case_id)
 tasks = [{"id": _run_case_id(row,"run","sglang.dsa_generation_module"), "params":row} for row in expanded.rows]
@@ -218,7 +218,7 @@ assert checkpoint.filter_done(tasks) == []
 
 def test_qwen_measured_666_anchor_batches_are_retained(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "Qwen/Qwen3.5-397B-A17B")
-    points = plan("attention_context", "vllm", 103, include_long_history=True).cases
+    points = plan("attention_context", "vllm", 103, include_long_context=True).cases
     actual = {
         (case.batch_size, case.input_len)
         for case in points
@@ -254,7 +254,7 @@ def test_glm_measured_665_batch52_frontier_is_declared_for_native_head8(monkeypa
         720896,
     }
     for op in ("dsa_generation_module", "dsa_generation_module_skip_indexer"):
-        cases = plan(op, "sglang", 103, include_long_history=True).cases
+        cases = plan(op, "sglang", 103, include_long_context=True).cases
         selected = [case for case in cases if case.batch_size == 52]
         assert {case.seq_len for case in selected} == expected
         assert {case.num_heads for case in selected} == {8}
@@ -280,7 +280,7 @@ def test_unknown_quantization_and_actual_head_geometry_are_never_erased(monkeypa
 
 def test_added_module_points_have_one_persisted_key_per_runtime_owner():
     for op in ("dsa_context_module", "dsa_generation_module"):
-        cases = plan(op, "vllm", 103, include_long_history=True).cases
+        cases = plan(op, "vllm", 103, include_long_context=True).cases
         keys = {
             (*case[:6], tuple(op_plans._history_config(case.model_path).get("architectures", [])), case.prefix_len)
             for case in cases
@@ -291,7 +291,7 @@ def test_added_module_points_have_one_persisted_key_per_runtime_owner():
 def test_equivalent_model_points_reuse_existing_canonical_owner():
     for op in ("dsa_context_module", "dsa_generation_module"):
         normal = plan(op, "vllm", 103)
-        extended = plan(op, "vllm", 103, include_long_history=True)
+        extended = plan(op, "vllm", 103, include_long_context=True)
         owners = {case.model_path for case in normal.cases}
         assert {case.model_path for case in extended.cases} <= owners
 
@@ -310,11 +310,11 @@ def test_partial_quantization_exclusions_do_not_prove_attention_unquantized(monk
 def test_unqualified_kimi_nope_extension_is_not_enabled(monkeypatch, op):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "moonshotai/Kimi-K3")
     baseline = plan(op, "vllm", 103)
-    extended = plan(op, "vllm", 103, include_long_history=True)
+    extended = plan(op, "vllm", 103, include_long_context=True)
     assert baseline.cases
     assert extended.cases == baseline.cases
-    # The pin's ordinary geometry remains; no new long-history recipe is
+    # The pin's ordinary geometry remains; no new long-context recipe is
     # inferred from Kimi's 1M context limit or native-head declaration.
     profiles = case_generator._framework_specific_model_case_values("mla_module", "vllm")
-    assert profiles and all("long_history_cases" not in profile for profile in profiles)
-    assert all("long_history_tensor_parallel_sizes" not in profile for profile in profiles)
+    assert profiles and all("long_context_cases" not in profile for profile in profiles)
+    assert all("long_context_tensor_parallel_sizes" not in profile for profile in profiles)

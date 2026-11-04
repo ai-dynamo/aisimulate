@@ -4,10 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Agentic collector coverage
 
-The optional model-owned history extension is stacked on collector planner
-#676 at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`. Normal history coverage
+The optional model-owned long-context extension is stacked on collector planner
+#676 at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`. Normal context coverage
 preserves that revision's case population. That baseline already includes some
-1M module points: off does not mean removing all long histories.
+1M module points: off does not remove all long-context points.
 
 ## Evidence used to choose coverage
 
@@ -18,10 +18,10 @@ three and say what remains unmeasured:
 |---|---|---|
 | Model architecture/config | Packaged checkpoint config and existing `model_case_values`, with source revision | Operator family, correlated geometry, legal TP shards and context validity limit |
 | Supported serving recipe | AgentX effective runtime logs and launch configuration, cross-checked against pinned framework source | Local/global token mapping, TP/DP/EP, precision, selected backend and speculative width |
-| Target workload | AgentX profiling **and warmup** request traces; per-rank forwards when available | History demand and observed joint batch/query/prefix shapes |
+| Target workload | AgentX profiling **and warmup** request traces; per-rank forwards when available | Context demand and observed joint batch/query/prefix shapes |
 
 The frozen 2 November 2026 audit covers 808 active NVIDIA AgentX
-configurations. It derives request history from each request's input plus
+configurations. It derives request context demand from each request's input plus
 actual output, not independent maxima. These request traces do not establish
 physical GPU batches. Resolved launch allowances establish bounds, not filled
 forwards. Full per-rank batch/query/prefix records remain missing; current
@@ -35,22 +35,24 @@ exact manifests, signed collector/runtime revisions, source URLs and artifact
 hashes there. Do not substitute another model or checkpoint
 when an identity cannot be resolved.
 
-## Model-owned history policy
+## Model-owned long-context policy
 
 | Model route | Added coverage | Qualification |
 |---|---|---|
 | Qwen3.5-397B dense layers | Full-lookup anchors 24K/32K/40K at measured B1/2/4/8/16, 64K/128K/262K at selected B1/2/4; decode through 262K at B1/2/4/8 | Uses the declared 32 query / 2 KV heads, d256 and valid TP shards. History stays at the audited model range; no 1M Qwen declaration. |
-| Kimi-K3 MLA | No new optional history points until the native adapter is qualified | Preserve #676's ordinary coverage and independent KDA verifier-width additions. The current generic DeepSeek MLA module does not establish native Kimi NoPE parity. |
+| Kimi-K3 MLA | No new optional long-context points until the native adapter is qualified | Preserve #676's ordinary coverage and independent KDA verifier-width additions. The current generic DeepSeek MLA module does not establish native Kimi NoPE parity. |
 | GLM-5.2/5.3 DSA | Intermediate 786432/917504 history, selected sparse queries including 32K, and B8/16/32 tail decode | Uses 64 native heads and valid TP shards. Full and reused-indexer operations stay separate. The NVFP4 TP8/head8 row also declares #665's 22 measured B52 history points through 720896; B52 is a calibration key, not an observed GPU-forward batch. The 32K query is a qualified collection shape, not proof every serving recipe uses it. |
-| MiniMax-M3 MSA | Intermediate history, 32K new queries, selected tail decode batches | Native MSA geometry and precision; global history does not enlarge recurrent/GEMM token work. |
+| MiniMax-M3 MSA | Intermediate history, 32K new queries, selected tail decode batches | Native MSA geometry and precision; global context does not enlarge recurrent/GEMM token work. |
 | DSV4.1, MuseSpark, QwenNext unsupported routes | No invented extension | Exact model/backend/feature support and forward tuples must be qualified separately. |
 
 All tuples live on the model rows; the shared grid is not crossed with these
 additional axes. Context tuples are `[batch, query, prefix]` for modules and
 `[batch, full_lookup_sequence, 0]` for dense attention. Decode tuples are
-`[batch, past, 0]`, leaving room for one new token. Model context limits validate
-points, not automatically generate them. Native indexing, dispatched kernels
-and measured device capacity remain independent requirements.
+`[batch, past_length, 0]`, where past-KV length excludes the one new token.
+Module context prefixes are cached-prefix lengths, excluding the new query.
+Model context limits validate points rather than automatically generating them.
+Native indexing, dispatched kernels and measured device capacity remain
+independent requirements.
 
 ## Disposition of the previous shared expansion
 
@@ -61,9 +63,9 @@ and measured device capacity remain independent requirements.
 | Getter-time memory filtering and memory-filtered task manifests | Not ported; #676 plans remain device-independent and workers refuse capacity |
 | vLLM 0.31 attention family pin/native adaptations | Retained with shared-plan getters; applies to both dense phases |
 | TRT standalone MLA synthetic Scenario/RoPE capacity mismatch | Retained native capacity repair; does not change checkpoint context validity |
-| MoE 32K/64K, KDA verifier widths 3/5/6, NCCL through 1 GiB | Retained independently of the long-history option |
+| MoE 32K/64K, KDA verifier widths 3/5/6, NCCL through 1 GiB | Retained independently of the long-context option |
 | TRT MoE silently shrinking dry-run/tuning sweeps | Removed; a task must account for its requested sweep |
-| Batch-52 serving padding, measurement boundary and source attribution | Separate correctness/consumer review work; history selection does not settle them |
+| Batch-52 serving padding, measurement boundary and source attribution | Separate correctness/consumer review work; context selection does not settle them |
 | Packaged parquet and historical collector provenance | Preserved; no rewriting of existing measurements |
 
 ## Cost and validation contract
@@ -123,7 +125,7 @@ owns fused prefill/decode cache insertion, its cache binding and weight
 processing, and a two-argument forward interface. The existing generic
 `DeepseekV2MLAAttention` collector is not an interchangeable factory selection.
 
-Before adding Kimi-specific long-history module cases, an adapter must preserve
+Before adding Kimi-specific long-context module cases, an adapter must preserve
 native layer registration and cache binding, process absorbed weights, construct
 native metadata and FP8 prefill policy, and invoke the real forward contract.
 Its output-gate/projection timing boundary must also agree with the consumer,

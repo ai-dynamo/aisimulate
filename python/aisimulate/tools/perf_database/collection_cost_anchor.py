@@ -188,7 +188,9 @@ def run(spec: dict, output: Path) -> dict:
 
         def record_allocation(record):
             event = {
-                "native_call_index": current_call["index"], "native_pass_index": current_call["pass_index"], **record
+                "native_call_index": current_call["index"],
+                "native_pass_index": current_call["pass_index"],
+                **record,
             }
             result["allocation_observations"].append(event)
             print(json.dumps({"event": "allocation_observation", **event}), flush=True)
@@ -232,7 +234,7 @@ def run(spec: dict, output: Path) -> dict:
             else contextlib.nullcontext()
         )
         with policy, cache_observer:
-            options = {"include_long_history": True} if spec["scenario"] == "model" else {}
+            options = {"include_long_context": True} if spec["scenario"] == "model" else {}
             selected = select_plan(plans.plan(spec["op"], spec["backend"], spec["sm"], **options), spec["cases"])
             rows = selected.rows
             passes = int(spec.get("native_passes", 1))

@@ -122,7 +122,7 @@ def export(backend: str, sm: int, output: Path, scenario: str) -> dict:
             continue
         entry = registered[op]
         eligible = not entry.unverified and sm not in entry.unverified_sms
-        with_context = {"include_long_history": True} if scenario == "model" else {}
+        with_context = {"include_long_context": True} if scenario == "model" else {}
         planned = plans.plan(op, backend, sm, **with_context)
         spec = plans.OP_PLANS[op]
         path = output / f"{backend}_sm{sm}_{op}.csv"

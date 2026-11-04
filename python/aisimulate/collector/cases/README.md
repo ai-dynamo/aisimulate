@@ -227,38 +227,40 @@ collector only when no existing op can generate the needed points. See
 `.claude/rules/collector/case_authoring.md` for the full rules.
 
 
-## Optional long-history points
+## Optional long-context points
 
 Model attention and MLA/DSA/MSA module rows can declare additive numerical
-points, consumed only with `--include-long-history` (default off). This extends
+points, consumed only with `--include-long-context` (default off). This extends
 model-correlated coverage without increasing every geometry's base grid.
 
 | Field | Value and meaning |
 |---|---|
-| `model_case_values.attention[].long_history_cases.context` | Exact `[batch, full_lookup_sequence, 0]` points |
-| `model_case_values.attention[].long_history_cases.generation` | Exact `[batch, past_length, 0]` points |
-| `model_case_values.mla_module[].long_history_cases.context` | Exact `[batch, new_query_length, cached_prefix_length]` points |
-| `model_case_values.mla_module[].long_history_cases.generation` | Exact `[batch, past_length, 0]` points |
-| `long_history_tensor_parallel_sizes` | Optional real TP shards for these added module points only, when a legacy normal row has no TP declaration; otherwise inherits `tensor_parallel_sizes` |
+| `model_case_values.attention[].long_context_cases.context` | Exact `[batch, full_lookup_sequence, 0]` points |
+| `model_case_values.attention[].long_context_cases.generation` | Exact `[batch, past_length, 0]` points |
+| `model_case_values.mla_module[].long_context_cases.context` | Exact `[batch, new_query_length, cached_prefix_length]` points |
+| `model_case_values.mla_module[].long_context_cases.generation` | Exact `[batch, past_length, 0]` points |
+| `long_context_tensor_parallel_sizes` | Optional real TP shards for these added module points only, when a legacy normal row has no TP declaration; otherwise inherits `tensor_parallel_sizes` |
 
-The same `long_history_cases` structure is supported on an existing
+The same `long_context_cases` structure is supported on an existing
 `framework_specific_model_case_values.mla_module` row. Such a model geometry
 contributes to the shared case plan, with backend availability still owned by
 `collector/skips.py`. Numeric tuples do not express predicates or independent
 sweep axes. For example, on an existing sparse module model row:
 
 ```yaml
-long_history_cases:
+long_context_cases:
   context:
     - [1, 32768, 917504]
   generation:
     - [32, 1048575, 0]
 ```
 
-Context validates `query + prefix <= max_position_embeddings`; decode validates
+`past_length` is the decode past-KV length, excluding the new token.
+`cached_prefix_length` counts already cached prefill tokens, excluding the new
+query. Context validates `query + prefix <= max_position_embeddings`; decode validates
 `past + 1 <= max_position_embeddings`, including nested text configs. Invalid
 metadata raises; missing model configs or context limits never become guessed
-coverage. Dense context uses full history because that is the current lookup
+coverage. Dense context uses the full lookup sequence because that is the current lookup
 contract, even for a short cached query. Shared native indexing constraints
 still apply; device capacity is refused at runtime, not used to vary the plan.
 

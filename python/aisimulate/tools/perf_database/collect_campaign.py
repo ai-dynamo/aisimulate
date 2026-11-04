@@ -72,7 +72,7 @@ class Shard:
     name: str
     case_filter: str | None = None
     model_path: str | None = None
-    include_long_history: bool = False
+    include_long_context: bool = False
 
     @property
     def key(self) -> str:
@@ -91,15 +91,15 @@ def load_plan(path: Path) -> Plan:
     shards = []
     seen: set[str] = set()
     for raw in doc["shards"]:
-        include_long_history = raw.get("include_long_history", False)
-        if not isinstance(include_long_history, bool):
-            raise ValueError("include_long_history must be a YAML boolean")
+        include_long_context = raw.get("include_long_context", False)
+        if not isinstance(include_long_context, bool):
+            raise ValueError("include_long_context must be a YAML boolean")
         s = Shard(
             op=str(raw["op"]),
             name=str(raw.get("name", "all")),
             case_filter=raw.get("case_filter") or None,
             model_path=raw.get("model_path") or None,
-            include_long_history=include_long_history,
+            include_long_context=include_long_context,
         )
         if s.key in seen:
             raise ValueError(f"duplicate shard {s.key}")
@@ -169,8 +169,8 @@ def collector_argv(plan: Plan, shard: Shard) -> list[str]:
         argv += ["--model-path", shard.model_path]
     else:
         argv += ["--model-cases-full"]
-    if shard.include_long_history:
-        argv += ["--include-long-history"]
+    if shard.include_long_context:
+        argv += ["--include-long-context"]
     if shard.case_filter:
         argv += ["--case-filter", shard.case_filter]
     assert "--keep-csv" not in argv

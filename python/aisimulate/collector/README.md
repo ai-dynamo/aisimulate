@@ -19,17 +19,17 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
-# Optional model-owned long-history coverage
+# Optional model-owned long-context coverage
 
 Normal collection retains the shared grid and model geometry coverage. Add
-`--include-long-history` to collect the additional correlated points declared
+`--include-long-context` to collect the additional correlated points declared
 on selected model rows; it defaults to off. A model selection or
-`--model-cases-full` is required. Existing long-history points in the normal
+`--model-cases-full` is required. Existing long-context points in the normal
 shared module grid remain enabled.
 
 ```bash
-python collect.py --backend sglang --model-path zai-org/GLM-5.2 --ops dsa_generation_module --include-long-history
-python collect.py --backend sglang --model-cases-full --sm 103 --plan-only --include-long-history
+python collect.py --backend sglang --model-path zai-org/GLM-5.2 --ops dsa_generation_module --include-long-context
+python collect.py --backend sglang --model-cases-full --sm 103 --plan-only --include-long-context
 ```
 
 The optional points reuse the native geometry, actual projection precision and
@@ -41,12 +41,12 @@ separate checkpoint/output roots for before/after cost experiments; changing a
 group's point list changes its existing task ID and can repeat its older points
 on resume, while preventing newly added points from being skipped.
 
-See [the declaration fields](cases/README.md#optional-long-history-points) and
+See [the declaration fields](cases/README.md#optional-long-context-points) and
 [coverage rationale and disposition](cases/agentic_coverage.md). Collection-cost
 estimates count setup changes, point preparation, warmup/capture and timed
 forwards; scheduler wait and GPU allocation overhead are excluded.
 
-Kimi-K3 adds no optional MLA history points yet: pinned vLLM 0.30.0
+Kimi-K3 adds no optional MLA long-context points yet: pinned vLLM 0.30.0
 [`MultiHeadLatentAttention`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/mla.py#L136)
 uses NoPE and fused cache operations that the existing generic DeepSeek module
 does not reproduce. A native adapter needs cache registration/binding, absorbed
@@ -54,7 +54,7 @@ weight processing, forward/metadata and FP8 policy support, plus a consumer
 review of its output-gate timing boundary and silicon qualification. See the
 [deferred extension](cases/agentic_coverage.md#deferred-kimi-k3-mla-extension).
 Normal coverage and independent KDA width additions remain enabled; the missing
-native long-history route is an unmeasured gap, not zero collection cost.
+native long-context route is an unmeasured gap, not zero collection cost.
 
 # Preparation
 
@@ -751,19 +751,19 @@ case raises before timing or publishing rows. CUDA accelerator errors propagate
 immediately. The successful collection path and historical profile values are
 unchanged by this failure guard.
 
-# Appendix: estimated extra collection time for long-history shapes
+# Appendix: estimated extra collection time for long-context shapes
 
 These are **provisional planning estimates**, in additional collection GPU-hours
 above the pinned #676 baseline. They price the extra model-owned points enabled
-by `--include-long-history`; the existing baseline anchors remain enabled when
+by `--include-long-context`; the existing baseline anchors remain enabled when
 the flag is off. They are not measured full-sweep totals or confidence bounds.
 
-## Estimated long-history increment
+## Estimated long-context increment
 
 The estimates use each sampled SKU's own framework measurements and the frozen
 added-case inventory. Rounded planning centers across the three frameworks are:
 
-| GPU SKU | vLLM GPUh | SGLang GPUh | TRT-LLM GPUh | Long-history total GPUh |
+| GPU SKU | vLLM GPUh | SGLang GPUh | TRT-LLM GPUh | Long-context total GPUh |
 |---|---:|---:|---:|---:|
 | L40S | 2.0 | 2.6 | 3.4 | ~8 |
 | H100 SXM | 4.4 | 2.7 | 1.9 | ~9 |
@@ -775,7 +775,7 @@ added-case inventory. Rounded planning centers across the three frameworks are:
 | A100 SXM80 | Unmeasured | Unmeasured | Unmeasured | Unmeasured |
 
 The seven sampled SKUs total **approximately 130 GPU-hours** for the modeled
-long-history work. Rows include explicit analogous-operation provisions where
+long-context work. Rows include explicit analogous-operation provisions where
 native measurements are missing; 1,628 additional history cells still lack a
 same-framework analogue. The table does not establish that every planned shape
 fits memory or has a working native kernel.

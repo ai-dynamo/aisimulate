@@ -45,7 +45,7 @@ model_case_values:
       model_path: Qwen/Qwen3.5-397B-A17B
       # Audited AgentX history range; exact points are coverage choices, not
       # claims of observed per-rank forwards. See agentic_coverage.md.
-      long_history_cases:
+      long_context_cases:
         context:
           # Preserve #666's measured calibration rows at these three lengths.
           - [1, 24576, 0]
