@@ -298,3 +298,46 @@ def test_report_rejects_unsupported_source_pairs(tmp_path):
     operation = lane["attention_context"]
     assert operation["paired_group_measurement"]["covered_added_points"] == 0
     assert operation["extra_gpu_hours_range"] is None
+
+
+def test_nonhistory_pairs_support_identical_alternatives_without_double_charge(tmp_path):
+    records = repeat_pairs()
+    for record in records:
+        record["operation"] = "moe"
+        record["group_member_cases"] = [
+            {"num_tokens": c["input_len"], "model_name": "exact-checkpoint", "dispatch": "native", "tp": "1"}
+            for c in record["group_member_cases"]
+        ]
+    before, after = records[0]["group_member_cases"], records[1]["group_member_cases"]
+    for name, rows in (("baseline", before), ("shared", after), ("model", after)):
+        directory = tmp_path / name
+        directory.mkdir()
+        with (directory / "vllm_sm103_moe.csv").open("w") as handle:
+            writer = csv.DictWriter(handle, fieldnames=rows[0])
+            writer.writeheader()
+            writer.writerows(rows)
+    shared = report.report_lane(
+        tmp_path / "baseline",
+        tmp_path / "shared",
+        records,
+        "b300_sxm",
+        "vllm",
+        "shared",
+        source_commit="abc",
+        alternate_candidate=tmp_path / "model",
+    )["moe"]
+    model = report.report_lane(
+        tmp_path / "baseline", tmp_path / "model", records, "b300_sxm", "vllm", source_commit="abc"
+    )["moe"]
+    assert shared["paired_group_measurement"]["complete"] and model["paired_group_measurement"]["complete"]
+    assert shared["extra_gpu_hours_range"] == model["extra_gpu_hours_range"] == [6 / 3600, 7 / 3600]
+    assert shared["paired_group_measurement"]["covered_added_points"] == 1
+    assert len(shared["scenario_equivalence_proofs"]) == 3
+    assert report.measured_cost(records) == 82.5  # alternative forecasts do not duplicate observations
+    assert all(s["scenario"] in {"baseline", "model"} for s in records)
+    # Missing or mismatched model/dispatch/task geometry cannot establish equivalence.
+    target = report.frozen_tables(str(tmp_path / "shared"))["vllm_sm103_moe"]
+    assert report.non_history_scenario_proof(records[1], "moe", target, {}) is None
+    assert report.non_history_scenario_proof(records[1], "attention_context", target, target) is None
+    changed = {key: {**row, "_task_case": {**row, "tp": "8"}} for key, row in target.items()}
+    assert report.non_history_scenario_proof(records[1], "moe", target, changed) is None
