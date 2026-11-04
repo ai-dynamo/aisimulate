@@ -101,6 +101,15 @@ changed attention/indexer/RoPE dimensions remain significant. A new incompatible
 collision at the same persisted key raises rather than writing duplicate or
 misidentified consumer rows. Targeted NVFP4 runs retain their own checkpoint.
 
+This proves equivalence of the timed attention and consumer key only. SGLang
+initializes two full dummy model layers by default, so expert precision can
+change resident weights, initialization time and available KV capacity. A
+canonical BF16 group can refuse a point that a targeted NVFP4 run admits.
+Keep that refusal as a coverage gap; collect with `--model-path` for the intended
+checkpoint when checkpoint-specific capacity is required. Do not transfer
+startup costs, capacity qualification or whole-group cost estimates between
+these representatives. The audit keeps targeted NVFP4 timings separate.
+
 
 ## Deferred Kimi-K3 MLA extension
 
