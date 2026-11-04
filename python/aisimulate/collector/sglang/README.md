@@ -14,6 +14,18 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Overview
 
+DSA decode collection uses the resolved serving graph buckets. With padding
+enabled, a real batch of 52 executes the captured 56-slot shape using
+SGLang's native decode-buffer registry and backend-provided sequence-length
+sentinels. Padded slots do not become extra full-history requests. Rows remain
+keyed by the 52 real requests. With padding disabled, only exact captured
+batches use graphs; other batches are timed eagerly. Native QKV projection and
+fresh `AttentionInputs` are included in every timed DSA forward; history
+initialization is measured separately as collection overhead.
+
+This corrects future collection. Historical exact-shape batch-52 rows must
+not be relabeled as padded-serving measurements.
+
 - **collect_mla_module.py**: Collects performance data for MLA and DSA attention module operators
 - Large-EP expert compute is measured by
   `../wideep/sglang/collect_deepep_moe.py` into the `moe_ep` table; measured
