@@ -158,6 +158,23 @@ def test_native_selection_keeps_only_requested_dispatch_and_refuses_missing_case
     with pytest.raises(ValueError, match="absent"):
         anchor.select_plan(planned, [{"batch_size": "8", "input_len": "262144", "dispatch": "a"}])
 
+    class Grouped(NamedTuple):
+        phase: str
+        batch_sizes: tuple
+        seq_lens: tuple
+
+    grouped = Plan([Grouped("verify", (1, 8), (2, 3, 4, 5, 6, 8))], [])
+    selected = anchor.select_plan(
+        grouped,
+        [
+            {"phase": "verify", "batch_sizes": "1", "seq_lens": "3", "dispatch": "", "_task_case": "attribution"},
+            {"phase": "verify", "batch_sizes": "8", "seq_lens": "5", "dispatch": ""},
+        ],
+    )
+    assert selected.cases == [Grouped("verify", (1,), (3,)), Grouped("verify", (8,), (5,))]
+    with pytest.raises(ValueError, match="absent"):
+        anchor.select_plan(grouped, [{"phase": "verify", "batch_sizes": "8", "seq_lens": "7", "dispatch": ""}])
+
 
 def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_path, monkeypatch):
     path = _TOOL.with_name("collection_cost_anchor.py")
@@ -205,10 +222,16 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
         "tools.perf_database.collection_cost_inventory": SimpleNamespace(),
         "collector.sglang.registry": SimpleNamespace(REGISTRY=[entry]),
         "native.module": SimpleNamespace(native=native),
+        "collector.collect": SimpleNamespace(
+            _is_cuda_fatal_exception=lambda error, torch: isinstance(error, MemoryError)
+        ),
+        "collector.helper": SimpleNamespace(cuda_context_error=lambda device: None),
     }
     monkeypatch.setattr(anchor.importlib, "import_module", lambda name: modules[name])
     monkeypatch.setattr(anchor.importlib.metadata, "version", lambda name: "0.5.21")
     monkeypatch.setenv("AISIM_COLLECTOR_REF", "a" * 40)
+    monkeypatch.setenv("COLLECTOR_MEASURE_POWER", "true")
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "unrelated/inherited-model")
     monkeypatch.delenv("AIS_SM", raising=False)
     monkeypatch.delenv("AIC_SM", raising=False)
     request = {
@@ -226,7 +249,34 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
     assert calls == [(32, 1048575, "cuda:0", True)]
     assert result["forward_rows"][0]["latency"] == "0.7897"
     assert result["calls"][0]["native_call_seconds"] >= 0
+    assert result["effective_protocol"] == {"measure_power": False, "model_path": None, "coverage_scenario": "baseline"}
     entry.unverified = True
     rejected = anchor.run(request, tmp_path / "unverified")
     assert rejected["status"] == "failed" and "unverified" in rejected["error"]
     assert len(calls) == 1
+    entry.unverified = False
+    modules["collector.op_plans"].plan = lambda *args, **kw: Plan(
+        [Case(32, 1048575), Case(64, 1048575)], [], [[32, 1048575], [64, 1048575]]
+    )
+    request["cases"].append({"batch_size": "64", "input_len": "1048575", "dispatch": ""})
+
+    def failed_first(batch, length, **kwargs):
+        if batch == 32:
+            raise ValueError("ordinary failed shape")
+        native(batch, length, **kwargs)
+
+    modules["native.module"].native = failed_first
+    recovered = anchor.run(request, tmp_path / "healthy-context")
+    assert len(recovered["calls"]) == 2 and recovered["calls"][1]["status"] == "passed"
+    modules["collector.helper"].cuda_context_error = lambda device: "sticky device error"
+    poisoned = anchor.run(request, tmp_path / "poisoned-context")
+    assert poisoned["worker_recycle_required"] is True
+    assert len(poisoned["calls"]) == 1 and len(poisoned["unattempted_rows"]) == 1
+
+    def allocation_failure(*args, **kwargs):
+        raise MemoryError("allocation failed")
+
+    modules["native.module"].native = allocation_failure
+    modules["collector.helper"].cuda_context_error = lambda device: None
+    oom = anchor.run(request, tmp_path / "oom-context")
+    assert oom["worker_recycle_required"] is True and len(oom["calls"]) == 1
