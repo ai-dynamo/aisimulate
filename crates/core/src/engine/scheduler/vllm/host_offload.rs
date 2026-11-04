@@ -11,7 +11,8 @@
 //! one recency epoch and uses logical identity only as a deterministic
 //! tie-break inside that epoch.
 //!
-//! Two vLLM 0.32.0 profiles ([`G2Connector`]) change these rules:
+//! Two vLLM 0.32.0 profiles change these rules
+//! ([`G2Connector::rules`](crate::engine::G2Connector::rules)):
 //!
 //! - `offloading_v0_32`, `OffloadingConnector` with the CPU backend: lookups
 //!   and stores touch nothing; a block is ranked when its store is admitted;
@@ -36,6 +37,7 @@ use uuid::Uuid;
 
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
+use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
     HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
@@ -45,7 +47,7 @@ use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
     SourceReuseDependency,
 };
-use crate::engine::{G2Connector, HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
+use crate::engine::{HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
@@ -111,8 +113,8 @@ pub(super) struct VllmHostRequestState {
     owner: Uuid,
     /// Complete prompt blocks, the first `prompt_blocks` of `block_keys`.
     prompt_blocks: usize,
-    /// One key per complete block, by block index: the prompt's, then the
-    /// decode blocks `simple_cpu_v0_32` stores.
+    /// One key per complete block, by block index: the prompt's, then any
+    /// decode blocks stored under `stores_eagerly`.
     block_keys: Vec<HostBlockKey>,
     /// Router identities of `block_keys`, retained only for `HostPinned`
     /// residency events.
@@ -125,13 +127,13 @@ pub(super) struct VllmHostRequestState {
     latest_store: Option<TransferId>,
     load: Option<LoadState>,
     first_admission_recorded: bool,
-    /// `simple_cpu_v0_32`: tokens computed before the latest pass, the prefix
-    /// the store may copy.
+    /// With `stores_eagerly`: tokens computed before the latest pass, the
+    /// prefix the store may copy.
     confirmed_tokens: usize,
-    /// `simple_cpu_v0_32`: keys the latest lookup hit, pinned until the load.
+    /// With `pins_hits`: keys the latest lookup hit, pinned until the load.
     lookup_pin: Option<Vec<HostBlockKey>>,
-    /// `offloading_v0_32`: blocks stored, offered or loaded, re-ranked when
-    /// the request finishes.
+    /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
+    /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
 }
 
@@ -272,14 +274,14 @@ pub(super) struct HostTransferProgress {
 pub(super) struct VllmHostOffloadAdapter {
     host: HostClient,
     shared: bool,
-    connector: G2Connector,
+    rules: ConnectorRules,
     /// The rank publishes G2 residency as `HostPinned` KV events.
     publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
     kvcr: Option<super::kvcr::VllmKvcrAdapter>,
     load_epoch: u64,
-    /// Keys being loaded, which defer a peer's lookup. SimpleCPU loads a block
-    /// into several requests at once, so it tracks none.
+    /// Keys being loaded, which defer a peer's lookup. Tracked only when the
+    /// connector `waits_for_loads`.
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
     compute_not_before_ms: f64,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
@@ -356,7 +358,7 @@ impl VllmHostOffloadAdapter {
         Ok(Self {
             host,
             shared,
-            connector: config.connector,
+            rules: config.connector.rules(),
             publishes_residency: subscribe,
             g3: None,
             kvcr: None,
@@ -367,22 +369,14 @@ impl VllmHostOffloadAdapter {
         })
     }
 
-    fn tracks_loads(&self) -> bool {
-        self.connector != G2Connector::SimpleCpuV032
-    }
-
     /// Whether a store keeps a reference on the G1 blocks it copies until the
-    /// copy completes, and the order it frees them in: a cluster-shared pool,
-    /// like Mooncake Store and LMCache MP, or SimpleCPU, which touches its GPU
-    /// source blocks for the copy.
+    /// copy completes, and the order it frees them in: the connector's rule,
+    /// or tail first for a cluster-shared pool, like Mooncake Store and
+    /// LMCache MP.
     pub(super) fn store_source_hold(&self) -> Option<SourceReleaseOrder> {
-        if self.connector == G2Connector::SimpleCpuV032 {
-            Some(SourceReleaseOrder::HeadFirst)
-        } else if self.shared {
-            Some(SourceReleaseOrder::TailFirst)
-        } else {
-            None
-        }
+        self.rules
+            .holds_store_sources
+            .or(self.shared.then_some(SourceReleaseOrder::TailFirst))
     }
 
     /// Whether requests must retain router identities for residency events.
@@ -413,35 +407,32 @@ impl VllmHostOffloadAdapter {
         {
             return HostLookup::Deferred;
         }
+        let rules = self.rules;
         let Self {
             host,
-            connector,
             g3,
             kvcr,
             load_by_key,
             ..
         } = self;
-        let simple = *connector == G2Connector::SimpleCpuV032;
         let mut tier = host.lock();
-        // SimpleCPU drops the previous lookup's pin before looking up again.
+        // A pinned hit is released before looking up again.
         if let Some(pinned) = request.lookup_pin.take() {
             tier.unpin_external(&pinned);
         }
         if let Some(transfer_id) = request.latest_store {
             if !tier.has_transfer(transfer_id) {
                 request.latest_store = None;
-            } else if !simple {
-                // The offloading connectors wait for the request's own stores.
+            } else if rules.waits_for_stores {
                 return HostLookup::Deferred;
             }
         }
 
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
         let base_g1_blocks = g1_cost.cached_tokens / block_size;
-        // SimpleCPU must recompute at least the last token. G2 loads only
-        // prompt blocks, so a preempted request recomputes its stored output
-        // blocks, which vLLM reloads.
-        let end = if simple {
+        // G2 loads only prompt blocks, so a preempted request recomputes the
+        // output blocks SimpleCPU stored, which vLLM reloads.
+        let end = if rules.leaves_last_token {
             ((sequence.len() - 1) / block_size).min(request.prompt_blocks)
         } else {
             request.prompt_blocks
@@ -494,10 +485,8 @@ impl VllmHostOffloadAdapter {
             for key in request.block_keys[base_g1_blocks..end].iter().copied() {
                 match tier.lookup(key) {
                     Lookup::Hit => deferred |= load_by_key.contains_key(&key),
-                    // SimpleCPU registers a block only when its store completes.
-                    Lookup::Pending { .. } if simple => break,
-                    Lookup::Pending { .. } => deferred = true,
-                    Lookup::Miss => break,
+                    Lookup::Pending { .. } if rules.waits_for_stores => deferred = true,
+                    Lookup::Pending { .. } | Lookup::Miss => break,
                 }
                 matched += 1;
             }
@@ -516,27 +505,22 @@ impl VllmHostOffloadAdapter {
             }
         };
 
-        match connector {
+        if rules.touches_prompt {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-            G2Connector::OffloadingV024 => {
-                for key in request.block_keys[..request.prompt_blocks]
-                    .iter()
-                    .rev()
-                    .copied()
-                {
-                    tier.touch(key);
-                }
+            for key in request.block_keys[..request.prompt_blocks]
+                .iter()
+                .rev()
+                .copied()
+            {
+                tier.touch(key);
             }
-            G2Connector::OffloadingV032 => {}
-            // SimpleCPU pins its hit until the request loads it or looks up
-            // again.
-            G2Connector::SimpleCpuV032 => {
-                if let HostLookup::Hit(hit) = &outcome {
-                    tier.pin_external(&hit.keys);
-                    request.lookup_pin = Some(hit.keys.clone());
-                }
-            }
+        }
+        if rules.pins_hits
+            && let HostLookup::Hit(hit) = &outcome
+        {
+            tier.pin_external(&hit.keys);
+            request.lookup_pin = Some(hit.keys.clone());
         }
         outcome
     }
@@ -604,12 +588,12 @@ impl VllmHostOffloadAdapter {
         }
         drop(tier);
 
-        if self.tracks_loads() {
+        if self.rules.waits_for_loads {
             for key in &hit.keys {
                 assert!(self.load_by_key.insert(*key, transfer_id).is_none());
             }
         }
-        if self.connector == G2Connector::OffloadingV032 {
+        if self.rules.reranks_at_finish {
             request
                 .accessed_blocks
                 .extend(hit.base_g1_blocks..hit.base_g1_blocks + hit.keys.len());
@@ -679,7 +663,7 @@ impl VllmHostOffloadAdapter {
             else {
                 continue;
             };
-            if self.tracks_loads() {
+            if self.rules.waits_for_loads {
                 for key in &blocks {
                     assert_eq!(self.load_by_key.remove(key), Some(transfer_id));
                 }
@@ -776,7 +760,7 @@ impl VllmHostOffloadAdapter {
             Some(LoadState::Loading(_)) => panic!("loading request cannot be admitted"),
             None => (reused_tokens, 0),
         };
-        if self.connector == G2Connector::SimpleCpuV032 {
+        if self.rules.stores_eagerly {
             // SimpleCPU scans every admitted request from block 0, a loaded or
             // preempted one included; its reused prefix is already computed.
             request.next_store_block = 0;
@@ -791,8 +775,9 @@ impl VllmHostOffloadAdapter {
     }
 
     /// Prepare one missing-only, per-request write-through cohort: the prompt
-    /// blocks computed so far, or for SimpleCPU every block computed before
-    /// this pass (vLLM stores a step's blocks when the next step is scheduled).
+    /// blocks computed so far, or for an eager store every block computed
+    /// before this pass (vLLM stores a step's blocks when the next step is
+    /// scheduled).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_completed_blocks(
         &mut self,
@@ -805,7 +790,8 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) {
-        let end = if self.connector == G2Connector::SimpleCpuV032 {
+        let rules = self.rules;
+        let end = if rules.stores_eagerly {
             let confirmed_blocks =
                 std::mem::replace(&mut request.confirmed_tokens, computed_tokens) / block_size;
             request.extend_keys(lease, confirmed_blocks);
@@ -818,7 +804,7 @@ impl VllmHostOffloadAdapter {
         }
         let start = request.next_store_block;
         let mut tier = self.host.lock();
-        if self.connector == G2Connector::OffloadingV032 {
+        if rules.reranks_at_finish {
             // `prepare_store` records the blocks it is offered, except those
             // still being stored, even when the store fails.
             request.accessed_blocks.extend((start..end).filter(|index| {
@@ -832,7 +818,7 @@ impl VllmHostOffloadAdapter {
             .filter(|index| matches!(tier.lookup(request.block_keys[*index]), Lookup::Miss))
             .collect::<Vec<_>>();
         let mut resume = end;
-        if self.connector == G2Connector::SimpleCpuV032 {
+        if rules.stores_what_fits {
             // SimpleCPU takes one free CPU block per block it stores and stops
             // at the first block it has no room for; with none free, it scans
             // nothing (`_select_eager_blocks_to_store`).
@@ -864,20 +850,20 @@ impl VllmHostOffloadAdapter {
         // The offloading connectors protect every block they offer from
         // eviction. SimpleCPU's `get_new_blocks` protects none, so it offers
         // only the missing blocks.
-        let simple_keys;
-        let simple_meta;
-        let (keys, meta) = if self.connector == G2Connector::SimpleCpuV032 {
-            simple_keys = missing_indices
+        let missing_keys;
+        let missing_meta;
+        let (keys, meta) = if rules.stores_what_fits {
+            missing_keys = missing_indices
                 .iter()
                 .map(|index| request.block_keys[*index])
                 .collect::<Vec<_>>();
-            simple_meta = request.block_meta.as_deref().map(|meta| {
+            missing_meta = request.block_meta.as_deref().map(|meta| {
                 missing_indices
                     .iter()
                     .map(|index| meta[*index].clone())
                     .collect::<Vec<_>>()
             });
-            (simple_keys.as_slice(), simple_meta.as_deref())
+            (missing_keys.as_slice(), missing_meta.as_deref())
         } else {
             (
                 &request.block_keys[start..end],
@@ -917,8 +903,7 @@ impl VllmHostOffloadAdapter {
                 }
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
-                // Only vLLM 0.24 touches the prompt after a store.
-                if self.connector == G2Connector::OffloadingV024 {
+                if rules.touches_prompt {
                     for key in request.block_keys[..request.prompt_blocks]
                         .iter()
                         .rev()
@@ -950,40 +935,27 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) {
-        match self.connector {
-            G2Connector::OffloadingV024 => {}
-            G2Connector::OffloadingV032 => {
-                self.observe_completed_blocks(
-                    uuid,
-                    request,
-                    lease,
-                    computed_tokens,
-                    prompt_tokens,
-                    block_size,
-                    kv_manager,
-                    now_ms,
-                );
-                let mut tier = self.host.lock();
-                for index in request.accessed_blocks.iter().rev() {
-                    tier.touch(request.block_keys[*index]);
-                }
-            }
-            G2Connector::SimpleCpuV032 => {
-                if let Some(pinned) = request.lookup_pin.take() {
-                    self.host.lock().unpin_external(&pinned);
-                }
-                // Everything computed is confirmed once the request leaves.
-                request.confirmed_tokens = computed_tokens;
-                self.observe_completed_blocks(
-                    uuid,
-                    request,
-                    lease,
-                    computed_tokens,
-                    prompt_tokens,
-                    block_size,
-                    kv_manager,
-                    now_ms,
-                );
+        if let Some(pinned) = request.lookup_pin.take() {
+            self.host.lock().unpin_external(&pinned);
+        }
+        if self.rules.stores_at_finish {
+            // Everything computed is confirmed once the request leaves.
+            request.confirmed_tokens = computed_tokens;
+            self.observe_completed_blocks(
+                uuid,
+                request,
+                lease,
+                computed_tokens,
+                prompt_tokens,
+                block_size,
+                kv_manager,
+                now_ms,
+            );
+        }
+        if self.rules.reranks_at_finish {
+            let mut tier = self.host.lock();
+            for index in request.accessed_blocks.iter().rev() {
+                tier.touch(request.block_keys[*index]);
             }
         }
     }
@@ -1018,7 +990,7 @@ impl VllmHostOffloadAdapter {
         request.restore_rounds.reset();
         let deadline = {
             let tier = self.host.lock();
-            if self.connector == G2Connector::SimpleCpuV032 {
+            if self.rules.preemption_waits_for_all {
                 tier.last_deadline(self.host.id())
             } else {
                 request
@@ -1049,7 +1021,7 @@ impl VllmHostOffloadAdapter {
         let LoadState::Loading(load) = load else {
             return false;
         };
-        if self.tracks_loads() {
+        if self.rules.waits_for_loads {
             for key in &load.keys {
                 assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
             }
@@ -1087,8 +1059,7 @@ impl VllmHostOffloadAdapter {
     /// next step, and `Scheduler.has_requests` keeps the engine stepping until
     /// it has, so an engine boundary submits them.
     pub(super) fn has_unsubmitted_stores(&self) -> bool {
-        self.connector != G2Connector::OffloadingV024
-            && self.host.lock().has_prepared_stores(self.host.id())
+        self.rules.stores_at_finish && self.host.lock().has_prepared_stores(self.host.id())
     }
 
     pub(super) fn has_work(&self) -> bool {
@@ -1116,7 +1087,7 @@ mod tests {
     use crate::engine::kv_manager::NativeAllocation;
     use crate::engine::scheduler::vllm::core::VllmCore;
     use crate::engine::trace::TraceCollector;
-    use crate::engine::{HostOffloadObservation, HostOffloadObservationData};
+    use crate::engine::{G2Connector, HostOffloadObservation, HostOffloadObservationData};
 
     fn adapter(capacity_blocks: usize) -> VllmHostOffloadAdapter {
         VllmHostOffloadAdapter::new(

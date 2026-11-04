@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Result, ensure};
 
 use super::{HostLink, HostPolicy, HostTier, HostTierConfig};
-use crate::engine::{G2Connector, G2Scope, NativeHostOffloadConfig};
+use crate::engine::{G2Scope, NativeHostOffloadConfig};
 
 /// Everything that must agree before ranks may share stored KV blocks.
 #[derive(Clone, Debug, PartialEq)]
@@ -140,11 +140,7 @@ impl HostClient {
                     capacity_blocks: config.num_host_blocks,
                     block_bytes,
                     shared_gbps: None,
-                    policy: match config.connector {
-                        G2Connector::OffloadingV024 => HostPolicy::CohortLru,
-                        G2Connector::OffloadingV032 => HostPolicy::Ranked,
-                        G2Connector::SimpleCpuV032 => HostPolicy::FreeQueue,
-                    },
+                    policy: config.connector.rules().policy,
                 })?;
                 tier.register(0, link)?;
                 Ok(Self {

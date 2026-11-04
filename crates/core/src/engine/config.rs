@@ -10,6 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::engine::common::speculative::normalize_conditional_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
+use crate::engine::host_offload::HostPolicy;
+use crate::engine::kv_manager::SourceReleaseOrder;
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
 use crate::perfmodel::FpmCacheGroup;
 
@@ -453,6 +455,95 @@ impl G2Connector {
     fn is_default(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Each rule in which the connectors differ, for the vLLM version this
+    /// connector names.
+    pub(crate) fn rules(self) -> ConnectorRules {
+        match self {
+            Self::OffloadingV024 => ConnectorRules {
+                policy: HostPolicy::CohortLru,
+                touches_prompt: true,
+                pins_hits: false,
+                leaves_last_token: false,
+                waits_for_stores: true,
+                waits_for_loads: true,
+                stores_eagerly: false,
+                stores_what_fits: false,
+                holds_store_sources: None,
+                stores_at_finish: false,
+                reranks_at_finish: false,
+                preemption_waits_for_all: false,
+            },
+            Self::OffloadingV032 => ConnectorRules {
+                policy: HostPolicy::Ranked,
+                touches_prompt: false,
+                pins_hits: false,
+                leaves_last_token: false,
+                waits_for_stores: true,
+                waits_for_loads: true,
+                stores_eagerly: false,
+                stores_what_fits: false,
+                holds_store_sources: None,
+                stores_at_finish: true,
+                reranks_at_finish: true,
+                preemption_waits_for_all: false,
+            },
+            Self::SimpleCpuV032 => ConnectorRules {
+                policy: HostPolicy::FreeQueue,
+                touches_prompt: false,
+                pins_hits: true,
+                leaves_last_token: true,
+                waits_for_stores: false,
+                waits_for_loads: false,
+                stores_eagerly: true,
+                stores_what_fits: true,
+                holds_store_sources: Some(SourceReleaseOrder::HeadFirst),
+                stores_at_finish: true,
+                reranks_at_finish: false,
+                preemption_waits_for_all: true,
+            },
+        }
+    }
+}
+
+/// The rules in which the [`G2Connector`]s differ, so G2 branches on
+/// behavior rather than on connector names.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectorRules {
+    /// Where a block enters G2's eviction order.
+    pub(crate) policy: HostPolicy,
+    /// Each lookup and store makes the prompt's resident blocks the newest,
+    /// its first block newest of all (`LRUCachePolicy.touch`).
+    pub(crate) touches_prompt: bool,
+    /// A lookup pins its hit until the request loads it or looks up again.
+    pub(crate) pins_hits: bool,
+    /// A lookup leaves at least the last token to compute.
+    pub(crate) leaves_last_token: bool,
+    /// A lookup waits for the request's own stores and for any block whose
+    /// store is in flight. Otherwise such a block misses.
+    pub(crate) waits_for_stores: bool,
+    /// A lookup waits for a block that another request is loading.
+    /// Otherwise both requests load it.
+    pub(crate) waits_for_loads: bool,
+    /// Each pass stores every block computed before it, decode blocks
+    /// included, from a cursor that restarts at block 0 at each admission.
+    /// Otherwise each pass stores the prompt blocks it computes.
+    pub(crate) stores_eagerly: bool,
+    /// A store takes one free block per block G2 lacks, as many as are free,
+    /// and protects none. Otherwise G2 admits the request's new blocks all
+    /// or none and protects those it already holds.
+    pub(crate) stores_what_fits: bool,
+    /// A store holds the G1 blocks it copies until the copy completes, then
+    /// frees them in this order.
+    pub(crate) holds_store_sources: Option<SourceReleaseOrder>,
+    /// A finishing request stores the blocks it has not stored yet.
+    pub(crate) stores_at_finish: bool,
+    /// A finishing request re-ranks every block it stored, offered or
+    /// loaded, its first block newest.
+    pub(crate) reranks_at_finish: bool,
+    /// A preemption waits for every transfer in flight, not only the
+    /// preempted request's stores.
+    pub(crate) preemption_waits_for_all: bool,
 }
 
 const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
