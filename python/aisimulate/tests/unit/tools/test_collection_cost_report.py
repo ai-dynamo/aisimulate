@@ -351,3 +351,30 @@ def test_missing_forward_evidence_retains_spend_but_cannot_fit():
     assert not report.validation([sample(1, 1), missing, sample(3, 3)])["passed"]
     observed = {**missing, "native_forward_rows": [{"latency": "0.5"}]}
     assert report.predict(observed["case"], [observed]) == (3, 3)
+
+
+def test_clock_scope_and_pass_protocols_cannot_blend_to_validate():
+    old = {
+        "audit_driver_sha256": "old",
+        "observer_sha256": "observer",
+        "runtime_protocol": {"clock_scope": "includes_pending_write"},
+        "native_pass_index": 1,
+    }
+    new = {
+        "audit_driver_sha256": "new",
+        "observer_sha256": "observer",
+        "runtime_protocol": {"clock_scope": "native_only_after_pending_write"},
+        "native_pass_index": 2,
+    }
+    records = [sample(1, 1, **old), sample(3, 3, **new), sample(2, 2, role="holdout", **old)]
+    assert not report.validation(records)["passed"]
+    assert report.predict(sample(2)["case"], records[:2]) is None
+    assert report.validation([records[0], sample(3, 3, **old), records[2]])["passed"]
+    assert not report.validation([sample(1, 1, **old), sample(3, 3, **old), sample(2, 2, role="holdout", **new)])[
+        "passed"
+    ]
+    # Even the same driver cannot silently merge first and subsequent passes.
+    assert (
+        report.predict(sample(2)["case"], [sample(1, 1, **old), sample(3, 3, **{**old, "native_pass_index": 2})])
+        is None
+    )
