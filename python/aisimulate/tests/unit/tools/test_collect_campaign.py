@@ -62,6 +62,30 @@ def test_one_namespace_per_shard_and_readonly_checkout(tmp_path):
     assert f"AISIM_COLLECTOR_REF={ref}" in argv
 
 
+def test_targeted_model_and_long_history_reach_collector(tmp_path):
+    c = _load()
+    plan = c.load_plan(
+        _plan(
+            tmp_path,
+            [{"op": "dsa_generation_module", "model_path": "nvidia/GLM-5.2-NVFP4", "include_long_history": True}],
+        )
+    )
+    argv = c.collector_argv(plan, plan.shards[0])
+    assert argv[argv.index("--model-path") + 1] == "nvidia/GLM-5.2-NVFP4"
+    assert "--model-cases-full" not in argv
+    assert "--include-long-history" in argv
+    default_plan = c.load_plan(_plan(tmp_path, [{"op": "gemm"}]))
+    default_argv = c.collector_argv(default_plan, default_plan.shards[0])
+    assert "--model-cases-full" in default_argv
+    assert "--include-long-history" not in default_argv
+
+
+def test_long_history_requires_boolean(tmp_path):
+    c = _load()
+    with pytest.raises(ValueError, match="YAML boolean"):
+        c.load_plan(_plan(tmp_path, [{"op": "gemm", "include_long_history": "false"}]))
+
+
 def test_collector_ref_is_the_clean_checkout_commit(tmp_path):
     import subprocess
 

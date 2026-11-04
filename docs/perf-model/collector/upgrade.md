@@ -183,6 +183,16 @@ operation. Resume only when the current plan still contains the completed task
 IDs. If enumeration changes, prove which completed IDs remain valid and keep a
 hash-verified checkpoint backup before migration.
 
+Each campaign YAML shard may select its checkpoint and optional history coverage:
+
+| Shard field | Default | Behavior |
+|---|---|---|
+| `model_path` | omitted | Pass `--model-path` before case planning and deduplication; omitted selects the full model plan. |
+| `include_long_history` | `false` | Pass `--include-long-history` for that shard; requires a YAML boolean. |
+
+Use these declared fields instead of an `AISIM_MODEL_FILTER` environment
+variable. The exact collector arguments are retained in `campaign.jsonl`.
+
 ## 6. Classify failures before changing code
 
 Record the exact case, exception, runtime state, and selected framework path.
