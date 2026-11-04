@@ -5,6 +5,9 @@
 Arguments (``--case-filter key=value,...``): ``backend`` (collect.py's ``--backend``),
 ``op``, and op-plan case fields naming exactly one planned case on this SM, e.g.
 ``op=dsa_context_module,model_path=deepseek-ai/DeepSeek-V3.2,seq_len=4096,batch_size=1,...``.
+A sweep field takes a ``+``-joined subset of its planned values (``num_tokens=1+4096``), and
+``env.<NAME>=value`` sets a variable the collector reads for this run only (recorded in the
+result).
 
 ``planned_row`` takes the case from the op plan (the shared cases minus collector/skips.py
 for this backend and SM) and builds its row from the plan's own rows / batch_rows,
@@ -34,26 +37,52 @@ from collector.probes._traced_child import kernel_names
 _RESTART_CODE = 10  # collector.helper.EXIT_CODE_RESTART: the worker recycles after the case ran
 
 
+def _sweep_subset(value) -> list:
+    """A selection for a sweep (list) field: a list, or ``1+4096`` from a probe argument."""
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [int(v) if v.lstrip("-").isdigit() else v for v in str(value).split("+")]
+
+
+def _matches(case, select: dict) -> bool:
+    for field, value in select.items():
+        planned = getattr(case, field)
+        if isinstance(planned, (list, tuple)):  # a sweep field: the selection names a subset of the planned sweep
+            sub = _sweep_subset(value)
+            if not sub or not set(sub) <= set(planned):
+                return False
+        elif str(planned) != str(value):
+            return False
+    return True
+
+
 def planned_row(backend: str, op: str, sm_version: int | None, **select):
     """The run arguments the collector queues for the ONE planned case whose fields equal
-    ``select``. A selection matching no planned case, or several, raises."""
+    ``select``. A sweep field (a list in the case, such as moe ``num_tokens`` or gdn
+    ``seq_lens``) may be given a subset of its planned values; the case then sweeps only
+    those. A selection matching no planned case, or several, raises."""
     from collector.op_plans import plan
 
     op_plan = plan(op, backend, sm_version)
-    picked = [
-        i
-        for i, case in enumerate(op_plan.cases)
-        if all(str(getattr(case, field)) == str(value) for field, value in select.items())
-    ]
+    picked = [i for i, case in enumerate(op_plan.cases) if _matches(case, select)]
     if len(picked) != 1:
         raise ValueError(f"{backend} {op} sm{sm_version}: select {select} matches {len(picked)} planned cases, want 1")
     i = picked[0]
+    case = op_plan.cases[i]
+    narrowed = {}
+    for field in select:
+        planned = getattr(case, field)
+        if isinstance(planned, (list, tuple)):
+            keep = set(_sweep_subset(select[field]))
+            narrowed[field] = type(planned)(v for v in planned if v in keep)
+    if narrowed:
+        case = case._replace(**narrowed)
     one = dataclasses.replace(
-        op_plan, cases=[op_plan.cases[i]], dispatches=op_plan.dispatches[i : i + 1] if op_plan.dispatches else []
+        op_plan, cases=[case], dispatches=op_plan.dispatches[i : i + 1] if op_plan.dispatches else []
     )
     rows = one.rows
     if len(rows) != 1:
-        raise ValueError(f"{backend} {op}: the planned case {op_plan.cases[i]} runs as {len(rows)} rows, want 1")
+        raise ValueError(f"{backend} {op}: the planned case {case} runs as {len(rows)} rows, want 1")
     return rows[0]
 
 
@@ -97,15 +126,17 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
 
     from collector.helper import TRACE_CHILD_DIR_ENV, get_sm_version
 
-    select = dict(args)
+    select = {k: v for k, v in args.items() if not k.startswith("env.")}
+    env = {k[len("env.") :]: v for k, v in args.items() if k.startswith("env.")}
     backend, op = select.pop("backend"), select.pop("op")
     sm = get_sm_version()
     row = planned_row(backend, op, sm, **select)
     entry, run_func = _resolve(backend, op)
     scratch = Path(tempfile.mkdtemp(prefix="trace_case_"))
     children = scratch / "children"
-    previous = os.environ.get(TRACE_CHILD_DIR_ENV)
+    saved = {name: os.environ.get(name) for name in (TRACE_CHILD_DIR_ENV, *env)}
     os.environ[TRACE_CHILD_DIR_ENV] = str(children)  # a measurement child records its own kernels there
+    os.environ.update(env)  # env.<NAME>=value: a capture-only switch the collector reads (it is in the result)
     error = None
     try:
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
@@ -122,10 +153,11 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
         own = kernel_names(prof)
         child_records = [json.loads(f.read_text()) for f in sorted(children.glob("child_*.json"))]
     finally:
-        if previous is None:
-            os.environ.pop(TRACE_CHILD_DIR_ENV, None)
-        else:
-            os.environ[TRACE_CHILD_DIR_ENV] = previous
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         shutil.rmtree(scratch, ignore_errors=True)
     kernels = sorted(set(own).union(*(r["kernels"] for r in child_records)))
     return {
@@ -133,6 +165,7 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
         "op": op,
         "sm": sm,
         "select": select,
+        "env": env,
         "row": str(row),
         "kernels": kernels,
         "measurement_children": len(child_records),

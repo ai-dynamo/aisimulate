@@ -195,3 +195,35 @@ def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tm
     out = trace_case.run({"backend": "sglang", "op": "mla_context_module"}, tmp_path)
     assert out["kernels"] == ["child_attn", "parent_gemm"] and out["measurement_children"] == 1
     assert helper.TRACE_CHILD_DIR_ENV not in os.environ  # restored after the probe
+
+
+def test_planned_row_narrows_a_sweep_field_to_a_subset_of_its_planned_values():
+    moe = dict(moe_type="fp8_block", model_name="deepseek-ai/DeepSeek-V3", hidden_size=7168, inter_size=2048)
+    moe.update(topk=8, num_experts=256, tp=1, ep=1, distribution="balanced", power_law_alpha=0.0)
+    row = trace_case.planned_row("vllm", "moe", 100, num_tokens="1+4096", **moe)
+    assert list(row[1]) == [1, 4096]  # the case's own sweep, cut to the two selected token counts
+    assert list(trace_case.planned_row("vllm", "moe", 100, num_tokens=[4096], **moe)[1]) == [4096]
+    with pytest.raises(ValueError, match="matches 0 planned cases"):
+        trace_case.planned_row("vllm", "moe", 100, num_tokens="3", **moe)  # 3 tokens is not in the planned sweep
+    gdn = dict(phase="context", model_name="Qwen/Qwen3.5-0.8B", d_model=1024, d_conv=4, num_k_heads=16)
+    gdn.update(head_k_dim=128, num_v_heads=16, head_v_dim=128, batch_sizes="1", seq_lens="4096")
+    case_row = trace_case.planned_row("vllm", "gdn", 100, **gdn)
+    assert [1] in [list(x) for x in case_row if isinstance(x, (list, tuple))]
+    assert [4096] in [list(x) for x in case_row if isinstance(x, (list, tuple))]
+
+
+def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
+    _fake_torch(monkeypatch, [_Event("fused_kda", 1.0)])
+    seen = {}
+
+    def run_func(*row, perf_filename, device):
+        seen["paths"] = os.environ.get("AIS_KDA_DECODE_PATHS")
+
+    entry = types.SimpleNamespace(perf_filename="kda_perf.txt", extra_perf_filenames=(), run_kwargs=None)
+    monkeypatch.setattr(trace_case, "_resolve", lambda backend, op: (entry, run_func))
+    monkeypatch.setattr(trace_case, "planned_row", lambda backend, op, sm, **sel: (1,))
+    monkeypatch.setattr("collector.helper.get_sm_version", lambda: 90)
+    monkeypatch.delenv("AIS_KDA_DECODE_PATHS", raising=False)
+    out = trace_case.run({"backend": "vllm", "op": "kda", "env.AIS_KDA_DECODE_PATHS": "fused"}, tmp_path)
+    assert seen["paths"] == "fused" and out["env"] == {"AIS_KDA_DECODE_PATHS": "fused"} and out["select"] == {}
+    assert "AIS_KDA_DECODE_PATHS" not in os.environ
