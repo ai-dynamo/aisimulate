@@ -384,3 +384,8 @@ Blackwell KDA **verify** widths2–8. B200/B300 verify attempts fail strict
 completeness with zero rows. This does not establish that KDA context or
 generation is unsupported. Hopper verify probes pass. Preserve #676 defaults
 and record the missing native verify qualification; do not substitute kernels.
+
+The published NCCL harness adds the required SPDX header only. Its exact executed
+bytes are preserved in [the original archive](native-nccl-executed-harness.zip),
+with [executed/published hashes](native-nccl-harness-hashes.json). Native run
+receipts retain the executed hash; no historical source identity is relabeled.
