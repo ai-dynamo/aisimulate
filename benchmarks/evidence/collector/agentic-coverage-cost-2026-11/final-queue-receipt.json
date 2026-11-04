@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-11-04T09:02:15.493039+00:00",
+  "clusters": [
+    {
+      "host": "computelab-sc-01",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "oci-hsg-cs-001-login-01.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "oci-jhb-slurm-1-login-01.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "aws-iad-slurm-2-login-02.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "neb-cdg-slurm-1-login-02.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "aws-pdx-slurm-1-login-01.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    },
+    {
+      "host": "nsc-svg-slurm-1-login-02.nvidia.com",
+      "returncode": 0,
+      "campaign_queue": [],
+      "stderr": ""
+    }
+  ]
+}
