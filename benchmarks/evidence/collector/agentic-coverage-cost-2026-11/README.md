@@ -314,3 +314,22 @@ worker output, remain in the report; only passed observations fit timings.
 Physical point anchors may support shared and model-owned deltas alike when
 native case semantics match; scenario labels remain binding for paired group
 setup comparisons. Full and reused-indexer DSA operations remain separate.
+The interim actual native measurements are preserved in
+[`measured-samples.jsonl`](measured-samples.jsonl), with inclusive worker clocks,
+per-point clocks where available, forward latency, native phases and failures.
+[`timing-receipts.json`](timing-receipts.json) preserves the underlying native
+and wrapper results with original raw-byte hashes.
+[`source-equivalence.json`](source-equivalence.json) proves only the listed
+operation implementations and dependencies are identical across measured and
+report sources; measured SHAs remain unchanged. It is not whole-collector
+equivalence. [`pilot-jobs.json`](pilot-jobs.json) records all eight target
+submissions; submission is not completion or qualification.
+
+Initial job-shell probes consumed only their first case group; failed startup
+imports and timeouts remain charged. Follow-ups fix input forwarding and the
+collector import path. TRT MoE normally recycles after its first native mode;
+partial groups are excluded from full-group estimates. Across-job cold/warm
+cache differences do not establish setup savings. Validation pairs reuse the
+same already-populated cache in fresh workers. NCCL, KDA and all other
+unmeasured strata retain unknown time subtotals; this snapshot establishes
+measured components, not a finite complete fleet total.

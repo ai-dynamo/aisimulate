@@ -1,0 +1,376 @@
+{
+  "proofs": [
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "vllm",
+      "operation": "attention_context",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/vllm/collect_attn.py",
+          "source_sha256": "9d8c1a55ec46f840e2138139ccfad9b7cde52abb93e91352a0dccde653014210",
+          "target_sha256": "9d8c1a55ec46f840e2138139ccfad9b7cde52abb93e91352a0dccde653014210"
+        },
+        {
+          "path": "python/aisimulate/collector/vllm/registry.py",
+          "source_sha256": "b9d52a401cd6fc5173b6fdf6beb613b568e5fedec199c9a48bfc0271657fe4ec",
+          "target_sha256": "b9d52a401cd6fc5173b6fdf6beb613b568e5fedec199c9a48bfc0271657fe4ec"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        },
+        {
+          "path": "python/aisimulate/collector/vllm/utils.py",
+          "source_sha256": "a9633079cb94a21a97b85ceaee1f183bae8c26c2e30c1d3d72efb735c5046cdb",
+          "target_sha256": "a9633079cb94a21a97b85ceaee1f183bae8c26c2e30c1d3d72efb735c5046cdb"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "vllm",
+      "operation": "attention_generation",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/vllm/collect_attn.py",
+          "source_sha256": "9d8c1a55ec46f840e2138139ccfad9b7cde52abb93e91352a0dccde653014210",
+          "target_sha256": "9d8c1a55ec46f840e2138139ccfad9b7cde52abb93e91352a0dccde653014210"
+        },
+        {
+          "path": "python/aisimulate/collector/vllm/registry.py",
+          "source_sha256": "b9d52a401cd6fc5173b6fdf6beb613b568e5fedec199c9a48bfc0271657fe4ec",
+          "target_sha256": "b9d52a401cd6fc5173b6fdf6beb613b568e5fedec199c9a48bfc0271657fe4ec"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        },
+        {
+          "path": "python/aisimulate/collector/vllm/utils.py",
+          "source_sha256": "a9633079cb94a21a97b85ceaee1f183bae8c26c2e30c1d3d72efb735c5046cdb",
+          "target_sha256": "a9633079cb94a21a97b85ceaee1f183bae8c26c2e30c1d3d72efb735c5046cdb"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "sglang",
+      "operation": "attention_context",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/sglang/collect_attn.py",
+          "source_sha256": "b7c316ab36f623606d2e46a28757d7260b8762b68d9ceafd3a799b1f587066e6",
+          "target_sha256": "b7c316ab36f623606d2e46a28757d7260b8762b68d9ceafd3a799b1f587066e6"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/registry.py",
+          "source_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22",
+          "target_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "sglang",
+      "operation": "attention_generation",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/sglang/collect_attn.py",
+          "source_sha256": "b7c316ab36f623606d2e46a28757d7260b8762b68d9ceafd3a799b1f587066e6",
+          "target_sha256": "b7c316ab36f623606d2e46a28757d7260b8762b68d9ceafd3a799b1f587066e6"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/registry.py",
+          "source_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22",
+          "target_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "trtllm",
+      "operation": "attention_context",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/trtllm/collect_attn.py",
+          "source_sha256": "905385616c973a0319cfdaa1857ea597d4256ef9a2366246e97e3cc1aa7a4d86",
+          "target_sha256": "905385616c973a0319cfdaa1857ea597d4256ef9a2366246e97e3cc1aa7a4d86"
+        },
+        {
+          "path": "python/aisimulate/collector/trtllm/registry.py",
+          "source_sha256": "6dd8794fb337425113a3a7ad6b52f2c7a5b4ebc5c0e7a9635eebdaee0da32db7",
+          "target_sha256": "6dd8794fb337425113a3a7ad6b52f2c7a5b4ebc5c0e7a9635eebdaee0da32db7"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "95a52e8f520ee2d25ead27cfb04cfcb78ad89cd9",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "trtllm",
+      "operation": "attention_generation",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/trtllm/collect_attn.py",
+          "source_sha256": "905385616c973a0319cfdaa1857ea597d4256ef9a2366246e97e3cc1aa7a4d86",
+          "target_sha256": "905385616c973a0319cfdaa1857ea597d4256ef9a2366246e97e3cc1aa7a4d86"
+        },
+        {
+          "path": "python/aisimulate/collector/trtllm/registry.py",
+          "source_sha256": "6dd8794fb337425113a3a7ad6b52f2c7a5b4ebc5c0e7a9635eebdaee0da32db7",
+          "target_sha256": "6dd8794fb337425113a3a7ad6b52f2c7a5b4ebc5c0e7a9635eebdaee0da32db7"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        }
+      ],
+      "scope": "op implementation and shared helper unchanged; direct native row arguments preserved in samples; not whole-collector or audit-driver equivalence",
+      "changed_outside_native_call": [
+        "collector/collect.py fatal/recycle classification",
+        "collector/op_plans.py selection/calibration metadata",
+        "audit driver timing instrumentation"
+      ],
+      "protocol_qualification": "old samples do not observe actual forward repetition counts or phase breakdown; inclusive measured native clocks only; forcepower0 preserved"
+    },
+    {
+      "source_commit": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "sglang",
+      "operation": "dsa_generation_module",
+      "model_path": "nvidia/GLM-5.2-NVFP4",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/sglang/collect_mla_module.py",
+          "source_sha256": "e919f2e8a54d23684d332547957e4619125168375f9f6e19d0349c6fd7f5780f",
+          "target_sha256": "e919f2e8a54d23684d332547957e4619125168375f9f6e19d0349c6fd7f5780f"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/registry.py",
+          "source_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22",
+          "target_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/runtime_compat.py",
+          "source_sha256": "217f9df05fbc0bcc744373d2a24df7f13a9bedafb534f0f90383b6eefc92a9c2",
+          "target_sha256": "217f9df05fbc0bcc744373d2a24df7f13a9bedafb534f0f90383b6eefc92a9c2"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/runtime_limits.py",
+          "source_sha256": "e817941acf002576f1c2063d5704a1f945d76b061da8df203578ef21d0c1f0c3",
+          "target_sha256": "e817941acf002576f1c2063d5704a1f945d76b061da8df203578ef21d0c1f0c3"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/dsa_prefill_graph.py",
+          "source_sha256": "ce6cde902985015c200f8cd52a3e0672a696b085120b6d095933937bfc08aaf1",
+          "target_sha256": "ce6cde902985015c200f8cd52a3e0672a696b085120b6d095933937bfc08aaf1"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_config.json",
+          "source_sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923",
+          "target_sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_hf_quant_config.json",
+          "source_sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6",
+          "target_sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6"
+        }
+      ],
+      "scope": "C44 B52 exact calibration point costs only; no native model-factory or cross-model equivalence claimed",
+      "protocol_qualification": "child-worker inclusive boundary excludes parent bootstrap; requested benchmark counts source-checked; actual counts not exported"
+    },
+    {
+      "source_commit": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+      "target_commit": "c569abb1cd034c934f47974209515e3507f60b8a",
+      "backend": "sglang",
+      "operation": "dsa_generation_module_skip_indexer",
+      "model_path": "nvidia/GLM-5.2-NVFP4",
+      "files": [
+        {
+          "path": "python/aisimulate/collector/sglang/collect_mla_module.py",
+          "source_sha256": "e919f2e8a54d23684d332547957e4619125168375f9f6e19d0349c6fd7f5780f",
+          "target_sha256": "e919f2e8a54d23684d332547957e4619125168375f9f6e19d0349c6fd7f5780f"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/registry.py",
+          "source_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22",
+          "target_sha256": "348c2107425b641b90ae5024fef1a80c7b30d800be24417cadd25bc7519fbf22"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/runtime_compat.py",
+          "source_sha256": "217f9df05fbc0bcc744373d2a24df7f13a9bedafb534f0f90383b6eefc92a9c2",
+          "target_sha256": "217f9df05fbc0bcc744373d2a24df7f13a9bedafb534f0f90383b6eefc92a9c2"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/runtime_limits.py",
+          "source_sha256": "e817941acf002576f1c2063d5704a1f945d76b061da8df203578ef21d0c1f0c3",
+          "target_sha256": "e817941acf002576f1c2063d5704a1f945d76b061da8df203578ef21d0c1f0c3"
+        },
+        {
+          "path": "python/aisimulate/collector/sglang/dsa_prefill_graph.py",
+          "source_sha256": "ce6cde902985015c200f8cd52a3e0672a696b085120b6d095933937bfc08aaf1",
+          "target_sha256": "ce6cde902985015c200f8cd52a3e0672a696b085120b6d095933937bfc08aaf1"
+        },
+        {
+          "path": "python/aisimulate/collector/helper.py",
+          "source_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7",
+          "target_sha256": "69a12694d580daf34da07c6374068f94e04ae8de2b330a31ad2d0804bf81d1b7"
+        },
+        {
+          "path": "python/aisimulate/collector/case_generator.py",
+          "source_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642",
+          "target_sha256": "5adb5453d01bde513ef97f03c91dbc4f65e1706846eaf4cb5638c6318f2cc642"
+        },
+        {
+          "path": "python/aisimulate/collector/registry_types.py",
+          "source_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b",
+          "target_sha256": "45765986f1127f53286b94e04b143fd2b84c68d6771d76d629f5f430ea92460b"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_config.json",
+          "source_sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923",
+          "target_sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923"
+        },
+        {
+          "path": "python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_hf_quant_config.json",
+          "source_sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6",
+          "target_sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6"
+        }
+      ],
+      "scope": "C44 B52 exact calibration point costs only; no native model-factory or cross-model equivalence claimed",
+      "protocol_qualification": "child-worker inclusive boundary excludes parent bootstrap; requested benchmark counts source-checked; actual counts not exported"
+    }
+  ]
+}
