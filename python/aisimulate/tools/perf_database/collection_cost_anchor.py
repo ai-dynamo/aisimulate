@@ -165,6 +165,8 @@ def run(spec: dict, output: Path) -> dict:
         )
         result["audit_driver_commit_declared"] = spec.get("audit_driver_commit")
         properties = torch.cuda.get_device_properties(0)
+        uuid = getattr(properties, "uuid", None)
+        result["gpu"]["uuid"] = str(uuid) if uuid is not None else None
         image_receipt = output.parent / (output.name.removeprefix("native-") + "-image.sha256")
         result["runtime_protocol"] = {
             "installed_framework_version_observed": result["package_version"],
@@ -176,7 +178,6 @@ def run(spec: dict, output: Path) -> dict:
             "omp_num_threads_observed": os.environ.get("OMP_NUM_THREADS"),
             "torch_num_threads_observed": getattr(torch, "get_num_threads", lambda: None)(),
             "image_squashfs_sha256_observed": image_receipt.read_text().split()[0] if image_receipt.exists() else None,
-            "gpu_uuid_observed": str(getattr(properties, "uuid", "unavailable")),
             "host_concurrent_workers_observed": None,
             "allocation_observation_enabled": bool(spec.get("observe_allocations")),
             "native_passes_requested": int(spec.get("native_passes", 1)),
@@ -245,7 +246,13 @@ def run(spec: dict, output: Path) -> dict:
             for index, row in enumerate(execution_rows):
                 params = row["params"] if isinstance(row, dict) and "params" in row else row
                 call_started = time.perf_counter()
-                call = {"index": index, "row": str(row), "native_pass_index": index // len(rows) + 1}
+                pass_index = index // len(rows) + 1
+                call = {
+                    "index": index,
+                    "row": str(row),
+                    "native_pass_index": pass_index,
+                    "pass_scope": "first_in_worker" if pass_index == 1 else "subsequent_same_worker_pass",
+                }
                 current_call.update(index=index, pass_index=call["native_pass_index"])
                 rows_before = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
                 result["pending_call"] = {
