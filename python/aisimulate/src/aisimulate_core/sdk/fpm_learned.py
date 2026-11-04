@@ -553,6 +553,57 @@ def iteration_wall_ms(metrics_by_rank: Sequence[dict[str, Any]]) -> float | None
     return best * 1000.0 if best > 0.0 else None
 
 
+def _launch_kind(fpm: dict[str, Any], max_cudagraph_capture_size: int) -> str:
+    s = _sched(fpm)
+    prefill = int(s.get("sum_prefill_tokens", 0))
+    lists = s.get("extend_lengths")
+    tokens = sum(lists) if lists else prefill + int(s.get("num_decode_requests", 0))
+    if tokens > max_cudagraph_capture_size:
+        return "eager"
+    return "piecewise" if prefill > 0 else "decode"
+
+
+def charge_own_launch(
+    iterations: Sequence[Sequence[dict[str, Any]]],
+    stall_ms: dict[str, dict[str, float]],
+    max_cudagraph_capture_size: int,
+) -> list[list[dict[str, Any]]]:
+    """Move the next pass's launch out of each vLLM record, for one-GPU workers.
+
+    Under async scheduling, vLLM launches pass k+1 before it processes pass k's
+    output, and the vLLM producer ends pass k's ``wall_time`` when that output
+    arrives. A launch longer than pass k therefore lands in pass k's record.
+    ``stall_ms[carrier][next]`` is what a record carries when the next pass is
+    ``"piecewise"`` (with prefill, at most ``max_cudagraph_capture_size``
+    scheduled tokens) or ``"eager"`` (more); a decode next pass carries none.
+    ``carrier`` is ``"prefill"`` for a record with prefill tokens, else
+    ``"decode"``. Each record gives up what it carries and takes back what its
+    predecessor carried for it. Two records are consecutive when they share
+    ``worker_id`` and their ``counter_id`` values differ by one, so a pass after
+    an idle heartbeat keeps its own launch. Times are floored at 0.5 ms.
+    """
+    if any(len(ranks) != 1 for ranks in iterations):
+        raise ValueError(
+            "charge_own_launch needs one rank per iteration; only a one-GPU vLLM worker launches in its engine loop"
+        )
+    fpms = [ranks[0] for ranks in iterations]
+    keys = [(str(fpm.get("worker_id") or ""), int(fpm["counter_id"])) for fpm in fpms]
+    position = {key: i for i, key in enumerate(keys)}
+    kinds = [_launch_kind(fpm, max_cudagraph_capture_size) for fpm in fpms]
+    carried = []
+    for fpm, (worker, counter) in zip(fpms, keys, strict=True):
+        nxt = position.get((worker, counter + 1))
+        carrier = "prefill" if int(_sched(fpm).get("sum_prefill_tokens", 0)) > 0 else "decode"
+        carried.append(0.0 if nxt is None else stall_ms.get(carrier, {}).get(kinds[nxt], 0.0))
+    out = []
+    for fpm, (worker, counter), own in zip(fpms, keys, carried, strict=True):
+        prev = position.get((worker, counter - 1))
+        given = carried[prev] if prev is not None else 0.0
+        wall_ms = max(1000.0 * float(fpm["wall_time"]) - own + given, 0.5)
+        out.append([{**fpm, "wall_time": wall_ms / 1000.0}])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Dataset, training, export
 # ---------------------------------------------------------------------------
@@ -1215,17 +1266,25 @@ def _format_report(report: dict[str, dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
+def _load_iterations(paths: Sequence[str], args: argparse.Namespace) -> list[list[dict[str, Any]]]:
+    iterations = group_iterations(iter_fpm_records(paths), args.join_ranks)
+    if args.launch_stall:
+        spec = json.loads(Path(args.launch_stall).read_text(encoding="utf-8"))
+        iterations = charge_own_launch(iterations, spec["stall_ms"], spec["max_cudagraph_capture_size"])
+    return iterations
+
+
 def _cmd_train(args: argparse.Namespace) -> int:
     if args.online_checkpoint_dir and not args.identity:
         raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
     identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
-    iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
+    iterations = _load_iterations(args.fpm, args)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
         return 2
     train_set, holdout = _split_holdout(iterations, args.holdout_frac, args.seed)
     if args.holdout_fpm:
-        holdout = holdout + group_iterations(iter_fpm_records(args.holdout_fpm), args.join_ranks)
+        holdout = holdout + _load_iterations(args.holdout_fpm, args)
     features = None
     if args.features:
         features = list(FEATURE_PRESETS.get(args.features, ())) or [f.strip() for f in args.features.split(",")]
@@ -1266,7 +1325,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     artifact = json.loads(Path(args.model).read_text(encoding="utf-8"))
     validate_artifact(artifact)
-    iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
+    iterations = _load_iterations(args.fpm, args)
     print(_format_report(evaluate(artifact, iterations)))
     return 0
 
@@ -1285,6 +1344,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("none", "counter"),
         default="none",
         help="'counter' keys records by (worker_id, counter_id) and rejects repeats; cross-rank joins are refused",
+    )
+    common.add_argument(
+        "--launch-stall",
+        default=None,
+        help="JSON file {max_cudagraph_capture_size, stall_ms}: charge each vLLM pass its own launch "
+        "(see charge_own_launch)",
     )
 
     tr = sub.add_parser("train", parents=[common], help="fit and export an artifact")

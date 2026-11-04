@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
-// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts, of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue and of the v0.30.0
+// (ced6857afa0ea7b2e3f0846a62e1394e90f15607) async block frees; immutable sources
+// and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -23,7 +25,8 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
-use crate::engine::host_offload::{G2Binding, HostTierHandle};
+use crate::engine::config::LoadCopyStart;
+use crate::engine::host_offload::{G2Binding, HostTierHandle, TransferId};
 use crate::engine::kv_manager::AllocationRequirement;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::kv_manager::{G1Manager, GroupedKvPool};
@@ -44,7 +47,8 @@ use crate::engine::scheduler::{
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
     CacheTierAttribution, DecodeAcceptance, DecodeWork, G2Scope, HandoffId, IterationMs,
-    KvHintSource, PrefillTotals, PrefillWork, PressureEvent, PressureKind, PressureState, RankWork,
+    KvHintSource, PassLaunchConfig, PrefillTotals, PrefillWork, PressureEvent, PressureKind,
+    PressureState, RankWork,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,9 @@ pub(crate) struct VllmRequestState {
     /// First pass, counted by `VllmCore::passes_executed`, that may admit the
     /// request: vLLM had already committed the passes before it on arrival.
     admissible_from_pass: u64,
+    /// `launch`: when the request reached the engine. vLLM decides a pass
+    /// with the requests that arrived before that decision.
+    arrival_ms: f64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
     /// Cleared on preemption: recomputation has no draft IDs to verify.
@@ -680,8 +687,61 @@ pub(crate) struct VllmCore {
     prefill_capacity_bound: bool,
     passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
+    /// With async scheduling, the boundary that completed the latest pass
+    /// that ran work: attention-DP ranks complete a pass together, at the end
+    /// of its slowest rank.
+    last_pass_end_ms: Option<f64>,
+    /// Whether the pass awaiting its boundary ran work, with async scheduling.
+    pass_ran_work: bool,
+    /// Requests that finished in the latest pass. vLLM frees their blocks when
+    /// it processes that pass's outputs, after it has formed the next pass.
+    finished_in_flight: Vec<HeldVllmPrefill>,
+    /// Requests the pass in flight runs, sorted, when vLLM defers freeing their
+    /// blocks until that pass ends: async scheduling with a CPU tier.
+    in_flight_requests: Vec<Uuid>,
+    /// `launch`: when vLLM decides the pass after the latest one, if that pass
+    /// follows it back to back.
+    next_decision_ms: f64,
     /// The scheduled pass awaiting its forward time.
     unpriced: Option<UnpricedPass>,
+    /// `launch`, load poll: CPU-tier loads whose copy completed but which
+    /// vLLM's scheduler does not see yet: the request, its transfer and when
+    /// it becomes schedulable.
+    pending_activations: Vec<(Uuid, TransferId, LoadRelease)>,
+    /// Load poll: loads in flight and the decision that issued them.
+    load_clock: FxHashMap<Uuid, LoadClock>,
+    /// Load poll: post-forward polls (decision index, instant) after the
+    /// oldest decision whose load may still be seen by one, oldest first.
+    poll_history: VecDeque<(u64, f64)>,
+    /// Load poll: scheduler decisions taken so far; the pass being formed has
+    /// this index.
+    poll_seq: u64,
+}
+
+/// Load poll: when a CPU-tier load whose copy completed becomes schedulable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LoadRelease {
+    /// From this scheduler decision on (two decisions after the poll that saw it).
+    Decision(u64),
+    /// The first post-forward poll of a pass after `pass` at or after
+    /// `copy_end_ms` (vLLM's frame) sees it; resolved into `Decision` when that
+    /// pass forms.
+    AfterPoll { pass: u64, copy_end_ms: f64 },
+    /// On an engine with no pass to poll in: its empty iterations see it then.
+    At(f64),
+}
+
+/// Load poll: where a CPU-tier load stands in vLLM's frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LoadClock {
+    /// The decision that issued the load.
+    pass: u64,
+    /// The copy's completion in the simulator's lane (fixed at issue on a
+    /// private lane).
+    lane_end_ms: Option<f64>,
+    /// vLLM's copy start minus the simulator's, at the connector's
+    /// [`LoadCopyStart`] of the issuing pass (set when that pass is priced).
+    shift_ms: Option<f64>,
 }
 
 /// A pass whose scheduling is committed and whose forward is not yet priced.
@@ -691,10 +751,25 @@ struct UnpricedPass {
     now_ms: f64,
     compute_start_ms: f64,
     forward: ForwardWork,
-    /// Native host offload advanced its retry state during this pass, so an
-    /// instantaneous pass asks for a same-timestamp retry.
+    /// Native host offload advanced its retry state during this pass, or the
+    /// pass decided nothing while the previous one ran, so an instantaneous
+    /// pass asks for a same-timestamp retry.
     retry_if_instant: bool,
+    /// Async scheduling: vLLM decided this pass while the previous one ran.
+    previous_in_flight: bool,
+    /// Load poll: the index of the decision that formed this pass.
+    poll_index: u64,
+    /// `launch`: the scheduled work the launch cost depends on; `None` when
+    /// the pass scheduled nothing or `launch` is unset.
+    launch_shape: Option<LaunchShape>,
     result: EnginePassResult,
+}
+
+/// What a pass's `launch` cost depends on.
+#[derive(Clone, Copy, Debug)]
+struct LaunchShape {
+    tokens: usize,
+    prefill: bool,
 }
 
 /// The model work of one pass, as [`VllmCore::forward_time`] prices it.
@@ -928,13 +1003,11 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
-        if native_host_offload
+        if let Some(order) = native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::is_shared)
+            .and_then(VllmHostOffloadAdapter::store_source_hold)
         {
-            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
-            // reference on the G1 blocks it copies until the copy completes.
-            kv_manager.hold_native_store_sources();
+            kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(
@@ -970,7 +1043,16 @@ impl VllmCore {
             attention_dp_size: 1,
             prefill_capacity_bound: false,
             passes_executed: 0,
+            last_pass_end_ms: None,
+            pass_ran_work: false,
+            finished_in_flight: Vec::new(),
+            in_flight_requests: Vec::new(),
+            next_decision_ms: 0.0,
             unpriced: None,
+            pending_activations: Vec::new(),
+            load_clock: FxHashMap::default(),
+            poll_history: VecDeque::new(),
+            poll_seq: 0,
         })
     }
 
@@ -1015,6 +1097,16 @@ impl VllmCore {
     #[cfg(test)]
     pub(crate) fn connector_waiting_selections(&self) -> usize {
         self.state.connector_waiting_selections()
+    }
+
+    /// A G2 load of `uuid` is in flight or awaits admission.
+    #[cfg(test)]
+    pub(super) fn test_has_host_load(&self, uuid: Uuid) -> bool {
+        self.state
+            .requests
+            .get(&uuid)
+            .and_then(|request| request.host_offload.as_deref())
+            .is_some_and(|host| host.reserved_blocks() > 0)
     }
 
     #[cfg(test)]
@@ -1078,7 +1170,11 @@ impl VllmCore {
                 let admissible_from_pass =
                     self.first_pass_admitting_arrival(!allow_destination_admission);
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request, admissible_from_pass)?),
+                    SchedulerCommandResult::Submitted(self.submit(
+                        request,
+                        admissible_from_pass,
+                        command_now_ms.unwrap_or_default(),
+                    )?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
@@ -1111,7 +1207,11 @@ impl VllmCore {
                 let admissible_from_pass =
                     self.first_pass_admitting_arrival(!allow_destination_admission);
                 let submitted = self
-                    .submit(request, admissible_from_pass)
+                    .submit(
+                        request,
+                        admissible_from_pass,
+                        command_now_ms.unwrap_or_default(),
+                    )
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -1444,6 +1544,7 @@ impl VllmCore {
         &mut self,
         mut request: DirectRequest,
         admissible_from_pass: u64,
+        arrival_ms: f64,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
         request.uuid = Some(uuid);
@@ -1453,6 +1554,7 @@ impl VllmCore {
         let waiting_order = self.allocate_waiting_order();
         let mut request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
         request.admissible_from_pass = admissible_from_pass;
+        request.arrival_ms = arrival_ms;
         self.state.insert_waiting(uuid, request);
         if let Some(request) = self.state.requests.get(&uuid) {
             request.debug_assert_progress(uuid);
@@ -1532,6 +1634,7 @@ impl VllmCore {
             status,
             waiting_order,
             admissible_from_pass: 0,
+            arrival_ms: 0.0,
             is_decode_handoff: false,
             num_computed_tokens: 0,
             drafts_ready: false,
@@ -1597,6 +1700,12 @@ impl VllmCore {
             request,
         };
         match self.source_holds.complete_source(uuid, payload) {
+            // vLLM frees a finished request's blocks when it processes the
+            // pass's outputs; with async scheduling that comes after it has
+            // formed the next pass.
+            SourceCompletion::Release(payload) if self.args.max_concurrent_batches > 1 => {
+                self.finished_in_flight.push(payload);
+            }
             SourceCompletion::Release(payload) => {
                 self.cleanup_completed_prefill(payload);
             }
@@ -1619,10 +1728,43 @@ impl VllmCore {
     fn cleanup_completed_prefill(&mut self, payload: HeldVllmPrefill) {
         let HeldVllmPrefill {
             request_id,
-            request,
+            mut request,
         } = payload;
+        self.finish_host_request(request_id, &mut request);
         self.kv_manager
             .finish_native(request_id, request.sequence.lease);
+    }
+
+    /// The G2 connector's work when a request finishes or is dropped, before
+    /// its G1 blocks are released: vLLM calls the connector's
+    /// `request_finished` from `Scheduler._free_request`, which frees them.
+    fn finish_host_request(&mut self, uuid: Uuid, request: &mut VllmRequestState) {
+        if let (Some(adapter), Some(host)) = (
+            self.native_host_offload.as_mut(),
+            request.host_offload.as_deref_mut(),
+        ) {
+            let now_ms = adapter.current_time_ms();
+            adapter.finish_request(
+                uuid,
+                host,
+                &request.sequence.lease,
+                request.num_computed_tokens,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
+    }
+
+    fn free_finished(&mut self, finished: Vec<HeldVllmPrefill>) {
+        if finished.is_empty() {
+            return;
+        }
+        for payload in finished {
+            self.cleanup_completed_prefill(payload);
+        }
+        self.bump_capacity_generation();
     }
 
     #[cfg(test)]
@@ -1649,6 +1791,21 @@ impl VllmCore {
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
             || self.destination_retry_ready
+            // A load that an idle engine sees at a later time wakes it through
+            // its internal deadline.
+            || self
+                .pending_activations
+                .iter()
+                .any(|&(_, _, release)| !matches!(release, LoadRelease::At(_)))
+            || self.has_unsubmitted_host_stores()
+    }
+
+    /// G2 stores a request prepared when it left between passes; the next
+    /// (possibly empty) pass submits them.
+    fn has_unsubmitted_host_stores(&self) -> bool {
+        self.native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::has_unsubmitted_stores)
     }
 
     #[allow(dead_code)]
@@ -1667,13 +1824,29 @@ impl VllmCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained() && !self.destination_retry_ready
+        self.is_empty()
+            && !self.is_drained()
+            && !self.destination_retry_ready
+            && !self.has_unsubmitted_host_stores()
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
-        self.native_host_offload
+        let idle_load = self
+            .pending_activations
+            .iter()
+            .filter_map(|&(_, _, release)| match release {
+                LoadRelease::At(at_ms) => Some(at_ms),
+                _ => None,
+            })
+            .min_by(f64::total_cmp);
+        let adapter = self
+            .native_host_offload
             .as_ref()
-            .and_then(VllmHostOffloadAdapter::next_deadline)
+            .and_then(VllmHostOffloadAdapter::next_deadline);
+        match (adapter, idle_load) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
@@ -1682,14 +1855,23 @@ impl VllmCore {
         };
         let progress = adapter.advance(&mut self.kv_manager, now_ms);
         self.apply_host_progress(progress);
+        self.settle_idle_loads(now_ms);
+        self.release_timed_activations(now_ms);
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
-        let Some(adapter) = self.native_host_offload.as_mut() else {
-            return;
-        };
-        let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
-        self.apply_host_progress(progress);
+        self.last_pass_end_ms = std::mem::take(&mut self.pass_ran_work).then_some(now_ms);
+        if let Some(adapter) = self.native_host_offload.as_mut() {
+            let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
+            self.apply_host_progress(progress);
+            self.settle_idle_loads(now_ms);
+        }
+        // With nothing to schedule, vLLM's next step is empty and it processes
+        // this pass's outputs at once.
+        if !self.is_ready() {
+            let finished = std::mem::take(&mut self.finished_in_flight);
+            self.free_finished(finished);
+        }
     }
 
     fn apply_host_progress(&mut self, progress: HostTransferProgress) {
@@ -1706,6 +1888,14 @@ impl VllmCore {
     }
 
     fn activate_completed_loads(&mut self, completed: Vec<CompletedLoad>) {
+        if self.load_poll() {
+            self.poll_completed_loads(completed);
+            return;
+        }
+        self.activate_loads_now(completed);
+    }
+
+    fn activate_loads_now(&mut self, completed: Vec<CompletedLoad>) {
         for completed in completed {
             let uuid = completed.uuid;
             let request = self
@@ -1730,6 +1920,204 @@ impl VllmCore {
                 );
             debug_assert!(self.state.connector_waiting_members.contains(&uuid));
             self.state.mark_materialized_waiting(uuid);
+        }
+    }
+
+    /// `launch` with a CPU-tier connector whose finished loads wait for
+    /// vLLM's poll.
+    fn load_poll(&self) -> bool {
+        self.args.max_concurrent_batches > 1
+            && self.args.launch.is_some()
+            && self
+                .native_host_offload
+                .as_ref()
+                .is_some_and(|adapter| adapter.polled_load_start().is_some())
+    }
+
+    /// Load poll: a load was issued by the decision that forms pass `pass`.
+    fn note_load_issued(&mut self, uuid: Uuid, pass: u64) {
+        if !self.load_poll() {
+            return;
+        }
+        let lane_end_ms = self.state.requests.get(&uuid).and_then(|request| {
+            let host = request.host_offload.as_deref()?;
+            self.native_host_offload.as_ref()?.load_deadline(host)
+        });
+        self.load_clock.insert(
+            uuid,
+            LoadClock {
+                pass,
+                lane_end_ms,
+                shift_ms: None,
+            },
+        );
+    }
+
+    /// Load poll (vLLM v0.32.0): `schedule(m)` issues the load and the worker
+    /// submits it in `post_forward` at the end of `sample_tokens(m)`, where
+    /// the copy starts at the connector's [`LoadCopyStart`]. Every later pass
+    /// polls in its own `post_forward`: the first pass f whose poll comes at
+    /// or after the copy end reports it, and `update_from_output(f)` records
+    /// it. `schedule(f+1)` runs before `update_from_output(f)`, so the request
+    /// is first schedulable at decision f + 2. An engine with no pass to poll
+    /// in sees it in its empty steps.
+    fn poll_completed_loads(&mut self, completed: Vec<CompletedLoad>) {
+        let now_ms = self
+            .native_host_offload
+            .as_ref()
+            .map_or(0.0, VllmHostOffloadAdapter::current_time_ms);
+        for load in completed {
+            let clock = self.load_clock.remove(&load.uuid);
+            let (pass, copy_end_ms) = match clock {
+                Some(clock) => (
+                    clock.pass,
+                    clock.lane_end_ms.unwrap_or(now_ms) + clock.shift_ms.unwrap_or(0.0),
+                ),
+                None => (self.poll_seq.saturating_sub(1), now_ms),
+            };
+            let release = match self
+                .poll_history
+                .iter()
+                .find(|&&(index, poll_ms)| index > pass && poll_ms >= copy_end_ms)
+            {
+                Some(&(index, _)) => LoadRelease::Decision(index + 2),
+                None => LoadRelease::AfterPoll { pass, copy_end_ms },
+            };
+            self.pending_activations
+                .push((load.uuid, load.transfer_id, release));
+        }
+        self.settle_idle_loads(now_ms);
+    }
+
+    /// Load poll: the pass `index` was decided at `decision_ms` and polled the
+    /// connector at the end of its launch, `launch_end_ms`. Loads it issued get
+    /// vLLM's copy start.
+    fn advance_load_poll(
+        &mut self,
+        index: u64,
+        now_ms: f64,
+        decision_ms: f64,
+        launch_end_ms: f64,
+        gpu_end_ms: f64,
+    ) {
+        if !self.load_poll() {
+            return;
+        }
+        let start = self
+            .native_host_offload
+            .as_ref()
+            .and_then(VllmHostOffloadAdapter::polled_load_start)
+            .expect("load_poll checked above");
+        for clock in self.load_clock.values_mut() {
+            if clock.pass != index || clock.shift_ms.is_some() {
+                continue;
+            }
+            // Never before the decision that issued it.
+            let vllm_start_ms = match start {
+                LoadCopyStart::LaunchEnd => launch_end_ms,
+                LoadCopyStart::PassEnd => launch_end_ms.max(gpu_end_ms),
+            }
+            .max(decision_ms);
+            clock.shift_ms = Some(vllm_start_ms - now_ms);
+        }
+        self.poll_history.push_back((index, launch_end_ms));
+        for (_, _, release) in &mut self.pending_activations {
+            if let LoadRelease::AfterPoll { pass, copy_end_ms } = *release
+                && index > pass
+                && launch_end_ms >= copy_end_ms
+            {
+                *release = LoadRelease::Decision(index + 2);
+            }
+        }
+        self.trim_poll_history();
+    }
+
+    /// Keep only the polls a load still in flight could be seen by: those
+    /// after the oldest decision that issued one.
+    fn trim_poll_history(&mut self) {
+        let oldest =
+            self.load_clock
+                .values()
+                .map(|clock| clock.pass)
+                .chain(self.pending_activations.iter().filter_map(
+                    |&(_, _, release)| match release {
+                        LoadRelease::AfterPoll { pass, .. } => Some(pass),
+                        _ => None,
+                    },
+                ))
+                .min();
+        match oldest {
+            Some(oldest) => {
+                while self
+                    .poll_history
+                    .front()
+                    .is_some_and(|&(index, _)| index <= oldest)
+                {
+                    self.poll_history.pop_front();
+                }
+            }
+            None => self.poll_history.clear(),
+        }
+    }
+
+    /// Loads still waiting for a poll on an engine that will form no pass are
+    /// seen by its empty steps, which replay prices at zero as it does an
+    /// empty batch: at the copy end.
+    fn settle_idle_loads(&mut self, now_ms: f64) {
+        if !self.load_poll()
+            || !self.state.running_members.is_empty()
+            || !self.state.waiting_members.is_empty()
+        {
+            return;
+        }
+        for (_, _, release) in &mut self.pending_activations {
+            if let LoadRelease::AfterPoll { copy_end_ms, .. } = *release {
+                *release = LoadRelease::At(copy_end_ms.max(now_ms));
+            }
+        }
+    }
+
+    /// Activate the deferred loads that `decision` may schedule (all of them
+    /// when nothing runs, as vLLM's empty steps pass at once), and the loads an
+    /// idle engine has seen by `now_ms`.
+    fn release_due_activations(&mut self, decision: u64, now_ms: f64) {
+        if self.pending_activations.is_empty() {
+            return;
+        }
+        let idle = self.state.running_members.is_empty();
+        let mut due = Vec::new();
+        self.pending_activations
+            .retain(|&(uuid, transfer_id, release)| {
+                let release = match release {
+                    LoadRelease::Decision(from) => idle || from <= decision,
+                    LoadRelease::AfterPoll { .. } => false,
+                    LoadRelease::At(at_ms) => at_ms <= now_ms,
+                };
+                if release {
+                    due.push(CompletedLoad { uuid, transfer_id });
+                }
+                !release
+            });
+        if !due.is_empty() {
+            self.activate_loads_now(due);
+            self.state.wake_connector_deadline_waiters();
+        }
+    }
+
+    /// Activate the loads an idle engine has seen by `now_ms`.
+    fn release_timed_activations(&mut self, now_ms: f64) {
+        let mut due = Vec::new();
+        self.pending_activations
+            .retain(|&(uuid, transfer_id, release)| {
+                let release = matches!(release, LoadRelease::At(at_ms) if at_ms <= now_ms);
+                if release {
+                    due.push(CompletedLoad { uuid, transfer_id });
+                }
+                !release
+            });
+        if !due.is_empty() {
+            self.activate_loads_now(due);
+            self.state.wake_connector_deadline_waiters();
         }
     }
 
@@ -1948,6 +2336,37 @@ impl VllmCore {
         let end_ms = forward_time.end_ms(pass.compute_start_ms);
         let mut result = pass.result;
         result.end_ms = end_ms;
+        // `launch`: vLLM returns the previous pass's outputs, then decides the
+        // next pass, once it has launched this pass and the previous pass has
+        // ended.
+        result.previous_returned_ms = self.args.launch.and_then(|launch| {
+            let decision_ms = if pass.previous_in_flight {
+                self.next_decision_ms
+            } else {
+                pass.now_ms
+            };
+            let launch_end_ms = self.launch_end_ms(
+                &launch,
+                pass.launch_shape,
+                decision_ms,
+                pass.compute_start_ms,
+                end_ms,
+            );
+            self.next_decision_ms = launch_end_ms.max(pass.now_ms);
+            let gpu_end_ms = if pass.launch_shape.is_some() {
+                end_ms
+            } else {
+                launch_end_ms
+            };
+            self.advance_load_poll(
+                pass.poll_index,
+                pass.now_ms,
+                decision_ms,
+                launch_end_ms,
+                gpu_end_ms,
+            );
+            pass.previous_in_flight.then_some(self.next_decision_ms)
+        });
         if let Some(fpm) = &mut result.fpm {
             fpm.wall_time_secs = (end_ms - pass.now_ms) / 1000.0;
         }
@@ -1981,6 +2400,19 @@ impl VllmCore {
             .and_then(|a| a.retry_epoch());
         self.kv_manager.begin_step();
         self.state.compact_running();
+        // With async scheduling vLLM forms this pass while the previous one
+        // runs, and processes the previous pass's outputs only afterwards,
+        // unless that pass ran nothing or ended before now.
+        let previous_in_flight = self.last_pass_end_ms == Some(now_ms);
+        if !previous_in_flight {
+            let finished = std::mem::take(&mut self.finished_in_flight);
+            self.free_finished(finished);
+            self.in_flight_requests.clear();
+        }
+        let finished_in_flight = std::mem::take(&mut self.finished_in_flight);
+        let poll_index = self.poll_seq;
+        self.poll_seq = self.poll_seq.saturating_add(1);
+        self.release_due_activations(poll_index, now_ms);
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
         let cadence_step = self.wave_step.is_multiple_of(
             u64::try_from(self.args.prefill_schedule_interval)
@@ -2140,7 +2572,7 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_before_admission, admission_stage, admissible_from_pass) = {
+            let (reject_before_admission, admission_stage, admissible_from_pass, arrival_ms) = {
                 let request = self
                     .state
                     .requests
@@ -2153,13 +2585,24 @@ impl VllmCore {
                             .accepts_sequence_length(request.sequence.len()),
                     admission.stage_for(request.prompt_is_prebuilt()),
                     request.admissible_from_pass,
+                    request.arrival_ms,
                 )
             };
             // vLLM committed this pass before the request arrived; FCFS keeps
-            // later arrivals behind it. A committed batch without other work
-            // runs no forward, so the arrivals then run in this pass.
-            if !admit_queued_arrivals && admissible_from_pass > self.passes_executed {
-                if !scheduled.is_empty() {
+            // later arrivals behind it. With `launch`, vLLM decided this pass
+            // at `next_decision_ms` if it followed the previous one back to
+            // back, and a request arriving at that instant is too late. A
+            // committed batch without other work runs no forward, so the
+            // arrivals then run at once. While a pass is in flight, that empty
+            // step processes it first, so this pass stays empty and replay
+            // decides again at the same instant.
+            let arrived_after_decision = if self.args.launch.is_some() {
+                previous_in_flight && arrival_ms >= self.next_decision_ms
+            } else {
+                admissible_from_pass > self.passes_executed
+            };
+            if !admit_queued_arrivals && arrived_after_decision {
+                if !scheduled.is_empty() || previous_in_flight {
                     stopped_at_queued_arrival = true;
                     break;
                 }
@@ -2340,6 +2783,7 @@ impl VllmCore {
                 );
                 match outcome {
                     StartLoad::Queued => {
+                        self.note_load_issued(uuid, poll_index);
                         self.update_pass_prefill_reservation(
                             &mut pass_prefill_reserved_blocks,
                             uuid,
@@ -2496,6 +2940,19 @@ impl VllmCore {
                 cached_tokens: None,
             });
         }
+        // vLLM processes the outputs of the pass in flight once it has formed
+        // this one, so the blocks of the requests that pass finished serve the
+        // next pass. A decision that formed nothing is an empty step: vLLM then
+        // processes the pass in flight at once and decides again.
+        let decide_again = previous_in_flight && scheduled.is_empty();
+        self.free_finished(finished_in_flight);
+        let launch_shape =
+            (self.args.launch.is_some() && !scheduled.is_empty()).then(|| LaunchShape {
+                tokens: scheduled.values().map(|work| work.total_tokens).sum(),
+                prefill: scheduled.values().any(|work| {
+                    work.prompt_tokens > 0 || work.total_tokens > work.draft_tokens + 1
+                }),
+            });
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
         {
@@ -2527,13 +2984,20 @@ impl VllmCore {
         }
         committed_requests.sort_unstable();
         committed_requests.dedup();
+        if self.args.max_concurrent_batches > 1 {
+            self.pass_ran_work = !committed_requests.is_empty();
+            if self.native_host_offload.is_some() {
+                self.in_flight_requests.clone_from(&committed_requests);
+            }
+        }
         self.passes_executed += 1;
         self.state.debug_assert_invariants();
-        let retry_if_instant = retry_epoch_before.is_some()
-            && self.native_host_offload.as_ref().is_some_and(|a| {
-                a.retry_epoch() != retry_epoch_before
-                    || a.next_deadline().is_some_and(|d| d <= now_ms)
-            });
+        let retry_if_instant = decide_again
+            || (retry_epoch_before.is_some()
+                && self.native_host_offload.as_ref().is_some_and(|a| {
+                    a.retry_epoch() != retry_epoch_before
+                        || a.next_deadline().is_some_and(|d| d <= now_ms)
+                }));
         let verify_width = if self.speculative_sampler.is_some() {
             self.args.aic_nextn.map_or(1, |nextn| nextn + 1)
         } else {
@@ -2588,15 +3052,44 @@ impl VllmCore {
                 .unwrap_or_default(),
             fpm: Some(fpm),
             decode_acceptance,
+            // Set when the pass is priced, with `launch`.
+            previous_returned_ms: None,
         };
         self.unpriced = Some(UnpricedPass {
             now_ms,
             compute_start_ms,
             forward,
             retry_if_instant,
+            previous_in_flight,
+            poll_index,
+            launch_shape,
             result,
         });
         Ok(work)
+    }
+
+    /// `launch`: when the CPU finishes launching a pass vLLM decided at
+    /// `decision_ms`. A launch never ends after its pass: the GPU waits for it.
+    fn launch_end_ms(
+        &self,
+        launch: &PassLaunchConfig,
+        shape: Option<LaunchShape>,
+        decision_ms: f64,
+        start_ms: f64,
+        end_ms: f64,
+    ) -> f64 {
+        let Some(LaunchShape { tokens, prefill }) = shape else {
+            return decision_ms;
+        };
+        let launch_end_ms = if tokens > launch.max_cudagraph_capture_size {
+            (decision_ms + launch.eager_ms)
+                .max(start_ms + launch.eager_queue_fraction * (end_ms - start_ms))
+        } else if prefill {
+            decision_ms + launch.piecewise_ms
+        } else {
+            decision_ms + launch.decode_ms
+        };
+        launch_end_ms.min(end_ms)
     }
 
     fn drop_request_at(
@@ -2609,6 +3102,23 @@ impl VllmCore {
             oracle.retire_requests([uuid]);
         }
         let mut cancelled_host_load = false;
+        self.load_clock.remove(&uuid);
+        if let Some(position) = self
+            .pending_activations
+            .iter()
+            .position(|&(pending, _, _)| pending == uuid)
+        {
+            self.pending_activations.remove(position);
+            if let (Some(adapter), Some(host)) = (
+                self.native_host_offload.as_mut(),
+                self.state
+                    .requests
+                    .get_mut(&uuid)
+                    .and_then(|request| request.host_offload.as_deref_mut()),
+            ) {
+                adapter.drop_completed_load(host, &mut self.kv_manager);
+            }
+        }
         if let Some(adapter) = self.native_host_offload.as_mut() {
             let mutation_now_ms = mutation_now_ms.unwrap_or_else(|| adapter.current_time_ms());
             let observed_at_ms = observed_at_ms.unwrap_or(mutation_now_ms);
@@ -2641,10 +3151,11 @@ impl VllmCore {
             || self.kv_manager.num_active_blocks() < active_blocks_before;
         self.source_holds.remove_request(uuid);
         self.active_destination_handoffs.remove_request(uuid);
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("request drop must remove the scheduler-owned request");
+        self.finish_host_request(uuid, &mut request);
         self.kv_manager.finish_native(uuid, request.sequence.lease);
         if capacity_improved {
             self.bump_capacity_generation();
@@ -2685,6 +3196,12 @@ impl VllmCore {
             break;
         }
         let selected = selected?;
+        // vLLM does not free the blocks of a request the pass in flight runs
+        // until that pass ends (async scheduling with a CPU tier), so it does
+        // not preempt such a request: the allocation stops instead.
+        if self.in_flight_requests.binary_search(&selected).is_ok() {
+            return None;
+        }
         let state_before = self.pressure_state();
         let request_active_blocks_before = self
             .state
@@ -3104,7 +3621,7 @@ impl VllmCore {
                 .cached_prefix_tokens
                 .get_or_insert(cached_prefix_tokens);
             let attribution = request.host_offload.as_deref_mut().and_then(|host| {
-                VllmHostOffloadAdapter::on_admitted(
+                self.native_host_offload.as_ref()?.on_admitted(
                     host,
                     cached_prefix_tokens,
                     self.args.block_size,

@@ -395,6 +395,7 @@ class EngineReplayRunnerFactory:
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
             supports_detokenization=True,
+            supports_scheduler_launch=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",

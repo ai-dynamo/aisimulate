@@ -13,7 +13,7 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 
 | Feature | Backend / execution | Topology and workload | Boundaries |
 | --- | --- | --- | --- |
-| Native token scheduling | vLLM, SGLang, TensorRT-LLM | Aggregated or P/D; synthetic and compatible traces | Engine-specific admission/cache behavior; no real network or host-runtime overhead |
+| Native token scheduling | vLLM, SGLang, TensorRT-LLM | Aggregated or P/D; synthetic and compatible traces | Engine-specific admission/cache behavior; no real network or host-runtime overhead, except vLLM's optional [pass launch](engine/workers.md#vllm-pass-launch) costs |
 | Attention-DP | All three native backends | Aggregated and independently sized P/D pools | Rank-local scheduling and G1; one grouped pass completes at the maximum rank time |
 | Native MTP | Supported engine/model path | Token or HBM-only agentic replay with explicit acceptance | Separate from ngram; no grouped-cache/G2/G3/sub-block state-cache combination; agentic accuracy is functional-only |
 | [Registered speculative schemes](engine/speculation.md#registered-schemes) | Offline vLLM/SGLang, subject to scheme/model constraints | Prediction, aggregated or P/D; token or HBM-only agentic replay | Existing linear 1–5-token executor; fixed KV capacity; default timing with supported OP cost; no trees, grouped-cache/G2/G3/sub-block state-cache combination or generic-scheme recommendation |
@@ -21,8 +21,8 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | Sessions | Native token replay | Synthetic or compatible trace sessions | Concurrency counts sessions through think time; see trace-format restrictions |
 | Prefix reuse | Native backend cache | G1 with prefix caching enabled | Actual reuse differs from Router overlap; complete block and backend admission rules apply |
 | Grouped FPM cache | vLLM | Cold aggregated, PP1/CP1 | HBM only, no speculation, prefix caching off, no scalar block capacity, no P/D |
-| G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool |
-| Agentic G2 | vLLM | One aggregated worker or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; each role may omit G2 or use local/shared scope |
+| G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool; an aggregated worker's local pool can follow vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR) |
+| Agentic G2 | vLLM | One aggregated worker, several aggregated workers each with local G2, or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; with one worker per role, each role may omit G2 or use local/shared scope |
 | G3 offload | vLLM | Aggregated, attention DP1; fixed or scaled pools | Requires G2; no speculation, AgentX, P/D, recommendation or hardware integration |
 | KVCR peer fetch | vLLM | Aggregated with any attention-DP size, or P/D prefill ranks; fixed or scaled pools | Requires private G2 and hints from a placement policy or ReplaySpec requests (CLI traffic has none); no G3, decode-role KVCR or recommendation; idle under AgentX |
 | Best-effort Belady | All three native backends | Fixed aggregated, DP1, complete open-loop input trace | Native descriptor; prefix caching required; rejects closed-loop/generated/agentic/delta inputs, scaling and offload |

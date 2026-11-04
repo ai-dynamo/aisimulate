@@ -200,6 +200,9 @@ pub(crate) struct MockEngineArgs {
     /// `EngineConfig::max_concurrent_batches`.
     #[builder(default = "1")]
     pub max_concurrent_batches: usize,
+    /// `EngineConfig::launch`.
+    #[builder(default = "None")]
+    pub launch: Option<crate::engine::PassLaunchConfig>,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]

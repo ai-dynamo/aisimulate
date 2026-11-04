@@ -121,6 +121,16 @@ class ParallelismPredictionConfig(ParallelismPresetConfig):
     decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
+class PassLaunchConfig(StrictModel):
+    """CPU launch costs of vLLM's async engine loop, measured on the serving deployment."""
+
+    decode_ms: NonNegativeFloat
+    piecewise_ms: NonNegativeFloat
+    eager_ms: NonNegativeFloat
+    max_cudagraph_capture_size: PositiveInt
+    eager_queue_fraction: Annotated[float, Field(strict=True, ge=0, lt=1, allow_inf_nan=False)]
+
+
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
@@ -139,6 +149,13 @@ class SchedulerPredictionConfig(StrictModel):
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
             "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+        ),
+    )
+    launch: PassLaunchConfig | None = Field(
+        default=None,
+        description=(
+            "vLLM aggregated workers with async scheduling only: CPU launch costs of vLLM's engine loop. A pass's "
+            "outputs then leave once the next pass is launched, and an arrival joins the first pass decided after it."
         ),
     )
 
@@ -177,6 +194,8 @@ class HostOffloadConfig(StrictModel):
     shared_d2h_bandwidth_gbps: NonNegativeFloat = 80.0
     shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
     latency_to_first_byte_ms: NonNegativeFloat = 0.0
+    # vLLM connector whose store, lookup and eviction rules G2 follows.
+    connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_v0_32"] = "offloading_v0_24"
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -187,11 +206,23 @@ class HostOffloadConfig(StrictModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _validate_connector(self) -> HostOffloadConfig:
+        if self.connector != "offloading_v0_24" and self.scope != "dp_rank_local":
+            raise ValueError("host_offload.connector other than offloading_v0_24 requires scope dp_rank_local")
+        return self
+
     @model_serializer(mode="wrap")
     def _omit_default_scope_controls(self, handler: Any) -> dict[str, Any]:
         # Keep the pre-scope descriptor shape unless these controls are used.
         payload = handler(self)
-        for name in ("scope", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps", "latency_to_first_byte_ms"):
+        for name in (
+            "scope",
+            "shared_d2h_bandwidth_gbps",
+            "shared_h2d_bandwidth_gbps",
+            "latency_to_first_byte_ms",
+            "connector",
+        ):
             if payload.get(name) == type(self).model_fields[name].default:
                 payload.pop(name)
         return payload
@@ -278,8 +309,12 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_g3(self):
-        if self.g3_offload is not None and self.host_offload is None:
+        if self.g3_offload is None:
+            return self
+        if self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("g3_offload requires host_offload.connector=offloading_v0_24")
         return self
 
     @model_validator(mode="after")
@@ -288,6 +323,8 @@ class KvCachePredictionConfig(StrictModel):
             return self
         if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
             raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("kvcr requires host_offload.connector=offloading_v0_24")
         if self.g3_offload is not None:
             raise ValueError("kvcr cannot be combined with g3_offload")
         return self
@@ -934,6 +971,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
+        _validate_prediction_launch(self)
         _validate_prediction_host(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
@@ -1310,9 +1348,34 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
             ("async_scheduling", "vllm", None),
+            ("launch", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def _validate_prediction_launch(engine: EnginePredictionConfig) -> None:
+    """`scheduler.launch` models vLLM's engine loop with its uniprocess executor: one aggregated GPU per engine."""
+    for role in ("prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is not None and worker.scheduler.launch is not None:
+            raise ValueError(f"workers.{role}.scheduler.launch is supported only on aggregated workers")
+    worker = engine.workers.aggregated
+    if worker is None or worker.scheduler.launch is None:
+        return
+    if worker.scheduler.async_scheduling is False:
+        raise ValueError("workers.aggregated.scheduler.launch requires async_scheduling")
+    parallel = worker.parallelism
+    if (
+        parallel.tensor != 1
+        or parallel.pipeline != 1
+        or parallel.attention_data != 1
+        or parallel.prefill_context not in (None, 1)
+    ):
+        raise ValueError(
+            "workers.aggregated.scheduler.launch models vLLM's uniprocess executor and requires tensor=1, "
+            "pipeline=1, attention_data=1 and prefill_context=1"
+        )
 
 
 def require_native_vl_parallelism(
@@ -1422,6 +1485,10 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     for role, worker in configured:
         if not worker.kv_cache.prefix_caching:
             raise ValueError("host_offload requires prefix_caching=true")
+        if worker.kv_cache.host_offload.connector != "offloading_v0_24" and role != "aggregated":
+            raise ValueError(
+                "host_offload.connector other than offloading_v0_24 is supported only for the aggregated worker"
+            )
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
         if worker.kv_cache.kvcr is not None and role == "decode":

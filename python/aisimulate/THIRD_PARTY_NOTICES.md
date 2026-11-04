@@ -298,6 +298,32 @@ under Apache-2.0. These repository-root-relative files adapt behavioral contract
 no upstream method bodies are copied. The Rust implementation and fixtures are
 modified for simulation and do not reproduce native filesystem timing.
 
+The `offloading_v0_32` and `simple_cpu_v0_32` G2 connector profiles in
+repository-root files `crates/core/src/engine/host_offload/tier.rs` and
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`, their tests in
+those files, and their description in `docs/replay/engine/kv-cache.md` are
+independently written, modified Rust simulation adaptations of behavioral
+contracts at vLLM tag `v0.32.0` (commit `5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/lru.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+which blocks each connector stores, when a lookup hits, misses or defers, the
+eviction order of the CPU cache, how long a store holds its G1 source blocks,
+what a preemption waits for, and the engine step that submits the stores of a
+finished request.
+
 The speculative scheduling/progress corrections in repository-root files
 `crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
 `crates/core/src/engine/common/speculative.rs` are independently written,
@@ -330,6 +356,33 @@ No upstream method bodies or test fixtures are copied. The adaptation models,
 in virtual time, which committed batch an arriving request can join while the
 engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
 asynchronous worker execution. That revision has no root NOTICE file.
+
+The async-scheduling block frees, preemption rules and engine-loop timing in
+repository-root files `crates/core/src/engine/scheduler/vllm/core.rs` and
+`crates/core/src/engine/scheduler/rank.rs` are an independently written,
+modified Rust simulation adaptation of behavioral contracts at vLLM tag
+`v0.30.0` (commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`):
+
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/config/parallel.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/executor/uniproc_executor.py
+
+and of the CUDA-graph dispatch at vLLM tag `v0.32.0` (commit
+`5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/LICENSE
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, when a finished request's blocks return to the pool, which
+running request may be preempted while a pass is in flight, when the engine
+loop decides a pass and returns the previous pass's outputs, and which passes
+run without a CUDA graph; it does not reproduce asynchronous worker execution.
+Neither revision has a root NOTICE file.
 
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):

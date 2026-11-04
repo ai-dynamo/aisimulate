@@ -331,8 +331,21 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
     else:
         raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
-    if any(type(count) is not int or count != 1 for count in counts):
-        raise ValueError("agentic host offload requires one aggregated worker or one prefill and one decode worker")
+    # Each aggregated worker owns a private G2; a shared pool and P/D keep one
+    # worker per role.
+    shared = any(
+        isinstance(rank, Mapping)
+        and isinstance(rank.get("native_host_offload"), Mapping)
+        and rank["native_host_offload"].get("scope", "dp_rank_local") != "dp_rank_local"
+        for _, _, rank in ranks
+    )
+    if any(type(count) is not int or count < 1 for count in counts) or (
+        any(count != 1 for count in counts) and (deployment.deployment_mode != "agg" or shared)
+    ):
+        raise ValueError(
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, "
+            "or static aggregated workers with scope=dp_rank_local"
+        )
     if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
         raise ValueError("agentic host offload requires static worker pools without a scaling policy")
     for role, args, rank in ranks:
@@ -411,6 +424,7 @@ class RunnerCapabilities:
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
+    supports_scheduler_launch: bool = False
     supports_deferred_encoder_overlay: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
@@ -588,6 +602,13 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.detokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.detokenization requires offline replay")
+        agg_rank = (deployment.agg_engine_args or {}).get("rank", deployment.agg_engine_args)
+        if isinstance(agg_rank, Mapping) and agg_rank.get("launch") is not None:
+            # Only offline replay releases the outputs a vLLM rank holds until it returns them.
+            if not self.supports_scheduler_launch:
+                raise ValueError("runner does not support scheduler.launch; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("scheduler.launch requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:
