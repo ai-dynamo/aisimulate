@@ -16,13 +16,16 @@ Arguments (``--case-filter key=value,...``):
   layers    layer counts, ``+``-separated (default ``4+8``)
   modes     ``graph``, ``eager`` or ``graph+eager`` (default)
   points    ``<batch>x<kv_len>`` pairs, ``+``-separated (default ``1x1024+8x1024+32x1024``)
-  steps     decode steps per timed generate (default 32)
+  steps     decode steps per timed generate (default 128)
   attempts  timed attempts per point, median reported (default 5)
 
 Per (layers, mode, point): ``generate`` with 1 and with 1 + ``steps`` output tokens for
 ``batch`` random prompts of ``kv_len`` tokens (prefix caching off, EOS ignored); the step
-time is their difference over ``steps``. Each (layers, mode) engine runs in its own child
-process, as serving runs one engine per process.
+time is their difference over ``steps``. Both generates prefill ``batch * kv_len`` tokens, so
+the prefill's run-to-run jitter lands in the difference; ``steps`` must be large enough for
+the decode to dominate it (32 steps left batch 8/32 points noisy on B200, job 527771824).
+Each (layers, mode) engine runs in its own child process, as serving runs one engine per
+process.
 
 Config edits, kept so the measured layers stay as served: ``num_hidden_layers`` (top
 level or ``text_config``); Engram tables emptied when the config declares them (hundreds
@@ -58,7 +61,7 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
     layers = [int(n) for n in args.get("layers", "4+8").split("+")]
     modes = args.get("modes", "graph+eager").split("+")
     points = _points(args.get("points", "1x1024+8x1024+32x1024"))
-    steps, attempts = int(args.get("steps", 32)), int(args.get("attempts", 5))
+    steps, attempts = int(args.get("steps", 128)), int(args.get("attempts", 5))
     if not set(modes) <= {"graph", "eager"} or len(layers) < 2:
         raise ValueError(f"modes {modes} must be graph/eager and layers {layers} needs two or more counts")
     runs = []
