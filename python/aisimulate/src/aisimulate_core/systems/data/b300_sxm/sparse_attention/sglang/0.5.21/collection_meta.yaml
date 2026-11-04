@@ -79,7 +79,7 @@ tables:
       rows: 3200
       status: complete
   dsv4_csa_topk_calib_perf:
-    rows: 5182
+    rows: 6708
     status: complete
     collections:
     - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
@@ -87,6 +87,12 @@ tables:
       case_plan_hash: sha256:8651e2221833b363be2df106e2f14c2d1b22f6f4a67bdfeaec083cf128d86f7c
       collected_at: '2026-10-08'
       rows: 5182
+      status: complete
+    - collector_ref: eb04c6888cf33ef4f48a995511a23429127f3baa
+      collector_hash: sha256:7b344d6a876f3bd922efc37fd75349a2451c97f74a4121fcf80dc18c5c5dcf46
+      case_plan_hash: sha256:c88624330173b68bfadd314e9a7c1e21026280db68c63fa273aa830c0dfb6dc1
+      collected_at: '2026-11-04'
+      rows: 1526
       status: complete
   dsv4_hca_context_module_perf:
     rows: 47696
