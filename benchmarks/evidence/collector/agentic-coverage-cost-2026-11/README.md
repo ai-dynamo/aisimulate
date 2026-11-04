@@ -7,6 +7,8 @@ publish smoke measurements as production performance data.
 Read the [cost summary](cost-summary.md) for qualified components, exact case
 counts and remaining unknown totals. [NCCL components](nccl-cost-components.json)
 are shared system costs reported separately from the three framework lanes.
+The final [machine report](cost-report.json.gz) is losslessly compressed; its
+[manifest](cost-report.manifest.json) records compressed and decoded hashes.
 The report snapshot and raw measurements identify their own input revisions;
 new evidence requires a fresh report, not relabeling an earlier snapshot.
 

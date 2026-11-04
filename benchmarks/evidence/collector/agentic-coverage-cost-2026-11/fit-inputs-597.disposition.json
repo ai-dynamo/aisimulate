@@ -28,5 +28,15 @@
     "report_sha256": "471e06b99676dc49daee1ea310fefbd3dd4b5e7eb1c1e9f56efc9dd377771506",
     "report_commit": "f9318078c",
     "public_equivalent_report_commit": "1ca349514"
+  },
+  "final_replacement": {
+    "archive": "fit-inputs-1018-final.zip",
+    "archive_sha256": "749b8563e84453a718866434731325b767913cc864bdfbc91d7b69f6a398ea65",
+    "dataset_sha256": "9210a7908f5142a9b33f7b3ceb8b0727939bd1bd629df615c9b6740c17404309",
+    "report": "cost-report.json.gz",
+    "report_manifest": "cost-report.manifest.json",
+    "decompressed_report_sha256": "7b94b003b32515a623bc3db3f1e1b26d3c4b0767d7698288506a391bc0ff1440",
+    "public_equivalent_report_commit": "329981cfe",
+    "qualification": "Final1018 independent identity/phase review passed. Historical snapshots remain immutable; full fleet totals remain unqualified."
   }
 }

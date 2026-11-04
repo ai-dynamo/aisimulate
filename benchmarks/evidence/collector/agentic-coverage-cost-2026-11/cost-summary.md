@@ -180,4 +180,4 @@ idle time is excluded from measured collection costs. See the frozen ledger for 
 
 Reproduce with the documented report CLI, the frozen sample/proof hashes above and the same
 inventory manifests. New samples require a new report snapshot; they must not silently change
-interpretation of this interim artifact.
+interpretation of this frozen artifact.
