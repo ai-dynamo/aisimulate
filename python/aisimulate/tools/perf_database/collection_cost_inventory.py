@@ -90,12 +90,17 @@ def shared_policy():
     def points(sweep, phase, heads, kv_heads, dim):
         if phase == "context":
             return original_points(sweep, phase, heads, kv_heads, dim)
-        return [
+        baseline_sweep = original_data["all_frameworks_op_cases"]["attention_generation"]["cases"][0]
+        baseline_points = original_points(baseline_sweep, phase, heads, kv_heads, dim)
+        added_points = [
             (batch, length - 1)
             for batch in sweep["batch_sizes"]
             for length in sweep["sequence_lengths"]
             if batch * length <= 16777216 and batch * length * kv_heads * dim * 2 < 2147483647
         ]
+        # The shared expansion is incremental: new index guards cannot remove
+        # pre-existing #676 anchors from this comparison counterfactual.
+        return sorted(set(baseline_points) | set(added_points))
 
     generator._load_base_cases_data = lambda: data
     plans._attention_points = points
