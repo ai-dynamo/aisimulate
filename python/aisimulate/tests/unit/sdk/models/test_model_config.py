@@ -474,6 +474,15 @@ class TestHFModelSupport:
                 (40, 40, 8),
             ),
             (
+                "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+                # The published MIXED_PRECISION export lists FP8 Mamba and shared-expert GEMMs.
+                common.GEMMQuantMode.fp8_static,
+                common.MoEQuantMode.nvfp4,
+                common.KVCacheQuantMode.fp8,
+                common.FMHAQuantMode.fp8,
+                (40, 40, 8),
+            ),
+            (
                 "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
                 common.GEMMQuantMode.bfloat16,
                 common.MoEQuantMode.bfloat16,
@@ -491,7 +500,8 @@ class TestHFModelSupport:
             ),
             (
                 "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
-                common.GEMMQuantMode.nvfp4,
+                # The published MIXED_PRECISION export lists FP8 Mamba and shared-expert GEMMs.
+                common.GEMMQuantMode.fp8_static,
                 common.MoEQuantMode.nvfp4,
                 common.KVCacheQuantMode.fp8,
                 common.FMHAQuantMode.fp8,
