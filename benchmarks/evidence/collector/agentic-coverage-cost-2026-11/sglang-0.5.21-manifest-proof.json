@@ -1,0 +1,37 @@
+{
+  "image": "lmsysorg/sglang:v0.5.21",
+  "request_url": "https://registry-1.docker.io/v2/lmsysorg/sglang/manifests/sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+  "expected_index_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+  "response_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+  "raw_payload_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+  "platform_children": [
+    {
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      },
+      "digest": "sha256:2dbe4c7f53230b09aaa8fa41891c13c51d9d2e253f486a70822aaf08783fff75"
+    },
+    {
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "digest": "sha256:1cc146952338e073db9831a8f016ef928c882eded2b0aaeeee3b0aeb228a08a3"
+    },
+    {
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      },
+      "digest": "sha256:1f176b3a1dd1205d2a462ab80ea9fc17769a32e53cb6f3c690efa2dc2c384977"
+    },
+    {
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      },
+      "digest": "sha256:ccee833dc0b861ece5e935e2995bb01ca96498049cf9e01e16125cc7a92284f3"
+    }
+  ]
+}
