@@ -201,8 +201,9 @@ eviction rules G2 follows:
 | G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes, then freed first block first |
 | A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
 
-vLLM main has changed some of these rules since v0.32.0; each profile follows
-the version it names. The model also differs from vLLM v0.32.0 here:
+vLLM main has changed some of these rules since v0.32.0. Each profile models the
+rules of the version it names; none was compared with a running vLLM. The model
+also differs from vLLM v0.32.0 here:
 
 - `offloading_v0_32` offers and re-ranks a finishing request's blocks when the
   request finishes. vLLM does both in its next step, after that step's other
