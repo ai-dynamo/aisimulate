@@ -15,11 +15,13 @@ import ast
 import contextlib
 import csv
 import dataclasses
+import hashlib
 import importlib
 import importlib.metadata
 import itertools
 import json
 import os
+import platform
 import sys
 import time
 import traceback
@@ -155,6 +157,36 @@ def run(spec: dict, output: Path) -> dict:
         executor = importlib.import_module("collector.collect")
         helper = importlib.import_module("collector.helper")
         function = getattr(module, entry.run_func)
+        observations = importlib.import_module("tools.perf_database.collection_cost_observations")
+        result["audit_driver_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        observer_file = getattr(observations, "__file__", None)
+        result["audit_observer_sha256"] = (
+            hashlib.sha256(Path(observer_file).read_bytes()).hexdigest() if observer_file else None
+        )
+        result["audit_driver_commit_declared"] = spec.get("audit_driver_commit")
+        properties = torch.cuda.get_device_properties(0)
+        image_receipt = output.parent / (output.name.removeprefix("native-") + "-image.sha256")
+        result["runtime_protocol"] = {
+            "installed_framework_version_observed": result["package_version"],
+            "torch_version_observed": getattr(torch, "__version__", None),
+            "torch_cuda_build_version_observed": getattr(getattr(torch, "version", None), "cuda", None),
+            "loaded_cuda_runtimes_observed": observations.loaded_cuda_runtimes(),
+            "python_version_observed": platform.python_version(),
+            "measure_power_observed": False,
+            "omp_num_threads_observed": os.environ.get("OMP_NUM_THREADS"),
+            "torch_num_threads_observed": getattr(torch, "get_num_threads", lambda: None)(),
+            "image_squashfs_sha256_observed": image_receipt.read_text().split()[0] if image_receipt.exists() else None,
+            "gpu_uuid_observed": str(getattr(properties, "uuid", "unavailable")),
+            "host_concurrent_workers_observed": None,
+        }
+        result["allocation_observations"] = []
+        current_call = {"index": None}
+
+        def record_allocation(record):
+            event = {"native_call_index": current_call["index"], **record}
+            result["allocation_observations"].append(event)
+            print(json.dumps({"event": "allocation_observation", **event}), flush=True)
+
         # Direct collectors expose their benchmark helper in this module. Native
         # module subprocesses keep their existing point clocks in the raw log.
         benchmark = getattr(module, "benchmark_with_power", None)
@@ -162,6 +194,15 @@ def run(spec: dict, output: Path) -> dict:
 
         @contextlib.contextmanager
         def record_benchmark(*args, **kwargs):
+            if spec.get("observe_allocations"):
+                kernel = kwargs.get("kernel_func")
+                if kernel is not None:
+                    try:
+                        record_allocation(
+                            {"kind": "forward_input_arguments", **observations.forward_inputs(kernel, spec["backend"])}
+                        )
+                    except Exception as error:
+                        record_allocation({"kind": "forward_input_arguments", "observation_error": str(error)})
             with benchmark(*args, **kwargs) as measured:
                 yield measured
             measurements.append(
@@ -177,7 +218,12 @@ def run(spec: dict, output: Path) -> dict:
         if benchmark is not None:
             module.benchmark_with_power = record_benchmark
         policy = inventory.shared_policy() if spec["scenario"] == "shared" else contextlib.nullcontext()
-        with policy:
+        cache_observer = (
+            observations.observe_native_caches(module, spec["backend"], record_allocation)
+            if spec.get("observe_allocations")
+            else contextlib.nullcontext()
+        )
+        with policy, cache_observer:
             options = {"include_long_history": True} if spec["scenario"] == "model" else {}
             selected = select_plan(plans.plan(spec["op"], spec["backend"], spec["sm"], **options), spec["cases"])
             rows = selected.rows
@@ -189,6 +235,7 @@ def run(spec: dict, output: Path) -> dict:
                 params = row["params"] if isinstance(row, dict) and "params" in row else row
                 call_started = time.perf_counter()
                 call = {"index": index, "row": str(row)}
+                current_call["index"] = index
                 rows_before = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
                 result["pending_call"] = {
                     **call,

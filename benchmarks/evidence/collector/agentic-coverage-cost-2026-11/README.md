@@ -461,3 +461,18 @@ MoE/KDA/module manifests.
 [`normalization-correction-597.json`](normalization-correction-597.json) lists
 every affected sample. The old raw archive remains as provenance and must not
 be used to fit geometry costs.
+
+The optional audit-driver field `observe_allocations` records native cache
+constructor results without changing kernels or replacing returned objects.
+vLLM records initial and final-layout cache storage, SGLang records K/V pool
+buffers, and TRT records its unique primary pool. Shape, dtype, stride, logical
+bytes and unique underlying storage bytes distinguish real allocation floors.
+Views are deduplicated by hashed storage identity; tensor objects are never
+retained. Exact Q/K/V forward arguments are observed through the native
+benchmark closure (TRT records its packed forward argument, not an invented
+extra-buffer total). Observation errors remain explicit and invalidate a
+feature fit. Small CPU observation overhead belongs to the inclusive call clock.
+The driver also records actual framework/Torch/CUDA-build and already-loaded
+CUDA-runtime API versions, GPU UUID, image-hash receipt and thread settings.
+Unknown host concurrency remains null. This audit instrumentation is separate
+from the frozen collector/kernel revision and does not enable long history.
