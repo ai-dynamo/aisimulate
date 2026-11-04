@@ -13,6 +13,28 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 disaggregated admission and retraction recovery
+
+The native controls and scheduler wiring in repository-root
+`crates/core/src/engine/{config.rs,common/protocols.rs,scheduler/rank.rs}`,
+the request-capacity, transfer-admission and restoration behavior in
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,host_loop.rs,prefill.rs,request.rs,tests.rs}`,
+the native-limit regression in `crates/core/tests/engine.rs`, and the
+descriptions in `docs/replay/engine/workers.md` are modified
+behavioral adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/disaggregation/{decode.py,prefill.py}`,
+`python/sglang/srt/arg_groups/{fields/disagg.py,pd_disaggregation_hook.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_batch.py}`, and
+`python/sglang/srt/mem_cache/kv_cache_configurator.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's synchronous request leases and discrete-event replay.
+Tests use synthetic requests; no upstream implementation or fixture is vendored.
+
 ## SGLang v0.5.22 prefill admission and ratio lifecycle
 
 The admission budget, arrival limits, continuation priority, and ratio

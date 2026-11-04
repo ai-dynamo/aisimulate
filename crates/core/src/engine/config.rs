@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Serializable engine configuration.
 
@@ -253,6 +256,16 @@ pub struct SglangConfig {
     /// decode rank keeps each request's KV private, as SGLang's chunk cache
     /// does; other ranks ignore it.
     pub disaggregation_decode_enable_radix_cache: bool,
+    /// Per-request decode headroom reserved before a PD transfer (SGLang default: 512).
+    #[serde(default = "default_reserved_decode_tokens")]
+    pub num_reserved_decode_tokens: usize,
+    /// Extra request rows for in-transfer PD decode requests. Unset uses
+    /// twice the requested batch size for explicit limits at or below 32.
+    pub disaggregation_decode_extra_slots: Option<usize>,
+}
+
+const fn default_reserved_decode_tokens() -> usize {
+    512
 }
 
 const fn default_vlm_cache_bytes() -> u64 {
@@ -270,6 +283,8 @@ impl Default for SglangConfig {
             vlm_cache_bytes: default_vlm_cache_bytes(),
             host_loop: false,
             disaggregation_decode_enable_radix_cache: false,
+            num_reserved_decode_tokens: default_reserved_decode_tokens(),
+            disaggregation_decode_extra_slots: None,
         }
     }
 }
@@ -611,7 +626,8 @@ pub struct EngineConfig {
     /// Optional prompt-plus-output token limit for every backend.
     /// Prompts at or above the limit are rejected; generation stops at the limit.
     pub max_model_len: Option<usize>,
-    /// Maximum concurrently runnable sequences. JSON null means unbounded.
+    /// Maximum concurrently runnable sequences. JSON null removes the explicit
+    /// limit; SGLang then derives its request capacity from KV and context size.
     #[serde(
         default = "default_max_num_seqs",
         serialize_with = "serialize_scheduler_limit"

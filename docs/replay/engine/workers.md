@@ -183,6 +183,39 @@ re-estimates it from the survivors. Fully idle workers reset it; queued or
 transfer-held work does not. A skipped decode waiting for an in-flight
 completion neither retracts requests nor decays the ratio.
 
+### SGLang disaggregated capacity
+
+SGLang decode preallocation reserves **512 tokens per active request** by
+default, including requests in transfer and transferred requests waiting to
+run. It also protects enough space for one running request to finish. A
+candidate's matched prefix is pinned before checking the budget; only its
+missing, page-rounded prompt needs new KV pages. Admission stops at the first
+request that cannot fit. A prompt whose footprint plus the configured reserve
+exceeds the whole pool is rejected at the destination command boundary.
+
+The native Rust/JSON `engine.sglang` controls are:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `num_reserved_decode_tokens` | `512` | Decode headroom per preallocated request. A smaller value supports intentionally small synthetic KV pools; zero still retains the completion guard. |
+| `disaggregation_decode_extra_slots` | unset | Extra decode request rows for transfers. Unset uses twice the explicit per-rank sequence limit when it is at most 32, otherwise zero. |
+
+These controls apply to PD decode and are not YAML scheduler fields.
+The effective running-request limit is capped at half the KV token capacity.
+With native `max_num_seqs: null`, it is derived from KV capacity and context
+length, bounded to 2,048–4,096 before that cap. An omitted `max_num_seqs` keeps
+AISim's explicit default of 256. Decode has that many running
+slots, the configured extra transfer rows, and twice the running limit in
+transfer metadata slots. Transfer completion releases metadata; request rows
+remain occupied until completion, cancellation, or retraction.
+
+Retracted decodes restore private KV before new transfers are admitted or
+transferred requests enter the running batch. They do not re-match the radix
+cache or run a new prefill. The simulator models allocation and restoration
+ordering, without a separate host-copy latency for these backups. On prefill
+workers, completed sources retain their request row and KV until transfer
+release, so waiting sources may be blocked even when no prefill is running.
+
 <a id="vllm-prefill-schedule-interval"></a>
 
 ### vLLM prefill schedule interval

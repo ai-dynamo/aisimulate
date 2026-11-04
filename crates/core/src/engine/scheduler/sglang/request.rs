@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::VecDeque;
 use std::ops::{Deref, RangeFull};
@@ -19,6 +22,7 @@ use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 pub(super) struct SglangRequest {
     pub(super) uuid: Uuid,
     pub(super) is_decode_handoff: bool,
+    pub(super) retracted: bool,
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
     pub(super) max_output_tokens: usize,
@@ -53,6 +57,7 @@ impl SglangRequest {
         Self {
             uuid: req.uuid.unwrap_or_else(Uuid::new_v4),
             is_decode_handoff: false,
+            retracted: false,
             sequence_tokens,
             prompt_len,
             max_output_tokens,
@@ -238,6 +243,7 @@ impl SglangRequest {
         debug_assert!(!self.kv_lease.is_active());
         self.materialized_tokens = 0;
         self.allocated_tokens = 0;
+        self.retracted = true;
     }
 }
 

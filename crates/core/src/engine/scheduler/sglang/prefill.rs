@@ -41,6 +41,7 @@ pub(super) fn get_new_batch_prefill(
     new_token_ratio: f64,
     running: &[SglangRequest],
     mut batch_is_full: bool,
+    occupied_request_slots: usize,
 ) -> AdmitResult {
     let mut total_offset: f64 = running
         .iter()
@@ -60,7 +61,9 @@ pub(super) fn get_new_batch_prefill(
     let mut admissions = Vec::new();
     let mut prefill_fpm = Vec::new();
 
-    let available_running_slots = config.max_running_requests.saturating_sub(running.len());
+    let available_running_slots = config
+        .max_running_requests
+        .saturating_sub(running.len() + occupied_request_slots);
     // An in-flight chunk owns KV and must run before newly matched requests,
     // including under LPM or a full running batch.
     if let Some(index) = waiting.iter().position(|req| req.materialized_tokens > 0) {
@@ -181,6 +184,7 @@ pub(super) fn get_new_batch_prefill(
 
         req.kv_lease = lease;
         req.materialized_tokens = chunk_end;
+        req.retracted = false;
         req.allocated_tokens = ceil_to_block(chunk_end, config.block_size);
         req.debug_assert_invariants(config.block_size);
 

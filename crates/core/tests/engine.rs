@@ -113,6 +113,10 @@ fn engine_config(timing_model: TimingModelConfig) -> ReplayEngineConfig {
             block_size: 4,
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
+            sglang: SglangConfig {
+                num_reserved_decode_tokens: 0,
+                ..SglangConfig::default()
+            },
             timing_model,
             ..EngineConfig::default()
         },
@@ -238,6 +242,44 @@ fn disaggregated_backends_stop_at_max_model_len() {
     }
 }
 
+#[rstest::rstest]
+#[case(serde_json::Value::Null, 2048)]
+#[case(serde_json::json!(8), 8)]
+fn sglang_native_request_limit_reaches_batch_admission(
+    #[case] limit: serde_json::Value,
+    #[case] expected_batch: usize,
+) {
+    let config = serde_json::from_value::<EngineConfig>(serde_json::json!({
+        "backend": "sglang",
+        "num_gpu_blocks": 20000,
+        "block_size": 1,
+        "max_model_len": 20000,
+        "max_num_seqs": limit,
+        "max_num_batched_tokens": 20000,
+        "enable_prefix_caching": false,
+        "sglang": {"chunked_prefill_size": 20000},
+        "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+    }))
+    .unwrap();
+    let mut replay = spec(ReplayEngineConfig {
+        rank: config,
+        ..Default::default()
+    });
+    replay.requests = (0..=expected_batch)
+        .map(|index| request(&format!("request-{index}"), 0.0, 1, 2))
+        .collect();
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, expected_batch + 1);
+    assert_eq!(
+        report
+            .per_request
+            .iter()
+            .filter(|r| r.first_admit_ms == Some(0.0))
+            .count(),
+        expected_batch
+    );
+}
+
 fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: 1,
@@ -246,6 +288,10 @@ fn role_config(backend: Backend, timing_model: TimingModelConfig) -> ReplayRoleC
             num_gpu_blocks: 32,
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
+            sglang: SglangConfig {
+                num_reserved_decode_tokens: 0,
+                ..SglangConfig::default()
+            },
             timing_model,
             ..EngineConfig::for_backend(backend)
         },

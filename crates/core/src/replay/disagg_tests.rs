@@ -3964,8 +3964,12 @@ mod agentic_pd_qualification {
                 })
                 .collect();
             let prepared = prepared(agentic_trace(64, rows), 2);
+            let mut config = config(backend, false);
+            // The short request must retain its source row while the long
+            // prefill runs, so its client terminal can precede source cleanup.
+            config.prefill_args.max_num_seqs = 2;
             let mut replay = runtime(
-                &config(backend, false),
+                &config,
                 prepared,
                 true,
                 1.0,

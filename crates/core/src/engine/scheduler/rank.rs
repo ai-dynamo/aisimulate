@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Thin neutral contract adapter over the mechanically moved scheduler cores.
 
@@ -499,7 +502,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         num_gpu_blocks: config.num_gpu_blocks,
         block_size: config.block_size,
         max_model_len: config.max_model_len,
-        max_num_seqs: Some(config.max_num_seqs),
+        max_num_seqs: (config.backend != Backend::Sglang || config.max_num_seqs != usize::MAX)
+            .then_some(config.max_num_seqs),
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
         prefill_decode_interval: config.prefill_decode_interval,
@@ -551,6 +555,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             disaggregation_decode_enable_radix_cache: config
                 .sglang
                 .disaggregation_decode_enable_radix_cache,
+            num_reserved_decode_tokens: Some(config.sglang.num_reserved_decode_tokens),
+            disaggregation_decode_extra_slots: config.sglang.disaggregation_decode_extra_slots,
             frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,
