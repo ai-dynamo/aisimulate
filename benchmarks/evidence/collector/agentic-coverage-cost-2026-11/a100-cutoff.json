@@ -1,0 +1,138 @@
+{
+  "scope": "Coordinator cutoff: canonical A100 SXM80 nodes unavailable; no substitution or cross-system rate.",
+  "pending_jobs_before_cancel": [
+    {
+      "job_id": "5600257",
+      "job_name": "pr664-a100_sxm-sglang-prefill",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600256",
+      "job_name": "pr664-a100_sxm-trtllm-prefill",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600254",
+      "job_name": "pr664-a100_sxm-vllm-prefill",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600245",
+      "job_name": "pr664-a100_sxm-vllm-direct2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600242",
+      "job_name": "pr664-a100_sxm-trtllm-direct2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600240",
+      "job_name": "pr664-a100_sxm-vllm-repeat2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600234",
+      "job_name": "pr664-a100_sxm-vllm-validate2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600229",
+      "job_name": "pr664-a100_sxm-trtllm-repeat2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600228",
+      "job_name": "pr664-a100_sxm-sglang-repeat2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600227",
+      "job_name": "pr664-a100_sxm-trtllm-validate2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600226",
+      "job_name": "pr664-a100_sxm-vllm-primary2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600225",
+      "job_name": "pr664-a100_sxm-sglang-validate2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Dependency)"
+    },
+    {
+      "job_id": "5600222",
+      "job_name": "pr664-a100_sxm-trtllm-primary2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    },
+    {
+      "job_id": "5600220",
+      "job_name": "pr664-a100_sxm-sglang-primary2",
+      "state": "PENDING",
+      "elapsed": "0:00",
+      "reason": "(Resources)"
+    }
+  ],
+  "cancelled_ids": [
+    "5600257",
+    "5600256",
+    "5600254",
+    "5600245",
+    "5600242",
+    "5600240",
+    "5600234",
+    "5600229",
+    "5600228",
+    "5600227",
+    "5600226",
+    "5600225",
+    "5600222",
+    "5600220"
+  ],
+  "scheduler_after_cancel": "5600220|pr664-a100_sxm-sglang-primary2|CANCELLED by 141787|0|None|None assigned|\n5600222|pr664-a100_sxm-trtllm-primary2|CANCELLED by 141787|0|None|None assigned|\n5600225|pr664-a100_sxm-sglang-validate2|CANCELLED by 141787|0|None|None assigned|\n5600226|pr664-a100_sxm-vllm-primary2|CANCELLED by 141787|0|None|None assigned|\n5600227|pr664-a100_sxm-trtllm-validate2|CANCELLED by 141787|0|None|None assigned|\n5600228|pr664-a100_sxm-sglang-repeat2|CANCELLED by 141787|0|None|None assigned|\n5600229|pr664-a100_sxm-trtllm-repeat2|CANCELLED by 141787|0|None|None assigned|\n5600234|pr664-a100_sxm-vllm-validate2|CANCELLED by 141787|0|None|None assigned|\n5600240|pr664-a100_sxm-vllm-repeat2|CANCELLED by 141787|0|None|None assigned|\n5600242|pr664-a100_sxm-trtllm-direct2|CANCELLED by 141787|0|None|None assigned|\n5600245|pr664-a100_sxm-vllm-direct2|CANCELLED by 141787|0|None|None assigned|\n5600254|pr664-a100_sxm-vllm-prefill|CANCELLED by 141787|0|None|None assigned|\n5600256|pr664-a100_sxm-trtllm-prefill|CANCELLED by 141787|0|None|None assigned|\n5600257|pr664-a100_sxm-sglang-prefill|CANCELLED by 141787|0|None|None assigned|\n",
+  "ledger_snapshot": {
+    "a100_sxm-anchor-budget.jsonl": null,
+    "a100_sxm-validation-budget.jsonl": null
+  },
+  "collection_gpu_seconds": 0,
+  "unstarted_jobs_cancelled": true,
+  "reallocation": {
+    "a100_anchor_hours": 0,
+    "a100_validation_hours": 0,
+    "b300_validation_hours": 1.875,
+    "h100_validation_hours": 0.75,
+    "other_five_validation_hours": 0.375,
+    "other_seven_anchor_hours": 1,
+    "audit_total_hours": 11.5,
+    "correctness_hours": 0.5,
+    "global_total_hours": 12
+  },
+  "qualification": "Zero collection spent is a cancellation fact, not zero collection cost or completed A100 coverage."
+}

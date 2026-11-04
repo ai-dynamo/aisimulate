@@ -170,10 +170,12 @@ candidate anchors and do not establish fleet totals.
 
 ## Budget, estimates and acceptance
 
-The approved 12 collection GPU-hours are partitioned into 8 anchor, 0.5 correctness
-and 3.5 validation GPU-hours after coordinator transfers of unused correctness quota.
-B300 has1 anchor plus0.875 validation GPU-hours; the other seven systems each
-have1 anchor plus0.375 validation. The correctness agent has a separate0.5 cap. This audit owns11.5 GPU-hours in total; correctness owns the remaining0.5.
+The approved12 collection GPU-hours now contain7 anchor,4.5 validation and
+0.5 correctness GPU-hours after coordinator transfers. A100 has no remaining
+lease: its unstarted jobs were canceled at the resource cutoff with zero
+collection spend. B300 validation is1.875 GPU-hours; H100 validation is0.75;
+the other five systems each retain0.375 validation. All seven active systems
+retain1 anchor GPU-hour each. Audit allowance is11.5 and correctness0.5.
 Unused quotas require coordinator reassignment before transfer. A file lock
 protects one ledger, not independent cluster filesystems: each system receives
 its fixed quota and must keep one ledger for every local job using that quota.
@@ -483,3 +485,14 @@ and its subsequent use stay separate; three fresh matched groups can then
 validate a warm component independently. Every call remains inside the bounded
 collection clock. The default is one pass; repeated sampling adds no coverage
 claims or collector behavior changes.
+
+[`a100-cutoff.json`](a100-cutoff.json) records the coordinator cutoff: all14
+remaining A100 jobs were pending, canceled with zero elapsed allocation time,
+and both collection ledgers were absent. A100 remains unmeasured because no
+canonical80GB SXM capacity was available; no other GPU rate is substituted.
+The unused1.375-hour lease was transferred to B300 validation (+1) and H100
+validation (+0.375), preserving the11.5 audit/0.5 correctness/12 total cap.
+Older timestamped quota snapshots retain their historical values.
+The corrected597 report replacement is recorded in
+[`fit-inputs-597.disposition.json`](fit-inputs-597.disposition.json); the old
+wrong-label dataset and report remain explicitly superseded.
