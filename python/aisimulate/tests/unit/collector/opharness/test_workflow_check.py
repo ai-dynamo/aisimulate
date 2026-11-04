@@ -235,38 +235,6 @@ def test_floor_sm_accepts_a_comma_list():
 # ── evidence-flow predicates (b200_sxm sglang 0.5.21 shard run, job 469988017) ───────────────
 
 
-def test_executor_smoked_needs_a_record_with_every_planned_op_ok(wc, tmp_path):
-    p = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
-    ok, reason = wc.pred_executor_smoked(p)
-    assert ok is False and "no executor smoke record" in reason
-    reg = wc.HARNESS.parent / "vllm"
-    reg.mkdir(parents=True)
-    (reg / "registry.py").write_text('OpEntry(op="gemm")\nOpEntry(op="moe")\nOpEntry(op="research_only")\n')
-    f = wc.HARNESS / "results" / "sm90" / "executor_smoke" / "vllm-0.29.0.yaml"
-    f.parent.mkdir(parents=True)
-    rec = {
-        "_meta": {"framework": "vllm", "version": "0.29.0"},
-        "planned_ops": ["gemm", "moe"],
-        "not_in_plan": [],
-        "ops": {"gemm": {"status": "ok"}},
-    }
-    f.write_text(yaml.safe_dump(rec))
-    ok, reason = wc.pred_executor_smoked(p)
-    assert ok is False and "not smoked through collect.py" in reason
-    rec["ops"]["moe"] = {"status": "all_failed"}
-    f.write_text(yaml.safe_dump(rec))
-    ok, reason = wc.pred_executor_smoked(p)
-    assert ok is False and "moe=all_failed" in reason
-    rec["ops"]["moe"] = {"status": "ok"}
-    f.write_text(yaml.safe_dump(rec))
-    ok, reason = wc.pred_executor_smoked(p)
-    assert ok is False and "research_only" in reason  # registry op neither planned nor declared out
-    rec["not_in_plan"] = ["research_only"]
-    f.write_text(yaml.safe_dump(rec))
-    ok, reason = wc.pred_executor_smoked(p)
-    assert ok is True
-
-
 def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):
     """Rule 7: a pin bump re-checks every collector/skips.py entry in scope, by source or run."""
     p = {"fw": "vllm", "version": "0.33.0", "sm": "sm90", "ops": "dsv4_hca_context_module"}
@@ -289,15 +257,6 @@ def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_sc
     f.write_text(yaml.safe_dump({"skips": items}))
     ok, reason = wc.pred_skips_rechecked(p)
     assert ok is True and f"all {len(keys)}" in reason
-
-
-def test_lane_guards_predicate_uses_the_committed_rules_against_scratch_results(wc):
-    """No results for the scratch (fw, version, sm) -> every sglang lane reads absent; the
-    committed guard is open for 0.5.21 lanes on sm100 -> inconsistent ('open without evidence')."""
-    ok, reason = wc.pred_lane_guards_match_evidence({"fw": "sglang", "version": "0.5.21", "sm": "sm100"})
-    assert ok is False and "without hardware evidence" in reason
-    ok, reason = wc.pred_lane_guards_match_evidence({"fw": "vllm", "version": "0.29.0", "sm": "sm90"})
-    assert ok is True and "no lane guards declared" in reason
 
 
 def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):

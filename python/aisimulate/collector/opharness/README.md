@@ -37,8 +37,8 @@ differently from serving is a deviation note at that code, and a bug is a fix.
 There is no findings file. The evidence behind them is committed as a dated
 folder under `benchmarks/evidence/collector/` (README + the records it cites;
 the 2026-10 campaign's archive is `op-probe-2026-10/`). Everything else in
-`results/` travels in the campaign's evidence bundle (owner decision
-2026-10-30: intermediate results stay out of git).
+`results/` stays in the workspace (owner decision 2026-10-30: intermediate
+results stay out of git).
 
 ## Components
 
@@ -46,19 +46,13 @@ the 2026-10 campaign's archive is `op-probe-2026-10/`). Everything else in
 |---|---|
 | `dummies.py` | build depth-cut, width-true dummy checkpoints (quant/dispatch behave like the real model, load in minutes) |
 | `probe_driver.py` | the G1 driver: golden `cli generate` render -> per-GPU probe queues -> curated records -> results matrices — records and matrix cells carry `golden_facts` (did the render apply the generator's model facts, or did the pipeline swallow a facts-resolution failure), and a checkpoint under `dummy_overrides.family` is probed only on that adapter's dummy (a dir built by another adapter is skipped as `dummy not built`) (`--plan/--emit-queues/--records/--matrix/--check-coverage`, `--only` to scope) |
-| `probes/` + `inject/` | in-container identity probes per framework; `inject/sitecustomize.py` is the multi-rank (tp/ep) leg — the filename is the mechanism |
+| `probes/` | in-container identity probes per framework: in-process for tp1, the server route (`probe_*_server.py`) for tp>1 |
 | `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
-| `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
-| `decompose.py` | observed execution -> op families (taxonomy roles x backend labels) + residue (kernels no family names); results/<sm>/decompose/ |
-| `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry |
-| `evidence_bundle.py` | pack a campaign's evidence (raw + fingerprints, records, captures, full reports, kernel-level decompositions) into one content-addressed tar.gz and index it in results/evidence_index.yaml |
-| `build_images.sh` | rebuild probe images + the generator venv (this checkout) from targets.yaml pins |
+| `path_diff.py` | collector op path vs serving, same profiler, same vocabulary |
 | `op_smoke.py` | one case of one registered op through the executor's (get_func, run_func) contract — "can this collector build and time a case on the new pin" |
-| `executor_smoke.py` | the same op through collect.py's REAL path (`--model-cases-full` plan, checkpoint, `--resume`, finalize) -> results/<sm>/executor_smoke/; `--shards` checks a pipeline shard plan against the case plan on a CPU |
 | `case_inventory.py` | the collector's case plan for (fw, sm) — `collect.py --plan-only --plan-table` on any CPU — diffed against a base revision -> results/<sm>/cases/; a loss no `collector/skips.py` entry accounts for is the test-case regression; `--skips` lists the entries a pin bump re-checks |
-| `lane_evidence.py` + `lane_evidence.yaml` | collector version/SM lane guards graded against the identity records: the runner a lane declares is the op plan's dispatch on that SM, the yaml names which checkpoints are the evidence and which serving identity confirms a runner |
 
-Evidence layering (owner decisions 2026-09-26 and 2026-10-30): CONCLUSIONS are matrices, verdict summaries (identities, sha/fingerprint of both inputs, per-role counts, the deciding names when red), decompose summaries (role -> backend -> kernel count, residue) and findings; only the curated findings are committed (see Layout). EVIDENCE — raw probes and their `.fp` sidecars, records.jsonl, collector captures, full path_diff reports and kernel-level decompositions (`archive/evidence/` in the workspace) — stays out of git and is packed per campaign, together with the local `results/` tree, by `components/evidence_bundle.py`; `results/evidence_index.yaml` names each bundle by campaign id, sha256 and location, and every committed conclusion carries the ids/fingerprints that resolve into it.
+Evidence layering: a conclusion goes where the collector reads it (a `collector/skips.py` entry, a deviation note at the code, a fix). Raw evidence (raw probes and their `.fp` sidecars, records.jsonl, collector captures, full path_diff reports) and the local `results/` tree stay in the workspace, out of git; every committed conclusion carries the ids/fingerprints that resolve into it.
 
 Run-time layout: components run from this checkout (queues invoke `components/probes/` inside the container; the checkout is visible under the workspace mount or mounted read-only at `/harness`); the workspace (`AIS_PROBE_WORKSPACE`) holds only data — configs/, dummy_models/, archive/ (plan, run_sh, raw + `.fp` fingerprint sidecars, records), facts/, jitcache/, venv_ais/. Every plan run carries an execution fingerprint (engine invocation, dummy config, probe code, image, kv); a raw counts as evidence only when its sidecar or recorded argv matches, and the matrix marks the rest `stale evidence` / `unverified`.
 
@@ -200,7 +194,7 @@ back to the SDK's bundled config with a PROVENANCE note (tokenizer via
    root holds targets.yaml, dummy_models/ (gen_dummy_models.py), configs/
    (fetch step), archive/ (run_sh + raw + records.jsonl), facts/, jitcache/,
    aic/ (predecessor-toolchain checkout for golden renders) + venv_aic
-   (python3.12, aic-core wheel via maturin; see build_images.sh), and the
+   (python3.12, aic-core wheel via maturin; `uv sync`), and the
    framework images by digest from framework_manifest.yaml. Point
    AIS_PROBE_WORKSPACE at the root; probes run in-container with the
    workspace mounted at /work and MPS bypassed

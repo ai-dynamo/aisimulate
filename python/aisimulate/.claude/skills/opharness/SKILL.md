@@ -13,12 +13,11 @@ the workflow you are on (`collector/opharness/workflows/<workflow>.md` + `.yaml`
 
 | variable | read by | meaning / default |
 |---|---|---|
-| `AIS_PROBE_WORKSPACE` | every component, verdict scripts, evidence_bundle | GPU workspace root (dummy_models/, archive/, configs/, facts/). Default: cwd. May live outside the checkout. Legacy alias `AIC_PROBE_WORKSPACE`. |
+| `AIS_PROBE_WORKSPACE` | every component, verdict scripts | GPU workspace root (dummy_models/, archive/, configs/, facts/). Default: cwd. May live outside the checkout. Legacy alias `AIC_PROBE_WORKSPACE`. |
 | `AIS_SM` | probe_driver.current_sm, workflow_check, captures/verdicts_*.sh | OVERRIDE of the SM; default is `targets.yaml platform.sm`. Export only to grade another SM's imported evidence; never leave it set. |
-| `AIS_GENERATOR_CLI` | probe_driver.render_golden | path of the `aiconfigurator` CLI for golden renders (default `<ws>/venv_ais/bin/aiconfigurator`, built by `components/build_images.sh`). |
+| `AIS_GENERATOR_CLI` | probe_driver.render_golden | path of the `aiconfigurator` CLI for golden renders (default `<ws>/venv_ais/bin/aiconfigurator`, built with `uv sync`). |
 | `AIS_GENERATOR_SRC` | probe_driver | generator source tree stamped into renders (default this checkout's `src`). |
 | `AIS_PROBE_ISL` | probes/probe_vllm.py `--isl` default | prompt length of a probe (default 4096; shape-conditional paths such as DSA sparse thresholds are invisible below theirs). |
-| `AIS_PROBE_OUT` | probes | raw JSON output path inside the container (set by the emitted queues). |
 | `AIS_KDA_DECODE_PATHS` | collector/vllm/collect_kda.py (capture-only) | `fused,packed` default; the kda decode gate capture sets `fused` (captures/kda_gen.py does it) because the serving probe is non-spec. |
 | `AIS_DEBUG_IDXMETA` | collector/vllm/collect_mla_module.py (DSA debugging) | developer switch, off by default. |
 | `CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps` | every probe/capture container | mandatory on boxes with a host MPS daemon (queues set it). |
@@ -39,7 +38,6 @@ on those SMs only. Run ids include the platform name.
 python3 components/workflow_check.py <workflow> --param fw=vllm --param version=0.30.0 [--param sm=sm120]
 python3 components/probe_driver.py --plan | --emit-queues | --records | --matrix        # never --plan with --emit-queues
 AIS_SM=<sm> bash components/captures/verdicts_vllm_0300.sh                              # grade every declared gate
-python3 components/evidence_bundle.py --campaign <date>_<sm>                            # pack evidence, index in results/
 python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)
 python3 components/case_inventory.py --fw <fw> --skips [--ops a,b]                      # rule-7 recheck skeleton
 python3 components/op_smoke.py --backend <fw> --op <op> --select field=value,...        # one planned case, in the image

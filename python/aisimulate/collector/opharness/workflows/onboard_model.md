@@ -1,9 +1,9 @@
-# Workflow: onboard a model (decompose into ops, extend coverage)
+# Workflow: onboard a model (extend coverage)
 
 Entry: a new checkpoint (HF repo) on the pinned (framework, version, SM).
 Exit: the model boots under a generator-rendered command (or its failure is a
-root-caused terminal fact), its op decomposition is covered, and its cells
-appear in `results/`.
+root-caused terminal fact), its kernels are covered by collector ops, and its
+cells appear in `results/`.
 
 | # | Step | Who | Instrument / artifact |
 |---|------|-----|------------------------|
@@ -11,16 +11,15 @@ appear in `results/`.
 | 2 | Build dummies | script | `components/dummies.py` (depth-cut, width-true; per-repo exceptions only as `dummy_overrides` declarations) |
 | 3 | Identity probe | script | `probe_driver.py` per backend: golden `cli generate` render -> probe -> records. Verdict: pass / pass+custom / fail |
 | 4 | Rescue or root-cause | AI | for fails: A/B designed by AI but EXECUTED through the probe; workable extra generate args -> `targets.yaml cli_extra_args` (with fact citation); a terminal wall -> a `collector/skips.py` entry when the backend cannot serve the model, with the evidence under `benchmarks/evidence/collector/<campaign>/` |
-| 5 | Decompose | script | decompose component (not built yet; step stays blocked until it exists): observed execution -> op families + residue |
-| 6 | Granularity decision | owner | non-empty residue = the model has execution no family covers; deciding "new family / new table / absorb" is a human call, recorded before any collection: a new op plan, or a deviation note at the collector code that absorbs it |
-| 7 | Coverage gap -> dev | AI | missing collector modules / case declarations (this hands off to the new_op_collector workflow when a family has no collector at all) |
-| 8 | Collect + sanity | script | existing collector for the model's cases; row-level sanity |
-| 9 | Path alignment | script | `components/path_diff.py`: collector path vs step-3 serving records |
-| 10 | E2E admission | script | e2e_align component (not built yet): prediction vs live measurement on the golden deployment |
+| 5 | Coverage gap -> dev | AI | missing collector modules / case declarations (this hands off to the new_op_collector workflow when a family has no collector at all) |
+| 6 | Collect + sanity | script | existing collector for the model's cases; row-level sanity |
+| 7 | Path alignment | script | `components/path_diff.py`: collector path vs step-3 serving records |
 
 Identity ≠ compute precision: a quantized checkpoint that binds an NVFP4
 identity but executes a W4A16 dequant kernel family is recorded exactly so
 (the `moe quant->kernel` arrow in results); admission never equates
-"checkpoint loads" with "precision measured".
+"checkpoint loads" with "precision measured". Kernels no taxonomy rule labels are the
+record's `unclassified_kernels`; covering them is the coverage-gap step. End-to-end accuracy
+is the `aic-silicon-align` skill and the e2e accuracy CI, not a harness step.
 
 Progress is derived, not self-reported: `components/workflow_check.py onboard_model --param ...` evaluates the sibling `onboard_model.yaml` manifest against artifacts and names the first actionable step.

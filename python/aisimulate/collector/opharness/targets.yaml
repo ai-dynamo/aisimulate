@@ -467,7 +467,7 @@ topologies:
   ep: 1
   evidence: real
   status: implemented
-  route: launch_server + inject/sitecustomize (probe_sglang stage2 is single-process by design and cannot host tp>1)
+  route: launch_server via probes/probe_sglang_server.py (probe_sglang stage2 is single-process by design and cannot host tp>1)
 - tp: 8
   ep: 8
   evidence: real

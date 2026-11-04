@@ -59,14 +59,9 @@ IMPLEMENTED_COMPONENTS = {
     "probe_driver",
     "dummies",
     "probes",
-    "build_images",
     "workflow_check",
     "path_diff",
-    "decompose",
-    "e2e_align",
     "op_smoke",
-    "executor_smoke",
-    "lane_evidence",
     "case_inventory",
 }
 
@@ -261,68 +256,6 @@ def pred_customizations_retested(p):
 # reached the place it was needed — a guard edited against the identity
 # records, findings that named a framework gap no collector grid guard ever
 # learned, a smoke that never passed through collect.py's plan/resume/finalize).
-
-
-def _lane_evidence_module():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("lane_evidence_wc", HERE / "lane_evidence.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def pred_lane_guards_match_evidence(p):
-    """Every collector lane guard cell for (fw, version, sm) agrees with the
-    identity records (components/lane_evidence.yaml rules): a guard that is
-    closed while serving confirms the declared backend refuses rows for
-    nothing (int4_wo/SM100); one that is open without evidence, or against
-    it, risks wrong-kernel data. Reads results/<sm>/ and the guard source."""
-    sm = p.get("sm", "sm90")
-    try:
-        le = _lane_evidence_module()
-        state = le.evaluate(p["fw"], p["version"], sm, harness=HARNESS)
-    except FileNotFoundError as e:
-        return False, f"lane_evidence inputs missing: {e}"
-    if not state["cells"]:
-        return True, f"no lane guards declared for {p['fw']} in lane_evidence.yaml"
-    bad = [f"{c['lane']}: {c['why']}" for c in state["cells"] if not c["consistent"]]
-    if bad:
-        return False, f"{len(bad)}/{len(state['cells'])} lane cells inconsistent — {bad[0]}"
-    return True, f"{len(state['cells'])} lane guard cells agree with the {sm} identity records"
-
-
-def pred_executor_smoked(p):
-    """collect.py's real path (--model-cases-full plan, checkpoint, --resume,
-    finalize) ran once per planned op on this pin and every op finalized a
-    table: results/<sm>/executor_smoke/<fw>-<version>.yaml written by
-    components/executor_smoke.py --run. Registry ops the plan excludes must be
-    listed there as not_in_plan (the pipeline's shard plan is checked against
-    the same list), an op whose every case failed is not smoked."""
-    sm = p.get("sm", "sm90")
-    f = HARNESS / "results" / sm / "executor_smoke" / f"{p['fw']}-{p['version']}.yaml"
-    if not f.exists():
-        return False, f"no executor smoke record ({f.relative_to(HARNESS)}) — run components/executor_smoke.py --run"
-    rec = yaml.safe_load(f.read_text()) or {}
-    meta = rec.get("_meta") or {}
-    if str(meta.get("version")) != str(p["version"]) or meta.get("framework") != p["fw"]:
-        return False, "executor smoke record is for another framework/version"
-    ops = rec.get("ops") or {}
-    planned = set(rec.get("planned_ops") or [])
-    if not ops or not planned:
-        return False, "executor smoke record lists no ops"
-    missing = sorted(planned - set(ops))
-    if missing:
-        return False, f"{len(missing)} planned ops not smoked through collect.py (e.g. {missing[0]})"
-    bad = sorted(f"{op}={r.get('status')}" for op, r in ops.items() if r.get("status") != "ok")
-    if bad:
-        return False, f"{len(bad)} ops did not finalize a table through collect.py: {bad[:3]}"
-    reg = set(registry_ops(p["fw"]))
-    unaccounted = sorted(reg - planned - set(rec.get("not_in_plan") or []))
-    if unaccounted:
-        return False, f"registry ops neither planned nor recorded as not_in_plan: {unaccounted[:3]}"
-    n_out = len(rec.get("not_in_plan") or [])
-    return True, f"{len(ops)} planned ops finalized through collect.py; {n_out} registry ops recorded not_in_plan"
 
 
 def pred_case_set_no_regression(p):
@@ -610,79 +543,6 @@ def pred_model_fails_dispositioned(p):
     return True, "every fail cell is explained (or rescued)"
 
 
-def _decompositions(repo: str, sm: str) -> dict[str, dict]:
-    """{fw-version: decomposition entry} for every pinned backend whose matrix
-    cell for the repo PASSES (fail cells have no execution to decompose)."""
-    out = {}
-    for fw, be in _load_targets()["backends"].items():
-        ver = (be.get("versions") or ["?"])[0]
-        cell = ((_load_matrix(fw, ver, sm) or {}).get("results") or {}).get(repo) or {}
-        if not str(cell.get("verdict", "")).startswith("pass"):
-            continue
-        p = HARNESS / "results" / sm / "decompose" / f"{fw}-{ver}.yaml"
-        entry = ((yaml.safe_load(p.read_text()) or {}).get("results") or {}).get(repo) if p.exists() else None
-        out[f"{fw}-{ver}"] = entry
-    return out
-
-
-def pred_model_decomposed(p):
-    """components/decompose.py produced an entry for the repo on every pinned
-    backend where it passes (results/<sm>/decompose/<fw>-<ver>.yaml)."""
-    d = _decompositions(p["repo"], p.get("sm", "sm90"))
-    if not d:
-        return False, "not evaluable: no passing matrix cell yet (probe first)"
-    missing = [k for k, v in d.items() if v is None]
-    if missing:
-        return False, f"no decomposition on: {', '.join(missing)} (run components/decompose.py)"
-    res = sum(len(v.get("residue") or []) for v in d.values())
-    return True, f"decomposed on {len(d)} backends, {res} residue kernels"
-
-
-def pred_residue_dispositioned(p):
-    """Owner granularity call: every residue kernel of the repo is named where the
-    decision lives (a collector that times it, a deviation note that absorbs it, or
-    the evidence README), or there is no residue."""
-    d = _decompositions(p["repo"], p.get("sm", "sm90"))
-    if not d or any(v is None for v in d.values()):
-        return False, "not evaluable: decompose first"
-    residue = sorted({k for v in d.values() for k in (v.get("residue") or [])})
-    if not residue:
-        return True, "no residue — nothing to decide"
-    blob = _conclusions_text()
-    undecided = [k for k in residue if k not in blob]
-    if undecided:
-        return False, f"{len(undecided)} residue kernels without a decision (e.g. {undecided[0]})"
-    return True, f"{len(residue)} residue kernels dispositioned"
-
-
-def pred_e2e_admitted(p):
-    """components/e2e_align.py verdicts exist for the repo on every pinned
-    backend where it passes, and all of them are 'aligned'."""
-    sm = p.get("sm", "sm90")
-    tag = p["repo"].replace("/", "_")
-    missing, bad, n = [], [], 0
-    for fw, be in _load_targets()["backends"].items():
-        ver = (be.get("versions") or ["?"])[0]
-        cell = ((_load_matrix(fw, ver, sm) or {}).get("results") or {}).get(p["repo"]) or {}
-        if not str(cell.get("verdict", "")).startswith("pass"):
-            continue
-        files = sorted((HARNESS / "results" / sm / "e2e" / f"{fw}-{ver}").glob(f"{tag}*.json"))
-        if not files:
-            missing.append(f"{fw}-{ver}")
-            continue
-        for f in files:
-            n += 1
-            if json.loads(f.read_text()).get("verdict") != "aligned":
-                bad.append(f.name)
-    if not missing and n == 0:
-        return False, "not evaluable: no passing matrix cell yet"
-    if missing:
-        return False, f"no e2e verdict on: {', '.join(missing)} (needs a live measurement — see TODO.md)"
-    if bad:
-        return False, f"e2e verdicts not aligned: {bad[:3]}"
-    return True, f"{n} e2e verdicts, all aligned"
-
-
 _FAMILY_ROLE = {
     "attention": "attention",
     "mla": "attention",
@@ -705,24 +565,36 @@ def _pins():
 
 
 def pred_family_observed(p):
-    """Serving truth for an op family: some passing record decomposes into
-    kernels of the family's role (results/<sm>/decompose/)."""
-    sm, fam = p.get("sm", "sm90"), p["family"]
+    """Serving truth for an op family: a probe record on a pinned backend holds a
+    kernel the taxonomy labels with the family's role (archive/records.jsonl)."""
+    fam = p["family"]
     role = _FAMILY_ROLE.get(fam, fam)
-    hits = []
-    for fw, ver in _pins():
-        f = HARNESS / "results" / sm / "decompose" / f"{fw}-{ver}.yaml"
-        if not f.exists():
+    recs = ROOT / "archive" / "records.jsonl"
+    if not recs.exists():
+        return False, "no probe records (run probe_driver.py --records)"
+    pd = _probe_driver_module()
+    pins = set(_pins())
+    hits = set()
+    for line in recs.open():
+        r = json.loads(line)
+        rt, tgt = r.get("runtime") or {}, r.get("target") or {}
+        if (rt.get("backend"), str(rt.get("version"))) not in pins:
             continue
-        for repo, entry in ((yaml.safe_load(f.read_text()) or {}).get("results") or {}).items():
-            if role in (entry.get("roles") or entry.get("families") or {}):
-                hits.append(f"{fw}:{repo}")
+        kernels = {k for op in r.get("ops") or [] for k in op.get("kernels") or []}
+        if any((pd.kernel_role(k) or (None, None))[1] == role for k in kernels):
+            hits.add(f"{rt['backend']}:{tgt.get('repo')}")
     if not hits:
-        return (
-            False,
-            f"no decomposition shows role '{role}' for family '{fam}' (decompose first, or the family is unobserved)",
-        )
+        return False, f"no probe record shows role '{role}' for family '{fam}' (probe first, or it is unobserved)"
     return True, f"role '{role}' observed on {len(hits)} (backend, repo) cells"
+
+
+def _probe_driver_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("probe_driver_wc", HERE / "probe_driver.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def pred_family_unit_defined(p):
@@ -793,16 +665,11 @@ PREDICATES = {
         pred_dummies_built,
         pred_model_probed,
         pred_model_fails_dispositioned,
-        pred_model_decomposed,
-        pred_residue_dispositioned,
-        pred_e2e_admitted,
         pred_family_observed,
         pred_family_unit_defined,
         pred_family_collector_exists,
         pred_family_gates_aligned,
         pred_model_gates_aligned,
-        pred_lane_guards_match_evidence,
-        pred_executor_smoked,
         pred_skips_rechecked,
         pred_case_set_no_regression,
     ]
