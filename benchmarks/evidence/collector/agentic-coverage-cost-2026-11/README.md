@@ -62,6 +62,13 @@ output gating. The c4 evidence snapshot retains the proposed points as
 Preserve #676 normal coverage and the independent KDA width extension. Report
 the Kimi omission separately from savings on equivalent supported workloads.
 
+Canonical attention equivalence does not establish checkpoint setup or memory
+equivalence. SGLang initializes full dummy layers before extracting attention;
+expert-only quantization can change initialization cost and available KV
+capacity. Preserve the pinned normal representative, record its runtime refusals
+as gaps, and use a targeted model run for checkpoint-specific qualification.
+The NVFP4 B52 recollection is not a BF16 startup/capacity cost anchor.
+
 ## Comparable inventories
 
 Freeze the #676 base at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`:
