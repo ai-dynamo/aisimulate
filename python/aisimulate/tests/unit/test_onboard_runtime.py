@@ -78,6 +78,8 @@ def _campaign(
             layer_types=["deepseek_sparse_attention" if index % 4 == 3 else "linear_attention" for index in range(45)],
             linear_attn_config={"head_dim": 128},
             num_experts=0,
+            # The probe runs an fp8 KV cache, whose FMHA label is the checkpoint-native fp8 of this NVFP4 checkpoint.
+            quantization_config={"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "FP8"},
         )
     _write(model_path, config)
     checkpoint_model = tmp_path / "model-checkpoint"
@@ -107,6 +109,11 @@ def _campaign(
     for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
         for ref in [phase["launch_manifest"], *phase["artifacts"]]:
             path = index.parent / ref["path"]
+            if path.name == "model-config.json":
+                # The probe stages the model configuration that the launch names.
+                path.write_bytes(model_path.read_bytes())
+                ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                continue
             value = json.loads(path.read_text())
             value["launch"] = launch
             if ref.get("kind") == "observation":

@@ -683,10 +683,13 @@ def _fake_campaign(
             "path": str(path.relative_to(tmp_path)),
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        attempt["phases"][phase] = {
-            "launch_manifest": reference(context_path),
-            "artifacts": [{**reference(path), "kind": "observation"} for path in paths],
-        }
+        artifacts = [{**reference(path), "kind": "observation"} for path in paths]
+        if launch["precision"]["kvcache_quant_mode"] != "bfloat16":
+            # The probe stages the model configuration, and the import reads the FMHA label of this KV cache from it.
+            staged = directory / "model-config.json"
+            staged.write_bytes(model_config_path.read_bytes())
+            artifacts.append({**reference(staged), "kind": "runtime-artifact"})
+        attempt["phases"][phase] = {"launch_manifest": reference(context_path), "artifacts": artifacts}
         (tmp_path / "observations.json").write_text(json.dumps(index))
         return [json.loads(path.read_text()) for path in paths]
 

@@ -1767,15 +1767,16 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
         assert set(producer_env).isdisjoint(env)
 
 
-def _probe_backed_glm_plan(tmp_path, *, tp=4):
+def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None):
     """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
 
     The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
     configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.31.0
     instrumentation bundle, the pure-TP probe launch on GB300 (TP 4 unless ``tp`` says otherwise) with a stand-in
     Kubernetes deployment, and the profile that the probe import accepts, with the cache resources that the probe
-    measured at TP 4. Another ``tp`` keeps those resources. Return the plan and the deployment inputs that it was
-    planned with.
+    measured at TP 4. Another ``tp`` keeps those resources. ``precision`` replaces GEMM, MoE, FMHA and KV-cache labels
+    of the launch and the profile, which are the labels of that checkpoint by default. Return the plan and the
+    deployment inputs that it was planned with.
     """
     from collector.model_cases import build_collection_case_plan
 
@@ -1790,10 +1791,15 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4):
     config = tmp_path / "config.json"
     config.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
     topology = {"tp": tp, "pp": 1, "dp": 1, "moe_tp": tp, "moe_ep": 1, "cp": 1}
-    precision = {
+    labels = {
         "gemm_quant_mode": "fp8_block",
         "moe_quant_mode": "fp8_block",
         "fmha_quant_mode": "fp8",
+        "kvcache_quant_mode": "fp8",
+        **(precision or {}),
+    }
+    precision = {
+        **{name: labels[name] for name in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode")},
         "comm_quant_mode": "half",
     }
     profile = {
@@ -1811,7 +1817,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4):
                 "backend_version": "0.31.0",
                 **{name: topology[name] for name in ("tp", "dp", "moe_tp", "moe_ep")},
                 **precision,
-                "kv_cache_dtype": "fp8",
+                "kv_cache_dtype": labels["kvcache_quant_mode"],
                 "resources": {
                     "runtime_memory": {
                         "kv_cache_bytes": 180_218_332_800,
@@ -1844,7 +1850,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4):
             "interconnect": "nvlink",
         },
         "topology": topology,
-        "precision": {**precision, "kvcache_quant_mode": "fp8"},
+        "precision": {**precision, "kvcache_quant_mode": labels["kvcache_quant_mode"]},
         "collection": {
             "max_model_len": 1_048_576,
             "max_num_batched_tokens": 8192,
@@ -1884,9 +1890,9 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4):
         "--fpm-warmup-iterations",
         "0",
         "--fpm-weight-quantizations",
-        "fp8_block",
+        labels["gemm_quant_mode"],
         "--fpm-kv-cache-dtypes",
-        "fp8",
+        labels["kvcache_quant_mode"],
     ]
     overrides = {"K8sConfig": {"k8s_image": image}}
     case_plan = build_collection_case_plan(backend="vllm", model_path=model, gpu_type=system)
