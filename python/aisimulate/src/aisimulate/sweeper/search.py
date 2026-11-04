@@ -621,11 +621,18 @@ def _materialize_one(
                 )
         estimator_resolver = estimator_resolver or ForwardPassEstimatorResolver(config.search_space)
         forward_pass_estimators = estimator_resolver.resolve_candidate(sample)
+        # A role whose regression or learned model does not know the version
+        # leaves it to another role, or to the candidate's own resolution.
+        known_versions = [
+            spec.backend_version for spec in forward_pass_estimators.values() if spec.backend_version != "unknown"
+        ]
         backend_version = (
-            next(iter(forward_pass_estimators.values())).backend_version
+            next(iter(known_versions), None)
             if forward_pass_estimators
             else config.search_space.requested_backend_version(selection["backend"])
         )
+        if backend_version is None and forward_pass_estimators:
+            backend_version = config.search_space.requested_backend_version(selection["backend"])
         if backend_version is None:
             if sample["deployment_mode"] == "disagg":
                 role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}

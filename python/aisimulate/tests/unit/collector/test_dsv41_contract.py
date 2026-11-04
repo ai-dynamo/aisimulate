@@ -145,7 +145,7 @@ def row():
 
 
 def test_manifest_matches_native_graph_and_profiles(monkeypatch):
-    monkeypatch.delenv("DSV41_EXECUTION_PROFILE", raising=False)
+    monkeypatch.setenv("AIS_SM", "100")
     full, replay = build_manifest(4, False), build_manifest(4, True)
     assert full["config_sha256"] == replay["config_sha256"]
     assert full["config_sha256"] == "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d"
@@ -165,17 +165,11 @@ def test_manifest_matches_native_graph_and_profiles(monkeypatch):
 
 
 @pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
-def test_case_selection_includes_only_requested_execution_profile(monkeypatch, profile):
-    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", profile)
-    cases = get_dsv41_module_test_cases()
+def test_a_case_filter_on_the_id_selects_one_execution_profile(monkeypatch, profile):
+    monkeypatch.setenv("AIS_SM", "100")
+    cases = [case for case in get_dsv41_module_test_cases() if f"dsv41_{profile}_" in str(case)]
     assert len(cases) == 4
     assert {case["params"][2] for case in cases} == {profile}
-
-
-def test_case_selection_rejects_unknown_execution_profile(monkeypatch):
-    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", "unqualified")
-    with pytest.raises(ValueError, match="DSV41_EXECUTION_PROFILE"):
-        get_dsv41_module_test_cases()
 
 
 @pytest.mark.parametrize(
@@ -528,30 +522,25 @@ def test_registry_provenance_covers_execution_and_geometry_dependencies(tmp_path
     from collector import provenance
     from collector.op_catalog import family_for_perf_file, load_family_map
 
-    package_root = Path(__file__).resolve().parents[3]
-    module = "collector.sglang.collect_dsv41_module"
-    closures = provenance.load_closures(package_root / "collector/hash_closures.yaml")
-    assert module in provenance.enumerate_provenance_modules()
+    root = Path(__file__).resolve().parents[3]
     assert family_for_perf_file("dsv41_module_perf.parquet", load_family_map()) == "dsv41"
-    # Use the real closure, then change the executed runner and model geometry
-    # independently: either must invalidate the collector identity.
-    dependencies = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE}
-    dependencies.update(provenance._expand_closure_files(package_root, closures[module]))
-    for relative in dependencies:
-        target = tmp_path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(package_root / relative, target)
-    baseline = provenance.collector_hash(module, tmp_path, closures)
-    for relative in (
+    dependencies = (
+        "collector/sglang/collect_dsv41_module.py",
         "collector/sglang/dsv41_native_runner.py",
         "collector/sglang/dsv41_humming.py",
         "collector/sglang/dsv41_workloads.py",
         "src/aisimulate_core/sdk/models/deepseek_v41.py",
         "src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json",
-    ):
+    )
+    for relative in dependencies:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, target)
+    original_hash = provenance.collector_hash(tmp_path)
+    for relative in dependencies:
         target = tmp_path / relative
         original = target.read_bytes()
         target.write_bytes(original + b"\n ")
-        assert provenance.collector_hash(module, tmp_path, closures) != baseline, relative
+        assert provenance.collector_hash(tmp_path) != original_hash, relative
         target.write_bytes(original)
-    assert provenance.collector_hash(module, tmp_path, closures) == baseline
+    assert provenance.collector_hash(tmp_path) == original_hash

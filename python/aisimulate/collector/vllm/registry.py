@@ -108,7 +108,7 @@ REGISTRY: list[OpEntry] = [
         # MiniMax-M3 MSA hardware-validated on SM90 (h100/h200, Triton
         # impls), SM100/103 (b200/b300/gb200/gb300 — vLLM's own dispatch
         # switches the attend + indexer to the fmha_sm100 "MSA" impls via
-        # select_main_impl_cls / select_indexer_impl_cls @0.24.0), SM89
+        # select_main_impl_cls / select_indexer_impl_cls), SM89
         # (l40s) and SM120 (Triton impls; fp8_block gemm cases fail
         # classified on SM120 via DeepGEMM's SM120 assert). SM121 has never
         # run on hardware and stays marked.

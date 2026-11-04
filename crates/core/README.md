@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate Core
 
-`aisimulate-core` is the single public Rust package for engine-neutral
-inference simulation. It preserves three explicit implementation and API
-layers:
+`aisim-core` is the single public Rust package for engine-neutral inference
+simulation. Its Rust library namespace remains `aisimulate_core`. It preserves
+three explicit implementation and API layers:
 
 - `aisimulate_core::engine` owns scheduling, native GPU KV accounting,
   preemption, timing, and attention-DP composition.

@@ -11,7 +11,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
-    BeforeValidator,
     Field,
     PrivateAttr,
     StrictBool,
@@ -55,21 +54,10 @@ def resolve_block_size(backend: str, configured: int | None) -> int:
     return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
 
 
-def _validate_replay_estimation_mode(mode: str | None) -> str | None:
-    if mode == "fpm_learned":
-        raise ValueError(
-            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing "
-            "interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
-        )
-    return mode
-
-
-# Advertise only phase-only timing modes, while retaining the capability error
-# for learned input before Literal validation would turn it into a generic error.
-ReplayEstimationMode = Annotated[
-    Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"],
-    BeforeValidator(_validate_replay_estimation_mode),
-]
+# Replay prices native estimators per phase or iteration and regression and
+# learned estimators per iteration (see "Engine replay timing" in
+# docs/perf-model/configuration.md).
+ReplayEstimationMode = Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"]
 
 
 class AFDTopologyPredictionConfig(StrictModel):

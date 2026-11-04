@@ -22,8 +22,7 @@ distributed world supplies ``ep_size``/``node_num``, ``torch`` supplies the
 device name, and the framework version is the installed one, cross-checked
 against the ``wideep_sglang`` manifest pin.
 
-It is a STANDALONE collector (``provenance.STANDALONE_COLLECTOR_MODULES``),
-not a ``collect.py`` ``OpEntry``: the executor is single-host, this benchmark
+It is a STANDALONE collector, not a ``collect.py`` ``OpEntry``: the executor is single-host, this benchmark
 is inherently multi-node. Consequently the module also plays the executor's
 role — it owns its case plan, its classified failure log, its parquet
 finalization and its ``collection_meta.yaml`` sidecar (the
@@ -377,10 +376,7 @@ def get_moe_a2a_shapes(*, required_expert_parallel_size: int | None = None) -> l
     """
     from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model
 
-    recipes = get_common_moe_test_cases(
-        backend="sglang",
-        required_expert_parallel_size=required_expert_parallel_size,
-    )
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=required_expert_parallel_size)
     ordered = resolve_moe_a2a_shapes(recipes)
     dropped_not_declared = sum(1 for recipe in recipes if not is_wideep_moe_model(recipe.model_name))
     print(
@@ -1112,16 +1108,14 @@ def write_moe_a2a_sidecar(
     parquet_path: Path,
     failure_count: int,
     repo_root: Path = _REPO_ROOT,
-    module_name: str = MODULE_NAME,
 ) -> Path:
     """Write ``collection_meta.yaml`` for the finalized ``moe_a2a_perf`` table.
 
     ``status`` follows ``provenance.derive_table_status``: recorded per-case
     failures are observability-only (complete stays complete); only a
     ModuleCollectionFailure demotes, and a module-level death never reaches
-    this writer because dying runs do not finalize a sidecar. ``module_name`` selects whose hash closure is
-    attested — the trtllm alltoall writer produces the same table and shares
-    this finalizer.
+    this writer because dying runs do not finalize a sidecar. The trtllm
+    alltoall writer produces the same table and shares this finalizer.
     """
     import pyarrow.parquet as pq
 
@@ -1130,10 +1124,9 @@ def write_moe_a2a_sidecar(
             "refusing to attest a moe_a2a collection with an empty case plan: a case_plan_hash "
             "over zero cases cannot explain the produced parquet"
         )
-    closures = provenance.load_closures(repo_root / "collector" / "hash_closures.yaml")
     table_entry = {
         "collector_ref": _git_collector_ref(repo_root),
-        "collector_hash": provenance.collector_hash(module_name, repo_root, closures),
+        "collector_hash": provenance.collector_hash(repo_root),
         "case_plan_hash": provenance.case_plan_hash(case_ids),
         "collected_at": date.today().isoformat(),
         "rows": pq.read_metadata(parquet_path).num_rows,

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-import itertools
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,33 +85,33 @@ def _populate_gptoss_cases(
     module_config=None,
     resolved_backend=None,
 ):
-    from collector.case_generator import get_moe_quantization_modes
+    """SGLang's queued MoE rows for these model layers through the shared op plan."""
+    from collector import op_plans
+    from collector.case_generator import MoeCommonTestCase
 
     allowed_modes = {allowed_mode} if isinstance(allowed_mode, str) else set(allowed_mode)
-    loaded = _load_functions(
-        "get_moe_test_cases",
-        namespace={
-            "itertools": itertools,
-            "get_sm_version": lambda: sm_version,
-            "get_common_moe_test_cases": lambda: cases,
-            "get_moe_quantization_modes": get_moe_quantization_modes,
-            "moe_model_allows_quantization": (lambda _backend, _model, mode: mode in allowed_modes),
-            "get_moe_quantization_module_config": lambda *_args, **_kwargs: module_config or {},
-            "get_sglang_moe_backend": lambda _case, mode, sm: (
-                resolved_backend
-                or (
-                    "marlin"
-                    if sm == 90 and mode == "int4_wo"
-                    else "flashinfer_trtllm"
-                    if mode == "nvfp4" and sm in {100, 103}
-                    else "flashinfer_mxfp4"
-                    if mode in {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-                    else "triton"
-                )
-            ),
-        },
-    )
-    return loaded["get_moe_test_cases"]()
+    layers = [MoeCommonTestCase(**vars(case)) for case in cases]
+    by_row = {
+        (layer.model_name, layer.hidden_size, layer.inter_size, layer.topk, layer.num_experts): layer
+        for layer in layers
+    }
+
+    def runner(_case, mode, sm):
+        if resolved_backend:
+            return resolved_backend
+        if sm == 90 and mode == "int4_wo":
+            return "marlin"
+        if mode == "nvfp4" and sm in {100, 103}:
+            return "flashinfer_trtllm"
+        return "flashinfer_mxfp4" if mode in {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"} else "triton"
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(op_plans, "get_common_moe_test_cases", lambda: layers)
+        patch.setattr(op_plans, "moe_planned_modes", lambda _model, _declared: sorted(allowed_modes))
+        patch.setattr(op_plans, "get_moe_quantization_module_config", lambda *_args, **_kwargs: module_config or {})
+        patch.setattr(op_plans, "get_sglang_moe_backend", runner)
+        patch.setattr(op_plans, "moe_model_layer", lambda *row: by_row[row])
+        return op_plans.plan_cases("moe", "sglang", sm_version)
 
 
 def _glm5_case(model_name: str):
@@ -173,7 +172,7 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
     assert sum(len(case[1]) for case in populated) == 3078
     assert sum(len(case[1]) for case in populated if case[7] == 64) == 243
     assert sum(len(case[1]) for case in populated if case[7] == 128) == 162
-    # int4_wo opened to SM100/103 (owner decision 2026-07-11): serving
+    # int4_wo opened to SM100/103: serving
     # auto-selects flashinfer_trtllm for Kimi INT4 there (server_args.py:3736),
     # replacing the old zero-population contract.
     sm100 = _populate_gptoss_cases(
@@ -332,7 +331,7 @@ def test_moe_population_deduplicates_equal_persisted_keys_and_rejects_semantic_c
     assert len(_populate_gptoss_cases([first, duplicate])) == 1
 
     duplicate.sglang_moe_activation = "gelu"
-    with pytest.raises(ValueError, match="share one perf DB key but require different execution semantics"):
+    with pytest.raises(ValueError, match="time different layers under one consumer key"):
         _populate_gptoss_cases([first, duplicate])
 
 
@@ -373,7 +372,7 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
     dsv4 = model_case("deepseek-ai/DeepSeek-V4-Pro")
     assert (dsv4.sglang_moe_scoring_func, dsv4.sglang_moe_has_correction_bias) == ("sqrtsoftplus", True)
     # w4a16_mxfp4 is no longer in the Pro artifact's allowed_modes (owner
-    # decision 2026-07-05); the retained native-FP4 plan is the w4a8 path.
+    # decision); the retained native-FP4 plan is the w4a8 path.
     assert get_sglang_moe_backend(dsv4, "w4a8_mxfp4_mxfp8", 100) == "flashinfer_mxfp4"
 
     llama4 = model_case("meta-llama/Llama-4-Scout-17B-16E-Instruct")
@@ -394,11 +393,9 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
 
 
 def test_sm120_population_gates_w4a8_and_keeps_w4a16_marlin():
-    # w4a8_mxfp4_mxfp8 is SM100-family-only (max_sm_exclusive: 110): SGLang
-    # 0.5.14 has no SM120 mxfp8-activation MXFP4 path (mxfp4.py:344-360), and
-    # SM120 serving routes MXFP4 checkpoints to weight-only Marlin instead
-    # (server_args.py:3876-3887). The w4a16_mxfp4 slice therefore populates
-    # on SM120 while the w4a8 slice must not.
+    # SGLang's w4a8_mxfp4_mxfp8 runner has no verified SM120 pin
+    # (collector/skips.py), so the plan leaves that region out on
+    # SM120 while the w4a16_mxfp4 slice runs on Marlin.
     populated = _populate_gptoss_cases(
         [_gptoss_case(tp=1, ep=1)],
         sm_version=120,
@@ -709,7 +706,7 @@ def test_runtime_rejects_misaligned_sm90_dsv4_w4a16_case():
 
 
 def test_runtime_rejects_misaligned_sm100_dsv4_w4a8_case():
-    # B200 hardware probe 2026-07-05: SGLang 0.5.14 flashinfer_mxfp4 W4A8
+    # B200 hardware probe SGLang 0.5.14 flashinfer_mxfp4 W4A8
     # weight shuffle asserts M % 128 == 0 and the TRTLLM-gen batched GEMM has
     # no config for misaligned local widths; local_inter 128/384/768/1536/3072
     # pass while 64/96/192 fail. The guard converts those framework errors
@@ -790,7 +787,7 @@ def test_framework_moe_source_comes_from_the_constructed_quant_method():
 
 
 def test_moe_population_emits_one_case_per_token_sweep():
-    """2026-10-28: SGLang nvfp4 shards took 4.4-5.8 h against 1-1.4 h for vLLM on the same
+    """SGLang nvfp4 shards took 4.4-5.8 h against 1-1.4 h for vLLM on the same
     shapes because every token point was its own case and rebuilt the framework layer.
     Cases now carry the whole sweep (vLLM/TRT-LLM layout) and dedup on the series."""
     case = _gptoss_case(tp=1, ep=1)

@@ -197,10 +197,12 @@ Why these and not raw lists: trees need a fixed-width input; sums, extremes and 
 attention proxy capture the two cost drivers (GEMM work ∝ Σ e_i, attention work
 ∝ Σ e_i·p_i) plus the batch shape (n, spread) that decides kernel selection and
 padding. `v1` and `hisim` land within 0.3–0.6 pp of `sglang18` on every deployment
-tested; `sglang18` is the default. §3.1 works out how many of the 18 are actually needed:
-five suffice for decode without any measured loss, prefill needs all 18. The shipped code
-has no reduced preset; a reduced set is trained by passing the feature names to
-`--features` as a comma-separated list.
+tested; `sglang18` was the default when these were measured. §3.1 works out how many of
+the 18 are actually needed: five suffice for decode without any measured loss, prefill
+needs all 18. The reduced sets ship as the `atomic5` and `atomic10` presets, and any other
+set is trained by passing the feature names to `--features` as a comma-separated list.
+The trainer now defaults to `fpm5`; like `v1`, it needs no request lists, while the other
+presets cannot train on aggregate-only FPM data.
 
 ### 3.1 How many of the 18 features are needed
 
@@ -751,7 +753,11 @@ quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
 
 ### 8.7 Simplifying the model: fewer features, fewer and shallower trees
 
-**Conclusion.** The default model (18 features, 400 trees × 31 leaves) can be replaced by
+These measurements predate the `fpm5` default (§3). In §8.7 and §8.8, "default" means the
+baseline these evaluations used: the 18 `sglang18` features, then the trainer's default,
+with 400 trees × 31 leaves.
+
+**Conclusion.** That default model (18 features, 400 trees × 31 leaves) can be replaced by
 one with the atomic features and 4–5× fewer tree nodes, with no measurable loss where the
 model is meant to be used, i.e. on the workload it was trained on:
 

@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.release.package_identity import core_package
+
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
 REPLAY_ADAPTER_SHA256 = "2d03eb4fe0d62f2dd09521fc3cb1e5e97f6d956ef9efd2fb43eabc48d2318af3"
 
@@ -411,6 +415,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         raise ValueError("unexpected Dynamo revision")
     subprocess.run(["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"], check=True)
     core = source / "crates/core"
+    package = core_package(core)
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
     speculation_compatibility = patch_speculation_depth(dynamo)
@@ -422,7 +427,9 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     ):
         text, count = re.subn(
             r"^aisimulate-core = .*",
-            lambda _: f"aisimulate-core = {{ path = {json.dumps(str(core))}{options} }}",
+            lambda _: (
+                f"aisimulate-core = {{ package = {json.dumps(package)}, path = {json.dumps(str(core))}{options} }}"
+            ),
             manifest.read_text(),
             flags=re.MULTILINE,
         )
@@ -438,7 +445,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
             cwd=bindings,
         )
     )
-    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == "aisimulate-core"]
+    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == package]
     if linked != [str(core / "Cargo.toml")]:
         raise ValueError(f"Dynamo resolved a different AISimulate core: {linked}")
     subprocess.run(

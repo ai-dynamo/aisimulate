@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """The M3 index-head kernel limit is the DECODE scorer's: a guard keyed on the
-head count alone dropped 1808 prefill rows on the 0.30 sweep (2026-09-28)
+head count alone dropped 1808 prefill rows on the 0.30 sweep
 that the 0.29 sweep had collected."""
 
 import ast

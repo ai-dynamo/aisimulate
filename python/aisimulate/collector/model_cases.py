@@ -13,8 +13,7 @@ Everything below the op level is owned elsewhere:
 
 - case content comes from ``cases/base_ops/*.yaml`` sweep recipes crossed with
   ``model_case_values`` shapes (see ``case_generator``), deduplicated;
-- hardware floors are applied by ``collector.capabilities`` (generation-time
-  intersection, ``cases/capabilities.yaml``);
+- ``collector/skips.py`` leaves out what a backend does not run;
 - everything else that cannot run is a runtime observation: it fails fast, is
   classified in the failure log with a (model, dtype) group label, and
   systemic groups are surfaced in the collection summary as fix-me signals.
@@ -32,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from collector import skips
 
 COLLECTOR_ROOT = Path(__file__).resolve().parent
 CASE_ROOT = COLLECTOR_ROOT / "cases"
@@ -431,6 +432,10 @@ def build_collection_case_plan(
             )
 
     resolved_sm_version = resolve_sm_version(gpu_type=gpu_type, sm_version=sm_version)
+    if model_data and not full:
+        # A model run plans no op that collector/skips.py skips for every selected model.
+        architectures = {_model_case_architecture(data) for data in model_data}
+        selected = {op for op in selected if not architectures <= skips.models(backend, op, resolved_sm_version)}
     return CollectionCasePlan(
         backend=backend,
         model_path=model_path,

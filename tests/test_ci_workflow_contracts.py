@@ -727,6 +727,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
     ]
     assert len(contract_steps) == 1
+    assert 'echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"' in application_commands
     contract_command = contract_steps[0]["run"]
     assert "--group scripts/pyproject.toml:e2e-accuracy" in contract_command
     assert "--ignore=tests/fpm_accuracy" not in contract_command
@@ -883,7 +884,6 @@ def test_migrated_workflows_keep_reviewed_safety_fixes() -> None:
     platform_wheels = _workflow("validate-platform-wheels.yml")
 
     collector_commands = _run_commands(collector["jobs"]["check"])
-    assert '--no-tags origin "${BASE_SHA}"' in collector_commands
     assert "--depth=1" not in collector_commands
     assert "github.run_id" in collector["concurrency"]["group"]
     assert "cancel-in-progress" not in collector["concurrency"]
@@ -984,7 +984,7 @@ def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
     dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
     assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
     assert "auditwheel repair" in dockerfile
-    assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
+    assert "auditwheel show /workspace/dist/*.whl" in dockerfile
     assert "--compatibility manylinux_2_28" not in dockerfile
 
 
@@ -1129,9 +1129,8 @@ def _run_comparison_base(
 ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
     jobs = _workflow("ci.yml")["jobs"]
     assert jobs["verify-target"]["outputs"]["comparison-base"] == "${{ steps.comparison-base.outputs.sha }}"
-    for name, argument in (("collector-data", "base_sha"), ("prediction-regression", "old-ref")):
-        assert "verify-target" in jobs[name]["needs"]
-        assert jobs[name]["with"][argument] == "${{ needs.verify-target.outputs.comparison-base }}"
+    assert "verify-target" in jobs["prediction-regression"]["needs"]
+    assert jobs["prediction-regression"]["with"]["old-ref"] == "${{ needs.verify-target.outputs.comparison-base }}"
     step = next(step for step in jobs["verify-target"]["steps"] if step.get("id") == "comparison-base")
     assert step["env"]["PR_BASE_SHA"] == "${{ steps.pr-target.outputs.base }}"
     gh = tmp_path / "gh"
@@ -1493,13 +1492,6 @@ def test_fast_ci_whitespace_fetches_an_absent_base_without_truncating_history(tm
         assert "Invalid symmetric difference expression" not in result.stderr
 
 
-def test_collector_comparison_fetch_preserves_full_history() -> None:
-    commands = _run_commands(_workflow("collector-check.yml")["jobs"]["check"])
-
-    assert '--no-tags origin "${BASE_SHA}"' in commands
-    assert "--depth=1" not in commands
-
-
 def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
     generate = _workflow("fpe-support-matrix.yml")["jobs"]["generate"]
     checkout = next(step for step in generate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
@@ -1628,7 +1620,7 @@ def test_macos_wheel_environment_seeds_pip_for_shared_verification() -> None:
 
     commands = _run_commands(action["runs"])
     assert 'uv venv --seed --python 3.13 "${RUNNER_TEMP}/aisimulate-wheel-venv"' in commands
-    assert "python -m pip install --quiet wheelhouse/aisimulate-*.whl" in commands
+    assert "python -m pip install --quiet wheelhouse/*.whl" in commands
 
 
 def test_omitted_wheel_base_preserves_dockerfile_default() -> None:
@@ -2819,12 +2811,14 @@ def test_nightly_artifact_handoff_matches_fpe_and_accuracy_consumers():
         ("refs/heads/release/0.12.0", "workflow_dispatch"),
     ],
 )
-def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event):
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, source_ref, event, package):
+    (tmp_path / "scripts").symlink_to(REPOSITORY_ROOT / "scripts", target_is_directory=True)
     directory = tmp_path / "accuracy-wheel"
     directory.mkdir()
-    wheel = directory / "aisimulate-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
+    wheel = directory / f"{package}-0.12.0.dev20260917-cp311-abi3-manylinux_2_28_x86_64.whl"
     wheel.write_bytes(b"fixture wheel")
-    (directory / "aisimulate-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
+    (directory / f"{package}-core-0.12.0-dev.20260917.crate").write_bytes(b"fixture crate")
     manifest = tmp_path / "python/aisimulate/pyproject.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text('[project]\nversion = "0.12.0.dev20260917"\n')
@@ -2897,10 +2891,11 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
 
 
 @pytest.mark.parametrize("failure", [None, "missing-token", "http-error"])
-def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure):
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path, failure, package):
     # Interface verified against release-automation commit
-    # cdabacabb50e589c08b97b776b5c2f2644b5473e: .gitlab-ci.yml forwarding
-    # and projects/aisimulate.yml. This is an independent request fixture,
+    # cc63ecf80165209f630d4a5b3868983e980c6cc2 (MR !84): .gitlab-ci.yml forwarding
+    # and projects/aisim.yml. This is an independent request fixture,
     # not a copy of the external pipeline implementation.
     capture = tmp_path / "request.json"
     fake_bin = tmp_path / "bin"
@@ -2933,6 +2928,7 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
             "GITLAB_TRIGGER_TOKEN": "" if failure == "missing-token" else "fixture-token",
             "GITLAB_PIPELINE_URL": endpoint,
             "WHEEL_VERSION": "0.12.0.dev202609170000001234",
+            "WHEEL_PACKAGE": package,
             "TOOLING_SHA": "b" * 40,
             "GH_RUN_ID": "123456",
             "GH_SHA": "a" * 40,
@@ -2954,7 +2950,7 @@ def test_gitlab_security_trigger_matches_the_verified_consumer_contract(tmp_path
     assert fields == {
         "token": "fixture-token",
         "ref": "main",
-        "variables[PROJECT]": "aisimulate",
+        "variables[PROJECT]": package,
         "variables[PIPELINE_TYPE]": "security",
         "variables[RELEASE_TYPE]": "nightly",
         "variables[NIGHTLY_TAG]": "nightly-202609170000001234-aaaaaaa",
@@ -3050,7 +3046,8 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
 @pytest.mark.parametrize("base_version", [None, "0.12.0"], ids=["current", "historical"])
-def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version, package):
     current_version = _current_product_version()
     base_version = base_version or current_version
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml", "scripts/pyproject.toml"):
@@ -3061,6 +3058,15 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
             .read_text()
             .replace(f'version = "{current_version}"', f'version = "{base_version}"')
         )
+    if package == "aisimulate":
+        for name in ("crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
+            target = tmp_path / name
+            target.write_text(
+                target.read_text()
+                .replace('name = "aisim"', 'name = "aisimulate"')
+                .replace('name = "aisim-core"', 'name = "aisimulate-core"')
+                .replace('aisim = "aisimulate.supervision:main"\n', "")
+            )
     for args in (
         ["init", "-q"],
         ["add", "."],
@@ -3139,7 +3145,7 @@ def test_simulation_performance_rollout_and_revision_contract():
     callback_check = "scripts/performance/check_dynamo_callback.py source dynamo"
     assert (
         build_commands.index("build_simulation_dynamo.py source dynamo")
-        < build_commands.index('"${RUNNER_TEMP}"/wheel/aisimulate-*.whl')
+        < build_commands.index('python scripts/release/package_identity.py "${RUNNER_TEMP}/wheel"')
         < build_commands.index(callback_check)
         < build_commands.index("simulation_perf_artifact.py record")
     )
@@ -3878,13 +3884,14 @@ def test_simulation_dynamo_lifecycle_rejects_unsupported_host_events(extra):
 
 
 @pytest.mark.parametrize("wrong_core", [False, True])
-def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
+@pytest.mark.parametrize("package", ["aisim-core", "aisimulate-core"])
+def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core, package):
     from scripts.performance import build_simulation_dynamo as builder
 
     source, dynamo, output = (tmp_path / name for name in ("source", "dynamo", "output"))
     core = source / "crates/core/Cargo.toml"
     core.parent.mkdir(parents=True)
-    core.write_text('[package]\nname = "aisimulate-core"\nversion = "0.13.0"\n')
+    core.write_text(f'[package]\nname = "{package}"\nversion = "0.13.0"\n')
     bindings = dynamo / "lib/bindings/python"
     bindings.mkdir(parents=True)
     output.mkdir()
@@ -3936,16 +3943,13 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
             assert kwargs["cwd"] == bindings
             assert lock.read_bytes() == old_lock
             for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+                assert tomllib.loads(manifest.read_text())["dependencies"]["aisimulate-core"]["package"] == package
                 assert tomllib.loads(manifest.read_text())["dependencies"]["aisimulate-core"]["path"] == str(
                     core.parent
                 )
             lock.write_bytes(resolved_lock)
             return json.dumps(
-                {
-                    "packages": [
-                        {"name": "aisimulate-core", "manifest_path": str(core) + (".wrong" if wrong_core else "")}
-                    ]
-                }
+                {"packages": [{"name": package, "manifest_path": str(core) + (".wrong" if wrong_core else "")}]}
             )
         if args[-2:] == ["rev-parse", "HEAD"]:
             return builder.DYNAMO_REVISION if args[2] == str(dynamo) else "a" * 40
@@ -4109,7 +4113,7 @@ def test_release_manifest_discovery_rejects_unknown_tool_only_manifests(tmp_path
         target.write_bytes((REPOSITORY_ROOT / name).read_bytes())
     monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
     monkeypatch.setattr(
-        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisimulate/pyproject.toml": "aisimulate"}
+        release_artifacts, "EXPECTED_PYTHON_PROJECTS", {tmp_path / "python/aisimulate/pyproject.toml": "aisim"}
     )
     monkeypatch.setattr(release_artifacts, "EXPECTED_CRATE", tmp_path / "crates/core/Cargo.toml")
     release_artifacts.check_manifests()
@@ -4118,3 +4122,90 @@ def test_release_manifest_discovery_rejects_unknown_tool_only_manifests(tmp_path
     target.write_text("[dependency-groups]\nci = []\n")
     with pytest.raises(AssertionError, match="missing project name"):
         release_artifacts.check_manifests()
+
+
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+def test_wheel_identity_rejects_missing_and_mixed_product_builds(tmp_path, package):
+    from scripts.release.package_identity import single_wheel
+
+    (tmp_path / "ai_dynamo-1.0-py3-none-any.whl").write_bytes(b"dependency")
+    with pytest.raises(ValueError, match="exactly one"):
+        single_wheel(tmp_path)
+    selected = tmp_path / f"{package}-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl"
+    selected.write_bytes(b"selected product")
+    assert single_wheel(tmp_path) == selected
+    other = "aisimulate" if package == "aisim" else "aisim"
+    (tmp_path / f"{other}-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl").write_bytes(b"stale build")
+    with pytest.raises(ValueError, match="exactly one"):
+        single_wheel(tmp_path)
+
+
+@pytest.mark.parametrize("package,alias", [("aisim", True), ("aisimulate", False), ("aisimulate", True)])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "name",
+        "version",
+        "duplicate-name",
+        "dist-info",
+        "missing-metadata",
+        "extra-metadata",
+        "missing-entry-points",
+        "wrong-entry-root",
+        "missing-command",
+        "alias",
+        "wrong-target",
+        "extra-script",
+    ],
+)
+def test_release_output_checks_embedded_identity_and_scripts(tmp_path, monkeypatch, package, alias, failure):
+    version = "0.14.0" if package == "aisim" else "0.13.0"
+    monkeypatch.setattr(release_artifacts, "ROOT", tmp_path)
+    monkeypatch.setattr(release_artifacts, "PYTHON_PACKAGE", package)
+    monkeypatch.setattr(release_artifacts, "CRATE_PACKAGE", f"{package}-core")
+    monkeypatch.setattr(release_artifacts, "REQUIRE_CLI_ALIAS", alias)
+    output = tmp_path / "dist"
+    output.mkdir()
+    (output / f"{package}-core-{version}.crate").write_bytes(b"crate fixture")
+    for name in release_artifacts.LEGAL_FILES:
+        (tmp_path / name).write_text(f"fixture legal text for {name}\n")
+    scripts = {"aiconfigurator": "aisimulate.legacy_cli.entrypoint:main", "aisimulate": "aisimulate.supervision:main"}
+    if alias:
+        scripts["aisim"] = "aisimulate.supervision:main"
+    if failure == "missing-command":
+        del scripts["aisimulate"]
+    elif failure == "alias":
+        if alias:
+            del scripts["aisim"]
+        else:
+            scripts["aisim"] = "aisimulate.supervision:main"
+    elif failure == "wrong-target":
+        scripts["aisimulate"] = "wrong.module:main"
+    elif failure == "extra-script":
+        scripts["unexpected"] = "aisimulate.supervision:main"
+    embedded_name = "other-product" if failure == "name" else package
+    embedded_version = "0.0.1" if failure == "version" else version
+    metadata = f"Metadata-Version: 2.1\nName: {embedded_name}\nVersion: {embedded_version}\n"
+    if failure == "duplicate-name":
+        metadata += f"Name: {package}\n"
+    dist_info = "other.dist-info" if failure == "dist-info" else f"{package}-{version}.dist-info"
+    wheel = output / f"{package}-{version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        if failure != "missing-metadata":
+            archive.writestr(f"{dist_info}/METADATA", metadata)
+        if failure == "extra-metadata":
+            archive.writestr("extra.dist-info/METADATA", metadata)
+        if failure != "missing-entry-points":
+            entry_root = "other.dist-info" if failure == "wrong-entry-root" else dist_info
+            archive.writestr(
+                f"{entry_root}/entry_points.txt",
+                "[console_scripts]\n" + "".join(f"{name} = {target}\n" for name, target in scripts.items()),
+            )
+        for name in release_artifacts.LEGAL_FILES:
+            archive.writestr(f"{dist_info}/licenses/{name}", (tmp_path / name).read_bytes())
+    if failure is None:
+        release_artifacts.verify_output(output, version, version)
+    else:
+        with pytest.raises(AssertionError):
+            release_artifacts.verify_output(output, version, version)

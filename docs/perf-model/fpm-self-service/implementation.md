@@ -38,7 +38,7 @@ source python/aisimulate/.venv/bin/activate
 export AIS_REPO="$PWD"
 export PYTHONPATH="$AIS_REPO/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
 git rev-parse HEAD
-python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'import aisimulate; print(aisimulate.__version__)'
 aisimulate predict --help
 ```
 

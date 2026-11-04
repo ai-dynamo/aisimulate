@@ -78,8 +78,7 @@ to parquet under
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
-declared reuse; see `docs/perf_database/collector-v3-op-centric-design.md`),
-it does not replace how cases are declared or healed. A healing run collects
+declared reuse), it does not replace how cases are declared or healed. A healing run collects
 cases for a specific model/GPU pair instead of running every op bucket and
 hoping the support matrix improves. Use `--model-cases-full` when you want
 the case YAML to define a full model-centric run. Omitting all model-case
@@ -118,14 +117,14 @@ Case files (see `cases/README.md` for the full authoring guide):
 ```text
 cases/base_ops/<op>.yaml               — shared sweep recipes (interpolation grid)
 cases/models/<architecture>_cases.yaml — op activation + model shape values
-cases/capabilities.yaml                — positive hardware floors (dtype/op -> min SM)
-cases/denylist.yaml                    — hang/node-killer cases only
 model_cases.py                         — resolves which ops a model plan collects
-capabilities.py                        — generation-time capability/denylist filter
+skips.py                               — the one list of cases a collection leaves out
 ```
 
-The plan is one equation: cases = dedup(base grid ∪ model shapes), then
-intersected with hardware capability floors and minus the hang denylist.
+The plan is one equation: cases = dedup(base grid ∪ model shapes), minus what
+`skips.py` skips. For an op with an op plan (`OP_PLANS` in `op_plans.py`),
+`--plan-only` with `--sm` or `--gpu` also prints case counts per dtype and what
+was left out under which entry; `--plan-table DIR` writes one CSV row per case.
 
 TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
 in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
@@ -234,8 +233,8 @@ and `collection_summary_<backend>.json` with a classification and a
 group failing is a fix-me signal (collector bug, unverified combo, framework
 gap), not something to tolerate or auto-skip. Missing points are tolerated
 downstream by interpolation and fallback. Escalation rules — when a failure
-deserves a denylist entry, a registry `unverified` marker, or a capability
-floor — live in `.claude/rules/collector/failure_handling.md`.
+deserves a `skips.py` entry or a registry `unverified` marker — live in
+`.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
 `src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
@@ -300,9 +299,7 @@ resolve a single op's runtime, and
 `collector.framework_manifest.validate_resolution()` to check the whole
 manifest against every backend registry at once — it returns a list of error
 strings (empty = valid) and is the fail-closed CI gate asserting every
-registered op resolves to exactly one pinned runtime. See
-`docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
-design.
+registered op resolves to exactly one pinned runtime.
 
 ## File Naming Convention
 
@@ -463,7 +460,7 @@ raises (`allow_graph_fail=False`, the default) and the case fails classified.
   measurement-method degradation only when it is recorded in the output row.
   `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
   every file under `collector/`. The last fallback sites (trtllm mamba2 and
-  moe, wideep moe_compute, network trtllm alltoall) were closed on 2026-10-12;
+  moe, wideep moe_compute, network trtllm alltoall) were closed;
   the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
 - A collector that sweeps several cells inside one task counts failed cells
   and raises a strict-completeness error at the end (GDN, mamba2), so the

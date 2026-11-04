@@ -17,13 +17,13 @@ order — all collected, none modeled analytically:
                                                v1/v2 flat-vs-top_last DELTA calib
 
 The standalone FMLA sidecars (``flash_mla_with_kvcache`` as csa_attn / hca_attn)
-were removed 2026-10-15: their SDK readers were retired design placeholders with
+were removed their SDK readers were retired design placeholders with
 no query path (csa_attn never shipped data) and, as registry-only ops, they
 failed every shard plan generated from the registry.
 
-Inputs are SAME-SOURCE: every sub-kernel derives its ``(prefix, isl, bs[, tp])``
-shapes STRICTLY 1:1 from the CSA attention-module INPUT sweep it belongs to — no
-separate sweep grid — benched at the upstream layout (DeepGEMM
+Inputs are the op plans' rows (collector/op_plans.py): paged_mqa_logits takes
+the dsv4 block's sparse grid, the one vLLM times, and topk takes the CSA module
+plan's points. They are benched at the upstream layout (DeepGEMM
 ``test_attention.py`` for the indexer GEMM).
 
 CSV schema matches existing aic dsv4 module CSVs (so loaders can be shared):
@@ -34,9 +34,9 @@ c4 path (=4).
 # Requires stock SGLang 0.5.21 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import functools
@@ -51,52 +51,29 @@ from types import SimpleNamespace
 import torch
 
 try:
-    from collector.sglang.helper import benchmark_with_power, log_perf
+    from collector.sglang.helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
-# Re-export test case generators from the centralized case generator
-# module so collect.py's registry can resolve them via getattr on this module.
 try:
     from collector.case_generator import _DSV4_DEFAULT_MODELS
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import _DSV4_DEFAULT_MODELS
-
-
-def _dsv4_sparse_kernel_cases(kernel, models=None):
-    # One task per (model, bs); collect.py spreads bs across GPU workers (no
-    # single-worker cuda-graph buildup). The sparse kernels run a single fixed
-    # head config (the indexer heads are not TP-sharded), so each is
-    # TP-independent -> one config per bs, no tp sweep. Each task sweeps
-    # (isl, prefix) for its bs.
-    if models is None:
-        try:
-            from collector.case_generator import _selected_dsv4_models
-        except ModuleNotFoundError:
-            from case_generator import _selected_dsv4_models
-
-        models = _selected_dsv4_models()
-    cases = []
-    for m in models:
-        ctx = _dsv4_context_derived_shapes(m)
-        dec = _dsv4_generation_derived_shapes(m)
-        bss = sorted({b for (_p, _i, b) in ctx} | {b for (_p, _i, b) in dec})
-        cases.extend([m, kernel, b] for b in bss)
-    return cases
+from collector.op_plans import plan_cases
 
 
 def get_dsv4_paged_mqa_logits_test_cases():
-    return _dsv4_sparse_kernel_cases("paged_mqa_logits")
+    return plan_cases("dsv4_paged_mqa_logits_module", "sglang", get_sm_version())
 
 
-get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases
+def get_dsv4_topk_calib_test_cases():
+    return plan_cases("dsv4_csa_topk_calib", "sglang", get_sm_version())
 
 
 __all__ = [
     "DEFAULT_MODEL",
-    "get_dsv4_flash_paged_mqa_logits_test_cases",
     "get_dsv4_paged_mqa_logits_test_cases",
     "get_dsv4_topk_calib_test_cases",
     "run_dsv4_sparse_kernel_worker",
@@ -199,8 +176,8 @@ def _device_num_sms(device: str | torch.device) -> int:
 
 # The DSV4 sparse-op family — both collected by ONE worker
 # (run_dsv4_sparse_kernel_worker), all driven by the KERNEL_* maps below, all
-# same-source (shapes derived 1:1 from the CSA attention-module INPUT sweep),
-# all writing the SAME row schema (one ``latency`` per row):
+# timing the points of their op plan rows, all writing the SAME row schema
+# (one ``latency`` per row):
 #   - paged_mqa_logits: CSA indexer scoring (deep_gemm)            -> 1 row/shape
 #   - topk:           CSA selection — context runs v1 and generation runs v2,
 #                     each under two score distributions, emitted as TWO
@@ -222,17 +199,12 @@ KERNEL_TO_COMPRESS_RATIO = {
     "topk": 4,
 }
 
-# Each sparse sub-kernel derives its (prefix, isl, bs) shapes from its owning
-# attention module's INPUT sweep (paged_mqa/topk <- CSA) via
-# _dsv4_context_derived_shapes / _dsv4_generation_derived_shapes — NOT from the
-# already-collected module CSVs.
 # Both sparse kernels are TP-independent — the indexer latency does not
 # change with tp (the module's per-tp rows differ only by the attention module's
-# comms/sharding, not the sparse sub-kernel). So each is benched ONCE per unique
-# (prefix, isl, bs) module shape and written one row per shape (tp_size=1),
-# matching how the SDK consumes them (keyed by shape, not tp) — no per-tp
-# expansion. (topk additionally emits two phase-qualified score_mode rows per
-# shape.)
+# comms/sharding, not the sparse sub-kernel). So each is benched ONCE per point
+# and written one row per point at the row's tp_size (1), matching how the SDK
+# consumes them (keyed by shape, not tp). (topk additionally emits two
+# phase-qualified score_mode rows per point.)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -343,7 +315,7 @@ def _bench_paged_mqa_logits(
         # is set (default True, environ.py:1570) or the query row count exceeds 11673
         # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
         # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
-        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate 2026-10-01: the serving
+        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate the serving
         # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
         from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
     except ImportError:
@@ -509,36 +481,7 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
     return [(None, lat)]
 
 
-def _derive_context_shapes(bs_list, seq_list, prefix_list, is_valid, env_filter=None):
-    """Build unique ``(prefix, isl, bs)`` context shapes from a STATIC sweep grid
-    (the owning attention module's INPUT grid), deduped + order-preserving.
-
-    Shared by GLM5 (dsa) and DSV4 (csa/hca): the sparse sub-kernels reconstruct
-    the module's intended input grid instead of reading back the rows the full
-    module actually survived. The full module drops large isl at runtime (smem /
-    KV-pool caps) that the cheap sparse indexer/topk kernels do not hit, so a
-    1:1 read of the module CSV under-samples them.
-
-    ``is_valid(bs, isl, prefix) -> bool`` encodes the module's context limits.
-    ``env_filter`` (optional) takes the list of ``(bs, isl, prefix)`` tuples and
-    returns a filtered list (e.g. an ``AIC_*_CONTEXT_*`` env pin); applied
-    before dedup. Iteration is prefix-outer so a late long-prefix shape does not
-    reorder the smaller-isl rows.
-    """
-    cases = [
-        (bs, isl, prefix) for prefix in prefix_list for bs in bs_list for isl in seq_list if is_valid(bs, isl, prefix)
-    ]
-    if env_filter is not None:
-        cases = env_filter(cases)
-    shapes, seen = [], set()
-    for bs, isl, prefix in cases:
-        key = (int(prefix), int(isl), int(bs))
-        if key not in seen:
-            seen.add(key)
-            shapes.append(key)
-    return shapes
-
-
+# Derived once per process by _sglang_chunked_prefill_size.
 _CHUNKED_PREFILL = None
 
 
@@ -620,152 +563,40 @@ def _sglang_chunked_prefill_size():
     return _CHUNKED_PREFILL
 
 
-def _dsv4_context_derived_shapes(model_path):
-    """DSV4 sparse-kernel context shapes derived from the csa/hca context MODULE
-    INPUT sweep (same source as GLM5's dsa derive) — NOT read back from the
-    module CSV. paged_mqa_logits / topk therefore cover
-    the full-chunk isl the module drops at runtime; CSA and HCA share one grid
-    (the module input validity does not depend on attn_kind).
-
-    DSV4 differs from GLM5 in scale: context new-token budget is the
-    chunked-prefill size (bs*isl), per-request context is capped by the model
-    max_position_embeddings, and bs*(isl+prefix) is bounded by the KV pool.
-    isl==1 (paged decode) shapes are still read from the owning generation CSV
-    by the worker.
-    """
-    try:
-        from collector.case_generator import (
-            _DSV4_MODULE_BATCH_SIZES,
-            _DSV4_MODULE_PAST_KV_LIST,
-            _DSV4_MODULE_SEQ_LENGTHS,
-            _dsv4_module_is_valid_shape,
-        )
-    except ModuleNotFoundError:
-        from case_generator import (
-            _DSV4_MODULE_BATCH_SIZES,
-            _DSV4_MODULE_PAST_KV_LIST,
-            _DSV4_MODULE_SEQ_LENGTHS,
-            _dsv4_module_is_valid_shape,
-        )
-    cfg = _dsv4_model_config(model_path)
-    max_pos = cfg.get("max_position_embeddings")
-    try:
-        from collector.sglang.runtime_limits import required_kv_tokens
-    except ModuleNotFoundError:
-        from runtime_limits import required_kv_tokens
-    chunk = _sglang_chunked_prefill_size()  # sglang-derived (like the module), NOT hardcoded 8192
-
-    def _valid(bs, isl, prefix):
-        # Reuse the csa/hca MODULE's skip: chunk = sglang chunked_prefill_size
-        # (GPU-derived, like the module), per-request max_pos, and the module's
-        # _dsv4_module_is_valid_shape + required_kv_tokens (the shared KV-token fn
-        # GLM5 uses via dsa_indexer_total_kv_tokens_supported). The 1M KV-pool cap
-        # is the module's proxy -- DSV4 has no sglang-readable pool size offline.
-        if bs <= 0 or isl <= 0 or prefix < 0:
-            return False
-        if bs * isl > chunk:
-            return False
-        if max_pos and prefix + isl > max_pos:
-            return False
-        return _dsv4_module_is_valid_shape("context", bs, isl) and (
-            required_kv_tokens(bs, isl, prefix, is_prefill=True) <= 1_048_576
-        )
-
-    return _derive_context_shapes(
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_SEQ_LENGTHS,
-        _DSV4_MODULE_PAST_KV_LIST,
-        _valid,
-    )
-
-
-def _dsv4_generation_derived_shapes(model_path):
-    """Decode ``(kv_len, isl=1, bs)`` shapes from the csa/hca generation MODULE
-    INPUT sweep (``_DSV4_MODULE_BATCH_SIZES`` x ``_DSV4_MODULE_SEQ_LENGTHS`` +
-    generation validity), NOT read from the generation CSV. Decode sweeps
-    batch x kv_cache_len with isl==1 (the perf ``step`` column is kv_len); CSA
-    and HCA share one grid (validity does not depend on attn_kind). Reuses the
-    shared _derive_context_shapes engine with seq_list=[1] and the kv-length
-    sweep as the prefix dimension.
-    """
-    try:
-        from collector.case_generator import (
-            _DSV4_MODULE_BATCH_SIZES,
-            _DSV4_MODULE_SEQ_LENGTHS,
-            _dsv4_module_is_valid_shape,
-        )
-    except ModuleNotFoundError:
-        from case_generator import (
-            _DSV4_MODULE_BATCH_SIZES,
-            _DSV4_MODULE_SEQ_LENGTHS,
-            _dsv4_module_is_valid_shape,
-        )
-    cfg = _dsv4_model_config(model_path)
-    max_pos = cfg.get("max_position_embeddings")
-
-    def _valid(bs, isl, kv):
-        if bs <= 0 or kv <= 0:
-            return False
-        if max_pos and kv >= max_pos:  # decode seq_len must be < max_position
-            return False
-        return _dsv4_module_is_valid_shape("generation", bs, kv)
-
-    return _derive_context_shapes(_DSV4_MODULE_BATCH_SIZES, [1], _DSV4_MODULE_SEQ_LENGTHS, _valid)
-
-
 def run_dsv4_sparse_kernel_worker(
     model_path: str,
     kernel: str,
-    bs_only: int,
+    batch_size: int,
+    tp_size: int,
+    points,
     *,
     perf_filename: str,
     device: str = "cuda:0",
 ):
-    """Single worker for the whole DSV4 sparse-op family (invoked by collect.py,
-    one case per model from get_func).
+    """Single worker for the whole DSV4 sparse-op family: one (model, TP, batch) row of
+    its op plan (op_plans._sglang_dsv4_kernel_rows).
 
-    Derives the kernel's shapes from its owning CSA module INPUT sweep
-    (paged_mqa_logits / topk ← CSA) — dedups to the unique ``(prefix, isl, bs)``
-    module shapes (the kernels are TP-independent), and benches each once.
-    ``_bench_sparse_kernel_shape`` returns one or more ``(score_mode, latency)``
-    rows per shape — one for the single-latency kernels, two for topk
-    (variant-qualified flat + top_last) — each written as one row (tp_size=1)."""
+    ``points`` are the row's ``[prefix, isl, topk_variant]`` points, each benched
+    once. ``_bench_sparse_kernel_shape`` returns one or more ``(score_mode,
+    latency)`` rows per point — one for paged_mqa_logits, two for topk
+    (variant-qualified flat + top_last) — each written as one row."""
     if kernel not in KERNEL_TO_OP_NAME:
         raise ValueError(f"unknown kernel={kernel}; expected one of {list(KERNEL_TO_OP_NAME)}")
+    bs_only = int(batch_size)
+    shapes = [(int(prefix), int(isl), bs_only, variant) for prefix, isl, variant in points]
+    if not shapes:
+        raise RuntimeError(f"dsv4-sparse {kernel} bs={bs_only}: the row lists no points")
     sc = _dsv4_sparse_config(model_path)
     output_dir = os.path.dirname(perf_filename) or os.getcwd()
     perf_path = _make_perf_filename(kernel, output_dir)
-
-    # Both context and decode shapes are derived from the csa/hca module INPUT
-    # sweeps (no module CSV read): context from the csa/hca context sweep,
-    # decode (isl==1) from the generation sweep. TP-independent: one bench /
-    # one row per unique (prefix, isl, bs); CSA/HCA share one grid.
-    ctx_shapes = _dsv4_context_derived_shapes(model_path)
-    dec_shapes = _dsv4_generation_derived_shapes(model_path)
-    if kernel == "topk":
-        # SGLang 0.5.14 context allocates c4_sparse_raw_indices and therefore
-        # selects topk v1; normal decode has no raw-index output and selects v2.
-        # Keep both when a physical shape overlaps: the executed kernels differ.
-        shapes = [(*shape, "v1") for shape in ctx_shapes]
-        shapes.extend((*shape, "v2") for shape in dec_shapes)
-    else:
-        _seen = set(ctx_shapes)
-        shapes = [(*shape, None) for shape in ctx_shapes]
-        shapes.extend((*shape, None) for shape in dec_shapes if shape not in _seen)
-    # this task owns one bs (collect.py distributes bs across GPU workers)
-    shapes = [(prefix, isl, bs, variant) for (prefix, isl, bs, variant) in shapes if bs == bs_only]
-    if not shapes:
-        # A queued (kernel, bs) task with no derivable shapes is a case-plan
-        # inconsistency, not a clean completion: fail closed so it is recorded.
-        raise RuntimeError(f"dsv4-sparse {kernel} bs={bs_only}: queued task resolved no shapes")
 
     device_name = torch.cuda.get_device_name(device)
     print(f"[dsv4-sparse {kernel} bs={bs_only}] {len(shapes)} shapes -> {perf_path}")
     n_ok = 0
     failures = []
     for prefix, isl, bs, topk_variant in shapes:
-        # Every module shape is benched (strict 1:1); tiny shapes run fine
-        # (K/window clamp to full_s); failed attempts are reported together.
+        # Every point is benched; tiny shapes run fine (K/window clamp to
+        # full_s); failed attempts are reported together.
         label = f"bs={bs} isl={isl} past_kv={prefix}" + (f" topk_variant={topk_variant}" if topk_variant else "")
         results, error = _guarded_bench(
             lambda: _bench_sparse_kernel_shape(
@@ -795,7 +626,7 @@ def run_dsv4_sparse_kernel_worker(
                 bs=bs,
                 isl=isl,
                 past_kv=prefix,
-                tp_size=1,
+                tp_size=tp_size,
                 native_heads=sc.num_attention_heads,
                 latency_ms=latency_ms,
                 device_name=device_name,
@@ -928,22 +759,6 @@ def _bench_topk_512(
             )
 
     return _bench_cuda_graph(kernel_func, allow_graph_fail=False, device=device)["latency_ms"]
-
-
-def get_dsv4_topk_calib_test_cases():
-    """topk_512 DELTA calibration cases.
-
-    Same contract as ``case_generator.get_dsv4_topk_calib_test_cases``
-    (via ``_selected_dsv4_calib_models``): default plans stay on the canonical
-    calib model (cost policy); targeted runs collect their own model's
-    calibration — since #1460 the consumers key the DELTA per native head
-    geometry, so distinct models can no longer overwrite each other."""
-    try:
-        from collector.case_generator import _selected_dsv4_calib_models
-    except ModuleNotFoundError:
-        from case_generator import _selected_dsv4_calib_models
-
-    return _dsv4_sparse_kernel_cases("topk", models=_selected_dsv4_calib_models())
 
 
 def _bench_topk_shape(prefix: int, isl: int, bs: int, sc, device: str, *, variant: str) -> list:

@@ -13,7 +13,7 @@ Covers:
 - Stall watchdog: wedged workers are killed and restarted, the queue keeps
   draining; only consecutive rounds without progress close the op, and the
   never-dispatched tasks are not written into the failed ledger
-  (b200 vllm dsa_context_module, 2026-10-11)
+  (b200 vllm dsa_context_module)
 """
 
 import json
