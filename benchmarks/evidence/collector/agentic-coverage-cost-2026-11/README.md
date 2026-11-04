@@ -448,3 +448,9 @@ with workspace-specific paths. No model weights or container images are included
 This frozen fit input is distinct from the earlier407-record rendered sample
 snapshot and from subsequent live campaign receipts. All ZIP CRC/member hashes
 were checked.
+
+The original frozen597 fit is [superseded](fit-inputs-597.disposition.json):
+44 fresh dense-context clocks were attributed by requested order rather than
+recorded execution identity. Native rows/times and the independently checked
+other families remain valid. Keep the historical archive immutable; use the
+corrected input/report revision once published, not its affected point fits.

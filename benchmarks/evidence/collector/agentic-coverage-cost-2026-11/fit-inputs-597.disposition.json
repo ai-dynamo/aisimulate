@@ -1,0 +1,24 @@
+{
+  "snapshot": "frozen-597",
+  "state": "superseded_pending_corrected_point_attribution",
+  "dataset_sha256": "31708ed32a50301008c41578e20c3fb25ed2f3d842b6e6d549e89dd7a453142f",
+  "report_sha256": "2ac770bd959f08341bd02f0264e4c877f663c29d2470d5ef12c0327ca531451f",
+  "affected_records": {
+    "dense_context": 44,
+    "sglang": 20,
+    "trtllm": 12,
+    "vllm": 12
+  },
+  "cause": "Requested point order was used instead of recorded planner execution order when attributing fresh dense-context clocks. Native cases and raw measurements remain unchanged.",
+  "required_correction": "Match exact executed native case identity and dispatch; independently validate before refitting. Preserve historical raw inputs and producer identities.",
+  "independently_checked_unaffected": [
+    "52 historical dense points",
+    "fresh dense decode identities",
+    "113 MoE native calls",
+    "12 KDA native calls",
+    "42 module groups with unique batch/history identity",
+    "C44 warm preparation evidence",
+    "production data PR665 and PR666"
+  ],
+  "replacement": null
+}

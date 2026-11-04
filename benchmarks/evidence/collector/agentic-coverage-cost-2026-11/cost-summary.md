@@ -1,6 +1,6 @@
-# Collection-cost audit: frozen 597-sample interim report
+# Collection-cost audit: superseded 597-sample interim report
 
-**Interim: sampling continues. All 24 system/framework total forecasts and the fleet total remain unknown.**
+**Superseded: 44 fresh dense-context timing labels require corrected execution-identity attribution. Do not use this snapshot’s affected point forecasts. Native rows/timings are intact; see [disposition](fit-inputs-597.disposition.json). All complete forecasts remain unknown.**
 This snapshot contains 552 passed, 20 failed and 25 partial observations. Passed samples
 qualify only their recorded physical cases; failed and partial observations never fit timings.
 No GPU allocation, queue or reserved-idle time is charged.
