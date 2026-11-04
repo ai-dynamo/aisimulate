@@ -38,7 +38,11 @@ def select_plan(planned, requested: list[dict]):
         kept = []
         for runner in runners:
             key = json.dumps(
-                {**{name: str(value) for name, value in case._asdict().items()}, "dispatch": runner}, sort_keys=True
+                {
+                    **{name: "" if value is None else str(value) for name, value in case._asdict().items()},
+                    "dispatch": runner,
+                },
+                sort_keys=True,
             )
             if key in wanted:
                 kept.append(runner)
@@ -70,6 +74,8 @@ def run(spec: dict, output: Path) -> dict:
         }
         if result["gpu"]["sm"] != spec["sm"]:
             raise ValueError(f"GPU SM does not match requested system: {result['gpu']}")
+        if spec["gpu_name_contains"] not in result["gpu"]["name"]:
+            raise ValueError(f"GPU SKU does not match requested system: {result['gpu']}")
         package = "tensorrt_llm" if spec["backend"] == "trtllm" else spec["backend"]
         result["package_version"] = importlib.metadata.version(package)
         if result["package_version"] != spec["package_version"]:
@@ -78,6 +84,8 @@ def run(spec: dict, output: Path) -> dict:
         inventory = importlib.import_module("tools.perf_database.collection_cost_inventory")
         registry = importlib.import_module(f"collector.{spec['backend']}.registry").REGISTRY
         entry = next(entry for entry in registry if entry.op == spec["op"])
+        if entry.unverified or spec["sm"] in entry.unverified_sms:
+            raise ValueError("normal collector marks this operation unverified; exclude it from eligible cost")
         if entry.module is None:
             raise ValueError("version-routed registries require the normal resolver; no fallback is permitted")
         module = importlib.import_module(entry.module)
