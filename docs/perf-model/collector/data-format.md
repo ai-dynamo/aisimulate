@@ -94,6 +94,14 @@ remain valid observed outcomes. Never infer complete model coverage from a
 `complete` table status. A table without corresponding provenance is a coverage
 failure. Legacy provenance remains explicitly legacy, not newly measured.
 
+Context-attention timing scope follows retained row identity. TRT-LLM
+`1.3.0rc20` and `1.3.0rc29` rows labeled `torch_flow` include RoPE and both
+KV-cache writes; a collector measuring a different boundary must use a distinct
+kernel identity. Unknown identities retain legacy accounting. A prepared
+context slice cannot mix retained rows with incompatible timing boundaries.
+Ignored duplicate coordinates still follow first-wins source precedence.
+See [op-level timing](../methods/op-level.md#context-attention-measurement-boundaries).
+
 See [CI](../../ci/README.md) for the repository gates.
 
 ## Reuse and source priority
