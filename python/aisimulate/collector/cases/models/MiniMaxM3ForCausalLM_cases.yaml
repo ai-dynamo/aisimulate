@@ -82,6 +82,29 @@ model_case_values:
       # heads and only ever failed the decode scorer's power-of-2 tile.
       # TP 16 is the ceiling anyone runs this model at.
       tensor_parallel_sizes: [1, 2, 4, 8, 16]
+      # Native MSA, with a 32K new-query anchor and intermediate retained history.
+      long_history_cases:
+        context:
+          - [1, 512, 786432]
+          - [1, 32768, 786432]
+          - [1, 512, 917504]
+          - [1, 32768, 917504]
+          - [1, 32768, 262144]
+          - [4, 32768, 131072]
+        generation:
+          - [1, 786432, 0]
+          - [4, 786432, 0]
+          - [8, 786432, 0]
+          - [16, 786432, 0]
+          - [32, 786432, 0]
+          - [1, 917504, 0]
+          - [4, 917504, 0]
+          - [8, 917504, 0]
+          - [16, 917504, 0]
+          - [32, 917504, 0]
+          - [8, 1048575, 0]
+          - [16, 1048575, 0]
+          - [32, 1048575, 0]
 
 all_frameworks_op_cases:
   gemm:

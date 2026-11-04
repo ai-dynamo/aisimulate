@@ -19,6 +19,33 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# Optional model-owned long-history coverage
+
+Normal collection retains the shared grid and model geometry coverage. Add
+`--include-long-history` to collect the additional correlated points declared
+on selected model rows; it defaults to off. A model selection or
+`--model-cases-full` is required. Existing long-history points in the normal
+shared module grid remain enabled.
+
+```bash
+python collect.py --backend sglang --model-path zai-org/GLM-5.2 --ops dsa_generation_module --include-long-history
+python collect.py --backend sglang --model-cases-full --sm 103 --plan-only --include-long-history
+```
+
+The optional points reuse the native geometry, actual projection precision and
+existing framework dispatch. Model context limits validate declarations; they
+do not automatically request every length or batch. Workers receive explicit
+points and retain grouped setup. No environment switch changes their rows.
+`--plan-only` reports the selected mode and hashes its actual case list. Use
+separate checkpoint/output roots for before/after cost experiments; changing a
+group's point list changes its existing task ID and can repeat its older points
+on resume, while preventing newly added points from being skipped.
+
+See [the declaration fields](cases/README.md#optional-long-history-points) and
+[coverage rationale and disposition](cases/agentic_coverage.md). Collection-cost
+estimates count setup changes, point preparation, warmup/capture and timed
+forwards; scheduler wait and GPU allocation overhead are excluded.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.

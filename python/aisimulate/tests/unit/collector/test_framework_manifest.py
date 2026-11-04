@@ -407,10 +407,10 @@ def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
 
 
 def test_vllm_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("vllm", "0.30.0", requested_ops={"attention_context"}, wideep_ops=set())
+    baseline = require_collector_runtime("vllm", "0.31.0", requested_ops={"attention_context"}, wideep_ops=set())
     unmatched = require_collector_runtime(
         "vllm",
-        "0.30.0",
+        "0.31.0",
         requested_ops={"attention_context"},
         wideep_ops=set(),
         model_path="some-org/not-a-pinned-model",

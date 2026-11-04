@@ -89,6 +89,7 @@ from datetime import datetime
 from inspect import Parameter, signature
 from pathlib import Path
 
+from collector.coverage import long_history_coverage
 from helper import (
     EXIT_CODE_OPS_NOT_IN_PLAN,
     EXIT_CODE_RESTART,
@@ -1133,7 +1134,12 @@ def _collector_model_path(model_path: str | None):
             os.environ["COLLECTOR_MODEL_PATH"] = previous
 
 
-def _get_test_cases_for_model(get_func, model_path: str | None):
+def _get_test_cases_for_model(get_func, model_path: str | None, *, include_long_history: bool = False):
+    with long_history_coverage(include_long_history):
+        return _get_model_cases(get_func, model_path)
+
+
+def _get_model_cases(get_func, model_path: str | None):
     if not model_path:
         return get_func()
     with _collector_model_path(model_path):
@@ -2544,7 +2550,9 @@ def collect_ops(
                 from collector.case_generator import without_models
 
                 with without_models(skips.models(backend, op, sm_version)):
-                    cases = _get_test_cases_for_model(get_func, model_path)
+                    cases = _get_test_cases_for_model(
+                        get_func, model_path, include_long_history=bool(case_plan and case_plan.include_long_history)
+                    )
                 cases, _skipped = skips.filter_cases(cases, backend=backend, op=op, sm_version=sm_version)
                 if case_filters:
                     before_count = len(cases)
@@ -2682,7 +2690,9 @@ def collect_sglang(
                 sm_version=sm_version,
                 case_filters=case_filters,
                 replay=replay,
-                get_test_cases_for_model=_get_test_cases_for_model,
+                get_test_cases_for_model=functools.partial(
+                    _get_test_cases_for_model, include_long_history=bool(case_plan and case_plan.include_long_history)
+                ),
                 resume_checkpoint_cls=ResumeCheckpoint,
                 logger=logger,
             )
@@ -2908,7 +2918,9 @@ def generate_collection_summary(all_errors, backend, version):
     logger.info(f"\nDetailed error report saved to: {summary_file}")
 
 
-def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: str | None) -> dict:
+def _op_plan_report(
+    backend: str, ops: list[str], sm_version: int, table_dir: str | None, *, include_long_history: bool = False
+) -> dict:
     """Expand the requested ops that have an op plan and summarize each one.
 
     ``plan_hash`` uses the case IDs a run records (:func:`_run_case_id`).
@@ -2930,7 +2942,7 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
         # The report owns stdout: what planning prints (the MLA module loader's model
         # notes) goes to stderr.
         with contextlib.redirect_stdout(sys.stderr):
-            op_plan = plan(op, backend, sm_version)
+            op_plan = plan(op, backend, sm_version, include_long_history=include_long_history)
             report[op] = summarize(
                 op,
                 op_plan,
@@ -6354,6 +6366,11 @@ def main():
         help="Optional path to a model cases YAML file. Defaults to collector/cases/models/<architecture>_cases.yaml.",
     )
     parser.add_argument(
+        "--include-long-history",
+        action="store_true",
+        help="Add declared model-specific history points to normal coverage (default: off).",
+    )
+    parser.add_argument(
         "--model-cases-full",
         action="store_true",
         help="Collector v2 full mode: aggregate base op cases plus every model cases YAML file.",
@@ -6442,10 +6459,16 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
+    if fpm_requested and args.include_long_history:
+        parser.error("--include-long-history applies to operation collection, not fpm_forward")
     if fpm_requested and set(args.ops or ()) != {FPM_FORWARD_OP}:
         parser.error("fpm_forward must be collected alone; do not mix campaign and local op entries")
     if fpm_requested and not (args.model_path or args.model_architecture or args.model_cases):
         parser.error("fpm_forward requires --model-path, --model-architecture, or --model-cases")
+    if args.include_long_history and not (
+        args.model_path or args.model_architecture or args.model_cases or args.model_cases_full
+    ):
+        parser.error("--include-long-history requires a model selection or --model-cases-full")
     ops = args.ops
     case_plan = None
     logger_message = None
@@ -6469,6 +6492,7 @@ def main():
             sm_version=args.sm,
             model_cases_path=args.model_cases,
             full=args.model_cases_full,
+            include_long_history=args.include_long_history,
         )
         if case_plan.model_path:
             os.environ["COLLECTOR_MODEL_PATH"] = case_plan.model_path
@@ -6509,7 +6533,13 @@ def main():
             log_dict = case_plan.to_log_dict()
             log_dict["ops"] = ops
             if case_plan.sm_version is not None:
-                log_dict["plans"] = _op_plan_report(args.backend, ops, case_plan.sm_version, args.plan_table)
+                log_dict["plans"] = _op_plan_report(
+                    args.backend,
+                    ops,
+                    case_plan.sm_version,
+                    args.plan_table,
+                    include_long_history=args.include_long_history,
+                )
             print(json.dumps(log_dict, indent=2))
             return
     else:

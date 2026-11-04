@@ -11,10 +11,13 @@ and executed against fakes (same technique as ``test_collect_moe_ep.py``).
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import sys
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -157,3 +160,112 @@ def test_release_drops_every_trtllm_workspace_block_including_reserved(monkeypat
     monkeypatch.setitem(sys.modules, "tensorrt_llm._torch.memory_buffer_utils", utils)
     assert namespace[RELEASE]() == 7168 + 3584 + 28
     assert pool.buffers == {}
+
+
+class _TokenTensor:
+    def __init__(self, tokens):
+        self.tokens = tokens
+
+    def bfloat16(self):
+        return self
+
+    def to(self, *args, **kwargs):
+        return self
+
+    def __getitem__(self, index):
+        assert isinstance(index, slice)
+        return _TokenTensor(min(self.tokens, index.stop))
+
+
+def _run_sweep(tokens, *, fail_stage=None, fail_tokens=None):
+    """Run the actual case body with native allocation/timing calls replaced."""
+    tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
+    body = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_moe_case")
+    calls = []
+    rows = []
+    state = {"stage": "dry_run"}
+    failure = RuntimeError("native shape failed")
+
+    def forward(hidden, logits, **kwargs):
+        assert hidden.tokens == logits.tokens
+        calls.append((state["stage"], hidden.tokens))
+        if state["stage"] == fail_stage and hidden.tokens == fail_tokens:
+            raise failure
+
+    @contextmanager
+    def autotune():
+        state["stage"] = "tuning"
+        yield
+
+    @contextmanager
+    def benchmark(**kwargs):
+        state["stage"] = "measurement"
+        kwargs["kernel_func"]()
+        yield {"latency_ms": calls[-1][1] / 1000, "power_stats": {}}
+
+    device = SimpleNamespace(index=0)
+    torch = MagicMock()
+    torch.device.return_value = device
+    torch.randn.side_effect = lambda shape: _TokenTensor(shape[0])
+    torch.inference_mode = nullcontext
+    moe = SimpleNamespace(forward=forward, to=lambda device: None)
+    builder = MagicMock(return_value=moe)
+    namespace = {
+        "torch": torch,
+        "gc_collect": lambda: None,
+        "aic_debug": 0,
+        "QuantConfig": lambda **kwargs: SimpleNamespace(**kwargs),
+        "Mapping": SimpleNamespace,
+        "SimpleNamespace": SimpleNamespace,
+        "ModelConfig": lambda **kwargs: SimpleNamespace(**kwargs),
+        "NON_GATED_MOE_MODELS": [],
+        "ActivationType": None,
+        "get_sm_version": lambda: 100,
+        "_MXFP4_MOE_TYPES": {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"},
+        "RenormalizeMoeRoutingMethod": lambda topk: None,
+        "_declared_moe_routing": lambda model: None,
+        "create_moe": builder,
+        "inspect": inspect,
+        "balanced_logits": lambda count, experts, topk: _TokenTensor(count),
+        "cleanup_empty_json_files": lambda path: None,
+        "moe_tune_path": "unused",
+        "glob": SimpleNamespace(glob=lambda pattern: []),
+        "autotune": autotune,
+        "benchmark_with_power": benchmark,
+        "log_perf": lambda **kwargs: rows.extend(kwargs["item_list"]),
+        "tensorrt_llm": SimpleNamespace(__version__="test"),
+    }
+    exec(compile(ast.Module(body=[body], type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+
+    def run():
+        namespace["_run_moe_case"]("bfloat16", tokens, 4096, 2048, 2, 8, 2, 2, False, "model", perf_filename="unused")
+
+    return run, calls, rows, builder, failure
+
+
+def test_moe_sweep_measures_every_requested_shape_with_unchanged_identity():
+    # Unsorted input also exercises native capacity: the last item is not max.
+    tokens = [2, 65536, 32768]
+    run, calls, rows, builder, _ = _run_sweep(tokens)
+    run()
+
+    assert builder.call_args.kwargs["model_config"].moe_max_num_tokens == 65536
+    assert calls == [("dry_run", 65536)] + [("tuning", n) for n in reversed(tokens)] + [
+        ("measurement", n) for n in tokens
+    ]
+    assert [row["num_tokens"] for row in rows] == tokens
+    assert [row["latency"] for row in rows] == [n / 1000 for n in tokens]
+    assert {(row["moe_tp_size"], row["moe_ep_size"], row["moe_dtype"], row["distribution"]) for row in rows} == {
+        (2, 2, "bfloat16", "balanced")
+    }
+
+
+@pytest.mark.parametrize("stage", ["dry_run", "tuning", "measurement"])
+def test_moe_sweep_propagates_large_shape_failure_without_smaller_substitution(stage):
+    run, calls, rows, _, failure = _run_sweep([2, 32768, 65536], fail_stage=stage, fail_tokens=65536)
+    with pytest.raises(RuntimeError, match="native shape failed") as caught:
+        run()
+    assert caught.value is failure
+    assert calls[-1] == (stage, 65536)
+    # Measurement failures preserve only genuinely measured earlier rows.
+    assert [row["num_tokens"] for row in rows] == ([2, 32768] if stage == "measurement" else [])
