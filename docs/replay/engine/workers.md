@@ -47,7 +47,7 @@ engine:
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
 | `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts. See [vLLM async scheduling](#vllm-async-scheduling). |
-| `workers.aggregated.scheduler.launch` | Unset | predict only | vLLM only, with async scheduling, on one-GPU workers (`tensor`, `pipeline`, `attention_data` and `prefill_context` of 1) and `--stack engine`. `{decode_ms, piecewise_ms, eager_ms, max_cudagraph_capture_size, eager_queue_fraction}`: CPU launch costs measured on the deployment. Outputs leave once the next pass is launched, and an arrival joins the first pass decided after it. See [vLLM pass launch](#vllm-pass-launch). |
+| `workers.aggregated.scheduler.launch` | Unset | predict only | vLLM only, with async scheduling, on one-GPU workers (`tensor`, `pipeline`, `attention_data` and `prefill_context` of 1) and `--stack engine`. `{decode_ms, piecewise_ms, eager_ms, max_cudagraph_capture_size, eager_queue_fraction}`: CPU launch costs measured on the deployment. Outputs leave once the next pass is launched, and an arrival joins the first pass decided after it. With an `offloading_v0_32` or `simple_cpu_v0_32` CPU tier, a finished load waits for vLLM to check the connector; see [CPU-tier loads](#vllm-cpu-tier-loads). See [vLLM pass launch](#vllm-pass-launch). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
 | `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
@@ -358,7 +358,10 @@ takes, so that:
 - an arrival joins the first pass decided after it. vLLM decides a pass once
   it has launched the previous one and the pass before that has ended, so a
   request that arrives early in a long pass can join the next pass, while
-  counting passes would make it skip the pass already queued.
+  counting passes would make it skip the pass already queued;
+- with an `offloading_v0_32` or `simple_cpu_v0_32` CPU tier, a request whose
+  prefix loads from that tier waits for vLLM to see the copy finish. See
+  [CPU-tier loads](#vllm-cpu-tier-loads).
 
 ```yaml
 engine:
@@ -405,6 +408,39 @@ which
 selects for one GPU, and the CUDA-graph
 [`dispatch`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py)
 of v0.32.0.
+
+<a id="vllm-cpu-tier-loads"></a>
+
+#### CPU-tier loads
+
+vLLM starts an asynchronous CPU-tier load after the launch of the pass that
+issued it, and learns that the load finished only when a later pass checks the
+connector at the end of its own launch. It processes that pass's outputs after
+it has decided the next pass, so the request is first schedulable two passes
+after the check. For example, if pass 10 issues a load whose copy ends while
+pass 11 is launching, pass 11's check sees it and pass 13 is the first pass
+that can schedule the request.
+
+With `launch`, replay follows these rules for the
+[connector profiles](kv-cache.md#g2-connector-profiles) of vLLM v0.32.0:
+
+- `offloading_v0_32`: the copy starts once the issuing pass's GPU work ends.
+- `simple_cpu_v0_32`: a copy thread starts the copy when the issuing pass's
+  launch ends, without waiting for its GPU work.
+- An engine with nothing to run checks in its empty steps, which replay prices
+  at zero, so it sees a load when its copy ends.
+
+Each check comes at the end of a launch, so its timing comes from the `launch`
+costs and needs no setting of its own. Without `launch`, and with
+`offloading_v0_24`, a request can join the first pass decided after its copy
+ends. Behavior follows `ActiveKVConnector.post_forward` in vLLM
+[v0.32.0](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/kv_connector.py),
+called at the end of `GPUModelRunner.sample_tokens`; the scheduler's
+`_update_from_kv_xfer_finished` and `_handle_blocked_waiting_request`; the
+offloading connector's
+[`transfer_async`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/gpu_worker.py),
+whose stream waits for the compute stream; and SimpleCPU's
+[copy thread](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/copy_backend.py).
 
 <a id="sglang-prefilldecode-interval"></a>
 
