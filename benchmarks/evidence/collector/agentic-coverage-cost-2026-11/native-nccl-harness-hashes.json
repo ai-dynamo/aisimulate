@@ -1,0 +1,8 @@
+{
+  "archive": "native-nccl-executed-harness.zip",
+  "executed_path": "native-nccl-harness.py",
+  "executed_sha256": "9913f5d47b303d52bf2a12ddc0af837c07109b0ab74a6673c206f51cff298d9c",
+  "published_path": "native-nccl-harness.py",
+  "published_sha256": "2303100a9c5ebb4fc59508174558a132d787551f2710e087e19f9175b479a4f7",
+  "published_changes": "Required NVIDIA/Apache-2.0 SPDX header only; all run receipts retain actual executed hash"
+}
