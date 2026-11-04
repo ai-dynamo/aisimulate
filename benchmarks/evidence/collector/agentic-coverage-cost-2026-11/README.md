@@ -53,6 +53,12 @@ routes are not repaired by generic long-history metadata. These three families
 remain explicit support/collection gaps, excluded from a claim of complete
 AgentX coverage. Silicon calibration of the Qwen95 or GLM B52 frontier does
 not turn those points into observed workload batches.
+The owner decision withdraws only the new optional Kimi MLA points: the native
+NoPE module differs in cache binding, weight processing, forward signature and
+output gating. The c4 evidence snapshot retains the proposed points as
+**historical withdrawn declarations**, not final M coverage or qualified timing.
+Preserve #676 normal coverage and the independent KDA width extension. Report
+the Kimi omission separately from savings on equivalent supported workloads.
 
 ## Comparable inventories
 
@@ -209,5 +215,9 @@ Paired baseline/expanded MoE runs must include changed maximum-size autotuning
 and workspace allocation, not just two extra timed forwards. A poisoned CUDA
 context stops the worker and leaves remaining groups unattempted for a fresh
 worker retry; its fail-fast follow-on times are not independent shape samples.
+Honor the native normal worker-recycle protocol too: a persisted task followed
+by `EXIT_CODE_RESTART` or `WorkerRestartSignal` is completed work, not a failed
+kernel. Mark remaining groups unattempted and continue in a fresh worker under
+the same budget. Do not disable recycling to make an anchor pass.
 NCCL weights each collective by its actual participating 2/4/8-rank group,
 never by the entire reserved node for the whole harness.

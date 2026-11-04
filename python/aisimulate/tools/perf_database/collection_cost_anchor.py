@@ -183,15 +183,31 @@ def run(spec: dict, output: Path) -> dict:
                 params = row["params"] if isinstance(row, dict) and "params" in row else row
                 call_started = time.perf_counter()
                 call = {"index": index, "row": str(row)}
+                rows_before = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
                 try:
                     kwargs = {"perf_filename": str(perf), "device": "cuda:0", **entry.run_kwargs_dict}
                     if entry.extra_perf_filenames:
                         kwargs["extra_perf_filenames"] = tuple(
                             str(output / str(name)) for name in entry.extra_perf_filenames
                         )
-                    function(*params, **kwargs)
+                    outcome = function(*params, **kwargs)
+                    if isinstance(outcome, helper.WorkerRestartSignal):
+                        raise SystemExit(helper.EXIT_CODE_RESTART)
                     torch.cuda.synchronize()
                     call["status"] = "passed"
+                except SystemExit as error:
+                    rows_after = len(list(csv.DictReader(perf.open()))) if perf.exists() else 0
+                    expected = error.code == helper.EXIT_CODE_RESTART and rows_after > rows_before
+                    call.update(
+                        status="passed" if expected else "failed",
+                        worker_exit_code=error.code,
+                        persisted_forward_rows=rows_after - rows_before,
+                    )
+                    result["worker_recycle_required"] = True
+                    result["worker_recycle_reason"] = (
+                        "normal_executor_restart" if expected else "unexpected_worker_exit"
+                    )
+                    result["unattempted_rows"] = [str(pending) for pending in rows[index + 1 :]]
                 except Exception as error:
                     call.update(status="failed", error=str(error), traceback=traceback.format_exc())
                     traceback.print_exc()
@@ -211,7 +227,11 @@ def run(spec: dict, output: Path) -> dict:
             result["subprocess_repetition_policy"] = spec.get("source_checked_subprocess_repetition_policy")
             if not result["forward_rows"]:
                 raise ValueError("native calls produced no forward measurements")
-            result["status"] = "passed" if all(call["status"] == "passed" for call in result["calls"]) else "failed"
+            result["status"] = (
+                ("partial" if result.get("unattempted_rows") else "passed")
+                if all(call["status"] == "passed" for call in result["calls"])
+                else "failed"
+            )
     except Exception as error:
         result.update(status="failed", error=str(error), traceback=traceback.format_exc())
         traceback.print_exc()
