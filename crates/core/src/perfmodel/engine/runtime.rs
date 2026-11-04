@@ -495,8 +495,8 @@ struct MixStepPlan {
     /// Slot of each context operation, which runs in the shared or the
     /// context-attention pass.
     context_slot: Vec<usize>,
-    /// Slot of each generation-attention operation; the decode-attention
-    /// pass runs no other generation operation.
+    /// Slot of each generation-attention or qualified Mamba operation; the
+    /// decode pass runs no other generation operation.
     generation_slot: Vec<Option<usize>>,
 }
 
@@ -522,7 +522,9 @@ impl MixStepPlan {
         }
         let generation_slot = generation
             .iter()
-            .map(|op| op.is_generation_attention().then(|| slot_of(op)))
+            .map(|op| {
+                (op.is_generation_attention() || op.is_qualified_mamba()).then(|| slot_of(op))
+            })
             .collect();
         Self {
             names: names.into(),
@@ -4231,6 +4233,9 @@ pub(crate) mod tests {
         let mut engine = build_engine(Some(3));
         engine.context_ops = vec![qualified_mamba(true, 1)];
         engine.generation_ops = vec![qualified_mamba(false, 4)];
+        engine.context_plan = OpListPlan::new(&engine.context_ops);
+        engine.generation_plan = OpListPlan::new(&engine.generation_ops);
+        engine.mix_plan = MixStepPlan::new(&engine.context_ops, &engine.generation_ops);
         // Per token 18,560 activation bytes. Each prefill chunk reads and writes
         // its 1 MiB state; two width-four decodes add 10,634,240 bytes.
         let ms = |bytes: f64| bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
