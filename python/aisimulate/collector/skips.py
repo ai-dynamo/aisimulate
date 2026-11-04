@@ -72,6 +72,9 @@ SKIPS: list[dict] = [
     {"dtype": "w4a16_mxfp4", "sm": [80, 86]},
     # FP4 tensor cores, which NVFP4 and MXFP8 x MXFP4 need, start at Blackwell (SM100).
     {"dtype": ["nvfp4", "w4a8_mxfp4_mxfp8"], "sm": [80, 86, 89, 90]},
+    # SGLang and TRT-LLM: no collector path for w4a16_nvfp4 (NVFP4 weights, BF16
+    # activations); only the vLLM GEMM and MoE collectors build that layer.
+    {"backend": ["sglang", "trtllm"], "op": ["gemm", "moe"], "dtype": "w4a16_nvfp4"},
     # SGLang: the collector times fp8_block GEMMs through DeepGEMM, which has no
     # SM89 or SM120 kernel, so every case would fail. Serving runs them on
     # Triton (SM89) and CUTLASS (SM120).
