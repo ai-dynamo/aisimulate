@@ -29,7 +29,11 @@ from scripts.fpm_accuracy.scenarios import (
     score_scenario,
     select_artifact,
 )
-from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, ForwardPassMetric, RequestMetrics
+from scripts.fpm_accuracy.types.forward_pass import (
+    ForwardPassIteration,
+    ForwardPassMetric,
+    RequestMetrics,
+)
 
 
 def observation(index, kind="decode", actual=10.0, *, capture_id="target", worker="worker"):
@@ -170,7 +174,14 @@ def recording():
     instances = []
 
     def factory(
-        method, context, *, training_iterations=(), online=False, cold_start=False, mixed_fallback=False, scenario=None
+        method,
+        context,
+        *,
+        training_iterations=(),
+        online=False,
+        cold_start=False,
+        mixed_fallback=False,
+        scenario=None,
     ):
         model = RecordingPredictor(method, training_iterations)
         model.online, model.cold_start = online, cold_start
@@ -179,7 +190,16 @@ def recording():
 
     def bootstrap(case, selected):
         assert selected in case.fpm_artifacts
-        return tuple(observation(index, actual=5, capture_id="self-benchmark").iteration for index in (100, 101))
+        rows = tuple(observation(index, actual=5, capture_id="self-benchmark").iteration for index in (100, 101))
+        return tuple(
+            replace(
+                row,
+                ranks=(
+                    replace(row.ranks[0], scheduled=replace(row.ranks[0].scheduled, sum_decode_kv_tokens=64 + index)),
+                ),
+            )
+            for index, row in enumerate(rows)
+        )
 
     return instances, {"factory": factory, "bootstrap": bootstrap}
 
@@ -197,9 +217,52 @@ def test_a_uses_external_training_and_never_updates_targets(scenario_case, recor
     assert instances[0].closed
 
 
+@pytest.mark.parametrize("method", ["linear", "spline"])
+@pytest.mark.parametrize("scenario", ["a", "ac", "b", "bc", "c"])
+def test_only_spline_reorders_a_seeds_and_preserves_online_arrival(
+    scenario_case, recording, monkeypatch, method, scenario
+):
+    from scripts.fpm_accuracy.models import scenario_predictors
+
+    calls = []
+
+    def reverse_seeds(rows):
+        calls.append([row.fpm_ids[0] for row in rows])
+        return tuple(reversed(rows))
+
+    monkeypatch.setattr(scenario_predictors, "order_offline_regression_seeds", reverse_seeds)
+    instances, options = recording
+    result = score_scenario(scenario_case, method, scenario, **options)
+    seed_ids = [101, 100] if method == "spline" else [100, 101]
+    expected_training = {"a": seed_ids, "ac": seed_ids, "b": [0, 1, 2, 6, 7, 8], "bc": list(range(6)), "c": []}
+    assert instances[0].events[0] == ("fit", expected_training[scenario])
+    assert calls == ([[100, 101]] if method == "spline" and scenario in {"a", "ac"} else [])
+    expected_updates = {"a": [], "b": [], "ac": [[5], [10]], "bc": [[11]], "c": [[5], [10]]}
+    assert [event[1] for event in instances[0].events if event[0] == "tune"] == expected_updates[scenario]
+    assert result["training_count"] == len(expected_training[scenario])
+
+
+@pytest.mark.parametrize("method,scenario", [("gbdt", "a"), ("gbdt", "ac"), ("hybrid", "ac"), ("selector", "ac")])
+def test_learned_offline_seeds_keep_their_existing_order(scenario_case, recording, monkeypatch, method, scenario):
+    from scripts.fpm_accuracy.models import scenario_predictors
+
+    def forbidden(rows):
+        pytest.fail("Regression ordering must not change learned model seeds.")
+
+    monkeypatch.setattr(scenario_predictors, "order_offline_regression_seeds", forbidden)
+    instances, options = recording
+    score_scenario(scenario_case, method, scenario, **options)
+    assert instances[0].events[0] == ("fit", [100, 101])
+
+
 def test_interpolation_records_actual_method_without_inference(scenario_case, recording):
     _, options = recording
-    evidence = {"method": "direct", "timing_only": True, "text_only": True, "metadata_recovered": False}
+    evidence = {
+        "method": "direct",
+        "timing_only": True,
+        "text_only": True,
+        "metadata_recovered": False,
+    }
     model = RecordingPredictor("warmup", ())
     model.diagnostics = lambda: {"interpolation": evidence}
     result = score_scenario(scenario_case, "warmup", "a", **{**options, "factory": lambda *a, **k: model})
@@ -243,7 +306,14 @@ def test_b_alternates_each_workload_kind_and_freezes_after_fit(scenario_case, re
     ],
 )
 def test_streams_predict_before_current_target_updates(
-    scenario_case, recording, scenario, expected_training, test_ids, scheduled, warmup, skipped
+    scenario_case,
+    recording,
+    scenario,
+    expected_training,
+    test_ids,
+    scheduled,
+    warmup,
+    skipped,
 ):
     instances, options = recording
     result = score_scenario(scenario_case, "linear", scenario, **options)
@@ -275,7 +345,10 @@ def test_streams_predict_before_current_target_updates(
         "skipped_observation_count": skipped,
     }
     if scenario == "c":
-        assert result["cold_start"] == {"unavailable_before_first_prediction": 11, "first_prediction_index": 11}
+        assert result["cold_start"] == {
+            "unavailable_before_first_prediction": 11,
+            "first_prediction_index": 11,
+        }
         assert result["metrics"]["all"]["unavailable_count"] == 11
         assert result["metrics"]["all"]["coverage_pct"] == pytest.approx(100 / 12)
 
@@ -303,7 +376,11 @@ def test_changing_current_and_future_targets_cannot_change_earlier_predictions(s
 def test_intervening_targets_are_never_accumulated_or_replayed(scenario_case, recording, scenario, skipped):
     instances, options = recording
     altered = tuple(
-        observation(item.order, str(item.workload_kind), actual=1000 if item.order in skipped else 10)
+        observation(
+            item.order,
+            str(item.workload_kind),
+            actual=1000 if item.order in skipped else 10,
+        )
         for item in scenario_case.observations
     )
     first = score_scenario(scenario_case, "linear", scenario, **options)
@@ -418,7 +495,12 @@ def test_online_requires_valid_timestamps_for_entire_case(scenario_case, recordi
     # This lies in BC's training half: validating only the testing half would
     # incorrectly claim a temporal protocol for a source with a missing clock.
     observations[0] = replace(observations[0], event_time_ms=timestamp)
-    result = score_scenario(replace(scenario_case, observations=tuple(observations)), "linear", scenario, **options)
+    result = score_scenario(
+        replace(scenario_case, observations=tuple(observations)),
+        "linear",
+        scenario,
+        **options,
+    )
     assert result["status"] == "chronology_unavailable"
     assert not instances
     assert result["cost"]["fit_ms"] is None
@@ -501,18 +583,28 @@ def test_c_mixed_rank_store_cannot_train_early(scenario_case, recording):
     for index, prefill_tokens in enumerate((1, 1000, 1, 1000)):
         item = observation(index, "prefill")
         prefill_rank = replace(
-            item.iteration.ranks[0], scheduled=RequestMetrics(num_prefill_requests=1, sum_prefill_tokens=prefill_tokens)
+            item.iteration.ranks[0],
+            scheduled=RequestMetrics(num_prefill_requests=1, sum_prefill_tokens=prefill_tokens),
         )
         decode_rank = replace(
             observation(index, "decode").iteration.ranks[0],
             dp_rank=1,
         )
         observations.append(
-            replace(item, iteration=ForwardPassIteration((prefill_rank, decode_rank)), event_time_ms=index * 100)
+            replace(
+                item,
+                iteration=ForwardPassIteration((prefill_rank, decode_rank)),
+                event_time_ms=index * 100,
+            )
         )
     # Display categories alternate as the representative rank changes, while
     # all four observations occupy the same native cross-rank store.
-    assert [str(item.workload_kind) for item in observations] == ["decode", "prefill", "decode", "prefill"]
+    assert [str(item.workload_kind) for item in observations] == [
+        "decode",
+        "prefill",
+        "decode",
+        "prefill",
+    ]
 
     class SharedStorePredictor(RecordingPredictor):
         def predict(self, features):
@@ -538,7 +630,12 @@ def test_bc_uses_floor_half_and_does_not_claim_unordered_data_is_temporal(scenar
     result = score_scenario(odd_case, "linear", "bc", **options)
     assert instances[0].events[0] == ("fit", [0, 1])
     assert result["training_count"] == 2 and result["test_count"] == 3
-    result = score_scenario(replace(odd_case, ordering=OrderingKind.INTENTIONAL_SWEEP), "linear", "bc", **options)
+    result = score_scenario(
+        replace(odd_case, ordering=OrderingKind.INTENTIONAL_SWEEP),
+        "linear",
+        "bc",
+        **options,
+    )
     assert len(instances) == 1
     assert result["status"] == "chronology_unavailable"
     assert result["metrics"]["all"]["unavailable_count"] == 3
@@ -560,7 +657,7 @@ def test_matrix_separates_predictor_state_and_keeps_same_test_population(scenari
     document = scenario_document([row], snapshot={"hf_revision": "d" * 40})
     assert document["methods"] == list(METHODS)
     assert document["scenarios"] == list(SCENARIOS)
-    assert document["protocol_id"] == "fpm-scenarios-v13"
+    assert document["protocol_id"] == "fpm-scenarios-v14"
     assert row["results"]["a"]["selector"] is None
     assert all(row["split_results"][str(percent)]["b"]["selector"] is None for percent in TRAIN_PERCENTAGES)
     # Only C, A+C, and the nine B+C splits construct selector state.
@@ -702,13 +799,19 @@ def test_prediction_and_update_failures_retain_denominator_and_cleanup(scenario_
 def test_empty_holdout_and_invalid_stream_are_explicit(scenario_case, recording):
     instances, options = recording
     result = score_scenario(
-        replace(scenario_case, observations=scenario_case.observations[:3]), "linear", "b", **options
+        replace(scenario_case, observations=scenario_case.observations[:3]),
+        "linear",
+        "b",
+        **options,
     )
     assert result["status"] == "no_test_data"
     assert result["test_count"] == 0 and result["metrics"]["all"]["mape_pct"] is None
     assert not instances
     with pytest.raises(ValueError, match="unique IDs"):
-        evaluate_scenario_case(replace(scenario_case, observations=(scenario_case.observations[0],) * 2), **options)
+        evaluate_scenario_case(
+            replace(scenario_case, observations=(scenario_case.observations[0],) * 2),
+            **options,
+        )
 
 
 @pytest.fixture
@@ -749,26 +852,106 @@ def public_scenarios(scenario_case, recording):
     return scenario_document([row], snapshot=snapshot), summary
 
 
-def test_public_scenario_contract_matches_source_and_is_dependency_free(public_scenarios):
+def test_public_scenario_contract_matches_source_and_is_dependency_free(
+    public_scenarios,
+):
     document, summary = public_scenarios
     assert validate_scenarios(document, summary) is document
     subprocess.run(
-        [sys.executable, "-S", "-c", "from scripts.fpm_accuracy.scenario_contract import validate_scenarios"],
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "from scripts.fpm_accuracy.scenario_contract import validate_scenarios",
+        ],
         check=True,
         cwd=Path(__file__).resolve().parents[2],
     )
 
 
-def test_public_contract_preserves_and_validates_interpolation_semantics(public_scenarios):
+def test_public_contract_preserves_and_validates_interpolation_semantics(
+    public_scenarios,
+):
     document, summary = public_scenarios
-    evidence = {"method": "direct", "timing_only": True, "text_only": True, "metadata_recovered": False}
+    evidence = {
+        "method": "direct",
+        "timing_only": True,
+        "text_only": True,
+        "metadata_recovered": False,
+    }
     document["rows"][0]["results"]["a"]["warmup"]["interpolation"] = evidence
     assert validate_scenarios(document, summary) is document
-    for field, value in (("method", "auto"), ("timing_only", "true"), ("method", "sol")):
+    for field, value in (
+        ("method", "auto"),
+        ("timing_only", "true"),
+        ("method", "sol"),
+    ):
         altered = deepcopy(document)
         altered["rows"][0]["results"]["a"]["warmup"]["interpolation"][field] = value
         with pytest.raises(ValueError, match="interpolation"):
             validate_scenarios(altered, summary)
+
+
+@pytest.fixture
+def normalized_public_scenarios(public_scenarios):
+    document, summary = public_scenarios
+    cell = document["rows"][0]["results"]["a"]["linear"]
+    cell["seed_target_normalization"] = {
+        "policies": ["same_cell_batch_real_kv_extrapolation_v1"],
+        "source_parquet_sha256": [cell["artifact"]["sha256"]],
+        "source_metadata_sha256": [cell["artifact"]["metadata_sha256"]],
+        "marked_source_rows": 1,
+        "replaced_source_rows": 1,
+        "kept_source_rows": 0,
+        "replicated_seed_rows": 1,
+        "replacement_enabled": True,
+        "effective_targets_sha256": "e" * 64,
+        "target_scope": "native_profile_seed_targets_not_additional_measurements",
+    }
+    return document, summary
+
+
+def test_public_contract_binds_effective_seed_targets_to_original_artifact(normalized_public_scenarios):
+    document, summary = normalized_public_scenarios
+    assert validate_scenarios(document, summary) is document
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("source_parquet_sha256", ["f" * 64], "seed normalization source mismatch"),
+        ("source_metadata_sha256", ["f" * 64], "seed normalization source mismatch"),
+        ("policies", [], "invalid seed normalization policy"),
+        ("policies", ["unknown_policy"], "invalid seed normalization policy"),
+        ("marked_source_rows", 0, "seed normalization has no marked source rows"),
+        ("kept_source_rows", 1, "seed normalization row count mismatch"),
+        ("replicated_seed_rows", 0, "seed normalization replication count mismatch"),
+        ("replicated_seed_rows", 3, "seed normalization replication count mismatch"),
+        ("replacement_enabled", False, "disabled seed replacement changed targets"),
+        ("effective_targets_sha256", "e" * 63, "invalid SHA"),
+        ("effective_targets_sha256", "z" * 64, "invalid SHA"),
+        ("target_scope", "additional_measurements", "invalid seed target scope"),
+    ],
+)
+def test_public_contract_rejects_invalid_seed_normalization(normalized_public_scenarios, field, value, message):
+    document, summary = normalized_public_scenarios
+    cell = document["rows"][0]["results"]["a"]["linear"]
+    assert cell["training_count"] == 2
+    cell["seed_target_normalization"][field] = value
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        validate_scenarios(document, summary)
+
+
+@pytest.mark.parametrize("scenario,method", [("b", "linear"), ("a", "warmup"), ("a", "nowarmup")])
+def test_public_contract_rejects_seed_normalization_outside_learned_artifact_scenarios(
+    normalized_public_scenarios, scenario, method
+):
+    document, summary = normalized_public_scenarios
+    results = document["rows"][0]["results"]
+    details = results["a"]["linear"].pop("seed_target_normalization")
+    results[scenario][method]["seed_target_normalization"] = details
+    with pytest.raises(ValueError, match="^unexpected seed normalization$"):
+        validate_scenarios(document, summary)
 
 
 @pytest.mark.parametrize(
@@ -791,7 +974,18 @@ def test_public_contract_preserves_and_validates_interpolation_semantics(public_
         (("rows", 0, "results", "a", "linear", "reason"), "file:///private/secret"),
         (("rows", 0, "results", "a", "linear", "metrics", "all", "coverage_pct"), 0),
         (("rows", 0, "results", "a", "linear", "metrics", "all", "mape_pct"), 200),
-        (("rows", 0, "results", "c", "linear", "cold_start", "first_prediction_index"), 12),
+        (
+            (
+                "rows",
+                0,
+                "results",
+                "c",
+                "linear",
+                "cold_start",
+                "first_prediction_index",
+            ),
+            12,
+        ),
     ],
 )
 def test_public_contract_rejects_changed_evidence_or_misleading_outcomes(public_scenarios, field, value):
