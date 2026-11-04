@@ -40,7 +40,7 @@ python3 components/probe_driver.py --plan | --emit-queues | --records | --matrix
 AIS_SM=<sm> bash components/captures/verdicts_vllm_0300.sh                              # grade every declared gate
 python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)
 python3 components/case_inventory.py --fw <fw> --skips [--ops a,b]                      # rule-7 recheck skeleton
-python3 components/op_smoke.py --backend <fw> --op <op> --select field=value,...        # one planned case, in the image
+python3 -c 'from op_smoke import run_planned; run_planned("<fw>", "<op>", field=value)'  # one planned case, in the image
 ```
 
 The collector's vocabulary (Pin, Plan, Record, Note, Rule) is in

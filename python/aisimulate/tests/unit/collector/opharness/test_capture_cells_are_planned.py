@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""A capture that names its cell through the op plan (op_smoke.planned_row,
-run_planned or --select) must name exactly one planned case on the SMs it is graded
+"""A capture that names its cell through the op plan (op_smoke.planned_row
+or run_planned) must name exactly one planned case on the SMs it is graded
 on: a capture of a cell the collector never collects grades nothing (the GLM-5
 DSA module capture used to time 128 heads on GLM-5, a cell no plan holds)."""
 
@@ -20,21 +20,12 @@ GRADED_SMS = (90, 100)
 
 
 def _selections(path: Path) -> list[tuple[str, str, dict]]:
-    """(backend, op, select) of every planned_row / run_planned call and op_smoke --select argv in a capture."""
+    """(backend, op, select) of every planned_row / run_planned call in a capture."""
     found = []
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) in ("planned_row", "run_planned"):
             backend, op = (ast.literal_eval(arg) for arg in node.args[:2])
             found.append((backend, op, {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords}))
-        if (
-            isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.List)
-            and any(getattr(t, "attr", None) == "argv" for t in node.targets)
-        ):
-            argv = [ast.literal_eval(elt) for elt in node.value.elts]
-            if "--select" in argv:
-                select = dict(pair.split("=", 1) for pair in argv[argv.index("--select") + 1].split(","))
-                found.append((argv[argv.index("--backend") + 1], argv[argv.index("--op") + 1], select))
     return found
 
 
