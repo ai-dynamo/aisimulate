@@ -1,0 +1,88 @@
+{
+  "full_current_collection_gpu_hours": null,
+  "reason": "The completed PR517 campaign retains mixed, non-cumulative clocks, not a verified fleetGPUh total; current collector pins/plans also differ from that historical campaign.",
+  "timing_semantics": {
+    "summary_header": "GitLab job duration wall, includes pre/post/possible resource wait; not active GPU collection hours",
+    "multi_shard_seconds": "run_collector elapsed wall inside already-running container, includes collect.py startup/warmup/forward/finalization and possible exit-grace watchdog; excludes container provisioning and communication",
+    "single_shard_fallback_seconds": "If artifact lacks shard directories, package_run substitutes GitLab job duration, not same clock as multi-shard seconds",
+    "restore_dedup": "package_run keeps DONE/later shard status and can union partial jobs, so final per-shard summaries do not retain all retry cost; raw jobs needed for spend accounting",
+    "GPU_weight": "Visible GPUs/device_count starts worker pool in collector. Need actual participating workers/communication ranks and exclude idle tails; allocation times not actual collection metric."
+  },
+  "sources": [
+    {
+      "file": "deleted-inputs.json",
+      "git_ref": "2f9e97c6cd882d341daf4aa9b922adf1ecc77a6d",
+      "source_path": "docs/dynamo-1.6-refresh/inputs.json",
+      "sha256": "8080b0a33c3c079fb47db065fb5c8304c4f40698c59ebd38b453d231cbba58bd",
+      "url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/blob/2f9e97c6cd882d341daf4aa9b922adf1ecc77a6d/docs/dynamo-1.6-refresh/inputs.json"
+    },
+    {
+      "file": "case-inventory.json",
+      "git_ref": "2f9e97c6cd882d341daf4aa9b922adf1ecc77a6d",
+      "source_path": "docs/dynamo-1.6-refresh/case-inventory.json",
+      "sha256": "76260d0cd94cf5691dca46e27cd03f052eef54af08623adec4d88f6b3f056095",
+      "url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/blob/2f9e97c6cd882d341daf4aa9b922adf1ecc77a6d/docs/dynamo-1.6-refresh/case-inventory.json"
+    },
+    {
+      "file": "package_run.py",
+      "git_ref": "fad96ae0d38ec7fcd6de2bed06ef2a4082fa453f",
+      "source_path": "tools/campaign/package_run.py",
+      "sha256": "8d8831aa4e09b7505c28dd4194d40d8d1a8060e43e3ace8b5a449b3fd43189ed",
+      "url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/blob/fad96ae0d38ec7fcd6de2bed06ef2a4082fa453f/tools/campaign/package_run.py"
+    },
+    {
+      "file": "run_shards.py",
+      "git_ref": "fad96ae0d38ec7fcd6de2bed06ef2a4082fa453f",
+      "source_path": "data_collection/run_shards.py",
+      "sha256": "93e3e42eff8ab9a83466c2de94ee0552f9a5978b69d79ee1915216a0d31ef838",
+      "url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/blob/fad96ae0d38ec7fcd6de2bed06ef2a4082fa453f/data_collection/run_shards.py"
+    }
+  ],
+  "historical_campaign": {
+    "github_pr": "https://github.com/ai-dynamo/aisimulate/pull/517",
+    "gitlab_mr": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/merge_requests/75",
+    "frameworks": {
+      "vllm": "0.30.0",
+      "sglang": "0.5.21",
+      "trtllm": "1.3.0rc29"
+    },
+    "systems": [
+      "b200_sxm",
+      "b300_sxm",
+      "gb200",
+      "gb300",
+      "h100_sxm",
+      "h200_sxm",
+      "l40s",
+      "rtx_pro_6000_server"
+    ],
+    "cells": 24,
+    "tables": 508,
+    "rows": 14547494,
+    "current_collector_full_collection_gpu_hours": null,
+    "historical_campaign_total_gpu_hours": null,
+    "timing_caveat": "Retained status seconds mix latest collector invocations with fallback CI durations; resumes overwrite prior invocation clocks; actual per-attempt GPU participants differ. No valid GPU-hour total follows from summing them."
+  },
+  "concrete_fallback_example": {
+    "cell": "h200_sxm/vllm",
+    "shard": "dsa_context_module/s1536_2048_3072",
+    "recorded_seconds": 142226,
+    "clock": "GitLab job wall, not isolated collection",
+    "source_job": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/484472253"
+  },
+  "current_runtime_differences_source": "https://github.com/ai-dynamo/aisimulate/pull/649",
+  "historical_readme_guideline": {
+    "backend": "trtllm",
+    "gpu_hours": 30,
+    "wall_hours_on_8_gpus": [
+      3,
+      4
+    ],
+    "introduced_commit": "40bc989a91",
+    "status": "historical rule of thumb; GPU SKU, exact plan and measurement boundary not specified; not current baseline"
+  },
+  "removed_refresh_inventory": {
+    "scope": "SixSM90+systems x3frameworks; scope declaration only, not evidence of completed run or reviewer fleet identity.",
+    "status": "A separate deleted Dynamo1.6 refresh plan had18not_startedcells. This does not mean PR517 was uncollected."
+  }
+}

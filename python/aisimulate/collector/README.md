@@ -750,3 +750,95 @@ failures may try smaller eligible token counts; if every attempt fails, the
 case raises before timing or publishing rows. CUDA accelerator errors propagate
 immediately. The successful collection path and historical profile values are
 unchanged by this failure guard.
+
+# Appendix: estimated extra collection time for long-history shapes
+
+These are **provisional planning estimates**, in additional collection GPU-hours
+above the pinned #676 baseline. They price the extra model-owned points enabled
+by `--include-long-history`; the existing baseline anchors remain enabled when
+the flag is off. They are not measured full-sweep totals or confidence bounds.
+
+## Estimated long-history increment
+
+The estimates use each sampled SKU's own framework measurements and the frozen
+added-case inventory. Rounded planning centers across the three frameworks are:
+
+| GPU SKU | vLLM GPUh | SGLang GPUh | TRT-LLM GPUh | Long-history total GPUh |
+|---|---:|---:|---:|---:|
+| L40S | 2.0 | 2.6 | 3.4 | ~8 |
+| H100 SXM | 4.4 | 2.7 | 1.9 | ~9 |
+| H200 SXM | 3.9 | 10.2 | 1.7 | ~16 |
+| B200 SXM | 2.6 | 18.3 | 5.5 | ~26 |
+| B300 SXM | 2.2 | 18.7 | 1.3 | ~22 |
+| GB200 | 3.5 | 9.5 | 4.5 | ~18 |
+| GB300 | 5.6 | 13.9 | 10.6 | ~30 |
+| A100 SXM80 | Unmeasured | Unmeasured | Unmeasured | Unmeasured |
+
+The seven sampled SKUs total **approximately 130 GPU-hours** for the modeled
+long-history work. Rows include explicit analogous-operation provisions where
+native measurements are missing; 1,628 additional history cells still lack a
+same-framework analogue. The table does not establish that every planned shape
+fits memory or has a working native kernel.
+
+Preparation scales with cache/input payload and execution with attention work,
+including the sliding-window cap. Precision, geometry and dispatch extrapolations
+remain assumptions. B300 uses the intended GLM NVFP4 collection recipe and its
+own measurements; these timings do not establish canonical BF16 startup or
+capacity equivalence. Other SKUs do not borrow B300 rates.
+
+Inclusive point clocks contain input/history preparation, warmup, compilation,
+graph capture and forwards. Forward latency is not added again. Existing worker
+initialization is paid once when its group is extended; larger buffers and
+shape-dependent setup can still add cost. Scheduler wait, GPU allocation launch
+and idle reservation are excluded. Operator tests use one physical GPU even when
+their geometry represents a TP rank; actual collective ranks are counted for NCCL.
+
+## Broader expansion budget
+
+The independent MoE token, KDA width and NCCL payload changes add a separate
+**approximately 55 GPU-hours** of planning proxies across the seven sampled SKUs.
+They are outside the history flag and are not part of the 130-hour history total.
+Together, the modeled expansion subtotal is approximately **185 GPU-hours**.
+
+A provisional **eight-SKU working budget of 300 GPU-hours** adds selected reserves
+of 50 GPU-hours for unmeasured A100 work and 65 GPU-hours for remaining cases,
+setup changes and retries. A larger engineering allowance is **750 GPU-hours
+total**, not 750 additional hours. These reserves are budget choices, not measured
+rates, statistical intervals or guarantees of successful coverage. No RTX PRO
+estimate is included in this eight-SKU budget.
+
+The [planning calculation and assumptions](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/provisional-planning-estimate.json)
+retain the unrounded per-framework values, case counts, native/proxy distinctions
+and source hashes. The [calculation sources](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/provisional-calculation-sources.zip)
+preserve the environment-specific scratch calculations. The separate
+[strict audit](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/cost-summary.md)
+keeps unqualified full totals unknown; these planning figures do not change its
+validation results. Deferred native Kimi coverage is not priced as zero or counted
+as equivalent-coverage savings.
+
+## Existing full-collection cost: not established
+
+The earlier statement of approximately 30 GPU-hours for TRT-LLM is a historical
+rule of thumb, not a verified current-baseline cost. It does not identify a GPU
+SKU, frozen case inventory or timing boundary. Do not multiply it across all
+frameworks and SKUs to construct a fleet baseline.
+
+Tianhao's [October campaign, PR #517](https://github.com/ai-dynamo/aisimulate/pull/517),
+published 508 tables and 14,547,494 rows across 24 system/framework cells using
+vLLM 0.30.0, SGLang 0.5.21 and TRT-LLM 1.3.0rc29. Its eight SKUs included RTX PRO
+6000 Server Edition and excluded A100; only seven overlap the planning table above.
+It predates #676 and the newer vLLM attention pin, so even a recovered historical
+cost would need its original scope and revisions recorded.
+
+The [auto-collector campaign](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/merge_requests/75)
+retains per-shard timings, but they do not establish a defensible fleet GPU-hour
+total: resumed status replaces earlier invocation times, some packaged fallback
+timings are whole CI-job durations, GPU participation varies, and collector-exit
+grace can include idle time. Summing those fields or multiplying all of them by
+eight would mix collection, waiting and recovery clocks.
+
+The [baseline research and source references](../../../benchmarks/evidence/collector/agentic-coverage-cost-2026-11/baseline-cost-research.json)
+therefore record the current full-collection cost as **unknown**. Recovering it
+requires distinct collector/worker spans and actual GPU participation for each
+attempt, including resumes and retries, with allocation and idle time excluded.
+No baseline-plus-expansion total or percentage increase is claimed here.

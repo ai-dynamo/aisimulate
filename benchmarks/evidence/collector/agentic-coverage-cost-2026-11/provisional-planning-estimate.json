@@ -1,0 +1,1548 @@
+{
+  "status": "PROVISIONAL ENGINEERING PLANNING BUDGET; not validated fleet forecast or confidence interval",
+  "units": "additional active collection GPU-hours above pinned676; allocation excluded",
+  "sampled_systems": 7,
+  "target_systems": 8,
+  "systems": [
+    {
+      "system": "l40s",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 8.021751773802015,
+        "0.5": 7.860984801517922
+      },
+      "common_operation_planning_gpuh": 24.100847383093384,
+      "modeled_subtotal_gpuh": {
+        "0": 32.1225991568954,
+        "0.5": 31.961832184611307
+      },
+      "central_gpuh": 32.04221567075335,
+      "unpriced_history_cells": 290,
+      "common_engineering_allowance_gpuh": 48.39507452624716,
+      "uses_b300_NVFP4_recipe": false
+    },
+    {
+      "system": "h100_sxm",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 8.75873543545889,
+        "0.5": 9.418819156871978
+      },
+      "common_operation_planning_gpuh": 6.721356745057965,
+      "modeled_subtotal_gpuh": {
+        "0": 15.480092180516856,
+        "0.5": 16.140175901929943
+      },
+      "central_gpuh": 15.8101340412234,
+      "unpriced_history_cells": 300,
+      "common_engineering_allowance_gpuh": 17.22992905969637,
+      "uses_b300_NVFP4_recipe": false
+    },
+    {
+      "system": "h200_sxm",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 14.24535100102149,
+        "0.5": 17.40730675523713
+      },
+      "common_operation_planning_gpuh": 7.0873784846130725,
+      "modeled_subtotal_gpuh": {
+        "0": 21.332729485634562,
+        "0.5": 24.494685239850202
+      },
+      "central_gpuh": 22.913707362742382,
+      "unpriced_history_cells": 300,
+      "common_engineering_allowance_gpuh": 24.20910497751887,
+      "uses_b300_NVFP4_recipe": false
+    },
+    {
+      "system": "b200_sxm",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 25.562620453235777,
+        "0.5": 27.26018818991479
+      },
+      "common_operation_planning_gpuh": 4.095151996867585,
+      "modeled_subtotal_gpuh": {
+        "0": 29.657772450103362,
+        "0.5": 31.355340186782374
+      },
+      "central_gpuh": 30.50655631844287,
+      "unpriced_history_cells": 0,
+      "common_engineering_allowance_gpuh": 27.578087704043696,
+      "uses_b300_NVFP4_recipe": false
+    },
+    {
+      "system": "b300_sxm",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 22.238585794655105,
+        "0.5": 22.139876420988852
+      },
+      "common_operation_planning_gpuh": 3.727416926897647,
+      "modeled_subtotal_gpuh": {
+        "0": 25.96600272155275,
+        "0.5": 25.8672933478865
+      },
+      "central_gpuh": 25.916648034719625,
+      "unpriced_history_cells": 0,
+      "common_engineering_allowance_gpuh": 61.7388929681271,
+      "uses_b300_NVFP4_recipe": true
+    },
+    {
+      "system": "gb200",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 17.333121692162614,
+        "0.5": 17.652916894261466
+      },
+      "common_operation_planning_gpuh": 6.45690436080319,
+      "modeled_subtotal_gpuh": {
+        "0": 23.790026052965803,
+        "0.5": 24.109821255064656
+      },
+      "central_gpuh": 23.94992365401523,
+      "unpriced_history_cells": 0,
+      "common_engineering_allowance_gpuh": 15.172400951510985,
+      "uses_b300_NVFP4_recipe": false
+    },
+    {
+      "system": "gb300",
+      "directly_sampled": true,
+      "attention_planning_gpuh": {
+        "0": 32.76881862084198,
+        "0.5": 27.39779877312985
+      },
+      "common_operation_planning_gpuh": 3.280137751829694,
+      "modeled_subtotal_gpuh": {
+        "0": 36.04895637267167,
+        "0.5": 30.677936524959545
+      },
+      "central_gpuh": 33.36344644881561,
+      "unpriced_history_cells": 738,
+      "common_engineering_allowance_gpuh": 24.70949392536779,
+      "uses_b300_NVFP4_recipe": false
+    }
+  ],
+  "seven_system_matched_prep_scenarios_gpuh": [
+    184.3981784203404,
+    184.60708464108453
+  ],
+  "seven_system_modeled_center_gpuh": 184.50263153071245,
+  "seven_system_common_center_gpuh": 55.469193649162534,
+  "remaining_history_cells_without_same_framework_analogue": 1628,
+  "additional_gap_setup_retry_provision_gpuh": 65,
+  "a100_unmeasured_budget_reserve_gpuh": 50,
+  "a100_reserve_is_native_measurement_or_rate_estimate": false,
+  "eight_system_working_budget_calculation_gpuh": 299.50263153071245,
+  "rounded_eight_system_working_budget_gpuh": 300,
+  "engineering_allowance_calculation": {
+    "three_times_history_upper_prep_scenario_gpuh": 404.3051615567534,
+    "common_operation_engineering_allowance_gpuh": 219.03298411251197,
+    "gap_setup_retry_provision_gpuh": 65,
+    "a100_unmeasured_provision_gpuh": 50,
+    "sum_gpuh": 738.3381456692654,
+    "rounded_total_allowance_gpuh": 750
+  },
+  "assumptions": [
+    "50GPUhA100 and65GPUhresidual provisions are selected budget reserves, not empirical rates or forecast confidence bounds.",
+    "Seven-system estimates combine native point-based extrapolations and explicitly analogous-operation provisions. They do not guarantee successful native collection for refused or unsupported shapes.",
+    "No B300 silicon rate is substituted for anotherSKU. B300alone uses explicitGLMNVFP4recipe, not canonicalBF16startup/capacity equivalence.",
+    "The earlier strict audit remains unchanged; full qualifiedcosttotals are incomplete.",
+    "Reviewer1500GPUh referred to sixsystems and earlier broadgrid before676; exactsixSKUidentity notverified. Comparisons are coverage-policy/budget comparisons, not measured equivalent-workload savings."
+  ],
+  "shared_history_priced_only_seven_system_gpuh": [
+    2345.0794870027153,
+    3031.619547896646
+  ],
+  "no_new_GPU_runs": true,
+  "input_sample_sha256": "9210a7908f5142a9b33f7b3ceb8b0727939bd1bd629df615c9b6740c17404309",
+  "frozen_plan_zip_sha256": "1610a7be38163ecf7b6128bc7022bd808082e98378382282da9739a2d8bfe81a",
+  "attention_case_counts_and_proxy_details": [
+    {
+      "system": "l40s",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 426.1107585994432,
+          "0.5": 402.1457015369468
+        },
+        "operational_reserve_gpuh": {
+          "0": 0.8799037462022571,
+          "0.5": 0.8456365478515626
+        },
+        "residual_unpriced_cells": 5392,
+        "residual_gaps": [
+          {
+            "backend": "vllm",
+            "operation": "mla_generation_module",
+            "added": 792
+          },
+          {
+            "backend": "vllm",
+            "operation": "msa_generation_module",
+            "added": 480
+          },
+          {
+            "backend": "sglang",
+            "operation": "mla_context",
+            "added": 1876
+          },
+          {
+            "backend": "sglang",
+            "operation": "mla_generation",
+            "added": 504
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 490
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_generation_module",
+            "added": 120
+          },
+          {
+            "backend": "trtllm",
+            "operation": "msa_context_module",
+            "added": 890
+          },
+          {
+            "backend": "trtllm",
+            "operation": "msa_generation_module",
+            "added": 240
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 426.9906623456455,
+          "0.5": 402.9913380847983
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 7.645581365069918,
+          "0.5": 7.494780375858742
+        },
+        "operational_reserve_gpuh": {
+          "0": 0.3761704087320964,
+          "0.5": 0.3662044256591797
+        },
+        "residual_unpriced_cells": 290,
+        "residual_gaps": [
+          {
+            "backend": "vllm",
+            "operation": "msa_generation_module",
+            "added": 130
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 30
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_generation_module",
+            "added": 65
+          },
+          {
+            "backend": "trtllm",
+            "operation": "msa_generation_module",
+            "added": 65
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 8.021751773802015,
+          "0.5": 7.860984801517922
+        }
+      }
+    },
+    {
+      "system": "h100_sxm",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 260.9670145552235,
+          "0.5": 234.71099846543777
+        },
+        "operational_reserve_gpuh": {
+          "0": 112.93676013013788,
+          "0.5": 117.2743130449074
+        },
+        "residual_unpriced_cells": 7726,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module",
+            "added": 2910
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module_skip_indexer",
+            "added": 1960
+          },
+          {
+            "backend": "sglang",
+            "operation": "mla_context",
+            "added": 1876
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 980
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 373.9037746853614,
+          "0.5": 351.9853115103452
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 7.171221919256125,
+          "0.5": 7.44645391185622
+        },
+        "operational_reserve_gpuh": {
+          "0": 1.5875135162027647,
+          "0.5": 1.9723652450157585
+        },
+        "residual_unpriced_cells": 300,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module",
+            "added": 120
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module_skip_indexer",
+            "added": 120
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 60
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 8.75873543545889,
+          "0.5": 9.418819156871978
+        }
+      }
+    },
+    {
+      "system": "h200_sxm",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 229.73714288191448,
+          "0.5": 209.7966587244563
+        },
+        "operational_reserve_gpuh": {
+          "0": 95.77491611524273,
+          "0.5": 104.59219921313124
+        },
+        "residual_unpriced_cells": 7726,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module",
+            "added": 2910
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module_skip_indexer",
+            "added": 1960
+          },
+          {
+            "backend": "sglang",
+            "operation": "mla_context",
+            "added": 1876
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 980
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 325.5120589971572,
+          "0.5": 314.38885793758755
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 9.728359396241887,
+          "0.5": 11.335429569685472
+        },
+        "operational_reserve_gpuh": {
+          "0": 4.516991604779604,
+          "0.5": 6.071877185551657
+        },
+        "residual_unpriced_cells": 300,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module",
+            "added": 120
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_context_module_skip_indexer",
+            "added": 120
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_context_module",
+            "added": 60
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 14.24535100102149,
+          "0.5": 17.40730675523713
+        }
+      }
+    },
+    {
+      "system": "b200_sxm",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 434.39990883803955,
+          "0.5": 350.9043975108584
+        },
+        "operational_reserve_gpuh": {
+          "0": 248.0944322589283,
+          "0.5": 255.55091141204778
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 682.4943410969679,
+          "0.5": 606.4553089229062
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 18.921718626568815,
+          "0.5": 19.697245896850145
+        },
+        "operational_reserve_gpuh": {
+          "0": 6.640901826666963,
+          "0.5": 7.562942293064643
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 25.562620453235777,
+          "0.5": 27.26018818991479
+        }
+      }
+    },
+    {
+      "system": "b300_sxm",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 208.10153529925685,
+          "0.5": 174.38977178855566
+        },
+        "operational_reserve_gpuh": {
+          "0": 145.3296236017745,
+          "0.5": 149.23351538759246
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 353.4311589010314,
+          "0.5": 323.6232871761481
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 13.442174917857608,
+          "0.5": 12.55529189734553
+        },
+        "operational_reserve_gpuh": {
+          "0": 2.537502963130101,
+          "0.5": 2.6895149031979826
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 15.979677880987708,
+          "0.5": 15.244806800543513
+        }
+      }
+    },
+    {
+      "system": "gb200",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 355.65991934765185,
+          "0.5": 289.32337035712527
+        },
+        "operational_reserve_gpuh": {
+          "0": 201.53960571204755,
+          "0.5": 207.16261500198559
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 557.1995250596995,
+          "0.5": 496.4859853591108
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 13.885386237220235,
+          "0.5": 14.018885100152692
+        },
+        "operational_reserve_gpuh": {
+          "0": 3.44773545494238,
+          "0.5": 3.6340317941087745
+        },
+        "residual_unpriced_cells": 0,
+        "residual_gaps": [],
+        "conditional_planning_gpuh": {
+          "0": 17.333121692162614,
+          "0.5": 17.652916894261466
+        }
+      }
+    },
+    {
+      "system": "gb300",
+      "shared": {
+        "known_point_gpuh": {
+          "0": 1116.6432683751168,
+          "0.5": 683.8085886193352
+        },
+        "operational_reserve_gpuh": {
+          "0": 325.4247900571139,
+          "0.5": 333.18319480908934
+        },
+        "residual_unpriced_cells": 1704,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_generation_module",
+            "added": 480
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_generation_module_skip_indexer",
+            "added": 480
+          },
+          {
+            "backend": "sglang",
+            "operation": "mla_generation",
+            "added": 504
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_generation_module",
+            "added": 240
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 1442.0680584322308,
+          "0.5": 1016.9917834284245
+        }
+      },
+      "model": {
+        "known_point_gpuh": {
+          "0": 27.31114409876077,
+          "0.5": 22.08099751068012
+        },
+        "operational_reserve_gpuh": {
+          "0": 5.457674522081208,
+          "0.5": 5.31680126244973
+        },
+        "residual_unpriced_cells": 738,
+        "residual_gaps": [
+          {
+            "backend": "sglang",
+            "operation": "dsa_generation_module",
+            "added": 304
+          },
+          {
+            "backend": "sglang",
+            "operation": "dsa_generation_module_skip_indexer",
+            "added": 304
+          },
+          {
+            "backend": "sglang",
+            "operation": "msa_generation_module",
+            "added": 130
+          }
+        ],
+        "conditional_planning_gpuh": {
+          "0": 32.76881862084198,
+          "0.5": 27.39779877312985
+        }
+      }
+    }
+  ],
+  "native_point_projection_details": [
+    {
+      "system": "l40s",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 107.10617238335256,
+        "prep_half_fixed_gpuh": 90.99658821830047,
+        "priced_added_history_cells": 17296,
+        "unpriced_added_history_cells": 3232
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.6430225941386791,
+        "prep_half_fixed_gpuh": 1.555727372097728,
+        "priced_added_history_cells": 334,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "l40s",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 159.0643819647045,
+        "prep_half_fixed_gpuh": 155.52375079930366,
+        "priced_added_history_cells": 20071,
+        "unpriced_added_history_cells": 2990
+      },
+      "model": {
+        "prep_all_variable_gpuh": 2.62912120201891,
+        "prep_half_fixed_gpuh": 2.599273078966475,
+        "priced_added_history_cells": 334,
+        "unpriced_added_history_cells": 95
+      }
+    },
+    {
+      "system": "l40s",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 159.94020425138618,
+        "prep_half_fixed_gpuh": 155.62536251934262,
+        "priced_added_history_cells": 20035,
+        "unpriced_added_history_cells": 1130
+      },
+      "model": {
+        "prep_all_variable_gpuh": 3.373437568912329,
+        "prep_half_fixed_gpuh": 3.3397799247945392,
+        "priced_added_history_cells": 478,
+        "unpriced_added_history_cells": 65
+      }
+    },
+    {
+      "system": "l40s",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 426.1107585994432,
+        "prep_half_fixed_gpuh": 402.1457015369468,
+        "priced_added_history_cells": 57402,
+        "unpriced_added_history_cells": 7352
+      },
+      "model": {
+        "prep_all_variable_gpuh": 7.645581365069918,
+        "prep_half_fixed_gpuh": 7.494780375858742,
+        "priced_added_history_cells": 1146,
+        "unpriced_added_history_cells": 350
+      }
+    },
+    {
+      "system": "h100_sxm",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 87.26788102378501,
+        "prep_half_fixed_gpuh": 68.57407071849438,
+        "priced_added_history_cells": 21636,
+        "unpriced_added_history_cells": 4024
+      },
+      "model": {
+        "prep_all_variable_gpuh": 3.1255319653379194,
+        "prep_half_fixed_gpuh": 3.423634435352434,
+        "priced_added_history_cells": 758,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "h100_sxm",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 109.68929800376354,
+        "prep_half_fixed_gpuh": 107.46070123685136,
+        "priced_added_history_cells": 18136,
+        "unpriced_added_history_cells": 9190
+      },
+      "model": {
+        "prep_all_variable_gpuh": 2.1132609834931757,
+        "prep_half_fixed_gpuh": 2.131640898801908,
+        "priced_added_history_cells": 464,
+        "unpriced_added_history_cells": 908
+      }
+    },
+    {
+      "system": "h100_sxm",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 64.00983552767492,
+        "prep_half_fixed_gpuh": 58.67622651009202,
+        "priced_added_history_cells": 22205,
+        "unpriced_added_history_cells": 5094
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.9324289704250297,
+        "prep_half_fixed_gpuh": 1.891178577701878,
+        "priced_added_history_cells": 690,
+        "unpriced_added_history_cells": 65
+      }
+    },
+    {
+      "system": "h100_sxm",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 260.9670145552235,
+        "prep_half_fixed_gpuh": 234.71099846543777,
+        "priced_added_history_cells": 61977,
+        "unpriced_added_history_cells": 18308
+      },
+      "model": {
+        "prep_all_variable_gpuh": 7.171221919256125,
+        "prep_half_fixed_gpuh": 7.44645391185622,
+        "priced_added_history_cells": 1912,
+        "unpriced_added_history_cells": 1163
+      }
+    },
+    {
+      "system": "h200_sxm",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 73.82986980521464,
+        "prep_half_fixed_gpuh": 58.23558845740919,
+        "priced_added_history_cells": 21636,
+        "unpriced_added_history_cells": 4024
+      },
+      "model": {
+        "prep_all_variable_gpuh": 2.7517305588497907,
+        "prep_half_fixed_gpuh": 2.9221585946690967,
+        "priced_added_history_cells": 758,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "h200_sxm",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 94.53215532232434,
+        "prep_half_fixed_gpuh": 94.88666762133758,
+        "priced_added_history_cells": 18616,
+        "unpriced_added_history_cells": 8710
+      },
+      "model": {
+        "prep_all_variable_gpuh": 5.242139779273157,
+        "prep_half_fixed_gpuh": 6.7123062555201365,
+        "priced_added_history_cells": 768,
+        "unpriced_added_history_cells": 604
+      }
+    },
+    {
+      "system": "h200_sxm",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 61.37511775437551,
+        "prep_half_fixed_gpuh": 56.67440264570953,
+        "priced_added_history_cells": 22205,
+        "unpriced_added_history_cells": 5094
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.7344890581189378,
+        "prep_half_fixed_gpuh": 1.7009647194962378,
+        "priced_added_history_cells": 690,
+        "unpriced_added_history_cells": 65
+      }
+    },
+    {
+      "system": "h200_sxm",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 229.73714288191448,
+        "prep_half_fixed_gpuh": 209.7966587244563,
+        "priced_added_history_cells": 62457,
+        "unpriced_added_history_cells": 17828
+      },
+      "model": {
+        "prep_all_variable_gpuh": 9.728359396241887,
+        "prep_half_fixed_gpuh": 11.335429569685472,
+        "priced_added_history_cells": 2216,
+        "unpriced_added_history_cells": 859
+      }
+    },
+    {
+      "system": "b200_sxm",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 62.52115302707617,
+        "prep_half_fixed_gpuh": 48.19023239060821,
+        "priced_added_history_cells": 23074,
+        "unpriced_added_history_cells": 6036
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.8222744360535086,
+        "prep_half_fixed_gpuh": 1.925566421556721,
+        "priced_added_history_cells": 682,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "b200_sxm",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 50.553515788818316,
+        "prep_half_fixed_gpuh": 47.79121728646932,
+        "priced_added_history_cells": 26012,
+        "unpriced_added_history_cells": 4820
+      },
+      "model": {
+        "prep_all_variable_gpuh": 11.727431264161739,
+        "prep_half_fixed_gpuh": 12.460931815254824,
+        "priced_added_history_cells": 1370,
+        "unpriced_added_history_cells": 424
+      }
+    },
+    {
+      "system": "b200_sxm",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 321.32524002214507,
+        "prep_half_fixed_gpuh": 254.92294783378088,
+        "priced_added_history_cells": 25813,
+        "unpriced_added_history_cells": 6550
+      },
+      "model": {
+        "prep_all_variable_gpuh": 5.372012926353567,
+        "prep_half_fixed_gpuh": 5.310747660038598,
+        "priced_added_history_cells": 826,
+        "unpriced_added_history_cells": 95
+      }
+    },
+    {
+      "system": "b200_sxm",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 434.39990883803955,
+        "prep_half_fixed_gpuh": 350.9043975108584,
+        "priced_added_history_cells": 74899,
+        "unpriced_added_history_cells": 17406
+      },
+      "model": {
+        "prep_all_variable_gpuh": 18.921718626568815,
+        "prep_half_fixed_gpuh": 19.697245896850145,
+        "priced_added_history_cells": 2878,
+        "unpriced_added_history_cells": 709
+      }
+    },
+    {
+      "system": "b300_sxm",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 21.49004889753593,
+        "prep_half_fixed_gpuh": 18.45761501731282,
+        "priced_added_history_cells": 23074,
+        "unpriced_added_history_cells": 6036
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.353753002092988,
+        "prep_half_fixed_gpuh": 1.5342170961060562,
+        "priced_added_history_cells": 682,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "b300_sxm",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 119.30739912051077,
+        "prep_half_fixed_gpuh": 101.69610905127139,
+        "priced_added_history_cells": 25532,
+        "unpriced_added_history_cells": 5300
+      },
+      "model": {
+        "prep_all_variable_gpuh": 10.903361545119122,
+        "prep_half_fixed_gpuh": 9.880074878977126,
+        "priced_added_history_cells": 1066,
+        "unpriced_added_history_cells": 728
+      }
+    },
+    {
+      "system": "b300_sxm",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 67.30408728121017,
+        "prep_half_fixed_gpuh": 54.236047719971445,
+        "priced_added_history_cells": 25813,
+        "unpriced_added_history_cells": 6550
+      },
+      "model": {
+        "prep_all_variable_gpuh": 1.1850603706454987,
+        "prep_half_fixed_gpuh": 1.1409999222623481,
+        "priced_added_history_cells": 826,
+        "unpriced_added_history_cells": 95
+      }
+    },
+    {
+      "system": "b300_sxm",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 208.10153529925685,
+        "prep_half_fixed_gpuh": 174.38977178855566,
+        "priced_added_history_cells": 74419,
+        "unpriced_added_history_cells": 17886
+      },
+      "model": {
+        "prep_all_variable_gpuh": 13.442174917857608,
+        "prep_half_fixed_gpuh": 12.55529189734553,
+        "priced_added_history_cells": 2574,
+        "unpriced_added_history_cells": 1013
+      }
+    },
+    {
+      "system": "gb200",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 67.28643365006215,
+        "prep_half_fixed_gpuh": 53.16537422430117,
+        "priced_added_history_cells": 23074,
+        "unpriced_added_history_cells": 6036
+      },
+      "model": {
+        "prep_all_variable_gpuh": 2.3696089092313155,
+        "prep_half_fixed_gpuh": 2.6307790394215047,
+        "priced_added_history_cells": 682,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "gb200",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 35.832343655284646,
+        "prep_half_fixed_gpuh": 34.4593513644129,
+        "priced_added_history_cells": 25532,
+        "unpriced_added_history_cells": 5300
+      },
+      "model": {
+        "prep_all_variable_gpuh": 7.199268185061988,
+        "prep_half_fixed_gpuh": 7.097850610017194,
+        "priced_added_history_cells": 1066,
+        "unpriced_added_history_cells": 728
+      }
+    },
+    {
+      "system": "gb200",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 252.54114204230507,
+        "prep_half_fixed_gpuh": 201.6986447684112,
+        "priced_added_history_cells": 25813,
+        "unpriced_added_history_cells": 6550
+      },
+      "model": {
+        "prep_all_variable_gpuh": 4.3165091429269316,
+        "prep_half_fixed_gpuh": 4.290255450713993,
+        "priced_added_history_cells": 826,
+        "unpriced_added_history_cells": 95
+      }
+    },
+    {
+      "system": "gb200",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 355.65991934765185,
+        "prep_half_fixed_gpuh": 289.32337035712527,
+        "priced_added_history_cells": 74419,
+        "unpriced_added_history_cells": 17886
+      },
+      "model": {
+        "prep_all_variable_gpuh": 13.885386237220235,
+        "prep_half_fixed_gpuh": 14.018885100152692,
+        "priced_added_history_cells": 2574,
+        "unpriced_added_history_cells": 1013
+      }
+    },
+    {
+      "system": "gb300",
+      "backend": "vllm",
+      "shared": {
+        "prep_all_variable_gpuh": 288.9315078836913,
+        "prep_half_fixed_gpuh": 165.90985954016213,
+        "priced_added_history_cells": 23074,
+        "unpriced_added_history_cells": 6036
+      },
+      "model": {
+        "prep_all_variable_gpuh": 5.111785723476468,
+        "prep_half_fixed_gpuh": 4.053723045902692,
+        "priced_added_history_cells": 682,
+        "unpriced_added_history_cells": 190
+      }
+    },
+    {
+      "system": "gb300",
+      "backend": "sglang",
+      "shared": {
+        "prep_all_variable_gpuh": 41.78038763442035,
+        "prep_half_fixed_gpuh": 44.406795906235395,
+        "priced_added_history_cells": 25292,
+        "unpriced_added_history_cells": 5540
+      },
+      "model": {
+        "prep_all_variable_gpuh": 9.86202072048612,
+        "prep_half_fixed_gpuh": 9.512269597848809,
+        "priced_added_history_cells": 936,
+        "unpriced_added_history_cells": 858
+      }
+    },
+    {
+      "system": "gb300",
+      "backend": "trtllm",
+      "shared": {
+        "prep_all_variable_gpuh": 785.9313728570052,
+        "prep_half_fixed_gpuh": 473.49193317293765,
+        "priced_added_history_cells": 25813,
+        "unpriced_added_history_cells": 6550
+      },
+      "model": {
+        "prep_all_variable_gpuh": 12.337337654798183,
+        "prep_half_fixed_gpuh": 8.51500486692862,
+        "priced_added_history_cells": 826,
+        "unpriced_added_history_cells": 95
+      }
+    },
+    {
+      "system": "gb300",
+      "backend": "ALL",
+      "shared": {
+        "prep_all_variable_gpuh": 1116.6432683751168,
+        "prep_half_fixed_gpuh": 683.8085886193352,
+        "priced_added_history_cells": 74179,
+        "unpriced_added_history_cells": 18126
+      },
+      "model": {
+        "prep_all_variable_gpuh": 27.31114409876077,
+        "prep_half_fixed_gpuh": 22.08099751068012,
+        "priced_added_history_cells": 2444,
+        "unpriced_added_history_cells": 1143
+      }
+    }
+  ],
+  "b300_recipe_assumptions": [
+    {
+      "backend": "vllm",
+      "operation": "msa_context_module",
+      "added": 60,
+      "kind": "operational reserve via same-framework analogous DSA; unsupported route not certified",
+      "native_anchor_count": 4,
+      "prep_sensitivity_gpuh": {
+        "0": 0.2934044284501247,
+        "0.5": 0.29101755498198745
+      },
+      "proxy_operation": "dsa_context_module"
+    },
+    {
+      "backend": "vllm",
+      "operation": "msa_generation_module",
+      "added": 130,
+      "kind": "operational reserve via same-framework analogous DSA; unsupported route not certified",
+      "native_anchor_count": 4,
+      "prep_sensitivity_gpuh": {
+        "0": 0.37099513652415506,
+        "0.5": 0.4698452796504611
+      },
+      "proxy_operation": "dsa_generation_module"
+    },
+    {
+      "backend": "sglang",
+      "operation": "dsa_context_module_skip_indexer",
+      "added": 120,
+      "kind": "operational reserve via same-framework analogous DSA; unsupported route not certified",
+      "native_anchor_count": 2,
+      "prep_sensitivity_gpuh": {
+        "0": 1.4088606975719977,
+        "0.5": 1.3577934870940567
+      },
+      "proxy_operation": "dsa_context_module"
+    },
+    {
+      "backend": "sglang",
+      "operation": "dsa_generation_module",
+      "added": 304,
+      "kind": "NVFP4 recipe override, not canonical BF16 estimate",
+      "native_anchor_count": 28,
+      "prep_sensitivity_gpuh": {
+        "0": 3.2442065196923404,
+        "0.5": 3.605476960727419
+      },
+      "proxy_operation": "dsa_generation_module"
+    },
+    {
+      "backend": "sglang",
+      "operation": "dsa_generation_module_skip_indexer",
+      "added": 304,
+      "kind": "NVFP4 recipe override, not canonical BF16 estimate",
+      "native_anchor_count": 28,
+      "prep_sensitivity_gpuh": {
+        "0": 3.298240347491273,
+        "0.5": 3.6777820877641276
+      },
+      "proxy_operation": "dsa_generation_module_skip_indexer"
+    },
+    {
+      "backend": "trtllm",
+      "operation": "msa_context_module",
+      "added": 30,
+      "kind": "operational reserve via same-framework analogous DSA; unsupported route not certified",
+      "native_anchor_count": 4,
+      "prep_sensitivity_gpuh": {
+        "0": 0.17121233351227075,
+        "0.5": 0.16760033392076748
+      },
+      "proxy_operation": "dsa_context_module"
+    },
+    {
+      "backend": "trtllm",
+      "operation": "msa_generation_module",
+      "added": 65,
+      "kind": "operational reserve via same-framework analogous DSA; unsupported route not certified",
+      "native_anchor_count": 3,
+      "prep_sensitivity_gpuh": {
+        "0": 0.009491413555334484,
+        "0.5": 0.015068819504503218
+      },
+      "proxy_operation": "dsa_generation_module"
+    }
+  ],
+  "common_operation_details": {
+    "scope": "COMMON MoE/KDA/NCCL increments; identical S-B and M-B, excludes attention/MLA/DSA/MSA/history estimates. Seven directly sampled SKUs.",
+    "status": "PLANNING estimate, not validated forecast or guaranteed successful collection upper bound",
+    "allocation_included": false,
+    "generic_additional_worker_startup_gpu_hours": 0,
+    "setup_assumption": "MoE/KDA task group counts unchanged. Size-dependent native setup/autotuning in sampled deltas. No process initialization charged per extra inner cell.",
+    "engineering_allowance": "Per complete MoE lane max(2xcenter, observed group-noise sensitivity); partialTRT4xcenter; KDA/NCCL2xcenter. Deliberate engineering contingency, not statistical CI or coverage guarantee.",
+    "a100": "UNMEASURED; no substituted hardware rate; excluded from sum",
+    "systems": [
+      {
+        "system": "l40s",
+        "center_gpu_hours": 24.100847383093384,
+        "engineering_total_gpu_hours": 48.39507452624716,
+        "engineering_contingency_gpu_hours": 24.294227143153773,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 20.63580343682446,
+            "engineering_allowance_total_gpu_hours": 41.27285741487635,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 1.7138575700243563,
+            "engineering_allowance_total_gpu_hours": 3.527895532507082,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.7561206351744735,
+            "engineering_allowance_total_gpu_hours": 1.6041900967235354,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.6995382378143248,
+            "engineering_allowance_total_gpu_hours": 1.3990764756286496,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 0.29552750325576976,
+            "engineering_allowance_total_gpu_hours": 0.5910550065115395,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          }
+        ],
+        "unknown_scope": [
+          "L40S canonical one-GPU node has no sampled multi-GPU NCCL topology; omitted, not zero"
+        ]
+      },
+      {
+        "system": "h100_sxm",
+        "center_gpu_hours": 6.721356745057965,
+        "engineering_total_gpu_hours": 17.22992905969637,
+        "engineering_contingency_gpu_hours": 10.508572314638407,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 4.1587895036209375,
+            "engineering_allowance_total_gpu_hours": 8.9225665385214,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 0.8067790678469464,
+            "engineering_allowance_total_gpu_hours": 4.660761852329597,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.2800591863303756,
+            "engineering_allowance_total_gpu_hours": 0.6951426943259624,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 0.36505050013821516,
+            "engineering_allowance_total_gpu_hours": 0.7301010002764303,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.9076959570516345,
+            "engineering_allowance_total_gpu_hours": 1.815391914103269,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.2029825300698553,
+            "engineering_allowance_total_gpu_hours": 0.4059650601397106,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": []
+      },
+      {
+        "system": "h200_sxm",
+        "center_gpu_hours": 7.0873784846130725,
+        "engineering_total_gpu_hours": 24.20910497751887,
+        "engineering_contingency_gpu_hours": 17.121726492905797,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 4.89892070775289,
+            "engineering_allowance_total_gpu_hours": 11.962785253529242,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 0.6413338240468874,
+            "engineering_allowance_total_gpu_hours": 7.961806412274018,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.3865494219120592,
+            "engineering_allowance_total_gpu_hours": 1.9633642499131383,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 0.2888416222919964,
+            "engineering_allowance_total_gpu_hours": 0.5776832445839928,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.7087932060746993,
+            "engineering_allowance_total_gpu_hours": 1.4175864121493986,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.16293970253454057,
+            "engineering_allowance_total_gpu_hours": 0.32587940506908114,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": []
+      },
+      {
+        "system": "b200_sxm",
+        "center_gpu_hours": 4.095151996867585,
+        "engineering_total_gpu_hours": 27.578087704043696,
+        "engineering_contingency_gpu_hours": 23.48293570717611,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 1.5405843713708842,
+            "engineering_allowance_total_gpu_hours": 19.502844700866067,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 1.173710658827331,
+            "engineering_allowance_total_gpu_hours": 4.694842635309324,
+            "method": "2x measured first-mode new-case benchmark cost, assumes equal second mode; partial native coverage, setup/restart not demonstrated"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.5502241510732954,
+            "engineering_allowance_total_gpu_hours": 1.7191347366761571,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.6514512323944933,
+            "engineering_allowance_total_gpu_hours": 1.3029024647889866,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.17918158320158167,
+            "engineering_allowance_total_gpu_hours": 0.35836316640316335,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": [
+          "SGLang KDA verify missing native Blackwell kernel; successful coverage cost omitted, not zero"
+        ]
+      },
+      {
+        "system": "b300_sxm",
+        "center_gpu_hours": 3.727416926897647,
+        "engineering_total_gpu_hours": 61.7388929681271,
+        "engineering_contingency_gpu_hours": 58.01147604122945,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 1.4830339383302877,
+            "engineering_allowance_total_gpu_hours": 39.881567411615976,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 1.0992851526848972,
+            "engineering_allowance_total_gpu_hours": 4.397140610739589,
+            "method": "2x measured first-mode new-case benchmark cost, assumes equal second mode; partial native coverage, setup/restart not demonstrated"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.22429018250259106,
+            "engineering_allowance_total_gpu_hours": 15.61856963901179,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.7178791734236745,
+            "engineering_allowance_total_gpu_hours": 1.435758346847349,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.2029284799561966,
+            "engineering_allowance_total_gpu_hours": 0.4058569599123932,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": [
+          "SGLang KDA verify missing native Blackwell kernel; successful coverage cost omitted, not zero"
+        ]
+      },
+      {
+        "system": "gb200",
+        "center_gpu_hours": 6.45690436080319,
+        "engineering_total_gpu_hours": 15.172400951510985,
+        "engineering_contingency_gpu_hours": 8.715496590707795,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 3.9450849602918607,
+            "engineering_allowance_total_gpu_hours": 7.8901699205837215,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 1.1292961149523035,
+            "engineering_allowance_total_gpu_hours": 4.517184459809214,
+            "method": "2x measured first-mode new-case benchmark cost, assumes equal second mode; partial native coverage, setup/restart not demonstrated"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.6420049244528249,
+            "engineering_allowance_total_gpu_hours": 1.2840098489056497,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.6990076450982297,
+            "engineering_allowance_total_gpu_hours": 1.3980152901964593,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.04151071600797068,
+            "engineering_allowance_total_gpu_hours": 0.08302143201594137,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": [
+          "SGLang KDA verify missing native Blackwell kernel; successful coverage cost omitted, not zero",
+          "NCCL8-rank cross-node topology unmeasured; local2/4-rank scope only"
+        ]
+      },
+      {
+        "system": "gb300",
+        "center_gpu_hours": 3.280137751829694,
+        "engineering_total_gpu_hours": 24.70949392536779,
+        "engineering_contingency_gpu_hours": 21.429356173538096,
+        "components": [
+          {
+            "operation": "moe",
+            "backend": "sglang",
+            "planning_center_gpu_hours": 1.4320222101337277,
+            "engineering_allowance_total_gpu_hours": 17.95084036360456,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "moe",
+            "backend": "trtllm",
+            "planning_center_gpu_hours": 1.0610296952817588,
+            "engineering_allowance_total_gpu_hours": 4.244118781127035,
+            "method": "2x measured first-mode new-case benchmark cost, assumes equal second mode; partial native coverage, setup/restart not demonstrated"
+          },
+          {
+            "operation": "moe",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.1014126915804809,
+            "engineering_allowance_total_gpu_hours": 1.1431884709687439,
+            "method": "max(median observed paired worker delta, observed extra benchmark phases) x inventory task count; geometry/other quantization transfer proxy"
+          },
+          {
+            "operation": "kda",
+            "backend": "vllm",
+            "planning_center_gpu_hours": 0.652556865740438,
+            "engineering_allowance_total_gpu_hours": 1.305113731480876,
+            "method": "inclusive native call x actual added-cell buffer-work weight ratio; generic group startup already paid, conservative proxy"
+          },
+          {
+            "operation": "nccl",
+            "backend": "canonical TRT runtime once per system",
+            "planning_center_gpu_hours": 0.03311628909328849,
+            "engineering_allowance_total_gpu_hours": 0.06623257818657698,
+            "method": "complete 8 collective/dtype cases per actually sampled rank count using own-rank observed mean; censored unmeasured calls require transfer"
+          }
+        ],
+        "unknown_scope": [
+          "SGLang KDA verify missing native Blackwell kernel; successful coverage cost omitted, not zero",
+          "NCCL8-rank cross-node topology unmeasured; local2/4-rank scope only"
+        ]
+      }
+    ],
+    "seven_system_center_gpu_hours": 55.469193649162534,
+    "seven_system_engineering_total_gpu_hours": 219.03298411251197,
+    "warning": "Other quantization/geometry transfer is explicit. Fixing unsupported kernels and obtaining successful coverage for refused/OOM cases is additional unresolved scope.",
+    "six_sm90plus_subset_not_verified_original_fleet": {
+      "systems": [
+        "h100_sxm",
+        "h200_sxm",
+        "b200_sxm",
+        "b300_sxm",
+        "gb200",
+        "gb300"
+      ],
+      "center_gpu_hours": 31.368346266069153,
+      "engineering_total_gpu_hours": 170.6379095862648,
+      "identity_qualification": "Chosen six SM90+ subset; original reviewer says six systems but identities not verified. Not asserted as the original fleet."
+    }
+  },
+  "method_assumptions": [
+    "Rates remain on the sampled system/framework. No A100 rate or full fleet total is inferred.",
+    "Preparation scales using cache/input payload; execution scales attention work with sliding-window caps. Precision/head/kernel mismatches remain extrapolations.",
+    "Preparation sensitivity0 versus0.5 fixed;10% execution floor. Inclusive-only clocks assume50/50prep/exec. Coefficients are planning assumptions, not fitted or validated rates.",
+    "608SGLangdecode cells use actualNVFP4 anchors; canonicalBF16time/capacity is not inferred fromNVFP4.",
+    "405unmeasuredhistorycells use explicitly analogous-operation reserves; successful coverage is not established.",
+    "MoE transfers one sampled geometry over inventory groups. TRT second mode assumed same as measuredfirst mode, despite failed native secondmode qualification.",
+    "SGBlackwellKDA successfulcoverage remains unsupported. MissingNCCLcalls, failed/retrycosts and enlarged-shape setup are unresolved; engineeringallowance does not certify these.",
+    "Worker/process baseline initialization is paid once; do not charge again per addedpoint. Native point clocks already include forwards,warmup/capture. Allocation is excluded.",
+    "Shared andmodel policies differcoverage, includingdeferredKimi. Componentcomparison is not equivalent-coverage measuredsavings.",
+    "The75GPUhallowance is a chosen risk allowance, not an empirical confidence interval or a guaranteed full-sweep bound."
+  ],
+  "history_framework_centers": [
+    {
+      "system": "l40s",
+      "vllm": 1.9705624003138418,
+      "sglang": 2.6141971404926925,
+      "trtllm": 3.356608746853434,
+      "total_gpuh": 7.941368287659968
+    },
+    {
+      "system": "h100_sxm",
+      "vllm": 4.436802204847442,
+      "sglang": 2.7221342619867364,
+      "trtllm": 1.9298408293312557,
+      "total_gpuh": 9.088777296165434
+    },
+    {
+      "system": "h200_sxm",
+      "vllm": 3.871081709039937,
+      "sglang": 10.227251797225028,
+      "trtllm": 1.727995371864345,
+      "total_gpuh": 15.82632887812931
+    },
+    {
+      "system": "b200_sxm",
+      "vllm": 2.5518212106590834,
+      "sglang": 18.333288518173738,
+      "trtllm": 5.5262945927424605,
+      "total_gpuh": 26.411404321575283
+    },
+    {
+      "system": "b300_sxm",
+      "vllm": 2.1566162489028864,
+      "sglang": 18.68789826221873,
+      "trtllm": 1.3447165967003614,
+      "total_gpuh": 22.18923110782198
+    },
+    {
+      "system": "gb200",
+      "vllm": 3.491684072313915,
+      "sglang": 9.530653001448137,
+      "trtllm": 4.470682219449987,
+      "total_gpuh": 17.49301929321204
+    },
+    {
+      "system": "gb300",
+      "vllm": 5.572857166558493,
+      "sglang": 13.861834005004628,
+      "trtllm": 10.648617525422795,
+      "total_gpuh": 30.083308696985917
+    }
+  ],
+  "calculation_archive_sha256": "bd002e422664fe58abe6655bde6dfa5734d97030e46423b7ee7dce36173a5946",
+  "calculation_archive_files": [
+    "estimate-b300-corrected.py",
+    "estimate-all7-corrected.py",
+    "recipe_reserve.py",
+    "nonhistory.py"
+  ]
+}

@@ -12,6 +12,13 @@ The final [machine report](cost-report.json.gz) is losslessly compressed; its
 The report snapshot and raw measurements identify their own input revisions;
 new evidence requires a fresh report, not relabeling an earlier snapshot.
 
+The collector [README appendix](../../../../python/aisimulate/collector/README.md#appendix-estimated-extra-collection-time-for-long-history-shapes)
+adds a separate provisional planning view. Its [calculation](provisional-planning-estimate.json)
+uses native anchors plus explicit proxies and budget reserves; it does not replace
+the strict audit or its unknown full totals. [Baseline research](baseline-cost-research.json)
+explains why the historical campaign summaries cannot be presented as current
+full-collection GPU-hours.
+
 The [review ledger](review-ledger.md) records fixes, evidence and qualification limits across #664, #665 and #666.
 
 ## Coverage philosophy and evidence
