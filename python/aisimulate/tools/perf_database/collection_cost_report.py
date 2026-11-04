@@ -356,6 +356,35 @@ def inventory_difference(baseline, candidate):
     }
 
 
+def non_history_scenario_proof(sample, operation, candidate_rows, alternate_rows):
+    """Coverage flags do not change MoE/KDA execution; prove identical tasks.
+
+    Every selected physical member and its complete generated task geometry must
+    match both inventories. History setup is never transferred this way.
+    """
+    if operation not in {"moe", "kda"} or sample["measurement_scope"] != "group":
+        return None
+    members = member_keys(sample)
+    if not members or not members <= candidate_rows.keys() or not members <= alternate_rows.keys():
+        return None
+    task_keys = set()
+    for key in members:
+        candidate, alternate = candidate_rows[key], alternate_rows[key]
+        task = case_key(candidate.get("_task_case", candidate))
+        if task != case_key(alternate.get("_task_case", alternate)):
+            return None
+        task_keys.add(task)
+    return {
+        "scope": "non_history_identical_native_tasks",
+        "operation": operation,
+        "sample_id": sample["sample_id"],
+        "source_commit": sample["source_commit"],
+        "physical_members": len(members),
+        "physical_manifest_sha256": hashlib.sha256("\n".join(sorted(members)).encode()).hexdigest(),
+        "complete_task_manifest_sha256": hashlib.sha256("\n".join(sorted(task_keys)).encode()).hexdigest(),
+    }
+
+
 def report_lane(
     baseline,
     candidate,
@@ -366,6 +395,7 @@ def report_lane(
     baseline_scenario="baseline",
     source_commit=None,
     equivalents=frozenset(),
+    alternate_candidate=None,
 ):
     result = {}
     for table, delta in inventory_difference(baseline, candidate).items():
@@ -411,8 +441,20 @@ def report_lane(
         # Setup growth of retained workers is unknown without matched old/new
         # group evidence. Do not silently assume a sunk initialization cost.
         validations = [group_validation(bucket) for bucket in buckets.values()]
+        pair_lane, scenario_proofs = [], []
+        alternate = frozen_tables(str(alternate_candidate)).get(table, {}) if alternate_candidate is not None else {}
+        current = frozen_tables(str(candidate))[table]
+        for sample in lane:
+            proof = None
+            if scenario == "shared" and sample.get("scenario") == "model" and alternate:
+                proof = non_history_scenario_proof(sample, operation, current, alternate)
+            if proof is not None:
+                pair_lane.append({**sample, "scenario": "shared"})
+                scenario_proofs.append(proof)
+            else:
+                pair_lane.append(sample)
         paired = paired_groups(
-            lane,
+            pair_lane,
             scenario,
             {case_key(clean_case(c)) for c in delta["added"]},
             {case_key(clean_case(c)) for c in delta["removed"]},
@@ -440,6 +482,7 @@ def report_lane(
                 for (shape, commit), bucket in buckets.items()
             ],
             "paired_group_measurement": paired,
+            "scenario_equivalence_proofs": scenario_proofs,
             "extra_gpu_hours_range": [v / 3600 for v in paired["gpu_seconds_range"]] if paired["complete"] else None,
             "total_status": "measured_group_difference"
             if paired["complete"]
@@ -529,6 +572,9 @@ def main():
         "range_kind": "empirical_not_statistical_confidence_interval",
         "allocation_time_included": False,
         "fleet_gpu_hours_range": None,
+        "comparison_accounting": (
+            "shared/model/model_vs_shared are alternatives; reused observations are not additional collection spend"
+        ),
         "coverage_scope": "declared inventory only; deferred or undeclared model routes remain unmeasured",
         "lanes": {},
     }
@@ -546,6 +592,7 @@ def main():
                 name,
                 source_commit=args.source_commit,
                 equivalents=equivalents,
+                alternate_candidate=args.model / system / backend if name == "shared" else None,
             )
             for name, root in (("shared", args.shared), ("model", args.model))
         }
