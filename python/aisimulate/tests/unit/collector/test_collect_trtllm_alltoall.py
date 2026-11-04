@@ -393,16 +393,8 @@ def test_case_plan_ids_are_world_and_kernel_source_specific():
 
 
 # ---------------------------------------------------------------------------
-# Provenance — membership, closure, sidecar
+# Provenance — sidecar
 # ---------------------------------------------------------------------------
-
-
-def test_module_is_an_enrolled_standalone_collector_with_a_real_closure():
-    assert ata.MODULE_NAME in provenance.STANDALONE_COLLECTOR_MODULES
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    assert ata.MODULE_NAME in closures
-    digest = provenance.collector_hash(ata.MODULE_NAME, REPO_ROOT, closures)
-    assert digest.startswith("sha256:")
 
 
 def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
@@ -431,7 +423,6 @@ def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
         case_ids=case_ids,
         parquet_path=parquet_path,
         failure_count=0,
-        module_name=ata.MODULE_NAME,
     )
     doc = yaml.safe_load(meta_path.read_text())
     table = doc["tables"]["moe_a2a_perf"]
@@ -439,8 +430,7 @@ def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
     assert table["rows"] == len(rows)
     assert table["status"] == "complete"
     assert table["case_plan_hash"] == provenance.case_plan_hash(case_ids)
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    assert table["collector_hash"] == provenance.collector_hash(ata.MODULE_NAME, REPO_ROOT, closures)
+    assert table["collector_hash"] == provenance.collector_hash(REPO_ROOT)
 
 
 def test_runtime_meta_gates_the_installed_version_against_the_manifest_pin():

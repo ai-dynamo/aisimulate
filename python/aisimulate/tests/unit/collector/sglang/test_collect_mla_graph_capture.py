@@ -73,7 +73,7 @@ class _ServingBackend:
 
     def _run_prefill_kernel(self, *, q, cum_seq_lens_q, cum_seq_lens_kv, **_rest):
         # sglang calls flashinfer through the package attribute at call time
-        # (trtllm_mla_backend.py:1121 @v0.5.21), without the CPU mirrors.
+        # (trtllm_mla_backend.py:1121), without the CPU mirrors.
         import flashinfer
 
         return flashinfer.prefill.trtllm_ragged_attention_deepseek(

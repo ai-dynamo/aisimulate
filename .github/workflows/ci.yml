@@ -248,7 +248,6 @@ jobs:
     uses: ./.github/workflows/collector-check.yml
     with:
       expected_sha: ${{ github.sha }}
-      base_sha: ${{ needs.verify-target.outputs.comparison-base }}
 
   prediction-regression:
     name: Prediction Regression

@@ -116,5 +116,5 @@ metrics, routing summaries, source identity, and artifact hashes.
 ## Full correction follow-up
 
 The mapping, W4A8 collection, and complete 263-point rerun are recorded in
-[the 2026-09-18 report](gym-w4a8-20260918.md). Earlier metrics above remain
+[the report](gym-w4a8-20260918.md). Earlier metrics above remain
 historical ablations.

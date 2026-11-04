@@ -14,11 +14,6 @@ on:
         required: false
         type: string
         default: ""
-      base_sha:
-        description: Optional comparison base; defaults to the repository default branch
-        required: false
-        type: string
-        default: ""
   workflow_dispatch:
 
 permissions:
@@ -43,38 +38,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.expected_sha || github.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - name: Verify exact target
         env:
           TARGET_SHA: ${{ inputs.expected_sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$(git rev-parse "${TARGET_SHA}^{commit}")"
-      - name: Resolve comparison base
-        id: base
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          BASE_SHA_INPUT: ${{ inputs.base_sha }}
-        with:
-          script: |
-            if (process.env.BASE_SHA_INPUT) {
-              core.setOutput("sha", process.env.BASE_SHA_INPUT);
-              return;
-            }
-
-            const {data: branch} = await github.rest.repos.getBranch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              branch: context.payload.repository.default_branch,
-            });
-            core.setOutput("sha", branch.commit.sha);
-      - name: Fetch comparison base
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          basic_token="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 | tr -d '\n')"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_token}" fetch \
-            --no-tags origin "${BASE_SHA}"
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.13"
@@ -86,33 +54,6 @@ jobs:
       - name: Check op-backend facts registry
         working-directory: python/aisimulate
         run: python tools/perf_database/backend_facts.py --check
-      - name: Compute changed-operation manifest
-        id: changed_ops
-        working-directory: python/aisimulate
-        env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
-        run: |
-          set +e
-          python tools/perf_database/changed_ops.py \
-            --base "${BASE_SHA}" \
-            --out changed-ops.yaml
-          rc=$?
-          set -e
-          if [ "${rc}" -eq 3 ]; then
-            echo "::notice::comparison base predates Collector V3 provenance; manifest skipped"
-            echo "produced=false" >> "${GITHUB_OUTPUT}"
-          elif [ "${rc}" -ne 0 ]; then
-            exit "${rc}"
-          else
-            echo "produced=true" >> "${GITHUB_OUTPUT}"
-          fi
-      - name: Upload changed-operation manifest
-        if: steps.changed_ops.outputs.produced == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: changed-ops
-          path: python/aisimulate/changed-ops.yaml
-          retention-days: 30
 
   cross-backend-consistency:
     name: Perf data sanity (informational)

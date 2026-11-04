@@ -91,6 +91,7 @@ def _verify_payload() -> None:
             "aisimulate_core/systems/h100_sxm.yaml",
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/skips.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/fpm_forward/cli.py",
             "collector/fpm_forward/__init__.py",
@@ -272,6 +273,7 @@ def _verify_fpm_workflow() -> str:
         (
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/skips.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
             "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",

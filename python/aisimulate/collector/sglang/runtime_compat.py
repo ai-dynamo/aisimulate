@@ -4,7 +4,7 @@
 
 sglang 0.5.21 (runtime_context "bags"): a worker process must ``publish(server_args, role=...,
 ranks=SpawnRanks(...))`` first and the config initializers then take NO arguments
-(``benchmark/one_batch.py:893-902`` @0.5.21: publish -> initialize_moe_config() ->
+(``benchmark/one_batch.py:893-902``: publish -> initialize_moe_config ->
 initialize_fp8_gemm_config() -> initialize_fp4_gemm_config()); ``ModelRunner.__init__`` no longer
 accepts the parallel geometry (``model_executor/model_runner.py``: model_config, mem_fraction_static,
 gpu_id, nccl_port, server_args, ...) — it reads ``get_parallel()``.
@@ -108,7 +108,7 @@ def ensure_offline_runtime_published(**server_args_fields) -> bool:
     deterministic; parallel_state world_group). sglang's own unit tests publish an
     offline record exactly this way (``ServerArgs(model_path="dummy", **fields)`` +
     ``publish(role=..., ranks=SpawnRanks(world_rank=0))``, test/test_utils.py:1990-2023
-    @0.5.21; the resolution pipeline returns early on the dummy/absent-model path).
+    ; the resolution pipeline returns early on the dummy/absent-model path).
     Older sglang has no ``publish`` -> no-op. Returns True when a publish happened.
     """
     global _OFFLINE_PUBLISHED

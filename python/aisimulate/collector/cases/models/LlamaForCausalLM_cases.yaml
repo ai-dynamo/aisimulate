@@ -11,4 +11,17 @@ model_paths:
   - nvidia/Llama-3.1-70B-Instruct-FP8
 include_base: true
 description: >
-  Llama dense-family model-centric collection plan.
+  Llama dense-family model-centric collection plan. The 405B attention row
+  adds its unsharded shape (128 query / 8 KV heads, served at TP1 under
+  pipeline parallelism), which the base grids do not reach; the other
+  shapes of these models are inside the base grids.
+
+model_case_values:
+  attention:
+    - id: llama_3_1_405b_attention
+      model_path: meta-llama/Meta-Llama-3.1-405B
+      num_attention_heads: 128
+      num_key_value_heads: 8
+      head_dim: 128
+      window_size: 0
+      tensor_parallel_sizes: [1, 2, 4, 8]
