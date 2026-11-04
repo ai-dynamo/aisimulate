@@ -304,3 +304,13 @@ selection metadata and failed-call handling are outside that proof. The report
 retains actual source SHAs and the complete supplied proof, including protocol
 qualifications. Historical anchors without observed repetition counts or phase
 clocks keep those fields null.
+
+The same proof mechanism admits SGLang `dsa_generation_module` evidence only for
+the proof's explicit `model_path`. It additionally verifies the native module,
+runtime compatibility/limits and prefill-graph helpers, plus that checkpoint's
+cached configuration and quantization configuration. It cannot transfer a GLM
+measurement to another checkpoint. All observed status labels, including partial
+worker output, remain in the report; only passed observations fit timings.
+Physical point anchors may support shared and model-owned deltas alike when
+native case semantics match; scenario labels remain binding for paired group
+setup comparisons. Full and reused-indexer DSA operations remain separate.

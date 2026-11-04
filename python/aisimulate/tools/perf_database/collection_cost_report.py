@@ -247,10 +247,11 @@ def report_lane(
         lane = [s for s in samples if identity(s) == (system, backend, operation)]
         buckets = defaultdict(list)
         for sample in lane:
-            if sample.get("scenario") == scenario and (
+            if (
                 source_commit is None
                 or sample["source_commit"] == source_commit
                 or (sample["source_commit"], backend, operation) in equivalents
+                or (sample["source_commit"], backend, operation, sample["case"].get("model_path")) in equivalents
             ):
                 buckets[(geometry(sample["case"]), sample["source_commit"])].append(sample)
         covered = 0
@@ -331,9 +332,24 @@ def verified_sources(proofs, repository, target):
         )
         if proof["backend"] == "vllm":
             required.add("python/aisimulate/collector/vllm/utils.py")
-        if proof["operation"] not in {"attention_context", "attention_generation"} or not required <= {
-            f["path"] for f in proof["files"]
-        }:
+        supported = proof["operation"] in {"attention_context", "attention_generation"}
+        if (
+            proof["backend"] == "sglang"
+            and proof["operation"] in {"dsa_generation_module", "dsa_generation_module_skip_indexer"}
+            and proof.get("model_path")
+        ):
+            supported = True
+            required.discard("python/aisimulate/collector/sglang/collect_attn.py")
+            required.update(
+                f"python/aisimulate/collector/sglang/{name}"
+                for name in ("collect_mla_module.py", "runtime_compat.py", "runtime_limits.py", "dsa_prefill_graph.py")
+            )
+            model = proof["model_path"].replace("/", "--")
+            required.update(
+                f"python/aisimulate/src/aisimulate_core/model_configs/{model}_{name}.json"
+                for name in ("config", "hf_quant_config")
+            )
+        if not supported or not required <= {f["path"] for f in proof["files"]}:
             raise ValueError("unsupported or incomplete per-operation equivalence proof")
         for file in proof["files"]:
             for revision in (proof["source_commit"], target):
@@ -346,7 +362,8 @@ def verified_sources(proofs, repository, target):
                     or hashlib.sha256(payload).hexdigest() != expected
                 ):
                     raise ValueError(f"source equivalence hash mismatch: {revision}:{file['path']}")
-        result.add((proof["source_commit"], proof["backend"], proof["operation"]))
+        key = (proof["source_commit"], proof["backend"], proof["operation"])
+        result.add((*key, proof["model_path"]) if proof.get("model_path") else key)
     return result
 
 
@@ -412,7 +429,7 @@ def main():
     )
     result["sources"] = sorted({s["source_commit"] for s in samples})
     result["sample_status_counts"] = {
-        status: sum(s["status"] == status for s in samples) for status in ("passed", "failed", "timeout", "unattempted")
+        status: sum(s["status"] == status for s in samples) for status in sorted({s["status"] for s in samples})
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")

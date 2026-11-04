@@ -6,6 +6,7 @@ import csv
 import hashlib
 
 import pytest
+
 from tools.perf_database import collection_cost_report as report
 
 pytestmark = pytest.mark.unit
@@ -159,3 +160,53 @@ def test_source_equivalence_verifies_both_immutable_file_hashes(tmp_path, monkey
     )
     with pytest.raises(ValueError, match="hash mismatch"):
         report.verified_sources([proof], tmp_path, "new")
+
+
+def test_module_equivalence_requires_model_config_and_exact_model_scope(tmp_path, monkeypatch):
+    paths = [f"python/aisimulate/collector/{name}" for name in ("helper.py", "case_generator.py", "registry_types.py")]
+    paths += [
+        f"python/aisimulate/collector/sglang/{name}"
+        for name in (
+            "registry.py",
+            "collect_mla_module.py",
+            "runtime_compat.py",
+            "runtime_limits.py",
+            "dsa_prefill_graph.py",
+        )
+    ]
+    paths += [
+        f"python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_{name}.json"
+        for name in ("config", "hf_quant_config")
+    ]
+    proof = {
+        "source_commit": "old",
+        "target_commit": "new",
+        "backend": "sglang",
+        "operation": "dsa_generation_module",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "files": [{"path": p, "sha256": hashlib.sha256(b"same").hexdigest()} for p in paths],
+    }
+    monkeypatch.setattr(report.subprocess, "check_output", lambda argv: b"same")
+    assert report.verified_sources([proof], tmp_path, "new") == {
+        ("old", "sglang", "dsa_generation_module", "nvidia/GLM-5.2-NVFP4")
+    }
+    proof["files"].pop()
+    with pytest.raises(ValueError, match="incomplete"):
+        report.verified_sources([proof], tmp_path, "new")
+
+
+def test_shared_point_anchor_can_cover_identical_model_delta(tmp_path):
+    case = sample()["case"]
+    for name, rows in (("baseline", [case]), ("model", [case, sample(2)["case"]])):
+        directory = tmp_path / name
+        directory.mkdir()
+        with (directory / "vllm_sm103_attention_context.csv").open("w") as handle:
+            writer = csv.DictWriter(handle, fieldnames=case)
+            writer.writeheader()
+            writer.writerows(rows)
+    anchor = sample(2, 3, scenario="shared")
+    lane = report.report_lane(
+        tmp_path / "baseline", tmp_path / "model", [anchor], "b300_sxm", "vllm", source_commit="abc"
+    )
+    assert lane["attention_context"]["covered_added_points"] == 1
+    assert lane["attention_context"]["extra_gpu_hours_range"] is None
