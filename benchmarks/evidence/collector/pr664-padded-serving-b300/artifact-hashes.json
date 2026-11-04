@@ -1,0 +1,33 @@
+{
+  "original": {
+    "cases/indexer-exact-diagnostic/dsa_generation_module_perf.txt": "23b309716dae4f8f57b90c2c086905c3a378e587efab4b57077fae68afbfff44",
+    "cases/indexer-padded/dsa_generation_module_perf.txt": "2623280c362b0ca9b6b47dbecf47cf3e47ceb8f2087b9a17094726109cf8fa1c",
+    "cases/skip_indexer-exact-diagnostic/dsa_generation_module_perf.txt": "47cfe76218035954d81712fd599d9b5e13047dcfd250037c584da33100c25be1",
+    "cases/skip_indexer-padded/dsa_generation_module_perf.txt": "06bd2081c945f82c6c31d10c4257e28eec6f99fae0ac8b0178b8f47830d31e7f",
+    "input-sha256.txt": "fdb96e2a9dcf742f554e857a66ece812c5c5fc296b0b9834be3ef058fa0ee3d6",
+    "nvidia-smi-after.txt": "aed0cc1533d2e95ee236bfdc6b208366162310767cb14651431652a829a8ac60",
+    "nvidia-smi-before.txt": "619178e967a78419725e09829d4c21e92ce5204c43d8e9cdebfbbb1f47ecd593",
+    "padded.sbatch": "0bc3fdb57e51ed728b8ba9f23315322f6758f28a41cd8d662766ca21d322b502",
+    "padded_worker.py": "c50e4f8d153e1d5a624e0dfb40d2a0f199bd1607fa9620c8462b3f5caef9de98",
+    "slurm-job.txt": "39c4ed4d1e45dfc1173c8c06611d57e26c6842f1f03a0f87ee415d18eccfd000"
+  },
+  "published": {
+    "README.md": "0993b6ae751c20969d40a6d4ec0d228258cb3b977f138f2827646c8f8daa41a3",
+    "cases/indexer-exact-diagnostic/dsa_generation_module_perf.txt": "7fe309698e48ddde7572a0cfdfd7d6df9c22c921ec9394e241b2b41d6ee7c361",
+    "cases/indexer-exact-diagnostic/result.json": "a6f95bd99980b0eb75578c3b6ba0d84d164b3f085ce574a3b1a0981a03f7a62c",
+    "cases/indexer-padded/dsa_generation_module_perf.txt": "9db7688d16aaddfc60fd191191ba1cfa7a4c71d6795c02fe3973c64648abe617",
+    "cases/indexer-padded/result.json": "8f197362a8f5ee9a479c848db3502e2c387fda219e965d5c233e0099b78a3638",
+    "cases/skip_indexer-exact-diagnostic/dsa_generation_module_perf.txt": "df742027dc5bbd4a228333dce5a0c91d7c0c7f45787495b1f6dc1ef52f7b91d5",
+    "cases/skip_indexer-exact-diagnostic/result.json": "d1584fec454563d60f2a4288245acd2f3c610514fd00667bd4d1b7128378419f",
+    "cases/skip_indexer-padded/dsa_generation_module_perf.txt": "1b81c058b336a7280045b4356d8526b645c372caf742be734c754a0b7b4894e5",
+    "cases/skip_indexer-padded/result.json": "26e8b8a8a94a9d47fcfd4eece0694a31848da7faf945ad84a58497774dd8c137",
+    "executed-artifacts.zip": "43bd856b99fbd3e08393555fc8beef5cb1997c446b2a7374b6422d63b8273979",
+    "input-sha256.txt": "fdb96e2a9dcf742f554e857a66ece812c5c5fc296b0b9834be3ef058fa0ee3d6",
+    "nvidia-smi-after.txt": "eb722f57462d14f451072a8c91a6cf56713c64cb4877bb1ea54012812fa730a1",
+    "nvidia-smi-before.txt": "a5b407ec4b15b1f2bb260240c2aa4d1397aa941763670bc9e62aa763defb8178",
+    "padded.sbatch": "88fadf9c472ff80bac2c7c37d24ac4b8b4f1490a4f0fb0f858991f85881fdbd6",
+    "padded_worker.py": "1c77d85bc2d7383d3900203304aa2577f026255dab662211d5b5dc29be2d61ea",
+    "slurm-job.txt": "737f2a08e31c5515468c761eeef54312d33a7a87d745704d06e29b6af43f7457",
+    "summary.json": "2f93f847e97c2c26e6cf11caea7590e8b45043671bf2534c648d252e6ac01a7f"
+  }
+}

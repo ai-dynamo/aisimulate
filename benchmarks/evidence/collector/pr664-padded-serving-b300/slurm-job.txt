@@ -30,4 +30,3 @@ JobId=1024034 JobName=aisim664-padded-serving
    TresFreq=gpu:high
    TresPerNode=gres/gpu:1
    TresPerTask=cpu=16
-
