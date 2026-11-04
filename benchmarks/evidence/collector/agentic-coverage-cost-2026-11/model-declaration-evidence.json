@@ -1,5 +1,5 @@
 {
-  "collector_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+  "collector_revision": "4eaef24ff72a4dce5d4acf2976b746a65de3ca19",
   "source_snapshot": {
     "audit_collector_commit": "36a69a683c60081e61d6379f868b1c7257e1a41e",
     "effective_settings_sha256": "9fbaf5e2c37217af6dc0640390689275cba446493ecb7e13d5275436b0aa6a6b"
@@ -9,12 +9,12 @@
       "family": "Qwen3.5-397B",
       "canonical_geometry_model": "Qwen/Qwen3.5-397B-A17B",
       "geometry_evidence": {
-        "collector_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+        "collector_revision": "4eaef24ff72a4dce5d4acf2976b746a65de3ca19",
         "profile": "python/aisimulate/collector/cases/models/Qwen3_5MoeForConditionalGeneration_cases.yaml",
-        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/collector/cases/models/Qwen3_5MoeForConditionalGeneration_cases.yaml",
+        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/collector/cases/models/Qwen3_5MoeForConditionalGeneration_cases.yaml",
         "profile_sha256": "f184a3dace861ed16fbd054f0c2aef1870fffc93fb6fc97f72aeef9f70092f10",
         "config": "python/aisimulate/src/aisimulate_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json",
-        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/src/aisimulate_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json",
+        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/src/aisimulate_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json",
         "config_sha256": "3ae7fa89c2f7d1354096418ddaf1331e9e0898a8ca11e804fb6dbaa087efb7da",
         "geometry": {
           "num_attention_heads": 32,
@@ -487,7 +487,7 @@
               ]
             ]
           },
-          "classification": "chosen_interpolation_or_calibration_frontier_not_observed_rank_forward"
+          "classification": "chosen calibration/interpolation joint points bounded by config and audited recipe/workload; not observed per-rank forwards"
         }
       ],
       "limitations": [
@@ -499,12 +499,12 @@
       "family": "GLM5.2/5.3",
       "canonical_geometry_model": "zai-org/GLM-5.2",
       "geometry_evidence": {
-        "collector_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+        "collector_revision": "4eaef24ff72a4dce5d4acf2976b746a65de3ca19",
         "profile": "python/aisimulate/collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
-        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
+        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
         "profile_sha256": "483adbe343f350045657fec43a7b3dfda87f2f63069bc72d01a4f739ca864880",
         "config": "python/aisimulate/src/aisimulate_core/model_configs/zai-org--GLM-5.2_config.json",
-        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/src/aisimulate_core/model_configs/zai-org--GLM-5.2_config.json",
+        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/src/aisimulate_core/model_configs/zai-org--GLM-5.2_config.json",
         "config_sha256": "185f93ee6d12548e16a847e279dc0c3c90b1524c970b0866b42fb545747d859a",
         "geometry": {
           "num_attention_heads": 64,
@@ -924,12 +924,12 @@
               ]
             ]
           },
-          "classification": "chosen_interpolation_or_calibration_frontier_not_observed_rank_forward"
+          "classification": "chosen calibration/interpolation joint points bounded by config and audited recipe/workload; not observed per-rank forwards"
         },
         {
           "operation": "mla_module",
           "model_path": "nvidia/GLM-5.2-NVFP4",
-          "tensor_parallel_sizes": null,
+          "tensor_parallel_sizes": [],
           "points": {
             "generation": [
               [
@@ -1044,7 +1044,7 @@
               ]
             ]
           },
-          "classification": "chosen_interpolation_or_calibration_frontier_not_observed_rank_forward"
+          "classification": "chosen calibration/interpolation joint points bounded by config and audited recipe/workload; not observed per-rank forwards"
         }
       ],
       "limitations": [
@@ -1056,12 +1056,12 @@
       "family": "Kimi-K3",
       "canonical_geometry_model": "moonshotai/Kimi-K3",
       "geometry_evidence": {
-        "collector_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+        "collector_revision": "4eaef24ff72a4dce5d4acf2976b746a65de3ca19",
         "profile": "python/aisimulate/collector/cases/models/KimiK3ForConditionalGeneration_cases.yaml",
-        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/collector/cases/models/KimiK3ForConditionalGeneration_cases.yaml",
-        "profile_sha256": "5ee1566a890e227f182189a7d71055161b064f9a29dd624ee39bb831a2a7a456",
+        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/collector/cases/models/KimiK3ForConditionalGeneration_cases.yaml",
+        "profile_sha256": "6d7e63ddab2e611b33e9939fccec83ed848f1610238d1c33031f21a710900e8a",
         "config": "python/aisimulate/src/aisimulate_core/model_configs/moonshotai--Kimi-K3_config.json",
-        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/src/aisimulate_core/model_configs/moonshotai--Kimi-K3_config.json",
+        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/src/aisimulate_core/model_configs/moonshotai--Kimi-K3_config.json",
         "config_sha256": "9710e121a58d03ac92c8d6da287a19541994319afbbe6d6202af001ffd379213",
         "geometry": {
           "num_attention_heads": 96,
@@ -1311,18 +1311,18 @@
         "Native pilots held: the generic MLA factory must first prove it honors Kimi mla_use_nope semantics. Planned points are not qualified measurements.",
         "Owner withdrew the new optional MLA points rather than introducing an unqualified native NoPE adapter; normal #676 coverage and KDA widths remain."
       ],
-      "declaration_status": "historical_withdrawn_optional_MLA_points; final M excludes these points"
+      "declaration_status": "deferred: native Kimi NoPE adapter unsupported; optional long-history points withdrawn; not zero-cost completed coverage"
     },
     {
       "family": "MiniMax-M3.1",
       "canonical_geometry_model": "MiniMaxAI/MiniMax-M3",
       "geometry_evidence": {
-        "collector_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229",
+        "collector_revision": "4eaef24ff72a4dce5d4acf2976b746a65de3ca19",
         "profile": "python/aisimulate/collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
-        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
+        "profile_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
         "profile_sha256": "dacf6527877698367f2f8ce4d30a317371fd472416e7b3a6cb47b04da9e0d9e5",
         "config": "python/aisimulate/src/aisimulate_core/model_configs/MiniMaxAI--MiniMax-M3_config.json",
-        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/c4b44d81f526b3c5299f7c15ccafe02d90b39229/python/aisimulate/src/aisimulate_core/model_configs/MiniMaxAI--MiniMax-M3_config.json",
+        "config_url": "https://github.com/ai-dynamo/aisimulate/blob/4eaef24ff72a4dce5d4acf2976b746a65de3ca19/python/aisimulate/src/aisimulate_core/model_configs/MiniMaxAI--MiniMax-M3_config.json",
         "config_sha256": "7726ac24cb99116b67275430374140fcebd0525e55869b80ce3acb53848bc636",
         "geometry": {
           "num_attention_heads": 64,
@@ -1778,7 +1778,7 @@
               ]
             ]
           },
-          "classification": "chosen_interpolation_or_calibration_frontier_not_observed_rank_forward"
+          "classification": "chosen calibration/interpolation joint points bounded by config and audited recipe/workload; not observed per-rank forwards"
         }
       ],
       "limitations": [
@@ -1787,5 +1787,6 @@
         "Bundled MiniMax-M3 geometry matches audited core M3.1 dimensions; exact served M3.1 MXFP8/NVFP4 precision identity remains conditional."
       ]
     }
-  ]
+  ],
+  "historical_declaration_revision": "c4b44d81f526b3c5299f7c15ccafe02d90b39229"
 }
