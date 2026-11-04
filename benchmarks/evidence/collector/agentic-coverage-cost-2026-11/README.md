@@ -480,9 +480,10 @@ Unknown host concurrency remains null. This audit instrumentation is separate
 from the frozen collector/kernel revision and does not enable long history.
 
 For feature-identification only, `native_passes: 2` repeats the same selected
-native rows within one worker and records pass identity. Each shape’s first use
+native rows within one worker and records pass identity. Each shape’s first-in-worker use
 and its subsequent use stay separate; three fresh matched groups can then
-validate a warm component independently. Every call remains inside the bounded
+validate the subsequent-use component independently. Compiled caches may already
+exist: neither pass is labeled a guaranteed cold or warm compiler state. Every call remains inside the bounded
 collection clock. The default is one pass; repeated sampling adds no coverage
 claims or collector behavior changes.
 
@@ -496,3 +497,9 @@ Older timestamped quota snapshots retain their historical values.
 The corrected597 report replacement is recorded in
 [`fit-inputs-597.disposition.json`](fit-inputs-597.disposition.json); the old
 wrong-label dataset and report remain explicitly superseded.
+
+Physical GPU UUID is recorded outside software runtime_protocol. A matched
+pair can require the same UUID; repeated trials on different GPUs of the same
+SKU remain visible as hardware variance rather than different software. A
+two-pass worker clock is an experimental observation, not a normal one-pass
+collection forecast. Only explicitly scoped pass components may enter a fit.
