@@ -482,6 +482,16 @@ def test_kvcr_requires_per_rank_host_offload_and_no_g3(cache, message) -> None:
             {"host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"}, "kvcr": {}},
             "kvcr requires host_offload.connector=offloading_v0_24",
         ),
+        (
+            {
+                "host_offload": {
+                    "num_host_blocks": 8,
+                    "connector": "simple_cpu_v0_32",
+                    "eviction_policy": "mamba_aware_lru",
+                }
+            },
+            "eviction_policy mamba_aware_lru requires connector offloading_v0_32",
+        ),
     ],
 )
 def test_host_offload_connector_needs_a_private_pool_without_g3_or_kvcr(cache, message) -> None:
@@ -489,14 +499,18 @@ def test_host_offload_connector_needs_a_private_pool_without_g3_or_kvcr(cache, m
         KvCachePredictionConfig.model_validate(cache)
 
 
-def test_host_offload_connector_reaches_the_native_rank() -> None:
+@pytest.mark.parametrize("eviction_policy", [None, "mamba_aware_lru"])
+def test_host_offload_connector_reaches_the_native_rank(eviction_policy) -> None:
     engine = _prediction_engine()
     cache = engine["workers"]["aggregated"]["kv_cache"]
     cache["bytes_per_token"] = 131_072
     cache["host_offload"] = {"num_host_blocks": 4096, "connector": "offloading_v0_32"}
+    if eviction_policy is not None:
+        cache["host_offload"]["eviction_policy"] = eviction_policy
     config = CorePredictionConfig.model_validate({"engine": engine})
     rank = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
     assert rank["native_host_offload"]["connector"] == "offloading_v0_32"
+    assert rank["native_host_offload"].get("eviction_policy") == eviction_policy
 
 
 def test_host_offload_connector_rejects_disaggregated_workers() -> None:

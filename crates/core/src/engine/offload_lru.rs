@@ -56,6 +56,36 @@ impl Lru {
         self.push_newest(node);
     }
 
+    /// Link `key` right after node `after`, or at the oldest end for `None`,
+    /// moving its node if it is linked.
+    pub(crate) fn insert_after(
+        &mut self,
+        slot: &mut Option<NonZeroU32>,
+        key: HostBlockKey,
+        after: Option<NonZeroU32>,
+    ) {
+        let node = match *slot {
+            Some(node) => {
+                self.unlink(node);
+                node
+            }
+            None => *slot.insert(self.allocate(key)),
+        }
+        .get();
+        let older = after.map_or(SENTINEL, NonZeroU32::get);
+        debug_assert_ne!(older, node);
+        let newer = self.nodes[older as usize].newer;
+        self.nodes[node as usize].older = older;
+        self.nodes[node as usize].newer = newer;
+        self.nodes[older as usize].newer = node;
+        self.nodes[newer as usize].older = node;
+    }
+
+    /// The node just older than `node`; `None` at the oldest end.
+    pub(crate) fn older(&self, node: NonZeroU32) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.nodes[node.get() as usize].older)
+    }
+
     pub(crate) fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
         if let Some(node) = slot.take() {
             self.unlink(node);

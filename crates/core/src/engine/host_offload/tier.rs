@@ -80,6 +80,22 @@ pub(crate) enum HostPolicy {
     Ranked,
 }
 
+/// `mamba_aware_lru` (vllm-project/vllm#63578) on a [`HostPolicy::Ranked`]
+/// tier: when a request finishes, a state slot that an earlier request stored
+/// as its deepest one, and that now lies below a deeper present state on the
+/// same prefix, moves behind every other block. Demoted blocks form the oldest
+/// segment of the LRU list, oldest demotion first; a re-rank clears the mark.
+/// Private verification layer.
+#[derive(Default)]
+struct MambaAwareDemotion {
+    /// State slots their writer stored at its deepest new position.
+    tips: FxHashSet<HostBlockKey>,
+    /// Demoted slots.
+    marked: FxHashSet<HostBlockKey>,
+    /// LRU node of the newest demoted block.
+    tail: Option<NonZeroU32>,
+}
+
 /// One owner's access link. Zero bandwidth is instantaneous.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HostLink {
@@ -179,6 +195,8 @@ struct Entry {
     lru_slot: Option<NonZeroU32>,
     /// Filled by a KVCR peer fetch rather than a local store.
     kvcr_origin: bool,
+    /// A recurrent-state slot, which `mamba_aware_lru` may demote.
+    state_slot: bool,
 }
 
 /// Declaration order is the same-timestamp completion order.
@@ -316,6 +334,8 @@ pub(crate) struct HostTier {
     /// Installed only by detailed replay artifacts; ordinary runs retain no
     /// host-event buffer and allocate no observation payloads.
     observer: Option<Arc<dyn HostOffloadObserver>>,
+    /// `mamba_aware_lru` bookkeeping, on a ranked tier only.
+    mamba_aware: Option<MambaAwareDemotion>,
 }
 
 impl HostTier {
@@ -358,7 +378,97 @@ impl HostTier {
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
             observer: None,
+            mamba_aware: None,
         })
+    }
+
+    /// Apply `mamba_aware_lru` on top of the ranked tier's recency.
+    pub(crate) fn set_mamba_aware(&mut self) {
+        assert_eq!(
+            self.config.policy,
+            HostPolicy::Ranked,
+            "mamba_aware_lru needs a ranked tier"
+        );
+        self.mamba_aware = Some(MambaAwareDemotion::default());
+    }
+
+    pub(crate) fn is_mamba_aware(&self) -> bool {
+        self.mamba_aware.is_some()
+    }
+
+    /// Mark present `keys` as recurrent-state slots.
+    pub(crate) fn mark_state_slots(&mut self, keys: &[HostBlockKey]) {
+        for key in keys {
+            if let Some(entry) = self.entries.get_mut(key) {
+                entry.state_slot = true;
+            }
+        }
+    }
+
+    /// Forget `key`'s demotion before its LRU node is unlinked or moved:
+    /// the oldest segment's tail steps back past it. `removed` also drops it
+    /// from the tips.
+    fn forget_demotion(&mut self, key: HostBlockKey, node: Option<NonZeroU32>, removed: bool) {
+        let Some(demotion) = &mut self.mamba_aware else {
+            return;
+        };
+        if removed {
+            demotion.tips.remove(&key);
+        }
+        if demotion.marked.remove(&key)
+            && let Some(node) = node
+            && demotion.tail == Some(node)
+        {
+            demotion.tail = self.lru.older(node);
+        }
+    }
+
+    /// `MambaAwareLRUCachePolicy.on_request_finished` after the request's
+    /// re-rank: `inserted_states` are the state slots this request stored (and
+    /// did not reuse) with their end-token positions; `chain` is every state
+    /// slot on its block-hash chain, Mamba group by group in increasing
+    /// position. A tip below the chain's deepest present state is demoted.
+    pub(crate) fn demote_superseded_tips(
+        &mut self,
+        inserted_states: &[(usize, HostBlockKey)],
+        chain: &[(usize, HostBlockKey)],
+    ) {
+        if self.mamba_aware.is_none() {
+            return;
+        }
+        let entries = &self.entries;
+        let present = |key: HostBlockKey| entries.get(&key).is_some_and(|entry| entry.state_slot);
+        let new_states = inserted_states
+            .iter()
+            .copied()
+            .filter(|&(_, key)| present(key))
+            .collect::<Vec<_>>();
+        let chain = chain
+            .iter()
+            .copied()
+            .filter(|&(_, key)| present(key))
+            .collect::<Vec<_>>();
+        let demotion = self.mamba_aware.as_mut().unwrap();
+        if let Some(tip) = new_states.iter().map(|&(position, _)| position).max() {
+            demotion.tips.extend(
+                new_states
+                    .iter()
+                    .filter(|&&(position, _)| position == tip)
+                    .map(|&(_, key)| key),
+            );
+        }
+        let Some(deepest) = chain.iter().map(|&(position, _)| position).max() else {
+            return;
+        };
+        for (position, key) in chain {
+            let demotion = self.mamba_aware.as_mut().unwrap();
+            if position < deepest && demotion.tips.contains(&key) && demotion.marked.insert(key) {
+                let tail = demotion.tail;
+                let entry = self.entries.get_mut(&key).expect("a present state slot");
+                self.lru.insert_after(&mut entry.lru_slot, key, tail);
+                self.mamba_aware.as_mut().unwrap().tail = entry.lru_slot;
+            }
+        }
     }
 
     pub(crate) fn is_shared(&self) -> bool {
@@ -568,6 +678,7 @@ impl HostTier {
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
             self.resident_blocks -= 1;
+            self.forget_demotion(*victim, entry.lru_slot, true);
             self.lru.remove(&mut entry.lru_slot);
             self.observe(HostOffloadObservation {
                 request_id,
@@ -600,6 +711,7 @@ impl HostTier {
                 load_pins: 0,
                 lru_slot: None,
                 kvcr_origin: false,
+                state_slot: false,
             };
             if self.config.policy == HostPolicy::Ranked {
                 self.lru.touch(&mut entry.lru_slot, *key);
@@ -846,6 +958,7 @@ impl HostTier {
         for key in transfer.blocks {
             let mut entry = self.entries.remove(&key).unwrap();
             assert_eq!(entry.load_pins, 0);
+            self.forget_demotion(key, entry.lru_slot, true);
             self.lru.remove(&mut entry.lru_slot);
             self.meta.remove(&key);
         }
@@ -1016,10 +1129,13 @@ impl HostTier {
     /// outside vLLM's evictable LRU and ignore ordinary touches, except in a
     /// ranked tier, which re-ranks every present block.
     pub(crate) fn touch(&mut self, key: HostBlockKey) {
-        if let Some(entry) = self.entries.get_mut(&key)
+        if let Some(entry) = self.entries.get(&key)
             && (self.config.policy == HostPolicy::Ranked
                 || entry.state == EntryState::Resident && entry.load_pins == 0)
         {
+            // `_assign_new_rank` clears a Mamba-aware demotion.
+            self.forget_demotion(key, entry.lru_slot, false);
+            let entry = self.entries.get_mut(&key).unwrap();
             self.lru.touch(&mut entry.lru_slot, key);
         }
     }
@@ -2590,6 +2706,116 @@ pub(crate) mod tests {
             load(&mut tier, &[a, c], now);
             assert_eq!(tier.lru_order(), loaded, "{policy:?}");
         }
+    }
+
+    /// A ranked tier with `mamba_aware_lru`, holding `keys` in that order;
+    /// keys at or above 100 are state slots.
+    fn mamba_aware_tier(keys: &[HostBlockKey]) -> (HostTier, f64) {
+        let mut tier = policy_tier(16, HostPolicy::Ranked);
+        tier.set_mamba_aware();
+        let mut now = 0.0;
+        for key in keys {
+            now = make_resident(&mut tier, &[*key], now);
+            if key.sequence_hash() >= 100 {
+                tier.mark_state_slots(&[*key]);
+            }
+        }
+        (tier, now)
+    }
+
+    /// `on_request_finished`: re-rank head to tail (head newest), then demote.
+    fn finish(
+        tier: &mut HostTier,
+        head_to_tail: &[HostBlockKey],
+        inserted: &[(usize, HostBlockKey)],
+        chain: &[(usize, HostBlockKey)],
+    ) {
+        for key in head_to_tail.iter().rev() {
+            tier.touch(*key);
+        }
+        tier.demote_superseded_tips(inserted, chain);
+    }
+
+    #[test]
+    fn mamba_aware_worked_example_evicts_the_superseded_tip_first() {
+        // A 3-block turn then a 5-block turn of one session, one state slot
+        // per boundary: the second turn supersedes the first one's tip.
+        let a = |i: u64| key(i);
+        let st = |i: u64| key(100 + i);
+        let chain = |n: u64| (1..=n).map(|i| (i as usize, st(i))).collect::<Vec<_>>();
+        let (mut tier, now) = mamba_aware_tier(&[a(1), a(2), a(3), st(3)]);
+        finish(
+            &mut tier,
+            &[a(1), a(2), st(3), a(3)],
+            &[(3, st(3))],
+            &chain(3),
+        );
+        let mut now = now;
+        for block in [a(4), a(5), st(5)] {
+            now = make_resident(&mut tier, &[block], now);
+        }
+        tier.mark_state_slots(&[st(5)]);
+        finish(
+            &mut tier,
+            &[a(1), a(2), a(3), a(4), st(5), a(5)],
+            &[(5, st(5))],
+            &chain(5),
+        );
+        assert_eq!(
+            tier.lru_order(),
+            [st(3), a(5), st(5), a(4), a(3), a(2), a(1)],
+            "S3, A5, S5, A4, A3, A2, A1"
+        );
+        // The demoted tip goes first, ahead of the oldest LRU block.
+        let _ = make_resident(&mut tier, &[a(6)], now);
+        assert_eq!(tier.lru_order()[0], st(3));
+    }
+
+    #[test]
+    fn mamba_aware_never_demotes_attention_junctions_or_the_deepest_state() {
+        let (junction, tip) = (key(102), key(106));
+        let (mut tier, _) = mamba_aware_tier(&[key(2), junction, tip]);
+        let chain = [(2, junction), (6, tip)];
+        // A writer stores the junction state at 2 below its own tip at 6.
+        finish(
+            &mut tier,
+            &[key(2), junction, tip],
+            &[(2, junction), (6, tip)],
+            &chain,
+        );
+        let before = tier.lru_order();
+        // A later request on the same chain: the junction is not a tip, the
+        // tip is the deepest state.
+        tier.demote_superseded_tips(&[], &chain);
+        assert_eq!(tier.lru_order(), before);
+    }
+
+    #[test]
+    fn mamba_aware_undemotes_only_on_a_re_rank_and_keeps_demotions_in_order() {
+        let (s3, s5, s7, a1) = (key(103), key(105), key(107), key(1));
+        let (mut tier, now) = mamba_aware_tier(&[a1, s3]);
+        finish(&mut tier, &[a1, s3], &[(3, s3)], &[(3, s3)]);
+        let now = make_resident(&mut tier, &[s5], now);
+        tier.mark_state_slots(&[s5]);
+        finish(&mut tier, &[a1, s5], &[(5, s5)], &[(3, s3), (5, s5)]);
+        assert_eq!(tier.lru_order()[0], s3);
+        // A load pins and releases s3: still demoted, still first.
+        let now = load(&mut tier, &[s3], now);
+        assert_eq!(tier.lru_order()[0], s3);
+        // s5 is superseded by s7: demoted behind s3, the older demotion.
+        let _ = make_resident(&mut tier, &[s7], now);
+        tier.mark_state_slots(&[s7]);
+        finish(
+            &mut tier,
+            &[a1, s7],
+            &[(7, s7)],
+            &[(3, s3), (5, s5), (7, s7)],
+        );
+        assert_eq!(tier.lru_order()[..2], [s3, s5]);
+        // A request that re-ranks s3 clears its demotion; it is demoted again
+        // below s7, now behind s5.
+        finish(&mut tier, &[a1, s3], &[], &[(3, s3), (5, s5), (7, s7)]);
+        assert_eq!(tier.lru_order()[..2], [s5, s3]);
     }
 
     #[test]

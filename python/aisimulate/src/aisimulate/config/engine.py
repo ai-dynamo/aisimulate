@@ -191,6 +191,8 @@ class HostOffloadConfig(StrictModel):
     latency_to_first_byte_ms: NonNegativeFloat = 0.0
     # vLLM connector whose store, lookup and eviction rules G2 follows.
     connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_v0_32"] = "offloading_v0_24"
+    # vLLM's offloading eviction_policy; mamba_aware_lru (vllm-project/vllm#63578) needs offloading_v0_32.
+    eviction_policy: Literal["lru", "mamba_aware_lru"] = "lru"
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -205,6 +207,8 @@ class HostOffloadConfig(StrictModel):
     def _validate_connector(self) -> HostOffloadConfig:
         if self.connector != "offloading_v0_24" and self.scope != "dp_rank_local":
             raise ValueError("host_offload.connector other than offloading_v0_24 requires scope dp_rank_local")
+        if self.eviction_policy != "lru" and self.connector != "offloading_v0_32":
+            raise ValueError("host_offload.eviction_policy mamba_aware_lru requires connector offloading_v0_32")
         return self
 
     @model_serializer(mode="wrap")
@@ -217,6 +221,7 @@ class HostOffloadConfig(StrictModel):
             "shared_h2d_bandwidth_gbps",
             "latency_to_first_byte_ms",
             "connector",
+            "eviction_policy",
         ):
             if payload.get(name) == type(self).model_fields[name].default:
                 payload.pop(name)

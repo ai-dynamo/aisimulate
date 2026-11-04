@@ -455,6 +455,26 @@ impl G2Connector {
     }
 }
 
+/// Eviction policy of a rank-local G2 on top of its connector's recency rules,
+/// as vLLM's offloading `eviction_policy` selects it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostEvictionPolicy {
+    /// The connector's own LRU.
+    #[default]
+    Lru,
+    /// `lru` plus the Mamba-aware demotion of vllm-project/vllm#63578
+    /// (`MambaAwareLRUCachePolicy`): superseded Mamba tips are evicted first.
+    /// Needs `offloading_v0_32`.
+    MambaAwareLru,
+}
+
+impl HostEvictionPolicy {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
 
 fn default_shared_host_offload_bandwidth_gbps() -> f64 {
@@ -514,6 +534,9 @@ pub struct NativeHostOffloadConfig {
     /// vLLM connector whose rules the tier follows.
     #[serde(default, skip_serializing_if = "G2Connector::is_default")]
     pub connector: G2Connector,
+    /// CPU-tier eviction policy: vLLM's offloading `eviction_policy`.
+    #[serde(default, skip_serializing_if = "HostEvictionPolicy::is_default")]
+    pub eviction_policy: HostEvictionPolicy,
 }
 
 impl NativeHostOffloadConfig {
@@ -528,6 +551,7 @@ impl NativeHostOffloadConfig {
             latency_to_first_byte_ms: 0.0,
             kv_layout_id: None,
             connector: G2Connector::OffloadingV024,
+            eviction_policy: HostEvictionPolicy::Lru,
         }
     }
 
@@ -577,6 +601,10 @@ impl NativeHostOffloadConfig {
         ensure!(
             self.connector.is_default() || self.scope == G2Scope::DpRankLocal,
             "native_host_offload.connector other than offloading_v0_24 requires scope dp_rank_local"
+        );
+        ensure!(
+            self.eviction_policy.is_default() || self.connector == G2Connector::OffloadingV032,
+            "native_host_offload.eviction_policy mamba_aware_lru requires connector offloading_v0_32"
         );
         Ok(())
     }

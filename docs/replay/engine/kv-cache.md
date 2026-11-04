@@ -167,6 +167,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 | `shared_d2h_bandwidth_gbps` | `80.0` | Total GPU→host bandwidth of the pool. `cluster_shared` only. |
 | `shared_h2d_bandwidth_gbps` | `80.0` | Total host→GPU bandwidth of the pool. `cluster_shared` only. |
 | `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_v0_32`. The last two need the aggregated worker, `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
+| `eviction_policy` | `lru` | vLLM's offloading `eviction_policy`. `mamba_aware_lru` ([vllm-project/vllm#63578](https://github.com/vllm-project/vllm/pull/63578), not merged) is `lru`, except that when a request finishes, the Mamba tips it stored that now lie below a deeper state on its prefix are evicted first; a re-rank restores their `lru` order. Needs `offloading_v0_32`. |
 
 `recommend` keeps `host_offload` fixed; its size and bandwidth are not searched.
 

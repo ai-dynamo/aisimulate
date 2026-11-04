@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Result, ensure};
 
 use super::{HostLink, HostPolicy, HostTier, HostTierConfig};
-use crate::engine::{G2Connector, G2Scope, NativeHostOffloadConfig};
+use crate::engine::{G2Connector, G2Scope, HostEvictionPolicy, NativeHostOffloadConfig};
 
 /// Everything that must agree before ranks may share stored KV blocks.
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +146,9 @@ impl HostClient {
                         G2Connector::SimpleCpuV032 => HostPolicy::FreeQueue,
                     },
                 })?;
+                if config.eviction_policy == HostEvictionPolicy::MambaAwareLru {
+                    tier.set_mamba_aware();
+                }
                 tier.register(0, link)?;
                 Ok(Self {
                     tier: Arc::new(Mutex::new(tier)),

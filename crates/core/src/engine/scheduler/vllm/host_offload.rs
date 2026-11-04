@@ -35,7 +35,7 @@
 //! boundary hand-off), and a hit ends at the deepest block boundary that holds
 //! the attention prefix and every slot of the state there.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -141,6 +141,10 @@ pub(super) struct VllmHostRequestState {
     /// `offloading_v0_32`: boundaries, in blocks, of the states stored,
     /// offered or loaded, re-ranked with the blocks.
     accessed_states: BTreeSet<usize>,
+    /// `mamba_aware_lru`: state slots this request stored, with end-token
+    /// positions, and those it found present or loaded.
+    inserted_states: Vec<(usize, HostBlockKey)>,
+    reused_states: FxHashSet<HostBlockKey>,
 }
 
 impl VllmHostRequestState {
@@ -190,6 +194,8 @@ impl VllmHostRequestState {
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
             accessed_states: BTreeSet::new(),
+            inserted_states: Vec::new(),
+            reused_states: FxHashSet::default(),
         }
     }
 
@@ -679,6 +685,10 @@ impl VllmHostOffloadAdapter {
                 .extend(hit.base_g1_blocks..loaded_prefix_blocks);
             if hit.state_slots > 0 {
                 request.accessed_states.insert(loaded_prefix_blocks);
+                // `prepare_load` records the loaded slots as reused.
+                request
+                    .reused_states
+                    .extend(hit.keys[..hit.state_slots].iter().copied());
             }
         }
         if let Some(g3) = &mut self.g3 {
@@ -1030,18 +1040,23 @@ impl VllmHostOffloadAdapter {
         for (slot, key) in keys.iter().enumerate() {
             match tier.lookup(*key) {
                 Lookup::Pending { .. } => continue,
-                Lookup::Hit => offered = true,
+                Lookup::Hit => {
+                    offered = true;
+                    request.reused_states.insert(*key);
+                }
                 Lookup::Miss => {
                     offered = true;
                     if let StoreOutcome::Prepared { transfer_id, .. } =
                         tier.prepare_store(self.host.id(), handoff.owner, &[*key], None, now_ms)
                     {
+                        tier.mark_state_slots(&[*key]);
                         assert!(kv_manager.attach_state_handoff_dependency(
                             handoff,
                             &[slot],
                             source_dependency(transfer_id)
                         ));
                         request.latest_store = Some(transfer_id);
+                        request.inserted_states.push((handoff.position, *key));
                     }
                 }
             }
@@ -1103,6 +1118,31 @@ impl VllmHostOffloadAdapter {
                 let mut tier = self.host.lock();
                 for (_, _, key) in keys.into_iter().rev() {
                     tier.touch(key);
+                }
+                // `mamba_aware_lru`: the chain is every state slot on the
+                // request's block-hash chain, Mamba group by group.
+                if let Some(hybrid) = self.hybrid
+                    && tier.is_mamba_aware()
+                {
+                    let inserted = std::mem::take(&mut request.inserted_states)
+                        .into_iter()
+                        .filter(|(_, key)| !request.reused_states.contains(key))
+                        .collect::<Vec<_>>();
+                    let chain = (0..hybrid.slots)
+                        .flat_map(|slot| {
+                            request
+                                .prompt_keys
+                                .iter()
+                                .enumerate()
+                                .map(move |(index, key)| {
+                                    (
+                                        (index + 1) * block_size,
+                                        HostBlockKey::state(key.sequence_hash(), slot),
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>();
+                    tier.demote_superseded_tips(&inserted, &chain);
                 }
             }
             G2Connector::SimpleCpuV032 => {
@@ -1253,7 +1293,7 @@ mod tests {
     use crate::engine::kv_manager::NativeAllocation;
     use crate::engine::scheduler::vllm::core::VllmCore;
     use crate::engine::trace::TraceCollector;
-    use crate::engine::{HostOffloadObservation, HostOffloadObservationData};
+    use crate::engine::{HostEvictionPolicy, HostOffloadObservation, HostOffloadObservationData};
 
     fn adapter(capacity_blocks: usize) -> VllmHostOffloadAdapter {
         VllmHostOffloadAdapter::new(
@@ -3207,5 +3247,41 @@ mod tests {
         let state = |slot| HostBlockKey::state(tail.sequence_hash(), slot);
         let tier = core.host_offload().unwrap().host.lock();
         assert_eq!(tier.lru_order(), [tail, state(1), state(0), head]);
+    }
+
+    #[test]
+    fn mamba_aware_lru_evicts_a_tip_a_later_turn_superseded_first() {
+        // Turn 1 (10 tokens) stores its tip state at 8. Turn 2 extends the
+        // same prefix to 18 tokens and stores its tip at 16. At turn 2's
+        // finish the state at 8 lies below a deeper state on its chain, so
+        // `mamba_aware_lru` moves its two slots to the eviction end, slot 0
+        // first; `lru` leaves them ranked with turn 2's re-rank.
+        for (policy, demoted) in [
+            (HostEvictionPolicy::MambaAwareLru, true),
+            (HostEvictionPolicy::Lru, false),
+        ] {
+            let mut args = hybrid_args(G2Connector::OffloadingV032, 16);
+            args.native_host_offload.as_mut().unwrap().eviction_policy = policy;
+            let mut core = VllmCore::new(args);
+            let mut now = 0.0;
+            for (id, len) in [(1, 10), (2, 18)] {
+                core.receive(DirectRequest {
+                    tokens: (0..len).collect(),
+                    max_output_tokens: 1,
+                    uuid: Some(Uuid::from_u128(id)),
+                    arrival_timestamp_ms: Some(now),
+                    ..Default::default()
+                });
+                run_to_idle(&mut core, &mut now);
+            }
+            let (_, _, host) = request(Uuid::nil(), (0..18).collect());
+            let tip = |slot| HostBlockKey::state(host.prompt_keys[1].sequence_hash(), slot);
+            let tier = core.host_offload().unwrap().host.lock();
+            assert_eq!(
+                tier.lru_order()[..2] == [tip(0), tip(1)],
+                demoted,
+                "{policy:?}"
+            );
+        }
     }
 }
