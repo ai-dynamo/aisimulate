@@ -53,3 +53,10 @@ when (ModelConfig.nextn or 0) > 0:
 
 when kv_cache_dtype in ("float16", "bfloat16"):
     kv_cache_dtype = "auto"
+
+# MiniMax-M3 sparse attention, as in the default rule: rc29 requires algorithm on every SM,
+# implementation is the SM100-family prescription (utils.msa_sparse_algorithm / _implementation).
+when (ModelConfig.msa_sparse_implementation or '') != '':
+    agg_prefill_decode msa_sparse_implementation = ModelConfig.msa_sparse_implementation
+when (ModelConfig.msa_sparse_algorithm or '') != '':
+    agg_prefill_decode msa_sparse_algorithm = ModelConfig.msa_sparse_algorithm

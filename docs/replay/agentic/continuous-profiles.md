@@ -86,6 +86,14 @@ client drain ends immediately and `cancel_drain_timed_out` is false even when
 the report records unsettled server work. The configured drain deadline is an
 upper bound, not a minimum run duration.
 
+Telemetry reports `server_unsettled` when client completion leaves committed
+server work. This label alone does not establish a replay failure: inspect
+`client_in_flight_requests`, `cancel_drain_timed_out`, request terminals and
+lifecycle cleanup alongside the profile deadlines. Benchmark qualification can
+accept fully accounted grace-boundary cancellations while retaining this status
+and excluding canceled requests from accuracy scoring. Finite cohorts still
+require complete replay; do not extend the measured window to hide cleanup.
+
 ## Results and limits
 
 The `agentic_profile` report contains resolved options, barrier and deadline
@@ -134,13 +142,18 @@ Then run:
 ```bash
 python/aisimulate/.venv/bin/aisimulate predict \
   --config examples/cli/agentic-profile.yaml \
-  --capture-per-request --format json --output-dir /tmp/agentic-profile
+  --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
 ```
 
 The example uses the repository's self-authored two-play trace and fixed timing
 to exercise control flow without downloading a model or dataset. To change the
 duration on the existing CLI, use
 `--set traffic.load.agentic_profile.duration_seconds=3600`.
+
+`--capture-telemetry` additionally preserves preparation requests and lifecycle
+events and samples scheduler/cache/traffic state across the full run. It writes
+three native telemetry JSONL files; `requests.jsonl` and summary metrics remain
+profiling-only. See the [output contract](../../getting-started/understand-results.md#replay-telemetry).
 
 ## Behavioral reference
 

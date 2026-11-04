@@ -175,7 +175,7 @@ class TestResolveLocalModelPath:
 
 
 class TestBundledConfigRefresh:
-    """Regressions for the #1487 review: a bundled-config update under an
+    """A bundled-config update under an
     unchanged slug must reach consumers on a reused host (the materialized
     copy used to be write-once, so content-keyed caches downstream hashed
     stale bytes), and config.json + hf_quant_config.json must publish as ONE

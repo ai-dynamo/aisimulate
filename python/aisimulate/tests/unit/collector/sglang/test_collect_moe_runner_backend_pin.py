@@ -99,7 +99,7 @@ def _inject_fake_0514_runtime_context(monkeypatch) -> None:
     """Install a fake sglang.srt.runtime_context with NO get_flags export --
     the real shape of that module at 0.5.14 (a 226-line ParallelContext/
     get_parallel()-only file; the Flags/MoeFlags tier _pin_moe_runner_backend
-    reads was added later). Hermetic (MINOR 1, code review 2026-08-18):
+    reads was added later). Hermetic (MINOR 1, code review):
     previously this branch relied on sglang genuinely being absent from this
     venv, which is ambient environment state, not a controlled fact -- if a
     real sglang install (of any version) ever became importable here, `from
@@ -127,7 +127,7 @@ class TestPin0514BareGlobal:
     export is injected (see _inject_fake_0514_runtime_context) so `from
     sglang.srt.runtime_context import get_flags` fails here exactly as it
     would on a real 0.5.14 install, regardless of whether a real sglang is
-    ambiently importable in this venv (MINOR 1, code review 2026-08-18:
+    ambiently importable in this venv (MINOR 1, code review
     hermetic, not dependent on ambient absence)."""
 
     def test_pins_and_restores_the_module_global(self, monkeypatch, backend_value):

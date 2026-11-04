@@ -414,6 +414,10 @@ def test_speculative_fpm_query_scales_widened_stp_once(tmp_path, backend, model_
             assert detail["stp_reference"]["latency_ms"] == baseline
             assert detail["stp_reference"]["max_rank"] == 1
         assert ranks == original
+        # A fully prefix-cached prefill schedules no fresh token: decode-only.
+        cached = copy.deepcopy(ranks)
+        cached[1]["scheduled_requests"].update(num_prefill_requests=1, sum_prefill_kv_tokens=4096)
+        assert model.estimate_forward_pass_time_ms(cached, draft_length=2) == pytest.approx(8 * 1.41)
         assert model.estimate_forward_pass_time_ms(ranks) == 4.0
         assert "stp_reference" not in model.estimate_forward_pass_detailed(ranks)
         assert model.estimate_forward_pass_time_ms({}, draft_length=2) == 0.0

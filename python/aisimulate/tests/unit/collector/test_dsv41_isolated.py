@@ -140,28 +140,26 @@ def test_canary_cannot_be_admitted_by_changing_its_description(tmp_path):
         aggregate_isolated_records(tmp_path, plan_path, manifest_path)
 
 
-def test_isolated_hash_closure_tracks_reader_and_native_dependencies(tmp_path):
+def test_isolated_hash_tracks_reader_and_native_dependencies(tmp_path):
     from collector import provenance
 
     root = Path(__file__).resolve().parents[3]
-    module = "collector.sglang.dsv41_isolated_runner"
-    closures = provenance.load_closures(root / "collector/hash_closures.yaml")
-    assert module in provenance.enumerate_provenance_modules()
-    dependencies = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE}
-    dependencies.update(provenance._expand_closure_files(root, closures[module]))
-    for relative in dependencies:
-        target = tmp_path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(root / relative, target)
-    original_hash = provenance.collector_hash(module, tmp_path, closures)
-    for relative in (
+    dependencies = (
+        "collector/sglang/dsv41_isolated_runner.py",
         "collector/sglang/dsv41_native_runner.py",
         "collector/sglang/dsv41_humming.py",
         "collector/sglang/collect_dsv41_module.py",
         "src/aisimulate_core/sdk/models/deepseek_v41.py",
-    ):
+    )
+    for relative in dependencies:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, target)
+    original_hash = provenance.collector_hash(tmp_path)
+    for relative in dependencies:
         target = tmp_path / relative
         original = target.read_bytes()
         target.write_bytes(original + b"\n ")
-        assert provenance.collector_hash(module, tmp_path, closures) != original_hash, relative
+        assert provenance.collector_hash(tmp_path) != original_hash, relative
         target.write_bytes(original)
+    assert provenance.collector_hash(tmp_path) == original_hash

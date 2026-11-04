@@ -17,6 +17,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from collector.helper import PhaseClock
 
 pytestmark = pytest.mark.unit
 SOURCE = Path(__file__).resolve().parents[4] / "collector/sglang/collect_mla_module.py"
@@ -51,7 +52,7 @@ def runtime(monkeypatch):
     batch = SimpleNamespace(prepare_for_extend=record("prepare"))
     forward_batch = SimpleNamespace()
     module(
-        "sglang.srt.layers.communicator",
+        "sglang.srt.layers.layer_boundary.adapters.attention",
         AttentionInputs=lambda *_: object(),
         get_attn_tp_context=lambda: SimpleNamespace(set_attn_inputs=record("inputs")),
     )
@@ -128,7 +129,13 @@ def runtime(monkeypatch):
                 raise self.close_error
 
     graph = GraphContext()
-    bucket = _load(["graph_token_bucket"], source=GRAPH_SOURCE)["graph_token_bucket"]
+
+    # A runner whose prefill graph captures (4, 144, 2048): the collector keeps SGLang
+    # 0.5.21 prefill graphs off (test_dsa_prefill_graph.py pins graph_token_bucket), so
+    # this drives _run_prefill's native-graph branch on its own.
+    def bucket(_runner, tokens):
+        return next((size for size in (4, 144, 2048) if size >= tokens), None)
+
     module(
         "collector.sglang.dsa_prefill_graph",
         graph_token_bucket=bucket,
@@ -155,8 +162,10 @@ def runtime(monkeypatch):
             "_dsa_skip_indexer_enabled": lambda *_: False,
             "_resolve_perf_path": lambda _path, filename: filename,
             "_module_model_architecture": lambda _: "GlmMoeDsaForCausalLM",
-            "get_version": lambda _: "0.5.14",
+            "get_version": lambda _: "0.5.21",
             "log_perf": log_perf,
+            "PhaseClock": PhaseClock,
+            "_POINT_PHASE_TOTALS": {},
         },
     )
     kwargs = dict(
@@ -174,7 +183,7 @@ def runtime(monkeypatch):
         model_path="glm",
         architecture="GlmMoeDsaForCausalLM",
         backend_name="dsa",
-        version="0.5.14",
+        version="0.5.21",
         device_name="FakeGPU",
         log_mla_dtype="bfloat16",
         log_kv_dtype="fp8",

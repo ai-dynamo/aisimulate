@@ -31,18 +31,24 @@
 //! process ([`loaded`]); saving recomputes it and fails if the data changed
 //! since. Tables that other engines parsed before the fingerprint stop being
 //! shared then, because the shared table memo is keyed by paths, not content.
+//! For the same reason a restore shares only tables an earlier restore loaded
+//! right after verifying the same data, and only while no fingerprinted entry
+//! has been written and no link followed on the way to the data retargeted
+//! since ([`current`], [`verified`]): table families parse on first query, so
+//! equal content alone would admit files that changed and changed back after
+//! that restore.
 //! Packing copies exactly the fingerprinted entries, preserving relative
 //! paths, so a packed root resolves tables exactly like the original.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 
 use super::{Stage, invalid, io_error, normalized_absolute, sha256_hex};
 use crate::AicError;
-use crate::perfmodel::perf_database::unshare_tables;
+use crate::perfmodel::perf_database::{PerfDatabase, PerfTables, unshare_tables};
 
 pub(crate) const METHOD: &str = "systems_tree_sha256_v1";
 pub(crate) const PACKED_SYSTEMS_DIR: &str = "perf_db/systems";
@@ -84,6 +90,8 @@ struct Entry {
     label: String,
     absolute: PathBuf,
     kind: EntryKind,
+    /// [`stamp`] of the entry, and of the link itself for a symlink.
+    stamp: String,
 }
 
 impl Entry {
@@ -100,6 +108,109 @@ impl Entry {
 struct Inventory {
     data_dir: String,
     entries: Vec<Entry>,
+}
+
+/// What changes whenever an entry is written, replaced or retargeted, even
+/// back to its original bytes: its identity, size, and modification and
+/// status change times. The status change time cannot be set back.
+#[cfg(unix)]
+fn stamp(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        "{}:{} {} {}.{} {}.{}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec()
+    )
+}
+
+/// Without a status change time a rewrite can restore every field read here,
+/// so these stamps never match ([`DataStamp::matches`]).
+#[cfg(not(unix))]
+fn stamp(metadata: &std::fs::Metadata) -> String {
+    format!("{} {:?}", metadata.len(), metadata.modified().ok())
+}
+
+/// Symbolic links one resolution may follow, as Linux allows before `ELOOP`.
+const MAX_LINK_HOPS: usize = 40;
+
+/// [`stamp`]s of every symbolic link that resolving `path` follows, in order:
+/// the links among its components and, in turn, those in each link's target.
+/// Loaders read through `path`, so retargeting any of these links changes
+/// what they read although no target is written; a retarget always creates
+/// a new link.
+fn link_stamps(path: &Path) -> Result<String, AicError> {
+    let absolute = std::path::absolute(path).map_err(|error| io_error(path, error))?;
+    let parts = |path: &Path| -> Vec<PathBuf> {
+        path.components()
+            .rev()
+            .map(|component| PathBuf::from(component.as_os_str()))
+            .collect()
+    };
+    let mut pending = parts(&absolute);
+    let mut resolved = PathBuf::new();
+    let mut hops = 0;
+    let mut stamped = String::new();
+    while let Some(part) = pending.pop() {
+        match part.components().next() {
+            Some(Component::ParentDir) => {
+                resolved.pop();
+            }
+            Some(Component::Normal(_)) => {
+                let candidate = resolved.join(&part);
+                match std::fs::symlink_metadata(&candidate) {
+                    Ok(link) if link.file_type().is_symlink() => {
+                        hops += 1;
+                        if hops > MAX_LINK_HOPS {
+                            return Err(invalid(format!(
+                                "too many symbolic links resolving {}",
+                                path.display()
+                            )));
+                        }
+                        stamped.push_str(&format!("{} -> ", stamp(&link)));
+                        let target = std::fs::read_link(&candidate)
+                            .map_err(|error| io_error(&candidate, error))?;
+                        // An absolute target restarts at the root; a relative
+                        // one continues from the link's directory.
+                        pending.extend(parts(&target));
+                    }
+                    _ => resolved = candidate,
+                }
+            }
+            // The root (or a prefix) replaces what was resolved so far.
+            Some(Component::RootDir | Component::Prefix(_)) => resolved.push(&part),
+            Some(Component::CurDir) | None => {}
+        }
+    }
+    Ok(stamped)
+}
+
+/// [`link_stamps`] of `path`, then the [`stamp`] of what it resolves to.
+fn path_stamp(path: &Path) -> Result<String, AicError> {
+    let mut stamped = link_stamps(path)?;
+    match std::fs::metadata(path) {
+        Ok(metadata) => stamped.push_str(&stamp(&metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => stamped.push_str("absent"),
+        Err(error) => return Err(io_error(path, error)),
+    }
+    Ok(stamped)
+}
+
+/// The stamps of every input a fingerprint covers and of the links followed
+/// on the way to them, taken before their contents were hashed. Matching stamps
+/// mean no entry was written, replaced, added or removed, and no such link
+/// retargeted, in between.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DataStamp(String);
+
+impl DataStamp {
+    fn matches(&self, other: &Self) -> bool {
+        cfg!(unix) && self == other
+    }
 }
 
 fn hash_file(path: &Path) -> Result<(u64, String), AicError> {
@@ -136,24 +247,28 @@ fn yaml_data_dir(root: &Path, system: &str) -> Result<String, AicError> {
 
 /// Classify one directory entry like the loader sees it: symlinks are
 /// followed and an unresolvable one is recorded but never read.
-fn classify(path: &Path) -> Result<Option<EntryKind>, AicError> {
+fn classify(path: &Path) -> Result<Option<(EntryKind, String)>, AicError> {
     let link = std::fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
-    let metadata = if link.file_type().is_symlink() {
+    let (metadata, stamped) = if link.file_type().is_symlink() {
         match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
+            Ok(metadata) => {
+                let stamped = format!("{}{}", link_stamps(path)?, stamp(&metadata));
+                (metadata, stamped)
+            }
             Err(_) => {
                 let target = std::fs::read_link(path).map_err(|error| io_error(path, error))?;
-                return Ok(Some(EntryKind::Dangling { target }));
+                return Ok(Some((EntryKind::Dangling { target }, stamp(&link))));
             }
         }
     } else {
-        link
+        let stamped = stamp(&link);
+        (link, stamped)
     };
     Ok(if metadata.is_dir() {
-        Some(EntryKind::Dir)
+        Some((EntryKind::Dir, stamped))
     } else if metadata.is_file() {
         let (size, sha256) = hash_file(path)?;
-        Some(EntryKind::File { size, sha256 })
+        Some((EntryKind::File { size, sha256 }, stamped))
     } else {
         None
     })
@@ -185,7 +300,7 @@ fn walk(dir: &Path, label: &str, depth: usize, out: &mut Vec<Entry>) -> Result<(
     }
     for (name, path) in listed_children(dir)? {
         let child = format!("{label}/{name}");
-        let Some(kind) = classify(&path)? else {
+        let Some((kind, stamp)) = classify(&path)? else {
             continue;
         };
         let directory = kind == EntryKind::Dir;
@@ -193,6 +308,7 @@ fn walk(dir: &Path, label: &str, depth: usize, out: &mut Vec<Entry>) -> Result<(
             label: child.clone(),
             absolute: path.clone(),
             kind,
+            stamp,
         });
         if directory {
             walk(&path, &child, depth + 1, out)?;
@@ -205,7 +321,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     let data_dir = yaml_data_dir(root, system)?;
     let mut entries = Vec::new();
     for (name, path) in listed_children(root)? {
-        let Some(kind) = classify(&path)? else {
+        let Some((kind, stamp)) = classify(&path)? else {
             continue;
         };
         // Top-level directories (other systems, profiles) are not inputs.
@@ -214,6 +330,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
                 label: name,
                 absolute: path,
                 kind,
+                stamp,
             });
         }
     }
@@ -246,6 +363,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     match std::fs::metadata(&data_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => entries.push(Entry {
             label,
+            stamp: path_stamp(&data_path)?,
             absolute: data_path,
             kind: EntryKind::Absent,
         }),
@@ -255,6 +373,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
                 label: label.clone(),
                 absolute: data_path.clone(),
                 kind: EntryKind::Dir,
+                stamp: path_stamp(&data_path)?,
             });
             walk(&data_path, &label, 0, &mut entries)?;
         }
@@ -269,19 +388,27 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     Ok(Inventory { data_dir, entries })
 }
 
-fn external_fpm(path: Option<&Path>) -> Result<Option<ExternalFpmData>, AicError> {
+/// The external parquet's data and the [`stamp`]s of the files it read.
+fn external_fpm(path: Option<&Path>) -> Result<(Option<ExternalFpmData>, String), AicError> {
     let Some(path) = path else {
-        return Ok(None);
+        return Ok((None, String::new()));
     };
+    let mut stamped = path_stamp(path)?;
+    let sha256 = hash_file(path)?.1;
     let sidecar = path.with_extension("metadata.json");
-    Ok(Some(ExternalFpmData {
-        sha256: hash_file(path)?.1,
-        sidecar_sha256: if sidecar.is_file() {
-            Some(hash_file(&sidecar)?.1)
-        } else {
-            None
-        },
-    }))
+    let sidecar_sha256 = if sidecar.is_file() {
+        stamped = format!("{stamped} {}", path_stamp(&sidecar)?);
+        Some(hash_file(&sidecar)?.1)
+    } else {
+        None
+    };
+    Ok((
+        Some(ExternalFpmData {
+            sha256,
+            sidecar_sha256,
+        }),
+        stamped,
+    ))
 }
 
 fn summarize(
@@ -314,24 +441,53 @@ pub(crate) fn fingerprint(
     system: &str,
     fpm_parquet: Option<&Path>,
 ) -> Result<PerfDbFingerprint, AicError> {
+    observe(root, system, fpm_parquet).map(|(fingerprint, _)| fingerprint)
+}
+
+/// [`fingerprint`] the data and stamp the entries it read.
+fn observe(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+) -> Result<(PerfDbFingerprint, DataStamp), AicError> {
     let inventory = inventory(root, system)?;
-    Ok(summarize(system, &inventory, external_fpm(fpm_parquet)?))
+    let (external, external_stamp) = external_fpm(fpm_parquet)?;
+    let mut stamps: String = inventory
+        .entries
+        .iter()
+        .map(|entry| format!("{} {}\n", entry.label, entry.stamp))
+        .collect();
+    stamps.push_str(&format!("root {}\n", path_stamp(root)?));
+    stamps.push_str(&format!("external {external_stamp}\n"));
+    Ok((
+        summarize(system, &inventory, external),
+        DataStamp(sha256_hex(stamps.as_bytes())),
+    ))
 }
 
 /// The load-time fingerprint shared by a process's estimators.
 pub(crate) type LoadedFingerprint = Arc<Result<PerfDbFingerprint, String>>;
 
-/// The process-wide load-time fingerprint cell for one root, system and
-/// external parquet. Each key has its own cell, so concurrent first loads
-/// hash the data once without holding the map lock while hashing.
-fn loaded_cell(
-    root: &Path,
-    system: &str,
-    fpm_parquet: Option<&Path>,
-) -> Arc<OnceLock<LoadedFingerprint>> {
+/// The process-wide load-time fingerprint of one root, system and external
+/// parquet, and the shared tables known to hold the data it describes.
+#[derive(Default)]
+struct Loaded {
+    fingerprint: OnceLock<LoadedFingerprint>,
+    /// Tables restored estimators loaded right after the data was
+    /// fingerprinted again and still matched `fingerprint`, with the stamp of
+    /// that data. Only these stay shared across a restore, and only while the
+    /// stamp holds: the shared table memo is keyed by paths, so any other live
+    /// tables for the root may have been parsed from another generation of
+    /// its files, and these parse their families on first query.
+    verified: Mutex<Vec<(Weak<PerfTables>, DataStamp)>>,
+}
+
+/// The process-wide load-time state for one root, system and external
+/// parquet. Each key has its own cell, so concurrent first loads hash the
+/// data once without holding the map lock while hashing.
+fn loaded_cell(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> Arc<Loaded> {
     type Key = (PathBuf, String, Option<PathBuf>);
-    static LOADED: OnceLock<Mutex<HashMap<Key, Arc<OnceLock<LoadedFingerprint>>>>> =
-        OnceLock::new();
+    static LOADED: OnceLock<Mutex<HashMap<Key, Arc<Loaded>>>> = OnceLock::new();
     let normal = |path: &Path| normalized_absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let key = (normal(root), system.to_owned(), fpm_parquet.map(normal));
     Arc::clone(
@@ -352,28 +508,81 @@ fn loaded_cell(
 /// Tables another engine parsed before this fingerprint are no longer shared,
 /// so the estimator loading next reads what was fingerprinted.
 pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> LoadedFingerprint {
-    Arc::clone(loaded_cell(root, system, fpm_parquet).get_or_init(|| {
-        let fingerprint = fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string());
-        unshare_tables(root, system);
-        Arc::new(fingerprint)
-    }))
+    Arc::clone(
+        loaded_cell(root, system, fpm_parquet)
+            .fingerprint
+            .get_or_init(|| {
+                let fingerprint =
+                    fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string());
+                unshare_tables(root, system, &[]);
+                Arc::new(fingerprint)
+            }),
+    )
 }
 
 /// Fingerprint `root` as it is now, before a restore loads it. When this
 /// process has not loaded the root yet, the result is also its load-time
 /// fingerprint, so the load that follows does not hash the same data again.
-/// Tables parsed before this check are no longer shared, so the restored
-/// estimator reads the data that matched the snapshot.
+///
+/// Shared tables stop being shared unless a restore already verified them
+/// against this same data and no entry was written since ([`verified`]).
+/// Their families parse on first query, possibly long after that restore,
+/// so equal content alone would admit files that changed and changed back in
+/// between. Any other tables for the root may have been parsed while its
+/// files held other data: an estimator loaded after the load-time
+/// fingerprint reuses it without hashing again. Repeated restores of
+/// untouched data, such as one per replayed candidate, therefore parse the
+/// tables once and reuse them afterwards.
+///
+/// Returns the stamp of the data to pass to [`verified`].
 pub(crate) fn current(
     root: &Path,
     system: &str,
     fpm_parquet: Option<&Path>,
-) -> Result<PerfDbFingerprint, AicError> {
-    let cell = loaded_cell(root, system, fpm_parquet);
-    let current = fingerprint(root, system, fpm_parquet)?;
-    unshare_tables(root, system);
-    cell.get_or_init(|| Arc::new(Ok(current.clone())));
-    Ok(current)
+) -> Result<(PerfDbFingerprint, DataStamp), AicError> {
+    let loaded = loaded_cell(root, system, fpm_parquet);
+    let (current, stamp) = observe(root, system, fpm_parquet)?;
+    let unchanged = loaded
+        .fingerprint
+        .get()
+        .is_some_and(|loaded| loaded.as_ref().as_ref() == Ok(&current));
+    let keep: Vec<_> = {
+        let mut verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
+        // A written entry never regains its stamp, so the others never match again.
+        verified.retain(|(tables, known)| tables.strong_count() > 0 && known.matches(&stamp));
+        if unchanged {
+            verified
+                .iter()
+                .filter_map(|(tables, _)| tables.upgrade())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    unshare_tables(root, system, &keep);
+    loaded
+        .fingerprint
+        .get_or_init(|| Arc::new(Ok(current.clone())));
+    Ok((current, stamp))
+}
+
+/// Record that a restore loaded `database`'s tables right after [`current`]
+/// found the data under `root`, stamped `stamp`, unchanged from its load-time
+/// fingerprint, so later restores may share them while the stamp holds.
+pub(crate) fn verified(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+    database: &PerfDatabase,
+    stamp: DataStamp,
+) {
+    let loaded = loaded_cell(root, system, fpm_parquet);
+    let mut verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
+    let tables = database.tables_arc();
+    verified.retain(|(known, _)| {
+        known.strong_count() > 0 && !std::ptr::eq(known.as_ptr(), Arc::as_ptr(tables))
+    });
+    verified.push((Arc::downgrade(tables), stamp));
 }
 
 /// Copy the fingerprinted systems inputs into the stage. Returns the packed
@@ -517,7 +726,7 @@ mod tests {
         // Before any load, the restore check's result is the load-time value.
         let fresh = dir.path().join("fresh");
         systems(&fresh);
-        let checked = current(&fresh, "h200_sxm", None).unwrap();
+        let (checked, _) = current(&fresh, "h200_sxm", None).unwrap();
         std::fs::write(gemm(&fresh), b"changed").unwrap();
         assert_eq!(loaded(&fresh, "h200_sxm", None).as_ref(), &Ok(checked));
         // After a load, a later check reports the disk but keeps what was loaded.
@@ -525,9 +734,103 @@ mod tests {
         systems(&used);
         let first = loaded(&used, "h200_sxm", None);
         std::fs::write(gemm(&used), b"changed").unwrap();
-        let now = current(&used, "h200_sxm", None).unwrap();
+        let (now, _) = current(&used, "h200_sxm", None).unwrap();
         assert_ne!(first.as_ref(), &Ok(now));
         assert!(Arc::ptr_eq(&loaded(&used, "h200_sxm", None), &first));
+    }
+
+    #[test]
+    fn stamps_change_when_data_changes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        let parquet = dir.path().join("reviewed.parquet");
+        std::fs::write(&parquet, b"rows").unwrap();
+        let observed = || observe(&root, "h200_sxm", Some(&parquet)).unwrap();
+        let (base, stamp) = observed();
+        assert_eq!(observed().1.matches(&stamp), cfg!(unix));
+        // Coarse file clocks tick every few milliseconds.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let gemm = root.join("data/h200_sxm/vllm/1.0/gemm_perf.parquet");
+        for path in [&gemm, &parquet] {
+            let bytes = std::fs::read(path).unwrap();
+            std::fs::write(path, b"other").unwrap();
+            std::fs::write(path, &bytes).unwrap();
+            let (again, touched) = observed();
+            assert_eq!(again, base);
+            assert!(!touched.matches(&stamp));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stamps_change_when_a_link_on_the_data_path_points_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/h200_sxm/\n").unwrap();
+        for tree in ["a", "b"] {
+            let version = dir.path().join(tree).join("h200_sxm/vllm/1.0");
+            std::fs::create_dir_all(&version).unwrap();
+            std::fs::write(version.join("gemm_perf.parquet"), tree).unwrap();
+        }
+        // Retarget `systems/data` as `ln -sfn` does; neither tree is written.
+        let point = |tree: &str| {
+            let staged = root.join("data.next");
+            std::os::unix::fs::symlink(dir.path().join(tree), &staged).unwrap();
+            std::fs::rename(&staged, root.join("data")).unwrap();
+        };
+        point("a");
+        let (base, stamp) = observe(&root, "h200_sxm", None).unwrap();
+        // Coarse file clocks tick every few milliseconds.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        point("b");
+        assert_ne!(observe(&root, "h200_sxm", None).unwrap().0, base);
+        point("a");
+        let (again, pointed_back) = observe(&root, "h200_sxm", None).unwrap();
+        assert_eq!(again, base);
+        assert!(!pointed_back.matches(&stamp));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stamps_change_when_a_link_behind_another_link_points_back() {
+        let retarget = |link: &Path, target: &Path| {
+            let staged = link.with_extension("next");
+            std::os::unix::fs::symlink(target, &staged).unwrap();
+            std::fs::rename(&staged, link).unwrap();
+        };
+        // `systems/data`, or a version inside the data tree, links to
+        // `profiles/current`; only that intermediate link moves.
+        for outer in ["data", "data/h200_sxm/vllm/1.0"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("systems");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/h200_sxm/\n").unwrap();
+            for tree in ["a", "b"] {
+                let version = match outer {
+                    "data" => dir.path().join(tree).join("h200_sxm/vllm/1.0"),
+                    _ => dir.path().join(tree),
+                };
+                std::fs::create_dir_all(&version).unwrap();
+                std::fs::write(version.join("gemm_perf.parquet"), tree).unwrap();
+            }
+            let current = dir.path().join("profiles/current");
+            std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+            retarget(&current, &dir.path().join("a"));
+            let link = root.join(outer);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&current, &link).unwrap();
+            let (base, stamp) = observe(&root, "h200_sxm", None).unwrap();
+            // Coarse file clocks tick every few milliseconds.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            retarget(&current, &dir.path().join("b"));
+            assert_ne!(observe(&root, "h200_sxm", None).unwrap().0, base, "{outer}");
+            retarget(&current, &dir.path().join("a"));
+            let (again, pointed_back) = observe(&root, "h200_sxm", None).unwrap();
+            assert_eq!(again, base, "{outer}");
+            assert!(!pointed_back.matches(&stamp), "{outer}");
+        }
     }
 
     #[test]

@@ -538,13 +538,22 @@ def test_model_facts_are_lowered_by_typed_request():
     }
 
 
-def test_candidate_renders_deployable_artifacts_with_evaluated_limits():
+@pytest.mark.parametrize(
+    ("budget", "batch_size", "deployable"),
+    [(32, 4, False), (64, 4, True), (5000, 256, False), (5056, 256, True), (8192, 256, True)],
+)
+def test_candidate_renders_deployable_artifacts_with_evaluated_limits(budget, batch_size, deployable):
     request = from_sweeper_candidate(
-        _agg_candidate(),
+        _agg_candidate(agg_max_num_batched_tokens=budget, agg_max_num_seqs=batch_size),
         workload={"isl": 4000, "osl": 1000},
         model_facts=ModelFacts(is_moe=False),
         generator_overrides={"K8sConfig": {"k8s_image": "example/vllm:0.20.1"}},
     )
+
+    if not deployable:
+        with pytest.raises(ValueError, match=rf"Cannot preserve evaluated agg\.max_num_tokens={budget}.*Re-evaluate"):
+            generate_from_request(request)
+        return
 
     artifacts = generate_from_request(request)
 
@@ -552,8 +561,8 @@ def test_candidate_renders_deployable_artifacts_with_evaluated_limits():
     assert "bench_run.sh" in artifacts
     assert "k8s_bench.yaml" in artifacts
     assert '--max-model-len "8192"' in artifacts["cli_args_agg"]
-    assert '--max-num-seqs "256"' in artifacts["cli_args_agg"]
-    assert "--max-num-batched-tokens 8192" in artifacts["cli_args_agg"]
+    assert _cli_flag_value(artifacts["cli_args_agg"], "--max-num-seqs") == str(batch_size)
+    assert _cli_flag_value(artifacts["cli_args_agg"], "--max-num-batched-tokens") == str(budget)
     assert _cli_flag_value(artifacts["cli_args_agg"], "--gpu-memory-utilization") == "0.9"
 
 
@@ -815,3 +824,29 @@ def _assert_artifact_block_size(artifacts, backend, role, expected):
             assert flag not in shlex.split(artifacts[f"cli_args_{role}"])
         else:
             assert _cli_flag_value(artifacts[f"cli_args_{role}"], flag) == str(expected)
+
+
+@pytest.mark.parametrize(("hardware_sku", "implementation"), [("h200_sxm", None), ("b200_sxm", "msa")])
+def test_minimax_m3_trtllm_candidate_renders_its_sparse_attention_keys(hardware_sku, implementation):
+    """The Sweeper lowers through rule=benchmark; rc29 cannot build the M3 KV-cache manager
+    without sparse_attention_config.algorithm, on every SM."""
+    candidate = _agg_candidate(
+        model_name="MiniMaxAI/MiniMax-M3",
+        backend="trtllm",
+        backend_version="1.3.0rc29",
+        hardware_sku=hardware_sku,
+        moe_ep=2,
+        adapters={},
+    )
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=True, architecture="MiniMaxM3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": "example/trtllm:1.3.0rc29"}},
+    )
+    artifacts = generate_from_request(request)
+    name = next(name for name in artifacts if "extra_engine_args" in name and "agg" in name)
+    expected = {"algorithm": "minimax_m3"}
+    if implementation:
+        expected["implementation"] = implementation
+    assert yaml.safe_load(artifacts[name]).get("sparse_attention_config") == expected

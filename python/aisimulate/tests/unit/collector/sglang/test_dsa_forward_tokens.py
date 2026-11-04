@@ -34,20 +34,20 @@ def test_real_query_tensor_counts_must_match(tokens):
         input_ids=tensor(tokens),
         positions=tensor(tokens),
         out_cache_loc=tensor(tokens),
-        num_token_non_padded_cpu=tokens,
+        global_num_token_non_padded_cpu=tokens,
     )
     validate(batch, tokens)
     batch.input_ids = None
-    batch.num_token_non_padded_cpu = 0
+    batch.global_num_token_non_padded_cpu = 0
     with pytest.raises(ValueError, match="input_ids has None"):
         validate(batch, tokens)
 
 
-@pytest.mark.parametrize("field", ["positions", "out_cache_loc", "num_token_non_padded_cpu"])
+@pytest.mark.parametrize("field", ["positions", "out_cache_loc", "global_num_token_non_padded_cpu"])
 def test_decode_requires_one_new_token_per_request(field):
     batch = SimpleNamespace(
-        input_ids=tensor(4), positions=tensor(4), out_cache_loc=tensor(4), num_token_non_padded_cpu=4
+        input_ids=tensor(4), positions=tensor(4), out_cache_loc=tensor(4), global_num_token_non_padded_cpu=4
     )
-    setattr(batch, field, 0 if field == "num_token_non_padded_cpu" else tensor(8192))
+    setattr(batch, field, 0 if field == "global_num_token_non_padded_cpu" else tensor(8192))
     with pytest.raises(ValueError, match=field):
         validate(batch, 4)

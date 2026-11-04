@@ -373,6 +373,7 @@ jobs:
       contents: read
     outputs:
       wheel-version: ${{ steps.verify.outputs.wheel-version }}
+      wheel-package: ${{ steps.verify.outputs.wheel-package }}
     container:
       # Digest-pinned manylinux_2_28: ships the C toolchain the native build
       # needs and audit-tags wheels at glibc 2.28 — also the minimum glibc
@@ -526,7 +527,7 @@ jobs:
           set -euo pipefail
           # The .crate is arch-independent source; the amd64 leg's copy is
           # canonical, so drop this leg's duplicate before upload.
-          rm "${DIST_DIR}"/aisimulate-core-*.crate
+          rm "${DIST_DIR}"/*.crate
 
       # The wheel's name is a contract: stamped dev version (catches a
       # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
@@ -539,13 +540,17 @@ jobs:
           set -euo pipefail
           [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
-          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
+          package="${wheel%%-*}"
+          [[ "${package}" == aisim || "${package}" == aisimulate ]] || { echo "::error::unknown package"; exit 1; }
+          [[ "${wheel}" == "${package}"-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
             echo "::error::unexpected wheel name: ${wheel}"
             exit 1
           }
-          version="${wheel#aisimulate-}"
+          version="${wheel#*-}"
           version="${version%%-*}"
+          echo "WHEEL_PACKAGE=${package}" >> "${GITHUB_ENV}"
+          echo "wheel-package=${package}" >> "${GITHUB_OUTPUT}"
           echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
           echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
           echo "wheel OK: ${wheel} (version ${version})"
@@ -711,7 +716,7 @@ jobs:
           ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
           fetch_dir="${TOOLS_DIR}/staged-dist"
           mkdir -p "${fetch_dir}"
           curl -q --fail --silent --show-error --retry 3 \
@@ -749,7 +754,7 @@ jobs:
       - name: Smoke-test the staged wheel on every supported Python
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
           fetch_dir="${TOOLS_DIR}/staged-dist"
           cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
@@ -762,11 +767,11 @@ jobs:
           assert (
               aisimulate.__version__
               == aisimulate_core.__version__
-              == metadata.version("aisimulate")
+              == metadata.version(os.environ["WHEEL_PACKAGE"])
               == expected
           ), (aisimulate.__version__, expected)
           installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
-          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
+          forbidden = {"aisim-core", "aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
           assert installed.isdisjoint(forbidden), installed & forbidden
           EOF
           for series in ${PYTHON_SERIES_LIST}; do
@@ -975,6 +980,7 @@ jobs:
           SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
           STAGE_RESULT: ${{ needs.build-artifacts.result }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+          WHEEL_PACKAGE: ${{ needs.build-artifacts.outputs.wheel-package }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -992,8 +998,8 @@ jobs:
           fi
           wheel="" crate=""
           if [ -n "${WHEEL_VERSION}" ]; then
-            wheel="aisimulate ${WHEEL_VERSION}"
-            crate="aisimulate-core ${WHEEL_VERSION%.dev*}-dev.${WHEEL_VERSION##*.dev}"
+            wheel="${WHEEL_PACKAGE} ${WHEEL_VERSION}"
+            crate="${WHEEL_PACKAGE}-core ${WHEEL_VERSION%.dev*}-dev.${WHEEL_VERSION##*.dev}"
           fi
           payload=$(jq -n \
             --arg channel "${SLACK_CHANNEL_ID}" \
@@ -1074,13 +1080,14 @@ jobs:
           GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           TOOLING_SHA: ${{ github.sha }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+          WHEEL_PACKAGE: ${{ needs.build-artifacts.outputs.wheel-package }}
         run: |
           set -euo pipefail
-          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION TOOLING_SHA; do
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION WHEEL_PACKAGE TOOLING_SHA; do
             [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
           done
           # Variable names follow the release-automation root pipeline's
-          # contract (PROJECT routes to projects/aisimulate.yml there).
+          # contract (PROJECT=aisim and the legacy route use projects/aisim.yml).
           # The response names internal pipeline URLs: keep it out of the log.
           # Preflight requires a dated NIGHTLY_TAG for nightly runs.
           nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
@@ -1088,7 +1095,7 @@ jobs:
             --output "${RUNNER_TEMP}/gitlab-trigger.json" \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
             -F "ref=main" \
-            -F "variables[PROJECT]=aisimulate" \
+            -F "variables[PROJECT]=${WHEEL_PACKAGE}" \
             -F "variables[PIPELINE_TYPE]=security" \
             -F "variables[RELEASE_TYPE]=nightly" \
             -F "variables[NIGHTLY_TAG]=${nightly_tag}" \

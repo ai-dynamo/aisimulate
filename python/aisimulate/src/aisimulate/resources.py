@@ -477,6 +477,18 @@ def _weka_scan_key(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
     )
 
 
+def _profile_estimate(lower_bound_bytes: int) -> ResourceEstimate:
+    return ResourceEstimate(
+        "agentic-profile-unqualified-v1",
+        None,
+        0,
+        lower_bound_bytes,
+        None,
+        "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
+        "and requires supervised serial execution",
+    )
+
+
 def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
     """Reuse completed inspection while applying profile admission to current headroom."""
     unqualified = lambda reason: ResourceEstimate("weka-unqualified-v1", None, 0, 0, None, reason)
@@ -513,15 +525,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                 peak,
                 "initial profile trace materialization estimate exceeds live headroom",
             )
-        return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
-            None,
-            0,
-            lower,
-            None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
-        )
+        return _profile_estimate(lower)
     return estimate
 
 
@@ -549,6 +553,8 @@ class _TraceCounters:
     retains_source_hashes: bool
     # Mooncake-delta setup replaces each turn's hashes with its synthesized prompt.
     materializes_inputs: bool = False
+    # A snapshot expands prompts only for selected plays after their cuts.
+    expands_every_input: bool = True
     hashes: int = 0
     authored_outputs: int = 0
     outputs: int = 0
@@ -563,7 +569,7 @@ class _TraceCounters:
             prepared = max(4 * self.hashes, 4 * (self.total_input + self.outputs))
         else:
             prepared = 4 * (self.hashes + self.outputs)
-        return max(loaded, prepared, 4 * self.largest_input)
+        return max(loaded, prepared, 4 * self.largest_input if self.expands_every_input else 0)
 
 
 class _InspectionStopped(Exception):
@@ -581,7 +587,7 @@ def _observed_peak_estimate(counters: _TraceCounters) -> ResourceEstimate:
         0,
         counters.lower_bound,
         None,
-        "trace arrays and the largest prompt provide only a lower bound; the peak is measured from completed "
+        "trace arrays provide only a lower bound; the peak is measured from completed "
         "replays of the same trace and requires supervised serial execution until observed",
     )
 
@@ -785,11 +791,16 @@ def _trace_files(workload: Mapping[str, Any], format_name: str) -> list[Path] | 
 
 
 def _scan_finite_trace(
-    files: list[Path], format_name: str, configured_block_size: int, inspection_budget_bytes: int | None
+    files: list[Path],
+    format_name: str,
+    configured_block_size: int,
+    inspection_budget_bytes: int | None,
+    snapshot: bool,
 ) -> _TraceCounters:
     counters = _TraceCounters(
         retains_source_hashes=format_name in {"agentic_mooncake", "dynamo", "weka"},
         materializes_inputs=format_name == "mooncake-delta",
+        expands_every_input=not snapshot,
     )
     limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
     scan = _TRACE_SCANNERS[format_name]
@@ -835,10 +846,13 @@ def _estimate_finite_trace(
             return unqualified("trace symlinks have no stable resource identity")
         # Completed counters depend only on file contents, so admission and the
         # per-run guard share one pass. Headroom is compared live on every call.
+        # Warmup and profiles require a snapshot.
+        snapshot = workload.get("agentic_snapshot") is not None
         key = (
             "trace-scan-v1",
             format_name,
             workload.get("trace_block_size"),
+            snapshot,
             _trace_scan_identity(files),
         )
         with _TRACE_SCAN_CACHE_LOCK:
@@ -847,7 +861,7 @@ def _estimate_finite_trace(
                 _TRACE_SCAN_CACHE.move_to_end(key)
         if counters is None:
             block_size = int(workload.get("trace_block_size") or 512)
-            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes)
+            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes, snapshot)
             if counters.requests:
                 with _TRACE_SCAN_CACHE_LOCK:
                     _TRACE_SCAN_CACHE[key] = counters
@@ -875,133 +889,17 @@ def _estimate_trace(
         return ResourceEstimate(
             "trace-unqualified-v1", None, 0, 0, None, "trace format or runner has no qualified allocation model"
         )
-    if (
-        workload.get("agentic_profile") is not None
-        or workload.get("agentic_snapshot") is not None
-        or workload.get("agentic_warmup")
-    ):
-        return _estimate_trace_legacy(
-            workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
-        )
-    return _estimate_finite_trace(workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes)
-
-
-def _estimate_trace_legacy(
-    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
-) -> ResourceEstimate:
-    """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
-    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
-    length_keys = {
-        "in",
-        "out",
-        "input_length",
-        "output_length",
-        "input_tokens",
-        "output_tokens",
-        "input_prompt_length",
-        "assistant_response_length",
-        "tool_call_output_length",
-        "final_assistant_response_length",
-        "max_output_tokens",
-        "tool_tokens",
-        "system_tokens",
-    }
-    token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
-    record_keys = length_keys | token_keys
-    hash_keys = {"hash_ids", "input_sequence_hashes"}
-    total_bytes = tokens = hashes = records = turns = 0
-    block_size = int(workload.get("trace_block_size") or 512)
-
-    paths = workload.get("trace_paths") or [workload["trace_path"]]
-    try:
-        for raw_path in paths:
-            source = Path(raw_path)
-            files = source.rglob("*") if source.is_dir() else (source,)
-            for path in files:
-                if path.is_symlink():
-                    return unqualified("trace symlinks have no stable resource identity")
-                if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
-                    continue
-                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
-                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
-                    return ResourceEstimate(
-                        "trace-json-metadata-v1",
-                        None,
-                        0,
-                        0,
-                        storage_estimate,
-                        "trace storage estimate exceeds live headroom before metadata parsing",
-                    )
-                # Stream documents and arrays. The parser still holds individual
-                # scalar values in memory.
-                maps: list[bool] = []
-                with (
-                    gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb")
-                ) as stream:
-                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
-                        if event == "start_map":
-                            maps.append(False)
-                        elif event == "end_map":
-                            records += int(maps.pop())
-                        elif event == "map_key" and value in record_keys:
-                            maps[-1] = True
-                        else:
-                            parts = prefix.rsplit(".", 2)
-                            key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
-                            if key in length_keys and event not in {"start_array", "end_array"}:
-                                if event != "number" or type(value) is not int or value < 0:
-                                    raise ValueError("trace token lengths must be nonnegative integers")
-                                tokens += value
-                            elif key in token_keys and parts[-1] == "item" and event == "number":
-                                tokens += 1
-                            elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
-                                hashes += 1
-                            elif key in {"block_size", "trace_block_size"} and event == "number":
-                                block_size = max(block_size, int(value))
-                            elif key == "num_turns" and event == "number":
-                                turns += int(value) + 1
-                    total_bytes += stream.tell()
-    except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
-        return unqualified(f"cannot inspect trace metadata: {exc}")
-    if records == 0:
-        return unqualified("trace metadata contains no recognized request token lengths")
-    tokens += hashes * block_size
-    count = max(records, turns)
-    # Delta and tool-turn sources can accumulate every preceding turn's tokens.
-    cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
-    lanes = int(workload.get("agentic_lanes") or 1)
-    peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
-    if workload.get("agentic_profile") is not None:
-        # Retired plays release their large payloads, but retain identities and
-        # lifecycle rows. Their count depends on simulated completion times, so
-        # neither the finite corpus nor duration alone bounds the full profile.
-        # Keep the initial-materialization refusal before admitting unknown peaks.
-        if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
-            return ResourceEstimate(
-                "agentic-profile-materialization-v1",
-                None,
-                0,
-                0,
-                peak,
-                "initial profile trace materialization estimate exceeds live headroom",
-            )
-        return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
-            None,
-            0,
-            0,
-            None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
-        )
-    return ResourceEstimate(
-        "trace-json-metadata-v1",
-        None,
-        0,
-        0,
-        peak,
-        "streamed metadata estimate; runtime trace validation still required",
+    estimate = _estimate_finite_trace(
+        workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
     )
+    # Snapshot and warmup replays share the finite replay's single corpus graph;
+    # each lane adds one play's requests, not a corpus copy. A profile starts
+    # from that snapshot, so the corpus arrays bound it from below, but retired
+    # plays keep identities and lifecycle rows until the profile ends. That
+    # growth depends on simulated completion times, so no replay's peak sizes another.
+    if workload.get("agentic_profile") is None or estimate.allocation_model != OBSERVED_TRACE_MODEL:
+        return estimate
+    return _profile_estimate(estimate.lower_bound_bytes)
 
 
 def estimate_workload(
@@ -1212,13 +1110,8 @@ def _child_memory_bytes() -> int:
 def _trace_identity(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """Identify a finite trace replay whose peak a completed replay can measure."""
     paths = workload.get("trace_paths") or ([workload["trace_path"]] if workload.get("trace_path") else None)
-    # Snapshots, warmup and profiles retain state beyond the finite corpus.
-    if (
-        not paths
-        or workload.get("agentic_profile") is not None
-        or workload.get("agentic_snapshot") is not None
-        or workload.get("agentic_warmup")
-    ):
+    # Profiles retain state beyond the finite corpus.
+    if not paths or workload.get("agentic_profile") is not None:
         return None
     return workload.get("trace_format", "mooncake"), workload.get("trace_block_size"), tuple(map(str, paths))
 

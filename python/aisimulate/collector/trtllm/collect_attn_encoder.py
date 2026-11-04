@@ -12,50 +12,45 @@ Builds a single TRT-LLM torch-flow attention layer running in encoder mode:
 Quant: bf16 only. TRT-LLM upstream does not support fp8 on the encoder path.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import os
 
 import tensorrt_llm
 import torch
-from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
-from collector.helper import benchmark_with_power, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
-from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionRuntimeFeatures,
-    PredefinedAttentionMask,
-)
-from tensorrt_llm._torch.attention_backend.utils import create_attention
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionRuntimeFeatures,
+        PredefinedAttentionMask,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionRuntimeFeatures,
+        PredefinedAttentionMask,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import create_attention
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 
 
-def _int_list(values):
-    return [int(value) for value in values]
-
-
 def get_encoder_attention_test_cases():
-    test_cases = []
-
-    for shape_sweep in get_attention_encoder_shape_sweeps("trtllm"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-
-        for head_config in get_attention_encoder_head_configs(shape_sweep):
-            n = head_config.num_heads
-            head_dim = head_config.head_dim
-            for s in sorted(sequence_lengths):
-                for b in sorted(batch_sizes):
-                    # Workload token budget (128K) + 32-bit indexing safety.
-                    if b * s > 131072:
-                        continue
-                    if 4 * b * s * n * head_dim * 2 >= 2**31:
-                        continue
-                    test_cases.append([b, s, n, head_dim])
-
-    return test_cases
+    return plan_cases("encoder_attention", "trtllm", get_sm_version())
 
 
 def run_encoder_attention_torch(

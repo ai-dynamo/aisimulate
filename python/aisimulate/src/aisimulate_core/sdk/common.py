@@ -782,6 +782,10 @@ DefaultHFModels = {
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    # Unmodified copy of nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650
+    # (ModelOpt MIXED_PRECISION, text path only). See
+    # model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md.
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -1413,14 +1417,13 @@ class PerfDataFilename(Enum):
     # DeepSeek-V4 sparse-op family — all share one column schema, served by
     # the engine table view (``_dsv4_sparse_kernel_data.*`` /
     # ``_dsv4_csa_topk_calib_data``):
-    #   csa_attn / hca_attn / paged_mqa_logits : FMLA & indexer kernel latency,
-    #     keyed ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
-    #     queried by ``_lookup_sparse_kernel``).
+    #   paged_mqa_logits : indexer kernel latency, keyed
+    #     ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
+    #     queried by ``_lookup_sparse_kernel``). The csa_attn / hca_attn FMLA
+    #     sidecars were removed 2026-10-15 (retired placeholders, no query path).
     #   csa_topk_calib : two rows/shape (score_mode=flat|top_last); the topK
     #     DELTA (flat-top_last) correction applied to CSA module latency.
     dsv4_paged_mqa_logits_module = "dsv4_paged_mqa_logits_module_perf.parquet"
-    dsv4_hca_attn_module = "dsv4_hca_attn_module_perf.parquet"
-    dsv4_csa_attn_module = "dsv4_csa_attn_module_perf.parquet"
     dsv4_csa_topk_calib = "dsv4_csa_topk_calib_perf.parquet"
     dsv4_megamoe_module = "dsv4_megamoe_module_perf.parquet"
     # Whole-model forward-pass data (forward_model="fpm"). Paired with a

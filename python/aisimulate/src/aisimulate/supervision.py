@@ -428,6 +428,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
+            if args.command == "predict" and (args.capture_telemetry or args.export_html):
+                if args.stack != "engine" or args.online:
+                    raise ValueError("telemetry capture requires offline --stack engine")
+                if (
+                    config.engine.backend not in {"vllm", "sglang"}
+                    or config.engine.mode not in {"aggregated", "disaggregated"}
+                    or config.engine.workers.encoder is not None
+                ):
+                    raise ValueError(
+                        "telemetry capture requires offline native vLLM/SGLang aggregated or disaggregated replay "
+                        "without an encoder pool"
+                    )
             if (
                 config.traffic is not None
                 and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
@@ -514,7 +526,10 @@ def supervised_recommendation(config, kwargs):
                 if main_path and not Path(main_path).is_file():
                     preparation.pop("init_main_from_path")
                 pickle.dump(preparation, target)
-                pickle.dump((config.model_dump(mode="json"), kwargs), target)
+                from .recommend import recommendation_payload
+
+                raw_config, unset = recommendation_payload(config)
+                pickle.dump((raw_config, kwargs, unset), target)
             except (TypeError, AttributeError, pickle.PicklingError) as exc:
                 raise ValueError("supervised recommendation requires pickleable factories and providers") from exc
         report = run_process(

@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""SGLang prefill uses the native capture buckets, including padded shapes."""
+"""SGLang prefill graph adapter: off at 0.5.21 (eager DSA prefill), closed for any enabled backend."""
 
 import ast
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -13,7 +14,7 @@ pytestmark = pytest.mark.unit
 SOURCE = Path(__file__).resolve().parents[4] / "collector/sglang/dsa_prefill_graph.py"
 
 
-def select_bucket(backend, sizes, tokens):
+def select_bucket(monkeypatch, backend, tokens):
     node = next(
         n
         for n in ast.parse(SOURCE.read_text()).body
@@ -21,26 +22,25 @@ def select_bucket(backend, sizes, tokens):
     )
     ns = {}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), ns)
-    runner = SimpleNamespace(
-        server_args=SimpleNamespace(
-            cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend=backend, bs=sizes))
-        )
-    )
-    return ns["graph_token_bucket"](runner, tokens)
+    prefill = SimpleNamespace(backend=backend, bs=[1, 128, 256, 2048])
+    exec_bag = SimpleNamespace(graph=SimpleNamespace(cuda_graph_config=SimpleNamespace(prefill=prefill)))
+    for name in ("sglang", "sglang.srt"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    runtime_context = ModuleType("sglang.srt.runtime_context")
+    runtime_context.get_exec = lambda: exec_bag  # 0.5.21: the resolved config, not server_args
+    monkeypatch.setitem(sys.modules, runtime_context.__name__, runtime_context)
+    return ns["graph_token_bucket"](SimpleNamespace(server_args=SimpleNamespace(cuda_graph_config=None)), tokens)
 
 
-@pytest.mark.parametrize(
-    ("tokens", "expected"), [(1, 1), (128, 128), (129, 256), (1057, 2048), (2048, 2048), (2049, None)]
-)
-def test_prefill_capture_bucket_boundaries(tokens, expected):
-    assert select_bucket("tc_piecewise", [2048, 128, 1, 256], tokens) == expected
+@pytest.mark.parametrize("tokens", [1, 129, 2048, 4096])
+def test_disabled_prefill_graph_times_eagerly(monkeypatch, tokens):
+    assert select_bucket(monkeypatch, "disabled", tokens) is None
 
 
-def test_disabled_and_unsupported_backends_are_distinct():
-    assert select_bucket("disabled", [1, 128], 1) is None
-    assert select_bucket("tc_piecewise", [], 1) is None
-    with pytest.raises(ValueError, match="Unsupported"):
-        select_bucket("breakable", [1, 128], 1)
+@pytest.mark.parametrize("backend", ["tc_piecewise", "breakable", "full"])
+def test_enabled_prefill_graph_fails_closed_until_the_adapter_is_ported(monkeypatch, backend):
+    with pytest.raises(ValueError, match="not ported to 0.5.21"):
+        select_bucket(monkeypatch, backend, 1)
 
 
 def test_cleanup_removes_only_new_owned_native_compile_hooks():

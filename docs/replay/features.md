@@ -29,7 +29,7 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | Agentic dependency graph | vLLM, SGLang | Offline aggregated or P/D; Weka, Agentic Mooncake and agentic Dynamo traces | One target model for P/D; speculation requires HBM-only; no agentic TensorRT-LLM; HBM or qualified vLLM G2 |
 | Seeded snapshots and warmup | Same agentic boundary | Timestamp load, positive lanes, unsigned 64-bit seed | Request-boundary history, not a physical engine checkpoint; warmup preserves snapshot frontier |
 | Continuous agentic profiles | Same agentic boundary | Snapshots plus profile duration; warmup optional | No simultaneous virtual-time cap; grace can finish with unsettled server work; live host-memory supervision required |
-| Native telemetry observer | Rust Replayer | Settled virtual-time samples | Engine Python JSON runner rejects telemetry capture; consumer stacks have separate adapters |
+| Replay telemetry | Rust Replayer, Engine Python runner, CLI | Settled virtual-time samples; opt-in all-phase request/lifecycle capture | Offline vLLM/SGLang aggregated or P/D; consumer stacks have separate adapters |
 | Detailed native artifacts | RoundRobin Replayer | Fixed single aggregated worker with attention DP1 | No multiworker/scaling/P/D or shared G2 artifact claim; normal reports have broader scope |
 | Router and Planner | Optional Dynamo stack | Consumer-supported topologies/workloads | Separate installation, configuration ABI and downstream qualification |
 | Analytical AFD | vLLM, SGLang, TensorRT-LLM model paths | `afd` or `afd+pd`; fixed-length synthetic requests | No traces, random lengths, KV-relative load or native deployment renderer |

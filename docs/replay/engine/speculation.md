@@ -224,10 +224,13 @@ and cannot be combined with a measured full-round profile.
 Acceptance determines sampled output progress, not a latency multiplier. Each
 decode query consumes one measured complete round at the request count and
 actual past-KV total, without another draft charge. Prefill uses its own matching
-SD cell. Mixed scheduled iterations retain replay's separate P/D phase-cost
-composition; the data does not establish mixed-round fidelity. Small token
-budgets can produce partial-width rounds that are still priced at the configured
-depth. Query coverage and a measured serving comparison remain separate checks.
+SD cell. A mixed scheduled iteration costs its prefill plus a full decode
+round as one forward. Without online corrections that equals replay's separate
+P/D phase costs; a tuned model applies the mixed iteration's correction to the
+sum instead of each phase's own. The data does not establish mixed-round
+fidelity. Small token budgets can produce partial-width rounds that are still
+priced at the configured depth. Query coverage and a measured serving
+comparison remain separate checks.
 
 The recorded usable pool is already net of draft/graph allocations. Do not add
 another reservation or scalar capacity override. This path requires vLLM pure

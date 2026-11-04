@@ -293,7 +293,10 @@ def run_moe_torch(
                 )
 
         def run_iterations():
-            # Use benchmark_with_power context manager
+            # Use benchmark_with_power context manager. XPU graph capture follows
+            # vLLM's own VLLM_XPU_ENABLE_XPU_GRAPH (xpu_graph_measure_enabled), and
+            # a failed capture fails the case (allow_graph_fail stays at its False
+            # default) instead of silently timing eager.
             with benchmark_with_power(
                 device=device,
                 kernel_func=run_single_iteration,
@@ -301,7 +304,6 @@ def run_moe_torch(
                 num_runs=num_runs,
                 repeat_n=1,
                 use_cuda_graph=xpu_graph_measure_enabled(),
-                allow_graph_fail=False,  # graph mandatory; capture failure fails the case
             ) as results:
                 pass
 

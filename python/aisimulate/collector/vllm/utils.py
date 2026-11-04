@@ -116,13 +116,17 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
+    # Serving population site: vllm/v1/worker/gpu/attn_utils.py:456-475
+    # passes seq_lens + seq_lens_cpu_upper_bound (no private *_cpu fields — the
+    # 0.29 `_seq_lens_cpu` / `_num_computed_tokens_cpu` were removed in 0.30;
+    # computed-token counts derive from seq_lens and query_start_loc inside the
+    # dataclass).
+    del num_computed_tokens_cpu
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
         num_reqs=batch_spec.batch_size,
         num_actual_tokens=num_tokens,
         max_query_len=max_query_len,
@@ -164,7 +168,7 @@ def create_vllm_config(
     max_model_len: int = 1024,
     dtype: Union[ModelDType, torch.dtype] = "auto",
     num_gpu_blocks: int = 1000,
-    block_size: int = 16,
+    block_size: int | None = 16,
     max_num_seqs: int = 256,
     max_num_batched_tokens: int = 8192,
     enable_chunked_prefill: bool = True,
@@ -182,7 +186,7 @@ def create_vllm_config(
 
     ``hf_overrides`` is forwarded verbatim to ``ModelConfig`` — the same
     mechanism as vLLM's ``--hf-overrides`` serving flag, applied to the HF
-    config before architecture resolution (config/model.py:496-541 @0.24.0).
+    config before architecture resolution (config/model.py:496-541).
     """
 
     model_config = ModelConfig(
@@ -195,6 +199,11 @@ def create_vllm_config(
         hf_overrides=hf_overrides or {},
     )
 
+    # block_size=None is NOT "16": pydantic's CacheConfig marks any explicit value as
+    # user_specified_block_size, and the selector (v1/attention/selector.py:131-135) then
+    # filters backends by it exactly as --block-size would. Serving without --block-size
+    # selects unconstrained and derives the page from the chosen backend afterwards
+    # (utils.framework_kv_block_size); pass None to get that behaviour.
     cache_config = CacheConfig(
         block_size=block_size,
         cache_dtype="fp8" if use_fp8_kv_cache else "auto",
@@ -340,9 +349,13 @@ def create_and_prepopulate_kv_cache_mla(
         MLA KV cache tensor
     """
     batch_size = len(kv_c_contexts)
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    # 0.30: property removed; seq_lens - query_lens on device
+    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens)
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 
@@ -452,9 +465,13 @@ def create_kv_cache_and_block_mappings(
         Tuple of the empty KV cache and flattened history slot mapping
     """
     batch_size = common_attn_metadata.num_reqs
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    # 0.30: property removed; seq_lens - query_lens on device
+    # (utils.py CommonAttentionMetadata.compute_num_computed_tokens)
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 
@@ -533,7 +550,7 @@ def enable_engine_fused_ops() -> None:
     Why not ``torch.compile`` + CUDA graph instead? Outside a serving worker
     every norm path — including ``forward_native`` — routes through the IR
     torch custom op (``_ENABLE_TORCH_WRAP = True`` module default,
-    vllm/ir/op.py:50 @0.22.0), which is opaque to dynamo/inductor: compiling
+    vllm/ir/op.py:50), which is opaque to dynamo/inductor: compiling
     through it fuses nothing (B200/vLLM 0.22 glue microbench, CUDA-graph
     replay with kernel listing: native-eager 74.1 us, compile-through-wrap
     64.6 us with the aten mean/pow/rsqrt chain intact; vllm_c-eager 21.0 us).
@@ -543,7 +560,7 @@ def enable_engine_fused_ops() -> None:
     lowerings into neighboring GEMMs (serving-trace kernel
     ``triton_red_fused_..._fused_qkv_a_proj_rms_norm``); wrap-off is the
     documented way to let dynamo trace the impl inline
-    (config/compilation.py:492-498 @0.22.0). Replicating that here —
+    (config/compilation.py:492-498). Replicating that here —
     ``vllm.ir.set_default_torch_wrap(False)`` + ``torch.compile`` — does
     fuse fully (glue 8.0 us, module 87.7 us/layer) but OVERSHOOTS the
     engine, whose fused glue is not free (norm+quant fused kernels, paged
@@ -552,7 +569,7 @@ def enable_engine_fused_ops() -> None:
     native chain +37%. vllm_c-eager is therefore the closer surrogate and
     needs no per-shape compile during sweeps. Installs it as the
     process-lifetime default: ``IrOp.set_priority`` is a scoped context
-    manager, ``set_default`` is the permanent API (vllm/ir/op.py @0.24.0).
+    manager, ``set_default`` is the permanent API (vllm/ir/op.py).
 
     Raises on vLLM builds without the IR-op registry or the ``vllm_c``
     provider — a silent fallback to the native chain would benchmark a kernel
@@ -636,3 +653,31 @@ def with_exit_stack(func):
             return func(stack, *args, **kwargs)
 
     return wrapper
+
+
+def framework_kv_block_size(backend_cls, *, cache_backend_cls=None, user_block_size: int | None = None) -> int:
+    """The KV page the FRAMEWORK would run this backend with — asked, not tabled.
+
+    Mirrors serving (vllm 0.30.0): the cache manager block size is
+    ``get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)`` of the model's
+    FIRST non-SSM attention layer unless the user passed --block-size
+    (platforms/interface.py:588-640, _find_non_ssm_backend +
+    update_block_size_for_backend phase 1) — ``cache_backend_cls``, defaulting to
+    ``backend_cls`` when the measured layer is that first layer — and the kernel
+    page is ``select_common_block_size(cache_block_size, [backend])``
+    (v1/worker/utils.py: the manager size when every backend accepts it, else the
+    largest explicit size that divides it). The former per-SM table (removed) was an
+    interim; the B200 re-run showed it is not
+    equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
+    cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
+    dtype, head shape) decision, so it must come from the backend the case
+    actually selected.
+    """
+    from vllm.config.cache import CacheConfig
+    from vllm.v1.worker.utils import select_common_block_size
+
+    cache_backend = cache_backend_cls or backend_cls
+    cache_block = (
+        user_block_size if user_block_size else cache_backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
+    )
+    return int(select_common_block_size(int(cache_block), [backend_cls]))

@@ -1915,23 +1915,10 @@ class TestAttentionProjectionExclusions:
     """Per-projection exclusion parsing (V3.1/V3.2 exclude q/kv but not o_proj)."""
 
     @staticmethod
-    def _excl(patterns, *, precise_module_paths=True):
+    def _excl(patterns):
         from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
-        return attention_projection_exclusions(
-            {"quantization_config": {"ignore": patterns}}, precise_module_paths=precise_module_paths
-        )
-
-    def test_existing_consumers_keep_their_projection_exclusion_interpretation(self):
-        from aisimulate.sdk.models.helpers import attention_projection_exclusions
-
-        # SGLang, TRT-LLM and ordinary MLA retain the default exclusion matching.
-        # vLLM DSA opts into precise projection paths.
-        raw = {"quantization_config": {"ignore": ["model.layers.0.self_attn.q_a_layernorm"]}}
-        assert attention_projection_exclusions(raw) == frozenset({"q", "kv", "o", "indexer"})
-        assert self._excl(["model.layers.0.self_attn.indexers_proj"], precise_module_paths=False) == frozenset(
-            {"indexer"}
-        )
+        return attention_projection_exclusions({"quantization_config": {"ignore": patterns}})
 
     def test_whole_block_glob_covers_all_groups(self):
         assert self._excl(["model.layers.3.self_attn*"]) == frozenset({"q", "kv", "o", "indexer"})
@@ -1999,25 +1986,44 @@ class TestAttentionProjectionExclusions:
     def test_named_indexer_projection_exclusion(self, projection):
         assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
 
-    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-    @pytest.mark.parametrize("phase", ["context", "generation"])
-    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
-    def test_native_glm52_precision_correction_is_scoped_to_vllm_dsa(self, backend, phase, quant):
-        # The real checkpoint excludes layernorms and indexers_proj, not the
-        # q/kv/o projection GEMMs. NVFP4 mixed exclusions have separate tests
-        # in TestDSV32NVFP4AttentionExclusion above.
+    @staticmethod
+    def _dsa_gemm_mode(model_path, backend, phase, **model_config):
         from aisimulate.sdk import engine
 
         model = models.get_model(
-            "zai-org/GLM-5.2-FP8",
-            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode[quant]),
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, **model_config),
             backend_name=backend,
         )
-        expected_exclusions = frozenset() if backend == "vllm" else frozenset({"q", "kv", "o", "indexer"})
-        assert model.extra_params["dsa_attn_quant_exclusions"] == expected_exclusions
         specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
         attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
-        assert attention["gemm_quant_mode"] == (quant if backend == "vllm" else "bfloat16")
+        return model.extra_params["dsa_attn_quant_exclusions"], attention["gemm_quant_mode"]
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
+    def test_native_glm52_projections_follow_the_gemm_mode_on_every_backend(self, backend, phase, quant):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs, and every backend loads it that way. NVFP4
+        # mixed exclusions have separate tests in
+        # TestDSV32NVFP4AttentionExclusion above.
+        exclusions, gemm = self._dsa_gemm_mode(
+            "zai-org/GLM-5.2-FP8", backend, phase, gemm_quant_mode=common.GEMMQuantMode[quant]
+        )
+        assert exclusions == frozenset()
+        assert gemm == quant
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize(
+        "model_path", ["zai-org/GLM-5-FP8", "zai-org/GLM-5.1-FP8", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.3"]
+    )
+    def test_native_glm_fp8_checkpoint_prices_block_fp8_projections(self, model_path, backend, phase):
+        # quant_method fp8 with weight_block_size [128, 128]: without an
+        # explicit override, every backend's DSA module key is fp8_block.
+        exclusions, gemm = self._dsa_gemm_mode(model_path, backend, phase)
+        assert exclusions == frozenset()
+        assert gemm == "fp8_block"
 
     @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
     @pytest.mark.parametrize(
