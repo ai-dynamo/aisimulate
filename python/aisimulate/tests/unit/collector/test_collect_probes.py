@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""collect.py's two validation entries: --ops probe.<name> runs a probe module as an
-ordinary pipeline shard, and AIS_TRACE_KERNELS=1 records each case's kernels from an
-extra run whose rows are discarded, so table rows never depend on the switch."""
+"""collect.py --ops probe.<name> runs a probe module as an ordinary pipeline shard; the
+trace_case probe runs ONE planned case (a batch row cut to that point) under the
+profiler, the collector side of an opharness path gate."""
 
-import functools
 import json
 import re
 import sys
@@ -13,8 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from collector import kernel_trace, probes
-from collector.probes import vllm_decode_step
+from collector import probes
+from collector.probes import trace_case, vllm_decode_step
 
 pytestmark = pytest.mark.unit
 
@@ -24,7 +23,7 @@ _PIPELINE_OP_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 def test_probe_ops_are_pipeline_op_tokens():
     names = probes.probe_op_names()
-    assert "probe.vllm_decode_step" in names
+    assert {"probe.trace_case", "probe.vllm_decode_step"} <= set(names)
     assert all(_PIPELINE_OP_TOKEN.fullmatch(n) for n in names)
 
 
@@ -82,24 +81,18 @@ def test_decode_step_cuts_layers_and_empties_engram_tables(tmp_path):
     assert has_vision is True
 
 
-def _perf_writer(calls):
-    def run_case(a, b, *, perf_filename, extra_perf_filenames=(), device):
-        calls.append(perf_filename)
-        Path(perf_filename).write_text(f"{a},{b}\n")
-        for extra in extra_perf_filenames:
-            Path(extra).write_text("x\n")
-
-    return run_case
-
-
-def test_scratch_bound_redirects_every_perf_file(tmp_path):
-    func = functools.partial(
-        _perf_writer([]), perf_filename=str(tmp_path / "gemm_perf.txt"), extra_perf_filenames=(str(tmp_path / "s.txt"),)
-    )
-    scratch = tmp_path / "scratch"
-    bound = kernel_trace.scratch_bound(func, scratch)
-    assert bound.keywords["perf_filename"] == str(scratch / "gemm_perf.txt")
-    assert bound.keywords["extra_perf_filenames"] == (str(scratch / "s.txt"),)
+def test_planned_row_restricts_a_batch_row_to_the_selected_point():
+    select = dict(model_path="deepseek-ai/DeepSeek-V3.2", kv_cache_dtype="fp8", compute_dtype="bfloat16")
+    select.update(gemm_type="fp8_block", num_heads=128, batch_size=1, seq_len=4096, prefix_len=0)
+    hopper = trace_case.planned_row("sglang", "dsa_context_module", 90, **select)
+    blackwell = trace_case.planned_row("sglang", "dsa_context_module", 100, **select)
+    assert hopper[-1] == blackwell[-1] == [[1, 4096, 0]]
+    # the FP8-KV backend the plan pins per SM reaches the traced row
+    assert (hopper[10], blackwell[10]) == ("flashmla_kv", "trtllm")
+    with pytest.raises(ValueError, match="matches 5 planned cases"):
+        trace_case.planned_row(
+            "sglang", "dsa_context_module", 90, **{k: v for k, v in select.items() if k != "num_heads"}
+        )
 
 
 class _Event:
@@ -122,29 +115,31 @@ def _fake_torch(monkeypatch, events):
     monkeypatch.setitem(sys.modules, "torch.profiler", profiler)
 
 
-def test_trace_case_records_kernels_and_discards_the_traced_rows(monkeypatch, tmp_path):
+def test_trace_case_runs_the_planned_row_with_its_perf_file_discarded(monkeypatch, tmp_path):
     _fake_torch(monkeypatch, [_Event("gemm_kernel", 5.0), _Event("aten::mm", 5.0), _Event("cpu_only", 0)])
     calls = []
-    perf = tmp_path / "gemm_perf.txt"
-    func = functools.partial(_perf_writer(calls), perf_filename=str(perf))
-    kernel_trace.trace_case(func, (1, 2), "cuda:0", "t1", restart_code=10)
-    assert not perf.exists()  # the traced run wrote into a discarded scratch dir
-    assert calls and Path(calls[0]).name == "gemm_perf.txt" and Path(calls[0]).parent != tmp_path
-    line = json.loads((tmp_path / "gemm_perf.txt.kernels.jsonl").read_text())
-    assert line == {"task_id": "t1", "case": "(1, 2)", "kernels": ["gemm_kernel"], "error": None}
 
+    def run_func(a, b, *, perf_filename, device):
+        calls.append((a, b, perf_filename))
+        Path(perf_filename).write_text("row\n")
 
-def test_trace_case_records_a_failure_and_ignores_a_worker_recycle(monkeypatch, tmp_path):
-    _fake_torch(monkeypatch, [])
-    perf = tmp_path / "moe_perf.txt"
+    entry = types.SimpleNamespace(perf_filename="gemm_perf.txt", extra_perf_filenames=(), run_kwargs=None)
+    monkeypatch.setattr(trace_case, "_resolve", lambda backend, op: (entry, run_func))
+    monkeypatch.setattr(trace_case, "planned_row", lambda backend, op, sm, **sel: (int(sel["m"]), 7))
+    monkeypatch.setattr("collector.helper.get_sm_version", lambda: 100)
+    out = trace_case.run({"backend": "vllm", "op": "gemm", "m": "4096"}, tmp_path)
+    assert out["kernels"] == ["gemm_kernel"] and out["failed"] is False and out["select"] == {"m": "4096"}
+    assert calls[0][:2] == (4096, 7) and not Path(calls[0][2]).exists()  # the scratch perf file is gone
 
-    def recycle(*task, perf_filename, device):
-        raise SystemExit(10)
-
-    def broken(*task, perf_filename, device):
+    def broken(*row, perf_filename, device):
         raise RuntimeError("bad shape")
 
-    kernel_trace.trace_case(functools.partial(recycle, perf_filename=str(perf)), (), "cuda:0", "a", restart_code=10)
-    kernel_trace.trace_case(functools.partial(broken, perf_filename=str(perf)), (), "cuda:0", "b", restart_code=10)
-    lines = [json.loads(x) for x in (tmp_path / "moe_perf.txt.kernels.jsonl").read_text().splitlines()]
-    assert [(x["task_id"], x["error"]) for x in lines] == [("a", None), ("b", "RuntimeError: bad shape")]
+    monkeypatch.setattr(trace_case, "_resolve", lambda backend, op: (entry, broken))
+    out = trace_case.run({"backend": "vllm", "op": "gemm", "m": "1"}, tmp_path)
+    assert out["failed"] is True and out["error"] == "RuntimeError: bad shape"
+
+
+def test_run_probe_passes_collects_backend(monkeypatch, tmp_path):
+    _fake_probe(monkeypatch, lambda args, out_dir: dict(args))
+    assert probes.run_probe("fake_probe", ["op=gemm"], tmp_path, backend="trtllm") == 0
+    assert json.loads((tmp_path / "probe_fake_probe.json").read_text())["result"] == {"backend": "trtllm", "op": "gemm"}

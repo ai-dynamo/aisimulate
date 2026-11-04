@@ -41,12 +41,13 @@ def parse_args(filters: list[str]) -> dict[str, str]:
     return args
 
 
-def run_probe(name: str, filters: list[str], out_dir: Path) -> int:
-    """Run probe ``name``; write ``probe_<name>.json`` into ``out_dir``. Exit code 0 on success."""
+def run_probe(name: str, filters: list[str], out_dir: Path, backend: str | None = None) -> int:
+    """Run probe ``name``; write ``probe_<name>.json`` into ``out_dir``. Exit code 0 on success.
+    ``backend`` (collect.py --backend) is the ``backend`` argument unless the filters name one."""
     out = Path(out_dir) / f"probe_{name}.json"
     record: dict = {"probe": name}
     try:
-        record["args"] = parse_args(filters)
+        record["args"] = {**({"backend": backend} if backend else {}), **parse_args(filters)}
         module = importlib.import_module(f"collector.probes.{name}")
         record["result"] = module.run(record["args"], Path(out_dir))
         status = 1 if record["result"].get("failed") else 0

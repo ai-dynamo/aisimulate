@@ -1756,10 +1756,6 @@ def worker(
 
     set_worker_heartbeat(_beat if heartbeat is not None else None)
 
-    from collector import kernel_trace
-
-    trace_kernels = kernel_trace.enabled()
-
     # Process tasks
     while True:
         task_info = queue.get()
@@ -1790,9 +1786,6 @@ def worker(
         try:
             worker_logger.debug(f"Starting task {task_id}")
             _beat()
-            if trace_kernels:  # an extra, discarded run under the profiler; the timed run below is unchanged
-                kernel_trace.trace_case(func, task, device, task_id, EXIT_CODE_RESTART)
-                _beat()
             result = func(*task, device=device)
             # Only the dedicated sentinel requests a recycle: entrypoints also
             # return plain ints (row counts), which must never be mistaken for
@@ -6395,12 +6388,6 @@ def main():
         "each value is a comma list of key=value probe arguments.",
     )
     parser.add_argument(
-        "--trace-kernels",
-        action="store_true",
-        help="Also record the CUDA kernels of every case in <perf file>.kernels.jsonl, from one extra run "
-        "under torch.profiler whose rows are discarded (collector/kernel_trace.py; same as AIS_TRACE_KERNELS=1).",
-    )
-    parser.add_argument(
         "--cases-from",
         type=str,
         default=None,
@@ -6460,10 +6447,6 @@ def main():
         reject_fpm_arguments_without_fpm(args)
     except ValueError as error:
         parser.error(str(error))
-    if args.trace_kernels:
-        from collector.kernel_trace import TRACE_ENV
-
-        os.environ[TRACE_ENV] = "1"  # the spawned workers read it
     from collector.probes import PROBE_PREFIX, run_probe
 
     if any(op.startswith(PROBE_PREFIX) for op in args.ops or ()):
@@ -6471,7 +6454,7 @@ def main():
         # directory (the pipeline's shard dir). It runs alone; exit 0 marks the shard done.
         if len(args.ops) != 1:
             parser.error(f"a {PROBE_PREFIX}<name> op runs alone")
-        sys.exit(run_probe(args.ops[0][len(PROBE_PREFIX) :], args.case_filters or [], Path.cwd()))
+        sys.exit(run_probe(args.ops[0][len(PROBE_PREFIX) :], args.case_filters or [], Path.cwd(), backend=args.backend))
     fpm_requested = FPM_FORWARD_OP in (args.ops or ())
     if fpm_requested and set(args.ops or ()) != {FPM_FORWARD_OP}:
         parser.error("fpm_forward must be collected alone; do not mix campaign and local op entries")
