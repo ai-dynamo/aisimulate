@@ -4,6 +4,8 @@ This audit compares the extra **collection GPU-hours**, not allocated GPU-hours,
 of broad shared-grid coverage and model-owned long-history coverage. It does not
 publish smoke measurements as production performance data.
 
+The [review ledger](review-ledger.md) records fixes, evidence and qualification limits across #664, #665 and #666.
+
 ## Coverage philosophy and evidence
 
 Each model-owned declaration needs three independently identified inputs:
