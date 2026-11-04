@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -890,6 +891,17 @@ def build_collection_plan(
             benchmark_points_sha256=points_sha256,
             benchmark_points_origin=GLM_POINTS_ORIGIN,
         )
+    if capability.architecture == GLM_ARCHITECTURE:
+        # The runner passes this revision to vLLM and to the producer. It takes the revision of the accepted probe
+        # launch, and else the profile's. The producer refuses anything but a commit only after the engine starts.
+        if runtime_launch is not None:
+            revision = runtime_launch.get("identity", {}).get("model_revision")
+        else:
+            revision = profile.model_revision if profile is not None else None
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise ValueError(
+                f"GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got {revision!r}"
+            )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,

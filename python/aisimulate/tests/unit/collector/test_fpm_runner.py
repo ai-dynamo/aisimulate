@@ -3778,7 +3778,7 @@ def test_runtime_default_path_is_adapter_owned():
 def test_startup_environment_activates_the_runtime_adapter_before_preflight(tmp_path):
     from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
-    from .test_fpm_runtime_memory import _glm_plan
+    from .test_fpm_runtime_memory import _GLM_REVISION, _glm_plan
 
     # fpm_exec.sh sources this file before preflight.py. Preflight checks that the source-checked GLM-5.3-Flash
     # scheduler replaced the native one only when it sees the activation flag, and the scheduler import in the
@@ -3794,7 +3794,7 @@ def test_startup_environment_activates_the_runtime_adapter_before_preflight(tmp_
         "glm": [
             "export DYN_FPM_GLM53FLASH_REAL_KV=1",
             "export DYN_FPM_GLM53FLASH_PREFIX_SEED=1",
-            "export DYN_FPM_TOKENIZER_REVISION=collector-test-snapshot",
+            f"export DYN_FPM_TOKENIZER_REVISION={_GLM_REVISION}",
             "export PYTHONPATH=/tmp/fpm-bench:/opt/glm53flash-dynamo",
         ],
     }

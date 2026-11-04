@@ -1497,7 +1497,20 @@ def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
         assert ("--language-model-only" in args) == (architecture is not None)
 
 
-def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, max_num_tokens=8192, **changes):
+# A stand-in commit of the GLM-5.3-Flash checkpoint. vLLM loads the revision of a GLM-5.3-Flash plan, and the producer
+# and the planner accept 40 lowercase hex characters only.
+_GLM_REVISION = "c" * 40
+
+
+def _glm_plan(
+    tmp_path,
+    *,
+    hash_block_size_tokens=2176,
+    max_batch_size=256,
+    max_num_tokens=8192,
+    model_revision=_GLM_REVISION,
+    **changes,
+):
     """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
 
     The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
@@ -1522,7 +1535,7 @@ def _glm_plan(tmp_path, *, hash_block_size_tokens=2176, max_batch_size=256, max_
     profile = {
         "schema_version": 1,
         "model": str(path),
-        "model_revision": "collector-test-snapshot",
+        "model_revision": model_revision,
         "architecture": architecture,
         "context_length": 1_048_576,
         "num_experts": 8,
@@ -1644,6 +1657,39 @@ def test_glm_collection_plan_requires_batch_limits(tmp_path, changes):
     assert str(error.value) == "GLM-5.3-Flash collection requires --fpm-max-num-seqs or the per-phase batch limits"
 
 
+@pytest.mark.parametrize(
+    ("revision", "accepted"),
+    [
+        ("v1.0", False),
+        ("04c4e9e", False),
+        ("04C4E9E95C5DA8862DCED7E5056455116F83A7E0", False),
+        ("04c4e9e95c5da8862dced7e5056455116f83a7e0", True),
+    ],
+    ids=["tag", "short_hash", "uppercase", "commit"],
+)
+def test_glm_collection_plan_requires_a_commit_revision(tmp_path, revision, accepted):
+    # vLLM loads this revision, and the producer reads the tokenizer and the configuration of the same revision. The
+    # producer refuses anything but 40 lowercase hex characters only after the engine starts, so planning refuses it.
+    if accepted:
+        assert _glm_plan(tmp_path, model_revision=revision).fpm_profile.model_revision == revision
+        return
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, model_revision=revision)
+    assert str(error.value) == (
+        f"GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got {revision!r}"
+    )
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_collection_plan_takes_the_revision_of_the_probe_launch(tmp_path):
+    # Like the runner, the planner takes the revision of the accepted probe launch before the one of the profile.
+    with pytest.raises(ValueError) as error:
+        _probe_backed_glm_plan(tmp_path, launch_revision="v1.0")
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got 'v1.0'"
+    )
+
+
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_saved_glm_plan_reloads_with_its_generated_point_list(tmp_path):
     from collector.fpm_forward.repeatability import load_repeatability_source
@@ -1708,7 +1754,7 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
         "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
         "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
         # The plan has no probe launch, so the revision is the one of the accepted profile.
-        "DYN_FPM_TOKENIZER_REVISION": "collector-test-snapshot",
+        "DYN_FPM_TOKENIZER_REVISION": _GLM_REVISION,
         # The deepest measured context, which a 1,048,576-token runtime context holds with its seven extra positions.
         "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": "131072",
         "PYTHONPATH": "/tmp/fpm-bench:/opt/glm53flash-dynamo",
@@ -1767,7 +1813,7 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path):
         assert set(producer_env).isdisjoint(env)
 
 
-def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None):
+def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=None):
     """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
 
     The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
@@ -1775,8 +1821,8 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None):
     instrumentation bundle, the pure-TP probe launch on GB300 (TP 4 unless ``tp`` says otherwise) with a stand-in
     Kubernetes deployment, and the profile that the probe import accepts, with the cache resources that the probe
     measured at TP 4. Another ``tp`` keeps those resources. ``precision`` replaces GEMM, MoE, FMHA and KV-cache labels
-    of the launch and the profile, which are the labels of that checkpoint by default. Return the plan and the
-    deployment inputs that it was planned with.
+    of the launch and the profile, which are the labels of that checkpoint by default. ``launch_revision`` replaces
+    the model revision of the launch only. Return the plan and the deployment inputs that it was planned with.
     """
     from collector.model_cases import build_collection_case_plan
 
@@ -1841,7 +1887,7 @@ def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None):
     launch = {
         "identity": {
             "model": model,
-            "model_revision": LOADED_REVISION,
+            "model_revision": launch_revision or LOADED_REVISION,
             "model_kind": "moe",
             "framework": "vllm",
             "framework_version": "0.31.0",
@@ -2160,17 +2206,25 @@ def test_glm_collection_without_a_model_revision_is_refused(tmp_path):
         )
     )
     # Direct collector use with a user point list, and with neither an accepted probe launch nor an FPM profile.
-    plan = planner.build_collection_plan(
-        backend="vllm",
-        model_path=str(path),
-        system="b200_sxm",
-        selected_ops={"attention_context", "attention_generation"},
-        options=FPMCollectionOptions.from_args(_args(fpm_benchmark_points_file=str(points), fpm_warmup_iterations=0)),
-        model_architecture=architecture,
-        has_model_cases=False,
-        model_config_path=str(path),
-        collector_config={"aic_database_version": "0.27.0"},
+    with pytest.raises(ValueError) as error:
+        planner.build_collection_plan(
+            backend="vllm",
+            model_path=str(path),
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(
+                _args(fpm_benchmark_points_file=str(points), fpm_warmup_iterations=0)
+            ),
+            model_architecture=architecture,
+            has_model_cases=False,
+            model_config_path=str(path),
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got None"
     )
+    # The runner keeps its own refusal for a plan without either, such as a plan saved before planning refused it.
+    plan = replace(_glm_plan(tmp_path), _fpm_profile_json=None)
     assert (plan.runtime_launch, plan.fpm_profile) == (None, None)
     for cell in plan.cells:
         with pytest.raises(ValueError) as error:

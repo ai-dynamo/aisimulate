@@ -3567,9 +3567,13 @@ def test_explicit_eager_collection_admission():
 
 
 def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
+    from collector.fpm_forward.config import _freeze_benchmark_points
+
+    from .test_fpm_runtime_memory import _glm_plan
+
     architecture = "Glm5NextForConditionalGeneration"
     path = _mixed_attention_config(tmp_path, architecture, True)
-    # Without an accepted profile the planner cannot generate the GLM point list, so these plans bring their own.
+    # These plans bring their own GLM point list. Without an accepted profile the planner cannot generate one.
     points = tmp_path / "points.json"
     points.write_text(
         json.dumps(
@@ -3594,7 +3598,9 @@ def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
             collector_config={"aic_database_version": "0.27.0"},
         )
 
-    plan = build()
+    # The accepted profile names the model revision that vLLM and the producer load.
+    points_json, points_sha256 = _freeze_benchmark_points(str(points))
+    plan = _glm_plan(tmp_path, benchmark_points_json=points_json, benchmark_points_sha256=points_sha256)
 
     assert plan.options.enforce_eager is False
     assert "enforce_eager" not in plan.to_dict()["options"]
@@ -3611,6 +3617,12 @@ def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
     with pytest.raises(ValueError) as error:
         build(fpm_benchmark_points_file=None)
     assert str(error.value) == "GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens"
+    # Without an accepted profile or probe launch, the plan has no revision to load.
+    with pytest.raises(ValueError) as error:
+        build()
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got None"
+    )
 
 
 def test_deepseek_v41_plan_keeps_its_eager_rule():
