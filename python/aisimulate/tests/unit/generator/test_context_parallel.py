@@ -14,6 +14,7 @@ import copy
 import shlex
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -29,6 +30,7 @@ from aisimulate.generator.context_parallel import (
 from aisimulate.generator.module_bridge import task_config_to_generator_config
 from aisimulate.generator.rendering.engine import render_backend_templates
 from aisimulate.generator.request import ModelFacts, SweeperCandidateError, from_sweeper_candidate
+from aisimulate.legacy_cli.report_and_save import save_results
 
 from .test_fpm_artifacts import _params as _fpm_params
 from .test_sweeper_request import _agg_candidate, _cli_flag_value, _disagg_candidate
@@ -487,6 +489,46 @@ def test_bridge_reads_prefill_cp_from_result_row():
     assert _cli_flag_value(cli, "--tensor-parallel-size") == "8"
     assert _cli_flag_value(cli, "--attn-cp-size") == "4"
     assert "--enable-prefill-cp" in _flags(cli)
+
+
+def test_bridge_checks_cp_against_the_rendered_backend_version():
+    """The perf DB version the search ran on (SGLang 0.5.14 by default) is not
+    the version the artifacts are rendered for. The CP floor is about which
+    cli_args template emits the flags, so it must follow the rendered one."""
+    row = pd.Series({"workers": 1, "tp": 1, "pp": 1, "dp": 1, "cp": 2, "bs": 64})
+    task = _task(primary_backend_version="0.5.14")
+
+    agg = task_config_to_generator_config(task, row, num_gpus_per_node=8, backend_version="0.5.16")["params"]["agg"]
+    assert agg["context_parallel_size"] == 2
+    assert agg["gpus_per_worker"] == 2
+
+    # A newer perf DB must not let a CP row render with a template that has no CP line.
+    with pytest.raises(ContextParallelUnsupportedError, match=r"flag not available in 0\.5\.11"):
+        task_config_to_generator_config(
+            _task(primary_backend_version="0.5.16"), row, num_gpus_per_node=8, backend_version="0.5.11"
+        )
+
+
+def test_save_results_renders_cp_rows_for_the_generated_config_version(tmp_path):
+    task = _task(primary_backend_version="0.5.14", request_latency=None, to_yaml=lambda: "")
+    row = {"workers": 1, "tp": 1, "pp": 1, "dp": 1, "cp": 2, "bs": 64, "ttft": 100.0, "tpot": 10.0}
+
+    with patch(
+        "aisimulate.legacy_cli.report_and_save.get_default_dynamo_version_mapping",
+        return_value=("1.3.0", {"sglang": "0.5.16"}),
+    ):
+        save_results(
+            args=SimpleNamespace(inclusive_tpot=False, deployment_target="dynamo-j2"),
+            best_configs={"agg": pd.DataFrame([row])},
+            pareto_fronts={"agg": None},
+            tasks={"agg": task},
+            save_dir=str(tmp_path),
+            backend="sglang",
+        )
+
+    run_sh = next(tmp_path.glob("**/agg/top1/run_0.sh")).read_text()
+    assert '--attn-cp-size "2"' in run_sh
+    assert "--enable-prefill-cp" in run_sh
 
 
 def test_bridge_reads_decode_cp_from_task():
