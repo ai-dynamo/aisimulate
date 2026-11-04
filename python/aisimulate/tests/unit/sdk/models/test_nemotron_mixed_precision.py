@@ -528,6 +528,27 @@ def test_model_prices_routed_experts_per_layer_precision(tmp_path):
         assert dispatch == {common.MoEQuantMode.fp8, common.MoEQuantMode.nvfp4}
 
 
+def test_hopper_fallback_keeps_the_per_layer_expert_split(tmp_path):
+    from aisimulate_core.sdk.models.helpers import resolve_nvfp4_for_system
+
+    path = _expert_split_checkpoint(tmp_path, fp8_layers=10)
+
+    def experts(model):
+        moe = [op for op in model.context_ops if op._name == "context_moe"]
+        return {op._quant_mode: op._scale_factor for op in moe}, sum(op.get_weights() for op in moe)
+
+    canonical = get_model(path, ModelConfig(tp_size=2, moe_tp_size=2, system="h200_sxm"), backend_name="vllm")
+    # The legacy CLI estimate path infers the global mode as nvfp4_wo before get_model.
+    legacy_config = ModelConfig(tp_size=2, moe_tp_size=2)
+    resolve_nvfp4_for_system(legacy_config, "h200_sxm", path, backend_name="vllm")
+    assert legacy_config.moe_quant_mode == common.MoEQuantMode.nvfp4_wo
+    legacy = get_model(path, legacy_config, backend_name="vllm")
+
+    modes, weights = experts(legacy)
+    assert modes == pytest.approx({common.MoEQuantMode.fp8: 10, common.MoEQuantMode.nvfp4_wo: 30})
+    assert (modes, weights) == experts(canonical)
+
+
 def _expert_split_checkpoint(tmp_path, fp8_layers):
     path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
     data = json.loads(path.read_text())

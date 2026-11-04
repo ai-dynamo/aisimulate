@@ -1251,6 +1251,13 @@ def resolve_nvfp4_for_system(
     if is_blackwell_system(system_name):
         return  # native FP4 TC — nvfp4 stays as-is
 
+    # Record caller intent before the fallback fills inferred modes, so get_model
+    # still resolves per-layer checkpoint precision for the inferred ones.
+    if getattr(model_config, "_gemm_quant_mode_is_explicit", None) is None:
+        model_config._gemm_quant_mode_is_explicit = model_config.gemm_quant_mode is not None
+    if getattr(model_config, "_moe_quant_mode_is_explicit", None) is None:
+        model_config._moe_quant_mode_is_explicit = model_config.moe_quant_mode is not None
+
     gemm_q = model_config.gemm_quant_mode
     moe_q = model_config.moe_quant_mode
     if (gemm_q is None or moe_q is None) and model_path:
