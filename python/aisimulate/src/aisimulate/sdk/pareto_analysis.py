@@ -619,7 +619,7 @@ def _get_best_configs_under_constraint(
     candidate_configs = (
         candidate_configs.sort_values(by=sort_columns, ascending=sort_ascending).head(top_n).reset_index(drop=True)
     )
-    candidate_configs.drop(columns=["_sla_exceeded"], inplace=True)
+    candidate_configs = candidate_configs.drop(columns=["_sla_exceeded"])
     return candidate_configs
 
 
@@ -803,5 +803,5 @@ def get_best_configs_for_target_load(
         sort_asc = [True, False]
 
     candidates = candidates.sort_values(by=sort_cols, ascending=sort_asc).head(top_n).reset_index(drop=True)
-    candidates.drop(columns=["_sla_exceeded"], inplace=True, errors="ignore")
+    candidates = candidates.drop(columns=["_sla_exceeded"], errors="ignore")
     return candidates
