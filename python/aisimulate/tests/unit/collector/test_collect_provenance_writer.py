@@ -3781,6 +3781,61 @@ def test_existing_v2_same_table_history_appends_fresh_event(tmp_path):
     assert table["rows"] == 2
 
 
+def test_large_string_seeded_table_keeps_rows_types_and_history(tmp_path):
+    """A shipped table stored as large_string (pandas-3 merge output) merges
+    with a string-typed staging CSV: every existing row and value is kept, the
+    storage type is kept, and the history gains exactly one event."""
+    output_root = tmp_path / "out"
+    prior_event = {
+        "collector_ref": "a" * 40,
+        "collector_hash": "sha256:" + "b" * 64,
+        "case_plan_hash": "sha256:" + "c" * 64,
+        "collected_at": "2026-08-10",
+        "rows": 2,
+        "status": "complete",
+    }
+    provenance.write_collection_meta(
+        output_root,
+        {
+            "framework": "sglang",
+            "version": "0.5.14",
+            "image": "lmsysorg/sglang:v0.5.14",
+            "image_digest": "sha256:" + "0" * 64,
+        },
+        {"gemm_perf": {"rows": 2, "status": "complete", "collections": [prior_event]}},
+    )
+    parquet_path = output_root / "gemm_perf.parquet"
+    existing = pa.table({"op": pa.array(["matmul", "bmm"], type=pa.large_string()), "latency": pa.array([1.0, 4.0])})
+    pq.write_table(existing, parquet_path)
+    perf_path = output_root / "gemm_perf.txt"
+    perf_path.write_text("op,latency\nsoftmax,2.0\n")
+    finalization_info: dict[Path, collect_mod.PerfFinalizationInfo] = {}
+    collect_mod.finalize_perf_files([perf_path], delete_source=False, finalization_info=finalization_info)
+
+    merged = pq.read_table(parquet_path)
+    assert {row["op"]: row["latency"] for row in merged.to_pylist()} == {"matmul": 1.0, "bmm": 4.0, "softmax": 2.0}
+    assert str(merged.schema.field("op").type) == "large_string"
+    assert finalization_info[parquet_path.resolve()] == _finalization_fact(perf_path, new_rows=1, merged_existing=True)
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    _write_checkpoint(checkpoint_dir, done=["case-new"], failed=[])
+    collect_mod._write_collector_provenance(
+        output_root,
+        [parquet_path],
+        _provenance_ctx(_collections()),
+        run_errors=[],
+        backend=BACKEND,
+        checkpoint_dir=str(checkpoint_dir),
+        finalization_info=finalization_info,
+    )
+
+    table = yaml.safe_load((output_root / "collection_meta.yaml").read_text(encoding="utf-8"))["tables"]["gemm_perf"]
+    assert table["collections"][0] == prior_event
+    assert len(table["collections"]) == 2
+    assert table["collections"][1]["rows"] == 1
+    assert table["rows"] == 3
+
+
 def test_retry_event_hash_attests_only_cases_attempted_this_invocation(tmp_path):
     output_root = tmp_path / "out"
     prior_event = {

@@ -116,8 +116,9 @@ model_case_values:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
       # vLLM reads this checkpoint's packaged HF config
       # (model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json,
-      # added in its own human-approved commit).
-      quantization_modes: [nvfp4]
+      # added in its own human-approved commit). The checkpoint's routed
+      # experts are W4A16_NVFP4, which only vLLM collects (collector/skips.py).
+      quantization_modes: [nvfp4, w4a16_nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 4096
       inter_size: 2688
@@ -286,6 +287,16 @@ model_case_values:
       head_dim: 64
       n_groups: 8
       chunk_size: 128
+  gemm:
+    # Lightning shared-expert projections (hidden 2688, shared intermediate
+    # 3712) at TP1/4/8. hf_quant_config.json lists them W4A16_NVFP4, and the
+    # Nemotron-H model queries them at exactly these off-grid widths.
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [3712, 928, 464]
+      input_feature_sizes: [2688]
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [2688]
+      input_feature_sizes: [3712, 928, 464]
 
 all_frameworks_op_cases:
   moe:
