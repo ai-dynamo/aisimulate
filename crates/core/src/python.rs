@@ -24,7 +24,7 @@ use crate::replay::{
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
-        ValidatedAgenticGraph, WekaImportOptions, WekaNestedTimestampBasis,
+        ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
         WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
         load_weka_agentic_graph_cached,
     },
@@ -123,6 +123,8 @@ struct RuntimeTraffic {
     trace_block_size: Option<usize>,
     #[serde(default)]
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
+    weka_client: Option<WekaClient>,
     /// Keep the loaded Weka graph for later runs in this process (sweeps).
     #[serde(default)]
     trace_graph_cache: bool,
@@ -3502,6 +3504,11 @@ fn build_runtime_input(
         traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
         "weka_nested_timestamp_basis requires Weka trace input"
     );
+    ensure!(
+        traffic.weka_client.is_none()
+            || (traffic.source_type == "trace" && traffic.trace_format.as_deref() == Some("weka")),
+        "weka_client requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
@@ -3570,6 +3577,7 @@ fn build_runtime_input(
                 traffic.trace_block_size,
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
+                    client: traffic.weka_client.unwrap_or_default(),
                 },
                 traffic.trace_graph_cache,
             )?;

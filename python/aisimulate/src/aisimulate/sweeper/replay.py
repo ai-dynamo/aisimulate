@@ -408,6 +408,7 @@ class RunnerCapabilities:
     supports_native_epd: bool = False
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
+    supports_weka_client: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
@@ -609,6 +610,14 @@ class RunnerCapabilities:
                 raise ValueError("weka_nested_timestamp_basis requires Weka input")
             if weka_basis not in {"auto", "absolute", "relative"}:
                 raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        weka_client = spec.workload.get("weka_client")
+        if weka_client is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_client requires Weka input")
+            if weka_client not in {"recorded", "agentx"}:
+                raise ValueError("weka_client must be 'recorded' or 'agentx'")
+            if weka_client == "agentx" and not self.supports_weka_client:
+                raise ValueError("runner does not support weka_client 'agentx'; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

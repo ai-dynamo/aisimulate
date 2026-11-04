@@ -184,6 +184,10 @@ Known release differences:
   measured from its parent request's recorded end, while the fork measures it
   from the earliest subagent spawned with it. An inner subagent chain without a
   detected fork is anchored to the play root instead of the subagent's spawn.
+  Streams of a play also share their whole common hash prefix, while the fork
+  renders each stream as its own chat conversation. Set
+  `traffic.source.client: agentx` to lower the corpus as the fork does; see
+  [Weka client](../workloads.md#weka-client).
 - The fork's per-tree guard shifts again only when its earliest timer lands on
   a request held by a replay barrier. When it lands on a joining turn whose
   children still wait on later timers, the fork leaves that tree idle until its
