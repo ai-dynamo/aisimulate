@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
-use crate::engine::config::ConnectorRules;
+use crate::engine::config::{ConnectorRules, LoadCopyStart};
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
     HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
@@ -1034,6 +1034,40 @@ impl VllmHostOffloadAdapter {
         ));
         kv_manager.cancel_destination(load.reservation);
         true
+    }
+
+    /// Load poll: the completion time of a request's in-flight load on a
+    /// private lane (fixed at submission); `None` on a shared pool.
+    pub(super) fn load_deadline(&self, request: &VllmHostRequestState) -> Option<f64> {
+        match request.load.as_ref()? {
+            LoadState::Loading(load) => self.host.lock().transfer_deadline(load.transfer_id),
+            LoadState::Activated(_) => None,
+        }
+    }
+
+    /// Drop a load whose copy completed but which was not activated yet (load
+    /// poll): only its G1 destination remains to release.
+    pub(super) fn drop_completed_load(
+        &mut self,
+        request: &mut VllmHostRequestState,
+        kv_manager: &mut G1Manager,
+    ) {
+        let Some(LoadState::Loading(load)) = request.load.take() else {
+            panic!("a completed load awaiting activation lost its reservation")
+        };
+        assert!(
+            load.keys
+                .iter()
+                .all(|key| self.load_by_key.get(key) != Some(&load.transfer_id)),
+            "a completed load must have left the in-flight index"
+        );
+        kv_manager.cancel_destination(load.reservation);
+    }
+
+    /// Under `launch`, where a load's copy starts in the pass that issued it,
+    /// when the connector's finished loads wait for vLLM's poll.
+    pub(super) fn polled_load_start(&self) -> Option<LoadCopyStart> {
+        self.rules.polled_load_start
     }
 
     pub(super) fn compute_not_before_ms(&self, now_ms: f64) -> f64 {
@@ -2844,5 +2878,182 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(!core.is_ready() && core.is_drained());
+    }
+
+    /// Load poll under `launch`: the pass that issued the follow-up's G2 load
+    /// and the pass that admitted it, with passes back to back on a fixed
+    /// model of 10 ms decode-only and 80 ms prefill-only passes. The launch of
+    /// a decode pass ends 5 ms after its decision, which is the previous
+    /// pass's start, so pass k polls 5 ms before it starts on the GPU.
+    fn poll_load_passes(connector: G2Connector, copy_ms: f64, launch: bool) -> (usize, usize) {
+        let (issued, admitted, _) = poll_load_run(connector, copy_ms, true, launch);
+        (issued, admitted)
+    }
+
+    /// [`poll_load_passes`] with or without the busy request and `launch`;
+    /// also returns the time from the load's issue to the admitting decision.
+    fn poll_load_run(
+        connector: G2Connector,
+        copy_ms: f64,
+        busy: bool,
+        launch: bool,
+    ) -> (usize, usize, f64) {
+        use crate::engine::common::perf_model::PerfModel;
+        use crate::engine::{PassLaunchConfig, TimingModelConfig};
+        // Every pass before the admission is decode-only or prefill-only.
+        let timing = crate::engine::timing::built_in_timing_model(&TimingModelConfig::Fixed {
+            prefill_ms: 80.0,
+            decode_ms: 10.0,
+        })
+        .unwrap();
+        // Five 64 B blocks restored in `copy_ms`.
+        let h2d_gbps = 320.0 / (copy_ms * 1e6);
+        let args = MockEngineArgs::builder()
+            .num_gpu_blocks(16)
+            .block_size(4)
+            .max_num_seqs(Some(16))
+            .enable_prefix_caching(true)
+            .kv_cache_bytes_per_token(Some(16))
+            .native_host_offload(Some(
+                NativeHostOffloadConfig::new(64)
+                    .with_bandwidths(0.0, h2d_gbps)
+                    .with_connector(connector),
+            ))
+            .perf_model(Arc::new(PerfModel::External { timing }))
+            .max_concurrent_batches(2)
+            .launch(launch.then_some(PassLaunchConfig {
+                decode_ms: 5.0,
+                piecewise_ms: 50.0,
+                eager_ms: 150.0,
+                max_cudagraph_capture_size: 4096,
+                eager_queue_fraction: 0.4,
+            }))
+            .build()
+            .unwrap();
+        let mut core = VllmCore::new(args);
+        let mut now = 0.0;
+        let mut passes = Vec::new();
+        let step =
+            |core: &mut VllmCore,
+             now: &mut f64,
+             passes: &mut Vec<crate::engine::scheduler::EnginePassResult>| {
+                if core.is_ready() {
+                    let pass = core.execute_pass(&mut TraceCollector::default(), *now);
+                    *now = pass.end_ms.max(*now);
+                    core.complete_engine_boundary(*now);
+                    passes.push(pass);
+                } else {
+                    let deadline = core.next_internal_deadline_ms().expect("work left");
+                    *now = now.max(deadline);
+                    core.process_internal_work(*now);
+                }
+            };
+        let submit = |core: &mut VllmCore, id: u128, tokens: Vec<u32>, output: usize, at: f64| {
+            core.receive(DirectRequest {
+                tokens,
+                max_output_tokens: output,
+                uuid: Some(Uuid::from_u128(id)),
+                arrival_timestamp_ms: Some(at),
+                ..Default::default()
+            });
+        };
+        // Request 1 stores its five prompt blocks; a filler that needs every
+        // G1 block then evicts them from G1.
+        for (id, tokens, output) in [(1, (0..22).collect(), 1), (2, (500..560).collect(), 1)] {
+            submit(&mut core, id, tokens, output, now);
+            while !core.is_empty() || core.is_ready() {
+                step(&mut core, &mut now, &mut passes);
+            }
+        }
+        now += 1_000.0;
+        if busy {
+            submit(&mut core, 9, (900..906).collect(), 20, now);
+            for _ in 0..6 {
+                step(&mut core, &mut now, &mut passes);
+            }
+        }
+        let follow_up = Uuid::from_u128(3);
+        submit(&mut core, 3, (0..30).collect(), 2, now);
+        let mut issued = None;
+        for _ in 0..64 {
+            let pass = passes.len();
+            let start = now;
+            step(&mut core, &mut now, &mut passes);
+            if issued.is_none() && core.test_has_host_load(follow_up) {
+                issued = Some((pass, start));
+            }
+            if let Some(admission) = passes
+                .get(pass)
+                .and_then(|pass| pass.admissions.iter().find(|a| a.uuid == follow_up))
+            {
+                let tiers = admission.cache_tier_attribution.unwrap();
+                assert!(tiers.host_reused_input_tokens > 0, "{connector:?}");
+                let (issued, issued_at) = issued.expect("the load was issued");
+                return (issued, pass, start - issued_at);
+            }
+        }
+        panic!("the follow-up was not admitted")
+    }
+
+    #[test]
+    fn load_poll_sees_a_copy_at_the_first_poll_after_it_and_schedules_two_decisions_later() {
+        // Pass m issues the load and pass k polls at S(k) - 5, where S(k) =
+        // S(m) + 10 (k - m) is its GPU start. update_from_output(f) runs after
+        // schedule(f+1), so the first pass f to see the copy makes the request
+        // schedulable at f+2.
+        // SimpleCPU: the copy starts when pass m's launch ends, S(m) - 5. A
+        // 3 ms copy ends at S(m) - 2, before m+1's poll at S(m) + 5: admitted
+        // at m+3. A 12 ms copy ends at S(m) + 7 and misses it: m+2 sees it at
+        // S(m) + 15, admitted at m+4.
+        let (issued, admitted) = poll_load_passes(G2Connector::SimpleCpuV032, 3.0, true);
+        assert_eq!(admitted - issued, 3);
+        let (issued, admitted) = poll_load_passes(G2Connector::SimpleCpuV032, 12.0, true);
+        assert_eq!(admitted - issued, 4);
+        // The offloading connector's copy waits for pass m's GPU work, until
+        // S(m) + 10, and copies the blocks G1 no longer holds, four or five.
+        // With five blocks in 3 ms it ends by S(m) + 13 and m+2 sees it at
+        // S(m) + 15; with five in 8 ms it ends after S(m) + 16 and m+3 sees
+        // it at S(m) + 25.
+        let (issued, admitted) = poll_load_passes(G2Connector::OffloadingV032, 3.0, true);
+        assert_eq!(admitted - issued, 4);
+        let (issued, admitted) = poll_load_passes(G2Connector::OffloadingV032, 8.0, true);
+        assert_eq!(admitted - issued, 5);
+        // vLLM 0.24's connector is not polled: the copy, issued as pass m is
+        // formed at S(m), ends while m runs, and pass m+1 admits the request.
+        let (issued, admitted) = poll_load_passes(G2Connector::OffloadingV024, 3.0, true);
+        assert_eq!(admitted - issued, 1);
+    }
+
+    #[test]
+    fn without_launch_a_load_is_seen_when_its_copy_ends() {
+        // The same runs without `launch`: the copy, issued as pass m is formed
+        // at S(m), is seen at the first pass boundary after it ends. A copy
+        // shorter than the 10 ms pass ends while m runs, so m+1 admits the
+        // request; a 12 ms copy ends while m+1 runs, so m+2 does.
+        for (connector, copy_ms, passes) in [
+            (G2Connector::SimpleCpuV032, 3.0, 1),
+            (G2Connector::SimpleCpuV032, 12.0, 2),
+            (G2Connector::OffloadingV032, 3.0, 1),
+            (G2Connector::OffloadingV032, 8.0, 1),
+        ] {
+            let (issued, admitted) = poll_load_passes(connector, copy_ms, false);
+            assert_eq!(admitted - issued, passes, "{connector:?} {copy_ms} ms");
+        }
+    }
+
+    #[test]
+    fn load_poll_on_an_idle_engine_sees_the_copy_at_its_end() {
+        // Nothing runs, so no pass polls: the engine's empty steps, priced at
+        // zero, see the load when its copy ends. Under SimpleCPU the filler
+        // evicted every G1 block of request 1, so all five blocks copy (3 ms);
+        // the offloading connector's G1 kept the first block, so four copy
+        // (2.4 ms).
+        for (connector, copy_ms) in [
+            (G2Connector::SimpleCpuV032, 3.0),
+            (G2Connector::OffloadingV032, 2.4),
+        ] {
+            let (_, _, waited) = poll_load_run(connector, 3.0, false, true);
+            assert!((waited - copy_ms).abs() < 1e-6, "{connector:?}: {waited}");
+        }
     }
 }

@@ -473,6 +473,7 @@ impl G2Connector {
                 stores_at_finish: false,
                 reranks_at_finish: false,
                 preemption_waits_for_all: false,
+                polled_load_start: None,
             },
             Self::OffloadingV032 => ConnectorRules {
                 policy: HostPolicy::Ranked,
@@ -487,6 +488,7 @@ impl G2Connector {
                 stores_at_finish: true,
                 reranks_at_finish: true,
                 preemption_waits_for_all: false,
+                polled_load_start: Some(LoadCopyStart::PassEnd),
             },
             Self::SimpleCpuV032 => ConnectorRules {
                 policy: HostPolicy::FreeQueue,
@@ -501,6 +503,7 @@ impl G2Connector {
                 stores_at_finish: true,
                 reranks_at_finish: false,
                 preemption_waits_for_all: true,
+                polled_load_start: Some(LoadCopyStart::LaunchEnd),
             },
         }
     }
@@ -544,6 +547,21 @@ pub(crate) struct ConnectorRules {
     /// A preemption waits for every transfer in flight, not only the
     /// preempted request's stores.
     pub(crate) preemption_waits_for_all: bool,
+    /// Under `launch`, a finished load waits for a later pass to poll the
+    /// connector, and its copy starts at this point of the pass that issued
+    /// it. `None`: the load is seen when its copy ends.
+    pub(crate) polled_load_start: Option<LoadCopyStart>,
+}
+
+/// When a load's copy starts, relative to the pass that issued it. The
+/// connector submits it after the pass's launch, in vLLM's post-forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoadCopyStart {
+    /// When the launch ends: a copy thread submits it without waiting for
+    /// compute.
+    LaunchEnd,
+    /// When the pass's GPU work ends: the copy stream waits for compute.
+    PassEnd,
 }
 
 const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
