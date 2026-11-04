@@ -65,6 +65,22 @@ def point_fit_samples(samples):
     ]
 
 
+def point_protocol(sample):
+    """Observer overhead, timer placement and cache/pass state are not exchangeable."""
+    return {
+        "audit_driver_sha256": sample.get("audit_driver_sha256"),
+        "observer_sha256": sample.get("observer_sha256", sample.get("audit_observer_sha256")),
+        "runtime_protocol": sample.get("runtime_protocol"),
+        "point_clock_scope": sample.get("point_clock_scope", sample.get("native_call_clock_scope")),
+        "native_pass_index": sample.get("native_pass_index"),
+        "pass_scope": sample.get("pass_scope"),
+        "actual_kernel_source": sample.get("actual_kernel_source"),
+        "num_runs_executed": sample.get("num_runs_executed"),
+        "requested_warmups": sample.get("requested_num_warmups", sample.get("requested_warmups")),
+        "repeat_n": sample.get("repeat_n"),
+    }
+
+
 def measured_cost(samples):
     """Inclusive point times plus explicitly separate setup once per group.
 
@@ -97,7 +113,11 @@ def predict(case, samples, component=None):
     """
     case = clean_case(case)
     matched = [s for s in point_fit_samples(samples) if geometry(s["case"]) == geometry(case)]
-    if len({s["source_commit"] for s in matched}) > 1 or len({identity(s) for s in matched}) > 1:
+    if (
+        len({s["source_commit"] for s in matched}) > 1
+        or len({identity(s) for s in matched}) > 1
+        or len({json.dumps(point_protocol(s), sort_keys=True) for s in matched}) > 1
+    ):
         return None
     full_causal = bool(matched) and matched[0]["operation"] == "attention_context" and case.get("window_size") == "0"
     if (
@@ -162,7 +182,14 @@ def validation(samples):
     holdouts = [s for s in points if s.get("role") == "holdout"]
     errors = []
     for sample in holdouts:
-        estimate = predict(sample["case"], fit)
+        compatible = [
+            s
+            for s in fit
+            if identity(s) == identity(sample)
+            and s["source_commit"] == sample["source_commit"]
+            and point_protocol(s) == point_protocol(sample)
+        ]
+        estimate = predict(sample["case"], compatible)
         if sample not in point_fit_samples([sample]) or estimate is None:
             return {"passed": False, "reason": "uncovered_or_failed_holdout", "max_relative_error": None}
         actual = sample["collection_seconds"]
@@ -226,6 +253,8 @@ def controlled_protocol(sample):
         sample["cache_scope_declared"],
         json.dumps(sample.get("runtime_protocol"), sort_keys=True),
         json.dumps(repetitions),
+        sample.get("audit_driver_sha256"),
+        sample.get("observer_sha256", sample.get("audit_observer_sha256")),
     )
 
 
@@ -429,12 +458,14 @@ def report_lane(
                 lane.append({**sample, "_qualified_runtime_source": source_commit or sample["source_commit"]})
         buckets = defaultdict(list)
         for sample in lane:
-            buckets[(geometry(sample["case"]), sample["source_commit"])].append(sample)
+            buckets[
+                (geometry(sample["case"]), sample["source_commit"], json.dumps(point_protocol(sample), sort_keys=True))
+            ].append(sample)
         covered = 0
         low = high = 0.0
         gaps = defaultdict(int)
         for case in delta["added"]:
-            matches = [bucket for (shape, _commit), bucket in buckets.items() if shape == geometry(case)]
+            matches = [bucket for (shape, _commit, _protocol), bucket in buckets.items() if shape == geometry(case)]
             estimates = []
             for bucket in matches:
                 point_samples = [s for s in bucket if s["measurement_scope"] == "point"]
@@ -486,11 +517,12 @@ def report_lane(
                 {
                     "geometry": dict(shape),
                     "source_commit": commit,
+                    "point_protocol": json.loads(protocol),
                     "point_validation": validation(bucket),
                     "group_validation": group_validation(bucket),
                     "phase_accounting_check": phase_accounting_check(bucket),
                 }
-                for (shape, commit), bucket in buckets.items()
+                for (shape, commit, protocol), bucket in buckets.items()
             ],
             "paired_group_measurement": paired,
             "scenario_equivalence_proofs": scenario_proofs,
