@@ -26,7 +26,7 @@ date.
 |---|---|---|
 | **Pin** | The framework release and image each (backend, op family) is collected with; the collector refuses any other installed version | `collector/framework_manifest.yaml` |
 | **Plan** | Every case an op collects: one list for every backend | `collector/op_plans.py` expands the `collector/cases/` YAML; `collector/skips.py` leaves cases out (`case_authoring.md`) |
-| **Record** | How a table came to be: collected or reused, the runtime, `collector_hash` (one hash over the collector source), `case_plan_hash` (the cases attempted) and how the run went | `collection_meta.yaml` (the collector writes it) or `reuse.yaml` (a person writes it) next to the parquet |
+| **Record** | How a table came to be: collected or reused, the runtime, `collector_hash` (one hash over the collector source, the SDK and the packaged model configs), `case_plan_hash` (the cases attempted) and how the run went | `collection_meta.yaml` (the collector writes it) or `reuse.yaml` (a person writes it) next to the parquet |
 | **Note** | A deviation the rows cannot show: the table measures a different path than serving runs | A comment at the deviating code (`layer_permissions.md`, "Deviations are notes") |
 | **Rule** | What every collector change must satisfy | The rules below |
 

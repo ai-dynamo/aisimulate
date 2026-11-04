@@ -90,18 +90,26 @@ class OpPlan:
     dtype_field: str | tuple[str, ...]
     # The case fields whose values share one module build in a worker.
     group_fields: tuple[str, ...]
+    # The mapping defaults come from factories: a mappingproxy default is
+    # rejected by dataclasses on Python 3.11, where it is unhashable.
     # backend -> the kernel or runner the backend measures a case on, where the
     # plan picks it; a tuple when serving runs the case on several.
-    dispatch: Mapping[str, Callable[[object, int | None], str | tuple[str, ...]]] = MappingProxyType({})
+    dispatch: Mapping[str, Callable[[object, int | None], str | tuple[str, ...]]] = dataclasses.field(
+        default_factory=lambda: MappingProxyType({})
+    )
     # backend -> the run arguments for one case and its dispatch (None without
     # one), for a run function that takes more than the case.
-    rows: Mapping[str, Callable[[object, int | None, str | None], list]] = MappingProxyType({})
+    rows: Mapping[str, Callable[[object, int | None, str | None], list]] = dataclasses.field(
+        default_factory=lambda: MappingProxyType({})
+    )
     # backend -> the tasks for its kept cases where one task times several of
     # them on one module build: (row, the cases it times) pairs. A row carries
     # its points explicitly; every kept case is timed by exactly one row. With a
     # dispatch, the function is given the (case, dispatch) runs instead, and
     # every run is timed by exactly one row.
-    batch_rows: Mapping[str, Callable[[list, int | None], list[tuple[object, tuple]]]] = MappingProxyType({})
+    batch_rows: Mapping[str, Callable[[list, int | None], list[tuple[object, tuple]]]] = dataclasses.field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         both = sorted(set(self.batch_rows) & set(self.rows))
@@ -640,10 +648,8 @@ def _expand_deepep() -> list[DeepepCase]:
     """
     shapes = set()
     for path in Path(_AIC_MODEL_CONFIG_DIR).glob("*_config.json"):
-        try:
-            config = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
+        # A packaged config that does not parse is a packaging error, not a shape to skip.
+        config = json.loads(path.read_text())
         text = config.get("text_config") or {}
         num_experts = (
             config.get("n_routed_experts")
@@ -1143,9 +1149,19 @@ def _mla_module_plan(phase: str) -> OpPlan:
 
 @functools.cache
 def _packaged_config(model_path: str, kind: str = "config") -> dict:
-    """A checkpoint's packaged config.json (kind "config") or hf_quant_config.json, or {} when none ships."""
+    """A checkpoint's packaged config.json (kind "config") or hf_quant_config.json.
+
+    Every planned model ships its config.json; a missing one is a packaging
+    error and raises, since the plan would otherwise read every field as
+    absent and queue a different case set. hf_quant_config.json ships for
+    ModelOpt checkpoints only, so a missing one is {}.
+    """
     path = Path(_AIC_MODEL_CONFIG_DIR) / f"{model_path.replace('/', '--')}_{kind}.json"
-    return json.loads(path.read_text()) if path.exists() else {}
+    if path.exists():
+        return json.loads(path.read_text())
+    if kind == "config":
+        raise FileNotFoundError(f"{model_path} has no packaged config.json: expected {path}")
+    return {}
 
 
 def _max_position(model_path: str) -> int | None:

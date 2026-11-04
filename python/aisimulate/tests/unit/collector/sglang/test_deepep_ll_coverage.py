@@ -94,7 +94,6 @@ def test_public_plan_does_not_filter_framework_kernel_limits(monkeypatch, tmp_pa
     }
     for name, config in configs.items():
         (tmp_path / f"{name}_config.json").write_text(json.dumps(config))
-    (tmp_path / "f_config.json").write_text("not json")
     monkeypatch.setattr(op_plans, "_AIC_MODEL_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(collect_deepep_ll, "get_sm_version", lambda: 90)
 

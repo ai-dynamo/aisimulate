@@ -1480,6 +1480,30 @@ def test_explicit_fmha_precision_with_trtllm_fp8_profiles():
     assert bf16_kv.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
+def test_fpm_task_keeps_its_explicit_fmha_identity_on_trtllm():
+    """A whole-model FPM identity is caller-owned: the TRT-LLM FP8 promotion that applies to
+    op-level tasks leaves an explicit bfloat16 alone, through build_model_config and the
+    estimate path's resolver, so the Task selects the collected bfloat16 cell."""
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="1.3.0rc20",
+        forward_model="fpm",
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+    )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    mc = t.build_model_config(role="agg")
+    assert mc.forward_model == "fpm" and mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("h200_sxm"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
     """Task delegates mode selection to the configured database-view boundary."""
     calls = []

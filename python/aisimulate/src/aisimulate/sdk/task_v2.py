@@ -1221,8 +1221,12 @@ class Task:
 
         # TRT-LLM runs MLA attention in FP8 on an FP8 KV cache on SM90/100/103/120
         # (helpers.trtllm_mla_runs_fp8), so a bfloat16 FMHA there, explicit or not,
-        # means the FP8 it runs.
+        # means the FP8 it runs. A whole-model FPM identity is caller-owned, as in
+        # the resolvers (helpers.resolve_trtllm_mla_compute): its fmha_quant_mode
+        # names the collected cell, not the kernel precision.
         for role in roles:
+            if self.forward_model == "fpm":
+                break
             if role == "decode" or self._role_attr(role, "fmha_quant_mode") != common.FMHAQuantMode.bfloat16:
                 continue
             sm_version = load_system_spec(self._role_attr(role, "system_name")).get("gpu", {}).get("sm_version")

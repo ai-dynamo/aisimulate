@@ -481,6 +481,10 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
     return [(None, lat)]
 
 
+# Derived once per process by _sglang_chunked_prefill_size.
+_CHUNKED_PREFILL = None
+
+
 def _chunked_prefill_size_from_gpu_mem(gpu_mem):
     """Replicate ``ServerArgs._handle_gpu_memory_settings`` chunked_prefill_size
     tiering directly from device memory (MB). Thresholds are identical across the
