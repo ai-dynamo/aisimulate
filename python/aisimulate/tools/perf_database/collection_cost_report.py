@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import itertools
 import json
 import math
 import statistics
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 
@@ -75,7 +77,7 @@ def measured_cost(samples):
     return total
 
 
-def predict(case, samples):
+def predict(case, samples, component=None):
     """Exact observations or multilinear interpolation inside measured corners.
 
     Every non-workload field must match. No extrapolation or proxy-to-time fit.
@@ -85,6 +87,26 @@ def predict(case, samples):
     matched = [s for s in accepted(samples) if geometry(s["case"]) == geometry(case)]
     if len({s["source_commit"] for s in matched}) > 1 or len({identity(s) for s in matched}) > 1:
         return None
+    full_causal = bool(matched) and matched[0]["operation"] == "attention_context" and case.get("window_size") == "0"
+    if (
+        full_causal
+        and component is None
+        and all(
+            positive(s.get("preparation_seconds"))
+            and positive(s.get("execution_seconds"))
+            and math.isclose(
+                s["preparation_seconds"] + s["execution_seconds"], s["collection_seconds"], rel_tol=1e-5, abs_tol=1e-6
+            )
+            for s in matched
+        )
+    ):
+        phases = [
+            predict(case, [{**s, "collection_seconds": s[field]} for s in matched], component=field)
+            for field in ("preparation_seconds", "execution_seconds")
+        ]
+        return (
+            tuple(sum(values) for values in zip(*phases, strict=True)) if all(p is not None for p in phases) else None
+        )
     exact = [s["collection_seconds"] for s in matched if clean_case(s["case"]) == case]
     if exact:
         return min(exact), max(exact)
@@ -112,10 +134,10 @@ def predict(case, samples):
         weight = 1.0
         for axis, value, bounds in zip(axes, point, corners, strict=True):
             if len(bounds) == 2:
+                power = 2 if full_causal and axis == "input_len" and component != "preparation_seconds" else 1
+                lower, upper, target = bounds[0] ** power, bounds[1] ** power, int(case[axis]) ** power
                 weight *= (
-                    (bounds[1] - int(case[axis])) / (bounds[1] - bounds[0])
-                    if value == bounds[0]
-                    else (int(case[axis]) - bounds[0]) / (bounds[1] - bounds[0])
+                    (upper - target) / (upper - lower) if value == bounds[0] else (target - lower) / (upper - lower)
                 )
         low += weight * min(observations)
         high += weight * max(observations)
@@ -209,7 +231,15 @@ def paired_groups(samples, scenario, added, removed, baseline_scenario="baseline
 
 
 def report_lane(
-    baseline, candidate, samples, system, backend, scenario="model", baseline_scenario="baseline", source_commit=None
+    baseline,
+    candidate,
+    samples,
+    system,
+    backend,
+    scenario="model",
+    baseline_scenario="baseline",
+    source_commit=None,
+    equivalents=frozenset(),
 ):
     result = {}
     for table, delta in compare(baseline, candidate).items():
@@ -218,7 +248,9 @@ def report_lane(
         buckets = defaultdict(list)
         for sample in lane:
             if sample.get("scenario") == scenario and (
-                source_commit is None or sample["source_commit"] == source_commit
+                source_commit is None
+                or sample["source_commit"] == source_commit
+                or (sample["source_commit"], backend, operation) in equivalents
             ):
                 buckets[(geometry(sample["case"]), sample["source_commit"])].append(sample)
         covered = 0
@@ -280,9 +312,51 @@ def report_lane(
     return result
 
 
+def verified_sources(proofs, repository, target):
+    """Verify explicit per-operation equivalence against immutable Git file bytes.
+
+    The proof declares its complete native-runtime dependency scope; matching a
+    single entrypoint is insufficient. Planner/case changes do not prove runtime
+    equivalence and are not silently accepted as such.
+    """
+    result = set()
+    for proof in proofs:
+        if proof["target_commit"] != target:
+            raise ValueError("source equivalence must name target and complete runtime dependency scope")
+        required = {
+            f"python/aisimulate/collector/{proof['backend']}/{name}" for name in ("collect_attn.py", "registry.py")
+        }
+        required.update(
+            f"python/aisimulate/collector/{name}" for name in ("helper.py", "case_generator.py", "registry_types.py")
+        )
+        if proof["backend"] == "vllm":
+            required.add("python/aisimulate/collector/vllm/utils.py")
+        if proof["operation"] not in {"attention_context", "attention_generation"} or not required <= {
+            f["path"] for f in proof["files"]
+        }:
+            raise ValueError("unsupported or incomplete per-operation equivalence proof")
+        for file in proof["files"]:
+            for revision in (proof["source_commit"], target):
+                payload = subprocess.check_output(["git", "-C", str(repository), "show", f"{revision}:{file['path']}"])
+                expected = file.get("sha256") or file.get(
+                    "source_sha256" if revision == proof["source_commit"] else "target_sha256"
+                )
+                if (
+                    file.get("source_sha256", expected) != file.get("target_sha256", expected)
+                    or hashlib.sha256(payload).hexdigest() != expected
+                ):
+                    raise ValueError(f"source equivalence hash mismatch: {revision}:{file['path']}")
+        result.add((proof["source_commit"], proof["backend"], proof["operation"]))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=Path, required=True)
+    parser.add_argument(
+        "--source-equivalence", type=Path, help="JSON list of per-op verified runtime dependency hashes"
+    )
+    parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument(
         "--source-commit", required=True, help="exact candidate source revision eligible for point interpolation"
     )
@@ -292,7 +366,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     samples = [json.loads(line) for line in args.samples.read_text().splitlines() if line.strip()]
+    proofs = json.loads(args.source_equivalence.read_text()) if args.source_equivalence else []
+    if isinstance(proofs, dict):
+        proofs = proofs["proofs"]
+    equivalents = verified_sources(proofs, args.repository, args.source_commit)
     result = {
+        "source_equivalence_proofs": proofs,
         "range_kind": "empirical_not_statistical_confidence_interval",
         "allocation_time_included": False,
         "fleet_gpu_hours_range": None,
@@ -305,7 +384,14 @@ def main():
         system, backend = directory.parent.name, directory.name
         result["lanes"][f"{system}/{backend}"] = {
             name: report_lane(
-                directory, root / system / backend, samples, system, backend, name, source_commit=args.source_commit
+                directory,
+                root / system / backend,
+                samples,
+                system,
+                backend,
+                name,
+                source_commit=args.source_commit,
+                equivalents=equivalents,
             )
             for name, root in (("shared", args.shared), ("model", args.model))
         }
@@ -318,6 +404,7 @@ def main():
             "model",
             "shared",
             source_commit=args.source_commit,
+            equivalents=equivalents,
         )
     result["samples"] = samples
     result["phase_accounting"] = (

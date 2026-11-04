@@ -3,6 +3,7 @@
 """Unknown coverage and failed validation must never become finite forecasts."""
 
 import csv
+import hashlib
 
 import pytest
 from tools.perf_database import collection_cost_report as report
@@ -106,3 +107,55 @@ def test_missing_stratum_keeps_total_unknown(tmp_path):
 
 def test_unrelated_source_revisions_do_not_form_interpolation_corners():
     assert report.predict(sample(2)["case"], [sample(1, 1), sample(3, 3, source_commit="different")]) is None
+
+
+def test_full_causal_three_anchor_quadratic_holdout():
+    rows = [sample(262144, 9.8785), sample(1048576, 169.3648), sample(524288, 39.7233, role="holdout")]
+    for row in rows:
+        row["case"]["window_size"] = "0"
+    validation = report.validation(rows)
+    assert validation["passed"]
+    assert validation["max_relative_error"] < 0.06
+    assert not report.validation(rows[:2])["passed"]
+    for row in rows:
+        row["case"]["window_size"] = "4096"
+    assert not report.validation(rows)["passed"]
+
+
+def test_preparation_and_execution_interpolate_separately_without_double_counting():
+    rows = [
+        sample(1, 3, preparation_seconds=2, execution_seconds=1),
+        sample(3, 15, preparation_seconds=6, execution_seconds=9),
+    ]
+    for row in rows:
+        row["case"]["window_size"] = "0"
+    case = {**sample(2)["case"], "window_size": "0"}
+    assert report.predict(case, rows) == (8, 8)
+
+
+def test_source_equivalence_verifies_both_immutable_file_hashes(tmp_path, monkeypatch):
+    proof = {
+        "source_commit": "old",
+        "target_commit": "new",
+        "backend": "vllm",
+        "operation": "attention_context",
+        "runtime_dependency_scope_complete": True,
+        "files": [
+            {"path": path, "sha256": hashlib.sha256(b"identical").hexdigest()}
+            for path in (
+                "python/aisimulate/collector/vllm/collect_attn.py",
+                "python/aisimulate/collector/helper.py",
+                "python/aisimulate/collector/case_generator.py",
+                "python/aisimulate/collector/registry_types.py",
+                "python/aisimulate/collector/vllm/registry.py",
+                "python/aisimulate/collector/vllm/utils.py",
+            )
+        ],
+    }
+    monkeypatch.setattr(report.subprocess, "check_output", lambda argv: b"identical")
+    assert report.verified_sources([proof], tmp_path, "new") == {("old", "vllm", "attention_context")}
+    monkeypatch.setattr(
+        report.subprocess, "check_output", lambda argv: b"changed" if argv[-1].startswith("new:") else b"identical"
+    )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        report.verified_sources([proof], tmp_path, "new")
