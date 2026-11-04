@@ -74,6 +74,16 @@ values. These TP4/EP4 values illustrate the fields:
 }
 ```
 
+For Replay or Recommend, omit both `moe_tp_size` and `moe_ep_size` from the
+training identity when `moe_tp_size * moe_ep_size == 1`. The Replay YAML can
+still use `parallelism.moe_tensor: 1` and `parallelism.moe_expert: 1`; its
+compiler represents those unsharded dimensions as `None` in the canonical
+identity. Training with explicit `1, 1` preserves a different identity, so the
+resulting artifact fails the exact identity check when Replay loads it.
+For a sharded topology, retain both fields, including a dimension equal to 1
+as in the example above. Use the same reviewed identity for training and
+subsequent SDK construction.
+
 Include the actual precision, KV block size and kernel settings from the
 [configuration reference](../configuration.md#choosing-a-forward-pass-api).
 Leave learned source paths out of this identity; training creates the source.
@@ -241,14 +251,28 @@ shasum -a 256 "$FPM_TRAIN" "$FPM_TEST" \
 
 The trainer accepts flat FPM records and native trace envelopes containing
 `event.fpm`. Its reader skips malformed JSON and unrecognized records, and
-training excludes idle or incompatible rows. It does not validate capture
-completeness or apply the selection decisions above. Inspect those exclusions
-alongside the source counts; the training CLI is not a capture validator.
+training excludes idle or incompatible rows. Before training, save an external
+validation report from your trace-selection workflow as
+`$FPM_RUN/receipts/$FPM_ROLE.selection.json`. Include:
+
+- The source and selected input file paths and their SHA-256 hashes.
+- Total source-record counts and accepted-record counts for training and
+  held-out data separately.
+- Exclusion counts by reason, such as malformed JSON, unrecognized records,
+  idle observations, incompatible roles or intervals outside the selection.
+  Use disjoint categories so the accepted and excluded counts reconcile with
+  the source total.
+
+Compare the report with the selected files and the input-hash receipt above,
+then retain them together. The training CLI does not produce this report,
+report parser exclusions or validate capture completeness. Its resulting
+iteration and store counts do not account for every source record.
 
 **Proceed when** every expected worker has accepted busy observations, the
-training and held-out populations are disjoint, and the client completion and
-source checks are recorded. AISimulate's supported input and split options are
-described in the [training reference](../fpm_ml/learned-forward-pass-model.md#2-train).
+training and held-out populations are disjoint, the report counts reconcile,
+and the client completion and source checks are recorded. Supported input and
+split options are described in the
+[training reference](../fpm_ml/learned-forward-pass-model.md#2-train).
 
 ## 3. Train and qualify accuracy
 
