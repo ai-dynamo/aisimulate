@@ -2565,26 +2565,33 @@ class Task:
             out[f.name] = value
         return out
 
+    def _inferred_quant_mode_resets(self) -> dict[str, None]:
+        """``{field: None}`` for each GEMM, MoE and FMHA mode that was inferred rather than set.
+
+        Rebuilding a task from its resolved fields would turn an inferred mode into an
+        explicit override and bypass checkpoint-specific per-layer precision; passing
+        these resets keeps it inferred.
+        """
+        return {
+            name if role == "agg" else f"{role}_{name}": None
+            for name, explicit_by_role in (
+                ("gemm_quant_mode", self._gemm_quant_mode_explicit_by_role),
+                ("moe_quant_mode", self._moe_quant_mode_explicit_by_role),
+                ("fmha_quant_mode", self._fmha_explicit),
+            )
+            for role, explicit in explicit_by_role.items()
+            if not explicit
+        }
+
     def to_yaml(self) -> str:
         """Serialize public configuration, keeping inferred GEMM, MoE and FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
-        Writing an inferred mode would turn it into an explicit override on
-        reload and bypass checkpoint-specific per-layer precision.
         """
         import yaml
 
-        values = self.to_dict()
-        for name, explicit_by_role in (
-            ("gemm_quant_mode", self._gemm_quant_mode_explicit_by_role),
-            ("moe_quant_mode", self._moe_quant_mode_explicit_by_role),
-            ("fmha_quant_mode", self._fmha_explicit),
-        ):
-            for role, explicit in explicit_by_role.items():
-                if not explicit:
-                    values[name if role == "agg" else f"{role}_{name}"] = None
-        return yaml.safe_dump(values, sort_keys=False)
+        return yaml.safe_dump({**self.to_dict(), **self._inferred_quant_mode_resets()}, sort_keys=False)
 
     # =====================================================================
     # sweep.py kwargs builders

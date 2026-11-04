@@ -622,6 +622,34 @@ def test_task_path_preserves_explicit_moe_mode(monkeypatch, tmp_path, explicit_m
         assert moe_modes == {common.MoEQuantMode.fp8, model_config.moe_quant_mode}
 
 
+@pytest.mark.parametrize("explicit_gemm", [None, common.GEMMQuantMode.fp8])
+def test_recommend_rebuild_keeps_per_layer_precision(monkeypatch, explicit_gemm):
+    from aisimulate.legacy_cli.api import _build_recommend_tasks
+    from aisimulate.sdk.task_v2 import Task
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    model_path = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+    task = Task(
+        serving_mode="agg",
+        model_path=model_path,
+        system_name="gb200",
+        backend_name="vllm",
+        backend_version="0.31.0",
+        database_mode="SOL",
+        **({"gemm_quant_mode": explicit_gemm} if explicit_gemm else {}),
+    )
+
+    def buckets(task):
+        model = get_model(model_path, task.build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1)), "vllm")
+        return model._projection_quant_modes, model._moe_quant_modes
+
+    rebuilt = _build_recommend_tasks({"agg": task}, 8)["agg"]
+    assert rebuilt.total_gpus == 8
+    assert buckets(rebuilt) == buckets(task)
+    # Super lists FP8 and BF16 projections; an explicit GEMM mode prices them all with one mode.
+    assert bool(buckets(rebuilt)[0]) is (explicit_gemm is None)
+
+
 def test_fused_qkv_modules_must_share_a_precision():
     raw = {
         "hf_quant_config": {
