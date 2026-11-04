@@ -59,14 +59,21 @@ impl Mamba2Op {
         } else {
             batch_size
         };
+        // A measured decode row prices one token per request. A qualified op
+        // that verifies several tokens has no row, so it takes the analytic
+        // SOL like a table miss.
+        let multi_token_decode =
+            self.phase == "generation" && self.state_dtype != "unrecorded" && self.token_width > 1;
         // SOL (and the retired SOL_FULL alias) never reads the table, as in
         // the GEMM, attention, MoE and mHC operators. Mamba2 has no util-space
         // empirical layer, so EMPIRICAL answers with the same analytic SOL
         // instead of reading measured rows.
-        if matches!(
-            db.database_mode,
-            DatabaseMode::Sol | DatabaseMode::SolFull | DatabaseMode::Empirical
-        ) {
+        if multi_token_decode
+            || matches!(
+                db.database_mode,
+                DatabaseMode::Sol | DatabaseMode::SolFull | DatabaseMode::Empirical
+            )
+        {
             let latency = self.sol_latency_ms(db, requests as f64, seq_len as f64);
             return Ok(PerformanceResult::new(latency, Source::Sol)
                 .clamp_non_negative()
