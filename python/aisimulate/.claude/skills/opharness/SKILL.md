@@ -1,6 +1,6 @@
 ---
 name: opharness
-description: Use when running or extending the op-path harness under collector/opharness (upgrade_op / onboard_model / new_op_collector campaigns, probes, path_diff gates, per-SM results). Lists every environment knob the components read and where each per-SM artifact lives; procedure lives in collector/opharness/README.md and workflows/*.md.
+description: Use when running or extending the op-path harness under collector/opharness (upgrade_op / onboard_model / new_op_collector, serving probes, path_diff gates). Lists every environment knob the components read and where each per-SM artifact lives; procedure lives in collector/opharness/README.md and workflows/*.md.
 ---
 
 # opharness — how a session drives it
@@ -26,7 +26,7 @@ the workflow you are on (`collector/opharness/workflows/<workflow>.md` + `.yaml`
 ## Per-SM artifacts
 
 Rules scoped by `sms:` in `components/kernel_taxonomy.yaml`, `results/<sm>/<fw>-<ver>.yaml`,
-`results/pathdiff/<sm>/<fw>-<ver>/`, `results/retests/<sm>/`. Gate lines in
+`results/pathdiff/<sm>/<fw>-<ver>/`. Gate lines in
 `components/captures/verdicts_*.sh` may carry `FLOOR_SM=<sm> FLOOR_NOTE="..."`
 (platform floor on that SM) or `SERVING_RAW=<raw>` (graded against a dedicated
 probe raw). Customizations in `targets.yaml` may carry `sms: [sm120]` to apply
@@ -45,14 +45,14 @@ python3 -c 'from op_smoke import run_planned; run_planned("<fw>", "<op>", field=
 
 The collector's vocabulary (Pin, Plan, Record, Note, Rule) is in
 `.claude/rules/collector/overview.md`; a campaign's conclusions go where it
-says (skips.py entries, the op plan's dispatch, deviation notes, fixes, and
-evidence under `benchmarks/evidence/collector/<campaign>/`), never into a
-findings file.
+says (skips.py entries, the op plan's dispatch, deviation notes, fixes), never
+into a findings file; cite the run (pipeline id, system, version) at the code
+instead of committing its evidence.
 
-Full perf-data collection after a campaign is NOT an opharness component: use
-`tools/perf_database/collect_campaign.py` (build-image / run / status / finalize) as
-described in the `aic-auto-collect` skill — never a hand-written docker loop.
+Smoke, collection and before/after diffs are not opharness components: use
+`collect.py --smoke` / `--limit` / `--case-filter` through the collection pipeline
+(the `aic-auto-collect` skill) and `tools/perf_database/parquet_diff.py`.
 
 Captures run inside the framework image with the checkout mounted and
-`PYTHONPATH=<checkout>/python/aisimulate`; one script per gate under
-`components/captures/`. Probes and captures must not share a GPU.
+`PYTHONPATH=<checkout>/python/aisimulate`; a capture names one planned case
+(`run_planned`). Probes and captures must not share a GPU.
