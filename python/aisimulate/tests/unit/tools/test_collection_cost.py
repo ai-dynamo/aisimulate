@@ -225,6 +225,7 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
         ),
         "collector.op_plans": SimpleNamespace(plan=lambda *args, **kw: Plan([Case(32, 1048575)], [], [[32, 1048575]])),
         "tools.perf_database.collection_cost_inventory": SimpleNamespace(),
+        "tools.perf_database.collection_cost_observations": SimpleNamespace(loaded_cuda_runtimes=lambda: []),
         "collector.sglang.registry": SimpleNamespace(REGISTRY=[entry]),
         "native.module": SimpleNamespace(native=native),
         "collector.collect": SimpleNamespace(
@@ -300,3 +301,58 @@ def test_native_driver_uses_registry_arguments_and_retains_forward_latency(tmp_p
     assert restarted["calls"][0]["persisted_forward_rows"] == 1
     assert restarted["worker_recycle_reason"] == "normal_executor_restart"
     assert len(restarted["unattempted_rows"]) == 1
+
+
+def test_cache_observation_deduplicates_views_and_restores_constructor():
+    path = _TOOL.with_name("collection_cost_observations.py")
+    spec = importlib.util.spec_from_file_location("cost_observations", path)
+    observations = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(observations)
+
+    class Storage:
+        def data_ptr(self):
+            return 1234
+
+        def nbytes(self):
+            return 128
+
+    class Tensor:
+        shape = (4, 4)
+        dtype = "torch.bfloat16"
+        device = "cuda:0"
+
+        def untyped_storage(self):
+            return Storage()
+
+        def stride(self):
+            return (4, 1)
+
+        def numel(self):
+            return 16
+
+        def element_size(self):
+            return 2
+
+    first, alias = Tensor(), Tensor()
+    pool = SimpleNamespace(k_buffer=[first], v_buffer=[alias], size=4)
+    constructor = lambda: pool
+    module = SimpleNamespace(MHATokenToKVPool=constructor)
+    records = []
+    with observations.observe_native_caches(module, "sglang", records.append):
+        assert module.MHATokenToKVPool() is pool
+    assert module.MHATokenToKVPool is constructor
+    assert records[0]["unique_storage_bytes"] == 128
+    assert len(records[0]["tensors"]) == 2
+    assert records[0]["tensors"][0]["storage_id"] == records[0]["tensors"][1]["storage_id"]
+    assert records[0]["factory_attributes"]["size"] == 4
+
+    error = RuntimeError("native constructor failure")
+
+    def fails():
+        raise error
+
+    module.MHATokenToKVPool = fails
+    with pytest.raises(RuntimeError) as caught, observations.observe_native_caches(module, "sglang", records.append):
+        module.MHATokenToKVPool()
+    assert caught.value is error
+    assert module.MHATokenToKVPool is fails
