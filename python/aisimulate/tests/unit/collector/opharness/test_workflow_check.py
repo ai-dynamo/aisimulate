@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""workflow_check predicates are relative to the PLAN and the DECLARED gates
-(review 2026-09-25 P1/P2 #4): an empty matrix is not complete, one aligned
-file does not satisfy every declared gate, and an implemented component never
-completes a step by itself."""
+"""workflow_check's four checks are relative to the manifest pin, the recorded plan diff,
+the DECLARED gates and skips.py: one aligned file does not satisfy every declared gate,
+and a gate set that lost a registry op's family is not aligned."""
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -21,8 +19,7 @@ COMPONENTS = Path(__file__).resolve().parents[4] / "collector" / "opharness" / "
 
 @pytest.fixture()
 def wc(tmp_path, monkeypatch):
-    """A scratch harness dir (targets, results, captures) and a scratch workspace."""
-    os.environ["AIS_PROBE_WORKSPACE"] = str(tmp_path / "ws")
+    """A scratch harness dir (results, captures, workflows) beside a scratch collector dir."""
     spec = importlib.util.spec_from_file_location("workflow_check_t", COMPONENTS / "workflow_check.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["workflow_check_t"] = mod
@@ -31,47 +28,8 @@ def wc(tmp_path, monkeypatch):
     (harness / "components" / "captures").mkdir(parents=True)
     (harness / "results" / "sm90" / "pathdiff").mkdir(parents=True)
     (harness / "workflows").mkdir()
-    (harness / "targets.yaml").write_text(
-        yaml.safe_dump({"backends": {"vllm": {"versions": ["0.29.0"]}}, "families": {}, "topologies": []})
-    )
-    (tmp_path / "ws" / "archive").mkdir(parents=True)
     monkeypatch.setattr(mod, "HARNESS", harness)
-    monkeypatch.setattr(mod, "ROOT", tmp_path / "ws")
     return mod
-
-
-def _matrix(wc, cells):
-    p = wc.HARNESS / "results" / "sm90" / "vllm-0.29.0.yaml"
-    p.write_text(yaml.safe_dump({"_meta": {"version": "0.29.0"}, "results": cells}))
-
-
-def _plan(wc, repos, version="0.29.0"):
-    (wc.ROOT / "archive" / "plan.json").write_text(
-        json.dumps([{"id": f"i{n}", "repo": r, "backend": "vllm", "version": version} for n, r in enumerate(repos)])
-    )
-
-
-def test_review_empty_matrix_is_not_complete(wc):
-    _matrix(wc, {})
-    ok, reason = wc.pred_matrix_complete({"fw": "vllm", "version": "0.29.0"})
-    assert ok is False and "no plan runs" in reason
-    _plan(wc, ["org/a", "org/b"])
-    ok, reason = wc.pred_matrix_complete({"fw": "vllm", "version": "0.29.0"})
-    assert ok is False and "2 planned repos without a cell" in reason
-
-
-def test_matrix_complete_means_every_planned_repo_has_a_verdict(wc):
-    _plan(wc, ["org/a", "org/b"])
-    _matrix(wc, {"org/a": {"verdict": "pass"}, "org/b": {"verdict": "fail", "cause": "generator rejects"}})
-    assert wc.pred_matrix_complete({"fw": "vllm", "version": "0.29.0"})[0] is True
-    # a new planned repo reopens the step
-    _plan(wc, ["org/a", "org/b", "org/c"])
-    ok, reason = wc.pred_matrix_complete({"fw": "vllm", "version": "0.29.0"})
-    assert ok is False and "org/c" in reason
-    # stale evidence is not completion either
-    _plan(wc, ["org/a"])
-    _matrix(wc, {"org/a": {"verdict": "fail", "cause": "stale evidence"}})
-    assert "stale" in wc.pred_matrix_complete({"fw": "vllm", "version": "0.29.0"})[1]
 
 
 def _gates_script(wc, gates):
@@ -88,67 +46,81 @@ def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0"):
     (d / f"{gate}.json").write_text(json.dumps({"verdict": verdict, "framework": fw, "version": version}))
 
 
-def test_review_one_identity_free_verdict_does_not_satisfy_the_declared_gates(wc):
+def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0", repo="org/m"):
+    d = wc.HARNESS / "results" / "pathdiff" / "sm90" / "vllm-0.29.0"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{gate}.json").write_text(json.dumps({"verdict": verdict, "framework": fw, "version": version, "repo": repo}))
+
+
+P = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
+
+
+def test_one_identity_free_verdict_does_not_satisfy_the_declared_gates(wc):
     _gates_script(wc, ["gemm_fp8_M", "attn_ctx_M"])
     _verdict(wc, "gemm_fp8_M")
-    ok, reason = wc.pred_path_verdicts_aligned({"fw": "vllm", "version": "0.29.0"})
+    ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "1/2 declared gates without a verdict" in reason
     # a verdict graded for another framework/version does not count
     _verdict(wc, "attn_ctx_M", fw="sglang", version="0.5.16")
-    ok, reason = wc.pred_path_verdicts_aligned({"fw": "vllm", "version": "0.29.0"})
+    ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "another framework/version" in reason
     _verdict(wc, "attn_ctx_M", verdict="diverged")
-    ok, reason = wc.pred_path_verdicts_aligned({"fw": "vllm", "version": "0.29.0"})
+    ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "attn_ctx_M=diverged" in reason
     _verdict(wc, "attn_ctx_M")
-    assert wc.pred_path_verdicts_aligned({"fw": "vllm", "version": "0.29.0"}) == (True, "2 declared gates, all aligned")
+    assert wc.pred_gates_aligned(P) == (True, "2 gates in scope, all aligned")
     assert wc.declared_gates("vllm", "0.29.0") == {"gemm_fp8_M", "attn_ctx_M"}  # commented lines are not gates
 
 
 def test_no_declared_gates_is_not_aligned(wc):
-    ok, reason = wc.pred_path_verdicts_aligned({"fw": "vllm", "version": "0.29.0"})
+    ok, reason = wc.pred_gates_aligned(P)
     assert ok is False and "no gates declared" in reason
 
 
-def test_review_implemented_component_never_completes_a_step(wc):
-    ok, reason = wc.pred_component_pending({"component": "path_diff"})
-    assert ok is False and "no completion predicate" in reason
-    ok, reason = wc.pred_component_pending({"component": "sanity"})
-    assert ok is False and "not implemented" in reason
+def test_repo_and_family_narrow_the_gates_in_scope(wc):
+    """onboard_model passes repo=, new_op_collector passes family=: the same check, scoped."""
+    _gates_script(wc, ["gemm_fp8_M", "attn_ctx_M"])
+    _verdict(wc, "gemm_fp8_M", repo="org/new")
+    assert wc.pred_gates_aligned({**P, "family": "gemm"}) == (True, "1 gates in scope, all aligned")
+    assert wc.pred_gates_aligned({**P, "family": "moe"})[0] is False
+    assert wc.pred_gates_aligned({**P, "repo": "org/new"}) == (True, "1 gates in scope, all aligned")
+    ok, reason = wc.pred_gates_aligned({**P, "repo": "org/other"})
+    assert ok is False and "no gate verdict names org/other" in reason
+
+
+def test_pin_is_reads_the_manifest_default_or_a_family_pin(wc):
+    manifest = yaml.safe_load((wc.COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"]["vllm"]
+    default = str(manifest["default"]["version"])
+    assert wc.pred_pin_is({"fw": "vllm", "version": default})[0] is True
+    for family in (manifest.get("families") or {}).values():
+        assert wc.pred_pin_is({"fw": "vllm", "version": str(family["version"])})[0] is True
+    ok, reason = wc.pred_pin_is({"fw": "vllm", "version": "0.0.1"})
+    assert ok is False and "want 0.0.1" in reason
+
+
+def test_evaluate_names_the_first_todo_and_flags_unknown_checks(wc):
     (wc.HARNESS / "workflows" / "w.yaml").write_text(
         yaml.safe_dump(
             {
                 "workflow": "w",
                 "steps": [
-                    {
-                        "id": "a",
-                        "actor": "script",
-                        "done_when": {"check": "component_pending", "args": {"component": "path_diff"}},
-                    },
-                    {
-                        "id": "b",
-                        "actor": "script",
-                        "done_when": {"check": "component_pending", "args": {"component": "sanity"}},
-                    },
+                    {"id": "pin", "done_when": {"check": "pin_is"}},
+                    {"id": "odd", "done_when": {"check": "no_such_check"}},
                 ],
             }
         )
     )
-    state = wc.evaluate("w", {})
-    assert [(s["id"], s["status"]) for s in state["steps"]] == [("a", "todo"), ("b", "blocked")]
-    assert state["all_done"] is False
-
-
-def test_review_nonexistent_family_shows_nothing_done(wc):
-    for pred in ("family_observed", "family_unit_defined", "family_collector_exists", "family_gates_aligned"):
-        ok, _ = wc.PREDICATES[pred]({"family": "nonexistent-review-op", "sm": "sm90"})
-        assert ok is False, pred
+    manifest = yaml.safe_load((wc.COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"]["vllm"]
+    state = wc.evaluate("w", {"fw": "vllm", "version": str(manifest["default"]["version"]), "sm": "sm90"})
+    assert [(s["id"], s["status"]) for s in state["steps"]] == [("pin", "done"), ("odd", "todo")]
+    assert state["first_todo"] == "odd" and state["all_done"] is False
+    assert "unknown check" in state["steps"][1]["reason"]
 
 
 def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_path):
     """Review 2026-09-29: the 0.30 gate rebuild kept 19 of 32 gates and
-    path_verdicts_aligned reported 19/19. gates_cover_registry_ops requires a
-    declared gate family for every registry op (or a recorded gate-free reason)."""
+    the path check reported 19/19. gates_aligned without a repo/family filter requires
+    a declared gate family for every registry op (or a recorded gate-free reason)."""
     (wc.HARNESS.parent / "vllm").mkdir(parents=True)
     (wc.HARNESS.parent / "vllm" / "registry.py").write_text(
         'REGISTRY = [OpEntry(op="gemm"), OpEntry(op="gdn"), '
@@ -160,16 +132,16 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_script(wc, tmp_pa
         "run gemm_bf16 gemm_bf16_Llama meta-llama/Llama auto ''\n"
         "run gdn_ctx gdn_ctx_Qwen Qwen/Q auto ''\n"
     )
-    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
     assert not ok and "gdn:^gdn_gen" in reason and "msa_context_module" in reason
     sh.write_text(
         sh.read_text() + "run gdn_gen gdn_gen_Qwen Qwen/Q auto ''\nrun msa_ctx msa_ctx_M3 MiniMaxAI/M3 auto ''\n"
     )
-    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
-    assert ok, reason
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
+    assert not ok and "without a verdict" in reason  # covered now; the verdicts are still missing
     # an op the table does not know is a finding, never silently gate-free
     (wc.HARNESS.parent / "vllm" / "registry.py").write_text('REGISTRY = [OpEntry(op="brand_new_op")]\n')
-    ok, reason = wc.pred_gates_cover_registry_ops({"fw": "vllm", "version": "0.30.0"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
     assert not ok and "brand_new_op" in reason
 
 
@@ -194,26 +166,6 @@ def test_platform_floor_gates_are_declared_coverage_but_not_expected_on_that_sm(
     assert wc.declared_gates("vllm", "0.30.0", "sm90") == wc.declared_gates("vllm", "0.30.0")
 
 
-def test_sm_defaults_to_the_targets_platform_and_ais_sm_overrides(wc, monkeypatch):
-    """RTX 5000 handoff §1.2 A: a hard-coded sm90 default let a forgotten export
-    read/label another SM's data silently. Source of truth is targets.platform.sm."""
-    monkeypatch.delenv("AIS_SM", raising=False)
-    assert wc.default_sm() == "sm90"  # fixture targets have no platform block
-    (wc.HARNESS / "targets.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "backends": {"vllm": {"versions": ["0.30.0"]}},
-                "families": {},
-                "topologies": [],
-                "platform": {"name": "rtx5000_sm120", "sm": 120, "system": "rtx_pro_6000_server"},
-            }
-        )
-    )
-    assert wc.default_sm() == "sm120"
-    monkeypatch.setenv("AIS_SM", "sm103")
-    assert wc.default_sm() == "sm103"
-
-
 def test_floor_sm_accepts_a_comma_list():
     """FLOOR_SM=sm120,sm89 declares one platform floor for both SMs; an SM not in the list still owns the gate."""
     import importlib.util
@@ -230,9 +182,6 @@ def test_floor_sm_accepts_a_comma_list():
     for sm in ("sm120", "sm89"):
         assert "mla_ctx_fp8_DeepSeek-R1" not in wfc.declared_gates("vllm", "0.30.0", sm)
     assert "mla_ctx_fp8_DeepSeek-R1" in wfc.declared_gates("vllm", "0.30.0", "sm90")
-
-
-# ── evidence-flow predicates (b200_sxm sglang 0.5.21 shard run, job 469988017) ───────────────
 
 
 def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_scope(wc):
@@ -281,16 +230,3 @@ def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):
     doc["_meta"]["dirty"] = True
     (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
     assert wc.pred_case_set_no_regression(p)[0] is False
-
-
-def test_new_fails_are_explained_where_the_collector_reads_conclusions(wc):
-    """No findings file: a newly failing repo is explained by a skips.py entry (the
-    backend cannot serve it), the collector source or a committed evidence README."""
-    p = {"fw": "vllm", "version": "0.29.0", "sm": "sm90"}
-    cause = {"verdict": "fail", "cause": "boot: unsupported architecture"}
-    _matrix(wc, {"RadixArk/Qwen3.8-2.4T-A95B-NVFP4": cause})
-    ok, reason = wc.pred_fails_root_caused(p)
-    assert ok is True and "1 new fails explained" in reason
-    _matrix(wc, {"RadixArk/Qwen3.8-2.4T-A95B-NVFP4": cause, "example-org/never-explained-model": cause})
-    ok, reason = wc.pred_fails_root_caused(p)
-    assert ok is False and "never-explained-model" in reason

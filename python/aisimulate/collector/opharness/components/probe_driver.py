@@ -1439,152 +1439,6 @@ def build_records() -> None:
 # can it boot, under what command, and what identity the framework actually
 # deployed. Machine facts stay in archive/records.jsonl (per-run evidence);
 # this is their consolidation.
-def _fail_cause(note: str) -> str:
-    rules = [
-        ("not a valid Hugg", "generator rejects"),
-        # a hardware/model FACT the generator rendered is not a value this framework
-        # pin accepts (B200 2026-10-04: hardware.yaml b200 `moe_backend: trtllm: WIDEEP`
-        # -> rc29 pydantic literal_error; `sglang: deepep_moe` -> 0.5.21 argparse
-        # invalid choice). Not a framework or model gap: the rendered config is wrong.
-        # The generator stopped filling WIDEEP from rc25 on 2026-10-31; the rule stays
-        # for older records and any other rejected fact.
-        ("literal_error|invalid choice:|Input should be '", "generator fact rejected by framework"),
-        # the generator's platform-blind MoE backend default (trtllm typed builder:
-        # moe_config.backend CUTLASS when no fact fills it) names a kernel the framework
-        # refuses on this SM (B200 2026-10-04: CutlassFusedMoE FP8_BLOCK_SCALES only
-        # supports SM90/SM120 -> every fp8-block MoE checkpoint). AUTO boots them; the
-        # rc29 template renders AUTO when unset since 2026-10-31.
-        # Scoped to Blackwell (got SM1xx): on SM89 the same message means no candidate
-        # at all serves the quant — the platform-floor rule further down.
-        (
-            r"(?s)(no MoE implementation can serve this layer|CutlassFusedMoE: sm_unsupported).*got SM1[0-9][0-9]",
-            "rendered MoE backend cannot serve this layer on this SM",
-        ),
-        # generator DSV4 trtllm facts (kv_cache_config.dtype fp8_ds_mla, tokens_per_block 128)
-        # are a Hopper recipe: rc29 on SM100 first demands page 256, then has no FMHA
-        # library for fp8_ds_mla sparse generation; kv auto (bf16) + page 256 serves.
-        ("fp8_ds_mla KV cache requires tokens_per_block", "generator DSV4 kv facts unservable on this SM"),
-        (
-            "OutOfMemoryError|CUDA out of memory|insufficient GPU memory",
-            "capacity (no faithful cut fits one probe GPU)",
-        ),
-        (
-            "Cannot find model module|not a registered|not supported for now|Unknown architecture|pydantic.*value_",
-            "arch not registered",
-        ),
-        ("NotImplementedError", "tied-embedding quant gap"),
-        ("Only gated SiLU", "NVFP4 x gelu-MoE: no kernel path"),
-        (
-            "pre-blackwell|Arch unsupported|use Blackwell|TllmGenFmhaRunner|Minimum ca|COMPRESS pool|"
-            "No supported MoE GEMM tactic|mxfp8 is not supported|NVFP4 quantization with the selected",
-            "platform floor (needs Blackwell)",
-        ),
-        # sm120 (consumer Blackwell, 101376 B opt-in smem/block): vllm 0.30 TRITON_MLA
-        # fp8-KV decode asks for 102400 B -> every MLA checkpoint that resolves fp8 KV
-        # (probe --kv-cache-dtype fp8, or NVFP4 artifacts whose hf_quant pins fp8 KV)
-        # dies at CUDA-graph capture; sparse-MLA sm120 decode has an enumerated shape table
-        # Ada (sm89) has the same 101376 B opt-in smem/block (L40 probe 2026-10-04: identical
-        # Required 102400 / Hardware limit 101376 on the NVFP4 MLA cells), so the label names both.
-        ("out of resource: shared memory", "platform limit (sm89/sm120 smem 101376 B: TRITON_MLA fp8-KV decode)"),
-        ("SM120 sparse-MLA has no decode kernel", "platform gap (sm120 sparse-MLA decode shape table)"),
-        # DSV4 hyperconnection kernels are DeepGEMM SM90 / SM10x only (L40 vllm 0.30.0 probe: 11
-        # DeepSeek-V4 cells, `hyperconnection.hpp:56 Unsupported architecture` at model init)
-        ("deepgemm.*Unsupported architecture", "platform floor (DeepGEMM needs SM90+)"),
-        # sparse-attention / FP4 kernels with no Ada build (L40 sglang 0.5.21 + vllm probes)
-        (
-            "Sparse Attention Forward Kernel is only supported on|Unsupported architecture for sparse decode|"
-            "requires Blackwell|"
-            "requires Hopper or newer|Invalid backend: \\d+",
-            "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4, DeepSeek-V4)",
-        ),
-        # the framework image, not the SM: rc29's transformers / python env lacks what the checkpoint or model needs
-        (
-            "update Transformers with the command|No module named '(fla|flash_linear_attention)'",
-            "image gap (framework image lacks the transformers version / module this model needs)",
-        ),
-        (
-            "reduce max_num_tokens|shard the model weights across GPUs",
-            "capacity (weights + engine buffers exceed one GPU)",
-        ),
-        (
-            "leave no GPU memory for the KV cache|exceeds available Mamba cache blocks",
-            "capacity (weights + state leave no KV room on this GPU)",
-        ),
-        # sglang's tp memory-balance check: another probe occupies a GPU of the group (the queue
-        # puts tp>1 cells in ONE GPU's queue without reserving the group) — not a framework fact
-        ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
-        # trtllm 1.3.0rc29 MoE resolution turned every candidate down for SM (L40: CutlassFusedMoE FP8_BLOCK_SCALES
-        # SM90/SM120 only, TritonFusedMoE SM90 only, Marlin implements nvfp4/w4a16_nvfp4 only): a platform floor of the
-        # framework, not a generator or model fact — except NVFP4, which MARLIN serves (targets.yaml sm89 customization)
-        (
-            "no MoE implementation can serve this layer",
-            "platform floor (trtllm MoE: no implementation for this quant on this SM)",
-        ),
-        ("requires an fp8 prefill query", "config gap (needs --attention-config use_prefill_query_quantization)"),
-        # single-kind dummy cuts forced by capacity (72GB box): a cut with no attention
-        # layer, or one that stripped every quantized layer, is a dummy artifact
-        (
-            "no attention-ish module classes|MIXED_PRECISION quant_algo requires a non-empty",
-            "capacity (single-kind cut is not a faithful identity probe)",
-        ),
-        ("Mismatched Tensor", "flake (flashinfer; env workaround exists)"),
-        ("sparse forward|KVCacheManagerV2", "rc23 M3-sparse not wired"),
-        # sparse (DSA) MLA has no backend below SM90 whatever the kv dtype: every GLM-5.x /
-        # DeepSeek-V3.2 cell on L40 failed here with kv auto AND fp8, and the catch-all below
-        # filed all 14 as "ckpt-forced fp8-KV" (a config cause that no flag can fix)
-        (
-            "No valid attention backend found.*use_sparse=True",
-            "platform gap (no sparse-MLA attention backend on this SM)",
-        ),
-        ("frame #|No valid attention backend", "ckpt-forced fp8-KV"),
-        ("NoneType|QuantAlgo", "quant parser gap"),
-    ]
-    for pat, tag in rules:
-        if re.search(pat, note):
-            return tag
-    return "framework gap"
-
-
-# Deciding line is not always the LAST one (sglang wraps the cause in a "Capture cuda graph failed" /
-# kill_process_tree epilogue): a second pass over the whole traceback, ONLY for causes the last-line rules
-# left as "framework gap", and only with patterns specific enough not to fire on incidental earlier lines.
-_DEEP_RULES = [
-    ("memory capacity is unbalanced", "harness: busy GPU in the tp group (rerun alone)"),
-    # sglang's launch route ends on a kill_process_tree epilogue; the OOM that killed the worker is earlier in the log
-    ("torch.OutOfMemoryError: CUDA out of memory", "capacity (no faithful cut fits one probe GPU)"),
-    # a JIT-compiled kernel whose ptx needs a newer target than the card (flashinfer cute-DSL RMSNormFP4Quant, rc29 L40)
-    ("requires \\.target sm_\\d+ or higher", "platform floor (JIT kernel needs a newer SM target)"),
-    # trtllm native aborts (no Python traceback, so only the console tail is known): attentionOp asserts
-    (
-        "Head size \\d+ is not supported by MMHA",
-        "platform floor (trtllm MMHA has no kernel for this head size on this SM)",
-    ),
-    ("Deepseek should be supported by fmha", "platform floor (trtllm MLA has no FMHA kernel on this SM)"),
-    (
-        "Unsupported architecture for sparse decode|Sparse Attention Forward Kernel is only supported on",
-        "platform floor (SM90+/Blackwell-only kernel: sparse attention, MXFP, FP4)",
-    ),
-    # DSV4 sparse decode: DeepGEMM attention.hpp asserts arch_major in {9, 10, 12} (L40 sglang 0.5.21)
-    ("deepgemm/csrc/apis/[a-z_]+\\.hpp:\\d+\\): .*arch_major", "platform floor (DeepGEMM needs SM90+)"),
-    # flashinfer 0.6.18's cutlass fused-MoE JIT does not compile for sm_89: tensorrt_llm::kernels::
-    # cutlass_kernels has no Fp4Type there (nemotron_h bf16/fp8 MoE on sglang 0.5.21, L40) — a framework
-    # JIT defect, not a model or config fact
-    (
-        'cutlass_kernels" has no member "Fp4Type"|has no member .Fp4Type',
-        "framework defect (flashinfer cutlass fused-MoE JIT fails to build for sm89: Fp4Type)",
-    ),
-]
-
-
-def _fail_cause_full(last_line: str, traceback_text: str) -> str:
-    cause = _fail_cause(last_line)
-    if cause == "framework gap":
-        for pat, tag in _DEEP_RULES:
-            if re.search(pat, traceback_text):
-                return tag
-    return cause
-
-
 def build_matrix(targets: dict) -> None:
     # resolve each backend's plan by the PINNED version (hardcoded names went
     # stale on the first version bump): pick the plan file whose runs carry
@@ -1704,13 +1558,8 @@ def build_matrix(targets: dict) -> None:
                         ),
                         lines[-1] if lines else "",
                     )
-                    cause = _fail_cause_full(deciding, txt)
                     if deciding:
-                        cell = {
-                            "verdict": "fail",
-                            "cause": cause if cause != "framework gap" else "no raw (crashed before dump)",
-                            "error": deciding[:200],
-                        }
+                        cell = {"verdict": "fail", "cause": "no raw (crashed before dump)", "error": deciding[:200]}
             elif evidence_status(run, _sidecar(run["id"]), json.loads(raw.read_text())) == "stale":
                 cell = {
                     "verdict": "fail",
@@ -1721,11 +1570,8 @@ def build_matrix(targets: dict) -> None:
                 f = json.loads(raw.read_text())
                 err = f.get("errors") or {}
                 if err:
-                    tb = next(iter(err.values())).strip()
-                    full = tb.splitlines()[-1]
-                    # classified on the FULL line: selector errors carry the deciding flag (use_sparse) late
-                    note = full[:200]
-                    cell = {"verdict": "fail", "cause": _fail_cause_full(full, tb), "error": note}
+                    # the observation is the error itself (V4 failure doctrine: observe, don't classify)
+                    cell = {"verdict": "fail", "error": next(iter(err.values())).strip().splitlines()[-1][:200]}
                 else:
                     ca = custom.get((repo, be))
                     cell = {"verdict": "pass+custom" if ca else "pass"}
