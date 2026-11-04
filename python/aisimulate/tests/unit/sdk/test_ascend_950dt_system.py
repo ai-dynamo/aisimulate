@@ -102,9 +102,11 @@ class TestAscend950dtRegistration:
         ordered = common.sort_support_matrix_systems(["a100_sxm", SYSTEM, "b60", "b200_sxm"])
         assert ordered == ["b200_sxm", "a100_sxm", "b60", SYSTEM]
 
-    def test_registration_ships_no_perf_data_yet(self) -> None:
-        """System registration only: on-device collection adds the databases."""
-        assert SYSTEM not in get_supported_databases()
+    def test_registration_now_carries_the_gemm_database(self) -> None:
+        """Registration initially shipped no databases; the first gemm table
+        for this system is staged synthetic data, and its consumption is
+        pinned by ``test_ascend_950dt_gemm_consumption.py``."""
+        assert "0.30.0rc2" in get_supported_databases()[SYSTEM]["vllm"]
 
 
 class TestExistingSystemsUnaffected:

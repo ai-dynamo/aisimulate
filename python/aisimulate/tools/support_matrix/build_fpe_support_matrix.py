@@ -36,6 +36,10 @@ SYSTEM_ORDER = (
     "l40s",
     "a100_sxm",
     "b60",
+    # Non-CUDA systems sort after the NVIDIA fleet, in the order
+    # sdk/common.py's support-matrix order uses. Unknown systems are appended
+    # sorted below, so this only fixes the position.
+    "ascend_950dt",
 )
 WEB_FIELDNAMES = (
     "HuggingFaceID",
