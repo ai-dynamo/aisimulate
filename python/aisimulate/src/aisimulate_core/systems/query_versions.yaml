@@ -34,6 +34,24 @@ defaults:
   sglang: {current: "0.5.21", previous: "0.5.14"}         # 0.5.20 (GLM-5.3-Flash ops drop #538) is older than current -> next = current
   vllm: {current: "0.30.0", previous: "0.24.0"}           # next derives to 0.31.0 (GLM-5.3-Flash ops drop #538: 5 systems, 6 families; everything else backward-fills from 0.30.0)
 overrides:
+  ascend_950dt:
+    # The vllm_npu lane's version axis is the vllm-ascend release, so the
+    # fleet defaults (current: 0.30.0, previous: 0.24.0 — base-vLLM versions
+    # this system holds no data for) and the fleet-derived `next` (currently
+    # 0.31.0 from the NVIDIA GLM-5.3-Flash drop) cannot apply: without an
+    # override the slot resolver advertises 0.30.0 / 0.24.0 / 0.31.0 on
+    # ascend_950dt and every enumerated-slot consumer fails to load them.
+    # 0.30.0rc2 currently holds M4 *synthetic staging* gemm rows
+    # (data/ascend_950dt/gemm/vllm/README.md); M5 replaces the rows in place,
+    # so this pin stays correct across that change.
+    #
+    # DO NOT REMOVE AFTER M5. The pin is load-bearing in both directions:
+    # override systems expose no `next` (keeping the fleet-derived 0.31.0 out
+    # of ascend_950dt's slots) and are excluded from the fleet `next`
+    # derivation (keeping future vllm-ascend release strings that sort above
+    # fleet current out of the derived `next` vLLM slot of every NVIDIA
+    # system). Pinned by tests/unit/sdk/test_ascend_950dt_gemm_consumption.py.
+    vllm: {current: "0.30.0rc2", previous: null}
   a100_sxm:
     trtllm: {current: "1.0.0", previous: null}
     sglang: {current: "0.5.10", previous: null}
