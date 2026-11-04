@@ -31,7 +31,7 @@ serving recipe is covered. Unsupported model architectures remain explicit gaps.
 ### Per-model declaration evidence
 
 The companion [model evidence](model-declaration-evidence.json) records exact
-profile/config hashes at candidate `c4b44d81f526b3c5299f7c15ccafe02d90b39229`,
+profile/config hashes at candidate `4eaef24ff72a4dce5d4acf2976b746a65de3ca19`,
 effective TP/DP/precision/backend values with source-log URLs/page hashes,
 profiling/warmup extrema, and the complete declared point lists. Framework
 recipes are source evidence; they are not assumed identical to the separately
@@ -42,7 +42,7 @@ heads; global TP/DP flags cannot be substituted for effective attention TP.
 |---|---|---|---|
 | Qwen3.5-397B | `Qwen3_5MoeForConditionalGeneration` profile and exact Qwen config; 32 query / 2 KV heads, d256 before effective TP | Native Qwen recipes linked in the companion; maximum same-request history 256,582, including both phases | Model dense geometry through 262K; preserve #666's 95-point B/length calibration frontier. Points are interpolation/calibration choices, not observed per-rank forwards. |
 | GLM5.2/5.3 | `GlmMoeDsaForCausalLM` profile and both exact configs; separate full/reused-indexer identity | Effective DSA recipes linked in the companion; maximum history 959,120 | Intermediate 786,432/917,504 history, bounded near-1M batches and B52 × 22-length calibration frontier. Configuration-derived history span; selected joint points are calibration choices. |
-| Kimi-K3 | `KimiK3ForConditionalGeneration` profile and exact Kimi config; MLA local heads from actual TP shards, separate KDA widths | Audited active AgentX lane is vLLM; maximum history 950,779 occurs during warmup | Planned MLA 512K/1M cases remain **unqualified** pending verification that the native factory honors Kimi's `mla_use_nope` semantics. Hold their native pilots; a Kimi model label does not establish the correct kernel. SGLang standalone-tail and dense 1M fallback gaps also remain. |
+| Kimi-K3 | `KimiK3ForConditionalGeneration` profile and exact Kimi config; MLA local heads from actual TP shards, separate KDA widths | Audited active AgentX lane is vLLM; maximum history 950,779 occurs during warmup | New optional MLA points are **withdrawn and deferred**: the generic DeepSeek factory cannot qualify Kimi NoPE/cache/output-gate semantics. This is an uncovered native-adapter gap, not zero-cost completed coverage. Existing #676 coverage and independent KDA widths remain. SGLang standalone-tail and dense 1M fallback gaps also remain. |
 | MiniMax-M3.1 | `MiniMaxM3ForCausalLM` profile and bundled M3 geometry, with exact config digest | Effective MSA recipes linked in the companion; maximum history 959,333 | Intermediate history/q32K and legal decode frontier. Core geometry is source-matched; exact M3.1 checkpoint precision policy remains conditional. |
 
 These smaller populations target the selected audited recipes; they do not
@@ -72,8 +72,10 @@ Freeze the #676 base at `69232f77ce94de85e8ca7c40da8c2e484a6bdff4`:
 B must be exported from a checkout whose **collector tree** equals the pinned
 #676 revision; the exporter rejects a changed tree. Export S and M from the
 same final candidate so retained non-history MoE/KDA changes are included in
-both. The initial B/S-only snapshots in `inventory-summary.json` predate that
-integration and are explicitly preliminary. NCCL is not an `OP_PLANS` operation;
+both. The final `inventory-summary.json` records all 24 system/framework lanes,
+B/S/M source commits, collector-tree and tool hashes, task and normalized
+inner-cell counts, exact additions/removals, and executor eligibility. B is
+pinned676; S/M use final4ea geometry. Runtime validity remains separate. NCCL is not an `OP_PLANS` operation;
 count its added sizes separately using its native driver and do not omit its
 cost from the series total.
 
@@ -153,9 +155,9 @@ candidate anchors and do not establish fleet totals.
 
 ## Budget, estimates and acceptance
 
-The approved 12 collection GPU-hours are partitioned into 8 anchor, 2 correctness
-and 2 validation GPU-hours. This audit owns 10: **1 anchor GPU-hour and 0.25
-validation GPU-hour per system**. The correctness campaign owns the other 2.
+The approved 12 collection GPU-hours are partitioned into 8 anchor, 1 correctness
+and 3 validation GPU-hours after the coordinator transferred unused correctness quota. Each system has 1 anchor plus 0.375 validation GPU-hours; the correctness agent has a separate 1 GPU-hour cap. This audit owns 11: **1 anchor GPU-hour and 0.375 validation
+GPU-hour per system**. The correctness campaign owns the remaining 1.
 Unused quotas require coordinator reassignment before transfer. A file lock
 protects one ledger, not independent cluster filesystems: each system receives
 its fixed quota and must keep one ledger for every local job using that quota.
@@ -271,3 +273,10 @@ registry response digest both equal `b1259f3ea3275f66237c498ea388919729018bc9f01
 records the AMD64 `2dbe4c7f…` and ARM64 `1f176b3a…` child mappings.
 This proves image-index membership; actual imported squashfs hashes remain
 separate run receipts. No registry credentials are retained.
+
+Grace-system scheduler policy requires four reserved GPUs. The audit executes
+three concurrent framework workers using exclusive one-GPU steps, records
+`SLURM_STEP_GPUS`, `CUDA_VISIBLE_DEVICES` and the actual GPU UUID, and locks
+that UUID while a worker runs. The fourth reserved GPU is idle and excluded.
+These workers share a Grace host and request eight CPUs each (32 CPUs for the
+allocation); their timings are not isolated-host CPU bandwidth measurements.
