@@ -1,0 +1,3 @@
+{
+  "gpu_after": "name, uuid, memory.total [MiB], memory.used [MiB], temperature.gpu, pstate, clocks.current.sm [MHz], clocks.current.memory [MHz], power.limit [W]\nNVIDIA H100 NVL, GPU-70bff730-c00c-c620-2b33-ac346d3103fe, 95830 MiB, 975 MiB, 39, P0, 1785 MHz, 2619 MHz, 400.00 W"
+}

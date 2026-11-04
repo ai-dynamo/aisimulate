@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/run.py",
+    "--output",
+    "benchmarks/evidence/vllm-fp8-block-rotation-pr613-20261027/direct"
+  ],
+  "cwd": "/kyukon/scratch/gent/vo/000/gvo00024/vsc40013/aisimulate",
+  "python": "/tmp/aisimulate-forward-ab/venv/bin/python",
+  "runner_sha256": "4ead3a081bca704d0ed121bb2355687dfa3ac9838f4c6fdcc355ef31bec8b836",
+  "gpu_before": "name, uuid, memory.total [MiB], memory.used [MiB], temperature.gpu, pstate, clocks.current.sm [MHz], clocks.current.memory [MHz], power.limit [W]\nNVIDIA H100 NVL, GPU-70bff730-c00c-c620-2b33-ac346d3103fe, 95830 MiB, 0 MiB, 35, P0, 345 MHz, 2619 MHz, 400.00 W"
+}

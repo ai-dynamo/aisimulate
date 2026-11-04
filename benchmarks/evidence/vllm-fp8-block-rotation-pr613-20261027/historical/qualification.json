@@ -1,0 +1,15 @@
+{
+  "verified_utc": "2026-10-27T16:32:49.948326+00:00",
+  "formal_model_points": 6,
+  "op_cases": 201,
+  "raw_trace_count": 207,
+  "freeze_hashes_match": true,
+  "analysis_hash_matches": true,
+  "op_trace_hashes_match": true,
+  "model_output_parity": "exact",
+  "matched_kernel_name_grid_block": "all 8 shapes across 3 starts, enforced by analysis",
+  "qk_norm_source_sequence": "two norm kernels between every QKV/output pair; 180 pairs per trace",
+  "all_processes_exit_zero": true,
+  "gpu_cleanup": "nvidia-smi reported no compute processes after campaign",
+  "production_changes": false
+}
