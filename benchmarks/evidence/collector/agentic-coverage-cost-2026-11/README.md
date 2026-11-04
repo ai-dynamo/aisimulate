@@ -415,3 +415,17 @@ whiteout failures blocked fresh imports. CPU job5599744 verified all four
 SHA256 values before publishing them. Transfer, CPU validation and allocation
 wait are excluded from collection GPU-hours; native runtime identity is still
 checked inside each benchmark worker.
+
+Group forecast validation uses independent controlled repeats: two native
+training groups predict a third with the same physical member manifest,
+verified runtime, rank count and warmed-cache protocol. The 15% gate is
+separate from phase accounting. Summing observed point clocks and their residual
+setup checks conservation only. Repeated pairs cover each physical addition
+once; they are not three copies of campaign work. Cold or unproven-cache pairs
+remain evidence but cannot qualify a warm marginal setup forecast.
+
+The [GLM B52 warm-preparation component](warm-history-preparation-fit.md)
+provides a reproducible affine-history fit with 17 training and four held-out
+points per indexer mode. Maximum held-out errors are 9.54% and 8.45%.
+First-use measurements remain separate. This component does not transfer
+NVFP4 setup/capacity to BF16 or establish a whole-group/fleet GPU-hour total.
