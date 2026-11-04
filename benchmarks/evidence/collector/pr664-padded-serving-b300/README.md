@@ -46,3 +46,22 @@ config. Remote result root:
 This validates native load-batch buffer preparation and sampled module graph
 execution. It does **not** establish full-model serving replay, TP8 E2E
 accuracy, or numerical attention correctness.
+
+## Published artifact representation
+
+`executed-artifacts.zip` preserves the original text outputs and executed
+harness/script bytes. Readable copies normalize line endings/trailing whitespace;
+the two script copies add SPDX headers only. Measurement values and executable
+statements are unchanged. `artifact-hashes.json` records original and published
+hashes; the original harness hash remains in `input-sha256.txt`.
+
+## GLM attention geometry source
+
+Pinned SGLang source `e00930c5489053f26d86b179cee0d087f846acbb`,
+`python/sglang/srt/models/deepseek_v2.py`, `DeepseekV2DecoderLayer` at lines
+2552–2562 passes explicit `qk_nope_head_dim`, `qk_rope_head_dim`, `v_head_dim`,
+`q_lora_rank` and `kv_lora_rank` into `DeepseekV2AttentionMLA`. Its constructor
+at lines 1993–1998 stores those dimensions. Generic `head_dim` is not the
+attention-dimension selector on this path. This source evidence supports the
+model-profile equivalence check; unrelated quantization configurations are not
+assumed equivalent.
