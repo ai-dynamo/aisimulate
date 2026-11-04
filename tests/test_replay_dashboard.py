@@ -302,6 +302,17 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_writer_embeds_utf8_assets_under_non_utf8_locale(tmp_path, capture, monkeypatch):
+    original = Path.read_text
+
+    def locale_read(path, encoding=None, errors=None):
+        return original(path, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", locale_read)
+    path = write_replay_dashboard(tmp_path, {}, capture)
+    assert "aisimulate.replay.dashboard.v1" in path.read_text(encoding="utf-8")
+
+
 def test_writer_streams_requests_in_chunks(tmp_path, capture, monkeypatch):
     row = capture["requests"][0]
     capture["requests"] = [

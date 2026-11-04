@@ -24,6 +24,14 @@ on:
         required: false
         default: estimated
         type: string
+      agentx_campaign_catalog:
+        required: false
+        default: ''
+        type: string
+      agentx_revision:
+        required: false
+        default: ''
+        type: string
       preview:
         required: false
         default: false
@@ -377,5 +385,150 @@ jobs:
           overwrite: true
           # A single directory lets the container hook remap the entire path.
           path: ${{ runner.temp }}/accuracy-public/
+          if-no-files-found: error
+          retention-days: 90
+
+  agentx:
+    name: Evaluate AgentX shard ${{ matrix.shard }} (${{ inputs.artifact_key }})
+    needs: wheel
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1]
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 360
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      RAYON_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install the CPU campaign environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgomp1
+          python -m venv "${RUNNER_TEMP}/agentx-venv"
+          echo "${RUNNER_TEMP}/agentx-venv/bin" >> "${GITHUB_PATH}"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-wheel-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/agentx-wheel
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: e2e-accuracy-dataset
+          path: ${{ runner.temp }}/agentx-dataset
+      - name: Install the exact evaluated wheel
+        env:
+          WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
+        run: |
+          echo "${WHEEL_SHA256}  $(echo "${RUNNER_TEMP}"/agentx-wheel/*.whl)" | sha256sum --check --strict
+          python -m pip install "${RUNNER_TEMP}"/agentx-wheel/*.whl
+          python -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+      - name: Fetch frozen AgentX inputs and replay one point at a time
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+          HF_HOME: ${{ runner.temp }}/agentx-hf
+          EXPECTED_SHA: ${{ inputs.sha }}
+          EVALUATED_BRANCH: ${{ inputs.branch }}
+          WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
+          PREVIEW: ${{ inputs.preview }}
+          SHARD_INDEX: ${{ matrix.shard }}
+          AGENTX_REVISION: ${{ inputs.agentx_revision }}
+          AGENTX_CAMPAIGN_CATALOG: ${{ inputs.agentx_campaign_catalog }}
+        run: |
+          revision=$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/agentx-dataset/e2e-accuracy-dataset.json"))["revision"])')
+          revision="${AGENTX_REVISION:-$revision}"
+          fetch_args=()
+          if [[ "$PREVIEW" == true ]]; then fetch_args+=(--preview); fi
+          if [[ -n "$AGENTX_CAMPAIGN_CATALOG" ]]; then fetch_args+=(--campaign-catalog "$AGENTX_CAMPAIGN_CATALOG"); fi
+          python scripts/e2e_accuracy/run_agentx_accuracy.py fetch --revision "$revision" --output "${RUNNER_TEMP}/agentx-inputs" "${fetch_args[@]}"
+          preview_args=()
+          if [[ "$PREVIEW" == true ]]; then preview_args+=(--preview); fi
+          python scripts/e2e_accuracy/run_agentx_accuracy.py run \
+            --inputs "${RUNNER_TEMP}/agentx-inputs" --output "${RUNNER_TEMP}/agentx-results" \
+            --revision "$revision" --commit "$EXPECTED_SHA" --branch "$EVALUATED_BRANCH" \
+            --wheel "${RUNNER_TEMP}"/agentx-wheel/*.whl --wheel-sha256 "$WHEEL_SHA256" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --shard-index "$SHARD_INDEX" --shard-count 2 "${preview_args[@]}"
+          cp "${RUNNER_TEMP}/agentx-inputs/catalog/e2e/agentx.json" "${RUNNER_TEMP}/agentx-results/catalog.json"
+      - name: Encrypt private AgentX results
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: |
+          if test -d "${RUNNER_TEMP}/agentx-results"; then
+            python scripts/e2e_accuracy/private_artifacts.py seal "${RUNNER_TEMP}/agentx-results" "${RUNNER_TEMP}/agentx-encrypted"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: agentx-private-${{ inputs.artifact_key }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/agentx-encrypted/
+          if-no-files-found: error
+          retention-days: 7
+
+  qualify-agentx:
+    name: Qualify AgentX accuracy (${{ inputs.artifact_key }})
+    needs: agentx
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 30
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install qualification tooling
+        run: |
+          python -m venv "${RUNNER_TEMP}/agentx-venv"
+          echo "${RUNNER_TEMP}/agentx-venv/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/agentx-venv/bin/python" -m pip install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: agentx-private-${{ inputs.artifact_key }}-*
+          path: ${{ runner.temp }}/agentx-encrypted
+          merge-multiple: true
+      - name: Verify complete cohort and export public numerical evidence
+        shell: bash
+        env:
+          PREVIEW: ${{ inputs.preview }}
+          AGENTX_CAMPAIGN_CATALOG: ${{ inputs.agentx_campaign_catalog }}
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+        run: |
+          python scripts/e2e_accuracy/private_artifacts.py open "${RUNNER_TEMP}/agentx-encrypted" "${RUNNER_TEMP}/agentx-results"
+          revision=$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/agentx-results/shard-0.json"))["snapshot"]["dataset_revision"])')
+          fetch_args=()
+          if [[ "$PREVIEW" == true ]]; then fetch_args+=(--preview); fi
+          if [[ -n "$AGENTX_CAMPAIGN_CATALOG" ]]; then fetch_args+=(--campaign-catalog "$AGENTX_CAMPAIGN_CATALOG"); fi
+          python scripts/e2e_accuracy/run_agentx_accuracy.py fetch --metadata-only \
+            --revision "$revision" --output "${RUNNER_TEMP}/agentx-inputs" "${fetch_args[@]}"
+          python scripts/e2e_accuracy/run_agentx_accuracy.py qualify \
+            --inputs "${RUNNER_TEMP}/agentx-inputs" --shards "${RUNNER_TEMP}/agentx-results" \
+            --shard-count 2 --output "${RUNNER_TEMP}/agentx-public"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.preview && 'e2e-agentx-preview' || 'e2e-agentx-web' }}-${{ inputs.artifact_key }}
+          path: ${{ runner.temp }}/agentx-public/
           if-no-files-found: error
           retention-days: 90
