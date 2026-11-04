@@ -1,0 +1,126 @@
+{
+  "generated_at_utc": "2026-11-04T07:12:05.980106+00:00",
+  "scope": "All new Agent C correctness/data GPU jobs for PR664/665 refactor campaign, including setup failures. Historical prior review runs excluded. Other contemporaneous cost-agent and unrelated GLM RSI jobs excluded.",
+  "accounting_kind": "conservative administrative upper bound; NOT collection-cost estimate",
+  "boundary": "Top-level scheduler allocated wall seconds multiplied by allocated GPUs; includes allocation/container/setup gaps. Overlapping batch/extern/srun step rows retained as evidence but never summed again.",
+  "quota_gpu_seconds": 1800,
+  "jobs": [
+    {
+      "cluster": "aws-pdx-slurm-1-login-01.nvidia.com",
+      "job_id": "1024034",
+      "purpose": "B300 native load_batch padding and diagnostic module rows",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 266,
+      "allocated_gpu_seconds_upper_bound": 266,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T21:34:22",
+      "started": "2026-11-03T21:34:27",
+      "ended": "2026-11-03T21:38:53",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-pdx-slurm-1-login-01.nvidia.com",
+      "job_id": "1024142",
+      "purpose": "B300 44-point production B52 recollection",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 795,
+      "allocated_gpu_seconds_upper_bound": 795,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T21:49:50",
+      "started": "2026-11-03T21:49:51",
+      "ended": "2026-11-03T22:03:06",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-iad-slurm-2-login-02.nvidia.com",
+      "job_id": "28261",
+      "purpose": "H100 MoE setup failure before collector imports",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 119,
+      "allocated_gpu_seconds_upper_bound": 119,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T21:44:36",
+      "started": "2026-11-03T21:44:40",
+      "ended": "2026-11-03T21:46:39",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-iad-slurm-2-login-02.nvidia.com",
+      "job_id": "28267",
+      "purpose": "H100 BF16 capacity refusal and FP8 native workspace failure",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 179,
+      "allocated_gpu_seconds_upper_bound": 179,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T21:47:38",
+      "started": "2026-11-03T21:47:40",
+      "ended": "2026-11-03T21:50:39",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-iad-slurm-2-login-02.nvidia.com",
+      "job_id": "28269",
+      "purpose": "H100 safe BF16 native row plus expected worker recycle",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 106,
+      "allocated_gpu_seconds_upper_bound": 106,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T21:53:23",
+      "started": "2026-11-03T21:53:23",
+      "ended": "2026-11-03T21:55:09",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-iad-slurm-2-login-02.nvidia.com",
+      "job_id": "28297",
+      "purpose": "H100 native-attention setup failure: missing /usr/bin/time",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 48,
+      "allocated_gpu_seconds_upper_bound": 48,
+      "scheduler_state": "FAILED",
+      "submitted": "2026-11-03T22:16:40",
+      "started": "2026-11-03T22:16:41",
+      "ended": "2026-11-03T22:17:29",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    },
+    {
+      "cluster": "aws-iad-slurm-2-login-02.nvidia.com",
+      "job_id": "28298",
+      "purpose": "H100 four collector/native prefill/decode attention attempts",
+      "allocated_gpus": 1,
+      "allocated_wall_seconds": 198,
+      "allocated_gpu_seconds_upper_bound": 198,
+      "scheduler_state": "COMPLETED",
+      "submitted": "2026-11-03T22:17:52",
+      "started": "2026-11-03T22:17:55",
+      "ended": "2026-11-03T22:21:13",
+      "allocated_tres": "billing=1,cpu=16,gres/gpu=1,mem=128G,node=1"
+    }
+  ],
+  "receipts": [
+    {
+      "path": "aws-pdx-slurm-1-login-01-selected-jobs-and-steps.txt",
+      "sha256": "5fa2ddd1331e6a726ede30fb7a4b190aefcb427a799e4ca7b8e8267af898a2a3",
+      "command": "ssh aws-pdx-slurm-1-login-01.nvidia.com sacct -j 1024034,1024142 -nP --format=JobIDRaw,JobName%60,ElapsedRaw,AllocTRES%100,State,Submit,Start,End"
+    },
+    {
+      "path": "aws-iad-slurm-2-login-02-selected-jobs-and-steps.txt",
+      "sha256": "83a909dc7485724551bbc1ed9ceaf09d39a0d599cbd750eb92e63b24eddaf628",
+      "command": "ssh aws-iad-slurm-2-login-02.nvidia.com sacct -j 28261,28267,28269,28297,28298 -nP --format=JobIDRaw,JobName%60,ElapsedRaw,AllocTRES%100,State,Submit,Start,End"
+    }
+  ],
+  "allocated_gpu_seconds_upper_bound": 1711,
+  "allocated_gpu_hours_upper_bound": 0.4752777777777778,
+  "remaining_quota_seconds_lower_bound": 89,
+  "all_job_inventory_check": "Read-only per-user top-level scheduler inventory from 2026-11-03T00:00:00 was inspected on both clusters; the seven job names below exhaust the new correctness/data lane. Concurrent cost-agent jobs and unrelated GLM RSI campaigns have separate owners; historical prior-review experiments are outside this new-job quota.",
+  "source_evidence": {
+    "1024034": "../pr664-padded-serving-b300/",
+    "1024142": "PR665 benchmarks/evidence/collector/pr665-b300-dsa-boundary/recollection/ at bfdb5f727ad601c9dde43933f6e18f2d97aad1d4",
+    "28261": "../pr664-h100-moe-capacity/README.md records setup-only import failure; raw scheduler outcome does not establish collector success",
+    "28267": "../pr664-h100-moe-capacity/28267/",
+    "28269": "../pr664-h100-moe-capacity/28269/",
+    "28297": "../pr664-sm90-fp8-native/28297/",
+    "28298": "../pr664-sm90-fp8-native/28298/"
+  },
+  "quota_reassignment": "Coordinator reduced correctness from 1 to 0.5 GPU-hours and raised audit to 11.5 GPU-hours (B300 validation 0.875), keeping combined campaign cap 12 GPU-hours. No more correctness GPU jobs authorized."
+}
