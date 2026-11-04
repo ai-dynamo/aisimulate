@@ -662,6 +662,10 @@ as well as the selected filter.
 
 ## AgentX beta
 
+Artifact paths allow symlinks above the trusted input root while rejecting
+symlinked bundle components and resolved paths outside that root. Timeline status
+values are escaped before rendering.
+
 The Hardware / backend column shows the recorded measured framework version,
 such as `sglang 0.5.20`. Grouped rows retain all distinct measured versions; missing
 versions stay unrecorded. The Performance model column identifies the prediction

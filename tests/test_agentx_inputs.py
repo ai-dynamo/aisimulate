@@ -48,6 +48,24 @@ def test_symlink_escape_rejected(tmp_path):
         safe_path(tmp_path, "link/escape.json")
 
 
+@pytest.mark.parametrize("child_link", [False, True])
+def test_trusted_root_with_symlinked_ancestor(tmp_path, child_link):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias / "inputs"
+    root.mkdir()
+    target = root / "bundle"
+    target.mkdir()
+    if child_link:
+        (root / "link").symlink_to(target, target_is_directory=True)
+        with pytest.raises(ValueError, match="Unsafe"):
+            safe_path(root, "link/manifest.json")
+    else:
+        assert safe_path(root, "bundle/manifest.json") == target / "manifest.json"
+
+
 def test_corpus_filter_preserves_original_bytes_and_order(tmp_path):
     source = tmp_path / "source.jsonl"
     lines = [

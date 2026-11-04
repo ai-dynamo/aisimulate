@@ -259,11 +259,16 @@ async def check_timeline_windows(page, site, port):
         if len(pair) == 2:
             pair[0]["counterpart"], pair[1]["counterpart"] = pair[1]["uuid"], pair[0]["uuid"]
         phase["requests"].extend(pair)
+    injected_status = 'completed" data-injected="yes'
+    phase["requests"][0]["terminal_status"] = injected_status
     path.write_bytes(canonical(detail))
     await page.goto(
         f"http://127.0.0.1:{port}/e2e-accuracy/agentx/point.html?branch=main&category=agentx&model=nvidia%2FGLM-5.3-NVFP4&lanes=1#view=timeline&stage=profile"
     )
     await expect(page.locator("#timeline-page-label")).to_contain_text("1 / 6")
+    interval = page.locator(f'.timeline-interval[data-request="{identities["early"]}"]')
+    await expect(interval).to_have_attribute("data-status", injected_status)
+    await expect(page.locator("[data-injected]")).to_have_count(0)
     scores = await page.locator("#timeline-summary .score-badges").text_content()
     for expected in [
         {"early", "crossing", "split", "spanning"},

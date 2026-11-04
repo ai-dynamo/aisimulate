@@ -1348,7 +1348,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
             if(!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms))return "";
             const start=Math.max(0,r.arrival_time_ms/1000-origin()),stop=Math.min(end,r.terminal_time_ms/1000-origin());
             if(stop<start)return "";
-            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${r.terminal_status}" data-start-s="${start}" data-end-s="${stop}" style="left:${percentAt(start)}%;width:max(2px,${percentAt(stop)-percentAt(start)}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
+            return `<button class="timeline-interval" data-request="${r.uuid}" data-origin="${r.origin}" data-status="${esc(r.terminal_status)}" data-start-s="${start}" data-end-s="${stop}" style="left:${percentAt(start)}%;width:max(2px,${percentAt(stop)-percentAt(start)}%);top:${r.origin==="silicon"?3:12}px" title="${esc(r.origin)} · TTFT ${fmt(r.ttft_ms)} ms · TPOT ${fmt(r.itl_ms)} ms/token" aria-label="Inspect ${r.origin} request ${esc(r.request_id || r.uuid)}"></button>`;
           }).join("");
           return `<div class="timeline-row comparison-row"><div class="timeline-label"><button data-request="${row.uuid}" title="${esc(label)}" aria-label="${esc(label)}"><span class="conversation-id">${row.group_id?"…"+esc(row.group_id.slice(-8)):"Unknown"}</span> · ${esc(requestId)}</button></div><div class="timeline-track">${intervals}</div></div>`;
         }).join("");

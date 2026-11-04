@@ -367,9 +367,9 @@ def write_replay_dashboard(
     assets = Path(__file__).parent
     template = (assets / "dashboard.html").read_text(encoding="utf-8")
     replacements = {
-        "__REPLAY_CSS__": (assets / "dashboard.css").read_text(),
-        "__REPLAY_JS__": (assets / "dashboard.js").read_text(),
-        "__REPLAY_BODY__": (assets / "dashboard-body.html").read_text(),
+        "__REPLAY_CSS__": (assets / "dashboard.css").read_text(encoding="utf-8"),
+        "__REPLAY_JS__": (assets / "dashboard.js").read_text(encoding="utf-8"),
+        "__REPLAY_BODY__": (assets / "dashboard-body.html").read_text(encoding="utf-8"),
         "__PLOTLY_JS__": get_plotlyjs(),
         "__PLOTLY_LICENSE__": html.escape((assets / "plotly-js-LICENSE.txt").read_text(encoding="utf-8")),
     }

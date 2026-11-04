@@ -1302,6 +1302,8 @@ test("AgentX performance-model labels use recorded estimator and prediction data
   assert.equal(vm.runInContext("window.AgentX.performanceModel(runs,true)",context),"Op-based (vllm 0.31.0)");
   assert.equal(label([{...run,config_summary:[]}]),"Unrecorded perf model (vllm 0.31.0)");
   assert.equal(label([{...run,prediction_backend_version:null}]),"Op-based perf model (vllm version unrecorded)");
+  const regression={...run,config_summary:[{name:"Estimation",value:"fpm_regression"}]};
+  assert.equal(label([regression]),"FPM regression perf model (vllm 0.31.0)");
   const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
   assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
 });

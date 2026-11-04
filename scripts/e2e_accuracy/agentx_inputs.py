@@ -15,7 +15,12 @@ def safe_path(root, name):
     if not isinstance(name, str) or not name or "\\" in name or any(p in {"", ".", ".."} for p in name.split("/")):
         raise ValueError("Unsafe AgentX artifact path")
     path = root / name
-    if not path.resolve().is_relative_to(root.resolve()) or any(p.is_symlink() for p in [path, *path.parents]):
+    current = root
+    for part in name.split("/"):
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Unsafe AgentX artifact path")
+    if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("Unsafe AgentX artifact path")
     return path
 

@@ -229,7 +229,7 @@ defaults to 1,000 simulated milliseconds and can be set with
 
 For an offline HTML dashboard, add `--export-html` instead. It enables telemetry
 automatically and writes `report.html` alongside these files. The standalone file
-embeds the same renderer assets used by the accuracy dashboard; it requires no
+embeds UTF-8 renderer assets shared with the accuracy dashboard; it requires no
 network access. Silicon comparisons appear only when qualified reference data is
 supplied by the accuracy publisher. Open it in a browser
 to inspect profiling, warmup, caches, throughput, and the scrolling request timeline.
