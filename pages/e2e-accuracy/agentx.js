@@ -29,11 +29,11 @@ window.AgentX = (() => {
     return {...values,point_errors:Object.fromEntries(metrics.map(m => [m,avg(runs.map(r => r.point_errors[m]))])),point_counts:Object.fromEntries(metrics.map(m=>[m,runs.filter(r=>finite(r.point_errors[m])).length])),request_errors,coverage};
   }
 
-  function performanceModel(runs) {
+  function performanceModel(runs, compact=false) {
     return [...new Set(runs.map(run => {
       const estimation=run.config_summary?.find(item=>item.name==="Estimation")?.value;
       const name={op_level:"Op-based",fpm_interpolation:"FPM interpolation",fpm_regression:"FPM regression"}[estimation] || estimation || "Unrecorded";
-      return `${name} perf model (${run.backend} ${run.prediction_backend_version || "version unrecorded"})`;
+      return `${name}${compact?"":" perf model"} (${run.backend} ${run.prediction_backend_version || "version unrecorded"})`;
     }))].join("; ");
   }
 
@@ -206,10 +206,10 @@ window.AgentX = (() => {
         (archived?`<p class="agentx-beta">Archived finite campaign. <a href="${esc(activeUrl)}">View current campaign ↗</a></p>`:"")+
         `<div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody>${[...new Set(data.runs.map(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])))].map((key,index) => {
           const points=data.runs.filter(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])===key), first=points[0], id=`ax-model-${index}`;
-          return `<tr class="agentx-model"><th><button type="button" data-agentx-expand="${id}" aria-expanded="true">▾ ${esc(first.model)}</button><small class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</small></th><td>${esc(first.hardware)} · ${esc(first.backend)}<small>${esc(first.precision)} · TP${first.tensor_parallel}</small></td><td class="agentx-perf-model">${esc(performanceModel(points))}</td>${cells(aggregate(points))}</tr>` +
+          return `<tr class="agentx-model"><th><button type="button" data-agentx-expand="${id}" aria-expanded="true">▾ ${esc(first.model)}</button><small class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</small></th><td>${esc(first.hardware)} · ${esc(first.backend)}<small>${esc(first.precision)} · TP${first.tensor_parallel}</small></td><td class="agentx-perf-model">${esc(performanceModel(points,true))}</td>${cells(aggregate(points))}</tr>` +
             [...new Set(points.map(r=>r.lanes))].sort((a,b)=>a-b).map(lanes=>{
               const matches=points.filter(r=>r.lanes===lanes), point=matches[0], failed=matches.filter(r=>r.outcome!=="completed").length;
-              return `<tr data-agentx-parent="${id}" data-agentx-href="${esc(pointUrl(point,branch))}" tabindex="0" aria-label="${lanes} lanes: open details"><th><a href="${esc(pointUrl(point,branch))}">${lanes} lane${lanes===1?"":"s"} ↗</a><small>${matches.length} run${matches.length===1?"":"s"}${failed?` · ${failed} unavailable`:""}</small></th><td>${source(point)}</td><td class="agentx-perf-model">${esc(performanceModel(matches))}</td>${cells(aggregate(matches))}</tr>`;
+              return `<tr data-agentx-parent="${id}" data-agentx-href="${esc(pointUrl(point,branch))}" tabindex="0" aria-label="${lanes} lanes: open details"><th><a href="${esc(pointUrl(point,branch))}">${lanes} lane${lanes===1?"":"s"} ↗</a><small>${matches.length} run${matches.length===1?"":"s"}${failed?` · ${failed} unavailable`:""}</small></th><td>${source(point)}</td><td class="agentx-perf-model">${esc(performanceModel(matches,true))}</td>${cells(aggregate(matches))}</tr>`;
             }).join("");
         }).join("")}</tbody></table></div><div id="agentx-point-tooltip" role="tooltip" popover>${pointDefinition}</div><details class="agentx-method"><summary>Metrics and provenance</summary>${methodology()}${provenance(data.snapshot,data.runs)}</details>`;
       bindPointHelp(target);

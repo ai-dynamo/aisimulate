@@ -1299,6 +1299,7 @@ test("AgentX performance-model labels use recorded estimator and prediction data
   const label=runs=>{context.runs=runs;return vm.runInContext("window.AgentX.performanceModel(runs)",context);};
   const run={backend:"vllm",measured_backend_version:"0.30.0",prediction_backend_version:"0.31.0",config_summary:[{name:"Estimation",value:"op_level"}]};
   assert.equal(label([run,run]),"Op-based perf model (vllm 0.31.0)");
+  assert.equal(vm.runInContext("window.AgentX.performanceModel(runs,true)",context),"Op-based (vllm 0.31.0)");
   assert.equal(label([{...run,config_summary:[]}]),"Unrecorded perf model (vllm 0.31.0)");
   assert.equal(label([{...run,prediction_backend_version:null}]),"Op-based perf model (vllm version unrecorded)");
   const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};

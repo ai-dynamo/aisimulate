@@ -662,8 +662,9 @@ as well as the selected filter.
 
 ## AgentX beta
 
-Model and concurrency rows show a dedicated Performance model column, such as `Op-based perf model
-(vllm 0.31.0)`. The detail page repeats it after the run/lane/request counts.
+Model and concurrency rows show a dedicated Performance model column, such as `Op-based
+(vllm 0.31.0)`. The detail page uses the full `Op-based perf model (vllm 0.31.0)`
+label after the run/lane/request counts.
 Labels use the recorded estimator and prediction database version; missing values
 stay unrecorded, and grouped runs retain each distinct model/version label.
 
