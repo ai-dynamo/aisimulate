@@ -72,8 +72,10 @@ def glm_point_manifest(
     in the same step. The producer divides a total evenly, so every request of a point gets the same prefix, the same
     new tokens and the same decode context.
     """
-    if token_budget % CHUNK_ALIGN or hash_block_size % CHUNK_ALIGN:
+    if token_budget % CHUNK_ALIGN:
         raise ValueError("GLM-5.3-Flash collection requires a token budget that is a multiple of 4")
+    if hash_block_size % CHUNK_ALIGN:
+        raise ValueError("GLM-5.3-Flash collection requires a hash block size that is a multiple of 4")
     budget = min(token_budget, MAX_NEW)
     measured = min(measured_context, MAX_CONTEXT)
     unit = hash_block_size

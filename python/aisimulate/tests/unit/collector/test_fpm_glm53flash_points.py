@@ -463,8 +463,14 @@ def test_copied_limits_match_the_producer(monkeypatch):
     assert glm_measured_context(SimpleNamespace(vllm_max_model_len=4096)) == 4096 - producer.CONTEXT_HEADROOM
 
 
-@pytest.mark.parametrize("field,value", [("token_budget", 8190), ("hash_block_size", 2178)])
-def test_budget_must_be_a_multiple_of_four(field, value):
+@pytest.mark.parametrize(
+    "field,value,text",
+    [
+        ("token_budget", 8190, "GLM-5.3-Flash collection requires a token budget that is a multiple of 4"),
+        ("hash_block_size", 2178, "GLM-5.3-Flash collection requires a hash block size that is a multiple of 4"),
+    ],
+)
+def test_budget_and_hash_block_must_be_multiples_of_four(field, value, text):
     with pytest.raises(ValueError) as error:
         glm_point_manifest(**{**_TP4, field: value})
-    assert str(error.value) == "GLM-5.3-Flash collection requires a token budget that is a multiple of 4"
+    assert str(error.value) == text
