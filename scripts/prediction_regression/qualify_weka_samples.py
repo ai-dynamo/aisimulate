@@ -94,7 +94,7 @@ def qualify(root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "--quiet",
                 "--locked",
                 "-p",
-                "aisimulate-core",
+                "aisim-core",
                 "--example",
                 "qualify_weka",
                 "--",

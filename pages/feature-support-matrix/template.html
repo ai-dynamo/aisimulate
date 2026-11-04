@@ -81,7 +81,10 @@ tailwind.config = {
   apply(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   btn.addEventListener('click', function() {
     const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
-    try { localStorage.setItem('sm-theme', next); } catch (e) {}
+    try {
+      localStorage.setItem('sm-theme', next);
+      localStorage.setItem('aisim-theme-mode', next);
+    } catch (e) {}
     apply(next);
   });
 

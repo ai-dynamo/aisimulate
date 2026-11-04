@@ -86,6 +86,14 @@ client drain ends immediately and `cancel_drain_timed_out` is false even when
 the report records unsettled server work. The configured drain deadline is an
 upper bound, not a minimum run duration.
 
+Telemetry reports `server_unsettled` when client completion leaves committed
+server work. This label alone does not establish a replay failure: inspect
+`client_in_flight_requests`, `cancel_drain_timed_out`, request terminals and
+lifecycle cleanup alongside the profile deadlines. Benchmark qualification can
+accept fully accounted grace-boundary cancellations while retaining this status
+and excluding canceled requests from accuracy scoring. Finite cohorts still
+require complete replay; do not extend the measured window to hide cleanup.
+
 ## Results and limits
 
 The `agentic_profile` report contains resolved options, barrier and deadline
