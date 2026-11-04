@@ -221,3 +221,46 @@ kernel. Mark remaining groups unattempted and continue in a fresh worker under
 the same budget. Do not disable recycling to make an anchor pass.
 NCCL weights each collective by its actual participating 2/4/8-rank group,
 never by the entire reserved node for the whole harness.
+
+### Cost report generation
+
+From `python/aisimulate`, generate a report from normalized native samples and
+frozen baseline/shared/model inventories:
+
+```bash
+python -m tools.perf_database.collection_cost_report \
+  --samples /tmp/pr664-cost-results/samples.jsonl \
+  --source-commit <full-candidate-sha> \
+  --baseline /tmp/pr664-cost-frozen/baseline \
+  --shared /tmp/pr664-cost-final4/shared \
+  --model /tmp/pr664-cost-final4/model \
+  --output /tmp/pr664-cost-results/report.json
+```
+
+Each JSONL record identifies system, backend, operation, exact scalar CSV `case`,
+`source_commit`, `sample_id`, `group_id`, `measurement_scope`, `status`, inclusive
+`collection_seconds` and separate `setup_seconds` when available. Retain
+`forward_latency_ms`, actual `num_runs_executed` (or null) and `phase_seconds` as
+supporting evidence. Add `scenario` (`baseline`, `shared`, `model`) and `role`
+(`fit`, `holdout`). Failed, timed-out and unattempted records never fit timings.
+
+Point estimates require the same checkpoint, geometry, precision, dispatch,
+framework, device and source revision. Interpolation requires measured corners
+on every workload axis; it never extrapolates. Interpolated components require
+at most 20% relative error on explicit held-out points. Independent group
+holdouts check reconstruction within 15%. Repeated observations bound empirical
+ranges; these are not statistical confidence intervals. With one observation,
+the range has no measured repeat-variation information.
+
+Inclusive group clocks already contain setup and forwards. For point clocks,
+separate setup is charged once per group; forward latency and nested phases are
+never added again. Matched native group records carry `paired_group_id`, exact
+`group_member_cases` manifests and `participating_gpus` (one for current
+single-device op-plan calls; explicit rank count required for NCCL). Their
+candidate-minus-baseline difference includes changed initialization and buffer
+costs without charging already-paid work twice. Finite total extra GPU-hours
+require paired group evidence covering the exact inventory additions/removals.
+Otherwise the report exposes supported point components, uncovered counts and
+null totals. Deferred or undeclared routes, including native Kimi NoPE history,
+remain outside the measured inventory; zero inventory additions do not qualify
+those routes. Fleet forecasts remain null while lanes are unqualified.
