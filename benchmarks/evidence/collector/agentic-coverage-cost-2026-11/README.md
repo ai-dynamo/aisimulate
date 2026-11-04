@@ -389,3 +389,13 @@ The published NCCL harness adds the required SPDX header only. Its exact execute
 bytes are preserved in [the original archive](native-nccl-executed-harness.zip),
 with [executed/published hashes](native-nccl-harness-hashes.json). Native run
 receipts retain the executed hash; no historical source identity is relabeled.
+[`frozen-plan-tables.zip`](frozen-plan-tables.zip) preserves every final B/S/M
+planner CSV and lane summary:864 files across24 lanes per scenario. The
+embedded plan-manifest records each file’s SHA256, byte size and CSV task/
+dispatch-row count plus exact source/environment identities; normalized inner-
+cell counts remain in inventory-summary.
+[`frozen-plan-tables.manifest.json`](frozen-plan-tables.manifest.json) mirrors
+that manifest and records the archive hash. Every ZIP member hash and archive
+CRC was verified after creation. B uses pinned676; S is the corrected final5
+superset fixture; M retains final4ea geometry. These frozen files require no GPU
+work to inspect or reproduce the cost census.
