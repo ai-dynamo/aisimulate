@@ -181,6 +181,7 @@ def run(spec: dict, output: Path) -> dict:
             "host_concurrent_workers_observed": None,
             "allocation_observation_enabled": bool(spec.get("observe_allocations")),
             "native_passes_requested": int(spec.get("native_passes", 1)),
+            "native_call_clock_scope": "native function and final sync; pending/progress receipt outside point clock",
         }
         result["allocation_observations"] = []
         current_call = {"index": None, "pass_index": None}
@@ -245,7 +246,7 @@ def run(spec: dict, output: Path) -> dict:
             perf = output / str(entry.perf_filename)
             for index, row in enumerate(execution_rows):
                 params = row["params"] if isinstance(row, dict) and "params" in row else row
-                call_started = time.perf_counter()
+                pending_started = time.perf_counter()
                 pass_index = index // len(rows) + 1
                 call = {
                     "index": index,
@@ -258,10 +259,11 @@ def run(spec: dict, output: Path) -> dict:
                 result["pending_call"] = {
                     **call,
                     "status": "running",
-                    "started_elapsed_seconds": call_started - started,
+                    "started_elapsed_seconds": pending_started - started,
                 }
                 save_result(output, result)
                 print(json.dumps({"event": "native_call_start", **result["pending_call"]}), flush=True)
+                call_started = time.perf_counter()
                 try:
                     kwargs = {"perf_filename": str(perf), "device": "cuda:0", **entry.run_kwargs_dict}
                     if entry.extra_perf_filenames:
