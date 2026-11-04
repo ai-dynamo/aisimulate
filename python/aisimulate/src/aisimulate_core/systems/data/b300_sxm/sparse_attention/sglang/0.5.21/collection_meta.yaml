@@ -52,6 +52,8 @@ tables:
       collected_at: '2026-10-08'
       rows: 2156
       status: complete
+      source_campaign_rows: 2464
+      source_campaign_status: complete
       # 308 physical coordinates superseded by native-QKV rows below; original
       # event and unmodified rows archived in benchmarks/evidence/collector/pr665-b300-dsa-boundary.
     - collector_ref: 0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04

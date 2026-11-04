@@ -168,8 +168,9 @@ not available.
 
 `agentx_dsa_shards.yaml` selects the full-indexer and skip-indexer DSA module
 groups for `nvidia/GLM-5.2-NVFP4`, TP8, BF16 projections and FP8 KV on B300.
-The auto-collector also requires `AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4`
-and `AISIM_SHARDS_PER_JOB=1`. Shared sweep defaults belong in
+The campaign explicitly passes `model_path` before deduplication and enables
+`include_long_history` in each shard. No model-filter environment variable is
+required. Shared sweep defaults belong in
 `cases/base_ops/mla_module.yaml`; this campaign file only selects the groups.
 
 The SGLang 0.5.21 collection used AISimulate commit
