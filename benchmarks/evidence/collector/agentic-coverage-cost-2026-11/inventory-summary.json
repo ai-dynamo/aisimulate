@@ -1,0 +1,5814 @@
+{
+  "schema_version": 1,
+  "source": "collection_cost_inventory.py",
+  "inventories": [
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 2815,
+          "runs": 2815,
+          "groups": 45,
+          "table": "sglang_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 965,
+          "runs": 965,
+          "groups": 55,
+          "table": "sglang_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2049,
+          "runs": 2049,
+          "groups": 2049,
+          "table": "sglang_sm80_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm80_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm80_attention_context.csv": {
+          "rows": 0,
+          "sha256": "1d0b610bf51ceecd4266108859a627dddf1b2e4316d1335972b70c0e876dd4d8"
+        },
+        "sglang_sm80_attention_generation.csv": {
+          "rows": 0,
+          "sha256": "1d0b610bf51ceecd4266108859a627dddf1b2e4316d1335972b70c0e876dd4d8"
+        },
+        "sglang_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_context_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_generation_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm80_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "sglang_sm80_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "sglang_sm80_moe.csv": {
+          "rows": 2049,
+          "sha256": "4a7fb8a329a8d42b35af1538017035add08a4a89a641faef296cd2d4583cf5fa"
+        },
+        "sglang_sm80_msa_context_module.csv": {
+          "rows": 2815,
+          "sha256": "5bc7b2bd0c951c2b999b696309620251e358a27c50941d0cba3d04f7daf78aed"
+        },
+        "sglang_sm80_msa_generation_module.csv": {
+          "rows": 965,
+          "sha256": "883e33c6669cd1e5106ac2a437eca1d6ec6403ee960e75fff1ffceff0e649217"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 12087,
+          "runs": 12087,
+          "groups": 104,
+          "table": "trtllm_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 15027,
+          "runs": 15027,
+          "groups": 92,
+          "table": "trtllm_sm80_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 2605,
+          "runs": 2605,
+          "groups": 45,
+          "table": "trtllm_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 965,
+          "runs": 965,
+          "groups": 55,
+          "table": "trtllm_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 1932,
+          "runs": 1932,
+          "groups": 1932,
+          "table": "trtllm_sm80_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm80_attention_context.csv": {
+          "rows": 12087,
+          "sha256": "651a876047a96927adacdaa1d876499823c61ee37d17aefb94a02fae3f039286"
+        },
+        "trtllm_sm80_attention_generation.csv": {
+          "rows": 15027,
+          "sha256": "42cd5c4ede84d94d1503f12d7511b843d32517d18193d0fadf50aba6165e3480"
+        },
+        "trtllm_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm80_mla_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm80_mla_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_moe.csv": {
+          "rows": 1932,
+          "sha256": "0ba7a5bd40196c62eec47aab9a935036f524f0e931fb897b7c058c10ee8128a6"
+        },
+        "trtllm_sm80_msa_context_module.csv": {
+          "rows": 2605,
+          "sha256": "83426352554b4b263100d02836e12e000461ba4fb173aecb040a22f51481e466"
+        },
+        "trtllm_sm80_msa_generation_module.csv": {
+          "rows": 965,
+          "sha256": "883e33c6669cd1e5106ac2a437eca1d6ec6403ee960e75fff1ffceff0e649217"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 14195,
+          "runs": 14195,
+          "groups": 122,
+          "table": "vllm_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 18048,
+          "runs": 18048,
+          "groups": 110,
+          "table": "vllm_sm80_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 1464,
+          "runs": 1464,
+          "groups": 108,
+          "table": "vllm_sm80_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 2208,
+          "runs": 2208,
+          "groups": 132,
+          "table": "vllm_sm80_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm80_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 2815,
+          "runs": 2815,
+          "groups": 45,
+          "table": "vllm_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 965,
+          "runs": 965,
+          "groups": 55,
+          "table": "vllm_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 759,
+          "runs": 759,
+          "groups": 759,
+          "table": "vllm_sm80_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm80_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm80_attention_context.csv": {
+          "rows": 14195,
+          "sha256": "7a11b9ef376943558a1ace189d89985e36c217d3f994c486bfa371b18edc56d1"
+        },
+        "vllm_sm80_attention_generation.csv": {
+          "rows": 18048,
+          "sha256": "d8a44489069b715440d10b4e7631239c9f3c8fde18077ac149541b60fb648d38"
+        },
+        "vllm_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm80_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm80_mla_context_module.csv": {
+          "rows": 1464,
+          "sha256": "cc5daf25f7e7053f0e9a000e6cbf99e0f35fdce34e45a02d70a5609844f841e9"
+        },
+        "vllm_sm80_mla_generation_module.csv": {
+          "rows": 2208,
+          "sha256": "1af2ec67b52eba9de59340dde280937828daed81757af3c88c10ce4f4dc20935"
+        },
+        "vllm_sm80_moe.csv": {
+          "rows": 759,
+          "sha256": "90c673ffbfc5e91242e346024305ccce55815be222fc7cbfa1abbb3d2a290439"
+        },
+        "vllm_sm80_msa_context_module.csv": {
+          "rows": 2815,
+          "sha256": "5bc7b2bd0c951c2b999b696309620251e358a27c50941d0cba3d04f7daf78aed"
+        },
+        "vllm_sm80_msa_generation_module.csv": {
+          "rows": 965,
+          "sha256": "883e33c6669cd1e5106ac2a437eca1d6ec6403ee960e75fff1ffceff0e649217"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 32844,
+          "runs": 35326,
+          "groups": 122,
+          "table": "sglang_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 41370,
+          "groups": 110,
+          "table": "sglang_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm100_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm100_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm100_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm100_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm100_attention_context.csv": {
+          "rows": 35326,
+          "sha256": "30163d94ffa7b194121054a10adf15f9a7bcfe4713e8ddddb89e1bdc7824428d"
+        },
+        "sglang_sm100_attention_generation.csv": {
+          "rows": 41370,
+          "sha256": "7f12c41e2f98fb295fdb8644643cf744e57b4dce17ccbb8aaab7c5b8e45a07c8"
+        },
+        "sglang_sm100_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "294abea8042b1b7841f09aebb264f93ae0451c9aa3447670ccb2f1a6b8c00d2f"
+        },
+        "sglang_sm100_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "4bafea834b9fdc9254b49da1be6173c6e71922a7c3649ac26b29b28075f82f1e"
+        },
+        "sglang_sm100_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "a06499c039b9d9f74cc27b318827b66f6c108fe7c38d29adee81acfbd5481f25"
+        },
+        "sglang_sm100_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "90372691ba726ffec0da0da110b4851db5e7f7ee67b5a3bfc90fd3ce49a6ca1a"
+        },
+        "sglang_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm100_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm100_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm100_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm100_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm100_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "trtllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "trtllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "trtllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 8445,
+          "runs": 8445,
+          "groups": 135,
+          "table": "trtllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2895,
+          "runs": 2895,
+          "groups": 165,
+          "table": "trtllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm100_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm100_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm100_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm100_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "trtllm_sm100_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "trtllm_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm100_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm100_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm100_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "trtllm_sm100_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm100_msa_context_module.csv": {
+          "rows": 8445,
+          "sha256": "23ebf8d2accf5e7e34d50e5f605b1362bc023a93317336f191abc4c4928d63b5"
+        },
+        "trtllm_sm100_msa_generation_module.csv": {
+          "rows": 2895,
+          "sha256": "96711c71afe3f4f030c12cc287b07af9ff42cf40c7513bbe1a3bcd90db283e42"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm100_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "vllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "vllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "vllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 16890,
+          "runs": 16890,
+          "groups": 270,
+          "table": "vllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 5790,
+          "runs": 5790,
+          "groups": 330,
+          "table": "vllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm100_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm100_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm100_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "vllm_sm100_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "vllm_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm100_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm100_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "vllm_sm100_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm100_msa_context_module.csv": {
+          "rows": 16890,
+          "sha256": "9d207e0ad6e912a5dfe352544ca3a3baf75adb6d6d2fb50a919dac54a4bae792"
+        },
+        "vllm_sm100_msa_generation_module.csv": {
+          "rows": 5790,
+          "sha256": "ff73610b10cf9b99a2ede9b29a62c8b97256a56a8764ff05a879a229b0ce01fe"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 32844,
+          "runs": 35326,
+          "groups": 122,
+          "table": "sglang_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 41370,
+          "groups": 110,
+          "table": "sglang_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm103_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm103_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm103_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm103_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm103_attention_context.csv": {
+          "rows": 35326,
+          "sha256": "30163d94ffa7b194121054a10adf15f9a7bcfe4713e8ddddb89e1bdc7824428d"
+        },
+        "sglang_sm103_attention_generation.csv": {
+          "rows": 41370,
+          "sha256": "7f12c41e2f98fb295fdb8644643cf744e57b4dce17ccbb8aaab7c5b8e45a07c8"
+        },
+        "sglang_sm103_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "294abea8042b1b7841f09aebb264f93ae0451c9aa3447670ccb2f1a6b8c00d2f"
+        },
+        "sglang_sm103_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "4bafea834b9fdc9254b49da1be6173c6e71922a7c3649ac26b29b28075f82f1e"
+        },
+        "sglang_sm103_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "a06499c039b9d9f74cc27b318827b66f6c108fe7c38d29adee81acfbd5481f25"
+        },
+        "sglang_sm103_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "90372691ba726ffec0da0da110b4851db5e7f7ee67b5a3bfc90fd3ce49a6ca1a"
+        },
+        "sglang_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm103_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm103_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm103_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm103_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm103_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "trtllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "trtllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "trtllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 8445,
+          "runs": 8445,
+          "groups": 135,
+          "table": "trtllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2895,
+          "runs": 2895,
+          "groups": 165,
+          "table": "trtllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm103_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm103_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm103_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm103_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "trtllm_sm103_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "trtllm_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm103_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm103_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm103_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "trtllm_sm103_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm103_msa_context_module.csv": {
+          "rows": 8445,
+          "sha256": "23ebf8d2accf5e7e34d50e5f605b1362bc023a93317336f191abc4c4928d63b5"
+        },
+        "trtllm_sm103_msa_generation_module.csv": {
+          "rows": 2895,
+          "sha256": "96711c71afe3f4f030c12cc287b07af9ff42cf40c7513bbe1a3bcd90db283e42"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm103_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "vllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "vllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "vllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 16890,
+          "runs": 16890,
+          "groups": 270,
+          "table": "vllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 5790,
+          "runs": 5790,
+          "groups": 330,
+          "table": "vllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm103_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm103_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm103_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "vllm_sm103_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "vllm_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm103_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm103_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "vllm_sm103_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm103_msa_context_module.csv": {
+          "rows": 16890,
+          "sha256": "9d207e0ad6e912a5dfe352544ca3a3baf75adb6d6d2fb50a919dac54a4bae792"
+        },
+        "vllm_sm103_msa_generation_module.csv": {
+          "rows": 5790,
+          "sha256": "ff73610b10cf9b99a2ede9b29a62c8b97256a56a8764ff05a879a229b0ce01fe"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 32844,
+          "runs": 35326,
+          "groups": 122,
+          "table": "sglang_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 41370,
+          "groups": 110,
+          "table": "sglang_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm100_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm100_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm100_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm100_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm100_attention_context.csv": {
+          "rows": 35326,
+          "sha256": "30163d94ffa7b194121054a10adf15f9a7bcfe4713e8ddddb89e1bdc7824428d"
+        },
+        "sglang_sm100_attention_generation.csv": {
+          "rows": 41370,
+          "sha256": "7f12c41e2f98fb295fdb8644643cf744e57b4dce17ccbb8aaab7c5b8e45a07c8"
+        },
+        "sglang_sm100_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "294abea8042b1b7841f09aebb264f93ae0451c9aa3447670ccb2f1a6b8c00d2f"
+        },
+        "sglang_sm100_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "4bafea834b9fdc9254b49da1be6173c6e71922a7c3649ac26b29b28075f82f1e"
+        },
+        "sglang_sm100_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "a06499c039b9d9f74cc27b318827b66f6c108fe7c38d29adee81acfbd5481f25"
+        },
+        "sglang_sm100_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "90372691ba726ffec0da0da110b4851db5e7f7ee67b5a3bfc90fd3ce49a6ca1a"
+        },
+        "sglang_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm100_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm100_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm100_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm100_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm100_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "trtllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "trtllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "trtllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 8445,
+          "runs": 8445,
+          "groups": 135,
+          "table": "trtllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2895,
+          "runs": 2895,
+          "groups": 165,
+          "table": "trtllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm100_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm100_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm100_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm100_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "trtllm_sm100_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "trtllm_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm100_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm100_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm100_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "trtllm_sm100_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm100_msa_context_module.csv": {
+          "rows": 8445,
+          "sha256": "23ebf8d2accf5e7e34d50e5f605b1362bc023a93317336f191abc4c4928d63b5"
+        },
+        "trtllm_sm100_msa_generation_module.csv": {
+          "rows": 2895,
+          "sha256": "96711c71afe3f4f030c12cc287b07af9ff42cf40c7513bbe1a3bcd90db283e42"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm100_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "vllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "vllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "vllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 16890,
+          "runs": 16890,
+          "groups": 270,
+          "table": "vllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 5790,
+          "runs": 5790,
+          "groups": 330,
+          "table": "vllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm100_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm100_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm100_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "vllm_sm100_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "vllm_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm100_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm100_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "vllm_sm100_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm100_msa_context_module.csv": {
+          "rows": 16890,
+          "sha256": "9d207e0ad6e912a5dfe352544ca3a3baf75adb6d6d2fb50a919dac54a4bae792"
+        },
+        "vllm_sm100_msa_generation_module.csv": {
+          "rows": 5790,
+          "sha256": "ff73610b10cf9b99a2ede9b29a62c8b97256a56a8764ff05a879a229b0ce01fe"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 32844,
+          "runs": 35326,
+          "groups": 122,
+          "table": "sglang_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 41370,
+          "groups": 110,
+          "table": "sglang_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm103_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm103_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm103_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm103_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm103_attention_context.csv": {
+          "rows": 35326,
+          "sha256": "30163d94ffa7b194121054a10adf15f9a7bcfe4713e8ddddb89e1bdc7824428d"
+        },
+        "sglang_sm103_attention_generation.csv": {
+          "rows": 41370,
+          "sha256": "7f12c41e2f98fb295fdb8644643cf744e57b4dce17ccbb8aaab7c5b8e45a07c8"
+        },
+        "sglang_sm103_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "294abea8042b1b7841f09aebb264f93ae0451c9aa3447670ccb2f1a6b8c00d2f"
+        },
+        "sglang_sm103_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "4bafea834b9fdc9254b49da1be6173c6e71922a7c3649ac26b29b28075f82f1e"
+        },
+        "sglang_sm103_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "a06499c039b9d9f74cc27b318827b66f6c108fe7c38d29adee81acfbd5481f25"
+        },
+        "sglang_sm103_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "90372691ba726ffec0da0da110b4851db5e7f7ee67b5a3bfc90fd3ce49a6ca1a"
+        },
+        "sglang_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm103_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm103_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm103_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm103_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm103_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "trtllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "trtllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "trtllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 8445,
+          "runs": 8445,
+          "groups": 135,
+          "table": "trtllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2895,
+          "runs": 2895,
+          "groups": 165,
+          "table": "trtllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm103_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm103_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm103_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm103_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "trtllm_sm103_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "trtllm_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm103_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm103_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm103_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "trtllm_sm103_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm103_msa_context_module.csv": {
+          "rows": 8445,
+          "sha256": "23ebf8d2accf5e7e34d50e5f605b1362bc023a93317336f191abc4c4928d63b5"
+        },
+        "trtllm_sm103_msa_generation_module.csv": {
+          "rows": 2895,
+          "sha256": "96711c71afe3f4f030c12cc287b07af9ff42cf40c7513bbe1a3bcd90db283e42"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm103_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 13248,
+          "runs": 13248,
+          "groups": 792,
+          "table": "vllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 29952,
+          "runs": 29952,
+          "groups": 486,
+          "table": "vllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10152,
+          "runs": 10152,
+          "groups": 594,
+          "table": "vllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 16890,
+          "runs": 16890,
+          "groups": 270,
+          "table": "vllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 5790,
+          "runs": 5790,
+          "groups": 330,
+          "table": "vllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm103_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm103_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm103_dsa_context_module.csv": {
+          "rows": 29952,
+          "sha256": "dfbdcfd94de19d6046893b31f4dd9d4fdb4d0faf72aafffe1d8f9cca91c2413c"
+        },
+        "vllm_sm103_dsa_generation_module.csv": {
+          "rows": 10152,
+          "sha256": "818ab50317f2db1ac2e17dfd6e4be572126283775f1bca5eedb87487259d506c"
+        },
+        "vllm_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm103_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm103_mla_generation_module.csv": {
+          "rows": 13248,
+          "sha256": "c0f6588db28b77c17e790cef666f715fbe4b7c09f736ba600449dae8c667aa7d"
+        },
+        "vllm_sm103_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm103_msa_context_module.csv": {
+          "rows": 16890,
+          "sha256": "9d207e0ad6e912a5dfe352544ca3a3baf75adb6d6d2fb50a919dac54a4bae792"
+        },
+        "vllm_sm103_msa_generation_module.csv": {
+          "rows": 5790,
+          "sha256": "ff73610b10cf9b99a2ede9b29a62c8b97256a56a8764ff05a879a229b0ce01fe"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 29784,
+          "runs": 29784,
+          "groups": 122,
+          "table": "sglang_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "sglang_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm90_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm90_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm90_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm90_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm90_attention_context.csv": {
+          "rows": 29784,
+          "sha256": "3947d69c1ad88b7d7a37e97ff0d11410827f43e4ded36fc61f58ad1aa38bf0cd"
+        },
+        "sglang_sm90_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "ade7ca1f81c4e67ad9e67448898473135cc6ecd10f7824153cfad6efdff7dbe1"
+        },
+        "sglang_sm90_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "dae9fd750c6f290e33f89fc7c4d4393757a990ef80c672e8b221e1d02eec8ccd"
+        },
+        "sglang_sm90_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "ab85a54ff223c0d342030c2e3bc06ddf005ae463ad6865b07c153531b03fc42c"
+        },
+        "sglang_sm90_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "ba02d48eecb0b7f97612634f4261a61159d5b150875b8cc97ab3e6eb0c54d54d"
+        },
+        "sglang_sm90_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "8112422cc8c9270f4263e2a35ef3d6b40eb457a69911b2d34019fbd5f155b590"
+        },
+        "sglang_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm90_moe.csv": {
+          "rows": 4755,
+          "sha256": "00d622ef58bb8c4abd580765bd92a3586e53247a095c50c3f8e108b14bfbf2ca"
+        },
+        "sglang_sm90_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm90_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "trtllm_sm90_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "trtllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 8832,
+          "runs": 8832,
+          "groups": 528,
+          "table": "trtllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 11110,
+          "runs": 11110,
+          "groups": 180,
+          "table": "trtllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 3770,
+          "runs": 3770,
+          "groups": 220,
+          "table": "trtllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 5210,
+          "runs": 5210,
+          "groups": 90,
+          "table": "trtllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "trtllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 5895,
+          "runs": 5895,
+          "groups": 5895,
+          "table": "trtllm_sm90_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm90_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm90_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm90_dsa_context_module.csv": {
+          "rows": 11110,
+          "sha256": "c26d29b6fcf160bfc6cf88efa9bd45de4d924dec429325194dae5aae6f225c8d"
+        },
+        "trtllm_sm90_dsa_generation_module.csv": {
+          "rows": 3770,
+          "sha256": "854e1daf07af07c97898dbf85b82a31c17b7585ccc04977435b51495022467ec"
+        },
+        "trtllm_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "trtllm_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "trtllm_sm90_mla_generation_module.csv": {
+          "rows": 8832,
+          "sha256": "2d8754ceb791838cd29622c86411cbd9fdd29f0dd7133532f6bc067b0cdc26f9"
+        },
+        "trtllm_sm90_moe.csv": {
+          "rows": 5895,
+          "sha256": "d7fdff40a2fc87fe51716f06582d8b6247fa8f3a720a38a22d5333bf6774339a"
+        },
+        "trtllm_sm90_msa_context_module.csv": {
+          "rows": 5210,
+          "sha256": "4591f722d9ef9ea52834c20aee2bc38d4005240e467768bdc35a54b81fbf26b4"
+        },
+        "trtllm_sm90_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "27ee7afe83f8fd16a8e5818a759fe2a69ef0455936d79152bc1abb4aee86af9d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm90_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "vllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 8832,
+          "runs": 8832,
+          "groups": 528,
+          "table": "vllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 22220,
+          "runs": 22220,
+          "groups": 360,
+          "table": "vllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 7540,
+          "runs": 7540,
+          "groups": 440,
+          "table": "vllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 11260,
+          "runs": 11260,
+          "groups": 180,
+          "table": "vllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "vllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm90_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm90_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm90_dsa_context_module.csv": {
+          "rows": 22220,
+          "sha256": "0c4ac2b32a1be4b687acfe23bf5dbd80ea8a43880f47caf422a8b0a595a0127b"
+        },
+        "vllm_sm90_dsa_generation_module.csv": {
+          "rows": 7540,
+          "sha256": "d0caed6d4f849bf8d17b83f53db455706615a6f260f78eb0373384ee6c4fd9dc"
+        },
+        "vllm_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "vllm_sm90_mla_generation_module.csv": {
+          "rows": 8832,
+          "sha256": "2d8754ceb791838cd29622c86411cbd9fdd29f0dd7133532f6bc067b0cdc26f9"
+        },
+        "vllm_sm90_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm90_msa_context_module.csv": {
+          "rows": 11260,
+          "sha256": "afd2b44a4f457ee4d7dec04db036d16e9f128d25f4859b524cc28d91cf588188"
+        },
+        "vllm_sm90_msa_generation_module.csv": {
+          "rows": 3860,
+          "sha256": "95c8b8168d560e0a5d810f99b0d74f776b4c5eccbc179f9acf962e8592d523c1"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 29784,
+          "runs": 29784,
+          "groups": 122,
+          "table": "sglang_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "sglang_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm90_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 14590,
+          "runs": 14590,
+          "groups": 270,
+          "table": "sglang_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 5700,
+          "runs": 5700,
+          "groups": 330,
+          "table": "sglang_sm90_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 9800,
+          "runs": 9800,
+          "groups": 180,
+          "table": "sglang_sm90_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "sglang_sm90_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 5630,
+          "runs": 5630,
+          "groups": 90,
+          "table": "sglang_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "sglang_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm90_attention_context.csv": {
+          "rows": 29784,
+          "sha256": "3947d69c1ad88b7d7a37e97ff0d11410827f43e4ded36fc61f58ad1aa38bf0cd"
+        },
+        "sglang_sm90_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "ade7ca1f81c4e67ad9e67448898473135cc6ecd10f7824153cfad6efdff7dbe1"
+        },
+        "sglang_sm90_dsa_context_module.csv": {
+          "rows": 14590,
+          "sha256": "dae9fd750c6f290e33f89fc7c4d4393757a990ef80c672e8b221e1d02eec8ccd"
+        },
+        "sglang_sm90_dsa_context_module_skip_indexer.csv": {
+          "rows": 9800,
+          "sha256": "ab85a54ff223c0d342030c2e3bc06ddf005ae463ad6865b07c153531b03fc42c"
+        },
+        "sglang_sm90_dsa_generation_module.csv": {
+          "rows": 5700,
+          "sha256": "ba02d48eecb0b7f97612634f4261a61159d5b150875b8cc97ab3e6eb0c54d54d"
+        },
+        "sglang_sm90_dsa_generation_module_skip_indexer.csv": {
+          "rows": 3860,
+          "sha256": "8112422cc8c9270f4263e2a35ef3d6b40eb457a69911b2d34019fbd5f155b590"
+        },
+        "sglang_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm90_moe.csv": {
+          "rows": 4755,
+          "sha256": "00d622ef58bb8c4abd580765bd92a3586e53247a095c50c3f8e108b14bfbf2ca"
+        },
+        "sglang_sm90_msa_context_module.csv": {
+          "rows": 5630,
+          "sha256": "cf469aef903d08f9e9e1ebe9607bebc8ccdf2dce484aa3ce8d82a0f19314842f"
+        },
+        "sglang_sm90_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "1e074f870252ecf413b3a46ec48368eb18e693c66bc2bc01657539f3b5a64313"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "trtllm_sm90_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "trtllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 8832,
+          "runs": 8832,
+          "groups": 528,
+          "table": "trtllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 11110,
+          "runs": 11110,
+          "groups": 180,
+          "table": "trtllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 3770,
+          "runs": 3770,
+          "groups": 220,
+          "table": "trtllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 5210,
+          "runs": 5210,
+          "groups": 90,
+          "table": "trtllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "trtllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 5895,
+          "runs": 5895,
+          "groups": 5895,
+          "table": "trtllm_sm90_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm90_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm90_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm90_dsa_context_module.csv": {
+          "rows": 11110,
+          "sha256": "c26d29b6fcf160bfc6cf88efa9bd45de4d924dec429325194dae5aae6f225c8d"
+        },
+        "trtllm_sm90_dsa_generation_module.csv": {
+          "rows": 3770,
+          "sha256": "854e1daf07af07c97898dbf85b82a31c17b7585ccc04977435b51495022467ec"
+        },
+        "trtllm_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "trtllm_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "trtllm_sm90_mla_generation_module.csv": {
+          "rows": 8832,
+          "sha256": "2d8754ceb791838cd29622c86411cbd9fdd29f0dd7133532f6bc067b0cdc26f9"
+        },
+        "trtllm_sm90_moe.csv": {
+          "rows": 5895,
+          "sha256": "d7fdff40a2fc87fe51716f06582d8b6247fa8f3a720a38a22d5333bf6774339a"
+        },
+        "trtllm_sm90_msa_context_module.csv": {
+          "rows": 5210,
+          "sha256": "4591f722d9ef9ea52834c20aee2bc38d4005240e467768bdc35a54b81fbf26b4"
+        },
+        "trtllm_sm90_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "27ee7afe83f8fd16a8e5818a759fe2a69ef0455936d79152bc1abb4aee86af9d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm90_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "vllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 8832,
+          "runs": 8832,
+          "groups": 528,
+          "table": "vllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 22220,
+          "runs": 22220,
+          "groups": 360,
+          "table": "vllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 7540,
+          "runs": 7540,
+          "groups": 440,
+          "table": "vllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 11260,
+          "runs": 11260,
+          "groups": 180,
+          "table": "vllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "vllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm90_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm90_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm90_dsa_context_module.csv": {
+          "rows": 22220,
+          "sha256": "0c4ac2b32a1be4b687acfe23bf5dbd80ea8a43880f47caf422a8b0a595a0127b"
+        },
+        "vllm_sm90_dsa_generation_module.csv": {
+          "rows": 7540,
+          "sha256": "d0caed6d4f849bf8d17b83f53db455706615a6f260f78eb0373384ee6c4fd9dc"
+        },
+        "vllm_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "vllm_sm90_mla_generation_module.csv": {
+          "rows": 8832,
+          "sha256": "2d8754ceb791838cd29622c86411cbd9fdd29f0dd7133532f6bc067b0cdc26f9"
+        },
+        "vllm_sm90_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm90_msa_context_module.csv": {
+          "rows": 11260,
+          "sha256": "afd2b44a4f457ee4d7dec04db036d16e9f128d25f4859b524cc28d91cf588188"
+        },
+        "vllm_sm90_msa_generation_module.csv": {
+          "rows": 3860,
+          "sha256": "95c8b8168d560e0a5d810f99b0d74f776b4c5eccbc179f9acf962e8592d523c1"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "sglang",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 34000,
+          "runs": 34238,
+          "groups": 122,
+          "table": "sglang_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "sglang_sm89_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm89_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm89_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 2815,
+          "runs": 2815,
+          "groups": 45,
+          "table": "sglang_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 965,
+          "runs": 965,
+          "groups": 55,
+          "table": "sglang_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm89_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm89_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm89_attention_context.csv": {
+          "rows": 34238,
+          "sha256": "6a2c06d1ebafb56358616161f73f75af4e63e1450025bf6dca4f14ff482413ea"
+        },
+        "sglang_sm89_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "5bce58039104756daeb97869779150d084f6a51bb44aa7d82504e8d3e5f31d53"
+        },
+        "sglang_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_context_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_generation_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm89_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm89_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm89_moe.csv": {
+          "rows": 4755,
+          "sha256": "5604082bea93156263b1dd8c121eb21b5c85520481427dc43b1405fe3324ea59"
+        },
+        "sglang_sm89_msa_context_module.csv": {
+          "rows": 2815,
+          "sha256": "5bc7b2bd0c951c2b999b696309620251e358a27c50941d0cba3d04f7daf78aed"
+        },
+        "sglang_sm89_msa_generation_module.csv": {
+          "rows": 965,
+          "sha256": "883e33c6669cd1e5106ac2a437eca1d6ec6403ee960e75fff1ffceff0e649217"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "trtllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 36261,
+          "runs": 36261,
+          "groups": 104,
+          "table": "trtllm_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 30054,
+          "runs": 30054,
+          "groups": 92,
+          "table": "trtllm_sm89_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 5210,
+          "runs": 5210,
+          "groups": 90,
+          "table": "trtllm_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1930,
+          "runs": 1930,
+          "groups": 110,
+          "table": "trtllm_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3519,
+          "runs": 3519,
+          "groups": 3519,
+          "table": "trtllm_sm89_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm89_attention_context.csv": {
+          "rows": 36261,
+          "sha256": "12203f5c41aee05a58e1eb078d9d4f938d3ce23941bbe46719e4d955dad05aa8"
+        },
+        "trtllm_sm89_attention_generation.csv": {
+          "rows": 30054,
+          "sha256": "07ae72f63719d27ddce3278486d8fe20c27ad63e2bcc41e87495d2d339f66625"
+        },
+        "trtllm_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm89_mla_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm89_mla_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_moe.csv": {
+          "rows": 3519,
+          "sha256": "2048dea76287735d3892fc7489e19ef91e6872155a4b1956aae527a7224e6bd8"
+        },
+        "trtllm_sm89_msa_context_module.csv": {
+          "rows": 5210,
+          "sha256": "4591f722d9ef9ea52834c20aee2bc38d4005240e467768bdc35a54b81fbf26b4"
+        },
+        "trtllm_sm89_msa_generation_module.csv": {
+          "rows": 1930,
+          "sha256": "27ee7afe83f8fd16a8e5818a759fe2a69ef0455936d79152bc1abb4aee86af9d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "vllm",
+      "scenario": "baseline",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 28390,
+          "runs": 28390,
+          "groups": 122,
+          "table": "vllm_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 36096,
+          "runs": 36096,
+          "groups": 110,
+          "table": "vllm_sm89_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 2928,
+          "runs": 2928,
+          "groups": 216,
+          "table": "vllm_sm89_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 4416,
+          "runs": 4416,
+          "groups": 264,
+          "table": "vllm_sm89_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm89_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 11260,
+          "runs": 11260,
+          "groups": 180,
+          "table": "vllm_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3860,
+          "runs": 3860,
+          "groups": 220,
+          "table": "vllm_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm89_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm89_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm89_attention_context.csv": {
+          "rows": 28390,
+          "sha256": "bbaa56d51bfd33b27f4fde5e714dd1417b4de8dd15a5dbc55de4ce09accdb68d"
+        },
+        "vllm_sm89_attention_generation.csv": {
+          "rows": 36096,
+          "sha256": "242f76f2f2d84da7350b10d3e1b0fbb7f1085fbe3b4487d3d0eb5ac0d8065eeb"
+        },
+        "vllm_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm89_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm89_mla_context_module.csv": {
+          "rows": 2928,
+          "sha256": "19430a3242ef1038835995076cfa5340f1e9f52dc9dcf981c66af296058fa0ce"
+        },
+        "vllm_sm89_mla_generation_module.csv": {
+          "rows": 4416,
+          "sha256": "6fd3382e0981b04b61e6d5b902e217796220e9835a54a3ffad3e9d8a573ab776"
+        },
+        "vllm_sm89_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm89_msa_context_module.csv": {
+          "rows": 11260,
+          "sha256": "afd2b44a4f457ee4d7dec04db036d16e9f128d25f4859b524cc28d91cf588188"
+        },
+        "vllm_sm89_msa_generation_module.csv": {
+          "rows": 3860,
+          "sha256": "95c8b8168d560e0a5d810f99b0d74f776b4c5eccbc179f9acf962e8592d523c1"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm80_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 3305,
+          "runs": 3305,
+          "groups": 45,
+          "table": "sglang_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1085,
+          "runs": 1085,
+          "groups": 55,
+          "table": "sglang_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2049,
+          "runs": 2049,
+          "groups": 2049,
+          "table": "sglang_sm80_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm80_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm80_attention_context.csv": {
+          "rows": 0,
+          "sha256": "1d0b610bf51ceecd4266108859a627dddf1b2e4316d1335972b70c0e876dd4d8"
+        },
+        "sglang_sm80_attention_generation.csv": {
+          "rows": 0,
+          "sha256": "1d0b610bf51ceecd4266108859a627dddf1b2e4316d1335972b70c0e876dd4d8"
+        },
+        "sglang_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_context_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_dsa_generation_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm80_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm80_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "sglang_sm80_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "sglang_sm80_moe.csv": {
+          "rows": 2049,
+          "sha256": "4a7fb8a329a8d42b35af1538017035add08a4a89a641faef296cd2d4583cf5fa"
+        },
+        "sglang_sm80_msa_context_module.csv": {
+          "rows": 3305,
+          "sha256": "98e7172bd71c9537a7b075ffdb19916cd48d58927f2534d6318d9af48b10e4eb"
+        },
+        "sglang_sm80_msa_generation_module.csv": {
+          "rows": 1085,
+          "sha256": "ca2864f952fb029f6a32280c327196c7a41e797f79a4045556d09c3f717bad24"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 17692,
+          "runs": 17692,
+          "groups": 104,
+          "table": "trtllm_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 16441,
+          "runs": 16441,
+          "groups": 92,
+          "table": "trtllm_sm80_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm80_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 3050,
+          "runs": 3050,
+          "groups": 45,
+          "table": "trtllm_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1085,
+          "runs": 1085,
+          "groups": 55,
+          "table": "trtllm_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 1932,
+          "runs": 1932,
+          "groups": 1932,
+          "table": "trtllm_sm80_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm80_attention_context.csv": {
+          "rows": 17692,
+          "sha256": "0b803af40407b0ed0960ff83f2ae805525060243e6dff14d4add3f20770ff57f"
+        },
+        "trtllm_sm80_attention_generation.csv": {
+          "rows": 16441,
+          "sha256": "4081018fa1cfff14ea383b8f0e32f0f6afdcb3720d735e05987290d13b4cd641"
+        },
+        "trtllm_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm80_mla_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm80_mla_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm80_moe.csv": {
+          "rows": 1932,
+          "sha256": "0ba7a5bd40196c62eec47aab9a935036f524f0e931fb897b7c058c10ee8128a6"
+        },
+        "trtllm_sm80_msa_context_module.csv": {
+          "rows": 3050,
+          "sha256": "36ebec379e95a0416e5037af9c4288331d36e75787cedc72a44330cb55177e53"
+        },
+        "trtllm_sm80_msa_generation_module.csv": {
+          "rows": 1085,
+          "sha256": "ca2864f952fb029f6a32280c327196c7a41e797f79a4045556d09c3f717bad24"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "a100_sxm",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 20841,
+          "runs": 20841,
+          "groups": 122,
+          "table": "vllm_sm80_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 19846,
+          "runs": 19846,
+          "groups": 110,
+          "table": "vllm_sm80_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 1464,
+          "runs": 1464,
+          "groups": 108,
+          "table": "vllm_sm80_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 2604,
+          "runs": 2604,
+          "groups": 132,
+          "table": "vllm_sm80_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm80_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm80_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 3305,
+          "runs": 3305,
+          "groups": 45,
+          "table": "vllm_sm80_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1085,
+          "runs": 1085,
+          "groups": 55,
+          "table": "vllm_sm80_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 759,
+          "runs": 759,
+          "groups": 759,
+          "table": "vllm_sm80_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm80_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm80_attention_context.csv": {
+          "rows": 20841,
+          "sha256": "1f4531a4c7a271e384703542bb64662c5ab9a23b07876ce0facd44a11b05f0e6"
+        },
+        "vllm_sm80_attention_generation.csv": {
+          "rows": 19846,
+          "sha256": "83bb172a8effde34946bb4f68d2b18351e869aca81327f9f8691d4e47a0daefe"
+        },
+        "vllm_sm80_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm80_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm80_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm80_mla_context_module.csv": {
+          "rows": 1464,
+          "sha256": "cc5daf25f7e7053f0e9a000e6cbf99e0f35fdce34e45a02d70a5609844f841e9"
+        },
+        "vllm_sm80_mla_generation_module.csv": {
+          "rows": 2604,
+          "sha256": "133fdbb16835f867aa36206f6b9a375e2f1da2c47a099cbbe6bedfa437a47a54"
+        },
+        "vllm_sm80_moe.csv": {
+          "rows": 759,
+          "sha256": "90c673ffbfc5e91242e346024305ccce55815be222fc7cbfa1abbb3d2a290439"
+        },
+        "vllm_sm80_msa_context_module.csv": {
+          "rows": 3305,
+          "sha256": "98e7172bd71c9537a7b075ffdb19916cd48d58927f2534d6318d9af48b10e4eb"
+        },
+        "vllm_sm80_msa_generation_module.csv": {
+          "rows": 1085,
+          "sha256": "ca2864f952fb029f6a32280c327196c7a41e797f79a4045556d09c3f717bad24"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 48320,
+          "runs": 52016,
+          "groups": 122,
+          "table": "sglang_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 45642,
+          "groups": 110,
+          "table": "sglang_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm100_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm100_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm100_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm100_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm100_attention_context.csv": {
+          "rows": 52016,
+          "sha256": "c269563880d573fcb59fd3a97d642cb8dd2046e99743697375dc3038f438a8b3"
+        },
+        "sglang_sm100_attention_generation.csv": {
+          "rows": 45642,
+          "sha256": "b38496f1a95ea6fbd57579aea839a0c9792c4216d37fd63a29d9cf93f38e73f8"
+        },
+        "sglang_sm100_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "7a1ce5920c3dc89744e6a711d8564ca9636ef33980d4b0ea9f5dafa4e9ef8971"
+        },
+        "sglang_sm100_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "17fc0d54f8e97cb4934f2f9383b52aad63fb8a867e76c31a5cd8a1b5c37a5c64"
+        },
+        "sglang_sm100_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "cfde7e4fddfe7220831521df6a97ba4d711c56657afbe287049be28f17051218"
+        },
+        "sglang_sm100_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "243ee1daf27402f93678582e0fc95100dd466a1d54025f63e2a7db034712b327"
+        },
+        "sglang_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm100_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm100_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm100_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm100_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm100_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "trtllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "trtllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "trtllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 9915,
+          "runs": 9915,
+          "groups": 135,
+          "table": "trtllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3255,
+          "runs": 3255,
+          "groups": 165,
+          "table": "trtllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm100_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm100_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm100_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm100_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "trtllm_sm100_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "trtllm_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm100_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm100_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm100_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "trtllm_sm100_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm100_msa_context_module.csv": {
+          "rows": 9915,
+          "sha256": "1b228271a9338d2fb95b8ebc9741e4b56257932bd557404a24b92a96b69203c7"
+        },
+        "trtllm_sm100_msa_generation_module.csv": {
+          "rows": 3255,
+          "sha256": "00f23a46a672c18121ac015a8a1f0cac86115cd3a8c0a9baeb136f7fb49fad28"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b200_sxm",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm100_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "vllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "vllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "vllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 19830,
+          "runs": 19830,
+          "groups": 270,
+          "table": "vllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 6510,
+          "runs": 6510,
+          "groups": 330,
+          "table": "vllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm100_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm100_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm100_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "vllm_sm100_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "vllm_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm100_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm100_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "vllm_sm100_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm100_msa_context_module.csv": {
+          "rows": 19830,
+          "sha256": "dedf45a6e03599281f3d8f2c793b9f8c2cda738da2da8610fa3639fa46923cf6"
+        },
+        "vllm_sm100_msa_generation_module.csv": {
+          "rows": 6510,
+          "sha256": "7a7469ae15602b27cce725b54b643cd8db27f74e792afa0018f44ecfeb6b0502"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 48320,
+          "runs": 52016,
+          "groups": 122,
+          "table": "sglang_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 45642,
+          "groups": 110,
+          "table": "sglang_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm103_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm103_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm103_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm103_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm103_attention_context.csv": {
+          "rows": 52016,
+          "sha256": "c269563880d573fcb59fd3a97d642cb8dd2046e99743697375dc3038f438a8b3"
+        },
+        "sglang_sm103_attention_generation.csv": {
+          "rows": 45642,
+          "sha256": "b38496f1a95ea6fbd57579aea839a0c9792c4216d37fd63a29d9cf93f38e73f8"
+        },
+        "sglang_sm103_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "7a1ce5920c3dc89744e6a711d8564ca9636ef33980d4b0ea9f5dafa4e9ef8971"
+        },
+        "sglang_sm103_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "17fc0d54f8e97cb4934f2f9383b52aad63fb8a867e76c31a5cd8a1b5c37a5c64"
+        },
+        "sglang_sm103_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "cfde7e4fddfe7220831521df6a97ba4d711c56657afbe287049be28f17051218"
+        },
+        "sglang_sm103_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "243ee1daf27402f93678582e0fc95100dd466a1d54025f63e2a7db034712b327"
+        },
+        "sglang_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm103_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm103_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm103_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm103_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm103_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "trtllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "trtllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "trtllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 9915,
+          "runs": 9915,
+          "groups": 135,
+          "table": "trtllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3255,
+          "runs": 3255,
+          "groups": 165,
+          "table": "trtllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm103_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm103_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm103_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm103_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "trtllm_sm103_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "trtllm_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm103_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm103_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm103_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "trtllm_sm103_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm103_msa_context_module.csv": {
+          "rows": 9915,
+          "sha256": "1b228271a9338d2fb95b8ebc9741e4b56257932bd557404a24b92a96b69203c7"
+        },
+        "trtllm_sm103_msa_generation_module.csv": {
+          "rows": 3255,
+          "sha256": "00f23a46a672c18121ac015a8a1f0cac86115cd3a8c0a9baeb136f7fb49fad28"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "b300_sxm",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm103_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "vllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "vllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "vllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 19830,
+          "runs": 19830,
+          "groups": 270,
+          "table": "vllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 6510,
+          "runs": 6510,
+          "groups": 330,
+          "table": "vllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm103_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm103_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm103_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "vllm_sm103_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "vllm_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm103_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm103_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "vllm_sm103_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm103_msa_context_module.csv": {
+          "rows": 19830,
+          "sha256": "dedf45a6e03599281f3d8f2c793b9f8c2cda738da2da8610fa3639fa46923cf6"
+        },
+        "vllm_sm103_msa_generation_module.csv": {
+          "rows": 6510,
+          "sha256": "7a7469ae15602b27cce725b54b643cd8db27f74e792afa0018f44ecfeb6b0502"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 48320,
+          "runs": 52016,
+          "groups": 122,
+          "table": "sglang_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 45642,
+          "groups": 110,
+          "table": "sglang_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm100_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm100_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm100_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm100_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm100_attention_context.csv": {
+          "rows": 52016,
+          "sha256": "c269563880d573fcb59fd3a97d642cb8dd2046e99743697375dc3038f438a8b3"
+        },
+        "sglang_sm100_attention_generation.csv": {
+          "rows": 45642,
+          "sha256": "b38496f1a95ea6fbd57579aea839a0c9792c4216d37fd63a29d9cf93f38e73f8"
+        },
+        "sglang_sm100_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "7a1ce5920c3dc89744e6a711d8564ca9636ef33980d4b0ea9f5dafa4e9ef8971"
+        },
+        "sglang_sm100_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "17fc0d54f8e97cb4934f2f9383b52aad63fb8a867e76c31a5cd8a1b5c37a5c64"
+        },
+        "sglang_sm100_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "cfde7e4fddfe7220831521df6a97ba4d711c56657afbe287049be28f17051218"
+        },
+        "sglang_sm100_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "243ee1daf27402f93678582e0fc95100dd466a1d54025f63e2a7db034712b327"
+        },
+        "sglang_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm100_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm100_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm100_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm100_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm100_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm100_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm100_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "trtllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "trtllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "trtllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 9915,
+          "runs": 9915,
+          "groups": 135,
+          "table": "trtllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3255,
+          "runs": 3255,
+          "groups": 165,
+          "table": "trtllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm100_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm100_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm100_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm100_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "trtllm_sm100_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "trtllm_sm100_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm100_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm100_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm100_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "trtllm_sm100_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm100_msa_context_module.csv": {
+          "rows": 9915,
+          "sha256": "1b228271a9338d2fb95b8ebc9741e4b56257932bd557404a24b92a96b69203c7"
+        },
+        "trtllm_sm100_msa_generation_module.csv": {
+          "rows": 3255,
+          "sha256": "00f23a46a672c18121ac015a8a1f0cac86115cd3a8c0a9baeb136f7fb49fad28"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb200",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm100_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm100_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm100_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "vllm_sm100_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "vllm_sm100_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "vllm_sm100_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 19830,
+          "runs": 19830,
+          "groups": 270,
+          "table": "vllm_sm100_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 6510,
+          "runs": 6510,
+          "groups": 330,
+          "table": "vllm_sm100_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm100_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm100_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm100_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm100_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm100_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "vllm_sm100_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "vllm_sm100_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm100_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm100_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "vllm_sm100_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm100_msa_context_module.csv": {
+          "rows": 19830,
+          "sha256": "dedf45a6e03599281f3d8f2c793b9f8c2cda738da2da8610fa3639fa46923cf6"
+        },
+        "vllm_sm100_msa_generation_module.csv": {
+          "rows": 6510,
+          "sha256": "7a7469ae15602b27cce725b54b643cd8db27f74e792afa0018f44ecfeb6b0502"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 48320,
+          "runs": 52016,
+          "groups": 122,
+          "table": "sglang_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 45642,
+          "groups": 110,
+          "table": "sglang_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm103_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm103_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm103_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm103_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 8274,
+          "runs": 8274,
+          "groups": 8274,
+          "table": "sglang_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm103_attention_context.csv": {
+          "rows": 52016,
+          "sha256": "c269563880d573fcb59fd3a97d642cb8dd2046e99743697375dc3038f438a8b3"
+        },
+        "sglang_sm103_attention_generation.csv": {
+          "rows": 45642,
+          "sha256": "b38496f1a95ea6fbd57579aea839a0c9792c4216d37fd63a29d9cf93f38e73f8"
+        },
+        "sglang_sm103_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "7a1ce5920c3dc89744e6a711d8564ca9636ef33980d4b0ea9f5dafa4e9ef8971"
+        },
+        "sglang_sm103_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "17fc0d54f8e97cb4934f2f9383b52aad63fb8a867e76c31a5cd8a1b5c37a5c64"
+        },
+        "sglang_sm103_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "cfde7e4fddfe7220831521df6a97ba4d711c56657afbe287049be28f17051218"
+        },
+        "sglang_sm103_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "243ee1daf27402f93678582e0fc95100dd466a1d54025f63e2a7db034712b327"
+        },
+        "sglang_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm103_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm103_moe.csv": {
+          "rows": 8274,
+          "sha256": "5bdc6b1d4f46d2c85d7636701575bc1d66f61fa7869431414cc071c02a9639c9"
+        },
+        "sglang_sm103_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm103_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm103_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm103_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 4706,
+          "runs": 4706,
+          "groups": 4706,
+          "table": "trtllm_sm103_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 8784,
+          "runs": 8784,
+          "groups": 648,
+          "table": "trtllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "trtllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "trtllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "trtllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 9915,
+          "runs": 9915,
+          "groups": 135,
+          "table": "trtllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 3255,
+          "runs": 3255,
+          "groups": 165,
+          "table": "trtllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 9198,
+          "runs": 9198,
+          "groups": 9198,
+          "table": "trtllm_sm103_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm103_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm103_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm103_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "trtllm_sm103_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "trtllm_sm103_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm103_mla_context_module.csv": {
+          "rows": 8784,
+          "sha256": "69c2a31034feac1f9a981bd66910e4c8a91d1cfe2ba3361ad1540bfb30eb1d0d"
+        },
+        "trtllm_sm103_mla_generation.csv": {
+          "rows": 4706,
+          "sha256": "2c9cf8eb13b394bd42090d9d0aae58eb6915d7a46e84abfd7301d621a7f0d907"
+        },
+        "trtllm_sm103_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "trtllm_sm103_moe.csv": {
+          "rows": 9198,
+          "sha256": "301aa1c90588f3ec129b8974ba99d8c424d1a6f5b741cc4202f31211ef6e7f55"
+        },
+        "trtllm_sm103_msa_context_module.csv": {
+          "rows": 9915,
+          "sha256": "1b228271a9338d2fb95b8ebc9741e4b56257932bd557404a24b92a96b69203c7"
+        },
+        "trtllm_sm103_msa_generation_module.csv": {
+          "rows": 3255,
+          "sha256": "00f23a46a672c18121ac015a8a1f0cac86115cd3a8c0a9baeb136f7fb49fad28"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "gb300",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm103_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm103_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 13176,
+          "runs": 13176,
+          "groups": 972,
+          "table": "vllm_sm103_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 15624,
+          "runs": 15624,
+          "groups": 792,
+          "table": "vllm_sm103_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 35154,
+          "runs": 35154,
+          "groups": 486,
+          "table": "vllm_sm103_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 10728,
+          "runs": 10728,
+          "groups": 594,
+          "table": "vllm_sm103_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 19830,
+          "runs": 19830,
+          "groups": 270,
+          "table": "vllm_sm103_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 6510,
+          "runs": 6510,
+          "groups": 330,
+          "table": "vllm_sm103_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3345,
+          "runs": 3345,
+          "groups": 3345,
+          "table": "vllm_sm103_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm103_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm103_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm103_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm103_dsa_context_module.csv": {
+          "rows": 35154,
+          "sha256": "65307197777026aa2fba8fb96c15b9bdc075b1942515a7af314f103bec2f9d84"
+        },
+        "vllm_sm103_dsa_generation_module.csv": {
+          "rows": 10728,
+          "sha256": "bdfafafe4d54d23c27e3f39e0ee43f40dc73dd0039abe3f79a35543c27bcd456"
+        },
+        "vllm_sm103_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm103_mla_context_module.csv": {
+          "rows": 13176,
+          "sha256": "40a0f83093ad72262ce649afd7fb62a8588c9aaf0f6c58afac83f5487216162a"
+        },
+        "vllm_sm103_mla_generation_module.csv": {
+          "rows": 15624,
+          "sha256": "4b6aef3c2707c495cf80c1038891df7a6a5968b616454556fadc8b9b44dd676a"
+        },
+        "vllm_sm103_moe.csv": {
+          "rows": 3345,
+          "sha256": "d9c29390005bb9b227995f354e8ee214f062ced0de563f757b87fe5051d34218"
+        },
+        "vllm_sm103_msa_context_module.csv": {
+          "rows": 19830,
+          "sha256": "dedf45a6e03599281f3d8f2c793b9f8c2cda738da2da8610fa3639fa46923cf6"
+        },
+        "vllm_sm103_msa_generation_module.csv": {
+          "rows": 6510,
+          "sha256": "7a7469ae15602b27cce725b54b643cd8db27f74e792afa0018f44ecfeb6b0502"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 43676,
+          "runs": 43676,
+          "groups": 122,
+          "table": "sglang_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "sglang_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm90_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm90_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm90_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm90_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm90_attention_context.csv": {
+          "rows": 43676,
+          "sha256": "c884624f47da56e9b09a3ccafea5871c5184912158bddbfc5e68b321d14f0afb"
+        },
+        "sglang_sm90_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "8e9de26a1abc12741bd9bc4fd55179d1c7c3a9feb0eafb9e2817466e94486da7"
+        },
+        "sglang_sm90_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "0ff2da58e4e1faf74ea61df12b54ade4f102d605fb51412ed6acdfa44ac520f6"
+        },
+        "sglang_sm90_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "abefebda600c21ffe320447fb7a778a999eb7cc5a9c43556a594887755367e7b"
+        },
+        "sglang_sm90_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "90eeee420e5f8d55c81be23c83a5702d9b334355dfa778a89c58a46a4451faee"
+        },
+        "sglang_sm90_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "3336449613429d385958a694da1754000d928be34e06aa7201d7590e0fe0702e"
+        },
+        "sglang_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm90_moe.csv": {
+          "rows": 4755,
+          "sha256": "00d622ef58bb8c4abd580765bd92a3586e53247a095c50c3f8e108b14bfbf2ca"
+        },
+        "sglang_sm90_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm90_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "trtllm_sm90_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "trtllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 10416,
+          "runs": 10416,
+          "groups": 528,
+          "table": "trtllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 13040,
+          "runs": 13040,
+          "groups": 180,
+          "table": "trtllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 4010,
+          "runs": 4010,
+          "groups": 220,
+          "table": "trtllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 6100,
+          "runs": 6100,
+          "groups": 90,
+          "table": "trtllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "trtllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 5895,
+          "runs": 5895,
+          "groups": 5895,
+          "table": "trtllm_sm90_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm90_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm90_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm90_dsa_context_module.csv": {
+          "rows": 13040,
+          "sha256": "3b9ed3d6f09243faa12b1040ef2ce70eeef5a2de7f85504ab12379a2f17fc820"
+        },
+        "trtllm_sm90_dsa_generation_module.csv": {
+          "rows": 4010,
+          "sha256": "6e2858f1eb7c8d7b75888664f44d38e294c64bbbadd7e92bef8ea4e279511bba"
+        },
+        "trtllm_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "trtllm_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "trtllm_sm90_mla_generation_module.csv": {
+          "rows": 10416,
+          "sha256": "93fe5059492bd54f6e00d71d3decdf939d8e4086e9a8497749d265108224e8ef"
+        },
+        "trtllm_sm90_moe.csv": {
+          "rows": 5895,
+          "sha256": "d7fdff40a2fc87fe51716f06582d8b6247fa8f3a720a38a22d5333bf6774339a"
+        },
+        "trtllm_sm90_msa_context_module.csv": {
+          "rows": 6100,
+          "sha256": "ddedbb5ec962acf36d438b0204d47d83a8b3c7e888bb133ceb453a6339186539"
+        },
+        "trtllm_sm90_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "b8adc643acc344e0b1a06c2ae26050488c06e1c2aada3f8310712e91b8e3aeaa"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h100_sxm",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm90_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "vllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 10416,
+          "runs": 10416,
+          "groups": 528,
+          "table": "vllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 26080,
+          "runs": 26080,
+          "groups": 360,
+          "table": "vllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 8020,
+          "runs": 8020,
+          "groups": 440,
+          "table": "vllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 13220,
+          "runs": 13220,
+          "groups": 180,
+          "table": "vllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "vllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm90_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm90_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm90_dsa_context_module.csv": {
+          "rows": 26080,
+          "sha256": "c8f5bab86b5d3ac43daa705c7a9f5c079f3098b88dd705f0a70983cf6dc2e4aa"
+        },
+        "vllm_sm90_dsa_generation_module.csv": {
+          "rows": 8020,
+          "sha256": "8cd28d6eb27c893cd3f8da895a6e0539c17a55c9190c8f66fb43223d9aa7404a"
+        },
+        "vllm_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "vllm_sm90_mla_generation_module.csv": {
+          "rows": 10416,
+          "sha256": "93fe5059492bd54f6e00d71d3decdf939d8e4086e9a8497749d265108224e8ef"
+        },
+        "vllm_sm90_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm90_msa_context_module.csv": {
+          "rows": 13220,
+          "sha256": "8002d2928bf3d3104eec20d8cb1f45680087370032d54f2b242852ccc75cc6d4"
+        },
+        "vllm_sm90_msa_generation_module.csv": {
+          "rows": 4340,
+          "sha256": "9d2509cf46464bc276eb98f3be6552e90907e3f95c91b76a1e071624b51c6176"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 43676,
+          "runs": 43676,
+          "groups": 122,
+          "table": "sglang_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "sglang_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm90_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 17500,
+          "runs": 17500,
+          "groups": 270,
+          "table": "sglang_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 6180,
+          "runs": 6180,
+          "groups": 330,
+          "table": "sglang_sm90_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 11760,
+          "runs": 11760,
+          "groups": 180,
+          "table": "sglang_sm90_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "sglang_sm90_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 6610,
+          "runs": 6610,
+          "groups": 90,
+          "table": "sglang_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "sglang_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm90_attention_context.csv": {
+          "rows": 43676,
+          "sha256": "c884624f47da56e9b09a3ccafea5871c5184912158bddbfc5e68b321d14f0afb"
+        },
+        "sglang_sm90_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "8e9de26a1abc12741bd9bc4fd55179d1c7c3a9feb0eafb9e2817466e94486da7"
+        },
+        "sglang_sm90_dsa_context_module.csv": {
+          "rows": 17500,
+          "sha256": "0ff2da58e4e1faf74ea61df12b54ade4f102d605fb51412ed6acdfa44ac520f6"
+        },
+        "sglang_sm90_dsa_context_module_skip_indexer.csv": {
+          "rows": 11760,
+          "sha256": "abefebda600c21ffe320447fb7a778a999eb7cc5a9c43556a594887755367e7b"
+        },
+        "sglang_sm90_dsa_generation_module.csv": {
+          "rows": 6180,
+          "sha256": "90eeee420e5f8d55c81be23c83a5702d9b334355dfa778a89c58a46a4451faee"
+        },
+        "sglang_sm90_dsa_generation_module_skip_indexer.csv": {
+          "rows": 4340,
+          "sha256": "3336449613429d385958a694da1754000d928be34e06aa7201d7590e0fe0702e"
+        },
+        "sglang_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm90_moe.csv": {
+          "rows": 4755,
+          "sha256": "00d622ef58bb8c4abd580765bd92a3586e53247a095c50c3f8e108b14bfbf2ca"
+        },
+        "sglang_sm90_msa_context_module.csv": {
+          "rows": 6610,
+          "sha256": "e87b8b17369b280797df85a531336d8c4209a017726853d350486bf655961b21"
+        },
+        "sglang_sm90_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "5e178ef24eefe8918a66c8b23c7a070c282dd8c1bffcc0f7f68103a76580438d"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm90_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "trtllm_sm90_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "trtllm_sm90_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "trtllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 10416,
+          "runs": 10416,
+          "groups": 528,
+          "table": "trtllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 13040,
+          "runs": 13040,
+          "groups": 180,
+          "table": "trtllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 4010,
+          "runs": 4010,
+          "groups": 220,
+          "table": "trtllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 6100,
+          "runs": 6100,
+          "groups": 90,
+          "table": "trtllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "trtllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 5895,
+          "runs": 5895,
+          "groups": 5895,
+          "table": "trtllm_sm90_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm90_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm90_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm90_dsa_context_module.csv": {
+          "rows": 13040,
+          "sha256": "3b9ed3d6f09243faa12b1040ef2ce70eeef5a2de7f85504ab12379a2f17fc820"
+        },
+        "trtllm_sm90_dsa_generation_module.csv": {
+          "rows": 4010,
+          "sha256": "6e2858f1eb7c8d7b75888664f44d38e294c64bbbadd7e92bef8ea4e279511bba"
+        },
+        "trtllm_sm90_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "trtllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "trtllm_sm90_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "trtllm_sm90_mla_generation_module.csv": {
+          "rows": 10416,
+          "sha256": "93fe5059492bd54f6e00d71d3decdf939d8e4086e9a8497749d265108224e8ef"
+        },
+        "trtllm_sm90_moe.csv": {
+          "rows": 5895,
+          "sha256": "d7fdff40a2fc87fe51716f06582d8b6247fa8f3a720a38a22d5333bf6774339a"
+        },
+        "trtllm_sm90_msa_context_module.csv": {
+          "rows": 6100,
+          "sha256": "ddedbb5ec962acf36d438b0204d47d83a8b3c7e888bb133ceb453a6339186539"
+        },
+        "trtllm_sm90_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "b8adc643acc344e0b1a06c2ae26050488c06e1c2aada3f8310712e91b8e3aeaa"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "h200_sxm",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm90_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm90_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 5856,
+          "runs": 5856,
+          "groups": 432,
+          "table": "vllm_sm90_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 10416,
+          "runs": 10416,
+          "groups": 528,
+          "table": "vllm_sm90_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 26080,
+          "runs": 26080,
+          "groups": 360,
+          "table": "vllm_sm90_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 8020,
+          "runs": 8020,
+          "groups": 440,
+          "table": "vllm_sm90_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 13220,
+          "runs": 13220,
+          "groups": 180,
+          "table": "vllm_sm90_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "vllm_sm90_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm90_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm90_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm90_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm90_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm90_dsa_context_module.csv": {
+          "rows": 26080,
+          "sha256": "c8f5bab86b5d3ac43daa705c7a9f5c079f3098b88dd705f0a70983cf6dc2e4aa"
+        },
+        "vllm_sm90_dsa_generation_module.csv": {
+          "rows": 8020,
+          "sha256": "8cd28d6eb27c893cd3f8da895a6e0539c17a55c9190c8f66fb43223d9aa7404a"
+        },
+        "vllm_sm90_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm90_mla_context_module.csv": {
+          "rows": 5856,
+          "sha256": "e72cc25532be97c2a91be74cfada778519b921d4be104ab29f570ed0ff3ccab9"
+        },
+        "vllm_sm90_mla_generation_module.csv": {
+          "rows": 10416,
+          "sha256": "93fe5059492bd54f6e00d71d3decdf939d8e4086e9a8497749d265108224e8ef"
+        },
+        "vllm_sm90_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm90_msa_context_module.csv": {
+          "rows": 13220,
+          "sha256": "8002d2928bf3d3104eec20d8cb1f45680087370032d54f2b242852ccc75cc6d4"
+        },
+        "vllm_sm90_msa_generation_module.csv": {
+          "rows": 4340,
+          "sha256": "9d2509cf46464bc276eb98f3be6552e90907e3f95c91b76a1e071624b51c6176"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "sglang",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 49969,
+          "runs": 50305,
+          "groups": 122,
+          "table": "sglang_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "sglang_sm89_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 3080,
+          "runs": 3080,
+          "groups": 3080,
+          "table": "sglang_sm89_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 5068,
+          "runs": 5068,
+          "groups": 5068,
+          "table": "sglang_sm89_mla_generation.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_generation_module.csv"
+        },
+        "dsa_context_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_context_module_skip_indexer.csv"
+        },
+        "dsa_generation_module_skip_indexer": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "sglang_sm89_dsa_generation_module_skip_indexer.csv"
+        },
+        "msa_context_module": {
+          "cases": 3305,
+          "runs": 3305,
+          "groups": 45,
+          "table": "sglang_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 1085,
+          "runs": 1085,
+          "groups": 55,
+          "table": "sglang_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 4755,
+          "runs": 4755,
+          "groups": 4755,
+          "table": "sglang_sm89_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "sglang_sm89_kda.csv"
+        }
+      },
+      "tables": {
+        "sglang_sm89_attention_context.csv": {
+          "rows": 50305,
+          "sha256": "f1e87c2b2bea2c3a9cc74c957ad6c64fefc50301792d95d7cc068024bd6deb45"
+        },
+        "sglang_sm89_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "2632230a6a4aefecae28f8aad639905b98b51c5adc3ca9cf3bfb9d1d8c7c9046"
+        },
+        "sglang_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_context_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_dsa_generation_module_skip_indexer.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "sglang_sm89_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "sglang_sm89_mla_context.csv": {
+          "rows": 3080,
+          "sha256": "fbe99ccd2a7d0c4e512eb8ea521ed15b3a46a6852fee50a8d900249cf96cbfda"
+        },
+        "sglang_sm89_mla_generation.csv": {
+          "rows": 5068,
+          "sha256": "8fd79e82e927459010fed7ab2450aa8efe4b849eb552e0622dab2c65b964fd0c"
+        },
+        "sglang_sm89_moe.csv": {
+          "rows": 4755,
+          "sha256": "5604082bea93156263b1dd8c121eb21b5c85520481427dc43b1405fe3324ea59"
+        },
+        "sglang_sm89_msa_context_module.csv": {
+          "rows": 3305,
+          "sha256": "98e7172bd71c9537a7b075ffdb19916cd48d58927f2534d6318d9af48b10e4eb"
+        },
+        "sglang_sm89_msa_generation_module.csv": {
+          "rows": 1085,
+          "sha256": "ca2864f952fb029f6a32280c327196c7a41e797f79a4045556d09c3f717bad24"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "trtllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 53076,
+          "runs": 53076,
+          "groups": 104,
+          "table": "trtllm_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 32882,
+          "runs": 32882,
+          "groups": 92,
+          "table": "trtllm_sm89_attention_generation.csv"
+        },
+        "mla_context": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_context.csv"
+        },
+        "mla_generation": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "trtllm_sm89_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 6100,
+          "runs": 6100,
+          "groups": 90,
+          "table": "trtllm_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 2170,
+          "runs": 2170,
+          "groups": 110,
+          "table": "trtllm_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 3519,
+          "runs": 3519,
+          "groups": 3519,
+          "table": "trtllm_sm89_moe.csv"
+        }
+      },
+      "tables": {
+        "trtllm_sm89_attention_context.csv": {
+          "rows": 53076,
+          "sha256": "f9639b773eb412a650092b1505f26d5ee1f68aa8021983470850589c7c7e48ce"
+        },
+        "trtllm_sm89_attention_generation.csv": {
+          "rows": 32882,
+          "sha256": "e03484b4360858ab0fff6d5247f54e2549506571ef20a9f6d5011690069327ef"
+        },
+        "trtllm_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_mla_context.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm89_mla_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_mla_generation.csv": {
+          "rows": 0,
+          "sha256": "38c849628cc6e444defc6d488f723cb40c94bc23c40020af85c80d2262307133"
+        },
+        "trtllm_sm89_mla_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "trtllm_sm89_moe.csv": {
+          "rows": 3519,
+          "sha256": "2048dea76287735d3892fc7489e19ef91e6872155a4b1956aae527a7224e6bd8"
+        },
+        "trtllm_sm89_msa_context_module.csv": {
+          "rows": 6100,
+          "sha256": "ddedbb5ec962acf36d438b0204d47d83a8b3c7e888bb133ceb453a6339186539"
+        },
+        "trtllm_sm89_msa_generation_module.csv": {
+          "rows": 2170,
+          "sha256": "b8adc643acc344e0b1a06c2ae26050488c06e1c2aada3f8310712e91b8e3aeaa"
+        }
+      }
+    },
+    {
+      "collector_commit": "69232f77ce94de85e8ca7c40da8c2e484a6bdff4",
+      "system": "l40s",
+      "backend": "vllm",
+      "scenario": "shared",
+      "scope": "planned cases; runtime failures/memory refusals not predicted",
+      "ops": {
+        "attention_context": {
+          "cases": 41682,
+          "runs": 41682,
+          "groups": 122,
+          "table": "vllm_sm89_attention_context.csv"
+        },
+        "attention_generation": {
+          "cases": 39692,
+          "runs": 39692,
+          "groups": 110,
+          "table": "vllm_sm89_attention_generation.csv"
+        },
+        "mla_context_module": {
+          "cases": 2928,
+          "runs": 2928,
+          "groups": 216,
+          "table": "vllm_sm89_mla_context_module.csv"
+        },
+        "mla_generation_module": {
+          "cases": 5208,
+          "runs": 5208,
+          "groups": 264,
+          "table": "vllm_sm89_mla_generation_module.csv"
+        },
+        "dsa_context_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm89_dsa_context_module.csv"
+        },
+        "dsa_generation_module": {
+          "cases": 0,
+          "runs": 0,
+          "groups": 0,
+          "table": "vllm_sm89_dsa_generation_module.csv"
+        },
+        "msa_context_module": {
+          "cases": 13220,
+          "runs": 13220,
+          "groups": 180,
+          "table": "vllm_sm89_msa_context_module.csv"
+        },
+        "msa_generation_module": {
+          "cases": 4340,
+          "runs": 4340,
+          "groups": 220,
+          "table": "vllm_sm89_msa_generation_module.csv"
+        },
+        "moe": {
+          "cases": 2265,
+          "runs": 2265,
+          "groups": 2265,
+          "table": "vllm_sm89_moe.csv"
+        },
+        "kda": {
+          "cases": 24,
+          "runs": 24,
+          "groups": 24,
+          "table": "vllm_sm89_kda.csv"
+        }
+      },
+      "tables": {
+        "vllm_sm89_attention_context.csv": {
+          "rows": 41682,
+          "sha256": "d8cf0d8fb425a993c5955b5fc181b94af3fecd5b69d7f6db7fd2f1b00fb90e93"
+        },
+        "vllm_sm89_attention_generation.csv": {
+          "rows": 39692,
+          "sha256": "6389ca28c88e07655c4f4487f19cdab2c095fa5c77a61cbcd6a7f9843c56f693"
+        },
+        "vllm_sm89_dsa_context_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm89_dsa_generation_module.csv": {
+          "rows": 0,
+          "sha256": "c2b5e0b6296bcef7f00646823cec9738dbef2e2ee5aac38acc63aa113b6a74e5"
+        },
+        "vllm_sm89_kda.csv": {
+          "rows": 24,
+          "sha256": "275bef66a3d5439485f41d1d36c329095ff380d6d8e2f0fe610031954fbabb1a"
+        },
+        "vllm_sm89_mla_context_module.csv": {
+          "rows": 2928,
+          "sha256": "19430a3242ef1038835995076cfa5340f1e9f52dc9dcf981c66af296058fa0ce"
+        },
+        "vllm_sm89_mla_generation_module.csv": {
+          "rows": 5208,
+          "sha256": "d76e3e9aa969c36701ec2c171258bdff128b15922d673035769988c39032cb33"
+        },
+        "vllm_sm89_moe.csv": {
+          "rows": 2265,
+          "sha256": "14ec98852ac75f5be29c390156af1e0f3f7ca9442ffe09e7c4ec43575e8bbfc1"
+        },
+        "vllm_sm89_msa_context_module.csv": {
+          "rows": 13220,
+          "sha256": "8002d2928bf3d3104eec20d8cb1f45680087370032d54f2b242852ccc75cc6d4"
+        },
+        "vllm_sm89_msa_generation_module.csv": {
+          "rows": 4340,
+          "sha256": "9d2509cf46464bc276eb98f3be6552e90907e3f95c91b76a1e071624b51c6176"
+        }
+      }
+    }
+  ]
+}
