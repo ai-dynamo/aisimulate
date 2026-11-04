@@ -359,3 +359,28 @@ The corrected S census uses fixture `a4d70f51c` and final4ea model geometry.
 Across all24 lanes and every inventoried operation, both B→S and B→M have
 zero removed physical cells. Previous pre-union S removal counts are
 superseded; no deletion is priced as reduced collection work.
+
+The refreshed raw snapshot contains407 sample records. Observed direct dense
+benchmark counts and phases are retained; older52 dense source95 points have
+no observed count. For a one-benchmark-per-call direct point, execution is the
+sum of the helper’s five disjoint warm-up/capture/timed/cleanup phases and
+preparation is the native-call residual; shared worker initialization remains
+separate. Grouped MoE/KDA keeps every actual benchmark measurement without
+assigning its entire group clock to each token/width.
+
+[`nccl-cost-components.json`](nccl-cost-components.json) records per-system
+NCCL1GiB incremental native-call components, actual participating ranks and
+latency rows. The native harness is preserved in
+[`native-nccl-harness.py`](native-nccl-harness.py), with its actual hash in run
+receipts. It calls the existing collector: no timing proxy or NCCL build. Native
+requests use40 warm-ups and60 timed iterations for these large messages; the
+per-call wall clock includes subprocess startup and those benchmark calls.
+Native CSV message_size is elements, so half divides the byte anchor by two.
+NCCL is shared per system via TRT, not charged once per framework. Partial
+rank groups and missing parent-setup proof retain unknown totals.
+
+The pinned SGLang0.5.21 image lacks `sglang.kernels.ops.kimi_k3` needed by
+Blackwell KDA **verify** widths2–8. B200/B300 verify attempts fail strict
+completeness with zero rows. This does not establish that KDA context or
+generation is unsupported. Hopper verify probes pass. Preserve #676 defaults
+and record the missing native verify qualification; do not substitute kernels.
