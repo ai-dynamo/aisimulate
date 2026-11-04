@@ -237,6 +237,8 @@ def test_agentic_g2_runs_on_several_aggregated_workers_with_private_pools() -> N
     report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
     assert report["completed_requests"] == 4
     assert report["agentic_qualification"] == "functional_only"
+    workers = {entry["logical_worker_id"] for row in report["per_request"] for entry in row["routing_history"]}
+    assert workers == {0, 1}
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
