@@ -439,3 +439,12 @@ provides a reproducible affine-history fit with 17 training and four held-out
 points per indexer mode. Maximum held-out errors are 9.54% and 8.45%.
 First-use measurements remain separate. This component does not transfer
 NVFP4 setup/capacity to BF16 or establish a whole-group/fleet GPU-hour total.
+[`fit-inputs-597.zip`](fit-inputs-597.zip) freezes the exact597-record dataset
+and source-proof inputs used by the interim report, plus contemporaneous fetched
+native/wrapper logs, latency CSVs, image hashes and reused C44 phase logs. Its
+manifest hashes every member; the sidecar records the archive and dataset
+hashes. Executed normalization producer bytes are archived as audit references
+with workspace-specific paths. No model weights or container images are included.
+This frozen fit input is distinct from the earlier407-record rendered sample
+snapshot and from subsequent live campaign receipts. All ZIP CRC/member hashes
+were checked.
