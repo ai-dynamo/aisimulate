@@ -1,0 +1,2391 @@
+{
+  "byte_sizes": [
+    536870912,
+    1073741824
+  ],
+  "row_message_size_unit": "elements = bytes / (2 for half, 1 for int8)",
+  "timing_scope": "Native nccl_benchmark call includes nccl-tests process initialization, 40 warm-up and 60 timed large-message iterations, and latency logging. Parent Python imports outside per-call clocks. Allocation excluded.",
+  "lanes": [
+    {
+      "system": "a100_sxm",
+      "expected_supported_local_new_cases": 24,
+      "measured_new_cases": 0,
+      "rank_groups": [],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": null,
+      "unknown_scope": "Unmeasured or censored rank/dtype/collective calls unknown; parent setup increment unproven",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "l40s",
+      "expected_supported_local_new_cases": 0,
+      "measured_new_cases": 0,
+      "rank_groups": [],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": null,
+      "unknown_scope": "No two-or-more local GPU topology on canonical L40S node",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "h100_sxm",
+      "expected_supported_local_new_cases": 24,
+      "measured_new_cases": 0,
+      "rank_groups": [],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": null,
+      "unknown_scope": "Unmeasured or censored rank/dtype/collective calls unknown; parent setup increment unproven",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "h200_sxm",
+      "expected_supported_local_new_cases": 24,
+      "measured_new_cases": 0,
+      "rank_groups": [],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": null,
+      "unknown_scope": "Unmeasured or censored rank/dtype/collective calls unknown; parent setup increment unproven",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "b200_sxm",
+      "expected_supported_local_new_cases": 24,
+      "measured_new_cases": 16,
+      "rank_groups": [
+        {
+          "participating_gpus": 8,
+          "completed_new_1GiB_cases": 2,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 14.753813920542598,
+          "measured_incremental_collection_gpu_hours": 0.03278625315676133,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": false,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b200_sxm/b200_sxm-nccl-2488961/native-r8/result.json",
+          "source_sha256": "9efd7ff74cfc0d2805726acdeba96e2408e59eb61cebfb24b2211fd8f86e46c4",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.541136412881315
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.593017693608999
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.355052678845823
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.1607962269335985
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 10.088231668807566
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "268435456",
+              "latency": "0.7868200000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "536870912",
+              "latency": "1.51423"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "8",
+              "message_size": "536870912",
+              "latency": "0.7835599999999999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "8",
+              "message_size": "1073741824",
+              "latency": "1.51283"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "268435456",
+              "latency": "0.8410299999999999"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d5fb9acf-8442-3e19-5ab6-31ee64d62eb5"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d377f390-2926-fd97-17ec-db9c6a74fdca"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "29f9d5d6-2913-a30a-f2a4-143b299fb0af"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "1ea09c3e-8c93-c770-dca3-c5c5c5836ba2"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "97a419eb-c209-1d0c-3093-4b1bfda3ae78"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "f0d73d8b-25df-55bb-d4f5-b24799db948a"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "0c4c06f1-52ca-ccd5-581e-df03f5284c84"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "083d6523-8fe9-f47c-eb2f-15f5d3d8d4bb"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007ffc7a3c8000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007f1cdee00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007f1cdea00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007f1cd2600000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f1cd2200000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007f1cded17000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f1ce017e000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f1cd1e00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007f1ce0179000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f1ce0174000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007f1ce016f000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f1ce01eb000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007ffc9a7c2000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007ba2e1a00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007ba2e1600000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007ba2d5200000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ba2d4e00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ba2e1917000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ba2e32f7000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ba2d4a00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007ba2e32f2000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007ba2e32ed000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007ba2e32e8000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ba2e3334000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007ffd7cfd2000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007d91d5c00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007d91d5800000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007d91c9400000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007d91c9000000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007d91d785f000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007d91d6fd2000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007d91c8c00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007d91d785a000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007d91d7855000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007d91d6fcd000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007d91d7957000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x00007ffc3b943000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000753660e00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000753660a00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000753654600000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000753654200000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000753662188000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000753660dd2000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000753653e00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000753662183000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000075366217e000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000753662179000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007536622b0000)\n"
+          },
+          "pending_call": {
+            "op": "alltoall",
+            "dtype": "half",
+            "size_bytes": 1073741824,
+            "participating_gpus": 8,
+            "status": "running"
+          }
+        },
+        {
+          "participating_gpus": 2,
+          "completed_new_1GiB_cases": 8,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 19.395316045731306,
+          "measured_incremental_collection_gpu_hours": 0.010775175580961837,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": true,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b200_sxm/b200_sxm-nccl-2488961/native-r2/result.json",
+          "source_sha256": "c8832b46555702ee6aa6423c985afb4bcb9b9d7318ade944d52dd47ff50f09ff",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2675081687048078
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.3767300145700574
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.386338428594172
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2320378199219704
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.1621436458081007
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.334072794765234
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.1296103233471513
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.347076255828142
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2070571789518
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2657866086810827
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.0746877174824476
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.399432529695332
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2010876685380936
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.655756971798837
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.326987008564174
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.78442305047065
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.6194700000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.1848"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.61933"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.18419"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.81571"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.25837"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.81608"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.25847"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.65158"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.2357"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.72693"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.39387"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.9911300000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.8927"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.06101"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "2.00006"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d5fb9acf-8442-3e19-5ab6-31ee64d62eb5"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d377f390-2926-fd97-17ec-db9c6a74fdca"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007ffd0bf89000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x000072a418a00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x000072a418600000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x000072a40c200000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x000072a40be00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000072a418917000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000072a419e1c000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x000072a40ba00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x000072a419e17000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000072a419e12000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x000072a419e0d000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000072a419e89000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007ffcd18f3000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x000077c825600000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x000077c825200000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x000077c818e00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x000077c818a00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000077c825517000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000077c8269c7000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x000077c818600000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x000077c826ec4000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000077c8269c2000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x000077c8269bd000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000077c826ecd000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007ffefbd83000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007d7e50000000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007d7e4fc00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007d7e43800000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007d7e43400000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007d7e51c87000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007d7e51c59000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007d7e43000000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007d7e51c54000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007d7e513fb000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007d7e513f6000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007d7e51d7f000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x00007ffd184c7000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000714ab9200000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000714ab8e00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000714aaca00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000714aac600000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000714ab9117000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000714ab90e9000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000714aac200000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000714aba582000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x0000714aba57d000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000714aba578000)\n\t/lib64/ld-linux-x86-64.so.2 (0x0000714aba5c6000)\n"
+          },
+          "pending_call": null
+        },
+        {
+          "participating_gpus": 4,
+          "completed_new_1GiB_cases": 6,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 25.15144162066281,
+          "measured_incremental_collection_gpu_hours": 0.0279460462451809,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": false,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b200_sxm/b200_sxm-nccl-2488961/native-r4/result.json",
+          "source_sha256": "7a88cecd739eaed70fb985fc801081b9683239138b691a0972f1f15a48c9af07",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7221284890547395
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.9505838118493557
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.904119581915438
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.281684929504991
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.107499985955656
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.227242964319885
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.059428609907627
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.134072150103748
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.8298960896208882
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.02934698574245
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.9915794720873237
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.52851077914238
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.102122654207051
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.7215800000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.39811"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.72213"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.39907"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.83563"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.52164"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.83464"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.52174"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.73201"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.38634"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.80679"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.54688"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "1.29942"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d5fb9acf-8442-3e19-5ab6-31ee64d62eb5"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "d377f390-2926-fd97-17ec-db9c6a74fdca"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "29f9d5d6-2913-a30a-f2a4-143b299fb0af"
+            },
+            {
+              "name": "NVIDIA B200",
+              "uuid": "1ea09c3e-8c93-c770-dca3-c5c5c5836ba2"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007ffd2df98000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000712384800000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000712384400000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000712378000000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000712377c00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000712385c00000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000712385bd2000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000712377800000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000712385bcd000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x0000712385bc8000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000712385bc3000)\n\t/lib64/ld-linux-x86-64.so.2 (0x0000712385d28000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007ffd849d7000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000739773c00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000739773800000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000739767400000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000739767000000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000739775585000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000739775557000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000739766c00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000739775552000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000073977554d000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000739775548000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000073977567d000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007fff1f1c1000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007f5ce2c00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007f5ce2800000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007f5cd6400000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f5cd6000000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007f5ce2b17000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f5ce4858000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f5cd5c00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007f5ce3ffb000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f5ce3ff6000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007f5ce3ff1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f5ce4895000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x00007fff97940000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x000074df78e00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x000074df78a00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x000074df6c600000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x000074df6c200000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000074df7a177000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000074df78dd2000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x000074df6be00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x000074df7a172000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000074df7a16d000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x000074df78dcd000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000074df7a29f000)\n"
+          },
+          "pending_call": {
+            "op": "all_reduce",
+            "dtype": "half",
+            "size_bytes": 1073741824,
+            "participating_gpus": 4,
+            "status": "running"
+          }
+        }
+      ],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": 0.07150747498290407,
+      "unknown_scope": "Unmeasured or censored rank/dtype/collective calls unknown; parent setup increment unproven",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "b300_sxm",
+      "expected_supported_local_new_cases": 24,
+      "measured_new_cases": 18,
+      "rank_groups": [
+        {
+          "participating_gpus": 8,
+          "completed_new_1GiB_cases": 3,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 26.453026688017417,
+          "measured_incremental_collection_gpu_hours": 0.05878450375114982,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": false,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b300_sxm/b300_sxm-nccl-1024609/native-r8/result.json",
+          "source_sha256": "762be255e4091491cac997da55eef251e1f79c77129ab614bc4745d76e998644",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.9809886640287
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.142128935025539
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.0236239999649115
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 7.184827503981069
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 8.783550605992787
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 8,
+              "status": "passed",
+              "collection_seconds": 12.126070249010809
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "268435456",
+              "latency": "0.79314"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "536870912",
+              "latency": "1.5155699999999999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "8",
+              "message_size": "536870912",
+              "latency": "0.7830900000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "8",
+              "message_size": "1073741824",
+              "latency": "1.5193699999999999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "268435456",
+              "latency": "0.81902"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "8",
+              "message_size": "536870912",
+              "latency": "1.5111400000000001"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "9887c081-c8cd-c8a2-53ca-830f1050d6aa"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "2a91cb63-58d8-37fd-0fa0-19725343d170"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "6e616fda-20aa-af2a-805f-d26e7d6022b4"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "9c6009a3-d047-f5b0-15b3-02b76c9dfda4"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "12c5bd17-4868-0d3e-20a1-19815429c7d6"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "1525b964-9fc8-2215-5dfd-8950c26b683b"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "475640d8-1fa5-0df5-04b8-c32d0ba26307"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "038a7e77-9ce7-6395-6d9c-a491a2daa78b"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007d91089f9000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007d9107600000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007d9107200000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007d90fae00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007d90faa00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007d9107517000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007d9108986000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007d90fa600000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007d9108981000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007d910897c000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007d9108977000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007d91089fb000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007ecc36165000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007ecc34800000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007ecc34400000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007ecc28000000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ecc27c00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ecc34717000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ecc36122000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ecc27800000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007ecc3611d000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007ecc36118000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007ecc36113000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ecc36167000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007ca04b784000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007ca049a00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007ca049600000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007ca03d200000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ca03ce00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ca04b686000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ca04b658000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ca03ca00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007ca04adfb000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007ca04adf6000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007ca04adf1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ca04b786000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x000079249e47e000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x000079249d000000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x000079249cc00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000792490800000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000792490400000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000079249cf17000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000079249e40b000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000792490000000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x000079249e406000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x000079249e401000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x000079249e3fc000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000079249e480000)\n"
+          },
+          "pending_call": {
+            "op": "alltoall",
+            "dtype": "int8",
+            "size_bytes": 536870912,
+            "participating_gpus": 8,
+            "status": "running"
+          }
+        },
+        {
+          "participating_gpus": 2,
+          "completed_new_1GiB_cases": 8,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 19.934998196957167,
+          "measured_incremental_collection_gpu_hours": 0.011074998998309537,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": true,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b300_sxm/b300_sxm-nccl-1024609/native-r2/result.json",
+          "source_sha256": "9a9958cd1f0d58b320be2354aefdf72ad87dba4a03875cfd00c7864816162021",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2382187000475824
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2512369489995763
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.1245480380021036
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.532428179983981
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.4724885679897852
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.4544617789797485
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.454782955988776
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.3017176919966005
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.5196327670128085
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.288999081996735
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.415144083031919
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.610759980045259
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.1708599000121467
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.7711911039659753
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.0992836019722745
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.7242034309892915
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.60616"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.1528399999999999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.60702"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.15338"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.7914"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.22309"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.79177"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.22319"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.64722"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.21598"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.72189"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.36896"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.97428"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.86427"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.0413599999999998"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.96854"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "9887c081-c8cd-c8a2-53ca-830f1050d6aa"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "2a91cb63-58d8-37fd-0fa0-19725343d170"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007e5c6628b000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007e5c64e00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007e5c64a00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007e5c58600000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007e5c58200000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007e5c64d17000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007e5c66218000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007e5c57e00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007e5c66213000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007e5c6620e000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007e5c66209000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007e5c6628d000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007e7ed34cf000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007e7ed1c00000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007e7ed1800000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007e7ec5400000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007e7ec5000000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007e7ed1b17000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007e7ed2fc7000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007e7ec4c00000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007e7ed2fc2000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007e7ed2fbd000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007e7ed2fb8000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007e7ed34d1000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007f34ab049000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007f34a9200000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007f34a8e00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007f349ca00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f349c600000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007f34aaf4b000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f34aaf1d000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f349c200000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007f34aaf18000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f34aaf13000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007f34aaf0e000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f34ab04b000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x0000793ae2823000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000793ae1400000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000793ae1000000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000793ad4c00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000793ad4800000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000793ae1317000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000793ae27b0000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000793ad4400000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000793ae27ab000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x0000793ae27a6000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000793ae27a1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x0000793ae2825000)\n"
+          },
+          "pending_call": null
+        },
+        {
+          "participating_gpus": 4,
+          "completed_new_1GiB_cases": 7,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 27.637158376921434,
+          "measured_incremental_collection_gpu_hours": 0.030707953752134927,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": false,
+          "source_artifact": "/tmp/pr664-cost-results/raw/b300_sxm/b300_sxm-nccl-1024609/native-r4/result.json",
+          "source_sha256": "e09925c9849aa9700a65d9cfe69a90ac2467c38909e67130d4c98bb0ad1d7921",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.912213058967609
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.287323080003262
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7231972709996626
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.909419140953105
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.219593549030833
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7786708369967528
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.842069504025858
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.046606505988166
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3662298500421457
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.8414369110250846
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7638432169915177
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.02631492796354
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.797206918010488
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7473869739915244
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.7129"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.3704800000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.71515"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.36906"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.81162"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.48077"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.81175"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.4819900000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.7176400000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.35361"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.8003"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.52712"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "1.29092"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA B300 SXM6 AC",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "2.509"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "9887c081-c8cd-c8a2-53ca-830f1050d6aa"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "2a91cb63-58d8-37fd-0fa0-19725343d170"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "6e616fda-20aa-af2a-805f-d26e7d6022b4"
+            },
+            {
+              "name": "NVIDIA B300 SXM6 AC",
+              "uuid": "9c6009a3-d047-f5b0-15b3-02b76c9dfda4"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x00007ecd53762000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007ecd52200000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007ecd51e00000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007ecd45a00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ecd45600000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ecd53634000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ecd53606000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ecd45200000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007ecd53601000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007ecd535fc000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007ecd535f7000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ecd53764000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x00007ada69e47000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007ada68400000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007ada68000000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007ada5bc00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007ada5b800000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007ada69d49000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ada69d1b000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007ada5b400000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007ada69d16000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007ada69d11000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007ada69d0c000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007ada69e49000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x00007c4710072000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x00007c470e400000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x00007c470e000000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x00007c4701c00000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007c4701800000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007c470e317000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007c470f7d2000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007c4701400000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007c4710058000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007c470f7cd000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007c470f7c8000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007c4710074000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x0000774134c98000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000774133800000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000774133400000)\n\tlibnccl.so.2 => /usr/lib/x86_64-linux-gnu/libnccl.so.2 (0x0000774127000000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000774126c00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000774133717000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000774134c25000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000774126800000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x0000774134c20000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x0000774134c1b000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x0000774134c16000)\n\t/lib64/ld-linux-x86-64.so.2 (0x0000774134c9a000)\n"
+          },
+          "pending_call": {
+            "op": "all_reduce",
+            "dtype": "int8",
+            "size_bytes": 536870912,
+            "participating_gpus": 4,
+            "status": "running"
+          }
+        }
+      ],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": 0.10056745650159428,
+      "unknown_scope": "Unmeasured or censored rank/dtype/collective calls unknown; parent setup increment unproven",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "gb200",
+      "expected_supported_local_new_cases": 16,
+      "measured_new_cases": 16,
+      "rank_groups": [
+        {
+          "participating_gpus": 2,
+          "completed_new_1GiB_cases": 8,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 17.287387298885733,
+          "measured_incremental_collection_gpu_hours": 0.009604104054936518,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": true,
+          "source_artifact": "/tmp/pr664-cost-results/raw/gb200/gb200-nccl-8611930/native-r2/result.json",
+          "source_sha256": "506e4f5a57c66d45f4fb2ab78bbf349fd123e0bd5a106cd7932c66700999032c",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.8035292751155794
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.4483531056903303
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.68443817878142
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7128086099401116
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7617883416824043
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7687128619290888
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7373702707700431
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.2245032228529453
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7768096113577485
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.290053951088339
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 1.7443965249694884
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.3585969703271985
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.227280644699931
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.255120932124555
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.277932221069932
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 2,
+              "status": "passed",
+              "collection_seconds": 2.229237644933164
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.60028"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.1379700000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.6001900000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.13774"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.7834"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.22293"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.7817500000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.22308"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.64375"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.20924"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "0.7196100000000001"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.3589300000000002"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "268435456",
+              "latency": "0.96885"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.86031"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "536870912",
+              "latency": "1.0334"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "2",
+              "message_size": "1073741824",
+              "latency": "1.95053"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "dec651dd-44b6-e0ce-96ff-cfee2f66fcd2"
+            },
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "a1161657-26d8-c0b0-da1e-a5f6408396f3"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6bb0000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6ad0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea8a0000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea610000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea560000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea520000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffea360000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffea330000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffea300000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffea2d0000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6720000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6640000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea410000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea180000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea0d0000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea090000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffe9ed0000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffe9ea0000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffe9e70000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffe9e40000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6390000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff62b0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea080000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffe9df0000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffe9d40000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffe9d00000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffe9b40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffe9b10000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffe9ae0000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffe9ab0000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6bb0000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6ad0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea8a0000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea610000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea560000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea520000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffea360000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffea330000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffea300000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffea2d0000)\n"
+          },
+          "pending_call": null
+        },
+        {
+          "participating_gpus": 4,
+          "completed_new_1GiB_cases": 8,
+          "expected_new_cases": 8,
+          "measured_incremental_native_seconds": 28.715950757730752,
+          "measured_incremental_collection_gpu_hours": 0.03190661195303417,
+          "parent_import_setup_increment_seconds": null,
+          "complete_native_rank_group": true,
+          "source_artifact": "/tmp/pr664-cost-results/raw/gb200/gb200-nccl-8611930/native-r4/result.json",
+          "source_sha256": "88db51254f34b376e96fc82a23bb64e3f7fbd72077057ef380d7f0b5d88f333e",
+          "calls": [
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3022395949810743
+            },
+            {
+              "op": "all_gather",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.213026543147862
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.4926766720600426
+            },
+            {
+              "op": "all_gather",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3419461785815656
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.406549484934658
+            },
+            {
+              "op": "alltoall",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.926309122238308
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.4281444642692804
+            },
+            {
+              "op": "alltoall",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.903926454950124
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.2458122768439353
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.2291396879591048
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3323658192530274
+            },
+            {
+              "op": "reduce_scatter",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.323996630962938
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3353218636475503
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "half",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.7758285249583423
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 536870912,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 3.3586130370385945
+            },
+            {
+              "op": "all_reduce",
+              "dtype": "int8",
+              "size_bytes": 1073741824,
+              "participating_gpus": 4,
+              "status": "passed",
+              "collection_seconds": 4.001777614932507
+            }
+          ],
+          "native_forward_rows": [
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.71225"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.37354"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.71489"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_gather",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.37344"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.80308"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.46723"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.80215"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "alltoall",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.46673"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "0.72829"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.36012"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "0.79999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "reduce_scatter",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "1.52399"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "268435456",
+              "latency": "1.28925"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "half",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "2.4943400000000002"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "536870912",
+              "latency": "1.3200399999999999"
+            },
+            {
+              "framework": "NCCL",
+              "version": "2.30.7",
+              "device": "NVIDIA GB200",
+              "op_name": "all_reduce",
+              "kernel_source": "NCCL",
+              "nccl_dtype": "int8",
+              "num_gpus": "4",
+              "message_size": "1073741824",
+              "latency": "2.55598"
+            }
+          ],
+          "gpu_uuid_receipts": [
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "dec651dd-44b6-e0ce-96ff-cfee2f66fcd2"
+            },
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "a1161657-26d8-c0b0-da1e-a5f6408396f3"
+            },
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "576cfe57-c95d-518f-522a-f2357d93870d"
+            },
+            {
+              "name": "NVIDIA GB200",
+              "uuid": "924fe930-3252-de85-edc0-4e93c518898b"
+            }
+          ],
+          "nccl_version": "2.30.7",
+          "binary_linkage": {
+            "all_gather_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6bb0000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6ad0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea8a0000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea610000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea560000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea520000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffea360000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffea330000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffea300000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffea2d0000)\n",
+            "all_reduce_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6720000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6640000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea410000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea180000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea0d0000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea090000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffe9ed0000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffe9ea0000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffe9e70000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffe9e40000)\n",
+            "alltoall_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6390000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff62b0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea080000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffe9df0000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffe9d40000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffe9d00000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffe9b40000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffe9b10000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffe9ae0000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffe9ab0000)\n",
+            "reduce_scatter_perf": "\tlinux-vdso.so.1 (0x0000fffff7fa0000)\n\tlibverifiable.so.0 => /usr/local/bin/verifiable/libverifiable.so.0 (0x0000fffff6bb0000)\n\tlibcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13 (0x0000fffff6ad0000)\n\tlibnccl.so.2 => /usr/lib/aarch64-linux-gnu/libnccl.so.2 (0x0000ffffea8a0000)\n\tlibstdc++.so.6 => /usr/lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ffffea610000)\n\tlibm.so.6 => /usr/lib/aarch64-linux-gnu/libm.so.6 (0x0000ffffea560000)\n\tlibgcc_s.so.1 => /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffea520000)\n\tlibc.so.6 => /usr/lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffea360000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000fffff7fb0000)\n\tlibdl.so.2 => /usr/lib/aarch64-linux-gnu/libdl.so.2 (0x0000ffffea330000)\n\tlibpthread.so.0 => /usr/lib/aarch64-linux-gnu/libpthread.so.0 (0x0000ffffea300000)\n\tlibrt.so.1 => /usr/lib/aarch64-linux-gnu/librt.so.1 (0x0000ffffea2d0000)\n"
+          },
+          "pending_call": null
+        }
+      ],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": 0.04151071600797068,
+      "unknown_scope": "Eight local ranks unsupported on four-GPU Grace nodes; censored calls unknown",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    },
+    {
+      "system": "gb300",
+      "expected_supported_local_new_cases": 16,
+      "measured_new_cases": 0,
+      "rank_groups": [],
+      "complete_system_extra_gpu_hours": null,
+      "measured_new_native_gpu_hours_component": null,
+      "unknown_scope": "Eight local ranks unsupported on four-GPU Grace nodes; censored calls unknown",
+      "shared_framework_accounting": "NCCL is per-system canonical TRT image; do not triple charge vLLM/SGLang/TRT"
+    }
+  ]
+}
