@@ -149,19 +149,6 @@ framework_specific_model_case_values:
         architecture: KimiK3ForConditionalGeneration
         native_num_heads: 96
         wideep_mla: false
-        long_history_tensor_parallel_sizes: [1, 2, 4, 8]
-        # Native MLA history, rather than an all-model dense fallback sweep.
-        long_history_cases:
-          context:
-            - [1, 524288, 0]
-            - [1, 1048576, 0]
-          generation:
-            - [1, 524287, 0]
-            - [2, 524287, 0]
-            - [4, 524287, 0]
-            - [1, 1048575, 0]
-            - [2, 1048575, 0]
-            - [4, 1048575, 0]
 
 # moe is activated per-framework (NOT all_frameworks): K3 has no trtllm
 # serving lane, and an all-frameworks activation made a K3-scoped trtllm run

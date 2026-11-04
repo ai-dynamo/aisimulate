@@ -40,7 +40,7 @@ when an identity cannot be resolved.
 | Model route | Added coverage | Qualification |
 |---|---|---|
 | Qwen3.5-397B dense layers | Full-lookup anchors 24K/32K/40K at measured B1/2/4/8/16, 64K/128K/262K at selected B1/2/4; decode through 262K at B1/2/4/8 | Uses the declared 32 query / 2 KV heads, d256 and valid TP shards. History stays at the audited model range; no 1M Qwen declaration. |
-| Kimi-K3 native MLA | B1 context at 512K/1M; selected B1/2/4 decode at those histories | Uses 96 native heads at TP1/2/4/8. Native-module support is separate from the legacy dense fallback. |
+| Kimi-K3 MLA | No new optional history points until the native adapter is qualified | Preserve #676's ordinary coverage and independent KDA verifier-width additions. The current generic DeepSeek MLA module does not establish native Kimi NoPE parity. |
 | GLM-5.2/5.3 DSA | Intermediate 786432/917504 history, selected sparse queries including 32K, and B8/16/32 tail decode | Uses 64 native heads and valid TP shards. Full and reused-indexer operations stay separate. The NVFP4 TP8/head8 row also declares #665's 22 measured B52 history points through 720896; B52 is a calibration key, not an observed GPU-forward batch. The 32K query is a qualified collection shape, not proof every serving recipe uses it. |
 | MiniMax-M3 MSA | Intermediate history, 32K new queries, selected tail decode batches | Native MSA geometry and precision; global history does not enlarge recurrent/GEMM token work. |
 | DSV4.1, MuseSpark, QwenNext unsupported routes | No invented extension | Exact model/backend/feature support and forward tuples must be qualified separately. |
@@ -100,3 +100,33 @@ module, or explicitly quantizes only MLP modules. Unknown quantization and
 changed attention/indexer/RoPE dimensions remain significant. A new incompatible
 collision at the same persisted key raises rather than writing duplicate or
 misidentified consumer rows. Targeted NVFP4 runs retain their own checkpoint.
+
+
+## Deferred Kimi-K3 MLA extension
+
+The model config's `mla_use_nope: true` is a kernel-contract fact, not just a
+history ceiling. At pinned vLLM 0.30.0 commit
+[`ced6857afa0ea7b2e3f0846a62e1394e90f15607`](https://github.com/vllm-project/vllm/commit/ced6857afa0ea7b2e3f0846a62e1394e90f15607),
+[`KimiDecoderLayer`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/model.py#L930)
+constructs native `MultiHeadLatentAttention` with NoPE and the configured output
+gate. Its [native MLA implementation](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/mla.py#L136)
+owns fused prefill/decode cache insertion, its cache binding and weight
+processing, and a two-argument forward interface. The existing generic
+`DeepseekV2MLAAttention` collector is not an interchangeable factory selection.
+
+Before adding Kimi-specific long-history module cases, an adapter must preserve
+native layer registration and cache binding, process absorbed weights, construct
+native metadata and FP8 prefill policy, and invoke the real forward contract.
+Its output-gate/projection timing boundary must also agree with the consumer,
+which prices some work separately. Qualify representative short and long
+prefill/decode shapes, BF16/FP8 cache, local heads including 12/24, graph/eager
+behavior and numerical/serving parity. Do not infer qualification from a generic
+DeepSeek module or a checkpoint label.
+
+This PR adds no optional Kimi MLA points. Ordinary #676 metadata and grids are
+preserved; that does not certify native parity for their existing generic rows.
+The audited AgentX Kimi route is vLLM's module path; SGLang Kimi uses standalone
+MLA tables and is not covered by the optional module extension. Neither that
+standalone route nor vLLM's dense fallback is claimed complete at 1M. The audit
+must mark the required native Kimi extension as deferred/unmeasured, not report
+zero GPU-hours as the cost of covering it. Independent KDA widths remain in scope.
