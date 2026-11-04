@@ -318,13 +318,18 @@ async def check():
                 )
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
-                await expect(table.locator("thead th")).to_have_count(8)
-                await expect(table.locator("tr[data-agentx-parent] .agentx-perf-tag")).to_have_text(
+                await expect(table.locator("thead th")).to_have_count(9)
+                await expect(table.locator("tr[data-agentx-parent] .agentx-perf-model")).to_have_text(
                     ["Op-based perf model (sglang 0.5.21)"] * 6 + ["Op-based perf model (vllm 0.31.0)"] * 3
                 )
+                await expect(table.locator("thead th").nth(2)).to_have_text("Performance model")
+                await expect(table.locator(".agentx-model .agentx-perf-model")).to_have_text(
+                    ["Op-based perf model (sglang 0.5.21)", "Op-based perf model (vllm 0.31.0)"]
+                )
+                await expect(table.locator("tr[data-agentx-parent] th .agentx-perf-model")).to_have_count(0)
                 info = page.get_by_role("button", name="About point TTFT and TPOT error")
                 tooltip = page.get_by_role("tooltip")
-                await expect(table.locator("thead th").nth(2)).to_have_text("Point TPOT error")
+                await expect(table.locator("thead th").nth(3)).to_have_text("Point TPOT error")
                 await info.hover()
                 await expect(tooltip).to_be_visible()
                 await expect(tooltip).to_contain_text(
