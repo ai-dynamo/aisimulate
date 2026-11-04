@@ -135,10 +135,17 @@ answers can differ during startup.
 
 ## 2. Start with C only
 
-With no seed and no qualified prior, return an unavailable prediction while
-collecting the first training population. Continue collecting real serving
-measurements; simulation outputs are not labels. Keep a buffer for each worker
-and workload class $s$. For the buffer in this example, write
+With no seed and no qualified prior, return an unavailable prediction for
+non-empty scheduled work while collecting the first training population.
+Constructed AISim models return `0.0` ms for valid rank records with no
+scheduled work. Before constructing a model, the application must handle idle
+inputs itself if it accepts them. An empty list of rank records is invalid;
+it does not describe an idle iteration. The example below accepts only busy
+decode observations.
+
+Continue collecting real serving measurements; simulation outputs are not
+labels. Keep a buffer for each worker and workload class $s$. For the buffer
+in this example, write
 
 $$
 \mathcal H_{s,t}=\{(i,x_i,y_i): i\leq t,\ \text{observation }i\text{ admitted to class }s\},\qquad

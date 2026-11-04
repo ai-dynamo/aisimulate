@@ -600,14 +600,29 @@ do not reuse the standalone save loop as a complete state export for them.
 ### Calibration and fallback with sparse feedback
 
 Let $F_{0,s}(x)$ be the frozen GBDT prediction for workload class $s$.
-Calibration uses coordinates $z$: $(Q_p)$ for prefill, $(B_d,K_d)$ for decode,
-and $(Q_p,K_d)$ for mixed batches. For multiple attention-DP ranks, it selects
-the rank-local vector with the largest coordinate sum. These coordinates need
-not match the GBDT feature vector $x$.
+Calibration of this fitted GBDT builds one vector per active rank: $(Q_p)$ for
+pure prefill, $(B_d,K_d)$ for pure decode, and $(Q_p,K_d)$ for locally mixed
+work. With multiple attention-DP ranks, it selects the vector with the highest
+load score, currently the sum of its coordinates. These calibration coordinates
+$z$ need not match the GBDT feature vector $x$.
 
-For an earlier measurement $y_i>0$ and uncorrected prediction
-$p_i=F_{0,s}(x_i)>0$, hybrid calibration records a bounded ratio. The factor
-$c_t$ used for pass $t$ depends only on previously admitted feedback:
+Eligible mixed-interpolation fallback maintains its own calibration history.
+Its key aggregates the complete attention-DP group:
+
+$$
+z^I=\left[\max_r A_r,\ \gamma\sum_r(Q_{p,r}+B_{d,r})\right].
+$$
+
+Here $A_r$ is rank $r$'s weighted attention term, $Q_{p,r}$ is its prefill-token
+count, $B_{d,r}$ is its decode-request count, and $\gamma$ is the FFN token
+weight. This fallback uses the group key rather than selecting one rank's
+vector. See the [A+C fallback walkthrough](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest)
+for its source requirements and update workflow.
+
+For calibration of the frozen GBDT, let $y_i>0$ be an earlier measurement and
+$p_i=F_{0,s}(x_i)>0$ its uncorrected prediction. Hybrid calibration records a
+bounded ratio. The factor $c_t$ used for pass $t$ depends only on previously
+admitted feedback:
 
 $$
 \begin{array}{rl}
