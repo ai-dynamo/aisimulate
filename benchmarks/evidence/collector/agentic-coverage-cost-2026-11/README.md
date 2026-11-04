@@ -513,3 +513,11 @@ was found. It is an empirical warning, not a proven H100/B300 kernel contract.
 The omitted point remains planned and unmeasured here; assign neither success
 nor zero cost. B1 avoids that particular offset expression, and decode uses
 query length1; other memory, context and kernel restrictions still apply.
+Tensor-observed point clocks start after the audit pending/progress receipt is
+written, so growth of audit JSON cannot masquerade as cache preparation. The
+whole bounded worker clock still includes those writes and charges them to the
+measurement budget. Native cache/input observations remain inside the point
+clock and their small CPU overhead is explicit. The wrapper-minus-point residual
+contains startup, planning, audit I/O and teardown; it is not pure initialization
+or an independently qualified one-pass forecast. Earlier clocks retain their
+original boundary and are not rewritten.
