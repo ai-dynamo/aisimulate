@@ -1,0 +1,6 @@
+Skipping import of cpp extensions due to incompatible torch version 2.14.0a0+4fdf77b940.nv26.08 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc29
+trtllm.moe: after case 1 on this worker: 6180 MiB allocated, 6184 MiB reserved (released 0 MiB of TRT-LLM workspace buffers)
+trtllm.moe: recycling worker after 1 case(s) (6180 MiB still allocated, leak guard)
+srun.real: error: pool0-0006: task 0: Exited with exit code 10
+srun.real: Terminating StepId=28269.0

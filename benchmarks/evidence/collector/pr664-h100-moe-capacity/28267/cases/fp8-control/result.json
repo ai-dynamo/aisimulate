@@ -1,0 +1,27 @@
+{
+  "publish_eligible": false,
+  "case": [
+    "fp8",
+    [
+      16384
+    ],
+    8192,
+    5120,
+    22,
+    512,
+    1,
+    1,
+    false,
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8",
+    "balanced",
+    0.0
+  ],
+  "collector_ref": "c66ce3ba3",
+  "collector_sha256": "1150a6441bfb3fefe2461d9df5fd20eff4539fa737e57cb1cac24958c11fc617",
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "capacity_bytes": 85019590656,
+  "error": "MoE autotuning did not succeed for any eligible token count",
+  "status": "failed",
+  "collection_seconds": 39.5432199165225,
+  "peak_allocated_bytes": 78744654848
+}

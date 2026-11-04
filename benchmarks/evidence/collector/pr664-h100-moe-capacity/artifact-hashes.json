@@ -1,0 +1,93 @@
+{
+  "archive": "executed-artifacts.zip",
+  "files": {
+    "28267/bf16-refusal.exit-code.txt": {
+      "executed_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "published_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "28267/bf16-refusal.log": {
+      "executed_sha256": "1d5222963843214e705e0068e627c13d1b7c53ec94ef025be4fa27126b3819bd",
+      "published_sha256": "1d5222963843214e705e0068e627c13d1b7c53ec94ef025be4fa27126b3819bd"
+    },
+    "28267/capacity.sbatch": {
+      "executed_sha256": "06e83900f48a2ca372fcf0da205bde1beabe0728cadc60f2325ce683b32ef783",
+      "published_sha256": "49ea127c392c2d204674e084e6ed3c187c40b904205b0a22241c95c8e8f785b1"
+    },
+    "28267/capacity_worker.py": {
+      "executed_sha256": "223df940ad826b89a8a0dabdba77af893c78397524b56751a5c85acbe9cc57e0",
+      "published_sha256": "132d82cebaf04ac32eb58fb2c67e9cd581762cb67231f4e79fab6645f4d7ccd6"
+    },
+    "28267/cases/bf16-refusal/result.json": {
+      "executed_sha256": "59b1c475cd626dafcebf2ccabc7d9ec707338bf9dc83df1a1110964cedc5901b",
+      "published_sha256": "59b1c475cd626dafcebf2ccabc7d9ec707338bf9dc83df1a1110964cedc5901b"
+    },
+    "28267/cases/fp8-control/result.json": {
+      "executed_sha256": "99acecfd498e8477e8845bc5187f9146ce76e83ac09620ca379f9b836162e946",
+      "published_sha256": "99acecfd498e8477e8845bc5187f9146ce76e83ac09620ca379f9b836162e946"
+    },
+    "28267/fp8-control.exit-code.txt": {
+      "executed_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "published_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    "28267/fp8-control.log": {
+      "executed_sha256": "d1b4f3df5fd6e25eb0ad54e94e3862144239f29ba5dd02fff9eb7b11ca520525",
+      "published_sha256": "d1b4f3df5fd6e25eb0ad54e94e3862144239f29ba5dd02fff9eb7b11ca520525"
+    },
+    "28267/input-sha256.txt": {
+      "executed_sha256": "fee60ee27cc2f6e62a7367e80d685fcb6c89038fe24e924fb4cf230f6f3cf166",
+      "published_sha256": "fee60ee27cc2f6e62a7367e80d685fcb6c89038fe24e924fb4cf230f6f3cf166"
+    },
+    "28267/nvidia-smi-after.txt": {
+      "executed_sha256": "dfdf4b1d62eb070714cdd0c0d2580381e422fdaed425d85b0913357ebde1d54e",
+      "published_sha256": "7e715f9a2d1f6c7dc9e32aa09e20ff51b947d80d38a1a7fb5684fe54436657f9"
+    },
+    "28267/nvidia-smi-before.txt": {
+      "executed_sha256": "d456018c012051ed089d7c0ea0029109e5ed1cdf0ff2f6e3f39fc10fc45f0d22",
+      "published_sha256": "c6560b23fdd8f5bd50605c753dc098994f562e5186bafe2569816919dcf673f4"
+    },
+    "28267/slurm-job.txt": {
+      "executed_sha256": "d02ddf883aa46e46d680603a6ff220276c7bb77d27a377086661445e30292cc2",
+      "published_sha256": "d02ddf883aa46e46d680603a6ff220276c7bb77d27a377086661445e30292cc2"
+    },
+    "28269/bf16-control.exit-code.txt": {
+      "executed_sha256": "917df3320d778ddbaa5c5c7742bc4046bf803c36ed2b050f30844ed206783469",
+      "published_sha256": "917df3320d778ddbaa5c5c7742bc4046bf803c36ed2b050f30844ed206783469"
+    },
+    "28269/bf16-control.log": {
+      "executed_sha256": "1f55e3fa3e8abadde9e41493035253cccae5970ba2537cff015257a7a27ceb09",
+      "published_sha256": "1f55e3fa3e8abadde9e41493035253cccae5970ba2537cff015257a7a27ceb09"
+    },
+    "28269/capacity-final.sbatch": {
+      "executed_sha256": "8c68efd47de7d6fdec2701dd249821ec725df4cc8e556b1375a3c4415d630e80",
+      "published_sha256": "fef14fd0748e2a0eed2ae38c424a696b5c7922d4b73db7ba1400a769db4e0d42"
+    },
+    "28269/capacity_worker.py": {
+      "executed_sha256": "acf19063229e9dba6bbb513fe9fc0c18dd7e738a8046a39dd162839ab2b054be",
+      "published_sha256": "964c15d66846aa0901c8aca664fad389aab1153da8bbe29709632bb59fcfeb27"
+    },
+    "28269/cases/bf16-control/native.csv": {
+      "executed_sha256": "585de960353173f99c9772613d460c99a087de54a3d1114b14cd5fa1374897aa",
+      "published_sha256": "933a7c51294b0ab466f121e1b6ec753697ed02735a88db45de169d6078497bef"
+    },
+    "28269/cases/bf16-control/result.json": {
+      "executed_sha256": "b40ff13e754d12041be93a55a53bfa62d37b0dbf67ce111550d0a3477abcf3eb",
+      "published_sha256": "b40ff13e754d12041be93a55a53bfa62d37b0dbf67ce111550d0a3477abcf3eb"
+    },
+    "28269/input-sha256.txt": {
+      "executed_sha256": "8ec74bdb76f30e603c9813af08d4ef3e542e005ba6a2f05ecba476e59a56678b",
+      "published_sha256": "8ec74bdb76f30e603c9813af08d4ef3e542e005ba6a2f05ecba476e59a56678b"
+    },
+    "28269/nvidia-smi-after.txt": {
+      "executed_sha256": "a895abadc4f1749d4587458d1054264eee553ebf675c7e619a6350e35eb1e9f7",
+      "published_sha256": "b8aeb382c257ca768194029ac20b2afd1eae5cde93d5b2649dde83ab02b4d86d"
+    },
+    "28269/nvidia-smi-before.txt": {
+      "executed_sha256": "95aa31b969af305d5b429b3f65ae0226ea554472bc369285524420898c4c0b0b",
+      "published_sha256": "f8c9b446afeaf1161d3ebc44cb024d834a607525dc813b79676038a02f064f4b"
+    },
+    "28269/slurm-job.txt": {
+      "executed_sha256": "5cf05c4c49d9f55a3cbd3187b7a376f300e8a03cafe18474c3f5f47f3e13dcd3",
+      "published_sha256": "5cf05c4c49d9f55a3cbd3187b7a376f300e8a03cafe18474c3f5f47f3e13dcd3"
+    }
+  }
+}

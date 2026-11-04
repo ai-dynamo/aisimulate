@@ -1,0 +1,2 @@
+8fee4dd36393c75dbb05dba80f290bcf401139558153224ac668291a387e1b75  /lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/jobs/pr664-capacity-20261103/source-capacity.tar.gz
+223df940ad826b89a8a0dabdba77af893c78397524b56751a5c85acbe9cc57e0  /lustre/fsw/portfolios/coreai/projects/coreai_comparch_lights-out-inf/users/simonec/results/pr664-capacity-20261103/28267/capacity_worker.py
