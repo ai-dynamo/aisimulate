@@ -1,0 +1,25 @@
+{
+  "stored_file": "cost-report.json.gz",
+  "compression": "gzip; mtime=0",
+  "format_after_decompression": "JSON",
+  "compressed_bytes": 1229901,
+  "compressed_sha256": "79484e4e8d6870e87f603ec7491ef431e71614775e12d1670e5bce4daf80cd53",
+  "decompressed_bytes": 18999608,
+  "decompressed_sha256": "7b94b003b32515a623bc3db3f1e1b26d3c4b0767d7698288506a391bc0ff1440",
+  "input_archive": "fit-inputs-1018-final.zip",
+  "input_archive_sha256": "749b8563e84453a718866434731325b767913cc864bdfbc91d7b69f6a398ea65",
+  "input_member": "fit-inputs/samples-1018-final.jsonl",
+  "input_sha256": "9210a7908f5142a9b33f7b3ceb8b0727939bd1bd629df615c9b6740c17404309",
+  "proof_member": "fit-inputs/source-proof-597.json",
+  "executed_helper_commit": "eb54cd5c40fcc22f0167c660c530ab7cc06fa869",
+  "public_equivalent_helper_commit": "44251a59fd9a146d1ae87d9a6576e1a4dfc0d082",
+  "helper_source_sha256": "4aa3d81834dabd42031ea6992f40ee111c2bcbfd7aea8657ad7a655bb65eaec3",
+  "sample_records": 1018,
+  "system_framework_lanes": 24,
+  "sample_status_counts": {
+    "failed": 49,
+    "partial": 28,
+    "passed": 924,
+    "timeout": 17
+  }
+}
