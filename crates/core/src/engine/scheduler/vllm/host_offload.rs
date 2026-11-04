@@ -820,9 +820,23 @@ impl VllmHostOffloadAdapter {
                 )
             }));
         }
-        let missing_indices = (start..end)
+        let mut missing_indices = (start..end)
             .filter(|index| matches!(tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
             .collect::<Vec<_>>();
+        let mut resume = end;
+        if self.connector == G2Connector::SimpleCpuV032 {
+            // SimpleCPU takes one free CPU block per block it stores and stops
+            // at the first block it has no room for; with none free, it scans
+            // nothing (`_select_eager_blocks_to_store`).
+            let free = tier.free_blocks();
+            if free == 0 {
+                return;
+            }
+            if let Some(&index) = missing_indices.get(free) {
+                resume = index;
+                missing_indices.truncate(free);
+            }
+        }
         if missing_indices.is_empty() {
             request.next_store_block = end;
             return;
@@ -894,7 +908,7 @@ impl VllmHostOffloadAdapter {
                     });
                 }
                 request.latest_store = Some(transfer_id);
-                request.next_store_block = end;
+                request.next_store_block = resume;
                 // Only vLLM 0.24 touches the prompt after a store.
                 if self.connector == G2Connector::OffloadingV024 {
                     for key in request.prompt_keys.iter().rev().copied() {
@@ -2558,6 +2572,30 @@ mod tests {
         adapter.on_admitted(&mut host, 8, 4);
         adapter.observe_completed_blocks(id, &mut host, &lease, 8, 8, 4, &mut manager, now);
         assert_eq!(evictions.take(), [host.prompt_keys[0]]);
+    }
+
+    #[test]
+    fn simple_cpu_stores_the_blocks_g2_has_room_for() {
+        // SimpleCPU stores as many blocks as its CPU pool has free and resumes
+        // at the first one it could not (`_select_eager_blocks_to_store`), so
+        // a finishing request with two blocks and room for one stores block 0.
+        let mut adapter = connector_adapter(G2Connector::SimpleCpuV032, 1);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let id = Uuid::from_u128(1);
+        let (mut sequence, mut lease, mut host) = request(id, (1..=8).collect());
+        assert!(matches!(
+            manager.allocate_native(id, &mut lease, 8, 0),
+            NativeAllocation::Ready { .. }
+        ));
+        manager.finalize_native_computed_prefix(id, 0, 8, &mut sequence, &mut lease);
+        adapter.finish_request(id, &mut host, &lease, 8, 8, 4, &mut manager, 0.0);
+        let tier = adapter.host.lock();
+        assert!(matches!(
+            tier.lookup(host.prompt_keys[0]),
+            Lookup::Pending { .. }
+        ));
+        assert_eq!(tier.lookup(host.prompt_keys[1]), Lookup::Miss);
+        assert_eq!(host.next_store_block, 1);
     }
 
     #[test]

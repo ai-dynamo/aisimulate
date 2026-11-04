@@ -207,8 +207,6 @@ the version it names. The model also differs from vLLM v0.32.0 here:
 - `offloading_v0_32` offers and re-ranks a finishing request's blocks when the
   request finishes. vLLM does both in its next step, after that step's other
   stores.
-- A `simple_cpu_v0_32` store that does not fit waits for the next pass, while
-  vLLM stores the blocks that fit.
 - After a preemption, `simple_cpu_v0_32` loads only prompt blocks from G2 and
   recomputes the request's output blocks, which vLLM reloads.
 

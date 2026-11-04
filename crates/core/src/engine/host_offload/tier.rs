@@ -1341,6 +1341,15 @@ impl HostTier {
         self.config.capacity_blocks
     }
 
+    /// Blocks a store can take now: empty slots and resident blocks no pin
+    /// holds, as vLLM's `BlockPool.get_num_free_blocks` counts them. Not for
+    /// a [`HostPolicy::Ranked`] tier, whose order also holds pending and
+    /// pinned blocks.
+    pub(crate) fn free_blocks(&self) -> usize {
+        debug_assert_ne!(self.config.policy, HostPolicy::Ranked);
+        self.config.capacity_blocks - self.entries.len() + self.lru.len()
+    }
+
     pub(crate) fn block_bytes(&self) -> usize {
         self.config.block_bytes
     }

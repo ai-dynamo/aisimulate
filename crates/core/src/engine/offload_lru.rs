@@ -63,6 +63,11 @@ impl Lru {
         }
     }
 
+    /// Number of linked blocks.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len() - 1 - self.vacant.len()
+    }
+
     /// The `count` oldest blocks that pass `is_eligible`.
     pub(crate) fn victims(
         &self,
