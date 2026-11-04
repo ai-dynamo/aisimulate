@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.unit.sdk import test_fpm_phase_readiness as phase_fixtures
 
 import aisimulate_core
 import aisimulate_core.sdk as sdk
@@ -22,6 +23,8 @@ from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
 from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+phase_roots = phase_fixtures.phase_roots
 
 EXPECTED_FACADE = {
     "AttentionBackend",
@@ -570,6 +573,43 @@ def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: s
         {"workload_kind": kind, "ready": False, "retained_observations": 0}
         for kind in ("pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill")
     ]
+
+
+@pytest.mark.unit
+def test_seed_target_normalization_stub_and_json_match_native_contract(phase_roots, monkeypatch) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        node
+        for node in model.body
+        if isinstance(node, ast.FunctionDef) and node.name == "fpm_seed_target_normalization"
+    )
+    assert [arg.arg for arg in method.args.args] == ["self"]
+    assert ast.unparse(method.returns) == "str"
+    native_class = importlib.import_module("aisimulate_core._native").RustForwardPassPerfModel
+    assert str(inspect.signature(native_class.fpm_seed_target_normalization)) == "(self, /)"
+    monkeypatch.delenv("AIC_FPM_FAKE_FALLBACK_RAW", raising=False)
+    config, make_root = phase_roots
+    config["systems_paths"] = [make_root("seed-target-report")]
+    native_model = native_class.best_available(json.dumps(config))
+    result = native_model.fpm_seed_target_normalization()
+    assert isinstance(result, str)
+    assert json.loads(result) == {
+        "policy": "same_cell_batch_real_kv_extrapolation_v1",
+        "row_count": 2,
+        "replacement_enabled": True,
+        "replaced_count": 0,
+        "kept_count": 0,
+        "rows": [],
+    }
+    ergonomic_model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert ergonomic_model.fpm_seed_target_normalization() == json.loads(result)
+    finally:
+        ergonomic_model.close()
 
 
 @pytest.mark.unit

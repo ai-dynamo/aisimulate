@@ -727,6 +727,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
     ]
     assert len(contract_steps) == 1
+    assert 'echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"' in application_commands
     contract_command = contract_steps[0]["run"]
     assert "--group scripts/pyproject.toml:e2e-accuracy" in contract_command
     assert "--ignore=tests/fpm_accuracy" not in contract_command
