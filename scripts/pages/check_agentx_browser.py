@@ -179,6 +179,8 @@ def fixtures(site, weka=False):
     summary = json.loads(bundle()["summary.json"])
     summary["runs"] = []
     for run in runs:
+        run["config_summary"] = [{"name": "Estimation", "value": "op_level"}]
+        run["prediction_backend_version"] = "0.31.0" if run["backend"] == "vllm" else "0.5.21"
         run["report"] = report
         entry = {k: v for k, v in run.items() if k not in {"pairs", "report"}}
         entry["detail_path"] = f"details/{run['id']}.json"
@@ -317,6 +319,9 @@ async def check():
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
                 await expect(table.locator("thead th")).to_have_count(8)
+                await expect(table.locator("tr[data-agentx-parent] .agentx-perf-tag")).to_have_text(
+                    ["Op-based perf model (sglang 0.5.21)"] * 6 + ["Op-based perf model (vllm 0.31.0)"] * 3
+                )
                 info = page.get_by_role("button", name="About point TTFT and TPOT error")
                 tooltip = page.get_by_role("tooltip")
                 await expect(table.locator("thead th").nth(2)).to_have_text("Point TPOT error")
@@ -362,6 +367,9 @@ async def check():
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator(".agentx-summary-main h2")).to_have_text("Concurrency summary")
+                await expect(frame.locator(".agentx-summary-main > p").first).to_contain_text(
+                    "requests matched · Op-based perf model (vllm 0.31.0)"
+                )
                 await expect(frame.locator("#profile-accuracy .agentx-summary-table")).to_have_count(1)
                 await expect(frame.locator("#profile-accuracy .agentx-feature-table")).to_have_count(1)
                 await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(

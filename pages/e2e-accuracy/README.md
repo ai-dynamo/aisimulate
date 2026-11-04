@@ -662,6 +662,11 @@ as well as the selected filter.
 
 ## AgentX beta
 
+Concurrency rows show a performance-model tag, such as `Op-based perf model
+(vllm 0.31.0)`. The detail page repeats it after the run/lane/request counts.
+Labels use the recorded estimator and prediction database version; missing values
+stay unrecorded, and grouped runs retain each distinct model/version label.
+
 The replacement Qwen Weka campaign remains unpublished until all
 six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
 Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`

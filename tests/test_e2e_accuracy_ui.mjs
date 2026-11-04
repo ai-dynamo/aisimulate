@@ -1291,3 +1291,16 @@ test("curated silicon features expose recorded scopes, cache types and actual dr
   assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
   assert.match(featureCell(html,"speculation","aisim"),/agentx-feature-status unknown/);
 });
+
+
+test("AgentX performance-model labels use recorded estimator and prediction database", () => {
+  const context=vm.createContext({window:{}});
+  vm.runInContext(readFileSync(new URL("../pages/e2e-accuracy/agentx.js",import.meta.url),"utf8"),context);
+  const label=runs=>{context.runs=runs;return vm.runInContext("window.AgentX.performanceModel(runs)",context);};
+  const run={backend:"vllm",measured_backend_version:"0.30.0",prediction_backend_version:"0.31.0",config_summary:[{name:"Estimation",value:"op_level"}]};
+  assert.equal(label([run,run]),"Op-based perf model (vllm 0.31.0)");
+  assert.equal(label([{...run,config_summary:[]}]),"Unrecorded perf model (vllm 0.31.0)");
+  assert.equal(label([{...run,prediction_backend_version:null}]),"Op-based perf model (vllm version unrecorded)");
+  const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
+  assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
+});
