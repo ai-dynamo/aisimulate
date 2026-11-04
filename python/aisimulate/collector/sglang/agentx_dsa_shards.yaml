@@ -9,10 +9,10 @@ shards:
   - op: dsa_generation_module
     name: glm52_agentx_tp8_fp8
     model_path: nvidia/GLM-5.2-NVFP4
-    include_long_history: true
+    include_long_context: true
     case_filter: "8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm'"
   - op: dsa_generation_module_skip_indexer
     name: glm52_agentx_tp8_fp8
     model_path: nvidia/GLM-5.2-NVFP4
-    include_long_history: true
+    include_long_context: true
     case_filter: "8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm'"
