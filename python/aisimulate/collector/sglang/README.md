@@ -23,6 +23,13 @@ batches use graphs; other batches are timed eagerly. Native QKV projection and
 fresh `AttentionInputs` are included in every timed DSA forward; history
 initialization is measured separately as collection overhead.
 
+Graph-eligible native TC DSA prefill currently raises
+`MeasurementBoundaryError`: the per-model Dynamo entry remains inside the
+per-layer timing boundary. It writes no performance row. Eager timing applies
+when the native graph path is ineligible; collection does not replace a rejected
+graph measurement with an eager row. Boundary failures remain explicit in the
+collection result.
+
 This corrects future collection. Historical exact-shape batch-52 rows must
 not be relabeled as padded-serving measurements.
 
@@ -35,14 +42,14 @@ not be relabeled as padded-serving measurements.
 
 ## Requirements
 
-- Stock SGLang collectors: v0.5.14
+- Stock SGLang collectors: v0.5.21
 
 ```bash
-docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.14-cu130
+docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.21-cu130
 ```
 
 - WideEP MoE collector: the independent v0.5.10 image declared in
-  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.14.
+  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.21.
 - DeepSeek model config (or use dummy weights)
 
 ## Execution Modes
@@ -52,7 +59,7 @@ Stock diagnostics and the independent WideEP MoE collector use these modes:
 ### Mode 1: Direct Diagnostic Execution
 
 Run scripts directly with command-line arguments for single GPU diagnostics.
-The MLA command exercises the stock 0.5.14 module implementation; it is not a
+The MLA command exercises the stock 0.5.21 module implementation; it is not a
 registered or accepted WideEP MLA collector:
 
 ```bash
@@ -75,7 +82,7 @@ cd /path/to/collector/
 # Run all stock SGLang operators
 python collect.py --backend sglang
 
-# Run stock DSA module operators in the v0.5.14 container
+# Run stock DSA module operators in the v0.5.21 container
 python collect.py --backend sglang --ops dsa_context_module dsa_generation_module
 
 # Run the large-EP MoE compute operator separately in the v0.5.10 container
@@ -115,7 +122,7 @@ files as parquet, and each file is then published to the family selected by
 
 Modify `output_path` in each direct script to your desired staging location:
 ```python
-output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.14/"
+output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.21/"
 ```
 
 
