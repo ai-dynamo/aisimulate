@@ -745,7 +745,8 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
     ]
 
 
-def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
+@pytest.mark.parametrize("pinned_role,independent_role", [("prefill", "decode"), ("decode", "prefill")])
+def test_disagg_mixed_parallel_presets_preserve_each_role_semantics(pinned_role, independent_role) -> None:
     mapping = {
         "replicas": 1,
         "tensor": 1,
@@ -763,8 +764,8 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
                 "backend": "vllm",
                 "context_length": 4096,
                 "workers": {
-                    "prefill": {"parallelism": {"preset": [mapping]}},
-                    "decode": {
+                    pinned_role: {"parallelism": {"preset": [mapping]}},
+                    independent_role: {
                         "parallelism": {
                             "preset": False,
                             "replicas": {"choices": [1, 2]},
@@ -778,7 +779,7 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
 
     lowered = recommendation_to_sweeper(config)
 
-    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"]["prefill"] == [
+    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"][pinned_role] == [
         {
             "replicas": 1,
             "tp": 1,
@@ -788,11 +789,13 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
             "moe_ep": 1,
         }
     ]
-    assert lowered.search_space.parallel_independent_by_mode["disagg"]["decode_replicas"] == [
+    assert lowered.search_space.parallel_independent_by_mode["disagg"][f"{independent_role}_replicas"] == [
         1,
         2,
     ]
-    assert not any(name.startswith("prefill_") for name in lowered.search_space.parallel_independent_by_mode["disagg"])
+    assert not any(
+        name.startswith(f"{pinned_role}_") for name in lowered.search_space.parallel_independent_by_mode["disagg"]
+    )
 
 
 def test_backend_specific_block_size_validation() -> None:

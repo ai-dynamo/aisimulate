@@ -745,6 +745,210 @@ def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, re
         enumerate_branches(config)
 
 
+@pytest.fixture
+def mixed_parallel_model(monkeypatch):
+    """Keep real topology and budget enumeration, with deterministic model capacity."""
+
+    def model_hardware(model, hardware, *, backend, **kwargs):
+        return ModelHardware(
+            model_name=model,
+            hardware_sku=hardware,
+            backend=backend,
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        )
+
+    monkeypatch.setattr("aisimulate.sweeper.model_hw.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr(
+        "aisimulate.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: dict.fromkeys(shapes, 4096),
+    )
+
+
+def _mixed_parallel_config(pinned_role, *, gpu_budget, pinned=None, independent=None, log_ranges=None):
+    independent_role = "decode" if pinned_role == "prefill" else "prefill"
+    independent_leaves = {
+        "tp": [1],
+        "pp": [1],
+        "attention_dp": [1],
+        "moe_tp": [1],
+        "moe_ep": [1],
+        "replicas": [1],
+        **(independent or {}),
+    }
+    return _config(
+        model_name="model",
+        deployment_mode=["disagg"],
+        backend=["vllm"],
+        gpu_budget=gpu_budget,
+        parallel_custom_configs_by_mode={"disagg": {pinned_role: [pinned or {"tp": 2, "replicas": 1}]}},
+        parallel_independent_by_mode={
+            "disagg": {f"{independent_role}_{name}": values for name, values in independent_leaves.items()}
+        },
+        parallel_independent_log_ranges_by_mode={
+            "disagg": {f"{independent_role}_{name}": bounds for name, bounds in (log_ranges or {}).items()}
+        },
+    )
+
+
+@pytest.mark.parametrize("pinned_role", ["prefill", "decode"])
+@pytest.mark.parametrize(
+    "pinned,independent,log_ranges,required_gpus",
+    [
+        ({"tp": 2}, {"tp": [1, 2]}, {}, 3),
+        ({"tp": 1}, {"replicas": [2, 3]}, {}, 3),
+        ({"tp": 1}, {"replicas": [1]}, {"replicas": [2, 64]}, 3),
+        ({"tp": 2}, {"replicas": [1]}, {"replicas": [1_000_000, 2_000_000]}, 1_000_002),
+    ],
+    ids=["tp-choices", "replica-choices", "replica-log-range", "large-replica-log-range"],
+)
+def test_mixed_parallel_gpu_budget_rejection_names_requirement_and_limit(
+    mixed_parallel_model, pinned_role, pinned, independent, log_ranges, required_gpus
+):
+    config = _mixed_parallel_config(
+        pinned_role,
+        gpu_budget=2,
+        pinned=pinned,
+        independent=independent,
+        log_ranges=log_ranges,
+    )
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(config)
+
+    message = str(error.value)
+    assert f"used_gpus={required_gpus}" in message
+    assert "gpu_budget=2" in message
+    assert "optimization.constraints.max_candidate_gpus" in message
+    assert "remove this preset or increase the GPU budget" in message
+
+
+@pytest.mark.parametrize("pinned_role", ["prefill", "decode"])
+def test_mixed_parallel_budget_keeps_the_feasible_subset(mixed_parallel_model, pinned_role):
+    config = _mixed_parallel_config(pinned_role, gpu_budget=3, independent={"tp": [1, 2]})
+
+    (branch,) = enumerate_branches(config)
+
+    pinned = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    expected = DisaggParallelConfig(
+        prefill=pinned if pinned_role == "prefill" else _AGG_CFG,
+        decode=pinned if pinned_role == "decode" else _AGG_CFG,
+    )
+    assert branch.parallel_configs == (expected,)
+    assert expected.total_gpus == 3
+    assert branch.supported_backends[expected] == frozenset({"vllm"})
+
+
+@pytest.mark.parametrize("pinned_role", ["prefill", "decode"])
+def test_mixed_parallel_budget_diagnostic_requires_kv_feasible_evidence(monkeypatch, mixed_parallel_model, pinned_role):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: {shape: 4096 for shape in shapes if shape.tp >= 2},
+    )
+    config = _mixed_parallel_config(pinned_role, gpu_budget=2, independent={"tp": [1, 2]})
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(config)
+
+    # TP1 would use only three GPUs, but it cannot hold the requested context.
+    assert "used_gpus=4" in str(error.value)
+    assert "gpu_budget=2" in str(error.value)
+
+
+@pytest.mark.parametrize("pinned_role", ["prefill", "decode"])
+@pytest.mark.parametrize("failure", ["illegal-shape", "outside-search-menu", "kv-capacity", "missing-perf-database"])
+def test_mixed_parallel_nonbudget_failure_is_not_reported_as_budget(
+    monkeypatch, mixed_parallel_model, pinned_role, failure
+):
+    pinned = None
+    if failure == "illegal-shape":
+        # Dense attention DP is illegal even when its GPU footprint fits.
+        pinned = {"tp": 1, "attention_dp": 2}
+    elif failure == "outside-search-menu":
+        # A diagnostic must not broaden the normal automatic shape menu.
+        pinned = {"tp": 32}
+    config = _mixed_parallel_config(
+        pinned_role,
+        gpu_budget=2,
+        pinned=pinned,
+    )
+    if failure == "kv-capacity":
+        monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", lambda shapes, **kwargs: {})
+    elif failure == "missing-perf-database":
+
+        def missing_database(*args, **kwargs):
+            raise NoPerfDatabase("no performance database for this backend")
+
+        monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", missing_database)
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(config)
+
+    message = str(error.value)
+    assert "used_gpus=" not in message
+    assert "minimum_required_gpus=" not in message
+    assert "increase the GPU budget" not in message
+
+
+@pytest.mark.parametrize("pinned_role", ["prefill", "decode"])
+def test_mixed_parallel_diagnostic_preserves_complete_pinned_constraints(mixed_parallel_model, pinned_role):
+    config = _mixed_parallel_config(pinned_role, gpu_budget=2)
+    config.search_space = config.search_space.model_copy(
+        update={"parallel_configs": [{"prefill": {"tp": 1}, "decode": {"tp": 1}}]}
+    )
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(config)
+
+    # The complete TP1+TP1 pin conflicts with the role-specific TP2 preset.
+    # Increasing the budget cannot make those constraints compatible.
+    assert "pinned parallel_configs" in str(error.value)
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
+@pytest.mark.parametrize("decode_context", [2048, 8192], ids=["fits-decode-cache", "exceeds-decode-cache"])
+def test_mixed_parallel_budget_diagnostic_preserves_heterogeneous_role_context(
+    monkeypatch, mixed_parallel_model, decode_context
+):
+    checked_roles = []
+
+    def feasible(shapes, *, hardware_sku, max_seq_len, **kwargs):
+        checked_roles.append((hardware_sku, max_seq_len))
+        capacity = {"h200_sxm": 8192, "gb200": 4096}[hardware_sku]
+        return dict.fromkeys(shapes, capacity) if max_seq_len < capacity else {}
+
+    monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", feasible)
+    config = _mixed_parallel_config("prefill", gpu_budget=2)
+    config.search_space = config.search_space.model_copy(
+        update={
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "backend_version": "0.19.0",
+            "prefill_context_length": 1024,
+            "decode_context_length": decode_context,
+        }
+    )
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(config, max_seq_len=512)
+
+    assert set(checked_roles) == {("h200_sxm", 1024), ("gb200", decode_context)}
+    message = str(error.value)
+    if decode_context < 4096:
+        assert "used_gpus=3" in message
+        assert "gpu_budget=2" in message
+    else:
+        assert "used_gpus=" not in message
+        assert "increase the GPU budget" not in message
+
+
 def test_illegal_pinned_parallel_config_is_rejected():
     config = _config(
         model_name="meta-llama/Meta-Llama-3.1-8B",
