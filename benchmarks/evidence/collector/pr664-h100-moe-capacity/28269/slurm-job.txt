@@ -29,4 +29,3 @@ JobId=28269 JobName=aisim664-moe-capacity
    MemPerTres=gpu:249742
    TresPerNode=gres/gpu:1
    TresPerTask=cpu=16
-
