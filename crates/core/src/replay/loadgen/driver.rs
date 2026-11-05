@@ -1431,27 +1431,30 @@ impl WorkloadDriver {
                     .max(profile.last_advanced_ms),
             );
         }
+        // A pending timer contributes only its play's idle deadline and the
+        // global one. Runtime steps call this on every iteration, so check each
+        // active play once instead of every request it holds: a play without
+        // either deadline contributes nothing, and one pending timer suffices.
+        let global_deadline = profile.global_idle_since_ms.map(|idle| {
+            (idle + profile.options.global_idle_cap_seconds * 1000.0).max(profile.last_advanced_ms)
+        });
         let mut next = cutoff;
-        for index in profile
-            .active_plays
-            .iter()
-            .flat_map(|&play| state.plays[play].nodes.iter())
-            .copied()
-        {
-            if self.sessions[index].next_ready_at_ms.is_none() {
+        for &play in &profile.active_plays {
+            let tree_deadline = profile.tree_idle_since_ms[play].map(|idle| {
+                (idle + profile.options.tree_idle_cap_seconds * 1000.0)
+                    .max(profile.last_advanced_ms)
+            });
+            if tree_deadline.is_none() && global_deadline.is_none() {
                 continue;
             }
-            if let Some(idle) = profile.tree_idle_since_ms[state.node_to_play[index]] {
-                next = next.min(
-                    (idle + profile.options.tree_idle_cap_seconds * 1000.0)
-                        .max(profile.last_advanced_ms),
-                );
-            }
-            if let Some(idle) = profile.global_idle_since_ms {
-                next = next.min(
-                    (idle + profile.options.global_idle_cap_seconds * 1000.0)
-                        .max(profile.last_advanced_ms),
-                );
+            let pending = state.plays[play]
+                .nodes
+                .iter()
+                .any(|&index| self.sessions[index].next_ready_at_ms.is_some());
+            if pending {
+                for deadline in [tree_deadline, global_deadline].into_iter().flatten() {
+                    next = next.min(deadline);
+                }
             }
         }
         Some(next)
@@ -6229,6 +6232,43 @@ mod tests {
                 .windows(2)
                 .all(|events| events[0].ordinal + 1 == events[1].ordinal)
         );
+    }
+
+    #[test]
+    fn profile_idle_deadline_comes_from_the_idle_play_with_a_pending_timer() {
+        // Play "a" goes idle with a child timer far past the tree-idle cap; play
+        // "b" still has its root in flight, so it holds no deadline and the
+        // global guard stays off. The cap on "a" alone sets the next wakeup.
+        let mut child = profile_row("a-child", "a", 500_000.0);
+        child.session_id = "child".into();
+        child.dependencies = vec![dependency(
+            "a-root",
+            AgenticDependencyTrigger::Completion,
+            499_000.0,
+            AgenticDependencyRelation::Spawn,
+        )];
+        let rows = vec![
+            profile_row("a-root", "a", 0.0),
+            child,
+            profile_row("b-root", "b", 0.0),
+        ];
+        let mut driver = profile_driver(rows, 2, AgenticProfileOptions::default());
+        let roots = driver.pop_ready(0.0, 2);
+        assert_eq!(roots.len(), 2);
+        let a_root = roots
+            .iter()
+            .find(|ready| ready.authored_request_id.as_deref() == Some("a-root"))
+            .unwrap();
+        driver
+            .on_causal_terminal(
+                a_root.request_uuid,
+                1_000.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        driver.advance_agentic_profile(1_000.0).unwrap();
+        let tree_cap_ms = AgenticProfileOptions::default().tree_idle_cap_seconds * 1000.0;
+        assert_eq!(driver.next_ready_time_ms(), Some(1_000.0 + tree_cap_ms));
     }
 
     #[test]
