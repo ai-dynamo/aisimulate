@@ -938,13 +938,11 @@ impl VllmCore {
             args.aic_nextn.is_some(),
         )
         .with_prefix_match_unit(args.prefix_match_unit);
-        if native_host_offload
+        if let Some(order) = native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::is_shared)
+            .and_then(VllmHostOffloadAdapter::store_source_hold)
         {
-            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
-            // reference on the G1 blocks it copies until the copy completes.
-            kv_manager.hold_native_store_sources();
+            kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(
@@ -1629,10 +1627,33 @@ impl VllmCore {
     fn cleanup_completed_prefill(&mut self, payload: HeldVllmPrefill) {
         let HeldVllmPrefill {
             request_id,
-            request,
+            mut request,
         } = payload;
+        self.finish_host_request(request_id, &mut request);
         self.kv_manager
             .finish_native(request_id, request.sequence.lease);
+    }
+
+    /// The G2 connector's work when a request finishes or is dropped, before
+    /// its G1 blocks are released: vLLM calls the connector's
+    /// `request_finished` from `Scheduler._free_request`, which frees them.
+    fn finish_host_request(&mut self, uuid: Uuid, request: &mut VllmRequestState) {
+        if let (Some(adapter), Some(host)) = (
+            self.native_host_offload.as_mut(),
+            request.host_offload.as_deref_mut(),
+        ) {
+            let now_ms = adapter.current_time_ms();
+            adapter.finish_request(
+                uuid,
+                host,
+                &request.sequence.lease,
+                request.num_computed_tokens,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -1659,6 +1680,15 @@ impl VllmCore {
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
             || self.destination_retry_ready
+            || self.has_unsubmitted_host_stores()
+    }
+
+    /// G2 stores a request prepared when it left between passes; the next
+    /// (possibly empty) pass submits them.
+    fn has_unsubmitted_host_stores(&self) -> bool {
+        self.native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::has_unsubmitted_stores)
     }
 
     #[allow(dead_code)]
@@ -1677,7 +1707,10 @@ impl VllmCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained() && !self.destination_retry_ready
+        self.is_empty()
+            && !self.is_drained()
+            && !self.destination_retry_ready
+            && !self.has_unsubmitted_host_stores()
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
@@ -2651,10 +2684,11 @@ impl VllmCore {
             || self.kv_manager.num_active_blocks() < active_blocks_before;
         self.source_holds.remove_request(uuid);
         self.active_destination_handoffs.remove_request(uuid);
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("request drop must remove the scheduler-owned request");
+        self.finish_host_request(uuid, &mut request);
         self.kv_manager.finish_native(uuid, request.sequence.lease);
         if capacity_improved {
             self.bump_capacity_generation();
@@ -3114,7 +3148,7 @@ impl VllmCore {
                 .cached_prefix_tokens
                 .get_or_insert(cached_prefix_tokens);
             let attribution = request.host_offload.as_deref_mut().and_then(|host| {
-                VllmHostOffloadAdapter::on_admitted(
+                self.native_host_offload.as_ref()?.on_admitted(
                     host,
                     cached_prefix_tokens,
                     self.args.block_size,

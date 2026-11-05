@@ -259,6 +259,27 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     assert request.backend.generated_config_version == "1.3.0rc14"
 
 
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
+)
+def test_disagg_candidate_renders_planner_entrypoint(backend, backend_version):
+    candidate = _disagg_candidate(backend=backend, backend_version=backend_version)
+    candidate["config"]["adapters"] = {"dynamo.planner": candidate["config"]["adapters"]["dynamo.planner"]}
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+    )
+
+    artifacts = generate_from_request(request)
+
+    [dgd] = [doc for doc in yaml.safe_load_all(artifacts["k8s_deploy.yaml"]) if doc["kind"] == "DynamoGraphDeployment"]
+    container = dgd["spec"]["services"]["Planner"]["extraPodSpec"]["mainContainer"]
+    assert container["command"] == ["python3", "-m", "dynamo.planner"]
+
+
 def test_disagg_candidate_accepts_matching_effective_role_hardware():
     request = from_sweeper_candidate(
         _disagg_candidate(
