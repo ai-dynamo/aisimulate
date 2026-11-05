@@ -17,6 +17,7 @@ from aisimulate.config.engine import (
     WorkersPredictionConfig,
 )
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
@@ -1812,13 +1813,21 @@ def test_sglang_decode_radix_cache_rejects_unsupported_settings(backend, decode,
         CorePredictionConfig.model_validate({"engine": _disaggregated_engine(backend, decode, prefill, **engine)})
 
 
-def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper() -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper(enabled) -> None:
+    worker = {
+        "kv_cache": {"capacity": {"type": "fixed", "blocks": 2048}},
+        "timing": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+    }
     engine = {
         **_engine(),
         "mode": "disaggregated",
         "backend": "sglang",
         "context_length": 4096,
-        "workers": {"prefill": {}, "decode": {"kv_cache": {"decode_radix_cache": True}}},
+        "workers": {
+            "prefill": worker,
+            "decode": {**worker, "kv_cache": {**worker["kv_cache"], "decode_radix_cache": enabled}},
+        },
     }
     config = CoreRecommendationConfig.model_validate(
         {
@@ -1834,8 +1843,38 @@ def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper() -
     )
 
     space = recommendation_to_sweeper(config).search_space
-    assert space.decode_radix_cache is True
+    assert space.decode_radix_cache is enabled
     assert space.decode_enable_prefix_caching is True
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "sglang",
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 8,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 8,
+        },
+        parallel_config=DisaggParallelConfig(replica, replica),
+    )
+    deployment = build_backend_deployment(sample, backend_version="0.5.22")
+    assert (
+        deployment.decode_engine_args.get("sglang", {}).get("disaggregation_decode_enable_radix_cache", False)
+        is enabled
+    )
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            ReplaySpec(
+                backend_deployment=deployment,
+                workload={"isl": 16, "osl": 4, "concurrency": 1, "num_request_ratio": 2},
+                goal={"target": "throughput"},
+            )
+        )
+    )
+    assert report.metrics["completed_requests"] == 2
 
 
 @pytest.mark.parametrize(

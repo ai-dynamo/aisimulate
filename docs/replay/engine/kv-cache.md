@@ -118,9 +118,11 @@ worker always serves its waiting queue first-come first-served. This follows
 
 For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
 `decode_enable_prefix_caching: true` on SGLang decode samples; deployment
-lowering rejects the inconsistent pair. A sweep may include other backends,
+lowering rejects the inconsistent pair and speculative decoding on a concrete
+SGLang disaggregated candidate. A sweep may include other backends,
 whose samples omit the SGLang-only radix flag. The recommendation path carries
-both controls from the worker's `kv_cache` configuration.
+both controls from the worker's `kv_cache` configuration. A search with no
+SGLang backend rejects `decode_radix_cache: true`.
 
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:

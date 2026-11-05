@@ -794,6 +794,78 @@ mod tests {
     };
 
     #[rstest::rstest]
+    #[case::unset(serde_json::json!({}), 6)]
+    #[case::zero(serde_json::json!({"disaggregation_decode_extra_slots": 0}), 2)]
+    #[case::explicit(serde_json::json!({"disaggregation_decode_extra_slots": 1}), 3)]
+    fn json_decode_extra_slots_control_destination_admission(
+        #[case] sglang: serde_json::Value,
+        #[case] limit: u128,
+    ) {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "worker_type": "decode",
+            "num_gpu_blocks": 16384,
+            "block_size": 1,
+            "max_num_seqs": 2,
+            "sglang": sglang,
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+        }))
+        .unwrap();
+        let mut core = SglangCore::new(core_args(&config, config.built_in_timing_model().unwrap()));
+        for id in 1..=limit + 1 {
+            let handoff_id = HandoffId::from(Uuid::from_u128(id));
+            let effects = core
+                .apply_command_effects(
+                    CoreCommand::ReserveDestination {
+                        handoff_id,
+                        request: DirectRequest {
+                            uuid: Some(Uuid::from_u128(id)),
+                            tokens: vec![id as u32; 8],
+                            max_output_tokens: 1,
+                            ..Default::default()
+                        },
+                    },
+                    true,
+                )
+                .unwrap();
+            assert_eq!(effects.lifecycle_events.len(), usize::from(id <= limit));
+            if id <= limit {
+                core.apply_command(CoreCommand::ActivateDestination { handoff_id })
+                    .unwrap();
+            }
+        }
+        let released = core
+            .apply_command_effects(
+                CoreCommand::CancelDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(1)),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(released.lifecycle_events.len(), 1);
+        core.apply_command(CoreCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(limit + 1)),
+        })
+        .unwrap();
+        let mut outputs = 0;
+        let mut now = 0.0;
+        for _ in 0..10 {
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            outputs += pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count();
+            if core.is_drained() {
+                break;
+            }
+        }
+        assert!(core.is_drained());
+        assert_eq!(outputs, limit as usize);
+    }
+
+    #[rstest::rstest]
     fn unsupported_native_images_reject_without_consuming_request_or_handoff_ids(
         #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
         #[values(WorkerType::Aggregated, WorkerType::Prefill, WorkerType::Decode)]
