@@ -314,6 +314,24 @@ def records(evidence):
     ]
 
 
+def test_fpm_prediction_reports_aiperf_metrics(profile, evidence_systems):
+    raw = prediction(profile, evidence_systems)
+    raw["evaluation"] = {"aiperf": {}}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        metrics = runner.run(spec).metrics
+    finally:
+        runner.close()
+    # FPM timing feeds the same request statistics as op-level timing.
+    for name in ("time_to_first_token", "request_latency", "inter_token_latency", "output_token_throughput_per_user"):
+        assert metrics[f"aiperf.{name}.count"] == 3
+        assert metrics[f"aiperf.{name}.p50"] > 0
+    assert metrics["aiperf.output_token_throughput_per_user.avg"] == pytest.approx(
+        metrics["mean_output_token_throughput_per_user"]
+    )
+
+
 def test_kv_first_marker_survives_saved_config_and_chunked_replay(profile, kv_first_systems, tmp_path):
     import jsonschema
 

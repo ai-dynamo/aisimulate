@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1480,6 +1481,7 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
 def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing, aiperf) -> None:
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.config import OptimizationGoal
+    from aisimulate.sweeper.replay import validate_json_value
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     raw["engine"]["workers"]["aggregated"]["timing"] = timing
@@ -1503,8 +1505,10 @@ def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing
     prediction = _candidate_prediction(
         config, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
     )
+    # Saved recommendations require plain JSON values, not enum members.
+    validate_json_value(prediction)
     # The exported prediction reports the same metric definitions the search scored.
-    reloaded = CorePredictionConfig.model_validate(prediction)
+    reloaded = CorePredictionConfig.model_validate(json.loads(json.dumps(prediction)))
     goal = OptimizationGoal.model_validate(prediction_to_replay_spec(reloaded).goal)
     assert goal.uses_aiperf_metrics and smart.goal.uses_aiperf_metrics
     assert goal.aiperf == smart.goal.aiperf == config.evaluation.aiperf

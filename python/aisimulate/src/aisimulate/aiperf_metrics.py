@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 class AIPerfMetric(str, Enum):
@@ -60,6 +60,11 @@ class MetricConstraint(BaseModel):
     metric: AIPerfMetric
     operator: Literal["lte", "gte"]
     threshold: float = Field(strict=True, ge=0, allow_inf_nan=False)
+
+    @field_serializer("metric")
+    def _serialize_metric(self, metric: AIPerfMetric) -> str:
+        # Saved recommendation configs must be plain JSON even in Python dump mode.
+        return metric.value
 
 
 class AIPerfEvaluation(BaseModel):

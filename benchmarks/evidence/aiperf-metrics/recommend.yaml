@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+traffic:
+  source: {type: trace, format: mooncake, paths: [TRACE], block_size: 64}
+  load: {type: concurrency, concurrency: {choices: [1, 16]}}
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-0.6B
+  hardware: gb200
+  backend: vllm
+  backend_version: 0.30.0
+  context_length: 4096
+  workers:
+    aggregated:
+      parallelism: {preset: false, tensor: 1, moe_tensor: 1, moe_expert: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      kv_cache: {prefix_caching: false}
+      timing: {type: default}
+evaluation:
+  aiperf:
+    per_chunk_usage: false
+    constraints:
+      - {metric: output_token_throughput_per_user.p50, operator: gte, threshold: THRESHOLD}
+optimization:
+  target: throughput_per_gpu
+  strict_sla: STRICT
+  constraints: {max_candidate_gpus: 1}
+optimizer: {algorithm: random, max_trials: 4, parallelism: 2}
