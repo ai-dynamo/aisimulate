@@ -284,7 +284,7 @@ title = "Deployment search"
 name = "Configuration search (recommend)"
 doc = "sweeper/README.md"
 cells = ["supported", "supported", "supported"]
-note = "Ranks candidates under a GPU budget and SLA."
+note = "Ranks candidates under a GPU budget and SLA. Native request replay also supports AIPerf avg/p50/p90/p95/p99 objectives and optional strict constraints."
 
 [[sections.rows]]
 name = "Dynamo deployment generation"

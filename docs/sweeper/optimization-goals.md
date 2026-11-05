@@ -107,6 +107,72 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
 a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
 
+## AIPerf metric selectors
+
+Use an AIPerf `metric.statistic` as a target or constraint. The supported metrics
+are `time_to_first_token`, `request_latency`, `inter_token_latency`, and
+`output_token_throughput_per_user`. Each accepts `avg`, `p50`, `p90`, `p95`, and
+`p99`. Latency targets minimize milliseconds; user throughput targets maximize
+tokens/s/user. The SDK also accepts these selectors in `pareto_objectives`.
+
+```yaml
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
+  aiperf_per_chunk_usage: false
+  constraints:
+    metrics:
+      - metric: output_token_throughput_per_user.p50
+        operator: gte
+        threshold: 50
+      - metric: time_to_first_token.p99
+        operator: lte
+        threshold: 2000
+```
+
+Set `target: request_latency.p99` to minimize request latency p99 instead.
+The SDK uses `OptimizationGoal.metric_constraints` for the same constraint list.
+Each entry requires `metric`, `operator` (`lte` or `gte`), and a finite,
+nonnegative `threshold`. Equality passes. Missing values or empty sample
+populations fail strict constraints and cannot qualify an objective.
+
+`strict_sla: true` enforces these constraints before optimizer feedback and
+ranking. With `strict_sla: false`, the metrics remain in candidate results, but
+the constraints do not reject candidates. The target remains unchanged:
+`throughput` counts all completed output, while `goodput` counts output from
+requests that satisfy `evaluation.sla`. Neither target enables strict rejection
+implicitly. The existing `min_gpus` target retains its mandatory SLA gate.
+
+The definitions match ordinary metrics in
+[AIPerf b0276e19398169eb450f5a79db28509dd4bcb48f](https://github.com/ai-dynamo/aiperf/tree/b0276e19398169eb450f5a79db28509dd4bcb48f/src/aiperf/metrics):
+
+- Each successful request contributes one sample per available metric.
+  Failed, canceled, and unfinished requests contribute no samples. AIPerf's
+  separate failure-adjusted `adj_*` metrics are outside this selector set.
+- TTFT spans arrival to first content; request latency ends at last content.
+  A single-token response contributes both, but no ITL or user TPS.
+- ITL divides the first-to-last content interval by output tokens minus one.
+  `aiperf_per_chunk_usage: true` subtracts the first content chunk's token count,
+  matching AIPerf's `--per-chunk-usage`. Missing, nonpositive, or inconsistent counts
+  fall back to subtracting one. Native replay treats tokens delivered at the
+  same first timestamp as the first chunk.
+- User TPS is `1000 / ITL` for each request with positive ITL. A zero ITL remains
+  an ITL sample but contributes no user TPS. Aggregation happens after inversion.
+- Percentiles use NumPy's linear interpolation over these request samples.
+  Native token-gap metrics and their existing quantiles remain unchanged.
+
+Candidate metrics use the `aiperf.` prefix, such as
+`aiperf.output_token_throughput_per_user.p50`, with a corresponding `.count`.
+These selectors require native offline request replay. FPM and op-level timing
+both use that path. Analytical AFD and analytical EPD cannot supply this evidence.
+
+Request capture runs only when an AIPerf objective or constraint needs it.
+The runner retains scalar summaries unless the caller also requests raw records.
+Exact percentiles therefore cost request-level capture and memory proportional
+to the number of requests; they do not require token-level trace retention.
+Matching these definitions does not model an unconfigured transport or frontend
+cost. Compare calibrated replay against serving measurements before admission.
+
 ## Minimum GPUs
 
 `goal.target: min_gpus` selects the smallest qualifying configuration found by the sweep.

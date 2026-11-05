@@ -493,6 +493,15 @@ class EngineReplayRunner:
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
+        from .sweeper.config import OptimizationGoal
+
+        metric_goal = OptimizationGoal.model_validate(spec.goal)
+        if metric_goal.uses_aiperf_metrics and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or (spec.backend_deployment.encoder is not None and spec.backend_deployment.encoder.mode == "analytical")
+        ):
+            raise InvalidRunnerError("AIPerf metric selectors require native offline request replay")
         encoder = spec.backend_deployment.encoder
         if (
             encoder is None
@@ -582,7 +591,7 @@ class EngineReplayRunner:
         execution_spec = _materialize_engine_execution_spec(
             spec,
             trace_block_size=self.trace_block_size,
-            record_per_request=output_requirements.capture_per_request,
+            record_per_request=output_requirements.capture_per_request or metric_goal.uses_aiperf_metrics,
             memory_diagnostics=memory_diagnostics,
         )
         if encoder is not None and encoder.mode == "native":
@@ -659,6 +668,21 @@ class EngineReplayRunner:
         }
         if state_sizes:
             report = {**report, "state_cache": state_sizes}
+        if metric_goal.uses_aiperf_metrics:
+            from .aiperf_metrics import summarize_requests
+
+            try:
+                report = {
+                    **report,
+                    **summarize_requests(
+                        report.get("per_request"),
+                        per_chunk_usage=metric_goal.aiperf_per_chunk_usage,
+                    ),
+                }
+            except ValueError as exc:
+                raise InvalidRunnerError(str(exc)) from exc
+            if not output_requirements.capture_per_request:
+                report.pop("per_request", None)
         normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(

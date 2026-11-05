@@ -41,6 +41,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..aiperf_metrics import AIPerfMetric, metric_value
 from ..power import POWER_FIELDS, normalize_power_summary
 from ..resources import ResourceLimitError
 from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_afd_measurements
@@ -1017,6 +1018,20 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
+    for target in effective_targets:
+        if isinstance(target, AIPerfMetric):
+            try:
+                metric_value(report, target)
+            except ValueError as exc:
+                return _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="infeasible",
+                    reason=str(exc),
+                    reason_category=ReasonCategory.NO_SAMPLES,
+                    runner_metadata=replay_result.metadata,
+                    report_metrics=report,
+                )
     sample = prepared.sample
     if not is_feasible(int(sample["used_gpus"]), config.search_space.gpu_budget):
         # Over gpu_budget: report as infeasible to the optimizer (observe_infeasible, not
@@ -1034,8 +1049,7 @@ def _score_prepared(
             report_metrics=report,
         )
     if goal.requires_aggregate_sla:
-        assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        violations = aggregate_sla_violations(report, goal.sla)
+        violations = aggregate_sla_violations(report, goal.sla, goal.metric_constraints)
         if violations:
             return _EvalResult(
                 candidate=None,

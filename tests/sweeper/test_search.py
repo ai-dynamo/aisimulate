@@ -1542,3 +1542,44 @@ def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
     assert result.counts.resource_limited == result.counts.feasible == 1
     assert result.counts.cache_hits == 0
     assert len(result.selected_candidates) == 1
+
+
+@pytest.mark.parametrize("strict, expected", [(False, [768.0, 512.0, 256.0]), (True, [512.0, 256.0])])
+def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict, expected):
+    _stub(monkeypatch, _branch(_pc()))
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        seen["sampler"] = sampler
+        return sampler
+
+    class MetricRunner(_FakeRunner):
+        def run(self, spec):
+            report = super().run(spec)
+            seqs = report.metrics["output_throughput_tok_s"]
+            return ReplayReport(
+                metrics={**report.metrics, "aiperf.request_latency.count": 2.0, "aiperf.request_latency.p99": seqs}
+            )
+
+    base = _config()
+    config = SmartSearchConfig(
+        search_space=base.search_space,
+        workload=base.workload,
+        sweep=base.sweep,
+        goal={
+            "target": "throughput",
+            "strict_sla": strict,
+            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+        },
+    )
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(MetricRunner()), sampler_factory=sampler_factory, show_progress=False
+    ).run(config, top_n=None)
+    assert [candidate.score for candidate in result.selected_candidates] == expected
+    rejected = [item for item in seen["sampler"].scored if isinstance(item, tuple)]
+    assert len(rejected) == int(strict)
+    if strict:
+        assert "request_latency.p99" in rejected[0][1]
+    restored = type(result).model_validate_json(result.model_dump_json())
+    assert [candidate.score for candidate in restored.selected_candidates] == expected

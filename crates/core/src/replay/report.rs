@@ -785,6 +785,7 @@ impl Default for TokenTimeline {
 
 #[derive(Debug, Clone, Copy)]
 struct FinalizedTokenTimeline {
+    first_content_chunk_tokens: usize,
     first_ms: f64,
     second_ms: Option<f64>,
     last_ms: f64,
@@ -993,6 +994,8 @@ pub struct PerRequestRecord {
     pub terminal_time_ms: f64,
     pub first_token_ms: Option<f64>,
     pub last_token_ms: Option<f64>,
+    /// Tokens delivered together at the first modeled content timestamp.
+    pub first_content_chunk_tokens: Option<usize>,
     pub ttft_ms: Option<f64>,
     pub ttst_ms: Option<f64>,
     pub e2e_latency_ms: Option<f64>,
@@ -1268,6 +1271,15 @@ impl TraceRequestStats {
         }
     }
 
+    fn first_content_chunk_tokens(&self) -> Option<usize> {
+        match &self.token_timeline {
+            TokenTimeline::Recording(times) => times
+                .first()
+                .map(|first| times.iter().take_while(|time| *time == first).count()),
+            TokenTimeline::Finalized(summary) => Some(summary.first_content_chunk_tokens),
+        }
+    }
+
     fn mean_tpot_ms(&self) -> Option<f64> {
         let num_gaps = self.actual_output_length().saturating_sub(1);
         if num_gaps == 0 {
@@ -1317,6 +1329,7 @@ impl TraceRequestStats {
             return;
         };
         let summary = FinalizedTokenTimeline {
+            first_content_chunk_tokens: times.iter().take_while(|time| **time == first_ms).count(),
             first_ms,
             second_ms: times.get(1).copied(),
             last_ms: times.last().copied().unwrap_or(first_ms),
@@ -2374,6 +2387,7 @@ impl TraceCollector {
                 terminal_time_ms,
                 first_token_ms,
                 last_token_ms,
+                first_content_chunk_tokens: stats.first_content_chunk_tokens(),
                 ttft_ms: first_token_ms.map(|time| (time - stats.arrival_time_ms).max(0.0)),
                 ttst_ms: stats.ttst_ms(),
                 e2e_latency_ms: last_token_ms.map(|time| (time - stats.arrival_time_ms).max(0.0)),
@@ -3224,6 +3238,26 @@ mod tests {
             }),
             0
         );
+    }
+
+    #[test]
+    fn first_content_chunk_survives_timeline_finalization() {
+        for deferred in [false, true] {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(true);
+            collector.set_defer_token_timeline_finalization(deferred);
+            let uuid = Uuid::from_u128(1);
+            collector.on_arrival(uuid, 0.0, 8, 5);
+            collector.on_prefill_admit(uuid, 0.0, 0, None);
+            for at in [10.0, 10.0, 20.0, 30.0, 40.0] {
+                collector.on_token(uuid, at);
+            }
+            collector.on_terminal(uuid, 40.0, ReplayTerminalStatus::Completed);
+            let report = collector.finish();
+            let row = &report.per_request[0];
+            assert_eq!(row.first_content_chunk_tokens, Some(2));
+            assert_eq!(row.itl_ms, Some(7.5)); // Native TPOT keeps its existing definition.
+        }
     }
 
     /// With per-request capture on, a standard disagg-style request lifecycle

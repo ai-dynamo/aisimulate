@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
+from ..aiperf_metrics import AIPerfMetric, MetricConstraint
 from ..config.common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     SystemsPath,
@@ -120,12 +121,14 @@ class OptimizationGoal(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target: OptimizationTarget = OptimizationTarget.THROUGHPUT
+    target: OptimizationTarget | AIPerfMetric = OptimizationTarget.THROUGHPUT
+    metric_constraints: list[MetricConstraint] = Field(default_factory=list)
+    aiperf_per_chunk_usage: bool = Field(default=False, strict=True)
     # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
     sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
-    pareto_objectives: list[OptimizationTarget] | None = None
+    pareto_objectives: list[OptimizationTarget | AIPerfMetric] | None = None
     # Preserve replay goodput's per-request SLA semantics by default. When
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
@@ -133,11 +136,16 @@ class OptimizationGoal(BaseModel):
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
 
     @property
+    def uses_aiperf_metrics(self) -> bool:
+        targets = self.resolved_pareto_objectives if self.is_pareto else [self.target]
+        return bool(self.metric_constraints) or any(isinstance(target, AIPerfMetric) for target in targets)
+
+    @property
     def requires_aggregate_sla(self) -> bool:
         return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
-    def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
+    def resolved_pareto_objectives(self) -> list[OptimizationTarget | AIPerfMetric]:
         """The effective Pareto objective list: the configured one, or the default pair only
         when unset (``None``). An explicitly-supplied empty/short list is kept as-is so the
         validator's ``len < 2`` guard rejects it (rather than silently using the default).
@@ -172,8 +180,8 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and not has_sla:
-            raise ValueError("strict_sla requires at least one SLA bound")
+        if self.strict_sla and not has_sla and not self.metric_constraints:
+            raise ValueError("strict_sla requires at least one SLA bound or metric constraint")
         if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
             raise ValueError("min_gpus requires at least one SLA bound")
         if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
