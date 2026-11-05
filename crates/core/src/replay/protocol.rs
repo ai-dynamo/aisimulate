@@ -201,11 +201,13 @@ impl DirectRequest {
             dp_rank: self.dp_rank,
             preferred_dp_rank: self.preferred_dp_rank,
             preferred_prefill_dp_rank: self.preferred_prefill_dp_rank,
+            kv_hints: self.kv_hints,
             arrival_timestamp_ms: self.arrival_timestamp_ms,
             priority: self.priority,
             strict_priority: self.strict_priority,
             policy_class: self.policy_class.clone(),
             replay_context: self.replay_context.clone(),
+            images: self.images.clone(),
         }
     }
 

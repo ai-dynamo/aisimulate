@@ -104,6 +104,7 @@ impl PlacementPolicy<ReplayRequestPayload> for UnknownSchedulerPlacement {
     ) -> anyhow::Result<crate::replay::PlacementEffects> {
         Ok(crate::replay::PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
+                kv_hints: None,
                 request_id: request.metadata().uuid.unwrap(),
                 scheduler_id: 4_242,
                 reported_overlap_tokens: 0,
@@ -516,6 +517,7 @@ fn scripted_release_runtime() -> ScriptedAggRuntime {
 
 fn placement(request_id: Uuid) -> Placement {
     Placement {
+        kv_hints: None,
         request_id,
         scheduler_id: 0,
         reported_overlap_tokens: 0,
@@ -601,6 +603,7 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingObservePlacement {
             .ok_or_else(|| anyhow::anyhow!("failing-observe placement requires a request UUID"))?;
         Ok(crate::replay::PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
+                kv_hints: None,
                 request_id,
                 scheduler_id: 0,
                 reported_overlap_tokens: 0,

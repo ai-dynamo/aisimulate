@@ -1351,6 +1351,8 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
 #[test]
 fn test_synthetic_rejects_unusable_length_distributions() {
     let spec = |input_tokens: LengthSpec| SyntheticTraceSpec {
+        cached_prefix_tokens: 0,
+        images: None,
         block_size: 4,
         num_sessions: 2,
         turns_per_session: 1,
@@ -1399,6 +1401,8 @@ fn test_synthetic_rejects_unusable_length_distributions() {
 #[test]
 fn test_synthetic_shared_prefix_ratio_without_groups_is_rejected() {
     let spec = |num_prefix_groups| SyntheticTraceSpec {
+        cached_prefix_tokens: 0,
+        images: None,
         block_size: 4,
         num_sessions: 2,
         turns_per_session: 1,

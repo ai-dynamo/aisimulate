@@ -3869,7 +3869,10 @@ where
                 if self
                     .tokenization
                     .as_mut()
-                    .is_some_and(|tokenization| tokenization.cancel(uuid)) => false
+                    .is_some_and(|tokenization| tokenization.cancel(uuid)) =>
+            {
+                false
+            }
             super::state::AggRequestPhase::Running => {
                 let scheduler_id = scheduler_id.ok_or_else(|| {
                     anyhow::anyhow!("offline replay running request {uuid} has no scheduler")

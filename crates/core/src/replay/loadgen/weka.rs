@@ -502,7 +502,7 @@ pub(crate) fn load_weka_agentic_graph_cached(
                 cache_hit = true,
                 "resolved Weka nested timestamp basis for complete corpus"
             );
-            return Ok((cached.graph, cached.resolved_timestamp_basis, true));
+            return Ok((cached.graph.clone(), cached.resolved_timestamp_basis, true));
         }
     }
 

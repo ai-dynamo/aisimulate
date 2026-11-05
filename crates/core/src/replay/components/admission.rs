@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use uuid::Uuid;
 
 use super::ReplayMode;

@@ -615,6 +615,7 @@ mod direct_request_conversion_tests {
             uuid: Some(Uuid::from_u128(7)),
             arrival_timestamp_ms: Some(1.0),
             replay_context: Some(ReplayRequestContext {
+                agentic: None,
                 authored_id: "authored-42".to_string(),
                 session_id: None,
                 turn_index: None,
@@ -684,6 +685,7 @@ mod direct_request_conversion_tests {
             strict_priority: 9,
             policy_class: Some("latency".to_string()),
             replay_context: Some(ReplayRequestContext {
+                agentic: None,
                 authored_id: "request".to_string(),
                 session_id: Some("session-1".to_string()),
                 turn_index: Some(3),
@@ -723,6 +725,7 @@ mod direct_request_conversion_tests {
         let request = DirectRequest {
             arrival_timestamp_ms: Some(1.0),
             replay_context: Some(ReplayRequestContext {
+                agentic: None,
                 authored_id: "request".to_string(),
                 session_id: None,
                 turn_index: None,
@@ -743,6 +746,7 @@ mod direct_request_conversion_tests {
         let request = DirectRequest {
             arrival_timestamp_ms: Some(1.0),
             replay_context: Some(ReplayRequestContext {
+                agentic: None,
                 authored_id: "request".to_string(),
                 session_id: None,
                 turn_index: None,
@@ -762,6 +766,7 @@ mod direct_request_conversion_tests {
             tokens: vec![1, 2],
             arrival_timestamp_ms: Some(1.0),
             replay_context: Some(ReplayRequestContext {
+                agentic: None,
                 authored_id: "synthetic".to_string(),
                 session_id: None,
                 turn_index: None,
@@ -782,6 +787,7 @@ mod direct_request_conversion_tests {
     #[test]
     fn validate_rejects_an_unbounded_declared_token_count() {
         let request = |input_tokens, output_tokens| ReplayRequest {
+            kv_hints: None,
             id: "r1".to_string(),
             arrival_time_ms: 0.0,
             input_tokens,

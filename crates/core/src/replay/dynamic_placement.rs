@@ -1143,6 +1143,7 @@ fn placement_from_abi(value: PlacementV1) -> Result<Placement> {
         flags => bail!("placement plugin returned unsupported cache-sample flags {flags}"),
     };
     Ok(Placement {
+        kv_hints: None,
         request_id: Uuid::from_bytes(value.request_id),
         scheduler_id: usize::try_from(value.scheduler_id)
             .context("placement scheduler ID does not fit this host")?,

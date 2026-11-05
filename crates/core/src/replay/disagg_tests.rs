@@ -287,6 +287,7 @@ impl PlacementPolicy<ReplayRequestPayload> for MismatchedDisaggPlacement {
     ) -> anyhow::Result<PlacementEffects> {
         Ok(PlacementEffects {
             decision: PlacementDecision::Immediate(Placement {
+                kv_hints: None,
                 request_id: Uuid::from_u128(999_999),
                 scheduler_id: self.scheduler_id,
                 reported_overlap_tokens: 0,

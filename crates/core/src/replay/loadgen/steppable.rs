@@ -1879,6 +1879,7 @@ mod tests {
             anyhow::ensure!(self.placements != 2, "second placement rejected");
             Ok(PlacementEffects {
                 decision: PlacementDecision::Immediate(Placement {
+                    kv_hints: None,
                     request_id: request.metadata().uuid.expect("test request has UUID"),
                     scheduler_id: 0,
                     reported_overlap_tokens: 0,

@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use xxhash_rust::xxh3::Xxh3;
 
 use super::trace::synthesize_validated_trace_tokens;
 use crate::engine::{
@@ -715,27 +714,6 @@ impl ReplayRequestPayload {
         match self {
             Self::Materialized(request) => Some(request),
             Self::Deferred { .. } => None,
-        }
-    }
-
-    /// Engine-block replay hashes of the prompt, derived without materializing
-    /// a deferred prompt.
-    pub(crate) fn replay_hashes(&self, engine_block_size: u32) -> ReplayRequestHashes {
-        match self {
-            Self::Materialized(request) => {
-                ReplayRequestHashes::from_tokens(&request.tokens, engine_block_size)
-            }
-            Self::Deferred {
-                input_length,
-                hash_ids,
-                trace_block_size,
-                ..
-            } => ReplayRequestHashes::from_trace_blocks(
-                *input_length,
-                hash_ids,
-                *trace_block_size,
-                engine_block_size,
-            ),
         }
     }
 

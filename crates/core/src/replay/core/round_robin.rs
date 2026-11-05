@@ -21,7 +21,7 @@ use crate::replay::protocol::AuthoredKvHints;
 /// worker is live in this pool, advertises router hints and has the named
 /// attention-DP rank. Any other authored hint is dropped: workers come and go
 /// under scaling, so naming one that is absent is not an error.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct AuthoredKvHintSources {
     /// Live workers that advertise router hints.
     router_hint_workers: BTreeSet<usize>,
@@ -64,7 +64,7 @@ impl AuthoredKvHintSources {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct SessionPins(Option<FxHashMap<String, usize>>);
 
 impl SessionPins {
@@ -148,7 +148,9 @@ impl<Events: EngineEventBatch> Clone for AggregatedRoundRobinPlacement<Events> {
         Self {
             counter: self.counter.clone(),
             workers: self.workers.clone(),
+            hints: self.hints.clone(),
             events: PhantomData,
+            session_pins: self.session_pins.clone(),
         }
     }
 }
@@ -879,10 +881,12 @@ mod tests {
             WorkerTopology {
                 worker_id: 0,
                 scheduler_ids: vec![10, 11],
+                router_hint: false,
             },
             WorkerTopology {
                 worker_id: 1,
                 scheduler_ids: vec![20, 21],
+                router_hint: false,
             },
         ]);
         let ranked = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, rank| {

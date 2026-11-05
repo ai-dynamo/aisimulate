@@ -475,7 +475,7 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
-    use crate::engine::{HostBlockKey, KvEventData};
+    use crate::engine::{HostBlockKey, KvEventData, KvEventTier};
 
     #[test]
     fn observer_mutex_poison_is_a_sticky_finalization_error() {
@@ -514,6 +514,7 @@ mod tests {
     #[test]
     fn take_refuses_to_drop_deferred_pass_start_kv_events() {
         let event = KvEvent {
+            tier: KvEventTier::Device,
             event_id: 1,
             dp_rank: 0,
             data: KvEventData::Removed {

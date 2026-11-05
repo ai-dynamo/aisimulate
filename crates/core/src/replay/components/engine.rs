@@ -1008,7 +1008,7 @@ where
             }
 
             let same_timestamp_retry = started.same_timestamp_retry;
-            let mut pending = PendingPass {
+            let pending = PendingPass {
                 committed_requests: Vec::new(),
                 committed_request_index: OnceLock::new(),
                 pass_id: started.pass_id,
@@ -1037,7 +1037,8 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
-                if let Some(telemetry) = self.required_worker_mut(worker_id)?.telemetry.as_mut() {
+                let worker = self.required_worker_mut(worker_id)?;
+                if let Some(telemetry) = worker.telemetry.as_mut() {
                     telemetry[rank.dp_rank as usize]
                         .interval
                         .checked_add_assign(ReplaySchedulerIntervalMetrics {
@@ -1045,6 +1046,12 @@ where
                             ..ReplaySchedulerIntervalMetrics::default()
                         })?;
                 }
+                // The pass was recorded above, before any fallible step; fold
+                // each rank's committed requests into that recorded pass.
+                let pending = worker
+                    .pending_pass
+                    .as_mut()
+                    .context("offline replay lost the pass it just recorded")?;
                 if pending.committed_requests.is_empty() {
                     pending.committed_requests = rank.effects.committed_requests;
                 } else {
@@ -1208,12 +1215,13 @@ where
         // engine call can fail, and clearing first would leave this component
         // believing the worker is idle while the engine still owns a live pass --
         // re-exposing it to `drive_ready` and hiding its mid-pass deadlines.
-        let pending = *self
+        let pending_pass_id = self
             .required_worker(completion.worker_id)?
             .pending_pass
             .as_ref()
-            .context("offline replay completed a worker with no pass in flight")?;
-        if pending.pass_id != completion.pass_id {
+            .context("offline replay completed a worker with no pass in flight")?
+            .pass_id;
+        if pending_pass_id != completion.pass_id {
             bail!("offline replay generalized-engine pass ID mismatch");
         }
         let completed = self

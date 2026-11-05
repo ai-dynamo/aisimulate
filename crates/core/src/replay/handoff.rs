@@ -761,6 +761,7 @@ mod tests {
             .on_fact(HandoffFact::SourceHeld {
                 handoff_id,
                 transfer_timing: HandoffTransferTiming {
+                    state_bytes: 0,
                     mode: TransferTimingMode::DestinationMissing,
                     full_prompt_tokens: 4,
                     kv_bytes_per_token: None,
@@ -835,6 +836,7 @@ mod tests {
     fn destination_missing_validates_the_delay_it_actually_schedules() {
         let handoff_id = HandoffId::new(Uuid::from_u128(11));
         let timing = HandoffTransferTiming {
+            state_bytes: 0,
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 1,
             kv_bytes_per_token: Some(1024),
@@ -878,6 +880,7 @@ mod tests {
     #[test]
     fn a_non_finite_fallback_delay_is_rejected_before_it_is_issued() {
         let timing = HandoffTransferTiming {
+            state_bytes: 0,
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 4,
             kv_bytes_per_token: None,
