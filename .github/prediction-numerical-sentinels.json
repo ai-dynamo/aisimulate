@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_source_sha": "d066e918705b98e2d55eed55743ce8d225f129ea",
+  "baseline_source_sha": "fc6e26a82dea7fe49317d48ae97523323ee940b7",
   "interpretation": "Native prediction stability sentinels; not measured-hardware accuracy. Two percent relative and 0.0001 ms absolute tolerance permit small numerical changes; baseline changes require explained review.",
   "cases": [
     {
@@ -205,7 +205,7 @@
         "isl": 1024,
         "prefix": 0
       },
-      "expected_ms": 24.59240663850414,
+      "expected_ms": 23.747489609932714,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -227,7 +227,7 @@
         "isl": 8192,
         "prefix": 128
       },
-      "expected_ms": 148.56245547690375,
+      "expected_ms": 147.71753844833233,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },

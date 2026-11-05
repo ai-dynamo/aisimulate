@@ -688,6 +688,59 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     assert json.loads(result) == []
 
 
+@pytest.mark.unit
+def test_canonical_context_attention_keeps_included_rope_and_kv_write_inside_table_timing(tmp_path) -> None:
+    # One layer matches issue #551's exact H200 BF16 attention row. Other
+    # operations still follow the normal canonical model construction path.
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "num_hidden_layers": 1,
+                "hidden_size": 4096,
+                "intermediate_size": 14336,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 4,
+                "head_dim": 128,
+                "vocab_size": 32000,
+                "max_position_embeddings": 4096,
+                "torch_dtype": "bfloat16",
+                "rms_norm_eps": 1e-5,
+                "rope_theta": 10000.0,
+                "tie_word_embeddings": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = RustForwardPassPerfModel.best_available(
+        sdk.ForwardPassPerfModelConfig(
+            model=str(tmp_path),
+            system="h200_sxm",
+            backend="trtllm",
+            backend_version="1.3.0rc20",
+            worker_type="aggregated",
+            tp=1,
+            estimation_mode="op_level",
+            database_mode="SILICON",
+            gemm_quant_mode="bfloat16",
+            fmha_quant_mode="bfloat16",
+            kvcache_quant_mode="bfloat16",
+        )
+    )
+    try:
+        operations = model.static_phase_diagnostics(batch_size=1, context_length=256, prefix=0, prefill=True)
+        [attention] = [op for op in operations if op["name"] == "context_attention"]
+        assert attention["latency_ms"] == pytest.approx(0.0191040001809597, rel=1e-12)
+        assert attention["source"] == "silicon"
+        # This shipped row has no power measurement; zero is the existing
+        # energy representation, not a measured claim about GPU energy.
+        assert attention["energy_wms"] == 0.0
+        assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
+    finally:
+        model.close()
+
+
 def test_state_memory_api_is_standalone_in_a_fresh_interpreter() -> None:
     script = """
 import sys

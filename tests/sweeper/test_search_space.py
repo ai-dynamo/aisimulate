@@ -745,6 +745,122 @@ def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, re
         enumerate_branches(config)
 
 
+@pytest.fixture
+def mixed_parallel_config(monkeypatch):
+    """Use real topology/budget checks with deterministic model capacity."""
+
+    def model_hardware(model, hardware, *, backend, **kwargs):
+        return ModelHardware(
+            model_name=model,
+            hardware_sku=hardware,
+            backend=backend,
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        )
+
+    monkeypatch.setattr("aisimulate.sweeper.model_hw.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr(
+        "aisimulate.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: dict.fromkeys(shapes, 4096),
+    )
+    return _config(
+        model_name="model",
+        deployment_mode=["disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        parallel_custom_configs_by_mode={"disagg": {"prefill": [{"tp": 2, "replicas": 1}]}},
+        parallel_independent_by_mode={
+            "disagg": {f"decode_{name}": [1] for name in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "replicas")}
+        },
+    )
+
+
+def test_mixed_parallel_budget_probe_handles_large_replica_range(mixed_parallel_config):
+    mixed_parallel_config.search_space.parallel_independent_log_ranges_by_mode = {
+        "disagg": {"decode_replicas": [1_000_000, 2_000_000]}
+    }
+
+    with pytest.raises(NoViableParallelConfig, match="used_gpus=1000002 exceeds gpu_budget=2"):
+        enumerate_branches(mixed_parallel_config)
+
+
+def test_mixed_parallel_budget_diagnostic_requires_kv_feasible_evidence(monkeypatch, mixed_parallel_config):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: {shape: 4096 for shape in shapes if shape.tp >= 2},
+    )
+    mixed_parallel_config.search_space.parallel_independent_by_mode["disagg"]["decode_tp"] = [1, 2]
+
+    # TP1 would use only three GPUs, but it cannot hold the requested context.
+    with pytest.raises(NoViableParallelConfig, match="used_gpus=4 exceeds gpu_budget=2"):
+        enumerate_branches(mixed_parallel_config)
+
+
+@pytest.mark.parametrize("failure", ["illegal-shape", "outside-search-menu", "kv-capacity", "missing-perf-database"])
+def test_mixed_parallel_nonbudget_failure_is_not_reported_as_budget(monkeypatch, mixed_parallel_config, failure):
+    if failure in {"illegal-shape", "outside-search-menu"}:
+        preset = {"tp": 1, "attention_dp": 2} if failure == "illegal-shape" else {"tp": 32}
+        mixed_parallel_config.search_space.parallel_custom_configs_by_mode = {"disagg": {"prefill": [preset]}}
+    elif failure == "kv-capacity":
+        monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", lambda shapes, **kwargs: {})
+    elif failure == "missing-perf-database":
+
+        def missing_database(*args, **kwargs):
+            raise NoPerfDatabase("no performance database for this backend")
+
+        monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", missing_database)
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(mixed_parallel_config)
+
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
+def test_mixed_parallel_diagnostic_preserves_complete_pinned_constraints(mixed_parallel_config):
+    # The complete TP1+TP1 pin conflicts with the role-specific TP2 preset.
+    mixed_parallel_config.search_space.parallel_configs = [{"prefill": {"tp": 1}, "decode": {"tp": 1}}]
+
+    with pytest.raises(NoViableParallelConfig, match="pinned parallel_configs") as error:
+        enumerate_branches(mixed_parallel_config)
+
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
+def test_mixed_parallel_budget_diagnostic_preserves_heterogeneous_role_context(monkeypatch, mixed_parallel_config):
+    checked_roles = []
+
+    def feasible(shapes, *, hardware_sku, max_seq_len, **kwargs):
+        checked_roles.append((hardware_sku, max_seq_len))
+        capacity = {"h200_sxm": 8192, "gb200": 4096}[hardware_sku]
+        return dict.fromkeys(shapes, capacity) if max_seq_len < capacity else {}
+
+    monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", feasible)
+    mixed_parallel_config.search_space = mixed_parallel_config.search_space.model_copy(
+        update={
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "backend_version": "0.19.0",
+            "prefill_context_length": 1024,
+            "decode_context_length": 8192,
+        }
+    )
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(mixed_parallel_config, max_seq_len=512)
+
+    assert set(checked_roles) == {("h200_sxm", 1024), ("gb200", 8192)}
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
 def test_illegal_pinned_parallel_config_is_rejected():
     config = _config(
         model_name="meta-llama/Meta-Llama-3.1-8B",
