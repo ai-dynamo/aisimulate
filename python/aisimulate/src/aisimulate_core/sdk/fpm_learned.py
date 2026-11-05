@@ -1303,13 +1303,22 @@ def _format_report(report: dict[str, dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
-def _load_iterations(paths: Sequence[str], args: argparse.Namespace) -> list[list[dict[str, Any]]]:
-    iterations = group_iterations(iter_fpm_records(paths), args.join_ranks)
-    if args.launch_stall:
-        spec = json.loads(Path(args.launch_stall).read_text(encoding="utf-8"))
-        if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "stall_ms"}:
-            raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and stall_ms, got {spec!r}")
-        iterations = charge_own_launch(iterations, spec["stall_ms"], spec["max_cudagraph_capture_size"])
+def _read_launch_stall(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    spec = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "stall_ms"}:
+        raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and stall_ms, got {spec!r}")
+    _check_launch_stall(spec["stall_ms"], spec["max_cudagraph_capture_size"])
+    return spec
+
+
+def _load_iterations(
+    paths: Sequence[str], join_ranks: str, launch_stall: dict[str, Any] | None
+) -> list[list[dict[str, Any]]]:
+    iterations = group_iterations(iter_fpm_records(paths), join_ranks)
+    if launch_stall is not None:
+        iterations = charge_own_launch(iterations, launch_stall["stall_ms"], launch_stall["max_cudagraph_capture_size"])
     return iterations
 
 
@@ -1317,13 +1326,14 @@ def _cmd_train(args: argparse.Namespace) -> int:
     if args.online_checkpoint_dir and not args.identity:
         raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
     identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
-    iterations = _load_iterations(args.fpm, args)
+    launch_stall = _read_launch_stall(args.launch_stall)
+    iterations = _load_iterations(args.fpm, args.join_ranks, launch_stall)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
         return 2
     train_set, holdout = _split_holdout(iterations, args.holdout_frac, args.seed)
     if args.holdout_fpm:
-        holdout = holdout + _load_iterations(args.holdout_fpm, args)
+        holdout = holdout + _load_iterations(args.holdout_fpm, args.join_ranks, launch_stall)
     features = None
     if args.features:
         features = list(FEATURE_PRESETS.get(args.features, ())) or [f.strip() for f in args.features.split(",")]
@@ -1347,6 +1357,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "train_iterations": len(train_set),
             "holdout_iterations": len(holdout),
             "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
+            **({"launch_stall": launch_stall} if launch_stall is not None else {}),
         },
     )
     out = Path(args.out)
@@ -1364,7 +1375,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     artifact = json.loads(Path(args.model).read_text(encoding="utf-8"))
     validate_artifact(artifact)
-    iterations = _load_iterations(args.fpm, args)
+    iterations = _load_iterations(args.fpm, args.join_ranks, _read_launch_stall(args.launch_stall))
     print(_format_report(evaluate(artifact, iterations)))
     return 0
 

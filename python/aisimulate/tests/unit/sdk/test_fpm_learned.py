@@ -500,6 +500,60 @@ def test_cli_train_records_the_default_fpm5_preset(tmp_path: Path) -> None:
     assert artifact["metadata"]["features_preset"] == "fpm5"
 
 
+def test_cli_launch_stall_moves_launches_for_train_and_evaluate(tmp_path: Path, capsys) -> None:
+    pytest.importorskip("sklearn")
+    # 20 ms decode passes; every fourth pass is an eager prefill whose 180 ms
+    # launch lands in the decode record before it
+    records = []
+    for counter in range(60):
+        if counter % 4 == 3:
+            fpm = _decode_fpm(0, 0, 0.100, counter=counter)
+            fpm["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": 8192}
+        else:
+            fpm = _decode_fpm(4, 4000, 0.200 if counter % 4 == 2 else 0.020, counter=counter)
+        records.append(fpm)
+    source = tmp_path / "fpm.jsonl"
+    source.write_text("".join(json.dumps(fpm) + "\n" for fpm in records))
+    spec = {
+        "max_cudagraph_capture_size": 4096,
+        "stall_ms": {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}},
+    }
+    stall = tmp_path / "stall.json"
+    stall.write_text(json.dumps(spec))
+    fit = ["--worker-type", "aggregated", "--max-iter", "5", "--min-store-rows", "10", "--holdout-frac", "0"]
+    decode = [records[0]]
+    for name, extra in (("plain", []), ("charged", ["--launch-stall", str(stall)])):
+        out = tmp_path / f"{name}.json"
+        assert fpm_learned.main(["train", "--fpm", str(source), *fit, "--out", str(out), *extra]) == 0
+    plain = json.loads((tmp_path / "plain.json").read_text())
+    charged = json.loads((tmp_path / "charged.json").read_text())
+    assert "launch_stall" not in plain["metadata"]
+    assert charged["metadata"]["launch_stall"] == spec
+    # the plain fit spreads the eager launch over decode passes
+    assert fpm_learned.rust_predictor(plain)(decode) > 30.0
+    assert fpm_learned.rust_predictor(charged)(decode) == pytest.approx(20.0, rel=0.01)
+
+    def decode_mape(*extra: str) -> float:
+        capsys.readouterr()
+        argv = ["evaluate", "--model", str(tmp_path / "charged.json"), "--fpm", str(source), *extra]
+        assert fpm_learned.main(argv) == 0
+        row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("pure_decode"))
+        return float(row.split()[2])
+
+    # against the records as written, the third of decode passes that carry the launch miss by 90%
+    assert decode_mape() == pytest.approx(30.0)
+    assert decode_mape("--launch-stall", str(stall)) < 1.0
+
+    bad_out = ["--out", str(tmp_path / "bad.json"), "--launch-stall", str(stall)]
+    for bad, match in (
+        ({"stall_ms": spec["stall_ms"]}, "--launch-stall needs exactly"),
+        ({**spec, "stall_ms": {"decode": spec["stall_ms"]["decode"]}}, "stall_ms needs exactly the carriers"),
+    ):
+        stall.write_text(json.dumps(bad))
+        with pytest.raises(ValueError, match=match):
+            fpm_learned.main(["train", "--fpm", str(source), *fit, *bad_out])
+
+
 def test_train_export_roundtrip_matches_sklearn() -> None:
     sklearn = pytest.importorskip("sklearn")
     del sklearn
