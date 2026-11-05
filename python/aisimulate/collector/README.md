@@ -815,30 +815,3 @@ shipped under `tools/perf_database/`. The separate strict audit
 keeps unqualified full totals unknown; these planning figures do not change its
 validation results. Deferred native Kimi coverage is not priced as zero or counted
 as equivalent-coverage savings.
-
-## Existing full-collection cost: not established
-
-The earlier statement of approximately 30 GPU-hours for TRT-LLM is a historical
-rule of thumb, not a verified current-baseline cost. It does not identify a GPU
-SKU, frozen case inventory or timing boundary. Do not multiply it across all
-frameworks and SKUs to construct a fleet baseline.
-
-Tianhao's [October campaign, PR #517](https://github.com/ai-dynamo/aisimulate/pull/517),
-published 508 tables and 14,547,494 rows across 24 system/framework cells using
-vLLM 0.30.0, SGLang 0.5.21 and TRT-LLM 1.3.0rc29. Its eight SKUs included RTX PRO
-6000 Server Edition and excluded A100; only seven overlap the planning table above.
-It predates #676 and the newer vLLM attention pin, so even a recovered historical
-cost would need its original scope and revisions recorded.
-
-The [auto-collector campaign](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/merge_requests/75)
-retains per-shard timings, but they do not establish a defensible fleet GPU-hour
-total: resumed status replaces earlier invocation times, some packaged fallback
-timings are whole CI-job durations, GPU participation varies, and collector-exit
-grace can include idle time. Summing those fields or multiplying all of them by
-eight would mix collection, waiting and recovery clocks.
-
-The baseline research, retained with the local campaign artifacts, therefore
-records the current full-collection cost as **unknown**. Recovering it
-requires distinct collector/worker spans and actual GPU participation for each
-attempt, including resumes and retries, with allocation and idle time excluded.
-No baseline-plus-expansion total or percentage increase is claimed here.
