@@ -2356,6 +2356,81 @@ mod destination_lifecycle {
         assert!(later.iter().all(|hash| !published.contains(hash)));
     }
 
+    #[test]
+    fn overlap_preserves_zero_output_terminal_when_decode_reservation_fails() {
+        let mut config = args_with_decode_radix_cache(WorkerType::Decode, false);
+        config.num_gpu_blocks = 3;
+        config.max_num_seqs = Some(2);
+        config.sglang.as_mut().unwrap().host_loop = true;
+        let mut core = SglangCore::new(config);
+
+        let a = Uuid::from_u128(23_001);
+        let b = Uuid::from_u128(23_002);
+        let a_handoff = HandoffId::from(Uuid::from_u128(23_003));
+        let b_handoff = HandoffId::from(Uuid::from_u128(23_004));
+
+        // Reserve all three pages before A becomes a running request.
+        for (handoff_id, request_id, tokens, outputs) in [
+            (a_handoff, a, (0..4).collect(), 1),
+            (b_handoff, b, (100..108).collect(), 0),
+        ] {
+            let reserved = core
+                .apply_command_effects(
+                    SchedulerCommand::ReserveDestination {
+                        handoff_id,
+                        request: request(request_id, tokens, outputs),
+                    },
+                    true,
+                )
+                .unwrap();
+            assert!(matches!(
+                reserved.lifecycle_events.as_slice(),
+                [SchedulerLifecycleEvent::DestinationReserved { .. }]
+            ));
+        }
+
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: a_handoff,
+            })
+            .unwrap(),
+            SchedulerCommandResult::Applied
+        );
+        let launched = execute(&mut core, 0.0);
+        assert!(launched.output_signals.is_empty());
+        assert_eq!(core.kv_manager.cache().available_tokens(), 0);
+
+        // A's unobserved terminal token needs a fourth page. B contributes a
+        // tokenless terminal before that reservation fails.
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination {
+                handoff_id: b_handoff,
+            })
+            .unwrap(),
+            SchedulerCommandResult::Applied
+        );
+        let mut now_ms = launched.end_ms;
+        let mut signals = Vec::new();
+        for _ in 0..4 {
+            if core.is_drained() {
+                break;
+            }
+            let pass = execute(&mut core, now_ms);
+            now_ms = pass.end_ms;
+            signals.extend(pass.output_signals);
+        }
+
+        assert_eq!(
+            signals
+                .iter()
+                .map(|s| (s.uuid, s.token_id.is_some(), s.completed, s.rejected))
+                .collect::<Vec<_>>(),
+            vec![(a, true, true, false), (b, false, true, false)]
+        );
+        assert!(core.is_drained());
+        assert_eq!(core.kv_manager.cache().available_tokens(), 12);
+    }
+
     fn occupied_tokens(core: &SglangCore) -> usize {
         core.kv_manager.cache().total_tokens() - core.kv_manager.cache().available_tokens()
     }
