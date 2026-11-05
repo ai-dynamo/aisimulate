@@ -80,7 +80,7 @@ note = "Engine-specific admission and token budgets; SGLang --enable-mixed-chunk
 name = "Prefix caching (G1 reuse)"
 doc = "replay/engine/kv-cache.md#gpu-cache-g1"
 cells = ["supported", "supported", "supported"]
-note = "Backend block and admission rules apply."
+note = "Backend block and admission rules apply. SGLang P/D decode reuse is opt-in through decode_radix_cache and requires prefix caching without speculation."
 
 [[sections.rows]]
 name = "Sub-block prefix reuse"
