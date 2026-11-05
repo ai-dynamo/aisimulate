@@ -583,6 +583,26 @@ def test_silicon_requires_exact_runtime_glm_tables():
         RustForwardPassPerfModel.best_available(_config("SILICON"))
 
 
+@pytest.mark.parametrize(
+    ("path", "system", "tp", "kv"),
+    [("nvidia/GLM-5.3-Flash-NVFP4", "gb300", 4, None), ("zai-org/GLM-5.3-Flash", "h200_sxm", 8, "bfloat16")],
+)
+def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path, system, tp, kv):
+    config = _config("SILICON", backend_version="0.31.0", enable_shared_layer=False).to_dict()
+    config.update(model=path, system=system, tp=tp, moe_tp_size=1, moe_ep_size=tp)
+    if kv:
+        config["kvcache_quant_mode"] = kv
+    # Construction requires table rows for every sparse layer's geometry.
+    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    try:
+        for prefill in (True, False):
+            ops = model.static_phase_diagnostics(batch_size=2, context_length=4096, prefix=0, prefill=prefill)
+            sources = {op["name"]: op["source"] for op in ops}
+            assert {sources[f"attention_{layer}"] for layer in range(3, 45, 4)} == {"silicon"}
+    finally:
+        model.close()
+
+
 @pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
 def test_fixed_hopper_fp8_runtimes_still_require_exact_silicon_tables(system, backend, version, monkeypatch):
