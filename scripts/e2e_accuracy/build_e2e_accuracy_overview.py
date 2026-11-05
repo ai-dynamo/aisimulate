@@ -300,7 +300,7 @@ def _prediction_error(row: dict[str, Any]) -> str | None:
     message = re.sub(r"(?<![\w/])(?:/[\w.~-]+)+", "[path]", message)
     message = re.sub(r"\b[a-z0-9.-]*gitlab[a-z0-9.-]*\b", "[redacted]", message, flags=re.IGNORECASE)
     for fragment in FORBIDDEN_PUBLIC_FRAGMENTS:
-        message = message.replace(fragment, "[redacted]")
+        message = re.sub(re.escape(fragment), "[redacted]", message, flags=re.IGNORECASE)
     message = " ".join(message.split())
     return message[:2047] + "…" if len(message) > 2048 else message
 

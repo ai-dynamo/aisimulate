@@ -343,10 +343,12 @@ separately. Imported historical profiles retain their original provenance and
 consumer limitations; successful loading does not manufacture missing quality
 or memory evidence.
 
-**End-to-end offline profiling.** Verify a smoke capture before running your
-workload, drain and close the capture, then check native envelopes, worker
+**End-to-end offline profiling.** Verify a smoke capture, run your workload,
+then drain and close the capture before checking native envelopes, worker
 identity, timing labels, counts and file integrity. Select observations and
-prepare separate training and evaluation files with the standalone helpers.
+prepare an alternating train/test split from the same capture with the standalone
+helpers. This evaluates a held-out portion of that capture; cross-run or
+cross-workload evaluation requires independently collected data.
 Preserve capture and selection receipts, excluded rows and required batch-class
 coverage. Review resource evidence separately. This route does not invoke
 `onboard validate-collection`, `onboard import-observations` or `onboard finalize`

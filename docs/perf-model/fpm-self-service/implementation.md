@@ -233,7 +233,9 @@ then drain and close capture files using the deployment owner's procedure.
 [Validate and select native rows](e2e-gbdt.md#2-check-and-prepare-the-data),
 checking every expected worker/role, unchanged counters and seconds-valued
 labels, file hashes, client completion and work-kind coverage. Record smoke,
-warmup and drain exclusions and keep separate training/test populations.
+warmup and drain exclusions. The preparation helper alternates observations
+within each work kind into training and test files from the same capture;
+cross-run or cross-workload evaluation requires independently collected data.
 Preserve raw files, receipts and logs. These checks do not prove lossless
 publication or accurate prediction. Resolve resource evidence separately; do
 not send native JSONL to `onboard finalize` or the timing-table quality assay.

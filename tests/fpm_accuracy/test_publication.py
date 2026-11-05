@@ -175,6 +175,46 @@ def test_reject_gitlab_provenance_in_public_text(summary, hostname):
         validate_summary(summary)
 
 
+@pytest.mark.parametrize("via_publisher", [False, True])
+@pytest.mark.parametrize(
+    "dataset,message",
+    [
+        ("https://gitlab.example.com/dataset", "internal provenance"),
+        ("GITLAB.EXAMPLE.COM/dataset", "internal provenance"),
+        ("file://example.com/dataset", "internal provenance"),
+        ("example\ncorpus", "control characters in public text"),
+        ("x" * 1025, "invalid public text"),
+    ],
+    ids=["gitlab-url", "uppercase-gitlab", "file-url", "control-character", "too-long"],
+)
+def test_reject_invalid_collection_dataset_names(summary, dataset, message, via_publisher):
+    summary["rows"][0]["collection"] = dict(
+        types=["trace_replay"], datasets=[dataset], run_count=1, unattributed_measurements=0
+    )
+    with pytest.raises(ValueError, match=message):
+        if via_publisher:
+            producer = run(summary)
+            publish.validate_artifact(
+                archive(summary), producer, "fpm-accuracy-web-" + artifact_key("main"), [job(producer)]
+            )
+        else:
+            validate_summary(summary)
+
+
+def test_public_collection_dataset_names_can_publish(summary):
+    summary["rows"][0]["collection"] = dict(
+        types=["trace_replay"], datasets=["example-corpus"], run_count=1, unattributed_measurements=0
+    )
+    producer = run(summary)
+    assert validate_summary(summary) == summary
+    assert (
+        publish.validate_artifact(
+            archive(summary), producer, "fpm-accuracy-web-" + artifact_key("main"), [job(producer)]
+        )
+        == summary
+    )
+
+
 @pytest.mark.parametrize("data", ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}'])
 def test_reject_ambiguous_json(data):
     with pytest.raises(ValueError):

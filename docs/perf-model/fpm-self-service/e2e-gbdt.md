@@ -244,9 +244,12 @@ python3 "$AIS_REPO/scripts/fpm_accuracy/prepare_native_training.py" \
 
 This writes `selected/ROLE.train.jsonl`, `selected/ROLE.test.jsonl` and a selection
 receipt. It preserves native rows and labels, checks source hashes and excludes
-idle rows. Use separately collected training/test inputs when assessing another
-run or workload. Keep decode-admission/mixed rows under their original role and
-account for any trainer exclusions.
+idle rows. Adjacent iterations can remain correlated across this split, so its
+held-out error describes the captured population. Use independently collected
+evaluation data when assessing another run or workload. Keep
+decode-admission/mixed rows under their original role and account for any trainer
+exclusions. Retain the original selection, capture report and both exports;
+the optional online-selection step uses them to exclude offline observations.
 
 ## 3. Train and qualify accuracy
 
@@ -390,10 +393,49 @@ iteration; worker IDs and equal counter values do not establish synchronization.
 
 ## 5. Optional: adapt and save
 
-Supply later measured observations from the same deployment as
-`selected/ROLE.online.jsonl`. Validate/select them as before, keep them separate
-from the frozen test set, and retain their order. Only role-compatible busy rows
-belong in this feedback file.
+Collect later measured observations from the same deployment. Recheck the
+model/runtime, topology and serving settings against `ROLE.identity.json`;
+native worker IDs alone do not establish that identity. This example supports
+one worker stream with attention DP=1 (rank 0), one worker lifetime per capture,
+and separate files for each P/D role.
+
+Copy the closed later capture into a new `traces/ROLE-online/` directory under
+`$FPM_RUN`, keeping the original capture, selection, receipts and train/test
+exports unchanged. Validate the later files with their actual worker identity:
+
+```bash
+python3 "$AIS_REPO/scripts/fpm_accuracy/validate_native_capture.py" \
+  --trace-dir "$FPM_RUN/traces/${FPM_ROLE}-online" \
+  --expect "$FPM_ROLE" NAMESPACE COMPONENT PRODUCER_ID WORKER_ID 0 \
+  --report "$FPM_RUN/receipts/$FPM_ROLE.online.capture.json"
+```
+
+Require a `valid` report. Save `$FPM_RUN/$FPM_ROLE.online.selection.json` using
+the [selection format above](#2-check-and-prepare-the-data): point each entry at
+its later capture file, use its validated hash and reviewed line range, and list
+segments in capture order. Exclude smoke/pilot rows and record warmup/drain
+choices as before. Then prepare the feedback file:
+
+```bash
+python3 "$AIS_REPO/scripts/fpm_accuracy/prepare_native_training.py" \
+  --run-dir "$FPM_RUN" --role "$FPM_ROLE" --mode online
+```
+
+This writes `selected/ROLE.online.jsonl` and
+`receipts/ROLE.online.selection.json`. It preserves the native bytes and order
+of eligible busy rows, excluding idle rows and work classes incompatible with
+the selected role. The receipt records hashes, admitted counts and exclusions.
+Require the completed receipt before adaptation.
+
+Online selection verifies the original offline receipts and exports, rejects
+reused offline source/export files, and requires feedback observation timestamps
+to be strictly later than every offline train/test row. Within the feedback,
+timestamps must not go backward and counters must increase. A continuing worker
+stream must also advance beyond the original capture's last counter. A timestamp tied
+with the offline boundary is rejected; choose a distinct later capture instead
+of relabeling records. These checks establish selection boundaries, not native
+timer alignment or deployment identity. Do not rename or concatenate the
+offline train/test files into feedback.
 
 Run the [online update example](../../../scripts/fpm_self_service/adapt_gbdt.py):
 
