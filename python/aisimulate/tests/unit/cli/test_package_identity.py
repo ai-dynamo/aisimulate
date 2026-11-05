@@ -1,17 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Installed-identity contracts: aisim/aisimulate overlap warning and command name."""
+"""Installed-identity contracts: aisim/aisimulate overlap warning, command name, and --version."""
 
 from __future__ import annotations
 
 import importlib.metadata
 import io
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+import aisimulate
 from aisimulate import package_identity, supervision
+from aisimulate.cli_args import build_parser
 
 pytestmark = pytest.mark.unit
 
@@ -161,3 +164,46 @@ def test_worker_processes_inherit_the_invoked_command(monkeypatch) -> None:
     assert package_identity.program_name(worker) == "aisim"
     monkeypatch.setenv(package_identity.PROGRAM_ENVIRONMENT, "something-else")
     assert package_identity.program_name(worker) == "aisimulate"
+
+
+def test_supervisor_passes_the_command_name_to_its_worker(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv(package_identity.PROGRAM_ENVIRONMENT, raising=False)
+    monkeypatch.setattr(sys, "argv", ["/venv/bin/aisim"])
+    monkeypatch.setattr(supervision, "discover_host", lambda: SimpleNamespace(process_memory_bytes=0))
+    monkeypatch.setattr(supervision, "resolve_budget", lambda _policy, _host: {"memory_limit_bytes": 1})
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def popen(command, *, env, start_new_session):
+        seen.update(env)
+        raise _Stop
+
+    monkeypatch.setattr(supervision.subprocess, "Popen", popen)
+    with pytest.raises(_Stop):
+        supervision._run_process(
+            ["worker"], policy=supervision.ResourceConfig(), timeout=None, events_output=None, directory=tmp_path
+        )
+    assert seen[package_identity.PROGRAM_ENVIRONMENT] == "aisim"
+
+
+@pytest.mark.parametrize("command", ["aisim", "aisimulate"])
+def test_help_usage_names_the_invoked_command(monkeypatch, command) -> None:
+    monkeypatch.setattr(sys, "argv", [f"/venv/bin/{command}"])
+    parser = build_parser()
+    assert parser.format_usage().startswith(f"usage: {command} ")
+    onboard = parser._subparsers._group_actions[0].choices["onboard"]
+    assert onboard.prog == f"{command} onboard"
+
+
+@pytest.mark.parametrize("command", ["aisim", "aisimulate"])
+def test_version_names_the_distribution_for_both_commands(monkeypatch, capsys, command) -> None:
+    _install(monkeypatch, AISIM)
+    monkeypatch.setattr(sys, "argv", [f"/venv/bin/{command}"])
+
+    with pytest.raises(SystemExit) as exited:
+        supervision.main(["--version"])
+
+    assert exited.value.code == 0
+    assert capsys.readouterr().out == f"aisim {aisimulate.__version__}\n"
