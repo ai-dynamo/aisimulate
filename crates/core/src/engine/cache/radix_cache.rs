@@ -848,7 +848,8 @@ impl RadixCache {
 
     /// Make room on `node`'s edge for `pages` more pages if the next insert from it extends the
     /// edge in place: a non-root leaf that no request but the caller holds (see
-    /// [`Self::insert_page_hash_suffix`]). Pages beyond the reservation still grow amortized.
+    /// [`Self::insert_page_hash_suffix`]). Pages beyond the reservation still grow amortized. The
+    /// leaf gives unused room back when it gains a child or its last holder unlocks it.
     pub(crate) fn reserve_leaf_extension(&mut self, node: NodeId, pages: usize) {
         let is_root = node == self.root;
         let edge = &mut self.nodes[node];
@@ -1025,6 +1026,10 @@ impl RadixCache {
                 self.protected_size -= tokens;
                 self.evictable_size += tokens;
                 if self.is_leaf(id) {
+                    // Its last holder is gone; release room reserved for that holder's tail.
+                    let leaf = &mut self.nodes[id];
+                    leaf.key.shrink_to_fit();
+                    leaf.value.shrink_to_fit();
                     self.insert_evictable_leaf(id);
                 }
             }

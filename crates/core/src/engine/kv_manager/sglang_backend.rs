@@ -1266,10 +1266,12 @@ mod tests {
         #[case] page_size: usize,
         #[case] prompt_len: usize,
         #[case] output_len: usize,
+        #[values(false, true)] cancel: bool,
     ) {
         // A prompt prefilled a chunk at a time, as SGLang does under attention DP. Sized for
         // completion, partial final page included, the request's page list and radix tail
-        // then grow without reallocating.
+        // then grow without reallocating. Ending before the output keeps the cached prompt and
+        // releases the tail room reserved for the output.
         let prompt: Vec<u32> = (0..prompt_len as u32).collect();
         let completion_pages = (prompt_len + output_len).div_ceil(page_size);
         let chunk = 2 * page_size;
@@ -1301,8 +1303,18 @@ mod tests {
             );
             assert_eq!(lease.pages.capacity(), completion_pages);
         }
-        mgr.finish(&prompt, lease);
+        if cancel {
+            assert!(mgr.abort(lease));
+        } else {
+            mgr.finish(&prompt, lease);
+        }
         assert_eq!(mgr.cache().evictable_size, prompt_len);
+        let node = mgr.cache().node(tail);
+        let cached_pages = prompt_len / page_size;
+        assert_eq!(
+            (node.key.capacity(), node.value.capacity()),
+            (cached_pages, cached_pages)
+        );
     }
 
     #[test]
