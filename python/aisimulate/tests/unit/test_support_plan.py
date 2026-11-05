@@ -60,7 +60,7 @@ class _OfflinePerfModel:
     def best_available(cls, request):
         import aisimulate_core
 
-        payload = request.to_dict()
+        payload = request.to_dict() if hasattr(request, "to_dict") else request
         cls.requests.append(payload)
         config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
         return cls(config)
@@ -71,6 +71,7 @@ class _OfflinePerfModel:
     def diagnostics(self):
         return {
             "readiness": "ready",
+            "dependencies": self.dependency_info(),
             "provenance": {
                 "config": self.config,
                 "selected_systems_root": self.config["systems_paths"][0],
@@ -78,6 +79,16 @@ class _OfflinePerfModel:
                 "selected_estimation_mode": "fpm_interpolation",
                 "selection_failures": [],
             },
+        }
+
+    def dependency_info(self):
+        roots = list(self.config["systems_paths"])
+        return {
+            "systems_paths": roots,
+            "external_systems_paths": roots,
+            "owned_systems_paths": [],
+            "files": [],
+            "fallback": None,
         }
 
     def close(self):
@@ -103,6 +114,10 @@ def _assert_estimator_requests(requests, systems_root, moe_tensor):
         "database_mode": "SILICON",
         "estimator_config": {},
     }
+    from aisimulate_core import RustForwardPassPerfModel
+
+    # The resolver now passes the exact native-normalized request to construction.
+    expected = json.loads(RustForwardPassPerfModel.normalize_config(json.dumps(expected)))
     for request in requests:
         assert {key: request[key] for key in expected} == expected
 
@@ -441,7 +456,7 @@ from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 def best_available(request):
     model = _OfflinePerfModel.best_available(request)
     with Path(os.environ["SUPPORT_TEST_ESTIMATOR_REQUESTS"]).open("a") as stream:
-        stream.write(json.dumps(request.to_dict()) + "\\n")
+        stream.write(json.dumps(model.config) + "\\n")
     return model
 
 RustForwardPassPerfModel.best_available = best_available

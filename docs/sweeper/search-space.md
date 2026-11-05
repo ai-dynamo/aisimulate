@@ -221,14 +221,18 @@ optimizer:
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
 | `optimizer.algorithm` | `bayesian` | `x` | `-` | `bayesian` or `random`. |
-| `optimizer.max_trials` | `320` | `x` | `-` | Positive total trial budget. |
+| `optimizer.max_trials` | `320` | `x` | `-` | Positive total trial budget; excludes automatically enumerated learned deployments with unavailable required stores. |
 | `optimizer.parallelism` | `16` | `x` | `-` | Positive. |
 | `optimizer.candidate_timeout_seconds` | `600` | `x` | `-` | Positive wall-clock limit per candidate. |
 | `optimizer.seed` | `42` | `x` | `-` | Nonnegative. |
 
 
-The progress bar counts settled suggestions, including cache hits, unsupported candidates,
-failures and timeouts. The summary separately reports actual evaluations and cache hits;
+The progress bar counts settled suggestions, including cache hits, unsupported backend candidates,
+failures and timeouts. Explicit learned searches exclude automatically enumerated
+deployments with unavailable required workload stores before replay; those
+`estimator_unavailable` records do not advance the progress bar or consume the
+trial budget. Their native readiness and identity remain in the candidate ledger.
+The summary separately reports actual evaluations and cache hits;
 `suggesting` means time is being spent in the optimizer, while `evaluating` means candidates
 are being materialized or replayed. Suggestion time is reported at the end.
 

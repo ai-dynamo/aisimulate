@@ -15,9 +15,10 @@ from aisimulate_core.sdk import (
     ForwardPassPerfModelConfig,
     RustForwardPassPerfModel,
 )
+from aisimulate_core.sdk.errors import LearnedSourceUnavailableError
 from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
-from ..estimator_readiness import unready_estimator_message
+from ..estimator_readiness import estimator_execution_ready, unready_estimator_message
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
@@ -25,6 +26,16 @@ from .replay import ForwardPassEstimatorSpec
 
 class ForwardPassEstimatorResolutionError(ValueError):
     """A configured forward-pass estimator identity cannot be resolved exactly."""
+
+
+class UnavailableLearnedCandidate(ForwardPassEstimatorResolutionError):
+    """An enumerated deployment has no usable learned route for required stores."""
+
+    def __init__(self, message: str, *, role: str, config: dict[str, Any], readiness: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.role = role
+        self.config = deepcopy(config)
+        self.readiness = deepcopy(readiness)
 
 
 def resolve_systems_paths(configured: list[str] | None, *, require_directories: bool = True) -> tuple[str, ...]:
@@ -126,7 +137,9 @@ class ForwardPassEstimatorResolver:
             fields.update(snapshot.saved_spellings(fields))
         return ForwardPassPerfModelConfig(**fields)
 
-    def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:
+    def _resolve(
+        self, request: ForwardPassPerfModelConfig, role: str, *, allow_unavailable: bool = False
+    ) -> ForwardPassEstimatorSpec:
         # Bind an external file before caching so identical relative spellings
         # from different working directories cannot reuse another pair.
         interpolation = request.estimator_config.get("fpm_interpolation", {})
@@ -146,9 +159,17 @@ class ForwardPassEstimatorResolver:
             cached = self._resolved.get(cache_key)
             if cached is not None:
                 return deepcopy(cached)
-            model = RustForwardPassPerfModel.best_available(request)
+            model = RustForwardPassPerfModel.best_available(request_payload)
             diagnostics = model.diagnostics()
-            diagnostics["dependencies"] = model.dependency_info()
+        except LearnedSourceUnavailableError as exc:
+            if allow_unavailable and request.estimation_mode == "fpm_learned":
+                raise UnavailableLearnedCandidate(
+                    str(exc),
+                    role=role,
+                    config=request.to_dict(),
+                    readiness={"source": {"available": False, "reason": str(exc)}},
+                ) from exc
+            raise ForwardPassEstimatorResolutionError(str(exc)) from exc
         except Exception as exc:
             raise ForwardPassEstimatorResolutionError(
                 "Core cannot construct the exact forward-pass estimator for "
@@ -167,10 +188,20 @@ class ForwardPassEstimatorResolver:
                 f"Core returned no resolved provenance for {request.system}/{request.backend}/{role}"
             )
         resolved_config = dict(provenance["config"])
-        if diagnostics.get("readiness") != "ready":
-            raise ForwardPassEstimatorResolutionError(
-                f"estimator for {role} is not ready: {unready_estimator_message(diagnostics)}"
-            )
+        if not estimator_execution_ready(diagnostics):
+            message = f"estimator for {role} is not ready: {unready_estimator_message(diagnostics)}"
+            report = diagnostics.get("readiness_report") or {}
+            unavailable = (report.get("execution") or {}).get("unavailable") or []
+            # Only explicit learned searches can exclude a discovery/readiness
+            # miss. Fitting failures and unknown reasons retain their errors.
+            if (
+                allow_unavailable
+                and request.estimation_mode == "fpm_learned"
+                and unavailable
+                and all(store.get("not_ready_reason") == "untrained_forest_store" for store in unavailable)
+            ):
+                raise UnavailableLearnedCandidate(message, role=role, config=resolved_config, readiness=report)
+            raise ForwardPassEstimatorResolutionError(message)
         if not resolved_config.get("backend_version"):
             raise ForwardPassEstimatorResolutionError(
                 f"Core did not resolve an exact backend version for {request.system}/{request.backend}/{role}"
@@ -217,8 +248,16 @@ class ForwardPassEstimatorResolver:
         if sample["deployment_mode"] not in {"agg", "disagg"} or self._search_space.encoder is not None:
             return {}
         roles = ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        pinned = bool(
+            self._search_space.parallel_configs
+            or self._search_space.parallel_configs_by_mode.get(sample["deployment_mode"])
+        )
         resolved = {
-            role: self._resolve(self._request(sample, role), role)
+            role: self._resolve(
+                self._request(sample, role),
+                role,
+                allow_unavailable=not pinned and self._search_space.state_snapshot_role(role) is None,
+            )
             for role in roles
             if sample.get(f"{role}_timing_model") is None
         }

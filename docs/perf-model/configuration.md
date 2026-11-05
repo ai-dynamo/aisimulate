@@ -718,6 +718,18 @@ Readiness does not guarantee coverage for every query: an interpolation route
 can still return no estimate outside its support. Portable snapshots reject
 the temporary mixed policy, so snapshot inspection does not report mixed
 fallback readiness.
+`model.readiness_report()` also exposes an additive `execution` decision for
+the constructed role, backend scheduler and attention-DP width. Its
+`required_stores` and `unavailable` entries use the same Core gate as replay.
+The existing top-level `ready` field keeps its coarse meaning. Rust callers
+use `model.execution_readiness()` or `report.for_execution(role, backend, width)`;
+the original four-field `ForwardPassReadinessReport` remains constructible.
+Automatically enumerated learned recommendation candidates with no compatible
+source or a missing required forest are recorded as `estimator_unavailable`
+without consuming simulation budget. Explicit requests, corrupt inputs and
+other errors remain failures. Missing stores require caller-managed fitting
+and seed export.
+
 `model.deployment_topology()` reports the identity's worker role, parallelism,
 speculation, KV block size and fixed correction limits.
 `RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, state_snapshot=path)`

@@ -67,9 +67,10 @@ pub use fpm::{
 pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
 pub use fpm::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
-    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
-    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
-    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+    ForwardPassDeploymentTopology, ForwardPassExecutionReadiness, ForwardPassReadinessReport,
+    ForwardPassStateSnapshotSummary, ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness,
+    STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions,
+    StateSnapshotTuning,
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,

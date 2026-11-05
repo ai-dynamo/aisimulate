@@ -31,8 +31,7 @@ use crate::replay::{
 };
 use crate::{
     DeploymentLimits, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
-    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassRegressionWorkloadKind,
-    ForwardPassWorkerType, UNKNOWN_SIZE,
+    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassWorkerType, UNKNOWN_SIZE,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
@@ -2605,7 +2604,7 @@ impl TimingModel for AicTimingModel {
 /// `attention_dp` ranks: pure prefill for a prefill worker, pure decode for a
 /// decode worker, and both for an aggregated worker. An aggregated rank also
 /// computes prefill and decode together when its backend's scheduler does
-/// (see [`schedules_locally_mixed`]), and its ranks compute different kinds of
+/// (as described by the shared readiness report), and its ranks compute different kinds of
 /// work when attention DP is known to be above one. Unknown attention DP adds
 /// no store here; the role checks again with its engine's width.
 fn require_iteration_stores(
@@ -2613,28 +2612,17 @@ fn require_iteration_stores(
     worker_type: ForwardPassWorkerType,
     attention_dp: u32,
 ) -> Result<()> {
-    use ForwardPassRegressionWorkloadKind::*;
     let provenance = model
         .provenance()
         .context("canonical estimator omitted construction provenance")?;
-    let mut required = match worker_type {
-        ForwardPassWorkerType::Prefill => vec![PurePrefill],
-        ForwardPassWorkerType::Decode => vec![PureDecode],
-        ForwardPassWorkerType::Aggregated => vec![PurePrefill, PureDecode],
-    };
-    if worker_type == ForwardPassWorkerType::Aggregated {
-        if schedules_locally_mixed(&provenance.config.backend) {
-            required.push(ContainsLocallyMixed);
-        }
-        if attention_dp > 1 && attention_dp != UNKNOWN_SIZE {
-            required.push(CrossRankAggregated);
-        }
-    }
-    let report = model.readiness_report();
+    let report = model.readiness_report().for_execution(
+        worker_type,
+        &provenance.config.backend,
+        attention_dp,
+    );
     let missing = report
-        .stores
+        .unavailable
         .iter()
-        .filter(|store| required.contains(&store.workload_kind) && !store.ready)
         .map(|store| match store.not_ready_reason {
             Some(reason) => format!("{} ({})", wire_name(store.workload_kind), wire_name(reason)),
             None => wire_name(store.workload_kind),
@@ -2649,15 +2637,6 @@ fn require_iteration_stores(
         missing.join(", ")
     );
     Ok(())
-}
-
-/// Whether `backend`'s replay scheduler computes prefill and decode in one
-/// rank pass. vLLM, and TensorRT-LLM on the shared vLLM core, schedule chunked
-/// prefill beside running decodes. SGLang runs a formed prefill batch alone
-/// (prefill and decode share a forward only with `--enable-mixed-chunk`,
-/// which is not modeled), so its ranks never compute locally mixed work.
-fn schedules_locally_mixed(backend: &crate::BackendKind) -> bool {
-    !matches!(backend, crate::BackendKind::Sglang)
 }
 
 /// Require the unit `decode_speedup_ratio` a regression or learned role needs.

@@ -119,9 +119,18 @@ not create a duplicate ledger row.
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
 | `resource_limited` | Host memory admission or bounded runtime recovery could not complete this candidate. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `estimator_unavailable`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
 `parallel_projection`, `adapter_constraint`, `resource_limit`, and `unknown`.
+
+For explicit `fpm_learned` searches, an automatically enumerated deployment with
+no usable route for a required workload store is `unsupported` with reason
+`estimator_unavailable`. Its configuration records `unavailable_estimator` with
+the role, resolved identity and Core execution-readiness report. These exclusions
+do not run replay or consume `max_trials`; subsequent suggestions recheck source
+availability. Explicit parallel configurations and state snapshots remain pinned:
+their missing readiness is an error. Corrupt sources, invalid configuration and
+failed fits remain errors for every candidate. `auto` retains its existing behavior.
 
 ## Provenance
 

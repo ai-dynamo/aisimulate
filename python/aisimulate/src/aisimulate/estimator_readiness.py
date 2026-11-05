@@ -1,12 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explain why no trained forward-pass estimator is available.
+"""Render Core-owned estimator readiness and selection failures for offline callers.
 
-Core reports an untrained regression fallback as not ready and records why each
-better estimator was rejected. Offline prediction must refuse that fallback;
-these helpers turn the recorded reasons into a message that names the cause and
-the valid options instead of a generic "not ready" error.
+Learned execution gates consume the native required-store decision; regression
+fallback messages retain the reasons each earlier estimator was rejected.
 """
 
 from __future__ import annotations
@@ -44,6 +42,8 @@ def unready_estimator_message(diagnostics: dict[str, Any]) -> str:
 
     provenance = diagnostics.get("provenance") or {}
     config = provenance.get("config") or {}
+    if config.get("estimation_mode") == "fpm_learned":
+        return learned_unready_message(diagnostics.get("readiness_report") or {})
     failures = [str(failure) for failure in provenance.get("selection_failures") or []]
     if not failures and diagnostics.get("last_warning"):
         failures = str(diagnostics["last_warning"]).split("; ")
@@ -75,6 +75,31 @@ def unready_estimator_message(diagnostics: dict[str, Any]) -> str:
         f"on {system}: {reasons}. Prediction will not fall back to an untrained regression estimator. "
         "Try another backend, backend_version or parallelism; to add a new model, follow the FPM "
         f"self-service guide ({FPM_SELF_SERVICE_GUIDE})"
+    )
+
+
+def estimator_execution_ready(diagnostics: dict[str, Any]) -> bool:
+    """Read the native decision without deriving phase requirements in Python."""
+    config = (diagnostics.get("provenance") or {}).get("config") or {}
+    if config.get("estimation_mode") == "fpm_learned":
+        return diagnostics.get("readiness_report", {}).get("execution", {}).get("ready") is True
+    return diagnostics.get("readiness") == "ready"
+
+
+def learned_unready_message(report: dict[str, Any]) -> str:
+    """Render native required-store lifecycle details for offline callers."""
+    execution = report.get("execution") or {}
+    unavailable = execution.get("unavailable") or []
+    details = []
+    for store in unavailable:
+        reason = store.get("not_ready_reason") or "unavailable"
+        detail = f"{store['workload_kind']}: {reason}"
+        details.append(detail)
+    missing = "; ".join(details) or "Core did not provide execution readiness"
+    return (
+        f"fpm_learned estimator is not ready for this execution: {missing}. "
+        "Select a bundle or snapshot covering the required stores, or fit and export those stores "
+        "in the calling application. Prediction does not train the model or substitute another estimator"
     )
 
 

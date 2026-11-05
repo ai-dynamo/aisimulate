@@ -1,0 +1,28 @@
+{
+  "parent": "211feab286f8ee823b4546b7ba7d651b37c3dc36",
+  "rust_fpm_passed": 414,
+  "public_api_passed": 26,
+  "resolver_passed": 95,
+  "cache_regression_pre_fix_oracle": "failed as expected",
+  "stage": "additive execution readiness, typed learned candidate filtering, normalized source cache binding; no complete snapshot3 yet",
+  "logs": {
+    "fpm-rust": {
+      "file": "pr2-fpm-rust.log",
+      "sha256": "35aa5861c11eca507e612312651cb668af49443a065a269f0cabdd59674052d1"
+    },
+    "public-api-rust": {
+      "file": "pr2-public-api-rust.log",
+      "sha256": "200f110307c2efdc548e960666ddd27858d14db86e68924add47c0b065291898"
+    },
+    "resolver": {
+      "file": "pr2-resolver.log",
+      "sha256": "592835fac128b87afac5d35d7a27beaddc48a20e5835c9cf90658599edb12676"
+    },
+    "resolver-pre-fix-oracle": {
+      "file": "pr2-resolver-pre-fix-oracle.log",
+      "sha256": "17db71182ae0e666d8b1ca914bc0875d29151c1df8183a48103df43ed6607364"
+    }
+  },
+  "support_plan_passed": 158,
+  "support_plan_command_record": "pr2-support-plan.json"
+}

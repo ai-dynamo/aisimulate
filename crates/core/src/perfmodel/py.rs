@@ -2473,7 +2473,7 @@ impl PyForwardPassPerfModel {
 
     /// Per-store estimation and correction readiness as JSON.
     fn readiness_report(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.readiness_report())
+        serde_json::to_string(&self.inner.readiness_record())
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
@@ -2602,7 +2602,13 @@ impl PyForwardPassPerfModel {
 
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
     fn diagnostics(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.diagnostics())
+        let mut diagnostics = serde_json::to_value(self.inner.diagnostics())
+            .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))?;
+        diagnostics["readiness_report"] = serde_json::to_value(self.inner.readiness_record())
+            .map_err(|e| PyValueError::new_err(format!("readiness serialize: {e}")))?;
+        diagnostics["dependencies"] = serde_json::to_value(self.inner.dependency_info())
+            .map_err(|e| PyValueError::new_err(format!("dependencies serialize: {e}")))?;
+        serde_json::to_string(&diagnostics)
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
     }
 

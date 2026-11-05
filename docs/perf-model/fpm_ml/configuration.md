@@ -44,6 +44,35 @@ errors fail construction. Learned mode also rejects active speculative decoding
 `speculation: {kind: none}` is accepted and normalized to no speculation;
 it must not contain parameters or a draft checkpoint.
 
+### Seeded updates and execution readiness
+
+Online construction selects and validates an explicit checkpoint/bundle or an
+exact catalogue seed. `source_policy: explicit_only` disables discovery and
+therefore requires a source path. The runtime updates existing forest stores;
+it does not train a new forest from an empty observation buffer. Applications own
+initial training, complete rank grouping, sampling, deduplication, ordering,
+admission cadence and stream offsets. The public offline producer can export a
+compatible seed without becoming a collection service.
+
+`readiness_report()` retains its existing store-route flags and exposes an
+`execution` report using the native role, scheduler and attention-DP requirements.
+A qualified fallback can cover an absent forest, but readiness does not guarantee
+coverage for every query. Offline execution requires every applicable route.
+Automatically enumerated learned searches can exclude unavailable candidates;
+explicit configurations and corrupt sources remain actionable errors. The legacy
+top-level readiness field retains its meaning and is not a complete coverage gate.
+
+Admit measured targets only after prediction/scoring. A multi-iteration call may
+admit earlier iterations before a later failure, so callers must reconcile their
+admission log before retrying. `flush_updates()` explicitly processes a pending
+update batch; saving a snapshot does not flush it. A snapshot contains model
+state, not the application's feedback cursor or delivery guarantee.
+
+Fixed seed bins and existing tree capacity bound online adaptation. Representative
+accepted seed data and independent evaluation are still required; updates do not
+create missing workload stores or invent thresholds for a feature that was
+constant in the seed.
+
 ## Estimator namespaces
 
 - `fpm_learned`: an explicit forest source, `adaptation` (`online` by default),

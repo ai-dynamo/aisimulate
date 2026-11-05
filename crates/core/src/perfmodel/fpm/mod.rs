@@ -69,9 +69,9 @@ pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, Schedul
 pub(crate) use model::NativeIterationEstimate;
 pub use model::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
-    ForwardPassDeploymentTopology, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
-    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    ForwardPassReadinessReport, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassDeploymentTopology, ForwardPassExecutionReadiness, ForwardPassPerfDiagnostics,
+    ForwardPassPerfModel, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
+    ForwardPassPerfSource, ForwardPassReadinessReport, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassStateSnapshotSummary,
     ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, ForwardPassWorkerType,
     StateSnapshotOptions,
