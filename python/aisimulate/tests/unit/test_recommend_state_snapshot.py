@@ -594,6 +594,8 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "aggregated": save("aggregated", _planner("aggregated")),
         "unready": save("unready", _planner("aggregated", kinds=("decode",))),
         "nextn": save("nextn", _planner("decode", kinds=("decode",), nextn=1)),
+        "sglang-nextn": save("sglang-nextn", _planner("decode", kinds=("decode",), backend="sglang", nextn=1)),
+        "nextn-agg": save("nextn-agg", _planner("aggregated", nextn=1)),
         "no-kv": save(
             "no-kv", _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_kv_tokens": "unknown"})
         ),
@@ -774,7 +776,12 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
             lambda raw, w: w.update(scheduler={"max_batched_tokens": 16384}),
             r"max_batched_tokens=\[16384\] exceeds .*max_num_batched_tokens=8192",
         ),
-        ("nextn", lambda raw, w: None, r"records nextn=1; an fpm_regression model prices no speculative decoding"),
+        ("nextn", lambda raw, w: None, r"saved with nextn=1; set engine.nextn=1 and engine.nextn_accepted"),
+        (
+            "sglang-nextn",
+            lambda raw, w: raw["engine"].update(backend="sglang"),
+            r"records nextn=1; only a vLLM fpm_regression model prices MTP rounds",
+        ),
         ("no-kv", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-limits", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
         ("no-sequences", lambda raw, w: None, r"does not record deployment_limits.max_num_seqs"),
@@ -894,6 +901,26 @@ def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(plan
     # pass, so the same telemetry cannot price its role.
     with pytest.raises((ValidationError, ValueError), match=r"without a ready contains_locally_mixed workload store"):
         _space(_planner_request(planner_snapshots["vllm-pure"], mode="aggregated"))
+
+
+def test_a_vllm_planner_snapshot_fitted_with_mtp_is_recommended_and_replayed_at_its_nextn(planner_snapshots):
+    # The snapshot pins nextn 1; the engine supplies the accepted draft tokens.
+    raw = _planner_request(planner_snapshots["nextn-agg"], mode="aggregated")
+    raw["engine"].update(nextn=1, nextn_accepted=0.5)
+    result = _planner_run(raw)
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    assert candidate.prediction_config["engine"]["nextn"] == 1
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+    # An MTP scheme of the same depth is the same nextn.
+    prediction = deepcopy(candidate.prediction_config)
+    engine = prediction["engine"]
+    engine["speculation"] = {
+        "kind": "mtp",
+        "params": {"depth": engine.pop("nextn")},
+        "expected_accepted_tokens": engine.pop("nextn_accepted"),
+    }
+    assert _replay(prediction).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
 
 
 def test_an_aggregated_planner_snapshot_with_attention_dp_needs_its_cross_rank_store(planner_snapshots):

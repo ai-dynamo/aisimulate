@@ -481,16 +481,27 @@ def test_generic_speculation_fixed_capacity_error_identifies_scheme_and_role(rol
         CorePredictionConfig.model_validate(raw)
 
 
-@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+_MTP = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+
+
 @pytest.mark.parametrize("fallback", ["allow", "deny"])
 @pytest.mark.parametrize(
-    "speculation",
+    ("mode", "speculation"),
     [
-        {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5},
-        _SPEC,
-        {**_COST, "expected_accepted_tokens": 1.5},
+        # fpm_regression takes an MTP scheme as its nextn instead; see test_recommend_state_snapshot.py.
+        ("fpm_interpolation", _MTP),
+        ("fpm_interpolation", _SPEC),
+        ("fpm_regression", _SPEC),
+        ("fpm_interpolation", {**_COST, "expected_accepted_tokens": 1.5}),
+        ("fpm_regression", {**_COST, "expected_accepted_tokens": 1.5}),
     ],
-    ids=["mtp", "ngram", "generic_ngram"],
+    ids=[
+        "interpolation-mtp",
+        "interpolation-ngram",
+        "regression-ngram",
+        "interpolation-generic_ngram",
+        "regression-generic_ngram",
+    ],
 )
 def test_replay_preserves_canonical_estimator_selection(mode, fallback, speculation):
     raw = _prediction(timing="default")

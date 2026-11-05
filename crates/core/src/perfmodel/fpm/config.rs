@@ -604,6 +604,15 @@ impl ForwardPassPerfModelConfig {
         {
             self.speculation = None;
         }
+        // A regression pins the `nextn` it was fitted at. An MTP draft is
+        // `depth` extra target-shaped layers, the same as legacy `nextn`
+        // (`aisimulate_core.sdk.speculation.mtp`), so a regression takes it so.
+        #[cfg(feature = "python")]
+        if self.estimation_mode == EstimationMode::FpmRegression
+            && let Some(mtp) = self.speculation.take_if(|spec| spec.kind == "mtp")
+        {
+            self.nextn = crate::py::speculation_replay_depth(&mtp)?;
+        }
         let registered = if self.fpm_profile.is_some() {
             self.estimator_config
                 .fpm_interpolation

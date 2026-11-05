@@ -82,7 +82,8 @@ worker timing selection schemas. Replay prices every pass of a regression or
 learned role with one `ForwardPassMetrics` query over the worker's
 attention-DP ranks, adding the per-request lengths a learned artifact reads,
 and rejects such a role when its model lacks a workload store the role needs,
-hosts the vision encoder or uses speculative decoding; see
+hosts the vision encoder or uses speculative decoding other than the MTP depth
+a vLLM regression was fitted at; see
 [engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
 These roles are latency-only, so their replay reports no power.
 
