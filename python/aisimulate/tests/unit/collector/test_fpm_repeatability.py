@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from collector.fpm_forward import cli, execution_evidence, repeatability, runner
-from collector.fpm_forward.config import with_kv_warmup_defaults
+from collector.fpm_forward.config import semantic_generator_overrides, with_kv_warmup_defaults
 from collector.fpm_forward.database import aggregate_cell
 from collector.fpm_forward.native_artifact import (
     _expected_scheduled,
@@ -754,6 +754,31 @@ def test_resolved_hub_snapshot_does_not_override_generated_revision(campaign, la
     assert result["status"] == ("qualified" if launch_revision == revision else "failed")
     if launch_revision != revision:
         assert "runtime model_config.model differs from generated --model" in result["failures"]
+
+
+@pytest.mark.parametrize("dynamo_version", [None, "1.1.0"])
+def test_archived_deployment_matches_semantic_plan_hash(campaign, dynamo_version):
+    # AISIM-2283: the planner freezes the semantic inputs, which drop the
+    # declared Dynamo version, while the archive keeps it as provenance.
+    plan, source, checkpoint = campaign
+    deployment = {} if dynamo_version is None else {"generator_dynamo_version": dynamo_version}
+    plan = replace(
+        plan, generator_config_sha256=repeatability._canonical_hash(semantic_generator_overrides(deployment))
+    )
+    _write_campaign(source, checkpoint, plan, generator_overrides=deployment)
+    archived = json.loads((source / "generator-overrides.json").read_text())
+    assert archived.get("generator_dynamo_version") == dynamo_version
+    cell = plan.cells[0]
+    raw = source / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    assert "archived deployment inputs differ from the source plan" not in result["failures"]
+    assert result["status"] == "qualified", result["failures"]
+
+    archived["K8sConfig"]["extra_env"].append({"name": "UNPLANNED", "value": "1"})
+    (source / "generator-overrides.json").write_text(json.dumps(archived))
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    assert "archived deployment inputs differ from the source plan" in result["failures"]
 
 
 def test_explicit_checkpoint_mount_does_not_accept_a_hub_snapshot_alias(campaign):
