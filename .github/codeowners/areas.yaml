@@ -50,6 +50,7 @@ areas:
     path_globs:
       - crates/core/examples/
       - crates/core/src/replay/
+      - crates/steppable-plugin/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
@@ -229,6 +230,8 @@ shared:
   - glob: tests/sweeper/
     owners: [sweeper, maintainers]
   - glob: crates/core/src/replay/
+    owners: [replay, maintainers]
+  - glob: crates/steppable-plugin/
     owners: [replay, maintainers]
   - glob: crates/core/examples/
     owners: [replay, maintainers]
