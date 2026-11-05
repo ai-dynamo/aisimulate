@@ -4,8 +4,8 @@
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# Attention-family pin: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6 (0.31.0).
+__compat__ = "vllm==0.31.0"
 
 import os
 
@@ -75,7 +75,7 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
     if backend_name_str == "FLASHINFER":
         # FlashInfer classifies requests by query length, not by the
         # collector's phase label: with query_len <= reorder_batch_threshold
-        # (1, flashinfer.py:563) an s=1 "context" batch is entirely
+        # (1, flashinfer.py:563 @0.24.0) an s=1 "context" batch is entirely
         # decodes and metadata.prefill is None (flashinfer.py:540-546), so
         # read the portion vLLM actually populated.
         if attn_metadata.num_prefills > 0:
@@ -87,7 +87,7 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
         label = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
         # 0.30 folds XQA and trtllm-gen decode into ONE metadata class,
         # FlashInferTrtllmAPIDecode, and names the kernel in its `kernel` field
-        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611;
+        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611 @v0.30.0;
         # decode_with_xqa / decode_with_trtllm_gen at :1997-1998). The class
         # name alone would label SM120's XQA row and SM100's trtllm-gen row
         # identically — kernel_source must name the kernel that ran.
@@ -143,6 +143,10 @@ def run_attention_torch(
         block_size=block_size,
         num_gpu_blocks=8192,
         max_num_seqs=batch_size,
+        # One collector call represents the full prefill, including shapes
+        # above a serving scheduler's new-token budget. Size native builder
+        # buffers for that call (flashinfer.py:721-723 @v0.31.0).
+        max_num_batched_tokens=max(8192, batch_spec.compute_num_tokens()),
         use_fp8_kv_cache=use_fp8_kv_cache,
         sliding_window=window_size if window_size > 0 else None,
         head_dim=head_dim,
@@ -162,29 +166,13 @@ def run_attention_torch(
         use_sparse=False,
         use_mm_prefix=False,
     )
-    # Backend selection for head_dim > 256 mirrors the framework's own
-    # heterogeneous-head-dim policy. head_dim > 256 is reachable only from
-    # Gemma-4 (global layers, global_head_dim=512), whose model-level config
-    # hook (Gemma4Config.verify_and_update_config,
-    # model_executor/models/config.py:209-256) forces a UNIFORM backend across
-    # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
-    # plus the per-group validity of head-512, resolves as follows on SM90
-    # (live-engine kernel probe, gemma-4-26B-A4B + kv fp8/auto):
-    #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
-    #             already returns this, so no override is needed.
-    #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
-    #             path compiles fp8+head512 on SM90, so the uniform-backend
-    #             policy lands on Triton. The bare platform selector, lacking
-    #             the model-level heterogeneous-head context, instead picks
-    #             FlashInfer (whose SM90 fp8+head512 JIT cannot compile) — the
-    #             attention fp8 collection failures. Force the serving backend.
-    # This is not a per-model special case: it reproduces the framework's own
-    # config-hook branch keyed on head_dim, with the metadata-parity citation.
-    selected_backend = None
-    if head_dim > 256 and use_fp8_kv_cache:
-        selected_backend = AttentionBackendEnum.TRITON_ATTN
+    # v0.31.0 model_executor/models/config.py:217-222,242-255 uses per-layer
+    # FA3/FA4 selection for Gemma4 FP8 KV on SM90. The native FlashAttention
+    # selector admits head512 FP8 via FA4 (flash_attn.py:476-490), replacing
+    # the older forced-Triton workaround. Let native selection choose both
+    # prefill and generation backends for this layer's geometry.
     backend_path = current_platform.get_attn_backend_cls(
-        selected_backend,
+        None,
         attn_selector_config,
         num_heads=num_heads,
     )
@@ -192,7 +180,11 @@ def run_attention_torch(
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 
-    # the page the framework would run THIS backend with (asked, not tabled)
+    # Native v0.31.0: CacheConfig.DEFAULT_BLOCK_SIZE=16 (config/cache.py:71),
+    # FlashInfer supports 16 (flashinfer.py:430-449), and get_preferred_block_size
+    # preserves it (backend.py:154-162). Thus the isolated Qwen n=4/kv=1/d=256
+    # case uses page 16 without an override. Full-model hybrid manager-page
+    # alignment is separate (platforms/interface.py:699-702).
     block_size = framework_kv_block_size(backend_cls)
     vllm_config.cache_config.block_size = block_size
 
@@ -245,7 +237,7 @@ def run_attention_torch(
     )
 
     # serving-same layout resolution for the single backend under test
-    # (utils.py:240-307); reset cache_config after the case so the
+    # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
     # next backend re-resolves instead of inheriting ("existing wins outright")
     _supported = get_supported_kv_cache_layouts([backend_cls])
     resolve_kv_cache_layout(vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
@@ -260,13 +252,13 @@ def run_attention_torch(
     # Serving allocates the per-layer cache in the RESOLVED physical layout and
     # backends read it through kv_cache.permute(*layout.layer_view_order)
     # (v1/kv_cache_layout.py KVCacheLayout.layer_view_order; flashinfer.py:2091
-    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous").
-    # A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
+    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous"
+    # @v0.30.0). A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
     # family (HND) that FLASH_ATTN and the SM100 trtllm-gen FlashInfer path
     # resolve (flashinfer.py:543-549); FlashInfer elsewhere resolves the NHD
     # default, whose XQA decode asserts "KV cache inner dims (block_size,
     # head_size) must be contiguous" on this HND memory (flashinfer.py:2448) —
-    # every fp8-KV GQA generation case on SM120. Lay the memory out
+    # every fp8-KV GQA generation case on SM120, 2026-10-01. Lay the memory out
     # per the resolved layout and hand the backend the same logical view.
     kv_cache = kv_cache_in_resolved_layout(
         kv_cache, vllm_config.cache_config.get_resolved_kv_cache_layout().layer_view_order
@@ -355,14 +347,12 @@ def run_attention_torch(
     # Output buffer is always BF16 — the impl dequantises internally.
     output = torch.empty_like(query_vllm)
 
-    # FIXME(kernel-limit): on SM100/SM110 the FA4 CuTe kernel rejects
-    # (head_dim, head_dim_v)=(192, 192): _validate_head_dims allows 8..128,
-    # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104),
-    # while vLLM's FlashAttentionBackend.supports_head_size claims
-    # any head_size <= 256 (flash_attn.py:173-179), so the selector still
-    # routes BF16-KV head-dim-192 shapes to FLASH_ATTN there and forward
-    # raises. Observed on B200; serving would fail identically. Re-verify on
-    # the next vLLM bump.
+    # FIXME(kernel-limit): v0.31.0 source recheck retains the FA4 SM100/SM110
+    # rejection of (192,192): flash-attention@9cd61de3, flash_attn/cute/
+    # interface.py:112-128. That dependency is pinned in vLLM's cmake/
+    # external_projects/vllm_flash_attn.cmake:42. The vLLM selector still
+    # accepts head192 (flash_attn.py:421-427); keep the native failure visible.
+    # Historical B200 failure is not a GPU qualification of this revision.
     def run():
         if not backend_cls.forward_includes_kv_cache_update:
             impl.do_kv_cache_update(
