@@ -172,6 +172,21 @@ pub struct StepOutcome {
     pub events: Vec<EngineEvent>,
 }
 
+/// Failure of an atomic passive batch. Rejected batches do not mutate replay
+/// state; runtime failures occur during stepping, never midway through enqueue.
+#[derive(Debug)]
+pub struct BatchSubmitError(anyhow::Error);
+
+impl BatchSubmitError {
+    pub fn is_poisoned(&self) -> bool { false }
+}
+
+impl std::fmt::Display for BatchSubmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
+}
+
+impl std::error::Error for BatchSubmitError {}
+
 /// An offline replay runtime as a steppable, clock-injected, dynamically fed
 /// engine. Every topology implements it, so one caller loop drives any of them.
 pub trait SteppableReplay {
@@ -194,6 +209,11 @@ pub trait SteppableReplay {
     /// implementations are unsupported unless they explicitly implement this.
     fn submit_compact(&mut self, _request: CompactDirectRequest) -> anyhow::Result<Uuid> {
         anyhow::bail!("this steppable replay does not support compact submission")
+    }
+
+    /// Atomically accept a batch at the current clock, without executing it.
+    fn submit_batch(&mut self, _requests: Vec<DirectRequest>) -> Result<Vec<Uuid>, BatchSubmitError> {
+        Err(BatchSubmitError(anyhow::anyhow!("this steppable replay does not support batch submission")))
     }
 
     /// Cancel one live request. Returns its terminal event when cancellation
@@ -270,11 +290,40 @@ fn steppable_mode() -> ReplayMode {
 #[derive(Default)]
 struct LiveRequests {
     uuids: HashMap<Uuid, Option<Arc<dyn CompactHashIdsLease>>>,
+    pending: VecDeque<ReplayRequestPayload>,
 }
 
 impl LiveRequests {
-    fn insert(&mut self, uuid: Uuid) {
-        self.uuids.insert(uuid, None);
+    fn enqueue(&mut self, mut payload: ReplayRequestPayload, owner: Option<Arc<dyn CompactHashIdsLease>>) -> Uuid {
+        let uuid = payload.metadata().uuid.unwrap_or_else(Uuid::new_v4);
+        payload.metadata_mut().uuid = Some(uuid);
+        self.pending.push_back(payload);
+        self.uuids.insert(uuid, owner);
+        if let Some(Some(owner)) = self.uuids.get(&uuid) { owner.on_accepted(); }
+        uuid
+    }
+
+    fn validate(&self, request: &DirectRequest, retained: bool, dp_size: u32, prefill_dp_size: u32, workers: usize) -> anyhow::Result<()> {
+        if let Some(uuid) = request.uuid {
+            anyhow::ensure!(!self.contains(uuid) && !retained, "steppable replay request {uuid} is already live or retained");
+        }
+        anyhow::ensure!(request.preferred_dp_rank.is_none_or(|rank| rank < dp_size), "preferred attention-DP rank is out of range");
+        anyhow::ensure!(request.preferred_prefill_dp_rank.or(request.preferred_dp_rank).is_none_or(|rank| rank < prefill_dp_size), "preferred prefill attention-DP rank is out of range");
+        if let Some(hint) = request.kv_hints {
+            anyhow::ensure!(hint.source_worker < workers && hint.source_dp_rank < dp_size, "KV hint source is out of range");
+        }
+        Ok(())
+    }
+
+    fn cancel_pending(&mut self, uuid: Uuid, now_ms: f64, collector: &mut crate::replay::TraceCollector) -> anyhow::Result<bool> {
+        let Some(index) = self.pending.iter().position(|payload| payload.metadata().uuid == Some(uuid)) else { return Ok(false); };
+        let request = &self.pending[index];
+        collector.try_on_arrival(uuid, now_ms, request.input_length(), request.metadata().effective_max_output_tokens())?;
+        if let Some(context) = request.metadata().replay_context.as_ref() { collector.on_request_context(uuid, context); }
+        collector.on_terminal(uuid, now_ms, ReplayTerminalStatus::Canceled);
+        self.pending.remove(index);
+        self.uuids.remove(&uuid);
+        Ok(true)
     }
 
     fn contains(&self, uuid: Uuid) -> bool {
@@ -298,6 +347,8 @@ fn aggregated_role_factory(
 pub struct SteppableAgg {
     runtime: SteppableAggRuntime,
     live: LiveRequests,
+    dp_size: u32,
+    num_workers: usize,
 }
 
 impl SteppableAgg {
@@ -320,7 +371,13 @@ impl SteppableAgg {
         Ok(Self {
             runtime,
             live: LiveRequests::default(),
+            dp_size: engine.dp_size,
+            num_workers,
         })
+    }
+
+    fn validate_submission(&self, request: &DirectRequest) -> anyhow::Result<()> {
+        self.live.validate(request, request.uuid.is_some_and(|uuid| self.runtime.collector().contains_request(uuid)), self.dp_size, self.dp_size, self.num_workers)
     }
 }
 
@@ -330,42 +387,37 @@ impl SteppableReplay for SteppableAgg {
     }
 
     fn advance_now_ms(&mut self, now_ms: f64) {
-        if now_ms.is_finite() && now_ms > self.runtime.now_ms() {
+        if self.live.pending.is_empty() && now_ms.is_finite() && now_ms > self.runtime.now_ms() {
             self.runtime.advance_now_ms(now_ms);
         }
     }
 
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
-        if let Some(uuid) = request.uuid
-            && self.live.contains(uuid)
-        {
-            anyhow::bail!("steppable replay request {uuid} is already live");
-        }
-        if let Some(uuid) = request.uuid
-            && self.runtime.collector().contains_request(uuid)
-        {
-            anyhow::bail!("steppable replay request {uuid} is already retained");
-        }
-        let uuid = self.runtime.submit_dynamic(request)?;
-        self.live.insert(uuid);
-        Ok(uuid)
+        self.validate_submission(&request)?;
+        Ok(self.live.enqueue(ReplayRequestPayload::materialized(request), None))
     }
 
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
         let (payload, owner) = request.into_parts();
-        if let Some(uuid) = payload.metadata().uuid {
-            anyhow::ensure!(!self.live.contains(uuid), "steppable replay request {uuid} is already live");
-            anyhow::ensure!(!self.runtime.collector().contains_request(uuid), "steppable replay request {uuid} is already retained");
+        self.validate_submission(payload.metadata())?;
+        Ok(self.live.enqueue(payload, owner))
+    }
+
+    fn submit_batch(&mut self, requests: Vec<DirectRequest>) -> Result<Vec<Uuid>, BatchSubmitError> {
+        let mut ids = std::collections::HashSet::new();
+        for request in &requests {
+            self.validate_submission(request).map_err(BatchSubmitError)?;
+            if let Some(uuid) = request.uuid {
+                if !ids.insert(uuid) { return Err(BatchSubmitError(anyhow::anyhow!("duplicate request {uuid} in batch"))); }
+            }
         }
-        let uuid = self.runtime.submit_dynamic_payload(payload)?;
-        self.live.uuids.insert(uuid, owner);
-        if let Some(Some(owner)) = self.live.uuids.get(&uuid) {
-            owner.on_accepted();
-        }
-        Ok(uuid)
+        Ok(requests.into_iter().map(|request| self.live.enqueue(ReplayRequestPayload::materialized(request), None)).collect())
     }
 
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
+        if self.live.cancel_pending(uuid, self.runtime.now_ms(), self.runtime.collector_mut())? {
+            return Ok(Some(EngineEvent::terminal(uuid, ReplayTerminalStatus::Canceled)));
+        }
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
             self.live.uuids.remove(&uuid);
@@ -374,6 +426,10 @@ impl SteppableReplay for SteppableAgg {
     }
 
     fn step_until(&mut self, until_ms: f64) -> anyhow::Result<StepOutcome> {
+        anyhow::ensure!(!until_ms.is_nan() && until_ms >= self.now_ms(), "step deadline precedes runtime time");
+        while let Some(payload) = self.live.pending.pop_front() {
+            self.runtime.submit_dynamic_payload(payload)?;
+        }
         let end_ms = self.runtime.step_dynamic_until(until_ms)?;
         let tokens = self.runtime.take_step_tokens();
         let mut events = tokens
@@ -388,11 +444,12 @@ impl SteppableReplay for SteppableAgg {
     }
 
     fn next_event_ms(&mut self) -> Option<f64> {
+        if !self.live.pending.is_empty() { return Some(self.now_ms()); }
         self.runtime.next_timestamp()
     }
 
     fn is_idle(&self) -> bool {
-        self.runtime.is_workload_done()
+        self.live.pending.is_empty() && self.runtime.is_workload_done()
     }
 
     fn in_flight(&self) -> usize {
@@ -426,6 +483,7 @@ impl SteppableReplay for SteppableAgg {
     }
 
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
+        anyhow::ensure!(self.is_idle(), "replay report requires an idle runtime");
         self.runtime.take_report_dynamic(wall_ms)
     }
 }
@@ -460,6 +518,10 @@ impl SteppableReplay for SteppableEngine {
 
     fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
         self.inner.submit_compact(request)
+    }
+
+    fn submit_batch(&mut self, requests: Vec<DirectRequest>) -> Result<Vec<Uuid>, BatchSubmitError> {
+        self.inner.submit_batch(requests)
     }
 
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
@@ -508,6 +570,133 @@ impl SteppableReplay for SteppableEngine {
 
     fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
         self.inner.take_report(wall_ms)
+    }
+}
+
+type SteppableDisaggRuntime = crate::replay::disagg::DisaggRuntimeImpl<
+    crate::replay::core::round_robin::PoolRoundRobinPlacement<()>,
+    NoEngineEvents,
+    NoReplayMetadata,
+>;
+
+/// Externally driven disaggregated replay using the current native handoff,
+/// transfer, release, and worker runtime. Client terminal and server quiescence
+/// remain distinct; compact owners survive both when cleanup is outstanding.
+pub struct SteppableDisagg {
+    runtime: SteppableDisaggRuntime,
+    live: LiveRequests,
+    retiring: HashMap<Uuid, Arc<dyn CompactHashIdsLease>>,
+    dp_size: u32,
+    prefill_dp_size: u32,
+    num_decode_workers: usize,
+}
+
+impl SteppableDisagg {
+    pub fn new(
+        engine: ReplayEngineConfig,
+        factory: &ReplayEngineFactory,
+        num_prefill_workers: usize,
+        num_decode_workers: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(num_prefill_workers > 0 && num_decode_workers > 0, "disaggregated worker counts must be positive");
+        let prefill_factory = factory.role_factory(&engine, WorkerStage::Prefill, false)?;
+        let decode_factory = factory.role_factory(&engine, WorkerStage::Decode, false)?;
+        let prefill_dp_size = prefill_factory.dp_size();
+        let dp_size = decode_factory.dp_size();
+        let config = crate::replay::OfflineDisaggReplayConfig {
+            prefill_factory,
+            decode_factory,
+            prefill_startup_time_ms: None,
+            decode_startup_time_ms: None,
+            num_prefill_workers,
+            num_decode_workers,
+            handoff_latency_ms: 0.0,
+        };
+        let runtime = SteppableDisaggRuntime::new_composed(
+            &config,
+            AdmissionQueue::new_requests(VecDeque::new(), steppable_mode()),
+            false,
+            |_, prefill, _, decode| Ok((
+                crate::replay::core::round_robin::PoolRoundRobinPlacement::new(prefill),
+                crate::replay::core::round_robin::PoolRoundRobinPlacement::new(decode),
+            )),
+        )?.into_steppable();
+        Ok(Self { runtime, live: LiveRequests::default(), retiring: HashMap::new(), dp_size, prefill_dp_size, num_decode_workers })
+    }
+
+    fn validate_submission(&self, request: &DirectRequest) -> anyhow::Result<()> {
+        self.live.validate(request, request.uuid.is_some_and(|uuid| self.runtime.collector().contains_request(uuid)), self.dp_size, self.prefill_dp_size, self.num_decode_workers)
+    }
+
+    fn retire_owner(&mut self, uuid: Uuid) {
+        if let Some(Some(owner)) = self.live.uuids.remove(&uuid) { self.retiring.insert(uuid, owner); }
+    }
+
+    fn release_quiescent_owners(&mut self) {
+        for uuid in self.runtime.take_step_quiescent() { self.retiring.remove(&uuid); }
+    }
+}
+
+impl SteppableReplay for SteppableDisagg {
+    fn now_ms(&self) -> f64 { self.runtime.now_ms() }
+    fn advance_now_ms(&mut self, now_ms: f64) {
+        if self.live.pending.is_empty() && now_ms.is_finite() && now_ms > self.now_ms() { self.runtime.advance_now_ms(now_ms); }
+    }
+    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        self.validate_submission(&request)?;
+        Ok(self.live.enqueue(ReplayRequestPayload::materialized(request), None))
+    }
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        let (payload, owner) = request.into_parts();
+        self.validate_submission(payload.metadata())?;
+        Ok(self.live.enqueue(payload, owner))
+    }
+    fn submit_batch(&mut self, requests: Vec<DirectRequest>) -> Result<Vec<Uuid>, BatchSubmitError> {
+        let mut ids = std::collections::HashSet::new();
+        for request in &requests {
+            self.validate_submission(request).map_err(BatchSubmitError)?;
+            if let Some(uuid) = request.uuid {
+                if !ids.insert(uuid) { return Err(BatchSubmitError(anyhow::anyhow!("duplicate request {uuid} in batch"))); }
+            }
+        }
+        Ok(requests.into_iter().map(|request| self.live.enqueue(ReplayRequestPayload::materialized(request), None)).collect())
+    }
+    fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
+        if self.live.cancel_pending(uuid, self.runtime.now_ms(), self.runtime.collector_mut())? {
+            return Ok(Some(EngineEvent::terminal(uuid, ReplayTerminalStatus::Canceled)));
+        }
+        let status = self.runtime.cancel_dynamic(uuid)?;
+        if status.is_some() { self.retire_owner(uuid); }
+        self.release_quiescent_owners();
+        Ok(status.map(|status| EngineEvent::terminal(uuid, status)))
+    }
+    fn step_until(&mut self, until_ms: f64) -> anyhow::Result<StepOutcome> {
+        anyhow::ensure!(!until_ms.is_nan() && until_ms >= self.now_ms(), "step deadline precedes runtime time");
+        while let Some(payload) = self.live.pending.pop_front() { self.runtime.submit_dynamic_payload(payload)?; }
+        let end_ms = self.runtime.step_dynamic_until(until_ms)?;
+        let mut events = self.runtime.take_step_tokens().into_iter().map(|(uuid, token_id)| EngineEvent::token(uuid, token_id)).collect::<Vec<_>>();
+        for (uuid, status) in self.runtime.take_step_terminals() {
+            self.retire_owner(uuid);
+            events.push(EngineEvent::terminal(uuid, status));
+        }
+        self.release_quiescent_owners();
+        Ok(StepOutcome { end_ms, events })
+    }
+    fn next_event_ms(&mut self) -> Option<f64> {
+        if !self.live.pending.is_empty() { return Some(self.now_ms()); }
+        self.runtime.next_dynamic_timestamp()
+    }
+    fn is_idle(&self) -> bool { self.live.pending.is_empty() && self.runtime.is_workload_done() }
+    fn in_flight(&self) -> usize { self.live.len() }
+    fn set_capture_per_request(&mut self, capture: bool) { self.runtime.collector_mut().set_capture_per_request(capture); }
+    fn set_sla_thresholds(&mut self, sla: SlaThresholds) { self.runtime.collector_mut().set_sla_thresholds(sla); }
+    fn request_latencies(&self, uuid: Uuid) -> Option<(f64, f64)> { self.runtime.collector().request_latencies(uuid) }
+    fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)> { self.runtime.collector().request_admission(uuid) }
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> { self.runtime.collector().request_reused_input_tokens(uuid) }
+    fn actual_output_length(&self, uuid: Uuid) -> Option<usize> { self.runtime.collector().actual_output_length(uuid) }
+    fn take_report(&mut self, wall_ms: f64) -> anyhow::Result<ReplayReport> {
+        anyhow::ensure!(self.is_idle(), "replay report requires an idle runtime");
+        self.runtime.take_report_dynamic(wall_ms)
     }
 }
 
@@ -590,6 +779,111 @@ mod tests {
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(weak.upgrade().is_none());
         assert_eq!(engine.in_flight(), 0);
+    }
+
+    #[test]
+    fn failed_atomic_batch_preserves_an_accepted_compact_owner() {
+        for disagg in [false, true] {
+            let factory = ReplayEngineFactory::new();
+            let mut engine: Box<dyn SteppableReplay> = if disagg {
+                Box::new(SteppableDisagg::new(ReplayEngineConfig::default(), &factory, 1, 1).unwrap())
+            } else {
+                Box::new(SteppableEngine::new(ReplayEngineConfig::default(), &factory).unwrap())
+            };
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let owner = Arc::new(TestLease { ids: vec![7], accepted: Arc::clone(&accepted) });
+            let weak = Arc::downgrade(&owner);
+            let uuid = engine.submit_compact(CompactDirectRequest::from_hash_ids_lease(request(710, 0, 1), 8, owner, 8).unwrap()).unwrap();
+            let error = engine.submit_batch(vec![request(711, 8, 1), request(710, 8, 1)]).unwrap_err();
+            assert!(!error.is_poisoned());
+            assert_eq!(engine.in_flight(), 1);
+            assert!(weak.upgrade().is_some());
+            assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(engine.cancel(Uuid::from_u128(711)).unwrap().is_none());
+            assert!(engine.submit_batch(vec![request(712, 8, 1), request(712, 8, 1)]).is_err());
+            let mut invalid = request(714, 8, 1);
+            invalid.preferred_dp_rank = Some(1);
+            assert!(engine.submit_batch(vec![request(713, 8, 1), invalid]).is_err());
+            assert_eq!(engine.in_flight(), 1);
+            engine.cancel(uuid).unwrap();
+            assert!(weak.upgrade().is_none());
+            assert!(engine.is_idle());
+            assert_eq!(engine.take_report(0.0).unwrap().request_counts.num_requests, 1);
+        }
+    }
+
+    #[test]
+    fn compact_acceptance_does_not_enter_worker_or_materialize_prompt() {
+        let mut engine = SteppableAgg::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new(), 1).unwrap();
+        engine.submit_compact(CompactDirectRequest::new(request(720, 0, 1), 17, vec![7, 7, 9], 8).unwrap()).unwrap();
+        assert_eq!(engine.live.pending.len(), 1);
+        assert!(engine.live.pending[0].materialized_tokens().is_none());
+        assert!(engine.runtime.collector().request_admission(Uuid::from_u128(720)).is_none());
+        assert_eq!(engine.next_event_ms(), Some(0.0));
+        engine.advance_now_ms(100.0);
+        assert_eq!(engine.now_ms(), 0.0, "queued ingress owns the current timestamp");
+        drain(&mut engine);
+    }
+
+    #[test]
+    fn maximum_reuse_accessor_is_not_first_admission_reuse() {
+        let mut engine = SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new()).unwrap();
+        let uuid = Uuid::from_u128(721);
+        let collector = engine.inner.runtime.collector_mut();
+        collector.try_on_arrival(uuid, 0.0, 32, 1).unwrap();
+        collector.on_admit(uuid, 1.0, 8);
+        collector.on_admit(uuid, 2.0, 24);
+        assert_eq!(engine.request_admission(uuid), Some((1.0, 8)));
+        assert_eq!(engine.request_reused_input_tokens(uuid), Some(24));
+    }
+
+    #[test]
+    fn disaggregated_compact_and_materialized_preserve_causal_transcript() {
+        fn run(compact: bool) -> Vec<(f64, EngineEvent)> {
+            let mut engine = SteppableDisagg::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new(), 2, 2).unwrap();
+            for id in 730..733 {
+                let metadata = DirectRequest { output_token_ids: Some(vec![41, 42, 43]), ..request(id, 0, 3) };
+                if compact {
+                    engine.submit_compact(CompactDirectRequest::new(metadata, 17, vec![7, 7, 9], 8).unwrap()).unwrap();
+                } else {
+                    let mut metadata = metadata;
+                    metadata.tokens = [vec![7; 16], vec![9]].concat();
+                    engine.submit(metadata).unwrap();
+                }
+            }
+            let mut transcript = Vec::new();
+            for _ in 0..1000 {
+                if engine.is_idle() {
+                    assert_eq!(engine.in_flight(), 0);
+                    assert!(engine.retiring.is_empty());
+                    let report = engine.take_report(0.0).unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 3);
+                    return transcript;
+                }
+                let step = engine.step().unwrap();
+                transcript.extend(step.events.into_iter().map(|event| (step.end_ms, event)));
+            }
+            panic!("disaggregated passive replay did not drain");
+        }
+        assert_eq!(run(true), run(false));
+    }
+
+    #[test]
+    fn disaggregated_cancellation_retains_owner_until_server_quiescence() {
+        let mut engine = SteppableDisagg::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new(), 1, 1).unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner = Arc::new(TestLease { ids: vec![7; 16], accepted });
+        let weak = Arc::downgrade(&owner);
+        let uuid = engine.submit_compact(CompactDirectRequest::from_hash_ids_lease(request(740, 0, 64), 128, owner, 8).unwrap()).unwrap();
+        engine.step_until(0.0).unwrap();
+        assert_eq!(engine.cancel(uuid).unwrap().unwrap().terminal_status, Some(ReplayTerminalStatus::Canceled));
+        assert_eq!(engine.in_flight(), 0);
+        if !engine.is_idle() { assert!(weak.upgrade().is_some()); }
+        let events = drain(&mut engine);
+        assert!(!events.iter().any(|event| event.uuid == uuid && event.terminal_status.is_some()), "cancel terminal must be delivered once");
+        assert!(weak.upgrade().is_none());
+        assert!(engine.retiring.is_empty());
+        assert_eq!(engine.next_event_ms(), None);
     }
 
     fn drain(engine: &mut dyn SteppableReplay) -> Vec<EngineEvent> {

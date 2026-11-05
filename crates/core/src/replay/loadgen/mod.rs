@@ -9,7 +9,7 @@ mod lineage;
 mod phase;
 mod profile;
 mod snapshot;
-mod steppable;
+pub mod steppable;
 mod trace;
 mod types;
 mod weka;
@@ -35,7 +35,10 @@ pub use snapshot::{
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
     AgenticSnapshotSelection, PreparedAgenticSnapshots,
 };
-pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
+pub use steppable::{
+    BatchSubmitError, CompactDirectRequest, CompactHashIdsLease, EngineEvent, StepOutcome,
+    SteppableAgg, SteppableDisagg, SteppableEngine, SteppableReplay,
+};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
 pub use types::CompactReadyTurn;

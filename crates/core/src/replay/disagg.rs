@@ -1132,6 +1132,13 @@ where
     profile_observers_started: bool,
     profile_cancel_started: bool,
     profile_canceled_requests: usize,
+    // Passive driving exposes causal terminals before committing another pass.
+    defer_drive: bool,
+    drive_pending: bool,
+    step_freed_slot: bool,
+    step_tokens: Vec<(Uuid, u32)>,
+    step_terminals: Vec<(Uuid, ReplayTerminalStatus)>,
+    step_quiescent: Vec<Uuid>,
 }
 
 #[cfg(test)]
@@ -1283,6 +1290,12 @@ where
             profile_observers_started: false,
             profile_cancel_started: false,
             profile_canceled_requests: 0,
+            defer_drive: false,
+            drive_pending: false,
+            step_freed_slot: false,
+            step_tokens: Vec::new(),
+            step_terminals: Vec::new(),
+            step_quiescent: Vec::new(),
             encoder: None,
         })
     }
@@ -1496,6 +1509,10 @@ where
         let Some(status) = status else {
             return Ok(());
         };
+        if self.defer_drive {
+            self.step_freed_slot = true;
+            self.step_terminals.push((uuid, status));
+        }
         self.admission
             .defer_causal_terminal(uuid, self.now_ms, status)
     }
@@ -1517,12 +1534,13 @@ where
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
+        if self.defer_drive { self.step_quiescent.push(uuid); }
         match self.awaiting_receipt.get_mut(&uuid) {
             // Released right after the client receives the request.
             Some(quiescent) => *quiescent = true,
             None => self.admission.defer_quiescent(uuid, self.now_ms)?,
         }
-        if !self.collector.is_batch_reporting() {
+        if !self.collector.is_batch_reporting() && !self.defer_drive {
             return Ok(());
         }
         // Both pipelines and the handoff coordinator are now quiescent. Only
@@ -2263,7 +2281,7 @@ where
 
     /// Return true once the request workload is complete, even if `WorkerReady`
     /// or control-tick events remain in the queue.
-    fn is_workload_done(&self) -> bool {
+    pub(crate) fn is_workload_done(&self) -> bool {
         self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
             && self.prefill_engine.is_drained()
@@ -2469,6 +2487,7 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
+            if self.defer_drive { self.step_tokens.push((signal.uuid, token_id)); }
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2597,6 +2616,10 @@ where
         let changed = !released.is_empty();
         for (at_ms, uuid, status) in released {
             self.collector.on_terminal(uuid, at_ms, status);
+            if self.defer_drive {
+                self.step_freed_slot = true;
+                self.step_terminals.push((uuid, status));
+            }
             self.admission
                 .defer_causal_terminal(uuid, self.now_ms, status)?;
             if self.awaiting_receipt.remove(&uuid) == Some(true) {
@@ -2820,6 +2843,7 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot { return Ok(changed); }
         }
     }
 
@@ -2839,6 +2863,7 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
+            if self.defer_drive && self.step_freed_slot { return Ok(changed); }
         }
     }
 
@@ -3106,11 +3131,23 @@ where
             if self.admission.agentic_profile_client_complete(self.now_ms) {
                 return Ok(());
             }
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
             changed |= self.drive_prefill_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             changed |= self.drive_decode_workers()?;
+            if self.defer_drive && self.step_freed_slot {
+                self.drive_pending = true;
+                return Ok(());
+            }
             let removed_prefill = self
                 .prefill_engine
                 .try_remove_drained()
@@ -3653,7 +3690,7 @@ where
     /// the interval just elapsed. `worker_count()` counts active + starting-up
     /// + draining workers, so this captures the startup ramp and the
     /// scale-down drain tail.
-    fn advance_now_ms(&mut self, new_now_ms: f64) {
+    pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
             let prefill_worker_seconds = self.prefill_engine.worker_count() as f64 * dt_ms / 1000.0;
@@ -4155,6 +4192,86 @@ where
         }
 
         Ok(())
+    }
+
+    pub(crate) fn into_steppable(mut self) -> Self {
+        self.defer_drive = true;
+        self
+    }
+
+    pub(crate) fn now_ms(&self) -> f64 { self.now_ms }
+    pub(crate) fn collector(&self) -> &TraceCollector { &self.collector }
+    pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector { &mut self.collector }
+    pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> { std::mem::take(&mut self.step_tokens) }
+    pub(crate) fn take_step_terminals(&mut self) -> Vec<(Uuid, ReplayTerminalStatus)> { std::mem::take(&mut self.step_terminals) }
+    pub(crate) fn take_step_quiescent(&mut self) -> Vec<Uuid> { std::mem::take(&mut self.step_quiescent) }
+
+    pub(crate) fn submit_dynamic_payload(&mut self, mut request: ReplayRequestPayload) -> Result<Uuid> {
+        request.metadata_mut().arrival_timestamp_ms = Some(self.now_ms);
+        let session_id = request.metadata().replay_context.as_ref().and_then(|context| context.session_id()).map(str::to_owned);
+        let uuid = self.on_external_arrival(request, self.now_ms, None, session_id, false)?;
+        self.drive_pending = true;
+        Ok(uuid)
+    }
+
+    pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {
+        let Some(state) = self.flow.requests.get(&uuid) else { return Ok(None); };
+        if state.terminal_status().is_some() { return Ok(None); }
+        let handoff_id = state.handoff_id;
+        self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
+        self.drive_pending_actions()?;
+        // The caller returns this causal terminal immediately. Server cleanup
+        // and quiescence retain their real committed-pass/transfer deadlines.
+        self.step_terminals.retain(|(id, _)| *id != uuid);
+        self.drive_pending = !self.is_workload_done();
+        Ok(Some(ReplayTerminalStatus::Canceled))
+    }
+
+    pub(crate) fn next_dynamic_timestamp(&mut self) -> Option<f64> {
+        if self.is_workload_done() { return None; }
+        if self.drive_pending { return Some(self.now_ms); }
+        self.next_timestamps().1
+    }
+
+    fn evaluate_dynamic_completions(&mut self) -> Result<bool> {
+        while self.apply_worker_completions()? {}
+        if self.step_freed_slot {
+            self.drive_pending = true;
+            return Ok(true);
+        }
+        self.drain_current_timestamp()?;
+        Ok(self.step_freed_slot)
+    }
+
+    pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> Result<f64> {
+        anyhow::ensure!(!until_ms.is_nan() && until_ms >= self.now_ms, "disaggregated step deadline precedes runtime time");
+        self.step_freed_slot = false;
+        if self.drive_pending {
+            self.drive_pending = false;
+            self.drain_current_timestamp()?;
+        } else if self.evaluate_dynamic_completions()? { return Ok(self.now_ms); }
+        if self.step_tokens.is_empty() && !self.step_freed_slot {
+            if let Some(next_ms) = self.next_dynamic_timestamp() {
+                if next_ms <= until_ms {
+                    self.advance_now_ms(next_ms);
+                    self.evaluate_dynamic_completions()?;
+                } else if until_ms.is_finite() { self.advance_now_ms(until_ms); }
+            }
+        }
+        Ok(self.now_ms)
+    }
+
+    pub(crate) fn take_report_dynamic(&mut self, wall_ms: f64) -> Result<crate::replay::ReplayReport> {
+        anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
+        anyhow::ensure!(self.is_workload_done(), "replay report requires an idle runtime");
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
+        self.collector.set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        self.collector.kvcr = self.prefill_engine.kvcr_stats();
+        self.collector.g2_domains = match self.prefill_engine.g2_domains() {
+            domains if domains.is_empty() => self.decode_engine.g2_domains(),
+            domains => domains,
+        };
+        Ok(self.collector.take_report(self.now_ms).with_wall_time_ms(wall_ms))
     }
 
     /// Run the staged offline replay until both prefill and decode pipelines are drained.

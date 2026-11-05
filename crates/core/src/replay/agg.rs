@@ -3503,6 +3503,7 @@ where
 
     /// Admit `request` at the current simulated time. The returned id
     /// correlates the request with later measurements.
+    #[cfg(test)]
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
         self.submit_dynamic_payload(ReplayRequestPayload::materialized(request))
     }
