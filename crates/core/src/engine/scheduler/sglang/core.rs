@@ -1012,8 +1012,7 @@ impl SglangCore {
         self.model_work_in_pass = false;
     }
 
-    /// Device time of the forward this pass launched under the host loop; `None`
-    /// when a pass ends with its own forward.
+    /// Duration of the last resolved forward, excluding preselection waits.
     pub(crate) fn last_forward_ms(&self) -> Option<f64> {
         self.last_forward_ms
     }
@@ -1238,16 +1237,14 @@ impl SglangCore {
         let forward_end_ms = forward_time
             .end_ms(stream_start_ms + pass.forward_start_ms - pass.selected_ms)
             .max(self.kv_manager.host_load_end_ms());
+        let forward_ms = forward_end_ms - stream_start_ms;
         let mut result = pass.result;
         if let Some(launch) = pass.launch {
             let host = self
                 .host
                 .as_mut()
                 .expect("a host-loop launch requires the host loop");
-            let forward_ms = launch
-                .forward
-                .is_some()
-                .then_some(forward_end_ms - stream_start_ms);
+            let forward_ms = launch.forward.is_some().then_some(forward_ms);
             let gpu_end_ms = host.launch(pass.selected_ms, forward_ms.zip(launch.forward));
             self.last_forward_ms = Some(forward_ms.unwrap_or(0.0));
             if let Some(gpu_end_ms) = gpu_end_ms {
@@ -1262,10 +1259,12 @@ impl SglangCore {
                     }),
                 );
             }
+        } else {
+            self.last_forward_ms = Some(forward_ms);
         }
         result.end_ms = pass.end_ms.unwrap_or(forward_end_ms);
         if let Some(fpm) = &mut result.fpm {
-            fpm.wall_time_secs = (forward_end_ms - stream_start_ms) / 1000.0;
+            fpm.wall_time_secs = forward_ms / 1000.0;
         }
         Ok(result)
     }

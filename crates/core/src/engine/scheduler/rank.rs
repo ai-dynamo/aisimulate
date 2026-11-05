@@ -391,8 +391,8 @@ impl RankEngine for SchedulerRank {
         pending.effects.metrics = self.metrics();
         pending.effects.metrics.sglang_cache_hit_tokens = sglang_cache_hit_tokens;
         pending.effects.metrics.sglang_cache_total_tokens = sglang_cache_total_tokens;
-        // Under the SGLang host loop a pass ends when the scheduler thread returns
-        // to its loop, not when its forward does; FPM telemetry wants the forward.
+        // SGLang passes can include preselection write-back waits or end before
+        // their forward under the host loop. FPM telemetry wants the forward itself.
         pending.effects.forward_pass_metrics.duration_ms = self
             .core
             .last_forward_ms()

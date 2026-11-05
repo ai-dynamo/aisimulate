@@ -352,8 +352,7 @@ impl EngineCore {
         matches!(self, Self::Sglang(core) if core.model_work_in_pass())
     }
 
-    /// Device time of the forward the last pass launched, when the SGLang host
-    /// loop separates it from the pass end.
+    /// Duration of the last resolved SGLang forward, excluding preselection waits.
     pub(crate) fn last_forward_ms(&self) -> Option<f64> {
         match self {
             Self::Sglang(core) => core.last_forward_ms(),

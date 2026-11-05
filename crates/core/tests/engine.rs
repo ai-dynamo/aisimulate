@@ -13,7 +13,8 @@ use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, S
 use aisimulate_core::engine::{
     Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
     FrontendStage, ImageSpec, IterationMs, NativeHostOffloadConfig, PassCompletionEffects,
-    RankWork, Request, SglangConfig, TimingModel, TimingModelConfig, VisionShape,
+    RankWork, Request, SglangConfig, SglangHiCacheConfig, SglangHiCacheWritePolicy, TimingModel,
+    TimingModelConfig, VisionShape,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
@@ -622,6 +623,74 @@ fn assert_interval_work(round: &IntervalRound, rank: usize, prefill: u32, decode
         (prefill, decode),
         "rank {rank}: {fpm:?}"
     );
+}
+
+#[rstest::rstest]
+fn sglang_hicache_write_back_excludes_preselection_wait_from_forward_metrics(
+    #[values(false, true)] host_loop: bool,
+) {
+    let config = EngineConfig {
+        num_gpu_blocks: 9,
+        block_size: 64,
+        max_num_seqs: 2,
+        max_num_batched_tokens: 512,
+        enable_prefix_caching: true,
+        kv_cache_bytes_per_token: Some(15_625),
+        sglang: SglangConfig {
+            chunked_prefill_size: 512,
+            max_prefill_tokens: 512,
+            schedule_conservativeness: 0.0,
+            num_reserved_decode_tokens: 0,
+            host_loop,
+            hicache: Some(SglangHiCacheConfig {
+                write_policy: SglangHiCacheWritePolicy::WriteBack,
+                d2h_bandwidth_gbps: 1.0,
+                h2d_bandwidth_gbps: 1.0,
+                latency_to_first_byte_ms: 0.0,
+                ..SglangHiCacheConfig::new(32)
+            }),
+            ..SglangConfig::default()
+        },
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 10.0,
+            decode_ms: 1.0,
+        },
+        ..EngineConfig::for_backend(Backend::Sglang)
+    };
+    let mut engine = EngineFactory::new(config)
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::MIN)
+        .unwrap();
+
+    // The second prompt evicts six 1 MB pages: 6 ms D2H before its 10 ms forward.
+    for (id, arrival_ms, expected_completion_ms) in [(1, 0.0, 10.0), (2, 20.0, 36.0)] {
+        let mut now_ms = arrival_ms;
+        submit_interval_request(&mut engine, 0, id, 384, 1, now_ms);
+        let mut prefill_durations = Vec::new();
+        let mut completion_ms = None;
+        for _ in 0..8 {
+            let round = step_interval_engine(&mut engine, &mut now_ms);
+            let effects = &round.ranks[0];
+            let fpm = &effects.forward_pass_metrics;
+            if fpm.num_prefill_requests > 0 {
+                assert_eq!(fpm.sum_prefill_tokens, 384);
+                prefill_durations.push(fpm.duration_ms);
+            }
+            for output in &effects.outputs {
+                assert_eq!(output.request_id, Uuid::from_u128(id));
+                assert!(!output.rejected);
+                if output.completed {
+                    completion_ms = Some(now_ms);
+                }
+            }
+            if engine.is_drained() {
+                break;
+            }
+        }
+        assert!(engine.is_drained());
+        assert_eq!(completion_ms, Some(expected_completion_ms));
+        assert_eq!(prefill_durations, vec![10.0]);
+    }
 }
 
 #[test]
