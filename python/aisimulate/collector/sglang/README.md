@@ -188,8 +188,10 @@ At 308 overlapping physical coordinates it keeps the newer measurements,
 which include native QKV projection and fresh inputs as serving does; 192
 coordinates are new. Original source revisions and plan hashes are preserved.
 The unmodified 6,620-row append, paired timing evidence, normalization checks
-and the unisolated residual indexer difference are documented in
-[`benchmarks/evidence/collector/pr665-b300-dsa-boundary`](../../../../benchmarks/evidence/collector/pr665-b300-dsa-boundary/README.md).
+and audit scripts are retained locally under
+`benchmarks/evidence/collector/pr665-b300-dsa-boundary/`, outside this PR.
+The sidecar's archive-path comment refers to that local evidence. The remaining
+4.3% full-indexer timing difference is unisolated.
 The archived historical batch-52 rows were exact-shape graphs. Their 44
 replacements use the collector's native serving-padding path and retain their
 actual source revision and exact requested-subset hashes. Merge depends on
