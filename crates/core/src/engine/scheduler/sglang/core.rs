@@ -1849,7 +1849,7 @@ impl SglangCore {
             published |= request.cached_tokens() > cached_before;
             admissions.push(crate::engine::scheduler::AdmissionEvent {
                 uuid: request.uuid,
-                reused_input_tokens: 0,
+                reused_input_tokens: cached_before,
                 cache_tier_attribution: None,
             });
             self.running.push(request);
