@@ -340,7 +340,7 @@ impl EngineCore {
     pub(crate) fn prepare_group_pass(&mut self, wave_step: u64, dp_size: u32) {
         match self {
             Self::Vllm(core) => core.prepare_group_pass(wave_step, dp_size),
-            Self::Sglang(core) => core.prepare_group_pass(),
+            Self::Sglang(core) => core.prepare_group_pass(wave_step),
         }
     }
 

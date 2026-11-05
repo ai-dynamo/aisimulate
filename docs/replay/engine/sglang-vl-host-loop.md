@@ -147,10 +147,11 @@ stages:
 Consequences the tests pin: a request's first token is observed one iteration
 after the forward that produced it; the radix cache learns a completed
 prefill's prefix only when that forward is observed, so a request selected one
-iteration later reuses nothing from it; a request that finished in forward `k`
-still occupies a slot in batch `k+1` and, when that batch is a decode, is
-allocated its row's KV slot, which is committed and cached with the request
-when the finish is observed (only an unaligned tail page is freed); a request
+iteration later reuses nothing from it. Following SGLang v0.5.22, aggregated
+non-speculative decode excludes rows whose queued result finishes them by
+length. Their KV stays owned until that result is observed; if survivors
+need that memory, the scheduler skips this decode without retraction or ratio
+decay. PD decode retains its ghost-row behavior. A request
 that needs no output token completes when its prefill is observed, not when it
 launches; a request retracted or cancelled while its forward is in flight
 neither receives that forward's token nor keeps it, while the device work stays
@@ -399,7 +400,7 @@ No upstream source or tests are copied;
 attribution. The collector (`python -m aisimulate.vl.collect`) instantiates the
 pinned upstream frontend objects unmodified on the serving host and times them
 from the outside. Deterministic Rust tests cover the iteration structure,
-mid-iteration arrivals, ghost decode members and their KV slot, deferred
+mid-iteration arrivals, finishing-row filtering, PD ghost decode members, deferred
 prefix-cache commits, retraction and cancellation of forwards in flight, the
 equivalence with the pass model (`host_loop: false`), cache-miss selection per
 chunk, pool ownership and arrivals settling past completions, the

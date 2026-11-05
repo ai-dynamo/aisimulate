@@ -20,8 +20,9 @@
 //! forward starts when it is launched and the previous forward has finished.
 //! Consequently the outputs, terminals, and KV release of batch `k` become
 //! visible at the end of iteration `k+1`, and a request that finished in batch
-//! `k` still fills a slot in batch `k+1` because SGLang's `filter_batch` only
-//! sees `finished()` after that result is processed. Everything a forward
+//! `k` retains KV until that result is processed. The core filters aggregated
+//! non-speculative rows finishing by length before batch `k+1`, following
+//! SGLang v0.5.22; PD decode can still run those ghost rows. Everything a forward
 //! produces for the scheduler's bookkeeping travels with the batch: its output
 //! tokens and the prefix-cache commits of `maybe_cache_unfinished_req` become
 //! visible together when the batch is observed. Retraction or cancellation

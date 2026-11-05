@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use crate::engine::common::hashing::compute_next_seq_hash;
 
@@ -32,8 +35,13 @@ pub(super) fn apply_schedule_policy(
                 IN_BATCH_PREFIX_CACHING_DEPRIORITIZE_THRESHOLD.div_ceil(page_size) * page_size;
             let mut waiting_prefixes = FxHashSet::default();
             let mut scored = Vec::with_capacity(waiting.len());
+            let mut continuations = Vec::new();
 
             for mut req in waiting.drain(..) {
+                if req.materialized_tokens > 0 {
+                    continuations.push(req);
+                    continue;
+                }
                 let sequence_tokens = &req.sequence_tokens;
                 req.kv_lease.ensure_page_hashes(sequence_tokens, page_size);
                 let prefix_len = kv_manager
@@ -57,6 +65,9 @@ pub(super) fn apply_schedule_policy(
 
             scored.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
 
+            for req in continuations {
+                waiting.push_back(req);
+            }
             for (_, _, req) in scored {
                 waiting.push_back(req);
             }

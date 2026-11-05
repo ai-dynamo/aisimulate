@@ -251,6 +251,10 @@ pub struct SglangConfig {
     /// Off, a pass is one forward whose outputs are visible when it ends. See
     /// `crates/core/src/engine/scheduler/sglang/host_loop.rs`.
     pub host_loop: bool,
+    /// SGLang `--disaggregation-decode-enable-radix-cache`. Without it, a
+    /// decode rank keeps each request's KV private, as SGLang's chunk cache
+    /// does; other ranks ignore it.
+    pub disaggregation_decode_enable_radix_cache: bool,
 }
 
 const fn default_vlm_cache_bytes() -> u64 {
@@ -267,6 +271,7 @@ impl Default for SglangConfig {
             schedule_conservativeness: default_schedule_conservativeness(),
             vlm_cache_bytes: default_vlm_cache_bytes(),
             host_loop: false,
+            disaggregation_decode_enable_radix_cache: false,
         }
     }
 }
@@ -1140,6 +1145,20 @@ impl EngineConfig {
             !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
             "sglang.host_loop is not modeled on a decode rank; the decode rank runs the text P/D decode loop"
         );
+        if self.sglang.disaggregation_decode_enable_radix_cache {
+            ensure!(
+                self.backend == Backend::Sglang,
+                "sglang.disaggregation_decode_enable_radix_cache is supported only for backend=sglang"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode || self.enable_prefix_caching,
+                "sglang.disaggregation_decode_enable_radix_cache requires enable_prefix_caching=true"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode || self.aic_nextn.is_none(),
+                "sglang.disaggregation_decode_enable_radix_cache does not support speculative decoding"
+            );
+        }
         if let Some(frontend) = &self.frontend {
             ensure!(
                 self.backend == Backend::Sglang && self.sglang.host_loop,
@@ -2345,6 +2364,42 @@ mod tests {
                 .to_string()
                 .contains("schedule_conservativeness")
         );
+    }
+
+    #[test]
+    fn decode_radix_cache_defaults_off_and_rejects_unsupported_combinations() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "worker_type": "decode",
+        }))
+        .unwrap();
+        assert!(!config.sglang.disaggregation_decode_enable_radix_cache);
+
+        let decode_with_radix_cache = || {
+            let mut config = EngineConfig {
+                worker_type: WorkerType::Decode,
+                ..EngineConfig::for_backend(Backend::Sglang)
+            };
+            config.sglang.disaggregation_decode_enable_radix_cache = true;
+            config
+        };
+        decode_with_radix_cache().validate().unwrap();
+
+        let mut vllm = EngineConfig::for_backend(Backend::Vllm);
+        vllm.sglang.disaggregation_decode_enable_radix_cache = true;
+        let mut no_prefix_caching = decode_with_radix_cache();
+        no_prefix_caching.enable_prefix_caching = false;
+        let mut speculative = decode_with_radix_cache();
+        speculative.aic_nextn = Some(1);
+        speculative.aic_nextn_accept_rates = Some("1.0".to_string());
+        for (config, expected) in [
+            (vllm, "backend=sglang"),
+            (no_prefix_caching, "enable_prefix_caching=true"),
+            (speculative, "speculative decoding"),
+        ] {
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

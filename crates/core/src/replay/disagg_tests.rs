@@ -376,6 +376,13 @@ fn transfer_timing_config(
     config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
     config.prefill_args.kv_transfer_timing_mode = mode;
     config.decode_args.kv_transfer_timing_mode = mode;
+    // Destination-missing timing needs a decode cache to hold the prefix.
+    if engine_type == EngineType::Sglang {
+        config
+            .decode_args
+            .sglang
+            .disaggregation_decode_enable_radix_cache = true;
+    }
     config
 }
 

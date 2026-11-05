@@ -276,6 +276,7 @@ class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
     prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
@@ -950,6 +951,11 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
                 workers=self.workers,
                 has_transfer=self.kv_transfer is not None,
             )
+        _validate_decode_radix_cache(
+            backends={self.backend},
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         _validate_prediction_host_offload(self)
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
@@ -1057,6 +1063,7 @@ class KvCapacityRecommendationConfig(StrictModel):
 class KvCacheRecommendationConfig(StrictModel):
     block_size: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     prefix_caching: bool = True
+    decode_radix_cache: bool = False
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
     host_offload: HostOffloadConfig | None = None
@@ -1204,6 +1211,11 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         _validate_recommendation_host(self, modes=modes, backends=backends)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
+        _validate_decode_radix_cache(
+            backends=backends,
+            workers=self.workers,
+            speculative=bool(self.nextn) or self.speculation is not None,
+        )
         return self
 
 
@@ -1333,6 +1345,26 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def _validate_decode_radix_cache(*, backends: set[str], workers, speculative: bool) -> None:
+    """Validate SGLang's `--disaggregation-decode-enable-radix-cache`.
+
+    Mixed backend domains may keep it; concrete predictions reject it outside SGLang.
+    """
+    for role in ("aggregated", "prefill"):
+        worker = getattr(workers, role)
+        if worker is not None and worker.kv_cache.decode_radix_cache:
+            raise ValueError(f"workers.{role}.kv_cache.decode_radix_cache applies only to the decode role")
+    decode = workers.decode
+    if decode is None or not decode.kv_cache.decode_radix_cache:
+        return
+    if "sglang" not in backends:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is supported only for backend=sglang")
+    if not decode.kv_cache.prefix_caching:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache requires prefix_caching=true")
+    if speculative:
+        raise ValueError("workers.decode.kv_cache.decode_radix_cache is incompatible with speculative decoding")
 
 
 def require_native_vl_parallelism(

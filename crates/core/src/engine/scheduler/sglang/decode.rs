@@ -192,6 +192,15 @@ fn decode_capacity_state(
     (actual_available, logical_available, page_growth_needed)
 }
 
+pub(super) fn decode_memory_fits(
+    running: &[SglangRequest],
+    kv_manager: &SglangKvManager,
+    config: &SglangConfig,
+) -> bool {
+    let (_, available, needed) = decode_capacity_state(running, kv_manager, config, 1);
+    available >= needed
+}
+
 pub(super) fn cache_materialized_prefix(
     req: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,

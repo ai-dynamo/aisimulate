@@ -13,6 +13,28 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 prefill admission and ratio lifecycle
+
+The admission budget, arrival limits, continuation priority, and ratio
+lifecycle in repository-root
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the protected-prefix capacity check in
+`crates/core/src/engine/kv_manager/sglang_backend.rs`, the regression fixtures in
+`crates/core/src/replay/components/engine.rs` and `crates/core/tests/engine.rs`,
+and the descriptions in
+`docs/replay/engine/{workers.md,sglang-vl-host-loop.md}` are modified behavioral
+adaptations of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/mem_cache/{prefill_budget.py,allocator/base.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_policy.py,schedule_batch.py,tp_worker.py,utils.py}`,
+and `python/sglang/srt/managers/scheduler_components/new_token_ratio_tracker.py`.
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's synchronous request leases
+and discrete-event scheduling. No serving implementation is vendored.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root
@@ -1771,3 +1793,26 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## SGLang v0.5.22 decode radix cache and decode waiting-queue order
+
+The following repository-root files independently model the decode server's opt-in radix cache and its arrival-order waiting queue:
+
+- `crates/core/src/engine/config.rs`
+- `crates/core/src/engine/scheduler/sglang/config.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `python/aisimulate/src/aisimulate/config/engine.py`
+
+The modified Rust behavior, configuration validation and synthetic regression
+fixtures adapt the contract observed in SGLang v0.5.22, commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+Original source paths: python/sglang/srt/arg_groups/fields/disagg.py (disaggregation_decode_enable_radix_cache), python/sglang/srt/arg_groups/pd_disaggregation_hook.py (handle_pd_disaggregation), python/sglang/srt/mem_cache/registry.py (decode tree-cache selection), python/sglang/srt/managers/schedule_policy.py (_validate_and_adjust_policy), and python/sglang/srt/disaggregation/decode.py (waiting-queue batch selection).
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.

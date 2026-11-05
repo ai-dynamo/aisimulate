@@ -130,6 +130,38 @@ def test_disagg_backend_deployment_preserves_both_roles():
     assert deployment.decode_engine_args["engine_type"] == "sglang"
 
 
+@pytest.mark.parametrize(
+    ("backend", "enabled", "expected"),
+    [
+        ("sglang", False, None),
+        ("sglang", True, {"disaggregation_decode_enable_radix_cache": True}),
+        ("vllm", True, None),
+    ],
+)
+def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, enabled, expected):
+    shape = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1)
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(shape, 1),
+        decode=ReplicaParallelConfig(shape, 1),
+    )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend=backend,
+        prefill_max_num_batched_tokens=8192,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=256,
+    )
+    sample = unroll_sample(
+        search_space=_space(decode_radix_cache=enabled), selection=selection, parallel_config=parallel
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.decode_engine_args.get("sglang") == expected
+    assert "sglang" not in deployment.prefill_engine_args
+
+
 def test_disagg_backend_deployment_uses_role_hardware():
     parallel = DisaggParallelConfig(
         prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),

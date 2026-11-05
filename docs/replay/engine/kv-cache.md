@@ -44,6 +44,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 |---|---|---|---|
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
+| `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
 | `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
 | `capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`, SGLang `0.88` | Searchable; fixed by default | In `(0, 1]`. `default` capacity only. Same meaning as vLLM `gpu_memory_utilization`, SGLang `mem_fraction_static`, TensorRT-LLM `free_gpu_memory_fraction`. |
@@ -100,6 +101,20 @@ forwards and on idle. Under memory pressure, decode retraction stably orders
 requests by descending output length and then ascending prompt length, retracts
 from the end, and evicts unused cache toward a 20-token reserve per survivor.
 These contracts follow [SGLang v0.5.20](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
+
+### SGLang decode radix cache
+
+An SGLang decode server runs a chunk cache unless it is launched with
+`--disaggregation-decode-enable-radix-cache`, which is off by default, so an
+SGLang `decode` worker caches nothing unless `decode_radix_cache: true` is set.
+Without it, transferred prompts and decoded output stay private to their
+request, the worker publishes no KV events, and every transfer moves the whole
+prompt. With it, the worker reuses cached prefixes and publishes a transferred
+prompt at running admission, as described above. Like SGLang, the simulator
+rejects the decode radix cache with speculative decoding. An SGLang decode
+worker always serves its waiting queue first-come first-served. This follows
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d)
+(`arg_groups/pd_disaggregation_hook.py`, `disaggregation/decode.py`).
 
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
