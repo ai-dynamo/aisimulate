@@ -8,6 +8,8 @@ import csv
 import io
 import json
 import re
+import stat
+import sys
 import zipfile
 
 import pytest
@@ -422,8 +424,8 @@ def test_packaged_deepseek_v3_notice_preserves_unresolved_scope(tmp_path):
     wheel_path = tmp_path / "legal-payload.whl"
     with zipfile.ZipFile(wheel_path, "w") as wheel:
         wheel.writestr("aisimulate-1.dist-info/licenses/THIRD_PARTY_NOTICES.md", packaged.read_bytes())
-    with zipfile.ZipFile(wheel_path) as wheel:
-        text = checker.notice_text(checker.ROOT, "THIRD_PARTY_NOTICES.md", wheel)
+    contents = checker.read_wheel(wheel_path, {})
+    text = checker.notice_text(checker.ROOT, "THIRD_PARTY_NOTICES.md", contents.legal_files)
     sections = dict(re.findall(r"^## (.*?)\n(.*?)(?=^## |\Z)", text, re.M | re.S))
     notice = sections[entry["notice"]["section"]]
     assert "deepseek-ai--DeepSeek-V3_config.json" in notice
@@ -460,3 +462,175 @@ def test_content_changes_change_osrb_identity(fixture, tmp_path):
     after = list(csv.DictReader(io.StringIO((tmp_path / "after/bundled-deps.csv").read_text())))[0]
     assert before["name"] == after["name"]
     assert before["version"] != after["version"]
+
+
+@pytest.mark.parametrize("distribution", ["aisim", "aisimulate"])
+def test_extract_exports_exact_configs_and_legal_files_without_importing(tmp_path, distribution):
+    wheel = tmp_path / f"{distribution}-1.whl"
+    payloads = {
+        CONFIG: b'{"model_type":"unrecorded"}',
+        "other/model.json": b'{"architectures":["OtherModel"]}',
+        f"{distribution}-1.dist-info/licenses/LICENSE": b"Complete license\n",
+        f"{distribution}-1.dist-info/licenses/nested/custom.txt": b"Additional legal terms\n",
+        "collector/runtime/COPYING.md": b"Vendored attribution\n",
+    }
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, data in payloads.items():
+            archive.writestr(name, data)
+        archive.writestr("aisimulate/__init__.py", "raise RuntimeError('must not import')")
+        archive.writestr("aisimulate/_runtime.so", b"not an executable extension")
+    output = tmp_path / "extracted"
+    contents, entries = checker.extract_wheel(wheel, output)
+    assert entries is None
+    assert set(contents.configs) == {CONFIG, "other/model.json"}
+    assert {p.relative_to(output / "files").as_posix() for p in (output / "files").rglob("*") if p.is_file()} == set(
+        payloads
+    )
+    for name, data in payloads.items():
+        assert (output / "files" / name).read_bytes() == data
+    report = json.loads((output / "extracted-files.json").read_text())
+    assert report["wheel_sha256"] == checker.digest(wheel.read_bytes())
+    assert report["provenance_checked"] is False
+    assert report["license_approval_asserted"] is False
+    assert {row["path"]: (row["sha256"], row["size_bytes"]) for row in report["files"]} == {
+        name: (checker.digest(data), len(data)) for name, data in payloads.items()
+    }
+    assert not (output / "bundled-deps.csv").exists()
+
+
+def test_extract_check_cli_reads_wheel_once_and_writes_existing_reports(fixture, tmp_path, monkeypatch):
+    root, path, entry, inventory, _ = fixture
+    wheel = wheel_file(root, path)
+    output = tmp_path / "extracted"
+    output.mkdir()  # An existing empty destination is supported.
+    original = checker.read_wheel
+    reads = []
+
+    def read_once(*args):
+        reads.append(args[0])
+        return original(*args)
+
+    monkeypatch.setattr(checker, "read_wheel", read_once)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_bundled_configs.py",
+            "extract",
+            "--check",
+            "--root",
+            str(root),
+            "--inventory",
+            str(inventory),
+            "--wheel",
+            str(wheel),
+            "--output-dir",
+            str(output),
+        ],
+    )
+    assert checker.main() == 0
+    assert reads == [wheel]
+    assert (output / "files" / CONFIG).read_bytes() == path.read_bytes()
+    with (output / "bundled-deps.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows[0]["name"] == CONFIG
+    assert rows[0]["version"] == "sha256:" + entry["sha256"]
+    provenance = json.loads((output / "bundled-provenance.json").read_text())
+    extraction = json.loads((output / "extracted-files.json").read_text())
+    assert extraction["provenance_checked"] is True
+    assert provenance["wheel_sha256"] == extraction["wheel_sha256"]
+
+
+def test_failed_checked_extraction_does_not_write_payloads_or_reports(fixture, tmp_path):
+    root, path, _, inventory, _ = fixture
+    wheel = wheel_file(root, path, extra={"other/model.json": '{"model_type":"unrecorded"}'})
+    output = tmp_path / "extracted"
+    with pytest.raises(checker.InventoryError, match="unexpected"):
+        checker.extract_wheel(wheel, output, root=root, inventory=inventory, check=True)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("name", ["../outside.json", "/absolute.json", "C:/outside.json", "C:outside.json"])
+def test_extract_rejects_unsafe_archive_paths_before_writing(fixture, tmp_path, name):
+    root, path, _, _, _ = fixture
+    wheel = wheel_file(root, path, extra={name: '{"model_type":"escape"}'})
+    output = tmp_path / "extracted"
+    with pytest.raises(checker.InventoryError, match="invalid relative path"):
+        checker.extract_wheel(wheel, output)
+    assert not output.exists()
+    assert not (tmp_path / "outside.json").exists()
+
+
+@pytest.mark.parametrize("kind", ["duplicate", "symlink"])
+def test_extract_rejects_ambiguous_or_linked_assets(tmp_path, kind):
+    wheel = tmp_path / "invalid.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        if kind == "duplicate":
+            archive.writestr(CONFIG, b"{}")
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                archive.writestr(CONFIG, b"{}")
+        else:
+            member = zipfile.ZipInfo(CONFIG)
+            member.create_system = 3
+            member.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(member, "../../outside")
+    with pytest.raises(checker.InventoryError, match="duplicate archive|regular file"):
+        checker.extract_wheel(wheel, tmp_path / "extracted")
+    assert not (tmp_path / "extracted").exists()
+
+
+def test_extract_does_not_overwrite_existing_output(fixture, tmp_path):
+    root, path, _, _, _ = fixture
+    wheel = wheel_file(root, path)
+    output = tmp_path / "extracted"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("keep")
+    with pytest.raises(checker.InventoryError, match="new or empty"):
+        checker.extract_wheel(wheel, output)
+    assert sentinel.read_text() == "keep"
+    assert not (output / "files").exists()
+
+
+def test_legacy_check_cli_still_validates_without_extraction(fixture, tmp_path, monkeypatch):
+    root, _, _, inventory, _ = fixture
+    output = tmp_path / "report"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_bundled_configs.py",
+            "--root",
+            str(root),
+            "--inventory",
+            str(inventory),
+            "--output-dir",
+            str(output),
+        ],
+    )
+    assert checker.main() == 0
+    assert (output / "bundled-deps.csv").is_file()
+    assert not (output / "files").exists()
+
+
+def test_extract_rejects_a_symlink_destination(fixture, tmp_path):
+    root, path, _, _, _ = fixture
+    target = tmp_path / "target"
+    target.mkdir()
+    output = tmp_path / "extracted"
+    output.symlink_to(target, target_is_directory=True)
+    with pytest.raises(checker.InventoryError, match="new or empty"):
+        checker.extract_wheel(wheel_file(root, path), output)
+    assert list(target.iterdir()) == []
+
+
+def test_extraction_write_failure_does_not_leave_a_partial_bundle(tmp_path):
+    wheel = tmp_path / "conflicting-paths.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("model_configs/file.json", b"{}")
+        archive.writestr("model_configs/file.json/child.json", b"{}")
+    output = tmp_path / "extracted"
+    with pytest.raises(OSError):
+        checker.extract_wheel(wheel, output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".bundled-configs-*"))

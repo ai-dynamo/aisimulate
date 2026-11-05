@@ -540,14 +540,17 @@ jobs:
             # the trusted workflow's catalog. Unknown or changed bytes fail.
             inventory_args=(--inventory release-tooling/scripts/ci/bundled_configs.json --allow-subset)
           fi
-          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/ci/check_bundled_configs.py \
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/ci/check_bundled_configs.py extract --check \
             --root . "${inventory_args[@]}" --wheel "${DIST_DIR}"/aisimulate-*.whl \
             --output-dir "${RUNNER_TEMP}/bundled-configs-nightly"
       - name: Preserve wheel configuration inventory
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundled-configs-nightly-${{ matrix.arch }}
-          path: ${{ runner.temp }}/bundled-configs-nightly/*
+          path: |
+            ${{ runner.temp }}/bundled-configs-nightly/bundled-deps.csv
+            ${{ runner.temp }}/bundled-configs-nightly/bundled-provenance.json
+            ${{ runner.temp }}/bundled-configs-nightly/extracted-files.json
           if-no-files-found: error
           retention-days: 30
           overwrite: true

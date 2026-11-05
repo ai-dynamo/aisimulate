@@ -2680,17 +2680,30 @@ def test_bundled_config_gates_run_before_wheel_publication_or_installation():
         if step.get("with", {}).get("name", "").startswith("application-test-wheel-")
     )
     assert check < upload
+    assert "check_bundled_configs.py extract --check" in application[check]["run"]
     action = yaml.load((ACTION_ROOT / "build-platform-wheel/action.yml").read_text(), Loader=yaml.BaseLoader)
     steps = action["runs"]["steps"]
     check = next(i for i, step in enumerate(steps) if step.get("name") == "Check exact wheel configuration provenance")
     install = next(i for i, step in enumerate(steps) if step.get("name") == "Verify installed unified wheel")
     assert check < install
+    assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "if" not in steps[check]  # Both Linux architectures and native macOS.
     steps = _workflow("nightly-ci.yml")["jobs"]["build-artifacts"]["steps"]
     check = next(i for i, step in enumerate(steps) if step.get("name") == "Check exact wheel configuration provenance")
     stage = next(i for i, step in enumerate(steps) if step.get("name") == "Stage to Artifactory")
     assert check < stage
+    assert "check_bundled_configs.py extract --check" in steps[check]["run"]
     assert "release-tooling/scripts/ci/check_bundled_configs.py" in steps[check]["run"]
+    for collection in (application, action["runs"]["steps"], steps):
+        upload_report = next(
+            step for step in collection if step.get("name") == "Preserve wheel configuration inventory"
+        )
+        paths = upload_report["with"]["path"].splitlines()
+        assert {path.rsplit("/", 1)[-1] for path in paths} == {
+            "bundled-deps.csv",
+            "bundled-provenance.json",
+            "extracted-files.json",
+        }
     tooling = next(step for step in steps if step.get("with", {}).get("path") == "release-tooling")
     for file in ["check_bundled_configs.py", "bundled_configs.json", "bundled_config_legacy.json"]:
         assert "/scripts/ci/" + file in tooling["with"]["sparse-checkout"]

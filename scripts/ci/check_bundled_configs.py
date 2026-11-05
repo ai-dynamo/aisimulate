@@ -14,9 +14,13 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
+import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -51,6 +55,7 @@ def relative_path(value: object) -> str:
         path.is_absolute()
         or ".." in path.parts
         or "\\" in value
+        or re.match(r"^[A-Za-z]:", value)
         or str(path) != value
         or any(ord(c) < 32 or ord(c) == 127 for c in value)
     ):
@@ -133,6 +138,64 @@ def model_config(name: str, data: bytes) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class WheelContents:
+    sha256: str
+    configs: dict[str, bytes]
+    legal_files: dict[str, bytes]
+
+
+def legal_file(name: str) -> bool:
+    path = PurePosixPath(name)
+    packaged_license = any(
+        part.endswith(".dist-info") and path.parts[index + 1] == "licenses"
+        for index, part in enumerate(path.parts[:-1])
+    )
+    return packaged_license or bool(
+        re.fullmatch(r"(?:LICENSE|LICENCE|COPYING|NOTICE|THIRD_PARTY_NOTICES)(?:[._-].*)?", path.name, re.I)
+    )
+
+
+def read_wheel(wheel_path: Path, declared: dict[str, dict]) -> WheelContents:
+    """Read configuration and legal payloads once, without importing the wheel."""
+    configs, legal_files = {}, {}
+    with wheel_path.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        wheel_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as wheel:
+            names = wheel.namelist()
+            if len(names) != len(set(names)):
+                raise InventoryError("wheel has duplicate archive members")
+            for member in wheel.infolist():
+                name = relative_path(member.filename.removesuffix("/"))
+                if member.is_dir():
+                    continue
+                is_legal = legal_file(name)
+                if not is_legal and PurePosixPath(name).suffix.lower() not in CONFIG_SUFFIXES:
+                    continue
+                data = wheel.read(member)
+                is_config = name in declared or model_config(name, data)
+                if not is_config and not is_legal:
+                    continue
+                mode = stat.S_IFMT(member.external_attr >> 16)
+                if mode not in (0, stat.S_IFREG):
+                    raise InventoryError(f"wheel asset must be a regular file: {name}")
+                if is_config:
+                    configs[name] = data
+                if is_legal:
+                    legal_files[name] = data
+        after = wheel_path.stat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise InventoryError("wheel changed while its contents were being read")
+    return WheelContents(wheel_sha, configs, legal_files)
+
+
 def source_configs(root: Path, declared: dict[str, dict]) -> dict[str, bytes]:
     result = {}
     # These directories contribute Python/package data to the unified wheel.
@@ -153,18 +216,18 @@ def source_configs(root: Path, declared: dict[str, dict]) -> dict[str, bytes]:
     return result
 
 
-def notice_text(root: Path, name: str, wheel: zipfile.ZipFile | None) -> str:
+def notice_text(root: Path, name: str, wheel: dict[str, bytes] | None) -> str:
     if name not in {"LICENSE", "THIRD_PARTY_NOTICES.md"}:
         raise InventoryError(f"unsupported canonical legal file: {name}")
     source = (root / name).read_bytes()
     if wheel is not None:
-        matches = [n for n in wheel.namelist() if n.endswith(f".dist-info/licenses/{name}")]
-        if len(matches) != 1 or wheel.read(matches[0]) != source:
+        matches = [n for n in wheel if n.endswith(f".dist-info/licenses/{name}")]
+        if len(matches) != 1 or wheel[matches[0]] != source:
             raise InventoryError(f"wheel's packaged {name} is missing, duplicated, or differs from its source")
     return source.decode("utf-8")
 
 
-def check_notice(root: Path, entry: dict, wheel: zipfile.ZipFile | None) -> None:
+def check_notice(root: Path, entry: dict, wheel: dict[str, bytes] | None) -> None:
     notice = entry.get("notice")
     if not isinstance(notice, dict):
         raise InventoryError("missing canonical notice reference")
@@ -194,7 +257,7 @@ def check_notice(root: Path, entry: dict, wheel: zipfile.ZipFile | None) -> None
             raise InventoryError("required attribution outside the license text is missing")
 
 
-def check_entry(entry: dict, data: bytes, baseline: dict[str, str], root: Path, wheel: zipfile.ZipFile | None) -> None:
+def check_entry(entry: dict, data: bytes, baseline: dict[str, str], root: Path, wheel: dict[str, bytes] | None) -> None:
     name = entry["path"]
     actual = digest(data)
     if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256"))) or actual != entry["sha256"]:
@@ -242,6 +305,13 @@ def validate(
     root: Path, inventory: Path, *, wheel_path: Path | None = None, allow_subset: bool = False
 ) -> tuple[list[dict], str | None]:
     entries = inventory_entries(inventory)
+    contents = read_wheel(wheel_path, entries) if wheel_path is not None else None
+    return validate_contents(root, entries, contents, allow_subset=allow_subset)
+
+
+def validate_contents(
+    root: Path, entries: dict[str, dict], contents: WheelContents | None, *, allow_subset: bool = False
+) -> tuple[list[dict], str | None]:
     baseline = legacy_baseline()
     source = source_configs(root, entries)
     undeclared = sorted(source.keys() - entries.keys())
@@ -257,33 +327,23 @@ def validate(
         except (InventoryError, KeyError, TypeError) as error:
             raise InventoryError(f"{name}: {error}") from error
     wheel_sha = None
-    if wheel_path is not None:
-        wheel_sha = digest(wheel_path.read_bytes())
-        with zipfile.ZipFile(wheel_path) as wheel:
-            names = wheel.namelist()
-            if len(names) != len(set(names)):
-                raise InventoryError("wheel has duplicate archive members")
-            actual = {}
-            for name in names:
-                relative_path(name.removesuffix("/"))
-                if PurePosixPath(name).suffix.lower() in CONFIG_SUFFIXES:
-                    data = wheel.read(name)
-                    if name in entries or model_config(name, data):
-                        actual[name] = data
-            if actual.keys() != source.keys():
-                raise InventoryError(
-                    "wheel configuration inventory differs from source; "
-                    f"unexpected={sorted(actual.keys() - source.keys())}, "
-                    f"missing={sorted(source.keys() - actual.keys())}"
-                )
-            for name, data in actual.items():
-                try:
-                    check_entry(entries[name], data, baseline, root, wheel)
-                except (InventoryError, KeyError, TypeError) as error:
-                    raise InventoryError(f"{name}: {error}") from error
-            # Verify canonical legal payloads even if every config is unresolved.
-            for legal_file in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
-                notice_text(root, legal_file, wheel)
+    if contents is not None:
+        wheel_sha = contents.sha256
+        actual = contents.configs
+        if actual.keys() != source.keys():
+            raise InventoryError(
+                "wheel configuration inventory differs from source; "
+                f"unexpected={sorted(actual.keys() - source.keys())}, "
+                f"missing={sorted(source.keys() - actual.keys())}"
+            )
+        for name, data in actual.items():
+            try:
+                check_entry(entries[name], data, baseline, root, contents.legal_files)
+            except (InventoryError, KeyError, TypeError) as error:
+                raise InventoryError(f"{name}: {error}") from error
+        # Verify canonical legal payloads even if every config is unresolved.
+        for legal_name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+            notice_text(root, legal_name, contents.legal_files)
     return [entries[name] for name in sorted(source)], wheel_sha
 
 
@@ -307,24 +367,113 @@ def write_reports(directory: Path, entries: list[dict], wheel_sha: str | None) -
     (directory / "bundled-provenance.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
+def extract_wheel(
+    wheel_path: Path,
+    directory: Path,
+    *,
+    root: Path | None = None,
+    inventory: Path | None = None,
+    check: bool = False,
+    allow_subset: bool = False,
+) -> tuple[WheelContents, list[dict] | None]:
+    """Export exact assets and their hashes; optionally apply the existing gate."""
+    declared = inventory_entries(inventory) if inventory is not None else {}
+    contents = read_wheel(wheel_path, declared)
+    entries = None
+    if check:
+        if root is None or inventory is None:
+            raise InventoryError("checked extraction requires a source root and inventory")
+        entries, _ = validate_contents(root, declared, contents, allow_subset=allow_subset)
+    if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or any(directory.iterdir()))):
+        raise InventoryError("extraction output directory must be new or empty")
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".bundled-configs-", dir=directory.parent) as temporary:
+        output = Path(temporary)
+        files = contents.configs | contents.legal_files
+        records = []
+        for name, data in sorted(files.items()):
+            destination = output / "files" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("xb") as stream:
+                stream.write(data)
+            records.append(
+                dict(
+                    path=name,
+                    sha256=digest(data),
+                    size_bytes=len(data),
+                    kinds=[
+                        kind
+                        for kind, selected in (("config", contents.configs), ("legal", contents.legal_files))
+                        if name in selected
+                    ],
+                )
+            )
+        manifest = dict(
+            schema_version=1,
+            wheel=wheel_path.name,
+            wheel_sha256=contents.sha256,
+            provenance_checked=check,
+            license_approval_asserted=False,
+            files=records,
+        )
+        (output / "extracted-files.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        if entries is not None:
+            write_reports(output, entries, contents.sha256)
+        if directory.exists():
+            directory.rmdir()  # Refuse a destination populated while extraction ran.
+        output.rename(directory)
+    return contents, entries
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=ROOT, help="Exact source checkout being built")
-    parser.add_argument("--inventory", type=Path, help="Explicit trusted inventory for historical sources")
-    parser.add_argument("--allow-subset", action="store_true", help="Permit historical sources to omit catalog entries")
-    parser.add_argument("--wheel", type=Path, help="Inspect the exact repaired wheel without importing it")
-    parser.add_argument("--output-dir", type=Path, help="Write CSV inventory and complete provenance evidence")
-    args = parser.parse_args()
+    commands = parser.add_subparsers(dest="command", required=True)
+    check_parser = commands.add_parser("check", help="Validate source or exact-wheel provenance")
+    extract_parser = commands.add_parser("extract", help="Unpack wheel configurations and legal files for analysis")
+    for command in (check_parser, extract_parser):
+        command.add_argument("--root", type=Path, default=ROOT, help="Exact source checkout being built")
+        command.add_argument("--inventory", type=Path, help="Explicit trusted inventory for historical sources")
+        command.add_argument(
+            "--allow-subset", action="store_true", help="Permit historical sources to omit catalog entries"
+        )
+        command.add_argument("--wheel", type=Path, required=command is extract_parser, help="Exact repaired wheel")
+        command.add_argument("--output-dir", type=Path, required=command is extract_parser, help="Output directory")
+    extract_parser.add_argument(
+        "--check", action="store_true", help="Also validate provenance and write compliance reports"
+    )
+    argv = sys.argv[1:]
+    # Keep existing source-check callers compatible while exposing both operations.
+    if not argv or argv[0] not in {"check", "extract", "-h", "--help"}:
+        argv.insert(0, "check")
+    args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.allow_subset and args.inventory is None:
         parser.error("--allow-subset requires an explicit trusted --inventory")
+    if args.command == "extract" and args.allow_subset and not args.check:
+        parser.error("--allow-subset requires --check")
     inventory = args.inventory or root / INVENTORY
     try:
-        entries, wheel_sha = validate(root, inventory, wheel_path=args.wheel, allow_subset=args.allow_subset)
-        if args.output_dir:
-            write_reports(args.output_dir, entries, wheel_sha)
+        if args.command == "extract":
+            contents, entries = extract_wheel(
+                args.wheel,
+                args.output_dir,
+                root=root,
+                check=args.check,
+                inventory=inventory if args.check else args.inventory,
+                allow_subset=args.allow_subset,
+            )
+            print(
+                f"Extracted {len(contents.configs)} configs and {len(contents.legal_files)} legal files "
+                f"to {args.output_dir}"
+            )
+            if entries is None:
+                return 0
+        else:
+            entries, wheel_sha = validate(root, inventory, wheel_path=args.wheel, allow_subset=args.allow_subset)
+            if args.output_dir:
+                write_reports(args.output_dir, entries, wheel_sha)
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
-        print(f"::error::Bundled configuration provenance check failed: {error}", file=sys.stderr)
+        print(f"::error::Bundled configuration {args.command} failed: {error}", file=sys.stderr)
         return 1
     unresolved = sum(entry["origin"] == "legacy_unresolved" for entry in entries)
     custom = sum(entry["license"].startswith("LicenseRef-") for entry in entries)

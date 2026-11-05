@@ -89,10 +89,28 @@ content Apache-2.0 to make CI pass. The baseline is not an OSRB approval.
 To validate and collect evidence locally:
 
 ```bash
-python scripts/ci/check_bundled_configs.py --output-dir /tmp/bundled-config-source
-python scripts/ci/check_bundled_configs.py --wheel dist/aisimulate-*.whl \
+python scripts/ci/check_bundled_configs.py check --output-dir /tmp/bundled-config-source
+python scripts/ci/check_bundled_configs.py extract --check --wheel dist/aisimulate-*.whl \
   --output-dir /tmp/bundled-config-wheel
 ```
+
+The `extract` subcommand unpacks the detected configurations and legal files
+without importing or installing the wheel. Files retain their archive-relative
+paths beneath `files/`; `extracted-files.json` records the wheel SHA256 and each
+file's size, hash, and kind. Legal files include the wheel's `.dist-info/licenses/`
+contents and conventional LICENSE, LICENCE, COPYING, NOTICE, and
+THIRD_PARTY_NOTICES filenames. Use a new or empty output directory.
+
+For inspection of an unrecorded or historical wheel, omit `--check`. Extraction
+alone does not validate provenance or produce a compliance assessment. An
+explicit `--inventory` can include declared configurations outside the usual
+model-config locations. With `--check`, the same invocation applies the existing
+source/wheel policy and writes the reports below; a failed check leaves no
+extracted output. Existing invocations without a subcommand still mean `check`.
+
+CI uses `extract --check` and retains only `bundled-deps.csv`,
+`bundled-provenance.json`, and `extracted-files.json` as report artifacts. The raw
+configuration and license copies remain in the runner's temporary directory.
 
 The generated `bundled-deps.csv` uses the existing OSRB columns
 `dependency_type,name,version,spdx_license`; each config has type
