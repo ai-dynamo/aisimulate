@@ -4620,6 +4620,7 @@ where
             arrival_time_ms,
             None,
             None,
+            false,
         )?;
         if self.defer_drive {
             self.drive_pending = true;
@@ -4638,7 +4639,8 @@ where
         anyhow::ensure!(engine_block_size > 0, "engine block size must be positive");
         let arrival_time_ms = self.now_ms;
         let replay_hashes = request.replay_hashes(engine_block_size as u32);
-        let uuid = self.on_external_arrival(request, arrival_time_ms, Some(replay_hashes), None)?;
+        let uuid =
+            self.on_external_arrival(request, arrival_time_ms, Some(replay_hashes), None, false)?;
         if self.defer_drive {
             self.drive_pending = true;
         }
