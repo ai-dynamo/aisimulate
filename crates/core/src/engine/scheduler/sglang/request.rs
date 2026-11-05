@@ -40,14 +40,13 @@ impl SglangRequest {
         let output_capacity = output_storage_hint.min(max_output_tokens);
         let mut sequence_tokens = req.tokens;
         sequence_tokens.reserve_exact(output_capacity);
-        let completion_pages = sequence_tokens
+        let completion_tokens = sequence_tokens
             .len()
             .checked_add(output_capacity)
-            .expect("SGLang request completion length overflow")
-            / block_size;
+            .expect("SGLang request completion length overflow");
         let mut kv_lease = RadixRequestLease::default();
         kv_lease.session_id = req.session_id;
-        kv_lease.reserve_page_hashes(completion_pages);
+        kv_lease.reserve_completion(completion_tokens, block_size);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
 
         Self {

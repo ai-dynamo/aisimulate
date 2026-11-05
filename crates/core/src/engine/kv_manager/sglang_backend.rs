@@ -37,6 +37,9 @@ pub(crate) struct RadixRequestLease {
     /// same whole-prompt match on every pass.
     admission_match_hint: Option<PrefixMatchHint>,
     last_node: Option<NodeId>,
+    /// Physical pages the request owns once complete (prompt plus planned output). Admission
+    /// sizes its page list for them and chunked prefill its radix tail, so neither regrows.
+    completion_pages: usize,
     pub(crate) session_id: Option<String>,
 }
 
@@ -68,9 +71,11 @@ impl RadixRequestLease {
         &self.page_hashes
     }
 
-    pub(crate) fn reserve_page_hashes(&mut self, complete_pages: usize) {
+    /// Size the lease for a request that completes with `tokens` tokens.
+    pub(crate) fn reserve_completion(&mut self, tokens: usize, page_size: usize) {
+        self.completion_pages = tokens.div_ceil(page_size);
         self.page_hashes
-            .reserve_exact(complete_pages.saturating_sub(self.page_hashes.len()));
+            .reserve_exact((tokens / page_size).saturating_sub(self.page_hashes.len()));
     }
 
     #[cfg(test)]
@@ -123,6 +128,7 @@ impl RadixRequestLease {
             page_hashes: Vec::new(),
             admission_match_hint: None,
             last_node: Some(last_node),
+            completion_pages: 0,
             session_id: None,
         }
     }
@@ -408,7 +414,10 @@ impl SglangKvManager {
         if required_tokens > available {
             self.evict(required_tokens - available);
         }
-        let mut pages = self.collect_path_pages_through(last_node, prefix_len);
+        let capacity = lease
+            .completion_pages
+            .max(token_ids.len().div_ceil(page_size));
+        let mut pages = self.collect_path_pages_through(last_node, prefix_len, capacity);
 
         let available_before = self.cache.available_tokens();
         let Some(mut new_pages) = self.cache.page_pool.allocate_pages(required_pages) else {
@@ -507,6 +516,13 @@ impl SglangKvManager {
             lease.len()
         );
         let last_node = lease.last_node();
+        // Later chunks and decode steps extend this request's own tail in place.
+        self.cache.reserve_leaf_extension(
+            last_node,
+            lease
+                .completion_pages
+                .saturating_sub(lease.cached_tokens / self.cache.page_size()),
+        );
         let complete_pages = complete_len / self.cache.page_size();
         let page_hashes = &lease.page_hashes[..complete_pages];
         let pages = &mut lease.pages[..complete_pages];
@@ -672,7 +688,7 @@ impl SglangKvManager {
         token_count: usize,
     ) -> Option<SglangDestinationReservation> {
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(page_hashes);
-        let prefix_pages = self.collect_path_pages_through(last_node, prefix_len);
+        let prefix_pages = self.collect_path_pages_through(last_node, prefix_len, 0);
 
         let allocated_tokens = if token_count == 0 {
             0
@@ -787,10 +803,11 @@ impl SglangKvManager {
         }
     }
 
-    /// Collect physical pages from the matched prefix path by walking root→last_node.
-    fn collect_path_pages(&self, last_node: NodeId) -> Vec<KvPageId> {
+    /// Collect physical pages from the matched prefix path by walking root→last_node,
+    /// into a vector with room for `capacity` pages.
+    fn collect_path_pages(&self, last_node: NodeId, capacity: usize) -> Vec<KvPageId> {
         if last_node == self.cache.root() {
-            return Vec::new();
+            return Vec::with_capacity(capacity);
         }
 
         // Walk from last_node to root, collecting node IDs
@@ -806,21 +823,26 @@ impl SglangKvManager {
         }
         path.reverse();
 
-        let mut pages = Vec::new();
+        let mut pages = Vec::with_capacity(capacity);
         for node_id in path {
             pages.extend_from_slice(&self.cache.node(node_id).value);
         }
         pages
     }
 
-    fn collect_path_pages_through(&self, last_node: NodeId, prefix_len: usize) -> Vec<KvPageId> {
+    fn collect_path_pages_through(
+        &self,
+        last_node: NodeId,
+        prefix_len: usize,
+        capacity: usize,
+    ) -> Vec<KvPageId> {
         assert_eq!(
             prefix_len % self.cache.page_size(),
             0,
             "matched SGLang prefix must be page-aligned"
         );
         let expected_pages = prefix_len / self.cache.page_size();
-        let mut pages = self.collect_path_pages(last_node);
+        let mut pages = self.collect_path_pages(last_node, capacity);
         assert!(
             pages.len() >= expected_pages,
             "SGLang radix path returned {} pages for a {expected_pages}-page prefix",
@@ -1235,6 +1257,64 @@ mod tests {
         assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         assert_eq!(alloc.lease.page_count(), 4);
         assert_eq!(mgr.cache().available_tokens(), 0);
+    }
+
+    #[rstest::rstest]
+    #[case::token_pages(1, 64, 8)]
+    #[case::partial_final_page(4, 16, 14)]
+    fn chunked_prefill_extends_lease_pages_and_radix_tail_in_place(
+        #[case] page_size: usize,
+        #[case] prompt_len: usize,
+        #[case] output_len: usize,
+        #[values(false, true)] cancel: bool,
+    ) {
+        // A prompt prefilled a chunk at a time, as SGLang does under attention DP. Sized for
+        // completion, partial final page included, the request's page list and radix tail
+        // then grow without reallocating. Ending before the output keeps the cached prompt and
+        // releases the tail room reserved for the output.
+        let prompt: Vec<u32> = (0..prompt_len as u32).collect();
+        let completion_pages = (prompt_len + output_len).div_ceil(page_size);
+        let chunk = 2 * page_size;
+        let mut mgr = SglangKvManager::new(256, page_size, KvEventPublishers::default(), 0);
+        let mut lease = RadixRequestLease::default();
+        lease.reserve_completion(prompt_len + output_len, page_size);
+        lease.ensure_page_hashes(&prompt, page_size);
+
+        assert_eq!(
+            mgr.allocate_for_request_lease(&prompt[..chunk], &mut lease),
+            Some(0)
+        );
+        assert_eq!(lease.pages.capacity(), completion_pages);
+        mgr.extend_cached_prefix(&prompt[..chunk], &mut lease);
+        let tail = lease.last_node();
+        for end in (2 * chunk..=prompt_len).step_by(chunk) {
+            assert!(mgr.extend_allocation(&prompt[..end], &mut lease).is_some());
+            mgr.extend_cached_prefix(&prompt[..end], &mut lease);
+            assert_eq!(
+                lease.last_node(),
+                tail,
+                "a chunk extends the request's own tail"
+            );
+            let node = mgr.cache().node(tail);
+            assert_eq!(node.key.len(), end / page_size);
+            assert_eq!(
+                (node.key.capacity(), node.value.capacity()),
+                (completion_pages, completion_pages)
+            );
+            assert_eq!(lease.pages.capacity(), completion_pages);
+        }
+        if cancel {
+            assert!(mgr.abort(lease));
+        } else {
+            mgr.finish(&prompt, lease);
+        }
+        assert_eq!(mgr.cache().evictable_size, prompt_len);
+        let node = mgr.cache().node(tail);
+        let cached_pages = prompt_len / page_size;
+        assert_eq!(
+            (node.key.capacity(), node.value.capacity()),
+            (cached_pages, cached_pages)
+        );
     }
 
     #[test]

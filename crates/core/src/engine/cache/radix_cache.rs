@@ -846,6 +846,19 @@ impl RadixCache {
         }
     }
 
+    /// Make room on `node`'s edge for `pages` more pages if the next insert from it extends the
+    /// edge in place: a non-root leaf that no request but the caller holds (see
+    /// [`Self::insert_page_hash_suffix`]). Pages beyond the reservation still grow amortized. The
+    /// leaf gives unused room back when it gains a child or its last holder unlocks it.
+    pub(crate) fn reserve_leaf_extension(&mut self, node: NodeId, pages: usize) {
+        let is_root = node == self.root;
+        let edge = &mut self.nodes[node];
+        if !is_root && edge.children.is_empty() && edge.lock_ref <= 1 {
+            edge.key.reserve(pages);
+            edge.value.reserve(pages);
+        }
+    }
+
     fn extend_leaf(
         &mut self,
         node_id: NodeId,
@@ -943,7 +956,13 @@ impl RadixCache {
 
         self.remove_evictable_leaf(parent_id);
 
-        self.nodes[parent_id].children.insert(ck, new_id);
+        // A leaf that gains a child no longer extends in place; release room reserved for that.
+        let parent = &mut self.nodes[parent_id];
+        if parent.children.is_empty() {
+            parent.key.shrink_to_fit();
+            parent.value.shrink_to_fit();
+        }
+        parent.children.insert(ck, new_id);
 
         self.insert_evictable_leaf(new_id);
         self.evictable_size += key.len() * self.page_size;
@@ -1007,6 +1026,10 @@ impl RadixCache {
                 self.protected_size -= tokens;
                 self.evictable_size += tokens;
                 if self.is_leaf(id) {
+                    // Its last holder is gone; release room reserved for that holder's tail.
+                    let leaf = &mut self.nodes[id];
+                    leaf.key.shrink_to_fit();
+                    leaf.value.shrink_to_fit();
                     self.insert_evictable_leaf(id);
                 }
             }
@@ -1427,6 +1450,9 @@ mod tests {
         cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
         let (_, tail) = cache.match_prefix(&[1, 2, 3, 4]);
         cache.inc_lock_ref(tail);
+        // Its first holder made room to extend it before another request locked it.
+        cache.reserve_leaf_extension(tail, 4);
+        assert!(cache.node(tail).key.capacity() > cache.node(tail).key.len());
         cache.inc_lock_ref(tail);
         let nodes_before = cache.num_nodes();
 
@@ -1441,6 +1467,10 @@ mod tests {
         assert_eq!(cache.num_nodes(), nodes_before + 1);
         assert_eq!(*cache.node(tail).key, cache.page_hashes(&[1, 2, 3, 4]));
         assert_eq!(*cache.node(extended).key, cache.page_hashes(&[5, 6, 7, 8]));
+        // With a child the leaf no longer extends in place, so it gives the room back.
+        let tail = cache.node(tail);
+        assert_eq!(tail.key.capacity(), tail.key.len());
+        assert_eq!(tail.value.capacity(), tail.value.len());
     }
 
     #[test]
