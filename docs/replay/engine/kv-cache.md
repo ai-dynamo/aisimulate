@@ -119,9 +119,11 @@ worker always serves its waiting queue first-come first-served. This follows
 
 For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
 `decode_enable_prefix_caching: true` on SGLang decode samples; deployment
-lowering rejects the inconsistent pair. A sweep may include other backends,
+lowering rejects the inconsistent pair and speculative decoding on a concrete
+SGLang disaggregated candidate. A sweep may include other backends,
 whose samples omit the SGLang-only radix flag. The recommendation path carries
-both controls from the worker's `kv_cache` configuration.
+both controls from the worker's `kv_cache` configuration. A search with no
+SGLang backend rejects `decode_radix_cache: true`.
 
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
@@ -162,6 +164,10 @@ for unsalted requests. It models the namespace behavior of
 [SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d),
 without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
 a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
+
+This is a simulator contract pinned to SGLang v0.5.22. AISimulate does not check
+the installed serving runtime's support for `cache_salt` or the decode radix
+flag; verify both capabilities when deploying an older SGLang version.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

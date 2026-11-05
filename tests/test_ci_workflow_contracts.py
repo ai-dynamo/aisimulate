@@ -3520,6 +3520,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "        }\n",
         f"            {_MARKER}"
         "            session_id: None,\n"
+        "            cache_salt: None,\n"
         "            kv_hint: None,\n"
         "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
         "            images: {\n"
@@ -3547,7 +3548,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "path": request.path,
         "struct": "Request",
         "before_sha256": request.sha256,
-        "inserted_fields": ["session_id", "images", "kv_hint"],
+        "inserted_fields": ["session_id", "cache_salt", "images", "kv_hint"],
         "rejected_lifecycle_events": ["TtftMilestone"],
         "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
     }
@@ -3848,7 +3849,15 @@ def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, 
             assert adapter.read_text() == source
 
 
-@pytest.mark.parametrize("fields", ["", "pub host_loop: bool, pub vlm_cache_bytes: u64,"])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        "",
+        "pub host_loop: bool, pub vlm_cache_bytes: u64,",
+        "pub disaggregation_decode_enable_radix_cache: bool, pub num_reserved_decode_tokens: usize, "
+        "pub disaggregation_decode_extra_slots: Option<usize>,",
+    ],
+)
 @pytest.mark.parametrize("drift", [None, "type", "new_field"])
 def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monkeypatch, fields, drift):
     from scripts.performance import build_simulation_dynamo as builder
@@ -3875,13 +3884,45 @@ def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monke
         assert adapter.read_text() == source
     else:
         record = builder.patch_replay_engine_config(core, dynamo)
-        assert record["inserted_sglang_fields"] == (["host_loop", "vlm_cache_bytes"] if fields else [])
-        if fields:
+        assert record["inserted_sglang_fields"] == re.findall(r"pub (\w+):", fields)
+        if "host_loop" in fields:
             assert "host_loop: false," in adapter.read_text()
             assert "vlm_cache_bytes: SglangConfig::default().vlm_cache_bytes," in adapter.read_text()
-        else:
+        if "num_reserved_decode_tokens" in fields:
+            assert "disaggregation_decode_enable_radix_cache: false," in adapter.read_text()
+            assert (
+                "num_reserved_decode_tokens: SglangConfig::default().num_reserved_decode_tokens," in adapter.read_text()
+            )
+            assert "disaggregation_decode_extra_slots: None," in adapter.read_text()
+        if not fields:
             assert adapter.read_text() == source
         assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+
+
+def test_simulation_dynamo_sglang_adapter_against_current_api(tmp_path, monkeypatch):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    dynamo = tmp_path / "dynamo"
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = (
+        "    let sglang = SglangConfig {\n"
+        "        schedule_policy,\n"
+        "        max_prefill_tokens: 16384,\n"
+        "        chunked_prefill_size: 8192,\n"
+        "        clip_max_new_tokens: 4096,\n"
+        "        schedule_conservativeness: 1.0,\n"
+        "    };\n" + "        num_gpu_blocks_is_explicit: Some(true),\n" * 4
+    )
+    adapter.write_text(source)
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+
+    record = builder.patch_replay_engine_config(REPOSITORY_ROOT / "crates/core", dynamo)
+
+    assert "disaggregation_decode_enable_radix_cache: false," in adapter.read_text()
+    assert "num_reserved_decode_tokens: SglangConfig::default().num_reserved_decode_tokens," in adapter.read_text()
+    assert "disaggregation_decode_extra_slots: None," in adapter.read_text()
+    assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(

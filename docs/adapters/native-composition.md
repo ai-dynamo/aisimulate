@@ -153,6 +153,22 @@ Replay's responsibility during worker drain and removal.
 
 ## Observations and telemetry
 
+SGLang requests and stored KV events expose an optional `cache_salt`. Pass it
+from the request into `Request`/`ReplayRequest`, and preserve it when forwarding
+`StoredBlocks` or reconstructing event identities from token IDs. Hash-only
+consumers can retain the published salted block and sequence hashes unchanged;
+the absence of a separate salt field does not make those hashes unsalted.
+Use `ReplayRequestHashes::from_tokens_with_cache_salt` when computing routing
+identities from a salted prompt.
+
+Serialized requests and events default missing salts to `None`. Rust consumers
+upgrading the crate must also update exhaustive `Request` and `StoredBlocks`
+struct literals: use `cache_salt: None` for unsalted data, or the originating
+request's salt. The pinned Dynamo compatibility builder remains text-only and
+unsalted; it inserts `None` rather than exposing salted routing through the
+older adapter. Supporting salted requests in a downstream adapter requires
+carrying the salt through its request and event conversions together.
+
 Compositions consume neutral engine observations only when needed. Round-robin
 can skip KV event capture; Dynamo performs Router-specific conversion outside
 AISimulate core. Offline P/D decode routing is overlap-blind and does not require

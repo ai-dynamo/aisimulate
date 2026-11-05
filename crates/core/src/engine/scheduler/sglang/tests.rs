@@ -778,6 +778,82 @@ mod pd_admission_v0522 {
         assert_eq!(terminals, [1; 4]);
         assert_eq!(core.kv_manager.cache().available_tokens(), 256);
     }
+
+    #[rstest::rstest]
+    fn decode_headroom_boundaries_drain_through_destination_commands(
+        #[values(8, 192, 224)] long_prompt: usize,
+        #[values(8, 32, 192)] peer_prompt: usize,
+        #[values(16, 32)] reserve_tokens: usize,
+        #[values(0, 32)] peer_delay: usize,
+        #[values(1, 8)] page_size: usize,
+        #[values(false, true)] overlap: bool,
+        #[values(false, true)] shared_prefix: bool,
+    ) {
+        let mut args = test_args(256 / page_size, page_size, 256);
+        args.worker_type = WorkerType::Decode;
+        args.max_num_seqs = Some(2);
+        let sglang = args.sglang.as_mut().unwrap();
+        sglang.num_reserved_decode_tokens = Some(reserve_tokens);
+        sglang.host_loop = overlap;
+        sglang.disaggregation_decode_enable_radix_cache = shared_prefix;
+        let mut core = SglangCore::new(args);
+        let mut submitted = [false; 2];
+        let mut activated = [false; 2];
+        let mut outputs = [0; 2];
+        let mut terminals = [0; 2];
+        let prompts = [long_prompt, peer_prompt];
+        let mut now = 0.0;
+        for step in 0..512 {
+            for index in 0..2 {
+                let id = index as u128 + 1;
+                let handoff_id = HandoffId::from(Uuid::from_u128(id));
+                if !submitted[index] && step >= if index == 0 { 0 } else { peer_delay } {
+                    core.apply_command_effects(
+                        SchedulerCommand::ReserveDestination {
+                            handoff_id,
+                            request: DirectRequest {
+                                uuid: Some(Uuid::from_u128(id)),
+                                ..direct_request(
+                                    vec![if shared_prefix { 1 } else { id as u32 }; prompts[index]],
+                                    128,
+                                )
+                            },
+                        },
+                        true,
+                    )
+                    .unwrap();
+                    submitted[index] = true;
+                }
+                if submitted[index]
+                    && !activated[index]
+                    && !core.destination_pages(handoff_id).is_empty()
+                {
+                    activate(&mut core, id);
+                    activated[index] = true;
+                }
+            }
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            for signal in pass.output_signals {
+                let index = signal.uuid.as_u128() as usize - 1;
+                outputs[index] += usize::from(signal.token_id.is_some());
+                terminals[index] += usize::from(signal.completed);
+            }
+            core.retry_pending_destinations();
+            if submitted == [true; 2] && core.is_drained() {
+                break;
+            }
+        }
+        assert!(
+            core.is_drained(),
+            "destination/restoration queues must drain"
+        );
+        assert_eq!(terminals, [1; 2]);
+        assert_eq!(
+            outputs,
+            prompts.map(|prompt| 128.min(256 - prompt - page_size - 1))
+        );
+    }
 }
 
 mod admission_v0522 {
