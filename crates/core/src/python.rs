@@ -24,7 +24,7 @@ use crate::replay::{
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
-        ValidatedAgenticGraph, WekaImportOptions, WekaNestedTimestampBasis,
+        ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
         WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
         load_weka_agentic_graph_cached,
     },
@@ -123,6 +123,8 @@ struct RuntimeTraffic {
     trace_block_size: Option<usize>,
     #[serde(default)]
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
+    weka_client: Option<WekaClient>,
     /// Keep the loaded Weka graph for later runs in this process (sweeps).
     #[serde(default)]
     trace_graph_cache: bool,
@@ -255,15 +257,25 @@ fn validate_public_agentic_engine(
         .iter()
         .any(|role| role.rank.native_host_offload.is_some())
     {
-        let single_worker_per_role = match &spec.topology {
-            ReplayTopology::Aggregated { workers } => workers.initial_workers == 1,
+        let qualified_workers = match &spec.topology {
+            // Each aggregated worker owns a private G2, and the warm-up
+            // barrier waits on every worker's G2 work. A shared pool and P/D
+            // keep one worker per role.
+            ReplayTopology::Aggregated { workers } => {
+                workers.initial_workers == 1
+                    || roles[0]
+                        .rank
+                        .native_host_offload
+                        .as_ref()
+                        .is_some_and(|host| host.scope == crate::engine::G2Scope::DpRankLocal)
+            }
             ReplayTopology::Disaggregated {
                 prefill, decode, ..
             } => prefill.initial_workers == 1 && decode.initial_workers == 1,
         };
         ensure!(
-            single_worker_per_role,
-            "agentic host offload requires one aggregated worker or one prefill and one decode worker"
+            qualified_workers,
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, or static aggregated workers with scope=dp_rank_local"
         );
         ensure!(
             spec.adapters.scaling.provider == "none",
@@ -3508,6 +3520,11 @@ fn build_runtime_input(
         traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
         "weka_nested_timestamp_basis requires Weka trace input"
     );
+    ensure!(
+        traffic.weka_client.is_none()
+            || (traffic.source_type == "trace" && traffic.trace_format.as_deref() == Some("weka")),
+        "weka_client requires Weka trace input"
+    );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
         let trace_block_size = traffic.trace_block_size.unwrap_or(512);
@@ -3576,6 +3593,7 @@ fn build_runtime_input(
                 traffic.trace_block_size,
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
+                    client: traffic.weka_client.unwrap_or_default(),
                 },
                 traffic.trace_graph_cache,
             )?;

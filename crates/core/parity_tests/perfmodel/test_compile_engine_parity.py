@@ -839,7 +839,8 @@ def _build_wideep_trtllm():
         gemm_quant_mode=common.GEMMQuantMode.nvfp4,
         moe_quant_mode=common.MoEQuantMode.nvfp4,
         kvcache_quant_mode=common.KVCacheQuantMode.fp8,
-        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        # TRT-LLM's MLA context attention runs FP8 FMHA on an FP8 KV cache.
+        fmha_quant_mode=common.FMHAQuantMode.fp8,
     )
     model = _quiet(get_model, "deepseek-ai/DeepSeek-V3", model_config, "trtllm")
     backend = get_backend("trtllm")

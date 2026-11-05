@@ -9,7 +9,7 @@ from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("aisimulate")
+    __version__ = version("aisim")
 except PackageNotFoundError:
     __version__ = "0+unknown"
 

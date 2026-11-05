@@ -331,8 +331,21 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
     else:
         raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
-    if any(type(count) is not int or count != 1 for count in counts):
-        raise ValueError("agentic host offload requires one aggregated worker or one prefill and one decode worker")
+    # Each aggregated worker owns a private G2; a shared pool and P/D keep one
+    # worker per role.
+    shared = any(
+        isinstance(rank, Mapping)
+        and isinstance(rank.get("native_host_offload"), Mapping)
+        and rank["native_host_offload"].get("scope", "dp_rank_local") != "dp_rank_local"
+        for _, _, rank in ranks
+    )
+    if any(type(count) is not int or count < 1 for count in counts) or (
+        any(count != 1 for count in counts) and (deployment.deployment_mode != "agg" or shared)
+    ):
+        raise ValueError(
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, "
+            "or static aggregated workers with scope=dp_rank_local"
+        )
     if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
         raise ValueError("agentic host offload requires static worker pools without a scaling policy")
     for role, args, rank in ranks:
@@ -408,6 +421,7 @@ class RunnerCapabilities:
     supports_native_epd: bool = False
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
+    supports_weka_client: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
@@ -609,6 +623,14 @@ class RunnerCapabilities:
                 raise ValueError("weka_nested_timestamp_basis requires Weka input")
             if weka_basis not in {"auto", "absolute", "relative"}:
                 raise ValueError("weka_nested_timestamp_basis must be 'auto', 'absolute', or 'relative'")
+        weka_client = spec.workload.get("weka_client")
+        if weka_client is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_client requires Weka input")
+            if weka_client not in {"recorded", "agentx"}:
+                raise ValueError("weka_client must be 'recorded' or 'agentx'")
+            if weka_client == "agentx" and not self.supports_weka_client:
+                raise ValueError("runner does not support weka_client 'agentx'; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

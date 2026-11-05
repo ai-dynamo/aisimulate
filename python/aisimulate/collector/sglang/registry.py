@@ -70,7 +70,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_moe_test_cases",
         run_func="run_moe_torch",
         perf_filename=PerfFile.MOE,
-        # SM120 bring-up audit completed on RTX 6000 Pro (2026-07-05): every
+        # SM120 bring-up audit completed on RTX 6000 Pro: every
         # (quant mode x backend) family in the SM120 plan was probed on
         # hardware with verified constructed-method provenance — bf16/triton,
         # bf16/flashinfer_cutlass (NemotronH), fp8_block/triton,
@@ -105,12 +105,12 @@ REGISTRY: list[OpEntry] = [
         get_func="get_dsa_context_module_test_cases",
         run_func="run_mla_module_worker",
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
-        # SM103 UNPARKED by hardware probe (B300, 2026-07-13, pipeline
+        # SM103 UNPARKED by hardware probe (B300, pipeline
         # 57716023): 32+32 sampled cases ran clean — 9,826 rows across all
         # three kernel buckets (dense_mha_trtllm_ragged, indexer_flashmla_
         # sparse, indexer_trtllm), zero errors. The earlier "TRTLLM-GEN
         # capability check rejects SM103" claim was source-derived and wrong.
-        # SM120 stays parked: the RTX 6000 Pro probe (2026-07-06) confirmed
+        # SM120 stays parked: the RTX 6000 Pro probe confirmed
         # 0.5.14 forces the TRTLLM-GEN sub-backend there and every case
         # raises "Unsupported architecture" (fmhaRunner.cuh:37) — hardware
         # confirmation of the ledger's DSA-SUBBACKEND-SELECTOR row.
@@ -130,7 +130,7 @@ REGISTRY: list[OpEntry] = [
     # SAME dsa_*_module table as the full op, tagged by an op_name
     # "_skip_indexer" suffix (that is what the SDK reads), so the entry declares
     # that shared table and selects the mode with run_kwargs — the executor
-    # binds skip_indexer=True to run_func. (Until 2026-10-06 the entry declared
+    # binds skip_indexer=True to run_func. (Before this, the entry declared
     # a dsa_*_skip_indexer_perf.txt table nobody wrote and the worker sniffed
     # the mode from that filename; --resume finalization trusted the
     # declaration and failed every skip_indexer shard: job 469988017.)
@@ -142,15 +142,15 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
         run_kwargs=(("skip_indexer", True),),
         # Hardware-validated on SM100, on SM103 via the B300 probe
-        # (2026-07-13, pipeline 57747474: 8,506 rows, skip_indexer
+        # (pipeline 57747474: 8,506 rows, skip_indexer
         # trtllm+flashmla buckets clean, 1 error), and on SM90 via the
-        # h100/h200 probe collections (2026-08-14..15, pipelines
+        # h100/h200 probe collections (pipelines
         # 62700025 + 62872230: 67,532 context + 4,896 generation rows,
         # fa3/flashmla_kv/flashmla_sparse buckets clean; failures were
         # 24 init-OOM tasks on the 80 GB h100 and 12 guarded 1M-prefix
         # IMA tasks — the same class the SM100 run records). SM120 shares
         # the full-module TRTLLM-GEN "Unsupported architecture" raise
-        # (RTX 6000 Pro probe 2026-07-06).
+        # (RTX 6000 Pro probe).
         unverified_sms=(120,),
     ),
     OpEntry(
@@ -169,11 +169,11 @@ REGISTRY: list[OpEntry] = [
         get_func="get_dsv4_csa_context_test_cases",
         run_func="run_dsv4_attn_worker",
         perf_filename=PerfFile.DSV4_CSA_CONTEXT_MODULE,
-        # RTX 6000 Pro probe 2026-07-06: every SM120 case raises the
+        # RTX 6000 Pro probe every SM120 case raises the
         # collector's own fail-closed guard (_derive_csa_context_pool_cap —
         # SM120 forces a Torch logits leaf whose memory contract is not the
         # SM90/100/103 DeepGEMM workspace formula). Park the SM until that
-        # workspace policy is separately validated. L40S probe 2026-07-07:
+        # workspace policy is separately validated. L40S probe
         # SM89 hits the same guard (named in its raise), and stock 0.5.14
         # serving cannot reach DSV4 attention on SM89 at all — the
         # server_args DeepseekV4 hook (server_args.py:3786-3810) disables
@@ -188,7 +188,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_dsv4_hca_context_test_cases",
         run_func="run_dsv4_attn_worker",
         perf_filename=PerfFile.DSV4_HCA_CONTEXT_MODULE,
-        # L40S probe 2026-07-07: every SM89 case dies in-kernel (CUDA
+        # L40S probe every SM89 case dies in-kernel (CUDA
         # InternalError at the first shape) — the sgl-kernel compressed
         # FlashMLA family has no SM89 target, and serving is blocked earlier
         # by the mHC prenorm NameError (see the CSA context entry).
@@ -200,7 +200,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_dsv4_csa_generation_test_cases",
         run_func="run_dsv4_attn_worker",
         perf_filename=PerfFile.DSV4_CSA_GENERATION_MODULE,
-        # L40S probe 2026-07-07: same SM89 in-kernel CUDA InternalError as
+        # L40S probe same SM89 in-kernel CUDA InternalError as
         # the HCA modules (no SM89 FlashMLA target; serving blocked by the
         # mHC prenorm NameError regardless).
         unverified_sms=(89,),
@@ -211,7 +211,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_dsv4_hca_generation_test_cases",
         run_func="run_dsv4_attn_worker",
         perf_filename=PerfFile.DSV4_HCA_GENERATION_MODULE,
-        # L40S probe 2026-07-07: see dsv4_hca_context_module — SM89 parked.
+        # L40S probe see dsv4_hca_context_module — SM89 parked.
         unverified_sms=(89,),
     ),
     # DeepSeek-V4 currently models CSA/HCA through full attention-module data
@@ -225,12 +225,10 @@ REGISTRY: list[OpEntry] = [
         run_func="run_dsv4_sparse_kernel_worker",
         perf_filename=PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE,
         # SM120 selects the Torch/v1 indexer paths and its whole DSV4 module
-        # family is source-derived, hardware-unvalidated; pre-Hopper is
-        # excluded by the op_min_sm=90 capability floor.  The 2026-07 RTX
-        # 6000 Pro bring-up left this marker in place: the op is
-        # experimental-only (no default-plan scheduling, no SDK call-site —
-        # see DeepseekV4ForCausalLM_cases.yaml), so there is nothing to
-        # hardware-validate through the sanctioned plan.
+        # family is source-derived, hardware-unvalidated; collector/skips.py
+        # leaves pre-Hopper out. The op is experimental-only (no default-plan
+        # scheduling, no SDK call site; see DeepseekV4ForCausalLM_cases.yaml),
+        # so there is nothing to hardware-validate through the default plan.
         unverified_sms=(120,),
     ),
     # CSA topk_512 DELTA calibration (flat vs top_last) — feeds the
@@ -242,24 +240,23 @@ REGISTRY: list[OpEntry] = [
         run_func="run_dsv4_sparse_kernel_worker",
         perf_filename=PerfFile.DSV4_CSA_TOPK_CALIB,
         # SM120 serving disables topk v2 and takes v1 for both phases (see
-        # DSV4-TOPK-PHASE-AND-SM120). The RTX 6000 Pro probe (2026-07-06)
+        # DSV4-TOPK-PHASE-AND-SM120). The RTX 6000 Pro probe
         # showed the un-reviewed producer emits v2 rows on SM120 anyway
         # (309/310 launched; one v2 shape fails a jit_kernel runtime check) —
         # wrong-variant rows for that platform. Keep SM120 parked until the
         # producer is made variant-aware and the whole-module CSA path is
-        # validated; pre-Hopper is excluded by the op_min_sm=90 capability
-        # floor.
+        # validated; collector/skips.py leaves pre-Hopper out.
         unverified_sms=(120,),
     ),
     # GLM-5 DSA sparse sub-kernels (mqa / topk / dsa_attn) — GLM-5 analogue of
-    # the DSV4 sparse family; shapes 1:1 from the GLM-5 DSA module CSV.
+    # the DSV4 sparse family; shapes are the DSA module plan's points.
     # GLM-5 sparse sub-kernels share the DeepGEMM fp8_mqa_logits / FlashMLA
-    # sparse family: pre-Hopper is excluded by the op_min_sm=90 capability
-    # floors. SM120 stays parked after the RTX 6000 Pro probe (2026-07-06):
+    # sparse family: collector/skips.py leaves pre-Hopper out. SM120 stays
+    # parked after the RTX 6000 Pro probe:
     # mqa raises DeepGEMM "Unsupported architecture" (attention.hpp:184) and
     # dsa_attn raises "Sparse Attention Forward Kernel is only supported on
     # SM90a and SM100f", so the GLM-5 DSA serving family is unrunnable on
-    # SM120 at 0.5.14. The topk kernel itself ran clean (32/32 smoke points,
+    # SM120. The topk kernel itself ran clean (32/32 smoke points,
     # fast_topk_transform_fused), but rows for a family serving can never run
     # there would be non-serving data — park all three together.
     OpEntry(
@@ -289,11 +286,11 @@ REGISTRY: list[OpEntry] = [
     # MiniMax-M3 MSA sparse-attention modules — need models/minimax_m3.py,
     # first shipped in the official v0.5.16 release (the module declares
     # __compat__ = "sglang>=0.5.16"; the 0.5.14-era framework_manifest carried
-    # an msa family pin to v0.5.16, retired when the default moved to 0.5.21
-    # on 2026-10-01). Hardware-validated per SM:
+    # an msa family pin to v0.5.16, retired when the default moved to 0.5.21).
+    # Hardware-validated per SM:
     # SM90 (h100/h200 — SGLang's own M3 server-args override selects
     # fa3 + page 128 and the Triton sparse path,
-    # arg_groups/overrides.py:521-537@v0.5.16), SM100/103
+    # arg_groups/overrides.py:521-537), SM100/103
     # (b200/b300/gb200/gb300 — same Triton sparse path on the official
     # image; the fmha_sm100 upgrade is wheel-gated and kernel_source
     # records what actually ran). SM89/SM120/SM121: v0.5.16's M3
@@ -335,7 +332,7 @@ REGISTRY: list[OpEntry] = [
         # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch; debugged
         # on Hopper (SM90), B200 (SM100) and B300 (SM103), then verified on
         # L40S/SM89 and RTX Pro 6000/SM120 via full-grid probe runs
-        # (2026-08-01, aic-auto-collector jobs 381312863/381312864: 1074 and
+        # (aic-auto-collector jobs 381312863/381312864: 1074 and
         # 1085 clean rows; SM89 needs the fused-decode SM90 gate in
         # collect_kda.py — the JIT kernel's mbarrier PTX rejects sm_89).
         unverified_sms=(80,),
@@ -346,7 +343,7 @@ REGISTRY: list[OpEntry] = [
         get_func="get_mhc_module_test_cases",
         run_func="run_mhc_module_worker",
         perf_filename=PerfFile.MHC_MODULE,
-        # L40S probe 2026-07-07: both directions crash in stock 0.5.14 —
+        # L40S probe both directions crash in stock 0.5.14 —
         # the server_args DeepseekV4 hook (server_args.py:3786-3810) turns
         # SGLANG_OPT_DEEPGEMM_HC_PRENORM off only for SM120/HIP, so SM89
         # keeps the default True (environ.py:781) and the pre/post paths

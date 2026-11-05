@@ -163,3 +163,36 @@ communication. Use `collector/wideep/sglang/collect_deepep_moe.py` for
 Large-EP local expert compute; it publishes the dedicated `moe_ep` table.
 Stock `moe_perf` is a modeled fallback only when a matching `moe_ep` row is
 not available.
+
+## GLM agentic decode campaign
+
+`agentx_dsa_shards.yaml` selects the full-indexer and skip-indexer DSA module
+groups for `nvidia/GLM-5.2-NVFP4`, TP8, BF16 projections and FP8 KV on B300.
+The campaign explicitly passes `model_path` before deduplication and enables
+`include_long_context` in each shard. No model-filter environment variable is
+required. Shared sweep defaults belong in
+`cases/base_ops/mla_module.yaml`; this campaign file only selects the groups.
+
+The SGLang 0.5.21 collection used AISimulate commit
+[`0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04`](https://github.com/ai-dynamo/aisimulate/commit/0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04),
+with 250 shapes per group, through past-KV length 720,896. Reproduction must
+pin that collector revision, the runtime image digest recorded in the data
+sidecar, and the campaign's B300 capacity. Current defaults may generate a
+different plan. See collection jobs
+[full-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211485)
+and [skip-indexer](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/523211486).
+The packaged 0.5.21 table retains 5,812 earlier rows, 456 November 2 additions
+and 44 batch-52 rows freshly recollected from signed collector
+`c4b44d81f526b3c5299f7c15ccafe02d90b39229`.
+At 308 overlapping physical coordinates it keeps the newer measurements,
+which include native QKV projection and fresh inputs as serving does; 192
+coordinates are new. Original source revisions and plan hashes are preserved.
+The unmodified 6,620-row append, paired timing evidence, normalization checks
+and audit scripts are retained locally under
+`benchmarks/evidence/collector/pr665-b300-dsa-boundary/`, outside this PR.
+The sidecar's archive-path comment refers to that local evidence. The remaining
+4.3% full-indexer timing difference is unisolated.
+The archived historical batch-52 rows were exact-shape graphs. Their 44
+replacements use the collector's native serving-padding path and retain their
+actual source revision and exact requested-subset hashes. Merge depends on
+the coordinated collector fix.

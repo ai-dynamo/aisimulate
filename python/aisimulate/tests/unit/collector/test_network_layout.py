@@ -85,7 +85,7 @@ def test_submit_moe_a2a_default_image_matches_manifest():
 def test_submit_trtllm_alltoall_default_image_matches_manifest():
     # Same sync requirement, against the WideEP all-to-all build base
     # (trtllm_a2a: the rc20 image is the immutable base the rc11 source wheel is
-    # built over), NOT the stock trtllm pin — stock moved to rc29 on 2026-10-02
+    # built over), NOT the stock trtllm pin — stock moved to rc29
     # while WideEP stays on its own pins. The collector gates the installed
     # tensorrt_llm version against this pin, so drift here would fail every
     # job loudly.

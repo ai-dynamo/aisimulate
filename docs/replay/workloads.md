@@ -63,6 +63,7 @@ the current SA convention.
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
 | `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
+| `traffic.source.client` | `recorded` | `x` | `-` | `recorded` or `agentx`; Weka only. See [Weka client](#weka-client). |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -256,6 +257,41 @@ A Weka corpus can name several source models. Replay runs every request on
 `engine.model` and records the source models and target under
 `agentic_model_projection`.
 
+<a id="weka-client"></a>
+
+### Weka client
+
+`traffic.source.client` chooses whose replay of the corpus AISimulate follows.
+With `recorded` (the default), a subagent starts at its recorded offset from
+the request before it, a joining turn waits its recorded gap after each child,
+and the streams of a play share their whole common hash prefix. `agentx`
+follows the AgentX client, the AIPerf fork in the
+[behavioral reference](agentic/continuous-profiles.md#behavioral-reference):
+
+- Every subagent and flattened chain is a child of the main conversation. A
+  flattened chain is a conversation that the trace lists among its top-level
+  requests. The spawning turn is the latest main turn listed before the child;
+  the joining turn is the first main turn listed after it that starts at or
+  after the child's recorded end. Subagents with the same spawning and joining
+  turns form one group, and so do flattened chains.
+- A group starts when its spawning turn returns, and each child starts at its
+  offset from the group's earliest start. A group that started before the
+  spawning turn's recorded end starts with that turn instead, each child at its
+  offset from the turn's start.
+- The joining turn waits for every child with no added gap, and for its own
+  recorded delay after the previous main turn.
+- A subagent that no main turn precedes is dropped. A flattened chain that no
+  main turn precedes is spawned by the first one.
+- Each stream is its own chat conversation: its first request is one user
+  message, and a later request cuts the message list where its hash prefix
+  diverges from the previous request's. Streams therefore share prompt blocks
+  only inside their first user message, at block granularity and without
+  chat-template header tokens. Corpora that declare tool or system tokens are
+  rejected.
+
+Every runner accepts `recorded`. A runner accepts `agentx` only if it
+advertises `supports_weka_client`, as the engine stack does.
+
 <a id="agentic-load-controls"></a>
 
 ## Agentic Load Controls
@@ -289,9 +325,10 @@ Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
 workers and HBM-only KV cache, including
 [speculative decoding](engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM additionally
-supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers,
-either one aggregated worker or 1P1D, `attention_data: 1` on every role and
-speculative decoding disabled. TensorRT-LLM, G3 offload and online
+supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers:
+one aggregated worker, 1P1D, or several aggregated workers with
+`scope: dp_rank_local`; `attention_data: 1` on every role and speculative
+decoding disabled. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.

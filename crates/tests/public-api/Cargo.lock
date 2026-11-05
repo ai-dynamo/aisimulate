@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core"
-version = "0.13.0"
+name = "aisim-core"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -60,7 +60,7 @@ dependencies = [
 name = "aisimulate-core-public-api"
 version = "0.0.0"
 dependencies = [
- "aisimulate-core",
+ "aisim-core",
  "anyhow",
  "serde",
  "serde_json",

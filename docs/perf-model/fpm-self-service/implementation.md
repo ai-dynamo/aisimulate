@@ -23,6 +23,8 @@ and a new MiniMax collection campaign.
 | Inspect timing data and resolve resources | [Published pair](#validate-and-install-the-fpm-profile), [runtime probe](#resolve-cache-geometry-with-a-runtime-probe), [finalization](#finalize-runtime-memory) |
 | Load timings and run simulation | [Canonical SDK](#construct-and-check-the-performance-model), [Replay configuration](#configure-replay), [ordinary configs](#run-the-generated-ordinary-configurations), [execution route](#choose-the-model-execution-route) |
 | Assess collection, coverage and serving accuracy | [Collection and serving validation](#validate-collection-and-serving-accuracy), [trace coverage](#validate-fpm-query-coverage-with-agentx-replay), [accuracy interpretation](#interpret-coverage-and-accuracy) |
+| Train a GBDT from End-to-end offline profiling | [Offline training and B+C adaptation](e2e-gbdt.md) |
+| Initialize from online observations or adapt a self-benchmark seed | [C-only and A+C tutorial](online-gbdt.md), [workflow selection](README.md#choose-a-learned-model-workflow) |
 | Recover interrupted work | [Recovery and cleanup](#recovery-and-cleanup), [troubleshooting](#fpm-data-and-prediction-troubleshooting) |
 
 ## Prepare the environment
@@ -38,7 +40,7 @@ source python/aisimulate/.venv/bin/activate
 export AIS_REPO="$PWD"
 export PYTHONPATH="$AIS_REPO/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
 git rev-parse HEAD
-python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'import aisimulate; print(aisimulate.__version__)'
 aisimulate predict --help
 ```
 

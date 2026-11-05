@@ -40,7 +40,7 @@ class PerfFile(str, Enum):
     # backends have always written it and the SDK consumes
     # scale_matrix_perf.parquet (aisimulate_core/sdk/common.py) — the enum
     # entry was simply missing, which the fail-closed finalize rejected on
-    # the first full vllm computescale run (2026-09-21).
+    # the first full vllm computescale run.
     SCALE_MATRIX = "scale_matrix_perf.txt"
     WIDEEP_CONTEXT_MLA = "wideep_context_mla_perf.txt"
     WIDEEP_GENERATION_MLA = "wideep_generation_mla_perf.txt"
@@ -77,7 +77,7 @@ class PerfFile(str, Enum):
     DSV4_HCA_GENERATION_MODULE = "dsv4_hca_generation_module_perf.txt"
     # DeepSeek-V4 sparse-kernel data — the CSA indexer scoring sub-kernel,
     # bench-collected 1:1 with its owning CSA module rows. The hca_attn /
-    # csa_attn FMLA sidecars were removed end to end on 2026-10-15: their SDK
+    # csa_attn FMLA sidecars were removed end to end: their SDK
     # readers had been retired (no query path; csa_attn never shipped data)
     # and the registry-only ops failed every shard that named them.
     DSV4_PAGED_MQA_LOGITS_MODULE = "dsv4_paged_mqa_logits_module_perf.txt"
@@ -136,7 +136,7 @@ class OpEntry:
     # Further tables the SAME run_func writes from one measurement (passed to
     # it as ``extra_perf_filenames``); finalize binds every one of them to
     # this producer's checkpoint. compute_scale is the only user so far
-    # (computescale_perf + scale_matrix_perf; owner decision 2026-09-28).
+    # (computescale_perf + scale_matrix_perf; owner decision).
     extra_perf_filenames: tuple[str, ...] = ()
     # Fixed keyword arguments the executor binds to run_func (functools.partial,
     # next to perf_filename / extra_perf_filenames). This is how one run_func
@@ -146,8 +146,8 @@ class OpEntry:
     # inferred the mode from a "skip_indexer" perf_filename that no collector
     # ever wrote, and --resume finalization (which trusts the declared table)
     # raised "open checkpoint event has no regular staging table" on every
-    # skip_indexer shard (b200_sxm sglang 0.5.21, GitLab job 469988017,
-    # 2026-10-05). A tuple of (name, value) pairs keeps the entry hashable.
+    # skip_indexer shard (b200_sxm sglang 0.5.21, GitLab job 469988017).
+    # A tuple of (name, value) pairs keeps the entry hashable.
     run_kwargs: tuple[tuple[str, Any], ...] = ()
 
     def __post_init__(self) -> None:

@@ -617,8 +617,9 @@ class TestParseHFConfig:
         assert cfg is not None
         # step=1: all layers MoE
         assert all(m == 1 for m in cfg.moe_layer_freq)
-        # alternating local(0)/global(1): even=0, odd=1
-        assert cfg.attn_layer_pattern == tuple(i % 2 for i in range(48))
+        # empty no_rope_layers: every 4th layer has no RoPE and attends globally (1), the rest are chunked (0)
+        assert cfg.attn_layer_pattern == tuple(int((i + 1) % 4 == 0) for i in range(48))
+        assert sum(cfg.attn_layer_pattern) == 12
         assert cfg.sliding_window_size == 8192
         assert cfg.dense_inter_size == 16384
         assert cfg.vision_config is not None
@@ -711,7 +712,8 @@ class TestParseHFConfig:
         assert result["layers"] == 10
         cfg = result["extra_params"]
         assert cfg is not None
-        assert cfg.attn_layer_pattern == tuple(hybrid_pattern)
+        # hybrid_layer_pattern marks sliding-window layers with 1; attn_layer_pattern marks global layers
+        assert cfg.attn_layer_pattern == tuple(1 - v for v in hybrid_pattern)
         assert cfg.moe_layer_freq == tuple(moe_freq)
         assert cfg.swa_num_kv_heads == 8
         assert cfg.swa_head_dim == 192
@@ -762,6 +764,72 @@ class TestParseHFConfig:
         }
         with pytest.raises(ValueError, match="positive integer"):
             _parse_hf_config_json(hf_config)
+
+    @staticmethod
+    def _llama4_text_only_config(**text_overrides):
+        text_config = {
+            "num_hidden_layers": 8,
+            "hidden_size": 1024,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "head_dim": 128,
+            "intermediate_size": 2048,
+            "vocab_size": 10000,
+            "max_position_embeddings": 4096,
+            "num_experts_per_tok": 1,
+            "num_local_experts": 4,
+            "interleave_moe_layer_step": 1,
+            "attention_chunk_size": 512,
+        }
+        text_config.update(text_overrides)
+        return {
+            "architectures": ["Llama4ForConditionalGeneration"],
+            "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
+            "text_config": text_config,
+        }
+
+    def test_llama4_global_layers_follow_no_rope_layers(self):
+        """Layers without RoPE (no_rope_layers 0) attend globally; an explicit list and an interval both count."""
+        explicit = [1, 0, 1, 1, 1, 1, 1, 0]
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=explicit))
+        assert result["extra_params"].attn_layer_pattern == (0, 1, 0, 0, 0, 0, 0, 1)
+
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=2))
+        assert result["extra_params"].attn_layer_pattern == (0, 1, 0, 1, 0, 1, 0, 1)
+
+    def test_llama4_pattern_inputs_are_validated(self):
+        """A non-positive interval or a non-list no_rope_layers raises instead of producing a wrong pattern."""
+        for interval in (0, -1, None, "4"):
+            with pytest.raises(ValueError, match="no_rope_layer_interval"):
+                _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=interval))
+        with pytest.raises(TypeError, match="no_rope_layers"):
+            _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=0))
+        # An empty list means the interval rule, as in transformers.
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=[]))
+        assert result["extra_params"].attn_layer_pattern == (0, 0, 0, 1, 0, 0, 0, 1)
+
+    def test_llama4_no_rope_layers_length_mismatch_raises(self):
+        """A no_rope_layers list that does not cover every layer raises ValueError."""
+        with pytest.raises(ValueError, match="no_rope_layers"):
+            _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=[1, 0, 1]))
 
     @staticmethod
     def _gemma4_text_config(layer_types):
@@ -1222,9 +1290,9 @@ class TestHybridMoEModelBuilder:
         )
 
     def test_mimov2flash_model_builds_all_three_layer_types(self):
-        """MiMo-V2-Flash config produces context/generation ops for global_moe, swa_moe, swa_dense."""
+        """MiMo-V2-Flash config produces context/generation ops for global_dense, global_moe, swa_moe."""
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=(0, 1, 1, 1, 1, 0, 1, 1, 1, 1),
+            attn_layer_pattern=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0),
             moe_layer_freq=(0, 1, 1, 1, 1, 1, 1, 1, 1, 1),
             swa_num_kv_heads=8,
             swa_head_dim=192,
@@ -1255,15 +1323,16 @@ class TestHybridMoEModelBuilder:
         assert len(model.context_ops) > 0
         assert len(model.generation_ops) > 0
         op_names = [op._name for op in model.context_ops]
-        assert any("global" in n for n in op_names), "Missing global attention ops"
+        assert any("global" in n and "moe" in n for n in op_names), "Missing global_moe ops"
         assert any("swa" in n and "moe" in n for n in op_names), "Missing swa_moe ops"
-        assert any("swa" in n and "dense" in n for n in op_names), "Missing swa_dense ops"
+        assert any("global" in n and "dense" in n for n in op_names), "Missing global_dense ops"
+        assert not any("swa" in n and "dense" in n for n in op_names), "MiMo-V2-Flash has no swa_dense layer"
 
     def test_llama4_scout_model_builds_global_and_swa_moe(self):
         """Llama 4 Scout (step=1, all MoE) produces global_moe + swa_moe ops."""
         layers = 8
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            attn_layer_pattern=tuple(int((i + 1) % 4 == 0) for i in range(layers)),
             moe_layer_freq=tuple(1 for _ in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,
@@ -1300,7 +1369,7 @@ class TestHybridMoEModelBuilder:
         layers = 8
         step = 2
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            attn_layer_pattern=tuple(int((i + 1) % 4 == 0) for i in range(layers)),
             moe_layer_freq=tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,

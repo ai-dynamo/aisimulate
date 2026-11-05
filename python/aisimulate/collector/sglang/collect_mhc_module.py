@@ -8,11 +8,11 @@
 # capable image or put a matching SGLang source tree on PYTHONPATH.
 from __future__ import annotations
 
-# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # Each architecture is additionally gated by _ARCHITECTURE_COMPAT
 # (DeepSeek-V4 on 0.5.21 via the native DeepseekV4Config).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import argparse
@@ -38,15 +38,16 @@ try:
     from registry_types import PerfFile
     from version_resolver import _check_compat
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import get_common_mhc_test_cases
     from registry_types import PerfFile
     from version_resolver import _check_compat
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
+from collector.op_plans import plan_cases
 
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
 PERF_FILENAME = PerfFile.MHC_MODULE.value
@@ -58,8 +59,8 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # MhcRuntimeNotAuditedError (a classified failure) instead of running.
 _ARCHITECTURE_COMPAT = {
     DSV4_ARCHITECTURE: "sglang==0.5.21",
-    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
-    # (main at c540ff90a (before #649)). 0.5.21 moved MHCState to layer_boundary, removed
+    # GLM-5.3-Flash (0.5.20 only) retired its route is git history
+    # (main at c540ff90a). 0.5.21 moved MHCState to layer_boundary, removed
     # ParallelState/init_torch_distributed and fuses post+pre for T<=16, so the
     # GLM path needs a port before it is re-admitted.
 }
@@ -156,43 +157,7 @@ def _default_num_tokens(model_path: str) -> list[int]:
 
 
 def get_mhc_module_test_cases() -> list[dict]:
-    """Return one task per model/op; each worker sweeps all num_tokens internally.
-
-    Loading the one-layer runner is expensive, so we pay it once per op
-    and model instead of per (op, model, num_tokens) combo.
-    """
-    cases: list[dict] = []
-    # Architecture is part of the invocation identity: DeepSeek-V4-Flash and
-    # GLM-5.3-Flash share (hidden_size, hc_mult) but run different call sites.
-    seen: set[tuple[str, str, int, int]] = set()
-    glm5next_profiles: dict[tuple[int, int], str] = {}
-    for case in get_common_mhc_test_cases():
-        key = (case.architecture, case.phase, case.hidden_size, case.hc_mult)
-        if key in seen:
-            continue
-        seen.add(key)
-        if case.architecture == GLM5NEXT_ARCHITECTURE:
-            # GLM call sites are a framework-dispatch fact (audit above), not
-            # the generator's pre/post phase pair.
-            glm5next_profiles.setdefault((case.hidden_size, case.hc_mult), case.model_name)
-            continue
-        model_id = case.model_name.replace("/", "_")
-        cases.append(
-            {
-                "id": f"mhc_{case.phase}_hs{case.hidden_size}_hcm{case.hc_mult}_{model_id}",
-                "params": [case.phase, case.model_name],
-            }
-        )
-    for (hidden_size, hc_mult), model_path in glm5next_profiles.items():
-        model_id = model_path.replace("/", "_")
-        for op in GLM5NEXT_SGLANG_OPS:
-            cases.append(
-                {
-                    "id": f"mhc_glm5next_{op}_hs{hidden_size}_hcm{hc_mult}_{model_id}",
-                    "params": [op, model_path, GLM5NEXT_ARCHITECTURE],
-                }
-            )
-    return cases
+    return plan_cases("mhc_module", "sglang", get_sm_version())
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:

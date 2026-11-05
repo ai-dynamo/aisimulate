@@ -112,12 +112,16 @@ python3 collector/collect.py \
 ```
 
 It does not mean the raw backend-registry Cartesian run with no model-case
-flags. Preserve the pruning invariants documented in
-[`collector-v2-population-design.md`](data-format.md).
+flags. Preserve the identity and deduplication invariants in
+[the data format](data-format.md).
+
+For GEMM, the `plans` block of that output gives the retained count per dtype
+and each region left out with its reason.
 
 For each operation, record raw and retained task counts, physical-key counts,
-model/artifact coverage, dtype counts, and SM exception counts. Quant-sensitive
-artifacts remain separate when the checkpoint changes the executed kernel.
+model/artifact coverage, dtype counts, and the regions `--plan-only` lists under
+`removed` and `removed_runs`. Quant-sensitive artifacts remain separate when the
+checkpoint changes the executed kernel.
 Verify that every required model emits at least one executable case; a
 successful empty plan is a failure.
 
@@ -143,6 +147,12 @@ framework would repack its weights into Marlin merely because the timed module
 itself has a BF16 key.
 
 ## 5. Progress from smoke to full collection
+
+Collect only the families whose kernels changed under the new pin, and declare
+reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every deviation note (a comment at the
+collector code that deviates) that covers a bumped family, by a source check or
+a targeted run of its cases: keep it when it still holds, delete it when it
+does not.
 
 For each operation, use deterministic smoke coverage rather than relying only
 on a few random cases. Cover representative and boundary combinations of:

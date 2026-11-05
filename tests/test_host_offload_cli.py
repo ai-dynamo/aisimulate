@@ -464,6 +464,51 @@ def test_kvcr_requires_per_rank_host_offload_and_no_g3(cache, message) -> None:
         KvCachePredictionConfig.model_validate(cache)
 
 
+@pytest.mark.parametrize(
+    ("cache", "message"),
+    [
+        (
+            {"host_offload": {"num_host_blocks": 8, "scope": "cluster_shared", "connector": "simple_cpu_v0_32"}},
+            "connector other than offloading_v0_24 requires scope dp_rank_local",
+        ),
+        (
+            {
+                "host_offload": {"num_host_blocks": 8, "connector": "offloading_v0_32"},
+                "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
+            },
+            "g3_offload requires host_offload.connector=offloading_v0_24",
+        ),
+        (
+            {"host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"}, "kvcr": {}},
+            "kvcr requires host_offload.connector=offloading_v0_24",
+        ),
+    ],
+)
+def test_host_offload_connector_needs_a_private_pool_without_g3_or_kvcr(cache, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        KvCachePredictionConfig.model_validate(cache)
+
+
+def test_host_offload_connector_reaches_the_native_rank() -> None:
+    engine = _prediction_engine()
+    cache = engine["workers"]["aggregated"]["kv_cache"]
+    cache["bytes_per_token"] = 131_072
+    cache["host_offload"] = {"num_host_blocks": 4096, "connector": "offloading_v0_32"}
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    rank = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+    assert rank["native_host_offload"]["connector"] == "offloading_v0_32"
+
+
+def test_host_offload_connector_rejects_disaggregated_workers() -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["kv_transfer"] = {"bytes_per_token": 131_072}
+    engine["workers"]["prefill"]["kv_cache"].update(
+        bytes_per_token=131_072, host_offload={**_host_offload(), "connector": "simple_cpu_v0_32"}
+    )
+    with pytest.raises(ValidationError, match="connector other than offloading_v0_24 is supported only"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
 def test_kvcr_defaults_and_overrides() -> None:
     cache = {"host_offload": {"num_host_blocks": 8}, "kvcr": {}}
     assert KvCachePredictionConfig.model_validate(cache).kvcr.model_dump() == _kvcr_defaults()

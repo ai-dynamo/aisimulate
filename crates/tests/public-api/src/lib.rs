@@ -11,7 +11,7 @@ use aisimulate_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
-    FpmQueryCoverage, KvCacheEstimateRequest,
+    FpmQueryCoverage, FpmSeedTargetNormalization, FpmSeedTargetRow, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -83,6 +83,17 @@ pub fn profile_model(
 /// Coverage is owned by the model returned by the one construction API.
 pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
     model.fpm_query_coverage()
+}
+
+/// Preparation reports and their rows must be nameable by external Rust callers.
+pub fn fpm_seed_targets(
+    model: &ForwardPassPerfModel,
+) -> Result<FpmSeedTargetNormalization, AicError> {
+    model.fpm_seed_target_normalization()
+}
+
+pub fn fpm_seed_rows(report: &FpmSeedTargetNormalization) -> &[FpmSeedTargetRow] {
+    &report.rows
 }
 
 pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
