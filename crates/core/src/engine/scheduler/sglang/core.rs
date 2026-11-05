@@ -86,6 +86,8 @@ pub(crate) struct SglangCore {
     destination_holds: DestinationHolds<ReservedSglangDecode>,
     active_destination_handoffs: ActiveHandoffRequests,
     capacity_generation: u64,
+    /// A failed pass awaits DMA releasing KV; new commands and capacity changes retry it.
+    host_capacity_blocked: bool,
     #[cfg(test)]
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
@@ -296,6 +298,7 @@ impl SglangCore {
             destination_holds: DestinationHolds::default(),
             active_destination_handoffs: ActiveHandoffRequests::default(),
             capacity_generation: 0,
+            host_capacity_blocked: false,
             prefill_rounds_remaining: 0,
             group_pass_prepared: false,
             prefill_in_pass: false,
@@ -678,6 +681,7 @@ impl SglangCore {
         request.debug_assert_invariants(self.config.block_size);
         let uuid = request.uuid;
         self.active_request_ids.insert(uuid);
+        self.host_capacity_blocked = false;
         match (&mut self.frontend, &mut self.host) {
             (Some(frontend), _) => {
                 let now_ms = now_ms.unwrap_or_else(|| frontend.now_ms());
@@ -703,6 +707,7 @@ impl SglangCore {
             .as_mut()
             .expect("frontend pools require the host loop");
         for (request, ready_ms) in frontend.advance(now_ms) {
+            self.host_capacity_blocked = false;
             self.lifecycle_events
                 .push(SchedulerLifecycleEvent::TtftMilestone {
                     request_id: request.uuid,
@@ -896,6 +901,7 @@ impl SglangCore {
         let Some(mut request) = request else {
             return false;
         };
+        self.host_capacity_blocked = false;
         self.active_request_ids.remove(&request_id);
         if let Some(host) = &mut self.host {
             // A chunk continuation waits in the queue while its producer still owns KV.
@@ -969,7 +975,10 @@ impl SglangCore {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        !self.scheduler_is_drained() || self.kv_manager.has_prepared_host_stores()
+        let waiting_for_host =
+            self.host_capacity_blocked && self.kv_manager.host_deadline_ms().is_some();
+        (!waiting_for_host && !self.scheduler_is_drained())
+            || self.kv_manager.has_prepared_host_stores()
     }
 
     pub(crate) fn is_drained(&self) -> bool {
@@ -1110,6 +1119,7 @@ impl SglangCore {
 
     fn bump_capacity_generation(&mut self) {
         self.batch_is_full = false;
+        self.host_capacity_blocked = false;
         self.capacity_generation = self
             .capacity_generation
             .checked_add(1)
@@ -1274,6 +1284,7 @@ impl SglangCore {
             self.batch_is_full = false;
             self.bump_capacity_generation();
         }
+        let capacity_generation_before = self.capacity_generation;
         let grouped = std::mem::take(&mut self.group_pass_prepared);
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
@@ -1544,6 +1555,10 @@ impl SglangCore {
         }
         self.model_work_in_pass = self.prefill_in_pass
             || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
+        // A failed reservation launches no forward, but terminal bookkeeping still needs observation.
+        let forward = forward
+            && (!decode.output_signals.is_empty()
+                || decode.decode.as_ref().is_none_or(|shape| shape.charged));
         if !stalled.is_empty() {
             // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
             stalled.append(&mut self.running);
@@ -1797,6 +1812,22 @@ impl SglangCore {
                     verify_width: self.config.speculative_max_tokens.unwrap_or(1),
                 }),
         };
+        self.host_capacity_blocked = !self.model_work_in_pass
+            && !defer_prefill
+            && admissions.is_empty()
+            && output_signals.is_empty()
+            && decode.pressure_events.is_empty()
+            && self.lifecycle_events.is_empty()
+            && self.new_token_ratio == new_token_ratio_before
+            && self.capacity_generation == capacity_generation_before
+            && self.host.as_ref().is_none_or(HostLoop::is_idle)
+            && launch
+                .as_ref()
+                .is_none_or(|launch| launch.forward.is_none())
+            && self
+                .kv_manager
+                .host_deadline_ms()
+                .is_some_and(|deadline| deadline > now_ms);
         let result = EnginePassResult {
             committed_requests,
             // The forward's end is set when it is priced; `now_ms` holds its place.

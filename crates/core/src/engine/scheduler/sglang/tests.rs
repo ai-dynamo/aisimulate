@@ -257,6 +257,28 @@ mod hicache_tests {
     }
 
     #[test]
+    fn hicache_cancelling_a_blocked_fifo_head_retries_without_waiting_for_dma() {
+        let mut core = core(1.0);
+        core.receive(direct_request((0..40).collect(), 1));
+        assert_eq!(core.execute_pass_internal(None, 0.0).end_ms, 1.0);
+        let deadline = core.next_internal_deadline_ms().unwrap();
+        let blocked = core.receive(direct_request((100..120).collect(), 1));
+        let fits = core.receive(direct_request((200..204).collect(), 1));
+        let idle = core.execute_pass_internal(None, 2.0);
+        assert_eq!(idle.end_ms, 2.0);
+        assert!(idle.admissions.is_empty());
+        assert!(!core.is_ready());
+        core.apply_command(SchedulerCommand::CancelRequest {
+            request_id: blocked,
+        })
+        .unwrap();
+        assert!(core.is_ready());
+        let admitted = core.execute_pass_internal(None, 2.0);
+        assert_eq!(admitted.admissions[0].uuid, fits);
+        assert!(admitted.end_ms < deadline);
+    }
+
+    #[test]
     fn hicache_cancelled_chunk_keeps_its_producer_pages_until_observation() {
         let mut core = core_with_policy(
             100.0,

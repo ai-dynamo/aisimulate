@@ -905,6 +905,43 @@ fn bounded_adversarial_replays_drain_with_exact_outputs() {
     }
 }
 
+#[test]
+fn hicache_backup_pressure_waits_for_completion() {
+    for overlap in [false, true] {
+        for decode_stall in [false, true] {
+            let mut rank = sglang_rank(if decode_stall { 10 } else { 9 });
+            rank.sglang.host_loop = overlap;
+            rank.kv_cache_bytes_per_token = Some(1024);
+            rank.sglang.hicache = Some(SglangHiCacheConfig {
+                d2h_bandwidth_gbps: 0.0,
+                h2d_bandwidth_gbps: 0.0,
+                latency_to_first_byte_ms: if decode_stall { 1000.0 } else { 3.0 },
+                ..SglangHiCacheConfig::new(32)
+            });
+            let (report, _) = run_deterministic(agg_with(
+                rank,
+                vec![
+                    request("backup", 0.0, prompt(1000, 384), 1),
+                    request(
+                        "blocked",
+                        11.0,
+                        prompt(3000, 128),
+                        if decode_stall { 256 } else { 1 },
+                    ),
+                ],
+            ));
+            assert_all_completed(&report);
+            let blocked = record(&report, "blocked");
+            if decode_stall {
+                assert_eq!(blocked.first_admit_ms, Some(11.0));
+                assert!(blocked.terminal_time_ms >= 1010.0);
+            } else {
+                assert_eq!(blocked.first_admit_ms, Some(13.0));
+            }
+        }
+    }
+}
+
 /// Run explicitly with --ignored --nocapture. Optional result path makes this usable
 /// with an interleaved wall-clock benchmark runner without adding a production API.
 #[test]
@@ -928,6 +965,7 @@ fn extended_offline_soak_profile() {
             SglangHiCacheWritePolicy::WriteBack,
         ] {
             for overlap in [false, true] {
+                eprintln!("soak seed={seed} policy={policy:?} overlap={overlap} count={count}");
                 let (report, _) = run(adversarial_spec(seed, count, policy, overlap));
                 assert_all_completed(&report);
                 assert_eq!(report.request_counts.completed_requests, count);
