@@ -22,9 +22,9 @@ adding prefill and decode GPU memory together does not establish that either fit
 The completed examples used eight B200 GPUs on one host: four disjoint GPUs per
 role, TP4/EP4, one attention data-parallel group. The two backends ran separately
 with different models. These are useful starting configurations, not a backend
-performance comparison or a qualification of another topology. The
-[completion evidence](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md)
-records the retained results and their limits.
+performance comparison or a qualification of another topology. Apply the
+[completion and native-label checks](native-pd-troubleshooting.md) to your own
+run and keep prediction accuracy and Replay qualification separate.
 
 | Identity | vLLM | SGLang |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ revisions. Inspect the chosen image's worker help before translating the flags
 below. The SGLang image tag is not its installed Dynamo version.
 
 For the pinned SGLang producer, first materialize and verify the
-[native prefill-counter correction](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/README.md#materialize-and-verify).
+[native prefill-counter correction](../../../scripts/fpm_self_service/native_patches/README.md#materialize-and-verify).
 Mount the corrected module into **both** workers and verify the imported file's
 path and hash there. Keep its provenance and license with the capture. The image
 digest alone does not identify the corrected producer. A different SGLang version

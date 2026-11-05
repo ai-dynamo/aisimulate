@@ -21,7 +21,7 @@ SGLang derivatives; their attribution is retained in each file. The generated
 module preserves the source attribution and marks the modification.
 [provenance.json](provenance.json) identifies the source, revision and all hashes;
 [the full upstream license](licenses/sglang-e087e662-LICENSE) is included. The
-repository's [canonical notices](../../../../THIRD_PARTY_NOTICES.md) record these
+repository's [canonical notices](../../../THIRD_PARTY_NOTICES.md) record these
 derivatives. The materializer and test orchestration are original code.
 
 ## Materialize and verify
@@ -30,9 +30,9 @@ From the repository root, use a fresh run-owned output path:
 
 ```bash
 FPM_NATIVE_PATCH=/absolute/owned/path/native-sglang-producer
-python3 -B benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/materialize_sglang_patch.py \
+python3 -B scripts/fpm_self_service/native_patches/materialize_sglang_patch.py \
   --output "$FPM_NATIVE_PATCH"
-python3 -B benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/materialize_sglang_patch.py \
+python3 -B scripts/fpm_self_service/native_patches/materialize_sglang_patch.py \
   --verify-dir "$FPM_NATIVE_PATCH"
 ```
 
@@ -61,8 +61,8 @@ review and compatible fix.
 Run the CPU regression and materialization tests from the repository root:
 
 ```bash
-python3 -B benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/test_sglang_native_five_fields.py -v
-python3 -B benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/test_materialize_sglang_patch.py -v
+python3 -B scripts/fpm_self_service/native_patches/test_sglang_native_five_fields.py -v
+python3 -B scripts/fpm_self_service/native_patches/test_materialize_sglang_patch.py -v
 ```
 
 To also check an extracted full source file and verify that unrelated methods
@@ -71,10 +71,9 @@ for the first test command. CPU tests verify logical counter construction and
 pinned bytes; they do not establish GPU timer/batch attribution, publication
 losslessness or prediction accuracy.
 
-The [self-service worker example](../../../../docs/perf-model/fpm-self-service/examples.md#d1-pin-the-aggregated-sglang-runtime)
+The [self-service worker example](../../../docs/perf-model/fpm-self-service/examples.md#d1-pin-the-aggregated-sglang-runtime)
 uses this correction with serial scheduling and disabled mixed scheduling,
-speculation, attention DP and prefill CP. Its
-[aggregate collection summary](../../fpm_sglang_aggregated_native_20261103/self-service-summary.md)
-records the completed run and remaining limits. Qualify cold, cached and chunked
-requests in each new deployment; preserve its own source, timer and worker
-identity with the resulting capture.
+speculation, attention DP and prefill CP. Follow the guide's
+[capture checks](../../../docs/perf-model/fpm-self-service/e2e-gbdt.md#2-check-and-prepare-the-data)
+and qualify cold, cached and chunked requests in each new deployment. Preserve
+its own source, timer and worker identity with the resulting capture.

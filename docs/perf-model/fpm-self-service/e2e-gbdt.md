@@ -191,13 +191,11 @@ settings, expected worker/role IDs, workload configuration, phase boundaries,
 completion counts, logs and file hashes. Identify smoke/pilot exclusions and any
 other traffic sharing the workers.
 
-**Completed SGLang example.** A native aggregated run used DeepSeek-V4-Flash-0731
-on four B200 GPUs with TP4/EP4, FP8 KV and an 8192-token prefill chunk. One hour
-at concurrency 15 completed 1,039 measured requests without errors or
-cancellations. It captured pure-prefill and pure-decode observations, with no
-mixed-row coverage. Use your own workload and load settings; the
-[deployment example](examples.md#example-d-collect-native-fpm-from-an-aggregated-worker)
-is optional background.
+**SGLang configuration example.** The tested
+[aggregated recipe](examples.md#example-d-collect-native-fpm-from-an-aggregated-worker)
+uses DeepSeek-V4-Flash-0731 on four B200 GPUs with TP4/EP4, FP8 KV and an
+8192-token prefill chunk. It covers pure-prefill and pure-decode work, with no
+mixed-row coverage. Use your own workload and load settings.
 
 ## 2. Check and prepare the data
 

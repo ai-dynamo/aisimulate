@@ -238,7 +238,7 @@ Preserve raw files, receipts and logs. These checks do not prove lossless
 publication or accurate prediction. Resolve resource evidence separately; do
 not send native JSONL to `onboard finalize` or the timing-table quality assay.
 For P/D, use the [troubleshooting and completion reference](native-pd-troubleshooting.md)
-and compare the required evidence with the [completed capture summary](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md).
+and retain the [completion record](native-pd-troubleshooting.md#keep-a-reviewable-completion-record).
 Continue to GBDT training in stage 6.
 
 **Self-benchmarking.** First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage or because historical native campaign artifacts are unavailable. For new or continuing collection, [check timing readiness](#check-timing-readiness-before-full-collection) against saved native artifacts for each configuration. Where evidence is missing, prepare a bounded smoke for each phase required by the selected role before a full grid; explicit aggregated and role-less historical requests require both prefill and decode. A completed runtime memory probe does not replace this timing check.

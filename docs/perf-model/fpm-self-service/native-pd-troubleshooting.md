@@ -23,7 +23,7 @@ own workload, cluster tools and artifact names.
 | Client reports prepared data but sends nothing | Verify preparation exits successfully and the first actual requests are sent. A progress counter reaching its total does not prove preparation or worker-pool shutdown completed. Preserve tokenizer, dependency and workload-client identities separately from GPU qualification. |
 | A role has no native rows | Verify native instrumentation, role-specific capture environment, writable mounted paths, expected producer identity and actual traffic. Frontend registration alone does not verify the producer. For SGLang, inspect the native counter correction and resolved scheduling settings. |
 
-The numeric settings above describe the pinned [completed P/D captures](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md).
+The numeric settings above describe the [tested P/D configurations](native-pd-setup.md#tested-identities).
 They are not defaults for another model, runtime or cluster. Retain each failed
 attempt, diagnose the cause and record any configuration change before retrying.
 
@@ -52,12 +52,19 @@ work and decode after an idle interval. These cases can expose counter/timer
 errors that a short uncached request misses. The reference campaign's accepted
 smoke does not independently qualify label alignment for every such case.
 
-Preserve native durations in seconds and their producer conventions. A host-side
-vLLM arrival interval and a completed SGLang device-timer report are different
-labels; neither should be replaced with client token gaps. The
-[evidence summary](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md#measurement-and-training-boundaries)
-records the pinned conventions. Keep vLLM decode-admission rows in the decode
-capture even when they contain prefill work; report any trainer exclusions.
+Preserve native durations in seconds and their producer conventions. In the
+pinned runtimes, vLLM normally measures host time between busy output-update
+arrivals; after initialization or an empty output, the next busy row uses its
+matching schedule timestamp. SGLang reports completed CUDA timer intervals with
+overlap disabled. These labels have different boundaries and neither measures
+end-to-end request latency. Do not replace them with client token gaps.
+
+vLLM decode context counts prior computed tokens; SGLang ordinary decode lengths
+include the current token. Preserve backend identity instead of applying a shared
+one-token correction. Serving role also differs from batch class: keep vLLM
+decode-admission and mixed rows under their original decode identity and report
+trainer exclusions. The tested SGLang recipe supplies pure-prefill and pure-decode
+observations only; it establishes no mixed-work coverage.
 
 ## Drain, close and account for the capture
 
@@ -84,8 +91,10 @@ The reference plan used a 128 MiB segment threshold and retained 64 segments per
 role. Size retention for **your** volume and preserve files before pruning. All
 retained files being readable proves storage integrity, not that every produced
 measurement reached the sink. Nonconsecutive native counters alone also do not
-prove loss. End-to-end losslessness needs producer/relay/writer accounting and
-verified drain behavior; those were not established by the completed campaign.
+prove loss, and continuous counters do not rule out events discarded before
+counter assignment. Publisher losslessness remains unproven for these recipes;
+it needs producer/relay/writer accounting and verified drain behavior in addition
+to valid files and completed requests.
 
 ### Keep a reviewable completion record
 

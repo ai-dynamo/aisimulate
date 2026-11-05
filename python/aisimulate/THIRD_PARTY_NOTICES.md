@@ -18,15 +18,15 @@ to `python/aisimulate/` in the repository source tree.
 The following repository-root files derive from
 `python/sglang/srt/managers/scheduler_components/metrics_reporter.py` in SGLang:
 
-- `benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/sglang-native-five-fields.patch`
-- `benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/fixtures/metrics_reporter_scheduled_method.py.txt`
+- `scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch`
+- `scripts/fpm_self_service/native_patches/fixtures/metrics_reporter_scheduled_method.py.txt`
 
 Upstream: https://github.com/sgl-project/sglang , immutable revision
 `e087e662ba1ac4ef7747537e2a9141085efd4561`. Original source:
 https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py .
 Copyright 2023-2024 SGLang Team; Apache-2.0. The unmodified upstream license is
 retained at
-`benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/licenses/sglang-e087e662-LICENSE`.
+`scripts/fpm_self_service/native_patches/licenses/sglang-e087e662-LICENSE`.
 The pinned repository has no separate NOTICE on this source's ancestor paths.
 
 Modification status: the patch changes scheduled-prefill accounting to use

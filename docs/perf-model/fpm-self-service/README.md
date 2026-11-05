@@ -352,9 +352,8 @@ coverage. Review resource evidence separately. This route does not invoke
 `onboard validate-collection`, `onboard import-observations` or `onboard finalize`
 on native JSONL. Follow [collection](e2e-gbdt.md#smoke-then-run-your-workload) and
 [data preparation](e2e-gbdt.md#2-check-and-prepare-the-data). For P/D, consult the
-[troubleshooting and completion checks](native-pd-troubleshooting.md), with
-[completed-run evidence](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md)
-as an example of what to retain.
+[troubleshooting and completion checks](native-pd-troubleshooting.md) and retain
+a [reviewable completion record](native-pd-troubleshooting.md#keep-a-reviewable-completion-record).
 
 Self-benchmark details: [smoke/readiness](implementation.md#check-timing-readiness-before-full-collection),
 [pair installation](implementation.md#validate-and-install-the-fpm-profile),

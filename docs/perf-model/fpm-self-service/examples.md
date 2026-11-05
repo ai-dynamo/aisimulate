@@ -756,9 +756,9 @@ on every relevant serving worker. A frontend or HTTP trace alone does not
 contain the engine measurements needed for training.
 
 For deployment details, use the optional [P/D setup reference](native-pd-setup.md)
-and [troubleshooting and completion checks](native-pd-troubleshooting.md). The
-[completed capture summary](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/self-service-summary.md)
-records the tested configuration, request completion and export checks.
+and [troubleshooting and completion checks](native-pd-troubleshooting.md). Retain
+the [completion record](native-pd-troubleshooting.md#keep-a-reviewable-completion-record)
+for your configuration, request outcomes and exports.
 
 Set these values in each worker's environment, substituting its role and a
 persistent path:
@@ -813,11 +813,11 @@ GBDT training and Replay steps. It accepts completed captures without cluster
 access and does not depend on a particular launcher or registry.
 
 The SGLang recipe below was used for a completed aggregated AgentX collection.
-Its [recorded result and qualification limits](../../../benchmarks/evidence/fpm_sglang_aggregated_native_20261103/self-service-summary.md)
-are retained as evidence. It supplies a concrete native worker configuration;
-you can use another model, workload or cluster after checking its own producer,
-resources and timing conventions. Historical hook-based timings must retain
-their original identity and cannot be relabeled as native capture.
+It supplies a concrete native worker configuration; use your own workload client
+and deployment tools, applying the [acceptance checks below](#d2-smoke-collect-and-hand-off).
+Another model, workload or cluster needs its own producer, resource and timing
+checks. Historical hook-based timings must retain their original identity and
+cannot be relabeled as native capture.
 
 ### D1. Pin the aggregated SGLang runtime
 
@@ -835,12 +835,12 @@ their original identity and cannot be relabeled as native capture.
 Acquire the image and model snapshot with your deployment's tools. Verify the
 weights, tokenizer and official encoder, and use fresh writable caches. This
 pinned producer requires the attributed
-[native counter correction](../../../benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/README.md).
+[native counter correction](../../../scripts/fpm_self_service/native_patches/README.md).
 From the repository root, materialize it on CPU:
 
 ```bash
 FPM_NATIVE_PATCH=/absolute/owned/path/native-sglang-producer
-python3 -B benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/materialize_sglang_patch.py \
+python3 -B scripts/fpm_self_service/native_patches/materialize_sglang_patch.py \
   --output "$FPM_NATIVE_PATCH"
 ```
 

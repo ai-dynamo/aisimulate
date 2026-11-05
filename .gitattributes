@@ -8,4 +8,4 @@ python/aisimulate/src/aisimulate_core/model_configs/*_hf_quant_config.json lingu
 # Preserve the byte-identical Plotly distribution, including upstream whitespace.
 pages/fpm-accuracy/assets/plotly.min.js -whitespace linguist-vendored=true
 # Preserve byte-addressed unified-patch context, including blank context lines.
-benchmarks/evidence/fpm_pr280_agentx_native_20261031/native-patches/sglang-native-five-fields.patch -whitespace
+scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch -whitespace
