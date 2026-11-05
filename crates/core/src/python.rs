@@ -5409,11 +5409,15 @@ mod tests {
         .unwrap();
         for backend in ["vllm", "sglang"] {
             for disagg in [false, true] {
-                let rank = serde_json::json!({
+                let mut rank = serde_json::json!({
                     "backend": backend, "block_size": 4, "num_gpu_blocks": 64,
                     "aic_nextn": 3, "aic_nextn_accept_rates": "1,0.78,0",
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
                 });
+                if backend == "sglang" {
+                    // Keep this toy pool below the production decode reservation.
+                    rank["sglang"] = serde_json::json!({"num_reserved_decode_tokens": 0});
+                }
                 let (topology, engine) = if disagg {
                     (
                         serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
@@ -5590,10 +5594,14 @@ mod tests {
             // Exercise all three importers through the actual native P/D
             // entrypoint. Standard Dynamo remains a non-agentic workload.
             for backend in ["vllm", "sglang"] {
-                let rank = serde_json::json!({
+                let mut rank = serde_json::json!({
                     "backend": backend, "block_size": 4, "num_gpu_blocks": 16,
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
                 });
+                if backend == "sglang" {
+                    // Keep this toy pool below the production decode reservation.
+                    rank["sglang"] = serde_json::json!({"num_reserved_decode_tokens": 0});
+                }
                 let mut payload = serde_json::json!({
                     "spec": {
                         "version": 1,

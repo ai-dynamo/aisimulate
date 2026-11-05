@@ -31,7 +31,8 @@ def _engine(mode: str = "aggregated") -> dict:
         "context_length": 1024,
         "workers": {
             role: {
-                "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                # Include room for SGLang's default 512-token P/D decode reserve.
+                "kv_cache": {"capacity": {"type": "fixed", "blocks": 1024}},
                 "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
             }
             for role in (["aggregated"] if mode == "aggregated" else ["prefill", "decode"])
@@ -255,13 +256,23 @@ def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, 
     assert report.metrics["completed_requests"] == 2
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
-@pytest.mark.parametrize("prefill_limit,completed", [(32, 0), (33, 1)])
+@pytest.mark.parametrize(
+    "backend,prefill_limit,completed",
+    [
+        ("vllm", 32, 0),
+        ("vllm", 33, 1),
+        # SGLang reserves one request token and five input safety tokens.
+        ("sglang", 37, 0),
+        ("sglang", 38, 1),
+        ("trtllm", 32, 0),
+        ("trtllm", 33, 1),
+    ],
+)
 def test_disaggregated_prefill_context_requires_room_for_first_token(backend, prefill_limit, completed):
     engine = _engine("disaggregated")
     engine["backend"] = backend
     engine["workers"]["prefill"]["context_length"] = prefill_limit
-    engine["workers"]["decode"]["context_length"] = 36
+    engine["workers"]["decode"]["context_length"] = 64
     report = _run(
         {
             "engine": engine,
