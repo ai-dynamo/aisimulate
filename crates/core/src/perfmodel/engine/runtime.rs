@@ -434,33 +434,28 @@ pub(crate) struct RankPricing {
     /// The least-confident empirical tier the rank's lookups fired, noted
     /// again whenever the memo answers in their place.
     provenance: ProvenanceTier,
-    /// What a caller derives from this pricing, kept with it so that a memo
-    /// hit returns it too ([`Self::derived`]).
+    /// What a caller derives from this pricing ([`Self::derived`]).
     derived: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl RankPricing {
     /// The `T` that `build` derives from this pricing, built on first use and
-    /// kept with the pricing, so that every rank the memo answers with this
-    /// entry reuses it. `build` may depend only on the pricing and on what
-    /// its memo key determines. A pricing that already keeps another type
-    /// builds `T` on every call.
-    pub(crate) fn derived<T, E>(
+    /// kept with it, so that every rank the memo answers with this entry
+    /// reuses it. `build` may depend only on the pricing and on what its memo
+    /// key determines. A pricing keeps one derived type.
+    pub(crate) fn derived<T: Send + Sync + 'static, E>(
         &self,
-        build: impl Fn(&Self) -> Result<T, E>,
-    ) -> Result<std::borrow::Cow<'_, T>, E>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
+        build: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<&T, E> {
         if self.derived.get().is_none() {
             // A concurrent first use keeps one of the equal values.
             let _ = self.derived.set(Box::new(build(self)?));
         }
-        match self.derived.get().and_then(|kept| kept.downcast_ref::<T>()) {
-            Some(value) => Ok(std::borrow::Cow::Borrowed(value)),
-            // Another type is kept: build `T` for this call alone.
-            None => build(self).map(std::borrow::Cow::Owned),
-        }
+        Ok(self
+            .derived
+            .get()
+            .and_then(|kept| kept.downcast_ref())
+            .expect("a rank pricing keeps one derived type"))
     }
 }
 
@@ -5459,7 +5454,6 @@ pub(crate) mod tests {
 
     #[test]
     fn rank_pricing_keeps_what_a_caller_derives_from_it() {
-        use std::borrow::Cow;
         let rank = RankPricing {
             latency_ms: 2.0,
             operations: None,
@@ -5473,26 +5467,10 @@ pub(crate) mod tests {
             Ok(vec![rank.latency_ms])
         };
         // A failed build keeps nothing.
-        assert!(
-            rank.derived(|_| Err::<Vec<f64>, _>("no".to_string()))
-                .is_err()
-        );
+        assert!(rank.derived(|_| Err::<Vec<f64>, _>("no")).is_err());
         let first = rank.derived(build).unwrap();
-        let again = rank.derived(build).unwrap();
-        assert!(matches!(
-            (&first, &again),
-            (Cow::Borrowed(_), Cow::Borrowed(_))
-        ));
-        assert!(std::ptr::eq(first.as_ref(), again.as_ref()));
-        assert_eq!((first.as_ref(), builds.get()), (&vec![2.0], 1));
-        // Another type is built for each call and leaves the kept value.
-        let other = rank.derived(|_| Ok::<_, String>(7_u32)).unwrap();
-        assert!(matches!(other, Cow::Owned(7)));
-        assert!(std::ptr::eq(
-            rank.derived(build).unwrap().as_ref(),
-            first.as_ref()
-        ));
-        assert_eq!(builds.get(), 1);
+        assert!(std::ptr::eq(rank.derived(build).unwrap(), first));
+        assert_eq!((first, builds.get()), (&vec![2.0], 1));
     }
 
     #[test]

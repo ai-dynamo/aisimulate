@@ -1817,8 +1817,7 @@ impl AicTimingModel {
             let Some(kind) = IterationKind::of(query) else {
                 continue;
             };
-            // The memo keys the pricing by this query and the detail that
-            // `capture` selects.
+            // The memo keys `rank` by this query and the detail `capture` selects.
             let parts = rank.derived(|rank| -> Result<RankEvidence> {
                 if capture {
                     self.rank_diagnostics_parts(pricing, index, kind, query, rank)
@@ -9551,67 +9550,49 @@ mod tests {
     }
 
     #[test]
-    fn rank_memo_hits_return_the_evidence_built_with_the_rank() {
+    fn rank_memo_entries_keep_their_rank_evidence() {
         pyo3::prepare_freethreaded_python();
-        let Some(mut timing) = packaged_op_level_timing(
-            "rank_memo_hits_return_the_evidence_built_with_the_rank",
-            true,
-        ) else {
+        let Some(mut timing) =
+            packaged_op_level_timing("rank_memo_entries_keep_their_rank_evidence", true)
+        else {
             return;
         };
         let model = Arc::clone(&timing.iteration.as_ref().unwrap().model);
-        let decode = |dp_rank| decode_work(dp_rank, 8, 8 * 1025, 1 << 20);
+        let ranks = [
+            prefill_work(0, 1, 512, 0),
+            decode_work(1, 8, 8 * 1025, 1 << 20),
+        ];
         let mut kept = Vec::new();
-        for capture in [false, true] {
+        for (capture, detail) in [(false, RankDetail::Values), (true, RankDetail::Diagnostics)] {
             timing.diagnostic_model = capture.then(|| Arc::clone(&model));
-            let timing = &timing;
             let pricing = timing.iteration.as_ref().unwrap();
             let IterationQuery::Native(dispatch) = pricing.query else {
                 panic!("a packaged operation graph prices natively");
             };
-            let evidence = |ranks: &[RankWork]| {
-                let queries: Vec<_> = ranks
-                    .iter()
-                    .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
-                    .collect();
-                timing
-                    .price_iteration(pricing, &queries, ranks, capture)
+            let queries: Vec<_> = ranks
+                .iter()
+                .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
+                .collect();
+            let evidence = timing
+                .price_iteration(pricing, &queries, &ranks, capture)
+                .unwrap()
+                .evidence;
+            // One part per pure rank, in rank order; each rank's memo entry
+            // keeps the part its pricing recorded.
+            assert_eq!(evidence.len(), ranks.len());
+            for (query, (phase, _)) in queries.iter().zip(&evidence) {
+                let entry = model
+                    .estimate_native_iteration(&[AicTimingModel::rank_metrics(query)], detail)
                     .unwrap()
-                    .evidence
-            };
-            // Two iterations whose decode rank does the same work at another
-            // DP rank: one part per pure rank, in rank order.
-            let first = evidence(&[prefill_work(0, 1, 512, 0), decode(1)]);
-            let second = evidence(&[decode(0), prefill_work(1, 2, 256, 64)]);
-            assert_eq!(
-                (first.len(), first[1].1, second.len(), second[0].1),
-                (2, false, 2, false)
-            );
-            assert!(
-                Arc::ptr_eq(&first[1].0, &second[0].0),
-                "the memo hit returns the decode rank's evidence"
-            );
-            assert!(!Arc::ptr_eq(&first[0].0, &second[1].0));
-            // The decode rank's memo entry keeps that evidence.
-            let detail = if capture {
-                RankDetail::Diagnostics
-            } else {
-                RankDetail::Values
-            };
-            let query = AicTimingModel::rank_query(dispatch, &decode(0))
-                .unwrap()
-                .unwrap();
-            let entry = model
-                .estimate_native_iteration(&[AicTimingModel::rank_metrics(&query)], detail)
-                .unwrap()
-                .unwrap();
-            let parts = entry.ranks[0]
-                .derived(|_| -> Result<RankEvidence> { bail!("the entry keeps no evidence") })
-                .unwrap();
-            assert!(Arc::ptr_eq(&parts[0].0, &first[1].0));
-            kept.push(Arc::clone(&first[1].0));
+                    .unwrap();
+                let parts = entry.ranks[0]
+                    .derived(|_| -> Result<RankEvidence> { bail!("the entry keeps no evidence") })
+                    .unwrap();
+                assert!(Arc::ptr_eq(&parts[0].0, phase));
+            }
+            kept.push(Arc::clone(&evidence[0].0));
         }
-        // Diagnostics are kept with their own memo entries.
+        // Values and diagnostics are kept on separate entries.
         assert!(!Arc::ptr_eq(&kept[0], &kept[1]));
     }
 
