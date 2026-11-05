@@ -206,9 +206,12 @@ def load_collector_side(files) -> dict:
     return {"kernels": sorted(kernels), "error": next((e for e in errors if e), None), "cmd": cmds, "env": envs or None}
 
 
-def serving_records(repo: str, framework: str, version: str, sm: str, kv_dtype: str | None) -> list[dict]:
+def serving_records(
+    repo: str, framework: str, version: str, sm: str, kv_dtype: str | None, isl: int | None = None
+) -> list[dict]:
     """The probe records of every campaign in the workspace for (repo, framework, version)
-    on this SM with a clean outcome, the kv class matching, newest first."""
+    on this SM with a clean outcome, the kv class (and prompt length, when asked) matching,
+    newest first."""
     out = []
     for path in sorted((probe_driver.ROOT / "campaigns").glob("*/records.jsonl")):
         for r in map(json.loads, path.open()):
@@ -220,6 +223,7 @@ def serving_records(repo: str, framework: str, version: str, sm: str, kv_dtype: 
                 and rt.get("sm") == sm
                 and (r.get("outcome") or {}).get("status") == "ok"
                 and (kv_dtype is None or _kv_equiv(rt.get("kv_cache_dtype"), kv_dtype))
+                and (isl is None or rt.get("isl") == isl)
             ):
                 out.append({**r, "campaign": path.parent.name})
     # no kv asked: the RENDERED configuration is the serving truth, a kv-variant record never
@@ -257,13 +261,14 @@ def diff(
     gate_name: str | None = None,
     target_roles: tuple | None = None,
     phase: str | None = None,
+    isl: int | None = None,
 ) -> int:
     cap = load_collector_side(capture_files)
     col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k)) and not _is_launcher(n)})
     col_backends, col_unmatched = probe_driver.label_kernels(col_kernels, sm)
-    candidates = serving_records(repo, framework, version, sm, kv_dtype)
+    candidates = serving_records(repo, framework, version, sm, kv_dtype, isl)
     if not candidates:
-        _hint = f" kv={kv_dtype}" if kv_dtype else ""
+        _hint = (f" kv={kv_dtype}" if kv_dtype else "") + (f" isl={isl}" if isl else "")
         print(f"[no-serving-record] {repo} {framework}-{version} {sm}{_hint} — probe that config first")
         return 2
     serving = candidates[0]
@@ -333,6 +338,7 @@ def main() -> int:
     ap.add_argument("--op-hint", default=None, help="regex over serving op labels/kernels to scope the comparison")
     ap.add_argument("--target-roles", required=True, help="comma list of taxonomy roles the capture must prove")
     ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"])
+    ap.add_argument("--isl", type=int, default=None, help="only serving records probed at this prompt length")
     ap.add_argument("--save", default=None, help="write the verdict json here")
     args = ap.parse_args()
     return diff(
@@ -347,6 +353,7 @@ def main() -> int:
         None,
         tuple(args.target_roles.split(",")),
         args.phase,
+        args.isl,
     )
 
 

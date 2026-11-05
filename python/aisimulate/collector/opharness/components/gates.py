@@ -173,6 +173,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
             gate_name=g["gate"],
             target_roles=roles,
             phase=phase,
+            isl=g.get("isl"),
         )
         verdicts[g["gate"]] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
     return verdicts

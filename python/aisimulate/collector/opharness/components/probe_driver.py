@@ -255,10 +255,17 @@ def derive_roster_checkpoints(fam: dict, targets: dict, only: list[str] | None =
     return out
 
 
-def _run_id(ck: dict, variant: str, backend: str, version: str, tp: int, kv, system: str) -> str:
-    """Run id = sha1 of the case identity, the system included (the same case on two
-    systems is two runs)."""
+DEFAULT_ISL = 4096  # the probes' prompt length unless a campaign asks for another
+
+
+def _run_id(
+    ck: dict, variant: str, backend: str, version: str, tp: int, kv, system: str, isl: int = DEFAULT_ISL
+) -> str:
+    """Run id = sha1 of the case identity, the system and prompt length included (the same
+    case on two systems, or at two lengths, is two runs)."""
     key = f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{tp}|kv{kv or 'rendered'}|{system}"
+    if isl != DEFAULT_ISL:
+        key += f"|isl{isl}"
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -397,8 +404,15 @@ def select_dummy_dir(
 
 
 def enumerate_runs(
-    targets: dict, system: str, full: bool, backends: list[str], only: list[str] | None = None
+    targets: dict,
+    system: str,
+    full: bool,
+    backends: list[str],
+    only: list[str] | None = None,
+    isl: int = DEFAULT_ISL,
 ) -> list[dict]:
+    """The runs of a campaign for one system. ``isl`` is the probes' prompt length: shape-
+    conditional paths (DSA prefill below 256 query tokens) are visible only at their length."""
     sm = system_sm(system)
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
     # topology_policy.tp_required: checkpoints whose representative probe must run at a
@@ -464,7 +478,7 @@ def enumerate_runs(
                             for kv in kv_variants.get(backend, [None]):
                                 runs.append(
                                     {
-                                        "id": _run_id(ck, variant, backend, version, topo["tp"], kv, system),
+                                        "id": _run_id(ck, variant, backend, version, topo["tp"], kv, system, isl),
                                         "family": fam_name,
                                         "repo": ck["repo"],
                                         "profile": ck["profile"],
@@ -476,6 +490,7 @@ def enumerate_runs(
                                         "image": be["images"][version],
                                         "tp": topo["tp"],
                                         "kv_dtype": kv,
+                                        "isl": isl,
                                         "model_dir": f"{WORK}/{vdir.relative_to(ROOT)}",
                                         "aic_registered": ck.get("aic_registered", False),
                                         "cli_extra_args": (
@@ -516,6 +531,13 @@ def _prepare_probe(run: dict, cdir: Path) -> tuple[str, list[str], dict] | None:
         run["skip"] = f"golden render failed: {run.get('golden_error')}"
         return None
     run["golden_dir"] = str(art)
+    probe = _probe_argv(run, art, cdir, raw)
+    if probe is not None:
+        probe[1].extend(["--isl", str(run.get("isl", DEFAULT_ISL))])
+    return probe
+
+
+def _probe_argv(run: dict, art: Path, cdir: Path, raw: str) -> tuple[str, list[str], dict] | None:
     tp = int(run.get("tp", 1))
     script = probe_script(run)
     if run["backend"] == "sglang":
@@ -1278,6 +1300,7 @@ def main() -> None:
     ap.add_argument("--backends", default="sglang", help="comma list: sglang,vllm,trtllm")
     ap.add_argument("--only", default=None, help="comma list of repo substrings — only matching checkpoints")
     ap.add_argument("--full", action="store_true", help="all variants and topologies (default: representative tp1)")
+    ap.add_argument("--isl", type=int, default=DEFAULT_ISL, help="the probes' prompt length (a gate may need another)")
     ap.add_argument("--plan", action="store_true", help="print the runs")
     ap.add_argument("--emit-shards", action="store_true", help="render, bundle and upload; write shard plans")
     ap.add_argument("--url-base", default=None, help="WebDAV directory the probe.serving shards fetch from")
@@ -1308,7 +1331,7 @@ def main() -> None:
         ap.error("--plan and --emit-shards need --system")
     pats = [p.strip() for p in (args.only or "").split(",") if p.strip()]
     # --only scopes the roster derivation too: a single checkpoint needs only its own fetched config
-    runs = enumerate_runs(targets, args.system, args.full, args.backends.split(","), pats or None)
+    runs = enumerate_runs(targets, args.system, args.full, args.backends.split(","), pats or None, args.isl)
     if pats:
         runs = [r for r in runs if any(p in (r.get("repo") or "") for p in pats)]
     if args.plan:

@@ -6,8 +6,9 @@
 # backend's `hint` regex. A gate whose select matches no planned case on an SM is not a gate
 # there (the plan decides). `no_serving` names SMs where serving cannot run the model at all
 # (a probe-box fact, not a plan fact); `also` traces further planned cases into the same
-# verdict; `env` is a capture-only switch the collector reads; `serving_raw` grades against
-# a dedicated probe raw. The version graded is the manifest's framework default.
+# verdict; `env` is a capture-only switch the collector reads; `isl` grades against a serving
+# record probed at that prompt length (probe_driver.py --isl). The version graded is the
+# manifest's framework default.
 hints:
   vllm: {GEMM: gemm|linear|proj|nvjet|gemvx|cublas|deepgemm|scaled_mm|quant|cutlass, MOE: moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing, MLA: mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant,
     GDN: gdn|delta|conv1d|linear|mamba|gated|recurrent, DSV4: dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant, ATTN: attn|attention|flash|fwd|unified,
@@ -206,7 +207,7 @@ gates:
   op: dsa_context_module
   select: {model_path: deepseek-ai/DeepSeek-V3.2, seq_len: 512, batch_size: 1, num_heads: 128, kv_cache_dtype: fp8, compute_dtype: bfloat16, gemm_type: fp8_block,
     prefix_len: 0}
-  serving_raw: facts/reprobe_nopc/04cea4da0eff_isl512.json
+  isl: 512
   no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2

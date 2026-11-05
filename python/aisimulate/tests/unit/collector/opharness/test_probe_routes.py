@@ -141,6 +141,18 @@ def test_import_files_only_this_emit_and_records_label_by_the_raw_sm(pd, tmp_pat
     }
 
 
+def test_a_campaign_prompt_length_reaches_every_probe_and_the_run_id(pd):
+    cdir = pd.campaign_dir("c")
+    run = dict(_run(pd, "sglang", 2), isl=512)
+    pd.emit_shards([run], cdir, "http://share/c", upload=False)
+    spec = json.loads((cdir / "bundles" / "sglang_tp2.json").read_text())
+    assert spec["args"][-2:] == ["--isl", "512"]
+    ck = {"repo": "org/m", "profile": "fp8"}
+    assert pd._run_id(ck, "v", "vllm", "1", 1, None, "h200_sxm", 512) != pd._run_id(
+        ck, "v", "vllm", "1", 1, None, "h200_sxm"
+    )
+
+
 def test_reemitting_a_campaign_starts_it_over(pd, tmp_path):
     cdir = pd.campaign_dir("c")
     pd.emit_shards([_run(pd, "vllm")], cdir, "http://share/c", upload=False)

@@ -7,6 +7,7 @@ inside a role stays red, and serving evidence is selected by PHASE.
 """
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -171,3 +172,25 @@ def test_a_span_only_kernel_is_kept_but_leaves_the_selection_unscoped():
     }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is False
+
+
+def test_serving_records_match_the_sm_kv_class_and_prompt_length(tmp_path, monkeypatch):
+    """A gate graded on SM100 never reads an SM90 record; kv auto and bf16 are one class; a gate
+    that names a prompt length reads only records probed at it; the newest import wins."""
+    monkeypatch.setattr(path_diff.probe_driver, "ROOT", tmp_path)
+
+    def rec(rid, sm, kv="auto", isl=4096, at=0.0):
+        rt = {"backend": "vllm", "version": "1", "sm": sm, "kv_cache_dtype": kv, "isl": isl}
+        return {"id": rid, "target": {"repo": "org/m"}, "runtime": rt, "outcome": {"status": "ok"}, "imported_at": at}
+
+    for name, recs in {
+        "h200": [rec("a", "sm90"), rec("b", "sm90", isl=512)],
+        "b200": [rec("c", "sm100", at=1.0), rec("d", "sm100", at=2.0), rec("e", "sm100", kv="fp8")],
+    }.items():
+        (tmp_path / "campaigns" / name).mkdir(parents=True)
+        (tmp_path / "campaigns" / name / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    ids = lambda *a, **k: [r["id"] for r in path_diff.serving_records("org/m", "vllm", "1", *a, **k)]
+    assert ids("sm100", "bfloat16") == ["d", "c"]
+    assert ids("sm100", "fp8") == ["e"]
+    assert ids("sm90", "auto", 512) == ["b"]
+    assert ids("sm103", "auto") == []
