@@ -1995,6 +1995,11 @@ impl TraceCollector {
         ))
     }
 
+    /// Maximum reuse across admissions, retained even without detailed capture.
+    pub(crate) fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.requests.get(&uuid).map(|stats| stats.reused_input_tokens)
+    }
+
     pub(crate) fn first_admission_input(&self, uuid: Uuid) -> Option<usize> {
         self.requests
             .get(&uuid)

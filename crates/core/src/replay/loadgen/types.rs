@@ -516,6 +516,11 @@ impl ReplayRequestHashes {
             return Self::from_tokens(&tokens, engine_block_size);
         }
 
+        // No complete engine block means no hashes and, importantly, no
+        // scratch allocation for a potentially enormous configured block.
+        if input_length < block_size {
+            return Self::from_local_block_hashes(Vec::new());
+        }
         let mut block = vec![0_u32; block_size];
         // Consecutive engine blocks inside one trace block are identical.
         let mut previous_run: Option<(u32, u64)> = None;
@@ -540,7 +545,8 @@ impl ReplayRequestHashes {
                 let mut position = start;
                 while position < end {
                     let trace_block = position / trace_block_size;
-                    let run_end = ((trace_block + 1) * trace_block_size).min(end);
+                    let run_end = position
+                        + (trace_block_size - position % trace_block_size).min(end - position);
                     block[position - start..run_end - start].fill(hash_ids[trace_block]);
                     position = run_end;
                 }
@@ -588,6 +594,26 @@ pub struct ReadyTurn {
     pub request: DirectRequest,
 }
 
+/// Storage for immutable deferred trace identities. Retained storage never
+/// copies the owner's hash array while it crosses placement queues.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum ReplayHashIds {
+    Owned(Vec<u32>),
+    Leased(Arc<dyn super::steppable::CompactHashIdsLease>),
+}
+
+impl std::ops::Deref for ReplayHashIds {
+    type Target = [u32];
+
+    fn deref(&self) -> &[u32] {
+        match self {
+            Self::Owned(ids) => ids,
+            Self::Leased(owner) => owner.hash_ids(),
+        }
+    }
+}
+
 /// A request whose prompt may still be represented by one hash id per trace
 /// block. Offline replay keeps this compact form while an aggregated or
 /// prefill router queues the request and materializes tokens only when a
@@ -599,7 +625,7 @@ pub enum ReplayRequestPayload {
     Deferred {
         request_metadata: DirectRequest,
         input_length: usize,
-        hash_ids: Vec<u32>,
+        hash_ids: ReplayHashIds,
         trace_block_size: usize,
     },
 }
@@ -619,7 +645,7 @@ impl ReplayRequestPayload {
         Self::Deferred {
             request_metadata,
             input_length,
-            hash_ids,
+            hash_ids: ReplayHashIds::Owned(hash_ids),
             trace_block_size,
         }
     }

@@ -35,7 +35,10 @@
 //! batch composition must submit its known same-timestamp arrivals before it
 //! advances the steppable runtime.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use super::types::{ReplayHashIds, ReplayRequestPayload};
 
 use uuid::Uuid;
 
@@ -46,6 +49,74 @@ use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::protocol::DirectRequest;
 use crate::replay::{ReplayReport, ReplayTerminalStatus, SlaThresholds, WorkerStage};
+
+/// Safe owner of an immutable compact prompt hash array.
+///
+/// `hash_ids` must return the same identities throughout this owner's lifetime.
+/// The replay retains an accepted owner until terminal, cancellation, or replay
+/// destruction, even after worker admission has materialized its tokens. Hooks
+/// must not panic or reenter the replay. Rejection never calls `on_accepted`.
+pub trait CompactHashIdsLease: std::fmt::Debug + Send + Sync {
+    fn hash_ids(&self) -> &[u32];
+
+    fn on_accepted(&self) {}
+}
+
+/// A complete logical prompt represented by one identity per trace block.
+/// Metadata is the current native request, with an empty `tokens` field; exact
+/// output plans (including an explicitly empty plan) and all routing/provenance
+/// fields pass unchanged through the existing deferred admission path.
+#[derive(Debug)]
+pub struct CompactDirectRequest {
+    payload: ReplayRequestPayload,
+}
+
+impl CompactDirectRequest {
+    pub fn new(
+        request_metadata: DirectRequest,
+        input_length: usize,
+        hash_ids: Vec<u32>,
+        trace_block_size: usize,
+    ) -> anyhow::Result<Self> {
+        Self::from_storage(request_metadata, input_length, ReplayHashIds::Owned(hash_ids), trace_block_size)
+    }
+
+    pub fn from_hash_ids_lease(
+        request_metadata: DirectRequest,
+        input_length: usize,
+        hash_ids: Arc<dyn CompactHashIdsLease>,
+        trace_block_size: usize,
+    ) -> anyhow::Result<Self> {
+        Self::from_storage(request_metadata, input_length, ReplayHashIds::Leased(hash_ids), trace_block_size)
+    }
+
+    fn from_storage(
+        request_metadata: DirectRequest,
+        input_length: usize,
+        hash_ids: ReplayHashIds,
+        trace_block_size: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(request_metadata.tokens.is_empty(), "compact request metadata must not contain tokens");
+        super::trace::validate_synthesizable_prompt(input_length, &hash_ids, trace_block_size)?;
+        anyhow::ensure!(hash_ids.len() == input_length.div_ceil(trace_block_size), "compact request requires exactly one hash id per logical trace block");
+        Ok(Self {
+            payload: ReplayRequestPayload::Deferred {
+                request_metadata,
+                input_length,
+                hash_ids,
+                trace_block_size,
+            },
+        })
+    }
+
+    fn into_parts(self) -> (ReplayRequestPayload, Option<Arc<dyn CompactHashIdsLease>>) {
+        let owner = match &self.payload {
+            ReplayRequestPayload::Deferred { hash_ids: ReplayHashIds::Leased(owner), .. } => Some(Arc::clone(owner)),
+            _ => None,
+        };
+        (self.payload, owner)
+    }
+}
 
 /// One per-request event produced by a [`SteppableReplay`] step.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +190,12 @@ pub trait SteppableReplay {
     /// epoch. A successful [`Self::take_report`] permits reuse in the next epoch.
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid>;
 
+    /// Submit without expanding prompt tokens before server admission. Custom
+    /// implementations are unsupported unless they explicitly implement this.
+    fn submit_compact(&mut self, _request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        anyhow::bail!("this steppable replay does not support compact submission")
+    }
+
     /// Cancel one live request. Returns its terminal event when cancellation
     /// won the race; already-terminal or unknown requests return `None`.
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>>;
@@ -159,6 +236,12 @@ pub trait SteppableReplay {
     /// First scheduler admission `(at_ms, reused_input_tokens)` for `uuid`.
     fn request_admission(&self, uuid: Uuid) -> Option<(f64, usize)>;
 
+    /// Maximum reuse observed across admissions, not the first-admission value.
+    /// Available for live requests without enabling per-request capture.
+    fn request_reused_input_tokens(&self, _uuid: Uuid) -> Option<usize> {
+        None
+    }
+
     /// Output tokens actually emitted for `uuid`.
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize>;
 
@@ -186,16 +269,16 @@ fn steppable_mode() -> ReplayMode {
 /// Tracks submitted requests until a terminal event removes them.
 #[derive(Default)]
 struct LiveRequests {
-    uuids: HashSet<Uuid>,
+    uuids: HashMap<Uuid, Option<Arc<dyn CompactHashIdsLease>>>,
 }
 
 impl LiveRequests {
     fn insert(&mut self, uuid: Uuid) {
-        self.uuids.insert(uuid);
+        self.uuids.insert(uuid, None);
     }
 
     fn contains(&self, uuid: Uuid) -> bool {
-        self.uuids.contains(&uuid)
+        self.uuids.contains_key(&uuid)
     }
 
     fn len(&self) -> usize {
@@ -268,6 +351,20 @@ impl SteppableReplay for SteppableAgg {
         Ok(uuid)
     }
 
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        let (payload, owner) = request.into_parts();
+        if let Some(uuid) = payload.metadata().uuid {
+            anyhow::ensure!(!self.live.contains(uuid), "steppable replay request {uuid} is already live");
+            anyhow::ensure!(!self.runtime.collector().contains_request(uuid), "steppable replay request {uuid} is already retained");
+        }
+        let uuid = self.runtime.submit_dynamic_payload(payload)?;
+        self.live.uuids.insert(uuid, owner);
+        if let Some(Some(owner)) = self.live.uuids.get(&uuid) {
+            owner.on_accepted();
+        }
+        Ok(uuid)
+    }
+
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
         let status = self.runtime.cancel_dynamic(uuid)?;
         if status.is_some() {
@@ -320,6 +417,10 @@ impl SteppableReplay for SteppableAgg {
         self.runtime.collector().request_admission(uuid)
     }
 
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.runtime.collector().request_reused_input_tokens(uuid)
+    }
+
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
         self.runtime.collector().actual_output_length(uuid)
     }
@@ -355,6 +456,10 @@ impl SteppableReplay for SteppableEngine {
 
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
         self.inner.submit(request)
+    }
+
+    fn submit_compact(&mut self, request: CompactDirectRequest) -> anyhow::Result<Uuid> {
+        self.inner.submit_compact(request)
     }
 
     fn cancel(&mut self, uuid: Uuid) -> anyhow::Result<Option<EngineEvent>> {
@@ -393,6 +498,10 @@ impl SteppableReplay for SteppableEngine {
         self.inner.request_admission(uuid)
     }
 
+    fn request_reused_input_tokens(&self, uuid: Uuid) -> Option<usize> {
+        self.inner.request_reused_input_tokens(uuid)
+    }
+
     fn actual_output_length(&self, uuid: Uuid) -> Option<usize> {
         self.inner.actual_output_length(uuid)
     }
@@ -414,6 +523,73 @@ mod tests {
             arrival_timestamp_ms: Some(0.0),
             ..Default::default()
         }
+    }
+
+    #[derive(Debug)]
+    struct TestLease {
+        ids: Vec<u32>,
+        accepted: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CompactHashIdsLease for TestLease {
+        fn hash_ids(&self) -> &[u32] {
+            &self.ids
+        }
+
+        fn on_accepted(&self) {
+            self.accepted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn compact_geometry_is_checked_without_block_sized_scratch() {
+        assert!(CompactDirectRequest::new(DirectRequest::default(), 1, vec![7], 0).is_err());
+        assert!(CompactDirectRequest::new(DirectRequest::default(), 9, vec![7], 8).is_err());
+        assert!(CompactDirectRequest::new(DirectRequest::default(), 1, vec![7, 8], 8).is_err());
+        assert!(CompactDirectRequest::new(request(1, 1, 1), 1, vec![7], 8).is_err());
+        let compact = CompactDirectRequest::new(DirectRequest::default(), 1, vec![7], usize::MAX).unwrap();
+        assert_eq!(compact.payload.prompt_tokens(), vec![7]);
+        assert_eq!(compact.payload.replay_hashes(u32::MAX).local_block_hashes, Vec::<u64>::new());
+        let empty = CompactDirectRequest::new(DirectRequest::default(), 0, vec![], 8).unwrap();
+        assert!(empty.payload.prompt_tokens().is_empty());
+    }
+
+    #[test]
+    fn compact_lease_is_retained_until_terminal_cancel_or_destruction() {
+        for mode in 0..3 {
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let owner = Arc::new(TestLease { ids: vec![7, 7, 9], accepted: Arc::clone(&accepted) });
+            let weak = Arc::downgrade(&owner);
+            let metadata = DirectRequest { uuid: Some(Uuid::from_u128(700)), max_output_tokens: 3, output_token_ids: Some(vec![42, 43, 44]), ..Default::default() };
+            let compact = CompactDirectRequest::from_hash_ids_lease(metadata, 17, owner, 8).unwrap();
+            let mut engine = SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new()).unwrap();
+            let uuid = engine.submit_compact(compact).unwrap();
+            assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(weak.upgrade().is_some());
+            engine.step_until(0.0).unwrap();
+            assert!(weak.upgrade().is_some(), "materialization is not a lease terminal");
+            match mode {
+                0 => { let events = drain(&mut engine); assert_eq!(events.iter().filter_map(|event| event.token_id).collect::<Vec<_>>(), vec![42, 43, 44]); }
+                1 => { engine.cancel(uuid).unwrap(); }
+                _ => drop(engine),
+            }
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn rejected_compact_submission_does_not_accept_or_retain_lease() {
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner = Arc::new(TestLease { ids: vec![7], accepted: Arc::clone(&accepted) });
+        let weak = Arc::downgrade(&owner);
+        let mut metadata = request(701, 0, 1);
+        metadata.preferred_dp_rank = Some(1);
+        let compact = CompactDirectRequest::from_hash_ids_lease(metadata, 8, owner, 8).unwrap();
+        let mut engine = SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new()).unwrap();
+        assert!(engine.submit_compact(compact).is_err());
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(engine.in_flight(), 0);
     }
 
     fn drain(engine: &mut dyn SteppableReplay) -> Vec<EngineEvent> {

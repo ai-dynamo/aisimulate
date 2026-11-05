@@ -3504,9 +3504,13 @@ where
     /// Admit `request` at the current simulated time. The returned id
     /// correlates the request with later measurements.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        self.submit_dynamic_payload(ReplayRequestPayload::materialized(request))
+    }
+
+    pub(crate) fn submit_dynamic_payload(&mut self, request: ReplayRequestPayload) -> anyhow::Result<Uuid> {
         let arrival_time_ms = self.now_ms;
         let uuid = self.assign_request(
-            ReplayRequestPayload::materialized(request),
+            request,
             arrival_time_ms,
             Metadata::from_hashes(None),
             None,
