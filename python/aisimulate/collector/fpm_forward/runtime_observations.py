@@ -22,6 +22,7 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
+from .model_capability import kimi_k31_native_attention_backend
 from .planner import BackendPolicy, FPMCell
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
@@ -336,10 +337,43 @@ def _validate_record(
         if "cudagraph_capture_sizes" in graph_settings:
             graph_settings.setdefault("max_cudagraph_capture_size", max(graph_settings["cudagraph_capture_sizes"]))
         runtime_memory.validate_requested_graph(record, config, graph_settings)
-    requested_backend = launch["precision"].get("attention_backend", "auto")
-    if requested_backend not in (None, "auto") and record.get("attention_backend") != requested_backend:
-        raise ValueError("runtime observation lacks the selected attention backend evidence")
+    _validate_attention_backend(record, launch, config)
     return config
+
+
+def _validate_attention_backend(record: dict, launch: dict, config: dict) -> None:
+    """Bind public policy to observed native names without changing row identity."""
+    requested = launch["precision"].get("attention_backend", "auto")
+    if requested in (None, "auto"):
+        return
+    architectures = config.get("model_config", {}).get("architectures")
+    architecture = architectures[0] if isinstance(architectures, list) and len(architectures) == 1 else None
+    native = kimi_k31_native_attention_backend(architecture, requested)
+    if native is None:
+        if record.get("attention_backend") != requested:
+            raise ValueError("runtime observation lacks the selected attention backend evidence")
+        return
+    attention = config.get("attention_config", {})
+    if attention.get("backend") != native or attention.get("indexer_kv_dtype") != "fp8":
+        raise ValueError("runtime observation lacks the selected native K3.1 attention configuration")
+    # Schedulers record resolved configuration; only workers own initialized
+    # attention groups. Rank-complete worker evidence is required by the importer.
+    if record.get("kind") == "scheduler":
+        return
+    observed = record.get("attention_backend")
+    names = [observed] if isinstance(observed, str) else observed
+    # The pinned image's get_name() implementations report these auxiliary
+    # KDA/indexer groups alongside DSA; neither is an alternative DSA backend.
+    auxiliary = {"KIMI_K3_KDA", "DEEPSEEK_V32_INDEXER"}
+    if (
+        not isinstance(names, list)
+        or not names
+        or any(not isinstance(name, str) for name in names)
+        or len(names) != len(set(names))
+        or native not in names
+        or set(names) - {native} - auxiliary
+    ):
+        raise ValueError("runtime observation lacks the selected native K3.1 attention backend evidence")
 
 
 def _validate_import_binding(record: dict, expected: dict, bundle: InstrumentationBundle) -> None:
@@ -707,7 +741,9 @@ def _configuration(
             scheduler = schedulers[dp]
             runtime_memory._validate_scheduler_config(worker, scheduler)
             groups, accounting = _physical_views(
-                worker["cache"], scheduler["cache"], runtime_memory._resolved_cache_dtype(worker["resolved_config"])
+                worker["cache"],
+                scheduler["cache"],
+                runtime_memory._resolved_cache_dtype(worker["resolved_config"], cell),
             )
             geometry = [
                 {key: value for key, value in group.items() if key != "pool_id"} for group in worker["cache"]["groups"]

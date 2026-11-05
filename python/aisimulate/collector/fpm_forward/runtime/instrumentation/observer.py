@@ -129,6 +129,17 @@ def _resolved(owner: Any) -> dict:
     for key in ("hf_config_path", "hf_overrides", "config_format"):
         if hasattr(config.model_config, key):
             value["model_config"][key] = _json(getattr(config.model_config, key))
+    hf_config = getattr(config.model_config, "hf_config", None)
+    architectures = getattr(hf_config, "architectures", None)
+    if architectures is not None:
+        value["model_config"]["architectures"] = _json(architectures)
+    attention = getattr(config, "attention_config", None)
+    if attention is not None:
+        value["attention_config"] = {
+            key: legacy._json_value(getattr(attention, key))
+            for key in ("backend", "indexer_kv_dtype")
+            if hasattr(attention, key)
+        }
     return value
 
 

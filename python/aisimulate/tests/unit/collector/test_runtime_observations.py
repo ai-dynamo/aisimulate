@@ -60,6 +60,37 @@ def test_cpu_sidecars_are_archived_without_changing_memory_import(tmp_path):
     assert reference in result["provenance"]["runtime_artifacts"]
 
 
+@pytest.mark.parametrize(
+    "policy, native",
+    [("flashmla", "FLASHMLA_SPARSE"), ("trtllm_mla", "FLASHINFER_MLA_SPARSE")],
+)
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_k31_native_attention_names_match_explicit_policy(policy, native, hybrid):
+    from collector.fpm_forward.runtime_observations import _validate_attention_backend
+
+    # Raw get_name() output from initialized native groups, not public aliases.
+    # This isolates identity validation and does not qualify hybrid cache memory.
+    names = ["KIMI_K3_KDA", "DEEPSEEK_V32_INDEXER", native] if hybrid else native
+    config = {
+        "model_config": {"architectures": ["KimiK31ForConditionalGeneration"]},
+        "attention_config": {"backend": native, "indexer_kv_dtype": "fp8"},
+    }
+    launch = {"precision": {"attention_backend": policy}}
+    _validate_attention_backend({"kind": "worker", "attention_backend": names}, launch, config)
+    _validate_attention_backend({"kind": "scheduler"}, launch, config)
+    for invalid in (None, policy, ["KIMI_K3_KDA"], [native, "FLASH_ATTN"], [native, native], [native, {}]):
+        with pytest.raises(ValueError, match="native K3.1 attention backend"):
+            _validate_attention_backend({"kind": "worker", "attention_backend": invalid}, launch, config)
+    for key, value in (("backend", "FLASH_ATTN"), ("indexer_kv_dtype", "mxfp4")):
+        bad = copy.deepcopy(config)
+        bad["attention_config"][key] = value
+        with pytest.raises(ValueError, match="native K3.1 attention configuration"):
+            _validate_attention_backend({"kind": "scheduler"}, launch, bad)
+    config["model_config"]["architectures"] = ["KimiK3ForConditionalGeneration"]
+    with pytest.raises(ValueError, match="selected attention backend evidence"):
+        _validate_attention_backend({"kind": "worker", "attention_backend": names}, launch, config)
+
+
 def _write(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload))

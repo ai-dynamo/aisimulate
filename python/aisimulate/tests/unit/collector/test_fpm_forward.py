@@ -1207,12 +1207,17 @@ def test_packaged_recurrent_state_configs_get_no_attention_template(
     _assert_native_runtime(capability, reasons, is_moe=is_moe)
 
 
-def test_kimi_k31_nested_dsa_keeps_native_runtime_without_op_data(tmp_path, monkeypatch):
+def _kimi_k31_config(tmp_path):
     # Reuse the repository's K3 fixture and declare only the independent K3.1
     # geometry facts; do not bundle the differently licensed Pro checkpoint.
     config = json.loads((_MODEL_CONFIGS / "moonshotai--Kimi-K3_config.json").read_text())
     config["architectures"] = ["KimiK31ForConditionalGeneration"]
     text = config["text_config"]
+    text["quantization_config"] = {
+        "quant_method": "compressed-tensors",
+        "config_groups": {"experts": {"weights": {"num_bits": 4, "type": "float"}}},
+        "ignore": ["self_attn", r"re:.*routed_expert_(up|down)_proj.*"],
+    }
     text["dsa_config"] = {
         "dsa_layers": list(text["linear_attn_config"]["full_attn_layers"]),
         "index_topk": 2048,
@@ -1221,18 +1226,57 @@ def test_kimi_k31_nested_dsa_keeps_native_runtime_without_op_data(tmp_path, monk
         "index_rope_dim": 0,
         "index_k_norm_type": "layernorm",
         "index_topk_freq": 1,
+        "index_skip_topk_offset": 1,
     }
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
+    return path, text
+
+
+def test_kimi_k31_nested_dsa_keeps_native_runtime_without_op_data(tmp_path, monkeypatch):
+    path, text = _kimi_k31_config(tmp_path)
     _forbid_templates_and_timing_data(monkeypatch)
     capability = _layout_capability(path, native=True, has_model_cases=True)
     _assert_native_runtime(capability, "recurrent-state field linear_attn_config", is_moe=True)
     assert capability.model_config.payload["architectures"] == ["KimiK31ForConditionalGeneration"]
     assert capability.model_config.effective_payload["dsa_config"] == text["dsa_config"]
+    assert capability.dtype.moe_quant_mode == "w4a16_mxfp4"
+    assert capability.dtype.gemm_quant_mode == "bfloat16"
     # An explicit runtime/profile is required even when the model's op cases
     # are registered; its hybrid state is never represented by an MLA table.
     with pytest.raises(ValueError, match="--fpm-model-profile or --fpm-backend-version"):
         _layout_capability(path, native=False, has_model_cases=True)
+
+
+@pytest.mark.parametrize("backend,native", [("flashmla", "FLASHMLA_SPARSE"), ("trtllm_mla", "FLASHINFER_MLA_SPARSE")])
+def test_kimi_k31_fpm_attention_policy_pins_native_backend_and_row_identity(tmp_path, backend, native):
+    path, _ = _kimi_k31_config(tmp_path)
+    kwargs = dict(
+        backend="vllm",
+        model_path=str(path.parent),
+        model_config_path=str(path),
+        system="b200_sxm",
+        selected_ops=set(),
+        has_model_cases=False,
+        generator_overrides={},
+        collector_config={"aic_database_version": "0.1.dev24216+g266e88c05"},
+    )
+    with pytest.raises(ValueError, match="requires --fpm-attention-backend"):
+        build_collection_plan(**kwargs, options=FPMCollectionOptions.from_args(_args(fpm_kv_cache_dtypes=["fp8"])))
+    plan = build_collection_plan(
+        **kwargs,
+        options=FPMCollectionOptions.from_args(_args(fpm_kv_cache_dtypes=["fp8"], fpm_attention_backend=backend)),
+    )
+    for cell in plan.cells:
+        policy = cell.backend_policy
+        assert backend_identity_columns(policy)["attention_backend"] == backend
+        args = policy.generator_overrides["params"]["agg"]["extra_cli_args"]
+        assert args[0] == "--attention-config"
+        assert json.loads(args[1]) == {"backend": native, "indexer_kv_dtype": "fp8"}
+        assert policy.expected_markers == {
+            "config.engine_args.attention_config.backend": f"AttentionBackendEnum.{native}",
+            "config.engine_args.attention_config.indexer_kv_dtype": "fp8",
+        }
 
 
 _ENTRY_ERROR = "layer_types entries must be nonempty strings"

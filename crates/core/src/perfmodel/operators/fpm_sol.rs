@@ -74,7 +74,7 @@ use crate::operators::{
 };
 use crate::perf_database::PerfDatabase;
 use crate::perf_database::dsa::{
-    dsa_context_sol_flops, dsa_context_sol_ms, dsa_dims, dsa_generation_sol_flops,
+    dsa_context_sol_flops, dsa_context_sol_ms, dsa_dims_for_backend, dsa_generation_sol_flops,
     dsa_generation_sol_ms,
 };
 
@@ -395,6 +395,8 @@ fn dsa_context_module_sol(
     s: f64,
     p: f64,
 ) -> Result<f64, AicError> {
+    op.validate_kimi_geometry()?;
+    op.validate_kimi_backend()?;
     if op.cp_size > 1 {
         return Err(AicError::SolNotImplemented(format!(
             "forward_model='fpm' SOL roofline has no Rust implementation for DSA context \
@@ -403,7 +405,7 @@ fn dsa_context_module_sol(
         )));
     }
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
     let flops = dsa_context_sol_flops(spec, op.gemm_quant_mode, op.fmha_quant_mode)?;
     let (b, s, p) = (
         b.round().max(1.0) as i64,
@@ -477,8 +479,10 @@ fn dsa_generation_module_sol(
     b: f64,
     s: f64,
 ) -> Result<f64, AicError> {
+    op.validate_kimi_geometry()?;
+    op.validate_kimi_backend()?;
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.generation_table_backend());
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
     // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
     // heads over this rank's KV stripe, sparse attention over the rank's
@@ -746,6 +750,8 @@ fn moe_dispatch_sol(op: &MoEDispatchOp, spec: &SystemSpec, x: f64) -> Result<f64
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    use crate::perf_database::dsa::dsa_dims;
 
     use crate::common::enums::{
         CommQuantMode, FmhaQuantMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode,
@@ -1334,6 +1340,73 @@ mod tests {
             "GlmMoeDsaForCausalLM",
             2048,
         )
+    }
+
+    #[test]
+    fn kimi_k31_fpm_sol_uses_the_selected_cache_layout() {
+        let d = db();
+        let mut prefill = Vec::new();
+        // TP8, one decode request with 4096 cached tokens: weights plus
+        // FP8 index history and 2048 selected latent entries. FlashMLA's
+        // entries are 656 bytes, TRTLLM's 576 bytes, a 163840-byte delta.
+        for (backend, expected_decode_ms) in
+            [("trtllm_mla", 0.098001920), ("flashmla", 0.098165760)]
+        {
+            let mut op = DsaModuleOp::new(
+                "attention",
+                12,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                "KimiK31ForConditionalGeneration",
+                2048,
+            );
+            op.attention_backend = Some(backend.into());
+            approx(
+                op_sol_latency_ms(&Op::DsaGeneration(op.clone()), &d, 1.0, 1.0, 4096.0, 0.0)
+                    .unwrap(),
+                expected_decode_ms / 7.7,
+            );
+            prefill
+                .push(op_sol_latency_ms(&Op::DsaContext(op), &d, 64.0, 1.0, 64.0, 4096.0).unwrap());
+        }
+        assert!(
+            prefill[1] > prefill[0],
+            "prefill must retain the FlashMLA cache footprint"
+        );
+    }
+
+    #[test]
+    fn kimi_k31_fpm_sol_rejects_unqualified_backends_and_geometry() {
+        let d = db();
+        for (backend, kv, cp, dcp, fraction) in [
+            (None, KvCacheQuantMode::Fp8, 1, 1, 1.0),
+            (Some("unknown"), KvCacheQuantMode::Bfloat16, 1, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Int8, 1, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 2, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 1, 2, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 1, 1, 0.5),
+        ] {
+            let mut op = DsaModuleOp::new(
+                "attention",
+                12,
+                kv,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                "KimiK31ForConditionalGeneration",
+                2048,
+            );
+            op.attention_backend = backend.map(str::to_owned);
+            op.cp_size = cp;
+            op.dcp_size = dcp;
+            op.full_frac = fraction;
+            for op in [Op::DsaContext(op.clone()), Op::DsaGeneration(op)] {
+                assert!(matches!(
+                    op_sol_latency_ms(&op, &d, 1.0, 1.0, 4096.0, 0.0),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+        }
     }
 
     #[test]

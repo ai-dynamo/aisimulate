@@ -28,6 +28,14 @@ the original model graph, including the KDA byte model and its fractional
 prefill coordinates. Exact measured hits retain their recorded latency. This
 does not establish support for visual inputs or KDA speculative verification.
 
+FP8 collection requires `--fpm-attention-backend=flashmla` or `trtllm_mla`.
+For the K3.1 vLLM runtime these request `FLASHMLA_SPARSE` and
+`FLASHINFER_MLA_SPARSE`, respectively, with FP8 indexer keys. The model-facing
+name stays in the measured cell identity; resolved runtime configuration must
+attest the native enum. SOL transfer uses that same explicit selection for the
+656-byte or 576-byte latent cache layout. An `auto` label cannot establish
+which layout was executed.
+
 Every decode point must report native `real_kv` seeding. A balanced MoE router
 or synthetic KV allocation does not establish the request's recurrent state.
 Cached prefill likewise requires `real_prefix` seeding. These checks retain the
@@ -36,6 +44,18 @@ numerical correctness. A compatible serving image, successful native-state
 smoke, measured graph behavior, matching timing/memory artifacts and independent
 accuracy validation are still required for each deployment. No K3 measurements
 are relabelled as K3.1-Pro data.
+
+The collector policies and evidence checks are preliminary integration work.
+They do not provide a qualified K3.1 instrumentation manifest: the current
+source-bound memory adapters cover older vLLM builds and still reject unknown
+hybrid KDA/DSA cache representations. A pinned native image, an adapter checked
+against that image, real checkpoint state, complete rank evidence and measured
+rows remain necessary before publishing a K3.1 FPM profile. MXFP4 weight
+configuration alone cannot attest W4A16 execution: the native MoE backend may
+quantize activations, so its initialized arithmetic must also be observed. For a decoder
+profile using a registered multimodal Kimi wrapper, request `text_only=True`
+explicitly to compile the language graph; omitting it preserves existing
+`method="auto"` selection. Encoder-resident weights are not silently removed.
 
 ## Hybrid FPM/OP deprecation and migration
 

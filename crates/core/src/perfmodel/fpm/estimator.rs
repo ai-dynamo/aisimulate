@@ -595,9 +595,12 @@ pub enum UnrecordedFpmQuantMode {
 
 impl FpmInterpolationConfig {
     pub(crate) fn validate_profile_options(&self) -> Result<(), AicError> {
-        if self.text_only || !self.unrecorded_quant_modes.is_empty() {
+        // A multimodal checkpoint may have an explicit text-only timing
+        // profile. This changes timing scope, not its recorded precision;
+        // the analytical graph still retains resident encoder weights.
+        if !self.unrecorded_quant_modes.is_empty() {
             return Err(super::config::invalid_config(
-                "fpm_profile does not support text_only or unrecorded_quant_modes overrides",
+                "fpm_profile does not support unrecorded_quant_modes overrides",
             ));
         }
         Ok(())

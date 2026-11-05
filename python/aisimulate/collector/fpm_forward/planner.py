@@ -38,6 +38,7 @@ from .config import (
     with_kv_warmup_defaults,
 )
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
+from .model_capability import kimi_k31_native_attention_backend
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
@@ -403,6 +404,7 @@ def _backend_policies(
     collector_config: dict[str, Any],
     *,
     backend: str,
+    architecture: str | None = None,
 ) -> tuple[BackendPolicy, ...]:
     declarations = collector_config.get("backend_variants", {})
     if not isinstance(declarations, dict):
@@ -431,7 +433,7 @@ def _backend_policies(
     # verify: a row claiming a backend the engine never ran is worse than no
     # row. vLLM plumbing exists for moe_backend (--kernel-config) and eplb
     # (--enable-eplb); wide-EP is an SGLang concept; pinning the attention
-    # backend has no verified vLLM plumbing yet.
+    # backend is admitted only for the source-checked K3.1 DSA paths below.
     if specified and backend != "vllm":
         raise ValueError(
             f"explicit FPM backend identity is only plumbed for the vllm backend; got {backend} with "
@@ -439,7 +441,8 @@ def _backend_policies(
         )
     if wideep == "true":
         raise ValueError("enable_wideep=true is not collectable on vllm (wide-EP is SGLang-only)")
-    if attention != "auto":
+    native_attention = kimi_k31_native_attention_backend(architecture, attention)
+    if attention != "auto" and native_attention is None:
         raise ValueError(
             "attention_backend pinning has no verified vllm plumbing yet; collect with auto or add the "
             "engine flag and its resolved-config marker first"
@@ -447,6 +450,11 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    if native_attention is not None:
+        extra_cli_args += ["--attention-config", json.dumps({"backend": native_attention, "indexer_kv_dtype": "fp8"})]
+        # Dynamo's config_dump encoder serializes native enums with str().
+        expected_markers["config.engine_args.attention_config.backend"] = f"AttentionBackendEnum.{native_attention}"
+        expected_markers["config.engine_args.attention_config.indexer_kv_dtype"] = "fp8"
     if options.enforce_eager:
         expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
@@ -817,7 +825,18 @@ def build_collection_plan(
         options=options,
         allow_pure_tp=capability.allow_pure_tp,
     )
-    policies = _backend_policies(options, collector_config, backend=backend)
+    policy_architecture = (
+        "KimiK31ForConditionalGeneration"
+        if capability.model_config.payload.get("architectures") == ["KimiK31ForConditionalGeneration"]
+        else capability.architecture
+    )
+    if (
+        policy_architecture == "KimiK31ForConditionalGeneration"
+        and "fp8" in capability.dtype.kv_cache_dtypes
+        and options.attention_backend == "auto"
+    ):
+        raise ValueError("Kimi K3.1 FP8 FPM requires --fpm-attention-backend=flashmla or trtllm_mla")
+    policies = _backend_policies(options, collector_config, backend=backend, architecture=policy_architecture)
     if profile is not None:
         deployments = _validate_profile_identities(
             profile,
