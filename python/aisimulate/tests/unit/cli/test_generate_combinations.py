@@ -10,7 +10,7 @@ import os
 import pytest
 import yaml
 
-from aiconfigurator.cli.main import main as cli_main
+from aisimulate.legacy_cli.main import main as cli_main
 
 # Test cases: (model_path, expected_min_tp, description)
 # expected_min_tp: None means any valid TP, int means TP must be >= that value

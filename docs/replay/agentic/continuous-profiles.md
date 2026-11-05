@@ -1,0 +1,195 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Continuous agentic profiles
+
+`traffic.load.agentic_profile` keeps seeded agentic lanes occupied until an
+admission deadline. Enable it with positive `agentic_lanes` and
+`agentic_snapshot: {seed: ...}`. The existing finite snapshot replay remains the
+default when this object is absent.
+
+```yaml
+traffic:
+  source: {type: trace, format: weka, paths: [trace.jsonl]}
+  load:
+    type: trace_timestamps
+    agentic_lanes: 4
+    agentic_snapshot: {seed: 42}
+    agentic_warmup: true
+    agentic_profile:
+      duration_seconds: 3600
+      response_grace_seconds: 30
+      cancel_drain_seconds: 10
+      tree_idle_cap_seconds: 300
+      global_idle_cap_seconds: 10
+```
+
+All five values have the defaults shown above, so `agentic_profile: {}` enables
+that configuration. Duration and idle caps must be finite and positive. Response
+and cancellation grace periods may be zero. Values whose millisecond deadlines
+overflow are rejected. Do not combine the profile with
+`traffic.stop.max_virtual_time_seconds` or the native `max_sim_time_ms` limit.
+The same controls are preserved by prediction, recommendation, saved YAML,
+Sweeper workloads, and the native JSON execution boundary.
+
+The built-in engine supports offline vLLM and SGLang with aggregated or separate
+prefill/decode workers and HBM-only KV cache, including speculative decoding
+with explicit acceptance assumptions and a compatible timing model.
+vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
+single aggregated worker or 1P1D, or local G2 on several static aggregated workers, with
+attention DP=1 on every role and speculative decoding disabled.
+Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
+other backends, and Dynamo-owned routing need their own qualified integration.
+
+## Lanes and virtual time
+
+The duration begins at the preparation barrier, or at simulation start when
+warmup is disabled. Once a play and its descendants have reached their client
+terminal states, its lane takes another complete play from a shared sequential
+corpus cursor. The cursor wraps at the end of the corpus. New plays start at
+turn zero with fresh request, conversation, play, and cache identities. Native
+server cleanup from an earlier play may continue after its lane is reused.
+
+Inside a play, requests follow AIPerf's release rules. A request that depends
+on other requests in its play starts from their actual dispatch or completion
+plus the recorded delay, never at its authored source offset, so a server that
+answers faster than the recorded API shortens the play. A turn that joins
+children waits for them and for its own recorded delay after its predecessor.
+The first request of a detected chain, which the trace anchors only with a
+replay barrier, starts when that barrier clears. Only play roots and, after a
+snapshot cut, each stream's next request whose predecessor lies before the cut
+keep a source-clock timer. Finite replay without a profile still waits for
+authored offsets.
+
+Idle guards advance pending workload timers after a tree or the whole client
+workload has no outstanding requests for its configured cap. Requests queued
+for placement and requests between prefill and decode still count as outstanding.
+Pending timers include a blocked request's own delay once its predecessor
+completes, such as a joining turn's delay while its children are pending or a
+turn's think time while its replay barrier is pending. The timer shift moves
+every pending timer by the same amount, preserving relative delays and
+dependencies. It does not move engine completions, KV transfers, or server
+cleanup events. When the earliest shifted timer belongs to a request that is
+still blocked, the guard shifts again at the same time.
+
+At the admission deadline, no new workload request or replacement play is
+issued. Previously submitted requests may complete during the response grace
+period. At its end, remaining client requests are canceled. Cancellation
+acknowledgements have a separate bounded drain period, which ends early once
+client requests are terminal. Already committed engine work retains its actual
+timestamps; the report records any server work still unsettled at client
+completion. The cancellation budget is not a GPU cleanup guarantee.
+The supported offline runtimes acknowledge cancellation synchronously, so their
+client drain ends immediately and `cancel_drain_timed_out` is false even when
+the report records unsettled server work. The configured drain deadline is an
+upper bound, not a minimum run duration.
+
+Telemetry reports `server_unsettled` when client completion leaves committed
+server work. This label alone does not establish a replay failure: inspect
+`client_in_flight_requests`, `cancel_drain_timed_out`, request terminals and
+lifecycle cleanup alongside the profile deadlines. Benchmark qualification can
+accept fully accounted grace-boundary cancellations while retaining this status
+and excluding canceled requests from accuracy scoring. Finite cohorts still
+require complete replay; do not extend the measured window to hide cleanup.
+
+## Results and limits
+
+The `agentic_profile` report contains resolved options, barrier and deadline
+timestamps, play/request counts, the corpus cursor, idle shifts, canceled and
+never-issued requests, and remaining server work. Its timestamps use the
+absolute runtime clock. Warmed per-request records use the existing
+barrier-relative convention described in [agentic warmup](warmup.md).
+
+Successful responses received during grace participate in the measured request
+cohort. The observation interval starts with the earliest arrival among those
+successful requests and ends with the latest successful response. It may differ from
+the configured admission duration. Throughput uses the observed request interval.
+With no successful requests, `observation_duration_ms` is `0` and
+`successful_request_throughput` is `null`. A single successful request uses its
+response time minus its arrival time; throughput is `null` only if that interval
+is zero.
+The report keeps the admission cutoff separately. A configured one-hour run can
+have a request observation interval shorter or longer than one hour.
+
+The default warmup policy repeats saved primer inputs and keeps the original
+snapshot frontier. The opt-in [live trajectory policy](warmup.md#live-trajectory-policy)
+advances the dependency graph during warmup and preserves its surviving frontier.
+Initial sampling retains AISimulate's existing deterministic algorithm unless
+reference cuts and the shared sequential cursor are explicitly imported. This is
+functional qualification of profile control, not complete AgentX parity or
+hardware performance accuracy. Long profiles retain lifecycle evidence and can
+use more host memory than a finite corpus replay. Resource admission still checks
+the initial trace, but does not use its finite size as a peak-memory estimate for
+the full profile. The CLI and guarded recommendation/Sweeper paths admit one
+profiled candidate at a time under live host-memory supervision. Low-level
+runner/native callers remain responsible for resource supervision. A run can stop
+with `resource_limited` if it exhausts the host budget; choosing a duration does
+not reserve enough memory to guarantee completion.
+
+## Reproducible smoke example
+
+From the repository root, first install the current source as described in
+[Use current source](../../getting-started/installation.md#use-current-source):
+
+```bash
+uv sync --project python/aisimulate --extra dev
+```
+
+Then run:
+
+```bash
+python/aisimulate/.venv/bin/aisimulate predict \
+  --config examples/cli/agentic-profile.yaml \
+  --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
+```
+
+The example uses the repository's self-authored two-play trace and fixed timing
+to exercise control flow without downloading a model or dataset. To change the
+duration on the existing CLI, use
+`--set traffic.load.agentic_profile.duration_seconds=3600`.
+
+`--capture-telemetry` additionally preserves preparation requests and lifecycle
+events and samples scheduler/cache/traffic state across the full run. It writes
+three native telemetry JSONL files; `requests.jsonl` and summary metrics remain
+profiling-only. See the [output contract](../../getting-started/understand-results.md#replay-telemetry).
+
+## Behavioral reference
+
+The reference executor is SemiAnalysisAI's AIPerf fork
+[`agentx-harness` at `754356e9a39acc6cc6afb242d123bb57c3fb6f75`](https://github.com/SemiAnalysisAI/agentx-harness/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75),
+licensed [Apache-2.0](https://github.com/SemiAnalysisAI/agentx-harness/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE).
+Its timing modules are `src/aiperf/timing/phase/runner.py`,
+`src/aiperf/timing/strategies/agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py`,
+`src/aiperf/timing/replay_dependencies.py`, and
+`src/aiperf/common/loop_scheduler.py`; request observation duration is
+defined in `src/aiperf/metrics/types/benchmark_duration_metric.py`.
+InferenceX [`4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80`](https://github.com/SemiAnalysisAI/InferenceX/tree/4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80)
+pins that executor under `utils/aiperf` and supplies the AgentX recipe in
+`benchmarks/benchmark_lib.sh` and `benchmarks/runtime_settings.sh`.
+The AISimulate implementation uses its native dependency graph and virtual event
+loop; the tests and example workload are locally authored. Source and attribution evidence is retained in the
+[replay evidence record](../../../benchmarks/evidence/accuracy/replay-evidence.md).
+
+Known release differences:
+
+- Upstream AIPerf releases on PyPI (0.12.0 and 0.13.0) resume a turn blocked
+  on a join as soon as its children complete, without the turn's own recorded
+  delay. AISimulate follows the pinned fork, which waits for both. Compare
+  against a live run only with the matching executor.
+- The Weka import keeps recorded gaps that the fork drops. A joining turn also
+  waits its recorded gap after each child ends. A subagent's start offset is
+  measured from its parent request's recorded end, while the fork measures it
+  from the earliest subagent spawned with it. An inner subagent chain without a
+  detected fork is anchored to the play root instead of the subagent's spawn.
+  Streams of a play also share their whole common hash prefix, while the fork
+  renders each stream as its own chat conversation. Set
+  `traffic.source.client: agentx` to lower the corpus as the fork does; see
+  [Weka client](../workloads.md#weka-client).
+- The fork's per-tree guard shifts again only when its earliest timer lands on
+  a request held by a replay barrier. When it lands on a joining turn whose
+  children still wait on later timers, the fork leaves that tree idle until its
+  next timer fires. AISimulate shifts again in both cases, as the fork's global
+  guard does.

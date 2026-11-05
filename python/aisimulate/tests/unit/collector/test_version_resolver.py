@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-from packaging.version import Version
-
 from collector.registry_types import OpEntry, PerfFile, VersionRoute
 from collector.version_resolver import (
     _check_compat,
@@ -18,6 +16,7 @@ from collector.version_resolver import (
     build_collections,
     resolve_module,
 )
+from packaging.version import Version
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +143,11 @@ class TestCheckCompat:
 # ---------------------------------------------------------------------------
 @pytest.mark.unit
 class TestExactVersionSet:
-    """``_check_compat``'s grammar is AND-of-comparators only (see
+    """Grammar semantics only: collector modules no longer use this form (one
+    exact ``==`` pin per file, layer_permissions.md "Version contract"); the
+    tests below keep ``_check_compat``'s range/``!=`` behaviour documented.
+
+    ``_check_compat``'s grammar is AND-of-comparators only (see
     ``_parse_compat_specifier``): no OR, so a __compat__ string can never
     directly express a discrete set like "0.5.14 or 0.5.17". When a module's
     verified-compatible versions are non-contiguous -- e.g.
@@ -155,7 +158,7 @@ class TestExactVersionSet:
     excluded base releases carved out via ``!=`` clauses (all ANDed, so
     every clause must hold).
 
-    CORRECTED (code review, 2026-08-18): this is NOT an exact {0.5.14,
+    CORRECTED (code review): this is NOT an exact {0.5.14,
     0.5.17} gate, and the class name/tests below previously implied
     otherwise. ``!=X`` excludes only the literal point version ``X`` --
     ``packaging.version.Version`` pre/post-release variants of an excluded
@@ -444,9 +447,13 @@ class TestBuildCollections:
             "get_func",
             "run_func",
             "perf_filename",
+            "extra_perf_filenames",
+            "run_kwargs",
             "unverified",
             "unverified_sms",
         }
+        assert c["extra_perf_filenames"] == ()
+        assert c["run_kwargs"] == ()
         assert c["name"] == "vllm"
         assert c["unverified"] is False
         assert c["unverified_sms"] == ()

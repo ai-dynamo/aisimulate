@@ -8,9 +8,9 @@ FROM nvcr.io/nvidia/base/ubuntu:jammy-20250619 AS base
 
 WORKDIR /workspace
 
-ENV VIRTUAL_ENV=/opt/aiconfigurator/venv
+ENV VIRTUAL_ENV=/opt/aisimulate/venv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-RUN mkdir /opt/aiconfigurator && \
+RUN mkdir /opt/aisimulate && \
     uv venv --python 3.13 ${VIRTUAL_ENV} && \
     chmod a+rx /root && \
     chmod -R a+rX /root/.local
@@ -22,7 +22,7 @@ ENV MPLCONFIGDIR=/tmp/matplotlib
 # One `aisimulate` wheel owns the application, compatibility namespaces,
 # SDK/data payload, Replay runtime, and unified Rust extension. It is built in
 # the PyPA manylinux_2_28 image so the native PyO3 `.so` links glibc 2.28 and
-# maturin's auditwheel stamps the portable
+# standalone auditwheel repairs and stamps the portable
 # `manylinux_2_28_<arch>` tag. We add `uv` and a rustup toolchain so cargo can
 # fetch crates over TLS.
 #
@@ -47,32 +47,50 @@ ENV UV_PYTHON=/opt/python/cp313-cp313/bin/python3
 COPY Cargo.toml Cargo.lock /workspace/
 COPY crates/ /workspace/crates/
 COPY python/aisimulate/src/ /workspace/python/aisimulate/src/
+COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/
 COPY python/aisimulate/LICENSE python/aisimulate/THIRD_PARTY_NOTICES.md python/aisimulate/pyproject.toml python/aisimulate/README.md /workspace/python/aisimulate/
 COPY python/aisimulate/tools/verify_release_wheels.py /workspace/python/aisimulate/tools/verify_release_wheels.py
 COPY python/aisimulate/tools/verify_installed_package_layers.py /workspace/python/aisimulate/tools/verify_installed_package_layers.py
 COPY python/aisimulate/tools/build_legacy_monolith_fixture.py /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py
+# Validate canonical packaged resources before the expensive Rust build.
+RUN test -d /workspace/python/aisimulate/src/aisimulate_core/model_configs \
+    && test -d /workspace/python/aisimulate/src/aisimulate_core/systems
 # Fail fast if Git LFS content wasn't materialized before the build — otherwise
 # the wheel ships pointer stubs in place of perf data (see DYN-2725).
 RUN set -e; \
-    bad=$(grep -rlE "^version https://git-lfs" /workspace/python/aisimulate/src/aiconfigurator_core/systems 2>/dev/null || true); \
+    bad=$(grep -rlE "^version https://git-lfs" /workspace/python/aisimulate/src/aisimulate_core/systems 2>/dev/null || true); \
     if [ -n "$bad" ]; then \
         echo "ERROR: Unmaterialized Git LFS pointer files found:" >&2; \
         echo "$bad" >&2; \
         echo "Run 'git lfs install && git lfs pull' in the source tree before building." >&2; \
         exit 1; \
     fi
-# `uv build` runs maturin's PEP517 backend, which defaults to `--compatibility
-# off`; MATURIN_PEP517_ARGS overrides it to stamp the manylinux_2_28 tag (maturin
-# appends it last, so it wins). `python` isn't on PATH here -> verify via UV_PYTHON.
+# Match Dynamo's release-wheel boundary: Maturin emits an unaudited wheel,
+# then the standalone auditwheel tool repairs and retags that exact wheel.
+# Compiling in this manylinux_2_28 image ensures repair never tries to claim a
+# policy older than the glibc symbols in the native extension.
 RUN cd /workspace/python/aisimulate && \
-    MATURIN_PEP517_ARGS="--compatibility manylinux_2_28" \
-        uv build --wheel --out-dir /workspace/dist && \
+    mkdir -p /workspace/unrepaired-dist && \
+    MATURIN_PEP517_ARGS="--auditwheel skip" \
+        uv build --wheel --out-dir /workspace/unrepaired-dist && \
+    set -- /workspace/unrepaired-dist/*.whl && \
+    [ "$#" -eq 1 ] && [ -f "$1" ] && \
+    case "$(uname -m)" in \
+        x86_64) manylinux_policy=manylinux_2_28_x86_64 ;; \
+        aarch64|arm64) manylinux_policy=manylinux_2_28_aarch64 ;; \
+        *) echo "unsupported wheel architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    auditwheel repair \
+        --plat "${manylinux_policy}" \
+        --wheel-dir /workspace/dist \
+        "$1" && \
+    auditwheel show /workspace/dist/*.whl && \
     "${UV_PYTHON}" tools/verify_release_wheels.py /workspace/dist
 
 # Exercise the one-wheel boundary outside the checkout, including all
 # compatibility imports, bundled data, and the native estimator.
 RUN uv venv --python 3.13 /tmp/aisimulate-wheel-test && \
-    AISIMULATE_WHL=$(ls /workspace/dist/aisimulate-*.whl) && \
+    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
     uv pip install --python /tmp/aisimulate-wheel-test/bin/python "${AISIMULATE_WHL}" && \
     uv pip check --python /tmp/aisimulate-wheel-test/bin/python && \
     cd /tmp && /tmp/aisimulate-wheel-test/bin/python \
@@ -83,7 +101,7 @@ RUN uv venv --python 3.13 /tmp/aisimulate-wheel-test && \
 # delete a compatibility file now owned by the unified distribution.
 RUN "${UV_PYTHON}" /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py /tmp/legacy-dist && \
     LEGACY_WHL=$(ls /tmp/legacy-dist/aiconfigurator-0.9.0-*.whl) && \
-    AISIMULATE_WHL=$(ls /workspace/dist/aisimulate-*.whl) && \
+    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
     "${UV_PYTHON}" -m venv /tmp/aic-pip-migration && \
     /tmp/aic-pip-migration/bin/pip install "${LEGACY_WHL}" && \
     /tmp/aic-pip-migration/bin/pip uninstall -y aiconfigurator aiconfigurator-core && \
@@ -97,12 +115,12 @@ COPY --from=build /workspace/dist/ /
 
 FROM base AS runtime
 COPY --from=build /workspace/dist /wheelhouse
-RUN uv pip install /wheelhouse/aisimulate-*.whl && \
+RUN uv pip install /wheelhouse/*.whl && \
     rm -rf /wheelhouse
 
 FROM runtime AS test
 
-# The perf-database tool tests shell out to git (changed_ops revision diffing,
+# The perf-database tool tests shell out to git (parquet_diff revision reads,
 # migrate_* execute paths use git mv/rm/add). Test stage only — the shipped
 # runtime image stays git-free.
 RUN apt-get update && \
@@ -112,7 +130,7 @@ RUN apt-get update && \
 # Runtime already installed the unified wheel. Add its development extras
 # before copying the test sources.
 COPY --from=build /workspace/dist /wheelhouse
-RUN AISIMULATE_WHL=$(ls /wheelhouse/aisimulate-*.whl) && \
+RUN AISIMULATE_WHL=$(ls /wheelhouse/*.whl) && \
     uv pip install "${AISIMULATE_WHL}[dev]" && \
     rm -rf /wheelhouse
 
@@ -121,5 +139,6 @@ COPY python/aisimulate/tests/ /workspace/tests/
 COPY python/aisimulate/src/ /workspace/src/
 COPY python/aisimulate/tools/ /workspace/tools/
 COPY python/aisimulate/collector/ /workspace/collector/
-COPY python/aisimulate/docs/support-matrix/index.html /workspace/docs/support-matrix/index.html
+COPY pages/ /workspace/pages/
+COPY python/aisimulate/README.md /workspace/README.md
 COPY python/aisimulate/.agents/ /workspace/.agents/

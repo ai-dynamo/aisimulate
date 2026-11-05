@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-
 from collector import provenance
 from collector.sglang.dsv4_megamoe import finalize_validated
 

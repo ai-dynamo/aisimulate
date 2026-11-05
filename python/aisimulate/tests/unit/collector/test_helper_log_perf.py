@@ -7,7 +7,6 @@ import os
 import time
 
 import pytest
-
 from collector import helper
 
 pytestmark = pytest.mark.unit

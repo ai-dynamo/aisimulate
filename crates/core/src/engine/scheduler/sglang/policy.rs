@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::VecDeque;
-
 use crate::engine::common::hashing::compute_next_seq_hash;
 
 use crate::engine::kv_manager::SglangKvManager;
@@ -12,10 +10,10 @@ use super::config::{
     IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD, IN_BATCH_PREFIX_CACHING_DEPRIORITIZE_THRESHOLD,
     LPM_FALLBACK_THRESHOLD, SchedulePolicy, SglangConfig,
 };
-use super::request::SglangRequest;
+use super::request::WaitingQueue;
 
 pub(super) fn apply_schedule_policy(
-    waiting: &mut VecDeque<SglangRequest>,
+    waiting: &mut WaitingQueue,
     kv_manager: &SglangKvManager,
     config: &SglangConfig,
 ) {

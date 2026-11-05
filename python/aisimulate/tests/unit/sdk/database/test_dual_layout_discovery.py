@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.perf_database import (
     _declared_versions,
     _iter_database_refs_for_system,
     get_latest_database_version,

@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
@@ -18,10 +19,46 @@ NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False
 Ratio = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
 
 
+class ImagePool(StrictModel):
+    """Requests draw their images from a fixed pool, so embeddings can be reused."""
+
+    pool: PositiveInt
+
+
+class ImageInput(StrictModel):
+    """Fixed image dimensions and count on every synthetic request."""
+
+    height: PositiveInt
+    width: PositiveInt
+    count: PositiveInt = 1
+    encoding: Literal["png", "jpeg"] = "png"
+    identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale lower bound; defaults to the checkpoint's preprocessor value."
+    )
+    max_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale upper bound; defaults to the checkpoint's preprocessor value."
+    )
+
+    @model_validator(mode="after")
+    def _validate_pixel_bounds(self) -> ImageInput:
+        if self.min_pixels is not None and self.max_pixels is not None and self.min_pixels > self.max_pixels:
+            raise ValueError("images.min_pixels cannot exceed images.max_pixels")
+        return self
+
+
 class SyntheticSource(StrictModel):
     type: Literal["synthetic"] = "synthetic"
     input_tokens: PositiveInt = 1024
     output_tokens: PositiveInt = 128
+    images: ImageInput | None = None
+    cached_prefix_tokens: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def _validate_cached_prefix(self):
+        if self.cached_prefix_tokens > self.input_tokens:
+            raise ValueError("cached_prefix_tokens cannot exceed input_tokens")
+        return self
 
 
 class SessionShape(StrictModel):
@@ -53,6 +90,7 @@ TraceFormat = Literal[
     "weka",
 ]
 WekaNestedTimestampBasis = Literal["auto", "absolute", "relative"]
+WekaClient = Literal["recorded", "agentx"]
 
 
 class TraceSource(StrictModel):
@@ -61,6 +99,7 @@ class TraceSource(StrictModel):
     format: TraceFormat = "mooncake"
     block_size: PositiveInt | None = None
     nested_timestamp_basis: WekaNestedTimestampBasis | None = None
+    client: WekaClient | None = None
 
     @field_validator("paths")
     @classmethod
@@ -77,6 +116,8 @@ class TraceSource(StrictModel):
             self.block_size = 512
         if self.nested_timestamp_basis is not None and self.format != "weka":
             raise ValueError("nested_timestamp_basis is only valid for trace format 'weka'")
+        if self.client is not None and self.format != "weka":
+            raise ValueError("client is only valid for trace format 'weka'")
         return self
 
 
@@ -94,7 +135,64 @@ class TrafficStop(StrictModel):
     max_virtual_time_seconds: PositiveFloat | None = None
 
 
+class AgenticSnapshotSelection(StrictModel):
+    """An exact reference-selected initial cut, in lane order."""
+
+    source_play_id: str = Field(strict=True, min_length=1)
+    t_star_ms: NonNegativeFloat
+
+
+class AgenticSnapshotOptions(StrictModel):
+    """Seed for deterministic initial AgentX request-boundary snapshots."""
+
+    seed: int = Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
+    initial_selections: list[AgenticSnapshotSelection] | None = Field(default=None, min_length=1)
+    corpus_cursor: int | None = Field(default=None, strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
+
+    @model_validator(mode="after")
+    def _validate_reference_selection(self):
+        if (self.initial_selections is None) != (self.corpus_cursor is None):
+            raise ValueError("initial_selections and corpus_cursor must be specified together")
+        if self.initial_selections is not None and self.corpus_cursor < len(self.initial_selections):
+            raise ValueError("corpus_cursor cannot precede the initial lane draws")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        result = handler(self)
+        # Keep legacy seed-only saved configurations byte-for-byte compatible.
+        return {key: value for key, value in result.items() if value is not None}
+
+
+class AgenticProfileOptions(StrictModel):
+    """Continuous agentic replay measured from the preparation barrier."""
+
+    duration_seconds: PositiveFloat = 3600.0
+    response_grace_seconds: NonNegativeFloat = 30.0
+    cancel_drain_seconds: NonNegativeFloat = 10.0
+    tree_idle_cap_seconds: PositiveFloat = 300.0
+    global_idle_cap_seconds: PositiveFloat = 10.0
+
+    @model_validator(mode="after")
+    def _validate_millisecond_deadlines(self) -> AgenticProfileOptions:
+        values = self.model_dump()
+        if any(not math.isfinite(value * 1000.0) for value in values.values()) or not math.isfinite(
+            (self.duration_seconds + self.response_grace_seconds + self.cancel_drain_seconds) * 1000.0
+        ):
+            raise ValueError("agentic_profile deadlines overflow")
+        return self
+
+
 class TrafficPredictionLoad(StrictModel):
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
+
     type: Literal[
         "concurrency",
         "poisson",
@@ -107,6 +205,9 @@ class TrafficPredictionLoad(StrictModel):
     seed: NonNegativeInt | None = None
     speedup: PositiveFloat | None = None
     agentic_lanes: PositiveInt | None = None
+    agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_profile: AgenticProfileOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -123,6 +224,15 @@ class TrafficPredictionLoad(StrictModel):
 
 
 class TrafficRecommendationLoad(StrictModel):
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
+
     type: Literal[
         "concurrency",
         "poisson",
@@ -137,6 +247,9 @@ class TrafficRecommendationLoad(StrictModel):
     fraction: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     speedup: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     agentic_lanes: PositiveInt | None = None
+    agentic_snapshot: AgenticSnapshotOptions | None = None
+    agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_profile: AgenticProfileOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -174,15 +287,28 @@ def _validate_load_fields(load) -> None:
             "fraction",
             "speedup",
             "agentic_lanes",
+            "agentic_snapshot",
+            "agentic_profile",
         )
         if getattr(load, name, None) is not None
     }
+    if load.agentic_warmup:
+        used.add("agentic_warmup")
+    if load.agentic_warmup_policy != "repeated_prefixes":
+        used.add("agentic_warmup_policy")
     allowed = {
         "concurrency": {"concurrency"},
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup", "agentic_lanes"},
+        "trace_timestamps": {
+            "speedup",
+            "agentic_lanes",
+            "agentic_snapshot",
+            "agentic_warmup",
+            "agentic_warmup_policy",
+            "agentic_profile",
+        },
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -206,6 +332,25 @@ class _TrafficConfigBase(StrictModel):
     def _validate_source_load_stop(self, load) -> None:
         source = self.source
         stop = self.stop
+        if load.agentic_profile is not None:
+            if load.agentic_snapshot is None:
+                raise ValueError("agentic_profile requires agentic_snapshot")
+            if stop is not None and stop.max_virtual_time_seconds is not None:
+                raise ValueError("agentic_profile cannot be combined with max_virtual_time_seconds")
+        if load.agentic_warmup and load.agentic_snapshot is None:
+            raise ValueError("agentic_warmup requires agentic_snapshot")
+        if load.agentic_warmup_policy == "live_trajectory_v1" and (
+            not load.agentic_warmup or load.agentic_profile is None
+        ):
+            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if load.agentic_snapshot is not None and load.agentic_lanes is None:
+            raise ValueError("agentic_snapshot requires positive agentic_lanes")
+        if (
+            load.agentic_snapshot is not None
+            and load.agentic_snapshot.initial_selections is not None
+            and len(load.agentic_snapshot.initial_selections) != load.agentic_lanes
+        ):
+            raise ValueError("initial_selections must contain exactly one selection per lane")
         if isinstance(source, TraceSource):
             if load.type not in {"trace_timestamps", "concurrency"}:
                 raise ValueError("trace traffic requires trace_timestamps or concurrency load")

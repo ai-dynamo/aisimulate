@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/engine/runtime.rs
 
 //! `Engine`: the compiled-spec execution core.
 //!
-//! Mirrors `aiconfigurator.sdk.backends.base_backend`'s static orchestration
+//! Mirrors `aisimulate.sdk.backends.base_backend`'s static orchestration
 //! (`run_static` / `run_static_latency_only` / `_run_static_breakdown` /
 //! `_run_context_phase` / `_run_generation_phase`) but executes a precompiled
 //! [`EngineSpec`] — Python no longer walks the op list per call. The per-phase
@@ -16,19 +18,27 @@
 //! embedded [`crate::AicEngineBuilder`] live in [`crate::py`]. The agg sweep is
 //! orchestrated in Python — there is no Rust `run_agg`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::FpmQueryCoverage;
+use crate::common::enums::EncoderParallel;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
+use crate::fpm::FpmExecutionBinding;
+use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
+use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
-use crate::perfmodel::engine::spec::EngineSpec;
+use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
-    ContextOpFilter, get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
-    run_context_ops_with, run_generation_ops_step, run_generation_ops_step_beamed_with,
+    ContextOpFilter, OpListPlan, QueryMemo, context_op_runtime, generation_op_runtime,
+    get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
+    run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
+    run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
-use crate::{ForwardPassMetrics, validate_forward_pass_metrics};
+use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
 /// Per-call runtime inputs. Field-for-field mirror of the Python
 /// `sdk/config.RuntimeConfig`.
@@ -121,6 +131,11 @@ pub(crate) type MoeCommFallbackValues = (MoeCommFallbackValue, Vec<MoeCommFallba
 /// the provenance tag (`silicon|empirical|sol|estimated|mixed`).
 pub type PerOpValue = (String, f64, f64, &'static str);
 
+/// One op name's folded `(latency_ms, energy_wms, source)`, addressed by its
+/// [`OpListPlan`] name slot instead of carrying the name. Folded exactly like
+/// [`PerOpValue`].
+pub(crate) type PerOpSlotValue = (f64, f64, &'static str);
+
 /// Internal per-op value used by the provenance-aware engine walk. The fifth
 /// field is `None` or `(first_record, additional_records)` in deterministic
 /// encounter order; public Rust and Python methods strip it and retain their
@@ -151,12 +166,15 @@ pub(crate) type MixedStepPerOpValuesWithMetadata = (
 pub type PerOpSolValue = (String, f64, f64, f64);
 
 /// Name-folding accumulator for [`PerOpValue`] streams. First-encounter
-/// order is preserved (mirrors Python dict insertion order). Linear scan on
-/// purpose: unique-name counts are a few dozen (per-block families repeat
-/// names), far below where a map would win.
+/// order is preserved (mirrors Python dict insertion order). [`Self::add`]
+/// scans names, which suits short lists; engine op lists fold through
+/// [`Self::add_slot`] with their [`OpListPlan`] name slots instead, because
+/// per-layer models carry hundreds of unique names.
 struct PerOpFold {
     inference_phase: &'static str,
     entries: Vec<PerOpValueWithMetadata>,
+    /// Entry index per name slot, for [`Self::add_slot`].
+    slots: Vec<Option<usize>>,
 }
 
 fn insert_per_op_fallback(
@@ -188,10 +206,33 @@ impl PerOpFold {
         Self {
             inference_phase,
             entries: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+
+    /// A fold for one engine op list, addressed by its plan's name slots.
+    fn for_plan(inference_phase: &'static str, plan: &OpListPlan) -> Self {
+        Self {
+            slots: vec![None; plan.names()],
+            ..Self::new(inference_phase)
         }
     }
 
     fn add(&mut self, op: &Op, r: PerformanceResult) {
+        let position = self.entries.iter().position(|e| e.0 == op.name());
+        self.add_at(position, op, r);
+    }
+
+    /// [`Self::add`] for an op whose plan name slot is `slot`.
+    fn add_slot(&mut self, slot: usize, op: &Op, r: PerformanceResult) {
+        let position = self.slots[slot];
+        if position.is_none() {
+            self.slots[slot] = Some(self.entries.len());
+        }
+        self.add_at(position, op, r);
+    }
+
+    fn add_at(&mut self, position: Option<usize>, op: &Op, r: PerformanceResult) {
         let name = op.name();
         let source = r.source.as_str();
         let mut fallbacks = None;
@@ -208,7 +249,7 @@ impl PerOpFold {
                 ),
             );
         }
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.0 == name) {
+        if let Some(entry) = position.map(|position| &mut self.entries[position]) {
             entry.1 += r.latency_ms;
             entry.2 += r.energy_wms;
             if entry.3 != source {
@@ -231,6 +272,55 @@ impl PerOpFold {
     }
 }
 
+/// [`PerOpFold`] by name slot, without names or fallback records. Static
+/// walks visit every op in order, so each slot first arrives as the next
+/// entry and entry `k` is name slot `k`.
+struct PerOpSlotFold {
+    entries: Vec<PerOpSlotValue>,
+    /// A slot arrived ahead of its first-encounter position.
+    misordered: bool,
+}
+
+impl PerOpSlotFold {
+    /// A fold sized for every name of `plan`.
+    fn for_plan(plan: &OpListPlan) -> Self {
+        Self {
+            entries: Vec::with_capacity(plan.names()),
+            misordered: false,
+        }
+    }
+
+    fn add(&mut self, slot: usize, r: PerformanceResult) {
+        let source = r.source.as_str();
+        if let Some(entry) = self.entries.get_mut(slot) {
+            entry.0 += r.latency_ms;
+            entry.1 += r.energy_wms;
+            if entry.2 != source {
+                entry.2 = "mixed";
+            }
+        } else if slot == self.entries.len() {
+            self.entries.push((r.latency_ms, r.energy_wms, source));
+        } else {
+            self.misordered = true;
+        }
+    }
+
+    /// The folded values, once every name slot of `plan` was visited in order.
+    fn into_values(self, plan: &OpListPlan) -> Result<Vec<PerOpSlotValue>, AicError> {
+        self.into_values_of(plan.names())
+    }
+
+    /// The folded values, once each of `names` slots was visited in order.
+    fn into_values_of(self, names: usize) -> Result<Vec<PerOpSlotValue>, AicError> {
+        if self.misordered || (!self.entries.is_empty() && self.entries.len() != names) {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase did not fold every operation name in slot order".into(),
+            ));
+        }
+        Ok(self.entries)
+    }
+}
+
 fn strip_per_op_metadata(entries: Vec<PerOpValueWithMetadata>) -> Vec<PerOpValue> {
     entries
         .into_iter()
@@ -240,6 +330,361 @@ fn strip_per_op_metadata(entries: Vec<PerOpValueWithMetadata>) -> Vec<PerOpValue
         .collect()
 }
 
+/// Name-folded operation evidence of one operation-graph forward-pass rank:
+/// executed values, sources and fallbacks folded like [`PerOpFold`], plus the
+/// SOL comparison [`Engine::static_phase_diagnostics`] reports, priced at each
+/// operation's own runtime context. A name's SOL stops at its first failure.
+struct RankOperationFold {
+    fold: PerOpFold,
+    positions: HashMap<String, usize>,
+    sols: Vec<Option<Result<super::diagnostics::SolDiagnostics, AicError>>>,
+    sol_db: PerfDatabase,
+}
+
+impl RankOperationFold {
+    fn new(db: &PerfDatabase) -> Self {
+        Self {
+            fold: PerOpFold::new("context"),
+            positions: HashMap::new(),
+            sols: Vec::new(),
+            sol_db: db.sol_full_view(),
+        }
+    }
+
+    /// Fold `op`'s `result` executed in `inference_phase`, divided by the
+    /// `divisor` its composition applies. `sol` prices the same query in the
+    /// SOL view.
+    fn add(
+        &mut self,
+        inference_phase: &'static str,
+        op: &Op,
+        mut result: PerformanceResult,
+        divisor: f64,
+        sol: impl FnOnce(&PerfDatabase) -> Result<PerformanceResult, AicError>,
+    ) {
+        if divisor != 1.0 {
+            result.latency_ms /= divisor;
+            result.energy_wms /= divisor;
+        }
+        let position = self.positions.get(op.name()).copied();
+        let slot = position.unwrap_or(self.sols.len());
+        if position.is_none() {
+            self.positions.insert(op.name().to_owned(), slot);
+            self.sols.push(None);
+        }
+        self.fold.inference_phase = inference_phase;
+        self.fold.add_at(position, op, result);
+        let entry = &mut self.sols[slot];
+        if matches!(entry, Some(Err(_))) {
+            return;
+        }
+        let next = sol(&self.sol_db).and_then(|result| {
+            let (math_ms, memory_ms) = sol_components(op, &result)?;
+            Ok(super::diagnostics::SolDiagnostics {
+                latency_ms: result.latency_ms / divisor,
+                math_ms: math_ms / divisor,
+                memory_ms: memory_ms / divisor,
+            })
+        });
+        *entry = Some(match (entry.take(), next) {
+            (Some(Ok(sum)), Ok(next)) => Ok(sum.plus(&next)),
+            (_, next) => next,
+        });
+    }
+
+    fn into_operations(self) -> Vec<super::diagnostics::StaticOperationDiagnostics> {
+        self.fold
+            .into_values()
+            .into_iter()
+            .zip(self.sols)
+            .map(|(entry, sol)| operation_diagnostics(entry, sol))
+            .collect()
+    }
+}
+
+/// Name-folded operation values of one operation-graph rank: each name's
+/// `(latency_ms, energy_wms, source)`, value `k` named `names[k]`. Ranks that
+/// run the same walk share `names`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RankOperationValues {
+    pub(crate) names: Arc<[String]>,
+    pub(crate) values: Vec<PerOpSlotValue>,
+}
+
+/// What an operation-graph rank of [`Engine::forward_pass_ranks`] reports
+/// about the operations it executed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum RankDetail {
+    /// Name-folded values under shared names ([`RankOperationValues`]).
+    Values,
+    /// The operations [`Engine::forward_pass_estimate`] diagnostics report,
+    /// with their SOL comparison.
+    Diagnostics,
+}
+
+/// One rank of [`Engine::forward_pass_ranks`]: its native latency and, for an
+/// operation graph, the operations it executed, in the requested detail.
+#[derive(Debug)]
+pub(crate) struct RankPricing {
+    pub(crate) latency_ms: f64,
+    /// [`RankDetail::Values`]; `None` for whole-model FPM.
+    pub(crate) operations: Option<RankOperationValues>,
+    /// [`RankDetail::Diagnostics`] of an operation graph.
+    pub(crate) diagnostics: Option<Vec<super::diagnostics::StaticOperationDiagnostics>>,
+    /// The least-confident empirical tier the rank's lookups fired, noted
+    /// again whenever the memo answers in their place.
+    provenance: ProvenanceTier,
+}
+
+/// [`Engine::forward_pass_estimate`] keeping each rank's pricing: the rank
+/// maximum and every rank, idle ranks included.
+#[derive(Debug)]
+pub(crate) struct NativeIteration {
+    pub(crate) latency_ms: f64,
+    pub(crate) ranks: Vec<Arc<RankPricing>>,
+}
+
+/// What a rank dispatch ([`Engine::rank_latency_ms`]) observes besides its
+/// latency.
+enum RankObserver<'a> {
+    Latency,
+    /// Diagnostics: a whole-model rank's direct FPM lookups or an operation
+    /// graph's operations with their SOL comparison.
+    Diagnostics(&'a mut crate::FpmRankEstimate),
+    /// An operation graph's operation values; whole-model FPM leaves `None`.
+    Values(&'a mut Option<RankOperationValues>),
+}
+
+/// Every scheduled-work field a rank dispatch reads
+/// ([`Engine::rank_latency_ms`]): the five counters and the prefill-length
+/// variance bits, with the detail the entry keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RankKey([u32; 5], u64, RankDetail);
+
+impl RankKey {
+    fn of(metrics: &ForwardPassMetrics, detail: RankDetail) -> Self {
+        let sched = &metrics.scheduled_requests;
+        Self(
+            [
+                sched.num_prefill_requests,
+                sched.sum_prefill_tokens,
+                sched.sum_prefill_kv_tokens,
+                sched.num_decode_requests,
+                sched.sum_decode_kv_tokens,
+            ],
+            sched.var_prefill_length.to_bits(),
+            detail,
+        )
+    }
+}
+
+/// Distinct rank workloads a memo keeps. A rank's pricing is a pure
+/// function of its key, so a hit returns exactly what the dispatch would.
+const RANK_MEMO_CAPACITY: usize = 4096;
+
+/// Name lists of walks without name slots (DSv4.1 stages) that
+/// [`Engine::shared_names`] keeps shared.
+const SHARED_NAME_LISTS: usize = 16;
+
+/// Name slots of the mix step's operations ([`get_mix_step_ops`]): every name
+/// its three passes visit, numbered in visit order, so slots arrive in
+/// first-encounter order like a phase walk's.
+#[derive(Debug)]
+struct MixStepPlan {
+    names: Arc<[String]>,
+    /// Slot of each context operation, which runs in the shared or the
+    /// context-attention pass.
+    context_slot: Vec<usize>,
+    /// Slot of each generation-attention operation; the decode-attention
+    /// pass runs no other generation operation.
+    generation_slot: Vec<Option<usize>>,
+}
+
+impl MixStepPlan {
+    fn new<'a>(context: &'a [Op], generation: &'a [Op]) -> Self {
+        let mut slots = HashMap::<&str, usize>::new();
+        let mut names = Vec::new();
+        let mut slot_of = |op: &'a Op| {
+            let name = op.name();
+            *slots.entry(name).or_insert_with(|| {
+                names.push(name.to_owned());
+                names.len() - 1
+            })
+        };
+        let mut context_slot = vec![0; context.len()];
+        // Pass 1 skips context attention, which pass 2 runs alone.
+        for attention in [false, true] {
+            for (index, op) in context.iter().enumerate() {
+                if op.is_context_attention() == attention {
+                    context_slot[index] = slot_of(op);
+                }
+            }
+        }
+        let generation_slot = generation
+            .iter()
+            .map(|op| op.is_generation_attention().then(|| slot_of(op)))
+            .collect();
+        Self {
+            names: names.into(),
+            context_slot,
+            generation_slot,
+        }
+    }
+}
+
+/// Name-folded values of an operation-graph rank without diagnostics, folded
+/// as [`RankOperationFold`] folds its executed values: by the name slots of
+/// the walk, or by name for a walk without slots.
+#[derive(Default)]
+struct RankValueFold {
+    /// The walk's slot names; `None` folds by name.
+    names: Option<Arc<[String]>>,
+    slots: Option<PerOpSlotFold>,
+    by_name: Option<PerOpFold>,
+}
+
+impl RankValueFold {
+    /// Start a walk over `names`' slots, or by name without them.
+    fn begin(&mut self, names: Option<&Arc<[String]>>) {
+        debug_assert!(self.slots.is_none() && self.by_name.is_none());
+        match names {
+            Some(names) => {
+                self.slots = Some(PerOpSlotFold {
+                    entries: Vec::with_capacity(names.len()),
+                    misordered: false,
+                });
+                self.names = Some(Arc::clone(names));
+            }
+            None => self.by_name = Some(PerOpFold::new("context")),
+        }
+    }
+
+    fn add(&mut self, slot: Option<usize>, op: &Op, mut result: PerformanceResult, divisor: f64) {
+        if divisor != 1.0 {
+            result.latency_ms /= divisor;
+            result.energy_wms /= divisor;
+        }
+        match (&mut self.slots, slot, &mut self.by_name) {
+            (Some(slots), Some(slot), _) => slots.add(slot, result),
+            (_, _, Some(by_name)) => by_name.add(op, result),
+            _ => {
+                if let Some(slots) = &mut self.slots {
+                    // A slotted walk reported an operation without a slot.
+                    slots.misordered = true;
+                }
+            }
+        }
+    }
+}
+
+/// How an operation-graph rank dispatch observes its executed operations.
+enum OperationObserver {
+    Latency,
+    Diagnostics(RankOperationFold),
+    Values(RankValueFold),
+}
+
+impl OperationObserver {
+    /// Start a walk whose operations have `names`' slots, or no slots.
+    fn begin(&mut self, names: Option<&Arc<[String]>>) {
+        if let Self::Values(fold) = self {
+            fold.begin(names);
+        }
+    }
+
+    /// Observe `op`'s raw `result` executed in `inference_phase` at the
+    /// `runtime` context, divided by the `divisor` its composition applies.
+    /// `slot` is its name slot in the walk's names.
+    fn add(
+        &mut self,
+        inference_phase: &'static str,
+        slot: Option<usize>,
+        op: &Op,
+        result: PerformanceResult,
+        divisor: f64,
+        runtime: impl FnOnce() -> RuntimeContext,
+    ) {
+        match self {
+            Self::Latency => {}
+            Self::Diagnostics(fold) => fold.add(inference_phase, op, result, divisor, |db| {
+                op.query(db, &runtime())
+            }),
+            Self::Values(fold) => fold.add(slot, op, result, divisor),
+        }
+    }
+}
+
+/// Public operation evidence of one name-folded value and its SOL comparison.
+fn operation_diagnostics(
+    (name, latency_ms, energy_wms, source, fallbacks): PerOpValueWithMetadata,
+    sol: Option<Result<super::diagnostics::SolDiagnostics, AicError>>,
+) -> super::diagnostics::StaticOperationDiagnostics {
+    use super::diagnostics::{ExecutedFallback, OperationDetails, StaticOperationDiagnostics};
+    let (sol, sol_unavailable_reason) = match sol {
+        Some(Ok(sol)) if sol.is_valid() => (Some(sol), None),
+        Some(Err(error)) => (None, Some(error.to_string())),
+        _ => (
+            None,
+            Some("operation did not export finite SOL evidence".into()),
+        ),
+    };
+    let fallbacks = fallbacks
+        .into_iter()
+        .flat_map(|(first, rest)| std::iter::once(first).chain(rest))
+        .map(
+            |(
+                phase,
+                backend,
+                requested_ep_size,
+                requested_node_num,
+                measurement_ep_size,
+                measurement_node_num,
+            )| ExecutedFallback {
+                inference_phase: phase.into(),
+                comm_backend: backend.into(),
+                requested_ep_size,
+                requested_node_num,
+                measurement_ep_size,
+                measurement_node_num,
+            },
+        )
+        .collect();
+    StaticOperationDiagnostics {
+        name,
+        latency_ms,
+        energy_wms,
+        source: source.into(),
+        details: OperationDetails {
+            fpm_estimates: Vec::new(),
+            sol,
+            sol_unavailable_reason,
+            fallbacks,
+        },
+    }
+}
+
+/// One-rank estimate of a static prefill step and its direct FPM queries.
+fn static_prefill_estimate(
+    prefill_ms: f64,
+    queries: Vec<crate::DirectFpmQueryEvidence>,
+) -> crate::ForwardPassEstimate {
+    let latency_ms = prefill_ms + 0.0; // same context + generation sum as run_static
+    crate::ForwardPassEstimate {
+        unavailable_reason: None,
+        latency_ms: Some(latency_ms),
+        native_latency_ms: Some(latency_ms),
+        correction_factor: Some(1.0),
+        max_rank: (latency_ms > 0.0).then_some(0),
+        ranks: vec![crate::FpmRankEstimate {
+            rank: 0,
+            latency_ms,
+            prefill_ms: Some(prefill_ms),
+            queries,
+            ..Default::default()
+        }],
+    }
+}
+
 /// Name-folding accumulator for [`PerOpSolValue`] streams (fold semantics of
 /// [`PerOpFold`]: first-encounter order, `+=` accumulation, linear scan).
 #[derive(Default)]
@@ -247,22 +692,25 @@ struct PerOpSolFold {
     entries: Vec<PerOpSolValue>,
 }
 
+/// `(sol_math_ms, sol_mem_ms)` of one op's SOL-mode result.
+fn sol_components(op: &Op, r: &PerformanceResult) -> Result<(f64, f64), AicError> {
+    match &r.sol {
+        Some(c) => Ok((c.math_ms, c.mem_ms)),
+        // No-op short-circuits (tp_size=1 allreduce, pp_size=1 P2P)
+        // return plain zero results without a decomposition: a zero
+        // contribution is exact, not a coverage gap.
+        None if r.latency_ms == 0.0 && r.energy_wms == 0.0 => Ok((0.0, 0.0)),
+        None => Err(AicError::SolNotImplemented(format!(
+            "evaluate_ops_sol_json: op '{}' has no SOL decomposition \
+             (family not exported yet — see PerformanceResult::sol)",
+            op.name()
+        ))),
+    }
+}
+
 impl PerOpSolFold {
     fn add(&mut self, op: &Op, r: PerformanceResult) -> Result<(), AicError> {
-        let (sol_math, sol_mem) = match r.sol {
-            Some(c) => (c.math_ms, c.mem_ms),
-            // No-op short-circuits (tp_size=1 allreduce, pp_size=1 P2P)
-            // return plain zero results without a decomposition: a zero
-            // contribution is exact, not a coverage gap.
-            None if r.latency_ms == 0.0 && r.energy_wms == 0.0 => (0.0, 0.0),
-            None => {
-                return Err(AicError::SolNotImplemented(format!(
-                    "evaluate_ops_sol_json: op '{}' has no SOL decomposition \
-                     (family not exported yet — see PerformanceResult::sol)",
-                    op.name()
-                )));
-            }
-        };
+        let (sol_math, sol_mem) = sol_components(op, &r)?;
         if let Some(entry) = self.entries.iter_mut().find(|e| e.0 == op.name()) {
             entry.1 += r.latency_ms;
             entry.2 += sol_math;
@@ -281,10 +729,26 @@ impl PerOpSolFold {
 
 /// Which of the three mixed-step passes produced a sinked per-op value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixedPass {
+pub(crate) enum MixedPass {
     SharedNonAttention,
     ContextAttention,
     DecodeAttention,
+}
+
+/// How [`Engine::iteration_dispatch`] can price one attention-DP iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IterationDispatch {
+    /// No common forward-pass query: a v1 execution profile, or hybrid
+    /// whole-model FPM with operation-level draft tails.
+    Unsupported,
+    /// Whole-model FPM at exact per-rank iteration totals, decode KV excluding
+    /// each request's current token. A measured SD-round profile prices
+    /// exactly one rank; a mixed rank is its prefill plus a full decode round.
+    WholeModel { sd_round: bool },
+    /// An operation graph over packed decode counters: `verify_width` decode
+    /// tokens per request, each at its full context length. `mixed` when one
+    /// rank may compute prefill and decode in one mix step.
+    Operations { verify_width: u32, mixed: bool },
 }
 
 /// Compiled engine: precompiled op lists + the matching perf database.
@@ -299,6 +763,10 @@ pub struct Engine {
     context_ops: Vec<Op>,
     /// Generation-phase ops in execution order (from `spec.generation_ops`).
     generation_ops: Vec<Op>,
+    /// Build-time query sharing and name slots of `context_ops`.
+    context_plan: OpListPlan,
+    /// Build-time query sharing and name slots of `generation_ops`.
+    generation_plan: OpListPlan,
     /// Loaded perf database. `Arc` so the `AicEngine` can share it with the
     /// capacity API; free fns take `&PerfDatabase`, so deref works either way.
     db: Arc<PerfDatabase>,
@@ -306,6 +774,26 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
+    pub(crate) profile_snapshot: Option<tempfile::TempDir>,
+    profile_phase: Option<ForwardPassWorkerType>,
+    legacy_profile: bool,
+    mixed_ops_supported: bool,
+    /// Measured target+draft round identity. This is parsed once from the
+    /// existing EngineConfig.extra map, not a new serialized Op field.
+    fpm_execution_profile: Option<FpmExecutionBinding>,
+    /// Vision tower ops and their layout over the `tp_size` ranks, when compiled.
+    vision: Option<VisionSpec>,
+    tp_size: u32,
+    /// [`EngineSpec::content_sha256`] of the spec this engine was built from.
+    /// The engine keeps no spec bytes, so state snapshots record this value.
+    spec_sha256: String,
+    /// Name slots of a mixed rank's mix step.
+    mix_plan: MixStepPlan,
+    /// Ranks priced without diagnostics or lookup coverage, by workload;
+    /// allocated on first use. See [`Self::rank_pricing`].
+    rank_memo: OnceLock<quick_cache::sync::Cache<RankKey, Arc<RankPricing>>>,
+    /// Name lists of walks without name slots, shared across ranks.
+    shared_names: Mutex<Vec<Arc<[String]>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -314,17 +802,99 @@ impl std::fmt::Debug for Engine {
             .field("context_ops", &self.context_ops.len())
             .field("generation_ops", &self.generation_ops.len())
             .field("nextn", &self.nextn)
+            .field("fpm_execution_profile", &self.fpm_execution_profile)
             .finish_non_exhaustive()
     }
 }
 
 impl Engine {
+    fn require_common_profile(&self) -> Result<(), AicError> {
+        if self.legacy_profile {
+            return Err(crate::operators::measured_composite::invalid(
+                "common forward-pass and mixed queries require execution profile schema_version 2; requalify the query coordinates and update the profile pin",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_mixed_ops(&self) -> Result<(), AicError> {
+        if !self.mixed_ops_supported {
+            return Err(crate::operators::measured_composite::invalid(
+                "mixed measured scopes require separate top-level phase attention operations; opaque whole-phase scopes or nested attention cannot be composed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Measured scopes must expose the split used by the existing mixed filters.
+    /// Compute this once for all input sources; pure-phase queries remain valid.
+    fn supports_mixed_ops(context: &[Op], generation: &[Op]) -> bool {
+        fn inspect(ops: &[Op], context: bool, nested: bool) -> (bool, bool) {
+            let mut measured = false;
+            let mut invalid_attention = false;
+            for op in ops {
+                measured |= matches!(op, Op::MeasuredComposite(_));
+                invalid_attention |= if nested {
+                    op.is_context_attention() || op.is_generation_attention()
+                } else if context {
+                    op.is_generation_attention()
+                } else {
+                    op.is_context_attention()
+                };
+                if let Op::Overlap(group) = op {
+                    for children in [&group.group_a, &group.group_b] {
+                        let (child_measured, child_invalid) = inspect(children, context, true);
+                        measured |= child_measured;
+                        invalid_attention |= child_invalid;
+                    }
+                }
+            }
+            (measured, invalid_attention)
+        }
+        let (ctx_measured, ctx_invalid) = inspect(context, true, false);
+        let (gen_measured, gen_invalid) = inspect(generation, false, false);
+        !(ctx_measured || gen_measured)
+            || (!ctx_invalid
+                && !gen_invalid
+                && context.iter().any(Op::is_context_attention)
+                && generation.iter().any(Op::is_generation_attention))
+    }
+
+    fn check_profile_phase(&self, prefill: bool) -> Result<(), AicError> {
+        if self.profile_phase.is_some_and(|phase| match phase {
+            ForwardPassWorkerType::Prefill => !prefill,
+            ForwardPassWorkerType::Decode => prefill,
+            ForwardPassWorkerType::Aggregated => false,
+        }) {
+            return Err(crate::operators::measured_composite::invalid(
+                "query phase is not qualified by this profile",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build an `Engine` from a spec and a pre-loaded database.
     ///
     /// Extracts the op lists and the `nextn` scalar from `spec.engine`. The
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        let fpm_execution_profile = Self::validate_fpm_spec(&spec)?;
+        Self::build_validated(spec, db, fpm_execution_profile)
+    }
+
+    fn build_validated(
+        spec: EngineSpec,
+        db: Arc<PerfDatabase>,
+        fpm_execution_profile: Option<FpmExecutionBinding>,
+    ) -> Result<Engine, AicError> {
+        if spec.engine.quantization.fpm_fmha_dtype.is_some()
+            && spec.engine.forward_model.as_deref() != Some("fpm")
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "fpm_fmha_dtype requires forward_model='fpm'".into(),
+            ));
+        }
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         Self::validate_engine_database_mode(db.database_mode)?;
         if spec.engine.database_mode != db.database_mode {
@@ -339,11 +909,120 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
-        // FPM whole-model specs must be exactly one op per phase (the Python
-        // rewrite guarantees this shape) and never carry MTP: the Python model
-        // builder rejects `nextn > 0` for forward_model="fpm" (commit
-        // ad93e75f) and the collected data has no speculative points. Guarding
-        // here keeps a hand-built or skewed spec from silently mis-composing.
+        super::readiness::validate_glm53_kv(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
+        super::readiness::validate_glm53_sources(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
+        let spec_sha256 = spec.content_sha256()?;
+        Ok(Engine {
+            legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
+                && match spec
+                    .engine
+                    .extra
+                    .get("execution_profile_schema_version")
+                    .map(String::as_str)
+                {
+                    None | Some("1") => true,
+                    Some("2") => false,
+                    _ => {
+                        return Err(crate::operators::measured_composite::invalid(
+                            "unsupported profile schema version",
+                        ));
+                    }
+                },
+            mixed_ops_supported: Self::supports_mixed_ops(&spec.context_ops, &spec.generation_ops),
+            spec_sha256,
+            mix_plan: MixStepPlan::new(&spec.context_ops, &spec.generation_ops),
+            rank_memo: OnceLock::new(),
+            shared_names: Mutex::default(),
+            context_plan: OpListPlan::new(&spec.context_ops),
+            generation_plan: OpListPlan::new(&spec.generation_ops),
+            context_ops: spec.context_ops,
+            generation_ops: spec.generation_ops,
+            db,
+            nextn,
+            profile_snapshot: None,
+            profile_phase: match spec
+                .engine
+                .extra
+                .get("execution_profile_phase")
+                .map(String::as_str)
+            {
+                None => None,
+                Some("prefill") => Some(ForwardPassWorkerType::Prefill),
+                Some("decode") => Some(ForwardPassWorkerType::Decode),
+                Some("aggregated") => Some(ForwardPassWorkerType::Aggregated),
+                _ => {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "invalid profile phase",
+                    ));
+                }
+            },
+            fpm_execution_profile,
+            vision: spec.vision,
+            tp_size: spec.engine.parallel.tp_size,
+        })
+    }
+
+    fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
+        fn contains_sd_round(ops: &[Op]) -> bool {
+            ops.iter().any(|op| match op {
+                Op::FpmForward(op) => {
+                    op.match_identity
+                        .get(16)
+                        .is_some_and(|selector| selector.starts_with("speculative_round"))
+                        || contains_sd_round(&op.sol_ops)
+                }
+                Op::TokenScale(op) => contains_sd_round(std::slice::from_ref(&op.op)),
+                Op::Dsv41Stage(op) => contains_sd_round(&op.children),
+                Op::Overlap(op) => contains_sd_round(&op.group_a) || contains_sd_round(&op.group_b),
+                Op::Fallback(op) => {
+                    contains_sd_round(std::slice::from_ref(&op.primary))
+                        || contains_sd_round(&op.fallback)
+                }
+                _ => false,
+            })
+        }
+        if contains_sd_round(ops) {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM requires an explicitly bound whole-round execution path".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<Option<FpmExecutionBinding>, AicError> {
+        let execution: Option<FpmExecutionBinding> = spec
+            .engine
+            .extra
+            .get("fpm_execution_profile")
+            .map(|value| {
+                serde_json::from_str(value).map_err(|error| {
+                    AicError::InvalidEngineConfig(format!(
+                        "invalid full SD-round FPM execution binding: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(binding) = &execution {
+            binding.validate()?;
+        } else {
+            Self::reject_sd_round_ops(&spec.context_ops)?;
+            Self::reject_sd_round_ops(&spec.generation_ops)?;
+        }
+        let nextn = spec
+            .engine
+            .speculative
+            .as_ref()
+            .and_then(|s| s.nextn)
+            .unwrap_or(0);
+        // Whole-model FPM phases lead with the target forward pass, followed
+        // only by draft operations whose work is absent from the collected
+        // autoregressive curves. Validate hand-built specs as well as Python's.
         // The scan is RECURSIVE: an FpmForward nested inside Overlap/Fallback
         // (never produced by the Python rewrite, but expressible in a
         // hand-built spec) would evade a top-level check and ride the
@@ -352,6 +1031,8 @@ impl Engine {
         fn contains_fpm(ops: &[Op]) -> bool {
             ops.iter().any(|op| match op {
                 Op::FpmForward(_) => true,
+                Op::TokenScale(o) => contains_fpm(std::slice::from_ref(&o.op)),
+                Op::Dsv41Stage(o) => contains_fpm(&o.children),
                 Op::Overlap(o) => contains_fpm(&o.group_a) || contains_fpm(&o.group_b),
                 Op::Fallback(o) => {
                     contains_fpm(std::slice::from_ref(&o.primary)) || contains_fpm(&o.fallback)
@@ -360,49 +1041,321 @@ impl Engine {
             })
         }
         let any_fpm = contains_fpm(&spec.context_ops) || contains_fpm(&spec.generation_ops);
-        if any_fpm {
+        if any_fpm
+            || execution.is_some()
+            || spec.engine.fpm_parquet_path.is_some()
+            || spec.engine.forward_model.as_deref() == Some("fpm")
+        {
+            // Hybrid speculative shape: the FIRST op of each phase is the
+            // whole-model FpmForward (target), optionally followed by
+            // op-level DRAFT ops (the Python rewrite keeps a scheme's
+            // `draft_` ops out of the whole-model fold — their cost is not
+            // in the AR-collected curves). The tails must not smuggle in
+            // another FpmForward (nested or top-level).
             let shape_ok = matches!(
-                spec.context_ops.as_slice(),
-                [Op::FpmForward(p)] if p.phase == FpmPhase::Prefill
+                spec.context_ops.first(),
+                Some(Op::FpmForward(p)) if p.phase == FpmPhase::Prefill
             ) && matches!(
-                spec.generation_ops.as_slice(),
-                [Op::FpmForward(d)] if d.phase == FpmPhase::Decode
-            );
+                spec.generation_ops.first(),
+                Some(Op::FpmForward(d)) if d.phase == FpmPhase::Decode
+            ) && !contains_fpm(&spec.context_ops[1..])
+                && !contains_fpm(&spec.generation_ops[1..]);
+            crate::config::validate_fpm_parquet_path(
+                spec.engine.fpm_parquet_path.as_deref(),
+                shape_ok,
+            )?;
             if !shape_ok {
                 return Err(AicError::InvalidEngineConfig(
                     "forward_model='fpm' spec must contain exactly one FpmForward op per phase \
-                     (prefill in context_ops, decode in generation_ops)"
+                     (leading prefill in context_ops, decode in generation_ops); only op-level \
+                     draft ops may follow it"
                         .to_string(),
                 ));
             }
-            if nextn > 0 {
+            let (prefill, decode) = match (spec.context_ops.first(), spec.generation_ops.first()) {
+                (Some(Op::FpmForward(p)), Some(Op::FpmForward(d))) => (p, d),
+                _ => unreachable!("validated leading FPM operations"),
+            };
+            // An execution selector is never enough to enable round semantics:
+            // low-level specs must bind the same typed identity explicitly.
+            for op in [prefill, decode] {
+                let selected = op
+                    .match_identity
+                    .get(16)
+                    .map(|selector| FpmExecutionBinding::parse_selector(selector))
+                    .transpose()?
+                    .flatten();
+                if selected != execution {
+                    return Err(AicError::InvalidEngineConfig(
+                        "full SD-round FPM selector and execution binding must match on both phases"
+                            .into(),
+                    ));
+                }
+            }
+            if let Some(binding) = &execution {
+                Self::validate_full_round_spec(spec, binding, prefill, decode, nextn)?;
+                return Ok(execution);
+            }
+            let expected_width = nextn.checked_add(1).ok_or_else(|| {
+                AicError::InvalidEngineConfig("nextn+1 exceeds the u32 verify width".into())
+            })?;
+            if prefill.verify_width != 1 || decode.verify_width != expected_width {
                 return Err(AicError::InvalidEngineConfig(format!(
-                    "forward_model='fpm' does not support MTP speculative decoding (nextn={nextn})"
+                    "forward_model='fpm' requires prefill verify_width=1 and decode \
+                     verify_width=nextn+1 ({expected_width}); got prefill={} decode={}. \
+                     Plain MTP with nextn>0 is unsupported because its draft cost is \
+                     absent from the AR-collected curves",
+                    prefill.verify_width, decode.verify_width
                 )));
             }
+            if spec.context_ops[1..]
+                .iter()
+                .chain(&spec.generation_ops[1..])
+                .any(|op| !op.name().starts_with("draft_"))
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "forward_model='fpm' only supports draft_ operations after FpmForward".into(),
+                ));
+            }
         }
-        Ok(Engine {
-            context_ops: spec.context_ops,
-            generation_ops: spec.generation_ops,
-            db,
-            nextn,
-        })
+        Ok(execution)
     }
 
-    /// FPM whole-model engine: both phase lists are exactly one `FpmForward`
-    /// (validated in [`Engine::build`]). Returns `(prefill_op, decode_op)`.
-    fn fpm_ops(&self) -> Option<(&FpmForwardOp, &FpmForwardOp)> {
-        match (self.context_ops.as_slice(), self.generation_ops.as_slice()) {
-            ([Op::FpmForward(p)], [Op::FpmForward(d)]) => Some((p, d)),
+    fn validate_full_round_spec(
+        spec: &EngineSpec,
+        binding: &FpmExecutionBinding,
+        prefill: &FpmForwardOp,
+        decode: &FpmForwardOp,
+        nextn: u32,
+    ) -> Result<(), AicError> {
+        let config = &spec.engine;
+        let parallel = &config.parallel;
+        let tp = parallel.tp_size;
+        let moe_tp = parallel.moe_tp_size.unwrap_or(1);
+        let moe_ep = parallel.moe_ep_size.unwrap_or(1);
+        if config.backend != crate::BackendKind::Vllm
+            || config.forward_model.as_deref() != Some("fpm")
+            || config.database_mode != DatabaseMode::Silicon
+            || config.decoder_replay
+            || config.moe_kernel_source.is_some()
+            || tp == 0
+            || parallel.pp_size != 1
+            || parallel.attention_dp_size.unwrap_or(1) != 1
+            || parallel.cp_size.unwrap_or(1) != 1
+            || parallel.dcp_size.unwrap_or(1) != 1
+            || moe_ep != 1
+            || (moe_tp != 1 && moe_tp != tp)
+            || nextn != binding.execution_profile.num_draft_tokens
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM requires matching nextn, SILICON vLLM TP with DP1/PP1/CP1 and no EP/decoder replay"
+                    .into(),
+            ));
+        }
+        let selector = binding.selector()?;
+        let topology = [tp, 1, 1, moe_tp, moe_ep, 1].map(|value| value.to_string());
+        for (op, count) in [
+            (prefill, spec.context_ops.len()),
+            (decode, spec.generation_ops.len()),
+        ] {
+            if count != 1
+                || op.verify_width != 1
+                || op.interpolation != crate::operators::fpm_forward::FpmInterpolation::Direct
+                || !op.sol_ops.is_empty()
+                || op.dcp_size.is_some_and(|value| value != 1)
+                || op.model_path != config.model_name
+                || op.match_identity.len() != 19
+                || op.match_identity[5..11] != topology
+                || op.match_identity[14] != "False"
+                || op.match_identity[13] != "False"
+                || op.match_identity[16] != selector
+                || op.match_identity[17] != "none"
+                || op.match_identity[18] != "text"
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "full SD-round FPM requires exact bound direct phase selectors, verify_width=1, and no draft or SOL operations"
+                        .into(),
+                ));
+            }
+        }
+        if prefill.match_identity != decode.match_identity {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM prefill and decode identities must agree".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_full_round_surface(&self, surface: &str) -> Result<(), AicError> {
+        if self.fpm_execution_profile.is_some() {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "full SD-round FPM does not support {surface}; use pure-prefill or pure-decode ForwardPassMetrics with exact iteration totals"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether this engine compiled a vision tower.
+    pub fn has_vision(&self) -> bool {
+        self.vision.is_some()
+    }
+
+    /// Evaluate one vision-encoder call over `shapes`, name-folded like the
+    /// other per-op walks. Mirrors `BaseBackend._run_encoder_phase`: under
+    /// encoder DP the busiest rank encodes its ceil share of the images, every
+    /// sequence of an image is an independent attention sequence, and each op
+    /// group runs at `x = sequences * tokens` of its token class.
+    pub fn evaluate_vision(
+        &self,
+        shapes: &[EncoderImageShape],
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        let vision = self.vision.as_ref().ok_or_else(|| {
+            AicError::InvalidEngineConfig(
+                "this engine compiled no vision tower; set encoder_parallel on a VL model".into(),
+            )
+        })?;
+        let encoder_dp = match vision.encoder_parallel {
+            EncoderParallel::Tp => 1,
+            EncoderParallel::Dp => self.tp_size.max(1),
+        };
+        let mut out = PerOpFold::new("context");
+        for shape in shapes {
+            if shape.images == 0 || shape.sequences == 0 {
+                continue;
+            }
+            let batch = shape
+                .images
+                .div_ceil(encoder_dp)
+                .checked_mul(shape.sequences)
+                .ok_or_else(|| AicError::InvalidEngineConfig("vision batch exceeds u32".into()))?;
+            for (ops, tokens) in [
+                (&vision.patch_ops, shape.patch_tokens),
+                (&vision.transformer_ops, shape.transformer_tokens),
+                (&vision.output_ops, shape.output_tokens),
+            ] {
+                if tokens == 0 {
+                    continue;
+                }
+                let x = batch.checked_mul(tokens).ok_or_else(|| {
+                    AicError::InvalidEngineConfig("vision tokens exceed u32".into())
+                })?;
+                for op in ops {
+                    let r = query_context_op(op, &self.db, batch, tokens, 0, 1.0, Some(x))?;
+                    out.add(op, r);
+                }
+            }
+        }
+        Ok(strip_per_op_metadata(out.into_values()))
+    }
+
+    /// FPM whole-model engine: each phase list LEADS with one `FpmForward`
+    /// (validated in [`Engine::build`]), optionally followed by op-level
+    /// draft ops (hybrid speculative shape). Returns
+    /// `(prefill_op, decode_op, ctx_draft_tail, gen_draft_tail)`; both tails
+    /// are empty for the plain (non-speculative) fpm engine.
+    fn fpm_split(&self) -> Option<(&FpmForwardOp, &FpmForwardOp, &[Op], &[Op])> {
+        match (self.context_ops.first(), self.generation_ops.first()) {
+            (Some(Op::FpmForward(p)), Some(Op::FpmForward(d))) => {
+                Some((p, d, &self.context_ops[1..], &self.generation_ops[1..]))
+            }
             _ => None,
         }
+    }
+
+    /// Back-compat view of [`Self::fpm_split`] for the call sites that only
+    /// need the whole-model pair.
+    fn fpm_ops(&self) -> Option<(&FpmForwardOp, &FpmForwardOp)> {
+        self.fpm_split().map(|(p, d, _, _)| (p, d))
+    }
+
+    /// Whether this engine prices measured complete speculative rounds.
+    pub(crate) fn is_measured_speculative_round(&self) -> bool {
+        self.fpm_execution_profile.is_some()
+    }
+
+    /// How the per-rank `ForwardPassMetrics` dispatch of
+    /// [`Self::forward_pass_time_ms`] can price an attention-DP iteration of
+    /// this engine. Decided from the compiled graph alone.
+    pub(crate) fn iteration_dispatch(&self) -> IterationDispatch {
+        if self.legacy_profile {
+            // v1 execution profiles reject every common forward-pass query.
+            return IterationDispatch::Unsupported;
+        }
+        match self.fpm_split() {
+            Some((_, _, ctx_tail, gen_tail)) => {
+                if !ctx_tail.is_empty()
+                    || !gen_tail.is_empty()
+                    || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+                {
+                    // Hybrid draft tails have no packed-telemetry mapping.
+                    IterationDispatch::Unsupported
+                } else {
+                    IterationDispatch::WholeModel {
+                        sd_round: self.fpm_execution_profile.is_some(),
+                    }
+                }
+            }
+            None => IterationDispatch::Operations {
+                verify_width: self.nextn.saturating_add(1),
+                mixed: self.mixed_ops_supported,
+            },
+        }
+    }
+
+    /// The mix-step pass of every operation name a mixed operation-graph
+    /// rank of [`Self::forward_pass_estimate`] reports, as
+    /// [`get_mix_step_ops`] composes it: context attention runs in the
+    /// context-attention pass, generation attention in the decode-attention
+    /// pass and every other context operation in the shared non-attention
+    /// pass. `None` when name folding merges operations of different passes,
+    /// as for GLM-5.3 attention named alike in both phases, or when a mixed
+    /// rank is not a mix step: whole-model FPM, DSv4.1 stages, or measured
+    /// scopes without a mix-step composition.
+    pub(crate) fn mix_step_passes(&self) -> Option<HashMap<String, MixedPass>> {
+        if self.fpm_split().is_some() || self.has_dsv41_stages() || !self.mixed_ops_supported {
+            return None;
+        }
+        let context = self.context_ops.iter().map(|op| {
+            let pass = if op.is_context_attention() {
+                MixedPass::ContextAttention
+            } else {
+                MixedPass::SharedNonAttention
+            };
+            (op, pass)
+        });
+        let decode = self
+            .generation_ops
+            .iter()
+            .filter(|op| op.is_generation_attention())
+            .map(|op| (op, MixedPass::DecodeAttention));
+        let mut passes = HashMap::new();
+        for (op, pass) in context.chain(decode) {
+            if *passes.entry(op.name().to_owned()).or_insert(pass) != pass {
+                return None;
+            }
+        }
+        Some(passes)
+    }
+
+    /// Whether this engine supplies an unscaled STP whole-forward reference.
+    pub(crate) fn is_autoregressive_fpm(&self) -> bool {
+        self.nextn == 0
+            && self.fpm_execution_profile.is_none()
+            && self
+                .fpm_split()
+                .is_some_and(|(prefill, decode, ctx_tail, gen_tail)| {
+                    prefill.verify_width == 1
+                        && decode.verify_width == 1
+                        && ctx_tail.is_empty()
+                        && gen_tail.is_empty()
+                })
     }
 
     /// Convenience constructor: deserialize a bincode `EngineSpec` and load the
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
     /// Runs the `Engine::from_spec_bytes(bytes) + PerfDatabase::load`
-    /// flow. `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems` and is used
+    /// flow. `systems_root` points at `python/aisimulate/src/aisimulate_core/systems` and is used
     /// only as a fallback: when the decoded `spec.engine.systems_path` is
     /// `Some`, that path is authoritative and overrides the `systems_root`
     /// argument.
@@ -411,6 +1364,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        let fpm_execution_profile = Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
@@ -428,7 +1382,7 @@ impl Engine {
         // engines would lazily re-parse the same parquet files on its first
         // query (~0.5s per engine on data-rich systems). Mode/policy, memo
         // caches, and the provenance accumulator stay per-engine.
-        let db = PerfDatabase::load_resolved_shared(
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
             systems_root,
             &spec.engine.system_name,
             spec.engine.backend.as_str(),
@@ -453,9 +1407,10 @@ impl Engine {
                 spec.engine.database_mode,
                 DatabaseMode::Empirical | DatabaseMode::Sol
             ) || spec.engine.tolerate_dirless_version,
+            spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
-        Engine::build(spec, Arc::new(db))
+        Self::build_validated(spec, Arc::new(db), fpm_execution_profile)
     }
 
     fn validate_engine_database_mode(database_mode: DatabaseMode) -> Result<(), AicError> {
@@ -466,6 +1421,28 @@ impl Engine {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_forward_pass_readiness(
+        &self,
+        worker_type: crate::ForwardPassWorkerType,
+    ) -> Result<(), AicError> {
+        super::readiness::validate(
+            &self.db,
+            self.context_ops
+                .iter()
+                .filter(|_| worker_type != crate::ForwardPassWorkerType::Decode)
+                .chain(
+                    self.generation_ops
+                        .iter()
+                        .filter(|_| worker_type != crate::ForwardPassWorkerType::Prefill),
+                ),
+        )
+    }
+
+    /// Content digest of the compiled spec, excluding storage locations.
+    pub(crate) fn spec_sha256(&self) -> &str {
+        &self.spec_sha256
     }
 
     /// Shared perf database handle.
@@ -518,6 +1495,12 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<StaticResult, AicError> {
+        if runtime.beam_width != 1 {
+            self.reject_full_round_surface("beam-search static phases")?;
+        }
+        if !matches!(mode, StaticMode::Context) {
+            self.reject_full_round_surface("static generation trajectories")?;
+        }
         let context_ms = match mode {
             StaticMode::Context | StaticMode::Both => self.run_context_phase(runtime)?,
             StaticMode::Generation => 0.0,
@@ -538,6 +1521,16 @@ impl Engine {
     /// Python `_run_context_phase` (`base_backend.py:144`): `effective_isl =
     /// isl - prefix`, validate `> 0`, then one full pass over `context_ops`.
     fn run_context_phase(&self, runtime: &RuntimeConfig) -> Result<f64, AicError> {
+        self.run_context_phase_with(runtime, None, |_, _| {})
+    }
+
+    fn run_context_phase_with(
+        &self,
+        runtime: &RuntimeConfig,
+        coverage: Option<&mut FpmQueryCoverage>,
+        mut on_op: impl FnMut(&Op, PerformanceResult),
+    ) -> Result<f64, AicError> {
+        self.check_profile_phase(true)?;
         // Python raises `ValueError` when `effective_isl <= 0`; mirror that.
         if runtime.prefix >= runtime.isl {
             return Err(AicError::InvalidEngineConfig(format!(
@@ -546,14 +1539,47 @@ impl Engine {
             )));
         }
         let effective_isl = runtime.isl - runtime.prefix;
-        run_context_ops(
+        if let Some(coverage) = coverage {
+            let Some((prefill, _, ctx_tail, gen_tail)) = self.fpm_split() else {
+                return Err(AicError::InvalidEngineConfig(
+                    "query coverage requires a direct FPM engine".into(),
+                ));
+            };
+            if !ctx_tail.is_empty()
+                || !gen_tail.is_empty()
+                || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "query coverage does not support speculative FPM".into(),
+                ));
+            }
+            let result = prefill.query_with_coverage(
+                &self.db,
+                &RuntimeContext {
+                    batch_size: runtime.batch_size,
+                    beam_width: 1,
+                    s: effective_isl,
+                    prefix: runtime.prefix,
+                    num_tokens: runtime.batch_size * effective_isl,
+                    seq_imbalance_correction_scale: runtime.seq_imbalance_correction_scale,
+                    ..Default::default()
+                },
+                Some(coverage),
+            )?;
+            let latency_ms = result.latency_ms;
+            on_op(&self.context_ops[0], result);
+            return Ok(latency_ms);
+        }
+        run_context_ops_planned(
             &self.context_ops,
+            Some(&self.context_plan),
             &self.db,
             runtime.batch_size,
             effective_isl,
             runtime.prefix,
             runtime.seq_imbalance_correction_scale,
             ContextOpFilter::All,
+            |_, op, result| on_op(op, result),
         )
     }
 
@@ -571,7 +1597,7 @@ impl Engine {
     ///
     /// `osl <= 1` yields an empty loop and 0.0 (matches Python).
     fn run_generation_phase(&self, runtime: &RuntimeConfig, stride: u32) -> Result<f64, AicError> {
-        self.run_generation_phase_with(runtime, stride, |_, _| {})
+        self.run_generation_phase_with(runtime, stride, |_, _, _| {})
     }
 
     /// [`Self::run_generation_phase`] with a per-op sink. Python builds a
@@ -581,12 +1607,21 @@ impl Engine {
     /// observes ONE per-step-folded result per op name, already weighted by
     /// `repeat_count`, in that exact order: `(r1 + r2) * k`, not
     /// `r1*k + r2*k` (bit-identical for repeated-name model families).
+    ///
+    /// The sink also receives the op's name slot in [`Self::generation_plan`].
     fn run_generation_phase_with(
         &self,
         runtime: &RuntimeConfig,
         stride: u32,
-        mut on_op: impl FnMut(&Op, PerformanceResult),
+        mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
+        self.check_profile_phase(false)?;
+        if self.legacy_profile && runtime.osl > 2 {
+            return Err(crate::operators::measured_composite::invalid(
+                "v1 execution profiles support at most one decode step per query",
+            ));
+        }
+        self.reject_full_round_surface("static generation trajectories")?;
         let bs = runtime
             .batch_size
             .saturating_mul(self.nextn.saturating_add(1));
@@ -595,6 +1630,10 @@ impl Engine {
         if runtime.osl <= 1 {
             return Ok(0.0);
         }
+        let plan = &self.generation_plan;
+        // Per-step name fold, indexed by name slot; `order` keeps first encounter.
+        let mut step_fold: Vec<Option<(&Op, PerformanceResult)>> = vec![None; plan.names()];
+        let mut order = Vec::with_capacity(plan.names());
         let upper = runtime.osl - 1; // exclusive, matches Python `range(0, osl-1, stride)`
         let mut i = 0u32;
         while i < upper {
@@ -605,30 +1644,33 @@ impl Engine {
             // Per-step name fold FIRST (Python's per-iteration dict), with
             // the phase-dict source merge (mismatch -> Mixed, no
             // zero-identity — mirrors `base_backend.py:391-393`).
-            let mut step_fold: Vec<(&Op, PerformanceResult)> = Vec::new();
-            let step = run_generation_ops_step_beamed_with(
+            let step = run_generation_ops_step_planned(
                 &self.generation_ops,
+                Some(plan),
                 &self.db,
                 bs,
                 runtime.beam_width,
                 s,
                 runtime.gen_seq_imbalance_correction_scale,
                 false,
-                |op, r| {
-                    if let Some(entry) = step_fold.iter_mut().find(|(e, _)| e.name() == op.name()) {
-                        entry.1.latency_ms += r.latency_ms;
-                        entry.1.energy_wms += r.energy_wms;
-                        if entry.1.source != r.source {
-                            entry.1.source = crate::operators::base::Source::Mixed;
+                |index, op, r| {
+                    let slot = plan.name_slot(index);
+                    if let Some((_, entry)) = &mut step_fold[slot] {
+                        entry.latency_ms += r.latency_ms;
+                        entry.energy_wms += r.energy_wms;
+                        if entry.source != r.source {
+                            entry.source = crate::operators::base::Source::Mixed;
                         }
-                        entry.1.moe_comm_fallbacks.extend(r.moe_comm_fallbacks);
+                        entry.moe_comm_fallbacks.extend(r.moe_comm_fallbacks);
                     } else {
-                        step_fold.push((op, r));
+                        step_fold[slot] = Some((op, r));
+                        order.push(slot);
                     }
                 },
             )?;
-            for (op, folded) in step_fold {
-                on_op(op, folded.scaled(repeat_count as f64));
+            for slot in order.drain(..) {
+                let (op, folded) = step_fold[slot].take().expect("visited name slot");
+                on_op(slot, op, folded.scaled(repeat_count as f64));
             }
             total += step * repeat_count as f64;
             i += stride;
@@ -641,6 +1683,16 @@ impl Engine {
     /// Thin shim over [`Self::run_static`] with `mode=Context` (osl is
     /// irrelevant for the context phase, so it is fixed at 1).
     pub fn predict_prefill_latency(&self, bs: u32, isl: u32, prefix: u32) -> Result<f64, AicError> {
+        self.predict_prefill_latency_with_coverage(bs, isl, prefix, None)
+    }
+
+    pub(crate) fn predict_prefill_latency_with_coverage(
+        &self,
+        bs: u32,
+        isl: u32,
+        prefix: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
         let rt = RuntimeConfig {
             batch_size: bs,
             isl,
@@ -648,9 +1700,146 @@ impl Engine {
             prefix,
             ..Default::default()
         };
-        Ok(self
-            .run_static(&rt, StaticMode::Context, DEFAULT_STATIC_STRIDE)?
-            .total_ms)
+        self.run_context_phase_with(&rt, coverage, |_, _| {})
+    }
+
+    /// Preserve static prefill geometry, including explicitly equal per-request
+    /// lengths for bounded decoder replay. Aggregate telemetry cannot express
+    /// that information and retains its separate validation.
+    pub(crate) fn predict_prefill_detailed(
+        &self,
+        bs: u32,
+        isl: u32,
+        prefix: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let runtime = RuntimeConfig {
+            batch_size: bs,
+            isl,
+            prefix,
+            osl: 1,
+            ..Default::default()
+        };
+        let mut queries = Vec::new();
+        let prefill_ms = self.run_context_phase_with(&runtime, coverage, |_, result| {
+            queries.extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+        })?;
+        Ok(static_prefill_estimate(prefill_ms, queries))
+    }
+
+    /// Prefill-step latency at exact per-rank iteration totals: the tokens the
+    /// step computes and the cached or earlier-chunk KV its requests read.
+    /// A whole-model FPM context phase queries these native coordinates
+    /// directly. Other graphs price per-request shapes and keep the integer
+    /// means of [`Self::predict_prefill_latency`].
+    pub fn predict_prefill_latency_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> Result<f64, AicError> {
+        self.predict_prefill_latency_total_with_coverage(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            None,
+        )
+    }
+
+    pub(crate) fn predict_prefill_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        self.run_context_phase_totals_with(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage,
+            |_, _| {},
+        )
+    }
+
+    /// [`Self::predict_prefill_detailed`] at exact iteration totals.
+    pub(crate) fn predict_prefill_detailed_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let mut queries = Vec::new();
+        let prefill_ms = self.run_context_phase_totals_with(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage,
+            |_, result| {
+                queries.extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+            },
+        )?;
+        Ok(static_prefill_estimate(prefill_ms, queries))
+    }
+
+    fn run_context_phase_totals_with(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+        mut on_op: impl FnMut(&Op, PerformanceResult),
+    ) -> Result<f64, AicError> {
+        self.check_profile_phase(true)?;
+        if total_prefill_tokens == 0 {
+            return Ok(0.0);
+        }
+        if total_prefill_tokens < batch_size || batch_size == 0 {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "each prefill request must compute a token, but got batch_size={batch_size} \
+                 and total_prefill_tokens={total_prefill_tokens}"
+            )));
+        }
+        // The same single-query FPM shape that `run_context_phase_with` covers.
+        match self.fpm_split() {
+            Some((prefill, _, [], []))
+                if self.nextn == 0 || self.fpm_execution_profile.is_some() =>
+            {
+                let coords = [
+                    f64::from(batch_size),
+                    f64::from(total_prefill_tokens),
+                    f64::from(total_kv_read_tokens),
+                ];
+                let result = prefill.query_totals_with_coverage(&self.db, &coords, coverage)?;
+                let latency_ms = result.latency_ms;
+                on_op(&self.context_ops[0], result);
+                Ok(latency_ms)
+            }
+            _ => {
+                if self.legacy_profile
+                    && (total_prefill_tokens % batch_size != 0
+                        || total_kv_read_tokens % batch_size != 0)
+                {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "v1 prefill profile requires a homogeneous batch",
+                    ));
+                }
+                let total_isl = total_prefill_tokens
+                    .checked_add(total_kv_read_tokens)
+                    .ok_or_else(|| {
+                        AicError::InvalidEngineConfig("prefill input totals exceed u32".into())
+                    })?;
+                let runtime = RuntimeConfig {
+                    batch_size,
+                    isl: total_isl / batch_size,
+                    prefix: total_kv_read_tokens / batch_size,
+                    osl: 1,
+                    ..Default::default()
+                };
+                self.run_context_phase_with(&runtime, coverage, on_op)
+            }
+        }
     }
 
     /// Mocker H2: decode-step latency in ms. Pure-Rust inherent method (no
@@ -678,14 +1867,78 @@ impl Engine {
         batch_size: u32,
         total_past_kv_tokens: u32,
     ) -> Result<f64, AicError> {
-        self.forward_pass_time_ms(&[ForwardPassMetrics {
-            scheduled_requests: crate::ScheduledRequestMetrics {
-                num_decode_requests: batch_size,
-                sum_decode_kv_tokens: total_past_kv_tokens,
+        self.predict_decode_latency_total_with_coverage(batch_size, total_past_kv_tokens, None)
+    }
+
+    pub(crate) fn predict_decode_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        if self.legacy_profile {
+            self.check_profile_phase(false)?;
+            if batch_size == 0 || total_past_kv_tokens % batch_size != 0 {
+                return Err(crate::operators::measured_composite::invalid(
+                    "v1 decode profile requires a positive homogeneous batch",
+                ));
+            }
+            return self.predict_decode_latency(batch_size, total_past_kv_tokens / batch_size, 2);
+        }
+        self.forward_pass_time_ms_with_coverage(
+            &[ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_decode_requests: batch_size,
+                    sum_decode_kv_tokens: total_past_kv_tokens,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        }])
+            }],
+            coverage,
+        )
+    }
+
+    /// Latency that `batch_size` decode requests add to a forward pass that
+    /// also computes prefill, from exact FPM iteration totals. A mixed pass
+    /// costs [`Self::predict_prefill_latency_total`] plus this term, as in
+    /// [`Self::forward_pass_time_ms`]. `None` when this engine has no such
+    /// one-pass composition; callers then price a separate decode pass.
+    pub(crate) fn predict_mixed_decode_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        self.fpm_mixed_decode_term_ms(batch_size, total_past_kv_tokens, None, coverage)
+    }
+
+    /// [`Self::predict_mixed_decode_latency_total_with_coverage`] with its
+    /// executed lookup evidence.
+    pub(crate) fn predict_mixed_decode_detailed_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<crate::ForwardPassEstimate>, AicError> {
+        let mut rank = crate::FpmRankEstimate::default();
+        let Some(latency_ms) = self.fpm_mixed_decode_term_ms(
+            batch_size,
+            total_past_kv_tokens,
+            Some(&mut rank),
+            coverage,
+        )?
+        else {
+            return Ok(None);
+        };
+        rank.latency_ms = latency_ms;
+        Ok(Some(crate::ForwardPassEstimate {
+            unavailable_reason: None,
+            latency_ms: Some(latency_ms),
+            native_latency_ms: Some(latency_ms),
+            correction_factor: Some(1.0),
+            max_rank: (latency_ms > 0.0).then_some(0),
+            ranks: vec![rank],
+        }))
     }
 
     /// Highest decode KV-read total covered by a compiled FPM engine.
@@ -695,6 +1948,19 @@ impl Engine {
             return Ok(None);
         };
         decode.decode_kv_ceiling(&self.db)
+    }
+
+    /// Canonical target normalization for the complete loaded FPM profile.
+    /// This preparation diagnostic never evaluates a timing query.
+    pub fn fpm_seed_target_normalization(
+        &self,
+    ) -> Result<crate::perf_database::fpm_forward::FpmSeedTargetNormalization, AicError> {
+        if self.fpm_ops().is_none() {
+            return Err(AicError::InvalidEngineConfig(
+                "seed target normalization requires a native FPM profile".into(),
+            ));
+        }
+        Ok(self.db.fpm_forward.seed_target_normalization()?.clone())
     }
 
     /// One mixed (chunked-prefill + decode) step latency. LITERAL mirror of
@@ -797,6 +2063,17 @@ impl Engine {
         gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<[f64; 4], AicError> {
+        self.require_common_profile()?;
+        if ctx_tokens > 0 && gen_tokens > 0 {
+            self.check_mixed_ops()?;
+        }
+        if ctx_tokens > 0 {
+            self.check_profile_phase(true)?;
+        }
+        if gen_tokens > 0 {
+            self.check_profile_phase(false)?;
+        }
+        self.reject_full_round_surface("static mixed-step composition")?;
         if ctx_tokens == 0 && gen_tokens == 0 {
             return Ok([0.0; 4]);
         }
@@ -807,23 +2084,54 @@ impl Engine {
         // Component mapping: FPM has no non-attention/attention split, so the
         // breakdown reports [total, prefill_component, 0, marginal_decode].
         // The component consumers (speculative agg scheduling) only read the
-        // split under MTP, which FPM rejects at build time.
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
+        // split under speculation; the target and draft work stay composed here.
+        if let Some((prefill_op, decode_op, ctx_tail, _gen_tail)) = self.fpm_split() {
             let (prefill_ms, marginal_decode_ms) = self.fpm_mixed_step_components(
                 prefill_op,
                 decode_op,
+                ctx_tail,
                 ctx_tokens,
                 gen_tokens,
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                |_, _, _| {},
             )?;
+            let prefill_ms = prefill_ms.latency_ms;
+            let marginal_decode_ms = marginal_decode_ms.latency_ms;
             return Ok([
                 prefill_ms + marginal_decode_ms,
                 prefill_ms,
                 0.0,
                 marginal_decode_ms,
             ]);
+        }
+        if self.has_dsv41_stages() {
+            let isl = isl.max(1);
+            if ctx_tokens > 0 && prefix >= isl {
+                return Err(AicError::InvalidEngineConfig(
+                    "V4.1 prefill requires isl > prefix".into(),
+                ));
+            }
+            // The SDK's packed context count includes prefix for complete
+            // requests. A remainder describes this iteration's partial extend.
+            let mut prefills = Vec::with_capacity(2);
+            if ctx_tokens / isl > 0 {
+                prefills.push((ctx_tokens / isl, isl - prefix, prefix));
+            }
+            if ctx_tokens % isl > 0 {
+                prefills.push((1, ctx_tokens % isl, prefix));
+            }
+            return self.dsv41_mixed_workload(
+                &prefills,
+                gen_tokens.saturating_mul(self.nextn.saturating_add(1)),
+                isl.saturating_add(osl / 2).saturating_add(1),
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                |pass, op, _, result| on_op(pass, op, result),
+            );
         }
         // Python divides by `isl` (`floor(ctx/isl)`, `ceil(ctx/isl)`) without
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
@@ -845,16 +2153,25 @@ impl Engine {
                 combined as i64 - prefix1 as i64
             )));
         }
-        let shared_non_attention = run_context_ops_with(
-            &self.context_ops,
-            &self.db,
-            1,
-            combined - prefix1,
-            prefix1,
-            seq_imbalance_correction_scale,
-            ContextOpFilter::SkipContextAttention,
-            |op, r| on_op(MixedPass::SharedNonAttention, op, r),
-        )?;
+        let mut shared_non_attention = 0.0;
+        for op in &self.context_ops {
+            // Only target operations share a forward across prefill and
+            // verification. The draft has its own phase-specific graph.
+            if op.is_context_attention() || op.name().starts_with("draft_") {
+                continue;
+            }
+            let result = query_context_op(
+                op,
+                &self.db,
+                1,
+                combined - prefix1,
+                prefix1,
+                seq_imbalance_correction_scale,
+                None,
+            )?;
+            shared_non_attention += result.latency_ms;
+            on_op(MixedPass::SharedNonAttention, op, result);
+        }
 
         // ---- Pass 2: context attention at the prefill shape ----
         // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
@@ -870,21 +2187,31 @@ impl Engine {
             }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
-            let attn = run_context_ops_with(
-                &self.context_ops,
-                &self.db,
-                batch2,
-                isl - prefix,
-                prefix,
-                seq_imbalance_correction_scale,
-                ContextOpFilter::OnlyContextAttention,
+            let mut attn = 0.0;
+            for op in &self.context_ops {
+                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // Draft prefill uses the same whole-prefill amortization
+                // as target attention, independently of decode work. It
+                // never sees the combined target verification token count.
+                let result = query_context_op(
+                    op,
+                    &self.db,
+                    batch2,
+                    isl - prefix,
+                    prefix,
+                    seq_imbalance_correction_scale,
+                    None,
+                )?;
+                attn += result.latency_ms;
                 // RAW results to the sink; the per-op wrapper divides the
                 // FOLDED values by scale2 with one true division per name
                 // (Python folds `context_attention` into one key, then
                 // `latency_dict["context_attention"] / scale_factor` —
                 // fold-then-divide, `base_backend.py:1244-1246`).
-                |op, r| on_op(MixedPass::ContextAttention, op, r),
-            )?;
+                on_op(MixedPass::ContextAttention, op, result);
+            }
             context_attention = attn / scale2;
         }
 
@@ -895,16 +2222,25 @@ impl Engine {
             // `_run_generation_phase` queries at s = isl_pass3 + i + 1 with
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
-            decode_attention = run_generation_ops_step_beamed_with(
-                &self.generation_ops,
-                &self.db,
-                bs,
-                1,
-                s,
-                gen_seq_imbalance_correction_scale,
-                true,
-                |op, r| on_op(MixedPass::DecodeAttention, op, r),
-            )?;
+            for op in &self.generation_ops {
+                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                    continue;
+                }
+                // The draft's TokenScale maps this verification-width
+                // batch to its own query width before native op lookup.
+                let result = query_generation_op(
+                    op,
+                    &self.db,
+                    bs,
+                    1,
+                    s,
+                    gen_seq_imbalance_correction_scale,
+                    0,
+                    None,
+                )?;
+                decode_attention += result.latency_ms;
+                on_op(MixedPass::DecodeAttention, op, result);
+            }
         }
 
         Ok([
@@ -913,6 +2249,131 @@ impl Engine {
             context_attention,
             decode_attention,
         ])
+    }
+
+    fn has_dsv41_stages(&self) -> bool {
+        self.context_ops
+            .iter()
+            .any(|op| matches!(op, Op::Dsv41Stage(_)))
+    }
+
+    /// Scope every prefill extend before fusing token-major work with decode.
+    /// Applying a decoder tail to the combined batch would incorrectly discard
+    /// decode tokens and other requests' tails. The tuple is (batch, new, prefix).
+    #[allow(clippy::too_many_arguments)]
+    fn dsv41_mixed_workload(
+        &self,
+        prefills: &[(u32, u32, u32)],
+        decode_batch: u32,
+        decode_kv: u32,
+        context_scale: f64,
+        generation_scale: f64,
+        mut on_op: impl FnMut(MixedPass, &Op, &RuntimeContext, PerformanceResult),
+    ) -> Result<[f64; 4], AicError> {
+        let mut totals = [0.0; 4];
+        if prefills.is_empty() {
+            if decode_batch > 0 {
+                // Generation can fuse or overlap children differently from
+                // prefill. Preserve that graph when no prefill is scheduled.
+                for outer in &self.generation_ops {
+                    let children: &[Op] = match outer {
+                        Op::Dsv41Stage(stage) => &stage.children,
+                        _ => std::slice::from_ref(outer),
+                    };
+                    for child in children {
+                        let runtime = generation_op_runtime(
+                            decode_batch,
+                            1,
+                            decode_kv,
+                            generation_scale,
+                            0,
+                            None,
+                        );
+                        let result = child.query(&self.db, &runtime)?;
+                        let (bucket, pass) = if child.is_generation_attention() {
+                            (3, MixedPass::DecodeAttention)
+                        } else {
+                            (1, MixedPass::SharedNonAttention)
+                        };
+                        totals[bucket] += result.latency_ms;
+                        on_op(pass, child, &runtime, result);
+                    }
+                }
+            }
+            totals[0] = totals[1] + totals[3];
+            return Ok(totals);
+        }
+        let prefill_requests: u32 = prefills.iter().map(|(batch, _, _)| batch).sum();
+        for outer in &self.context_ops {
+            let (stage, children): (_, &[Op]) = match outer {
+                Op::Dsv41Stage(stage) => (Some(stage), &stage.children),
+                _ => (None, std::slice::from_ref(outer)),
+            };
+            let scopes: Vec<_> = prefills
+                .iter()
+                .map(|&(batch, s, prefix)| {
+                    let (s, prefix) = stage.map_or((s as f64, prefix as f64), |stage| {
+                        stage.scope(s as f64, prefix as f64)
+                    });
+                    (batch, s as u32, prefix as u32)
+                })
+                .collect();
+            let tokens = scopes
+                .iter()
+                .try_fold(decode_batch, |total, &(batch, s, _)| {
+                    batch.checked_mul(s).and_then(|n| total.checked_add(n))
+                })
+                .ok_or_else(|| {
+                    AicError::InvalidEngineConfig("V4.1 mixed token count overflow".into())
+                })?;
+            for child in children {
+                if child.is_context_attention() {
+                    for &(batch, s, prefix) in &scopes {
+                        if batch == 0 || s == 0 {
+                            continue;
+                        }
+                        let runtime =
+                            context_op_runtime(child, batch, s, prefix, context_scale, None);
+                        let result = child.query(&self.db, &runtime)?;
+                        totals[2] += result.latency_ms;
+                        on_op(MixedPass::ContextAttention, child, &runtime, result);
+                    }
+                } else if tokens > 0 {
+                    let x = if child.is_logits_gemm() {
+                        prefill_requests.saturating_add(decode_batch)
+                    } else {
+                        tokens
+                    };
+                    let runtime = context_op_runtime(child, 1, tokens, 0, context_scale, Some(x));
+                    let result = child.query(&self.db, &runtime)?;
+                    totals[1] += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, child, &runtime, result);
+                }
+            }
+        }
+        if decode_batch > 0 {
+            for outer in &self.generation_ops {
+                let children: &[Op] = match outer {
+                    Op::Dsv41Stage(stage) => &stage.children,
+                    _ => std::slice::from_ref(outer),
+                };
+                for child in children.iter().filter(|op| op.is_generation_attention()) {
+                    let runtime = generation_op_runtime(
+                        decode_batch,
+                        1,
+                        decode_kv,
+                        generation_scale,
+                        0,
+                        None,
+                    );
+                    let result = child.query(&self.db, &runtime)?;
+                    totals[3] += result.latency_ms;
+                    on_op(MixedPass::DecodeAttention, child, &runtime, result);
+                }
+            }
+        }
+        totals[0] = totals[1] + totals[2] + totals[3];
+        Ok(totals)
     }
 
     /// One generation-only step latency. LITERAL mirror of Python
@@ -928,6 +2389,8 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<f64, AicError> {
+        self.check_profile_phase(false)?;
+        self.reject_full_round_surface("mean-context static decode steps")?;
         if gen_tokens == 0 {
             return Ok(0.0);
         }
@@ -966,17 +2429,59 @@ impl Engine {
     /// component stays the pass-baseline marginal. Correct only when the
     /// deployed engine configuration (especially the CUDA-graph capture
     /// surface) matches the collection — the cliffs live in the data.
+    ///
+    /// The equivalent-AR surface is an estimate for wide verification. It
+    /// preserves token and KV totals but does not contain measured wide-query
+    /// kernel timing. The caller also retains the whole-prefill scheduling
+    /// approximation when fewer than one full prefill arrives per round.
     fn fpm_mixed_step_components(
         &self,
         prefill_op: &FpmForwardOp,
         decode_op: &FpmForwardOp,
+        ctx_tail: &[Op],
         ctx_tokens: u32,
         gen_tokens: u32,
         isl: u32,
         osl: u32,
         prefix: u32,
-    ) -> Result<(f64, f64), AicError> {
-        let mut prefill_component = 0.0_f64;
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
+        mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
+    ) -> Result<(PerformanceResult, PerformanceResult), AicError> {
+        let mut prefill_component = PerformanceResult::zero();
+        let decode_query_tokens = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
+        let mut price_prefill = |batch: u32, tokens: u32, prefix: u32, scheduled: u32| {
+            let mut result = prefill_op.query_totals(
+                &self.db,
+                &[
+                    batch as f64,
+                    scheduled as f64 + decode_query_tokens as f64,
+                    batch as f64 * prefix as f64,
+                ],
+            )?;
+            on_op(
+                MixedPass::SharedNonAttention,
+                &self.context_ops[0],
+                result.clone(),
+            );
+            // Draft precompute is absent from the whole-model target curve.
+            // Keep energy, provenance and executed fallback metadata together
+            // with its latency for the native per-op reporting endpoint.
+            run_context_ops_with(
+                ctx_tail,
+                &self.db,
+                batch,
+                tokens,
+                prefix,
+                seq_imbalance_correction_scale,
+                ContextOpFilter::All,
+                |op, draft| {
+                    on_op(MixedPass::SharedNonAttention, op, draft.clone());
+                    result = std::mem::take(&mut result).plus(draft);
+                },
+            )?;
+            Ok::<_, AicError>(result)
+        };
         if ctx_tokens > 0 {
             let new_tokens = isl.saturating_sub(prefix);
             if new_tokens == 0 {
@@ -985,65 +2490,194 @@ impl Engine {
                 )));
             }
             if ctx_tokens >= new_tokens {
-                // Whole prefills this iteration: the scheduled total picks
-                // the regime row.
-                let batch = ctx_tokens.div_ceil(new_tokens);
-                prefill_component = prefill_op
-                    .query_totals(
-                        &self.db,
-                        &[
-                            batch as f64,
-                            (ctx_tokens + gen_tokens) as f64,
-                            (batch * prefix) as f64,
-                        ],
-                    )?
-                    .latency_ms;
+                prefill_component = price_prefill(
+                    ctx_tokens.div_ceil(new_tokens),
+                    new_tokens,
+                    prefix,
+                    ctx_tokens,
+                )?;
             } else {
                 // Chunked prefill: per-chunk totals, per-iteration average.
-                let mut total = 0.0_f64;
                 let mut chunks = 0u32;
                 let mut done = 0u32;
                 while done < new_tokens {
                     let chunk = ctx_tokens.min(new_tokens - done);
-                    total += prefill_op
-                        .query_totals(
-                            &self.db,
-                            &[1.0, (chunk + gen_tokens) as f64, (prefix + done) as f64],
-                        )?
-                        .latency_ms;
+                    prefill_component =
+                        prefill_component.plus(price_prefill(1, chunk, prefix + done, chunk)?);
                     done += chunk;
                     chunks += 1;
                 }
-                prefill_component = total / chunks as f64;
+                // Retain the existing scalar path's division order.
+                prefill_component.latency_ms /= chunks as f64;
+                prefill_component.energy_wms /= chunks as f64;
+                if let Some(sol) = &mut prefill_component.sol {
+                    sol.math_ms /= chunks as f64;
+                    sol.mem_ms /= chunks as f64;
+                }
             }
         }
-        let mut marginal_decode = 0.0_f64;
+        let mut marginal_decode = PerformanceResult::zero();
         if gen_tokens > 0 {
             let rt = RuntimeConfig {
                 batch_size: gen_tokens,
                 isl: isl.saturating_add(osl / 2),
                 osl: 2,
+                gen_seq_imbalance_correction_scale,
                 ..Default::default()
             };
-            let gen_ms = self.run_generation_phase(&rt, DEFAULT_STATIC_STRIDE)?;
-            let baseline_ms = if ctx_tokens > 0 {
-                // run_generation_phase scaled the batch by (nextn + 1) and
-                // sampled its single step at `s = rt.isl + 1`, so the decode
-                // query above landed on `(bs, bs * s)`. The baseline must be
-                // taken at that SAME coordinate: it selects its bracket rows
-                // by KV coverage, and a different KV can select different
-                // rows than the query used.
+            let mut target = PerformanceResult::zero();
+            let mut draft = PerformanceResult::zero();
+            self.run_generation_phase_with(&rt, DEFAULT_STATIC_STRIDE, |_, op, result| {
+                let component = if matches!(op, Op::FpmForward(_)) {
+                    &mut target
+                } else {
+                    on_op(MixedPass::DecodeAttention, op, result.clone());
+                    &mut draft
+                };
+                *component = std::mem::take(component).plus(result);
+            })?;
+            if ctx_tokens > 0 {
+                // Use the equivalent-AR query's same batch and KV coordinates
+                // so the current per-curve coverage policy chooses the same rows.
                 let baseline_batch = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
-                let baseline_kv = baseline_batch as f64 * (rt.isl as f64 + 1.0);
-                decode_op
+                let baseline_kv = gen_tokens as f64 * (rt.isl as f64 + 1.0);
+                let baseline_ms = decode_op
                     .query_pass_baseline(&self.db, baseline_batch, baseline_kv)?
-                    .latency_ms
-            } else {
-                0.0
-            };
-            marginal_decode = (gen_ms - baseline_ms).max(0.0);
+                    .latency_ms;
+                target.latency_ms = (target.latency_ms - baseline_ms).max(0.0);
+            }
+            // Draft work has no twin in the prefill pass and must survive
+            // even when the target's marginal cost clamps to zero.
+            on_op(
+                MixedPass::DecodeAttention,
+                &self.generation_ops[0],
+                target.clone(),
+            );
+            marginal_decode = target.plus(draft);
         }
         Ok((prefill_component, marginal_decode))
+    }
+
+    /// One prefill or decode step with executed provenance and a diagnostic SOL
+    /// comparison. SOL failures do not change the selected estimator or latency.
+    pub(crate) fn static_phase_diagnostics(
+        &self,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        self.check_profile_phase(prefill)?;
+        self.reject_full_round_surface("operation diagnostics")?;
+        use super::diagnostics::SolDiagnostics;
+        if prefix > context_length || (!prefill && prefix != 0) {
+            return Err(AicError::InvalidEngineConfig(
+                "invalid static phase prefix".into(),
+            ));
+        }
+        if !prefill && context_length == u32::MAX {
+            return Err(AicError::InvalidEngineConfig(
+                "decode context length overflows the next token".into(),
+            ));
+        }
+        if batch_size == 0 || (prefill && context_length == prefix) {
+            return Ok(Vec::new());
+        }
+        let token_count = if prefill {
+            batch_size.checked_mul(context_length - prefix)
+        } else {
+            self.nextn
+                .checked_add(1)
+                .and_then(|width| batch_size.checked_mul(width))
+        };
+        if token_count.is_none() {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase token count exceeds u32".into(),
+            ));
+        }
+        let runtime = RuntimeConfig {
+            batch_size,
+            isl: context_length,
+            prefix,
+            osl: if prefill { 1 } else { 2 },
+            ..Default::default()
+        };
+        let mode = if prefill {
+            StaticMode::Context
+        } else {
+            StaticMode::Generation
+        };
+        let (context, generation) =
+            self.run_static_per_op_with_metadata(&runtime, mode, DEFAULT_STATIC_STRIDE)?;
+        let entries = if prefill { context } else { generation };
+        let sol_db = self.db.sol_full_view();
+        let (ops, plan) = if prefill {
+            (&self.context_ops, &self.context_plan)
+        } else {
+            (&self.generation_ops, &self.generation_plan)
+        };
+        // Both folds visit every op in order, so entry `k` is name slot `k`.
+        if entries.len() != plan.names() {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase diagnostics did not fold every operation name".into(),
+            ));
+        }
+        // SOL comparison per name slot, summed in op order. A name stops at
+        // its first failure, which becomes its unavailable reason.
+        let mut sols: Vec<Option<Result<SolDiagnostics, AicError>>> =
+            (0..plan.names()).map(|_| None).collect();
+        let mut memo = QueryMemo::new(Some(plan), ops);
+        for (index, op) in ops.iter().enumerate() {
+            let sol = &mut sols[plan.name_slot(index)];
+            if matches!(sol, Some(Err(_))) {
+                continue;
+            }
+            let result = memo
+                .query(index, || {
+                    if prefill {
+                        query_context_op(
+                            op,
+                            &sol_db,
+                            batch_size,
+                            context_length - prefix,
+                            prefix,
+                            1.0,
+                            None,
+                        )
+                    } else {
+                        query_generation_op(
+                            op,
+                            &sol_db,
+                            batch_size.saturating_mul(self.nextn.saturating_add(1)),
+                            1,
+                            context_length.saturating_add(1),
+                            1.0,
+                            0,
+                            None,
+                        )
+                    }
+                })
+                .and_then(|result| {
+                    let (math_ms, memory_ms) = sol_components(op, &result)?;
+                    Ok(SolDiagnostics {
+                        latency_ms: result.latency_ms,
+                        math_ms,
+                        memory_ms,
+                    })
+                });
+            *sol = Some(match (sol.take(), result) {
+                (Some(Ok(sum)), Ok(next)) => Ok(sum.plus(&next)),
+                (_, result) => result,
+            });
+        }
+        debug_assert!(entries.iter().enumerate().all(|(slot, entry)| {
+            (0..ops.len()).any(|i| plan.name_slot(i) == slot && ops[i].name() == entry.0)
+        }));
+        Ok(entries
+            .into_iter()
+            .zip(sols)
+            .map(|(entry, sol)| operation_diagnostics(entry, sol))
+            .collect())
     }
 
     /// [`Self::run_static`] with the per-op values kept instead of summed:
@@ -1082,30 +2716,82 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
-        let mut context = PerOpFold::new("context");
+        let mut context = PerOpFold::for_plan("context", &self.context_plan);
+        let mut generation = PerOpFold::for_plan("generation", &self.generation_plan);
+        self.run_static_per_op_with(runtime, mode, stride, |is_context, slot, op, r| {
+            if is_context {
+                context.add_slot(slot, op, r)
+            } else {
+                generation.add_slot(slot, op, r)
+            }
+        })?;
+        Ok((context.into_values(), generation.into_values()))
+    }
+
+    /// The phase of [`Self::run_static_per_op`] that a static timing query
+    /// reads, context for [`StaticMode::Context`] and generation otherwise,
+    /// with value `k` belonging to the returned name `k` instead of carrying
+    /// it. Every call returns the same shared names, so callers that keep
+    /// names apart skip allocating them. The walk, values, sources and order
+    /// are those of [`Self::run_static_per_op`].
+    pub(crate) fn run_static_slot_values(
+        &self,
+        runtime: &RuntimeConfig,
+        mode: StaticMode,
+        stride: u32,
+    ) -> Result<(&Arc<[String]>, Vec<PerOpSlotValue>), AicError> {
+        let context = mode == StaticMode::Context;
+        let plan = if context {
+            &self.context_plan
+        } else {
+            &self.generation_plan
+        };
+        let mut fold = PerOpSlotFold::for_plan(plan);
+        self.run_static_per_op_with(runtime, mode, stride, |is_context, slot, _, r| {
+            if is_context == context {
+                fold.add(slot, r);
+            }
+        })?;
+        Ok((plan.slot_names(), fold.into_values(plan)?))
+    }
+
+    /// The static per-op walk: `on_op` observes whether each op is a context
+    /// op, its name slot and its result, in [`Self::run_static_per_op`] fold
+    /// order.
+    fn run_static_per_op_with(
+        &self,
+        runtime: &RuntimeConfig,
+        mode: StaticMode,
+        stride: u32,
+        mut on_op: impl FnMut(bool, usize, &Op, PerformanceResult),
+    ) -> Result<(), AicError> {
+        self.reject_full_round_surface("per-operation static phases")?;
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
+            self.check_profile_phase(true)?;
             if runtime.prefix >= runtime.isl {
                 return Err(AicError::InvalidEngineConfig(format!(
                     "isl must be greater than 0 after removing prefix, but got {}",
                     runtime.isl as i64 - runtime.prefix as i64
                 )));
             }
-            run_context_ops_with(
+            run_context_ops_planned(
                 &self.context_ops,
+                Some(&self.context_plan),
                 &self.db,
                 runtime.batch_size,
                 runtime.isl - runtime.prefix,
                 runtime.prefix,
                 runtime.seq_imbalance_correction_scale,
                 ContextOpFilter::All,
-                |op, r| context.add(op, r),
+                |index, op, r| on_op(true, self.context_plan.name_slot(index), op, r),
             )?;
         }
-        let mut generation = PerOpFold::new("generation");
         if matches!(mode, StaticMode::Generation | StaticMode::Both) {
-            self.run_generation_phase_with(runtime, stride, |op, r| generation.add(op, r))?;
+            self.run_generation_phase_with(runtime, stride, |slot, op, r| {
+                on_op(false, slot, op, r)
+            })?;
         }
-        Ok((context.into_values(), generation.into_values()))
+        Ok(())
     }
 
     /// [`Self::mixed_step_breakdown`] with the per-op values kept:
@@ -1174,37 +2860,42 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<MixedStepPerOpValuesWithMetadata, AicError> {
-        // Whole-model FPM: never the name-filtered three-pass split (see
-        // mixed_step_breakdown_with). Report the scalar path's component
-        // mapping as per-op entries — the prefill component under the
-        // prefill op's name in the shared bucket, the decode marginal under
-        // the decode op's name — so the Python fold sees the same keys as
-        // its own FPM branch.
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
-            let (prefill_ms, marginal_decode_ms) = self.fpm_mixed_step_components(
+        self.reject_full_round_surface("per-operation mixed steps")?;
+        // Preserve the FPM component contract while reporting the actual target
+        // and draft operations independently. The same execution path supplies
+        // scalar costs, energy, provenance, and fallback metadata.
+        if let Some((prefill_op, decode_op, ctx_tail, _gen_tail)) = self.fpm_split() {
+            let mut shared = PerOpFold::new("context");
+            let mut dec_attn = PerOpFold::new("generation");
+            self.fpm_mixed_step_components(
                 prefill_op,
                 decode_op,
+                ctx_tail,
                 ctx_tokens,
                 gen_tokens,
                 isl.max(1),
                 osl.max(1),
                 prefix,
+                seq_imbalance_correction_scale,
+                gen_seq_imbalance_correction_scale,
+                |pass, op, result| match pass {
+                    MixedPass::SharedNonAttention => shared.add(op, result),
+                    MixedPass::DecodeAttention => dec_attn.add(op, result),
+                    MixedPass::ContextAttention => unreachable!("FPM uses the prefill component"),
+                },
             )?;
-            let mut shared: Vec<PerOpValueWithMetadata> = Vec::new();
-            if ctx_tokens > 0 {
-                shared.push((prefill_op.name.clone(), prefill_ms, 0.0, "silicon", None));
+            let mut shared = shared.into_values();
+            let new_tokens = isl.max(1).saturating_sub(prefix);
+            if ctx_tokens > 0 && ctx_tokens < new_tokens {
+                // Fold each name before the same single division used by the
+                // scalar chunked-prefill path.
+                let chunks = new_tokens.div_ceil(ctx_tokens) as f64;
+                for row in &mut shared {
+                    row.1 /= chunks;
+                    row.2 /= chunks;
+                }
             }
-            let mut dec_attn: Vec<PerOpValueWithMetadata> = Vec::new();
-            if gen_tokens > 0 {
-                dec_attn.push((
-                    decode_op.name.clone(),
-                    marginal_decode_ms,
-                    0.0,
-                    "silicon",
-                    None,
-                ));
-            }
-            return Ok((shared, Vec::new(), dec_attn));
+            return Ok((shared, Vec::new(), dec_attn.into_values()));
         }
         let mut shared = PerOpFold::new("context");
         let mut ctx_attn = PerOpFold::new("context");
@@ -1227,7 +2918,7 @@ impl Engine {
             },
         )?;
         let mut ctx_attn = ctx_attn.into_values();
-        if ctx_tokens > 0 {
+        if ctx_tokens > 0 && !self.has_dsv41_stages() {
             // Mirror the scalar bucket and Python's fold-then-single-true-
             // division (`base_backend.py:1244-1246`): one `/ scale2` per
             // folded name, never a per-entry reciprocal multiply.
@@ -1271,6 +2962,8 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<Vec<PerOpValueWithMetadata>, AicError> {
+        self.check_profile_phase(false)?;
+        self.reject_full_round_surface("per-operation decode steps")?;
         let mut out = PerOpFold::new("generation");
         if gen_tokens == 0 {
             return Ok(out.into_values());
@@ -1304,6 +2997,8 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(true)?;
+        self.reject_full_round_surface("per-operation context queries")?;
         let mut out = PerOpFold::new("context");
         for &i in indices {
             let op = self.context_ops.get(i).ok_or_else(|| {
@@ -1338,6 +3033,8 @@ impl Engine {
         prefix: u32,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(false)?;
+        self.reject_full_round_surface("per-operation generation queries")?;
         let mut out = PerOpFold::new("generation");
         for &i in indices {
             let op = self.generation_ops.get(i).ok_or_else(|| {
@@ -1376,9 +3073,12 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(is_context)?;
+        self.reject_full_round_surface("ad-hoc operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -1423,6 +3123,8 @@ impl Engine {
         imbalance_correction_scale: f64,
         visual_block_upper_triangle: bool,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(true)?;
+        self.reject_full_round_surface("ad-hoc attention kernel queries")?;
         if visual_block_upper_triangle && prefix != 0 {
             return Err(AicError::InvalidEngineConfig(
                 "visual-block attention kernel evaluation requires prefix=0".into(),
@@ -1477,11 +3179,14 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpSolValue>, AicError> {
+        self.check_profile_phase(is_context)?;
+        self.reject_full_round_surface("SOL operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!(
                 "evaluate_ops_sol_json: invalid op list JSON: {e}"
             ))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let sol_db = self.db.sol_full_view();
         let mut out = PerOpSolFold::default();
         for op in &ops {
@@ -1531,22 +3236,226 @@ impl Engine {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<f64, AicError> {
+        self.forward_pass_time_ms_with_coverage(metrics_by_rank, None)
+    }
+
+    pub(crate) fn forward_pass_time_ms_with_coverage(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        self.forward_pass_estimate(metrics_by_rank, false, coverage)
+            .map(|estimate| estimate.native_latency_ms.unwrap())
+    }
+
+    pub(crate) fn forward_pass_estimate(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        capture: bool,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.check_iteration(metrics_by_rank)?;
+        let mut max_latency = 0.0_f64;
+        let mut max_rank = None;
+        let mut ranks = Vec::new();
+        for (rank, metrics) in metrics_by_rank.iter().enumerate() {
+            let rank_latency = if capture {
+                let mut evidence = crate::FpmRankEstimate {
+                    rank,
+                    ..Default::default()
+                };
+                let rank_latency = if coverage.is_none() && self.fpm_split().is_none() {
+                    // An operation graph reports only its operations, which
+                    // the memo keeps.
+                    let priced = self.rank_pricing(metrics, Some(RankDetail::Diagnostics), None)?;
+                    evidence.operations = priced.diagnostics.clone().unwrap_or_default();
+                    priced.latency_ms
+                } else {
+                    self.rank_latency_ms(
+                        metrics,
+                        RankObserver::Diagnostics(&mut evidence),
+                        coverage.as_deref_mut(),
+                    )?
+                };
+                evidence.latency_ms = rank_latency;
+                ranks.push(evidence);
+                rank_latency
+            } else {
+                self.rank_pricing(metrics, None, coverage.as_deref_mut())?
+                    .latency_ms
+            };
+            if rank_latency > max_latency {
+                max_latency = rank_latency;
+                max_rank = Some(rank);
+            }
+        }
+        Ok(crate::ForwardPassEstimate {
+            unavailable_reason: None,
+            latency_ms: Some(max_latency),
+            native_latency_ms: Some(max_latency),
+            correction_factor: Some(1.0),
+            max_rank,
+            ranks,
+        })
+    }
+
+    /// [`Self::forward_pass_estimate`] keeping each rank's pricing: its
+    /// native latency and, for an operation graph, the operations it
+    /// executed in `detail`: their values under names shared by every rank
+    /// that runs the same walk, or the diagnostics the detailed estimate
+    /// reports. Whole-model FPM ranks report neither; their direct-lookup
+    /// evidence needs [`Self::forward_pass_estimate`].
+    pub(crate) fn forward_pass_ranks(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        detail: RankDetail,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<NativeIteration, AicError> {
+        self.check_iteration(metrics_by_rank)?;
+        let mut latency_ms = 0.0_f64;
+        let mut ranks = Vec::with_capacity(metrics_by_rank.len());
+        for metrics in metrics_by_rank {
+            let rank = self.rank_pricing(metrics, Some(detail), coverage.as_deref_mut())?;
+            if rank.latency_ms > latency_ms {
+                latency_ms = rank.latency_ms;
+            }
+            ranks.push(rank);
+        }
+        Ok(NativeIteration { latency_ms, ranks })
+    }
+
+    fn check_iteration(&self, metrics_by_rank: &[ForwardPassMetrics]) -> Result<(), AicError> {
+        self.require_common_profile()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
             ));
         }
+        if self.fpm_execution_profile.is_some() && metrics_by_rank.len() != 1 {
+            return Err(AicError::InvalidForwardPassMetrics(
+                "full SD-round FPM requires exactly one attention-DP rank".into(),
+            ));
+        }
         for metrics in metrics_by_rank {
             validate_forward_pass_metrics(metrics)?;
         }
-        let mut max_latency = 0.0_f64;
-        for metrics in metrics_by_rank {
-            let rank_latency = self.rank_latency_ms(metrics)?;
-            if rank_latency > max_latency {
-                max_latency = rank_latency;
-            }
+        Ok(())
+    }
+
+    /// One rank's dispatch, observing its operations in `detail`. Without
+    /// lookup `coverage`, which counts every lookup, a bounded memo keyed by
+    /// the rank's [`RankKey`] answers repeated workloads: the dispatch reads
+    /// nothing else and the engine is immutable, so a hit returns the
+    /// dispatch's own latency and operations and notes again the empirical
+    /// provenance tier its lookups fired. Without a `detail`, the memo keeps
+    /// operation values. Whole-model diagnostics are never memoized: their
+    /// direct lookups are evidence of each call.
+    fn rank_pricing(
+        &self,
+        metrics: &ForwardPassMetrics,
+        detail: Option<RankDetail>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Arc<RankPricing>, AicError> {
+        if coverage.is_some()
+            || (detail == Some(RankDetail::Diagnostics) && self.fpm_split().is_some())
+        {
+            return self.price_rank(metrics, detail, coverage).map(Arc::new);
         }
-        Ok(max_latency)
+        let detail = detail.unwrap_or(RankDetail::Values);
+        let memo = self
+            .rank_memo
+            .get_or_init(|| quick_cache::sync::Cache::new(RANK_MEMO_CAPACITY));
+        let key = RankKey::of(metrics, detail);
+        if let Some(rank) = memo.get(&key) {
+            if rank.provenance != ProvenanceTier::Silicon {
+                self.db.note_provenance(rank.provenance);
+            }
+            return Ok(rank);
+        }
+        // Observe exactly the tiers this dispatch fires, then restore the
+        // caller's: the accumulator keeps the maximum of both either way.
+        let outer = self.db.take_provenance();
+        let priced = self.price_rank(metrics, Some(detail), None);
+        self.db.note_provenance(outer);
+        let rank = Arc::new(priced?);
+        memo.insert(key, Arc::clone(&rank));
+        Ok(rank)
+    }
+
+    /// One rank's dispatch with its operations in `detail`, and the tiers
+    /// its lookups fired since the accumulator was last taken.
+    fn price_rank(
+        &self,
+        metrics: &ForwardPassMetrics,
+        detail: Option<RankDetail>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<RankPricing, AicError> {
+        let mut values = None;
+        let mut evidence = crate::FpmRankEstimate::default();
+        let observer = match detail {
+            None => RankObserver::Latency,
+            Some(RankDetail::Values) => RankObserver::Values(&mut values),
+            Some(RankDetail::Diagnostics) => RankObserver::Diagnostics(&mut evidence),
+        };
+        let latency_ms = self.rank_latency_ms(metrics, observer, coverage)?;
+        let diagnostics = (detail == Some(RankDetail::Diagnostics) && self.fpm_split().is_none())
+            .then_some(evidence.operations);
+        Ok(RankPricing {
+            latency_ms,
+            operations: values,
+            diagnostics,
+            provenance: self.db.worst_provenance(),
+        })
+    }
+
+    /// `names` as an equal list kept by [`Self::shared_names`], so ranks
+    /// that fold by name share it like slot names.
+    fn shared_names(&self, names: Vec<String>) -> Arc<[String]> {
+        let Ok(mut shared) = self.shared_names.lock() else {
+            return names.into();
+        };
+        if let Some(known) = shared.iter().find(|known| ***known == *names) {
+            return Arc::clone(known);
+        }
+        let names: Arc<[String]> = names.into();
+        if shared.len() < SHARED_NAME_LISTS {
+            shared.push(Arc::clone(&names));
+        }
+        names
+    }
+
+    /// The values a [`RankValueFold`] folded, under shared names.
+    fn rank_operation_values(&self, fold: RankValueFold) -> Result<RankOperationValues, AicError> {
+        let (names, values) = match (fold.names, fold.slots, fold.by_name) {
+            (Some(names), Some(slots), _) => {
+                let values = slots.into_values_of(names.len()).map_err(|_| {
+                    AicError::InvalidEngineConfig(
+                        "operation-graph rank did not fold every operation name in slot order"
+                            .into(),
+                    )
+                })?;
+                (names, values)
+            }
+            (_, _, Some(by_name)) => {
+                let (names, values): (Vec<_>, Vec<_>) = by_name
+                    .into_values()
+                    .into_iter()
+                    .map(|(name, latency_ms, energy_wms, source, _)| {
+                        (name, (latency_ms, energy_wms, source))
+                    })
+                    .unzip();
+                (self.shared_names(names), values)
+            }
+            _ => (Arc::from([]), Vec::new()),
+        };
+        if values.is_empty() {
+            // A walk that executed no operation has no names either.
+            return Ok(RankOperationValues {
+                names: Arc::from([]),
+                values,
+            });
+        }
+        Ok(RankOperationValues { names, values })
     }
 
     /// Dispatch one rank's FPM on its scheduled workload. Literal port of
@@ -1554,8 +3463,20 @@ impl Engine {
     /// prefill+decode -> mix step ([`get_mix_step_ops`]); prefill-only ->
     /// [`run_context_ops`]; decode-only -> [`run_generation_ops_step`]. The FPM
     /// counts pass through unscaled (no `nextn` multiplier — see
-    /// [`Self::forward_pass_time_ms`]).
-    fn rank_latency_ms(&self, metrics: &ForwardPassMetrics) -> Result<f64, AicError> {
+    /// [`Self::forward_pass_time_ms`]). With diagnostics, a whole-model FPM
+    /// rank records its direct lookups and an operation graph its operations;
+    /// with values, an operation graph keeps its operations' values.
+    fn rank_latency_ms(
+        &self,
+        metrics: &ForwardPassMetrics,
+        observer: RankObserver<'_>,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        let (mut evidence, values) = match observer {
+            RankObserver::Latency => (None, None),
+            RankObserver::Diagnostics(evidence) => (Some(evidence), None),
+            RankObserver::Values(values) => (None, Some(values)),
+        };
         let sched = &metrics.scheduled_requests;
         // Token-based dispatch, aligned with `IterationFeatures` (fpm/model.rs):
         // a fully prefix-cached payload can retain prefill request/KV metadata
@@ -1566,14 +3487,67 @@ impl Engine {
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
 
+        if has_prefill {
+            self.check_profile_phase(true)?;
+        }
+        if has_decode {
+            self.check_profile_phase(false)?;
+        }
+
+        // The whole-forward rewrite retains the original stage graph in
+        // sol_ops. Apply the same replay restriction before its table lookup
+        // can return early. FPM v1 variance describes whole prompt lengths,
+        // not the current extends: even equal prompts can have different
+        // cached prefixes or previously completed chunks. Only one prefill
+        // request has identifiable (query, prefix) geometry in this input.
+        let replay_ops = self
+            .fpm_ops()
+            .map_or(self.context_ops.as_slice(), |(prefill, _)| {
+                prefill.sol_ops.as_slice()
+            });
+        if has_prefill
+            && replay_ops.iter().any(|op| {
+                matches!(op,
+                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
+            })
+        {
+            if !sched.var_prefill_length.is_finite() || sched.var_prefill_length < 0.0 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires finite nonnegative prefill variance".into(),
+                ));
+            }
+            if sched.num_prefill_requests > 1 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires per-request extend lengths; FPM v1 aggregates with multiple prefill requests cannot identify the tails, even when prompt-length variance is zero".into(),
+                ));
+            }
+        }
+
         // FPM engines never enter the three-pass mix composition (its op-name
         // filters cannot see a whole-model op). Prefill-only and decode-only
         // dispatch through the same shared free fns as op-level (the FpmForward
         // op consumes batch/s/prefix from the RuntimeContext naturally); a
         // mixed rank composes prefill + marginal decode, mirroring
         // `_get_fpm_mix_step_latency` at the telemetry counts (already packed,
-        // so no `(nextn + 1)` anywhere — and FPM engines enforce nextn == 0).
-        if let Some((prefill_op, decode_op)) = self.fpm_ops() {
+        // so no `(nextn + 1)` anywhere; hybrid speculative FPM is rejected
+        // below). A measured SD-round profile has no pass baseline for a
+        // marginal decode: its decode rows are complete target+draft rounds.
+        // Its mixed rank is the prefill plus a full decode round, the same
+        // total as pricing a separate prefill pass and decode pass.
+        if let Some((prefill_op, decode_op, ctx_tail, gen_tail)) = self.fpm_split() {
+            if !ctx_tail.is_empty()
+                || !gen_tail.is_empty()
+                || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+            {
+                // The telemetry counts are packed AR semantics; the hybrid
+                // speculative shape (draft tails / widened verify) has no
+                // defined mapping here yet.
+                return Err(AicError::InvalidEngineConfig(
+                    "forward_model='fpm' with speculative decoding does not support the \
+                     ForwardPassMetrics rank dispatch"
+                        .to_string(),
+                ));
+            }
             // The telemetry sums ARE the fpm_forward tables' native coordinate
             // system (per-rank iteration totals) — query them via
             // `query_totals` instead of the op-level per-request-average
@@ -1581,44 +3555,110 @@ impl Engine {
             // division on each axis.
             let mut total = 0.0_f64;
             if has_prefill {
-                total += prefill_op
-                    .query_totals(
-                        &self.db,
-                        &[
-                            sched.num_prefill_requests as f64,
-                            sched.sum_prefill_tokens as f64,
-                            sched.sum_prefill_kv_tokens as f64,
-                        ],
-                    )?
-                    .latency_ms;
-            }
-            if has_decode {
-                let decode_ms = decode_op
-                    .query_totals(
-                        &self.db,
-                        &[
-                            sched.num_decode_requests as f64,
-                            sched.sum_decode_kv_tokens as f64,
-                        ],
-                    )?
-                    .latency_ms;
-                if has_prefill {
-                    // Mixed rank: marginal-decode composition, mirroring
-                    // `_get_fpm_mix_step_latency` (counts already packed, no
-                    // `(nextn + 1)` — FPM engines enforce nextn == 0).
-                    let baseline_ms = decode_op
-                        .query_pass_baseline(
-                            &self.db,
-                            sched.num_decode_requests,
-                            sched.sum_decode_kv_tokens as f64,
-                        )?
-                        .latency_ms;
-                    total += (decode_ms - baseline_ms).max(0.0);
-                } else {
-                    total += decode_ms;
+                let result = prefill_op.query_totals_with_coverage(
+                    &self.db,
+                    &[
+                        sched.num_prefill_requests as f64,
+                        sched.sum_prefill_tokens as f64,
+                        sched.sum_prefill_kv_tokens as f64,
+                    ],
+                    coverage.as_deref_mut(),
+                )?;
+                total += result.latency_ms;
+                if let Some(evidence) = evidence.as_deref_mut() {
+                    evidence.prefill_ms = Some(result.latency_ms);
+                    evidence
+                        .queries
+                        .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
                 }
             }
+            if has_decode {
+                // Hybrid speculative FPM was rejected above, so the packed
+                // counts need no `(nextn + 1)` here.
+                total += self.fpm_decode_term_ms(
+                    decode_op,
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens,
+                    has_prefill && self.fpm_execution_profile.is_none(),
+                    evidence.as_deref_mut(),
+                    coverage.as_deref_mut(),
+                )?;
+            }
             return Ok(total);
+        }
+
+        let mut operations = match (&evidence, &values) {
+            (Some(_), _) => OperationObserver::Diagnostics(RankOperationFold::new(&self.db)),
+            (None, Some(_)) => OperationObserver::Values(RankValueFold::default()),
+            (None, None) => OperationObserver::Latency,
+        };
+        let latency_ms =
+            self.operation_rank_latency_ms(sched, has_prefill, has_decode, &mut operations)?;
+        match (operations, evidence, values) {
+            (OperationObserver::Diagnostics(operations), Some(evidence), _) => {
+                evidence.operations = operations.into_operations();
+            }
+            (OperationObserver::Values(fold), _, Some(values)) => {
+                *values = Some(self.rank_operation_values(fold)?);
+            }
+            _ => {}
+        }
+        Ok(latency_ms)
+    }
+
+    /// The operation-graph part of [`Self::rank_latency_ms`]. `operations`
+    /// observes every executed operation at its own runtime context; the
+    /// latency is unchanged by observation.
+    fn operation_rank_latency_ms(
+        &self,
+        sched: &crate::ScheduledRequestMetrics,
+        has_prefill: bool,
+        has_decode: bool,
+        operations: &mut OperationObserver,
+    ) -> Result<f64, AicError> {
+        if self.has_dsv41_stages() {
+            // Retain every scheduled token in balanced aggregate telemetry;
+            // integer averages alone discard the remainder. FPM v1 does not
+            // carry individual extend lengths; multiple bounded-replay
+            // prefills were rejected before the whole-forward dispatch above.
+            let mut prefills = Vec::new();
+            if has_prefill {
+                let n = sched.num_prefill_requests;
+                let q = sched.sum_prefill_tokens / n;
+                let qr = sched.sum_prefill_tokens % n;
+                let p = sched.sum_prefill_kv_tokens / n;
+                let pr = sched.sum_prefill_kv_tokens % n;
+                let mut bounds = vec![0, qr, pr, n];
+                bounds.sort_unstable();
+                bounds.dedup();
+                for pair in bounds.windows(2) {
+                    let count = pair[1] - pair[0];
+                    let query = q + u32::from(pair[0] < qr);
+                    if query > 0 {
+                        prefills.push((count, query, p + u32::from(pair[0] < pr)));
+                    }
+                }
+            }
+            // Stage children have no name slots.
+            operations.begin(None);
+            return self
+                .dsv41_mixed_workload(
+                    &prefills,
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens / sched.num_decode_requests.max(1),
+                    1.0,
+                    1.0,
+                    |pass, op, runtime, result| {
+                        // A decode-only rank runs the generation graph.
+                        let phase = if has_prefill && pass != MixedPass::DecodeAttention {
+                            "context"
+                        } else {
+                            "generation"
+                        };
+                        operations.add(phase, None, op, result, 1.0, || *runtime);
+                    },
+                )
+                .map(|parts| parts[0]);
         }
 
         if has_prefill && has_decode {
@@ -1626,6 +3666,7 @@ impl Engine {
             // `_get_mix_step_latency`. `sum_prefill_kv_tokens` is exactly the
             // combined-prefix value the pass-1 non-attention call needs; pass
             // it through unchanged.
+            self.check_mixed_ops()?;
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
@@ -1633,6 +3674,8 @@ impl Engine {
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
             let ctx_tokens = sched.sum_prefill_tokens;
             let gen_tokens = sched.num_decode_requests;
+            let plan = &self.mix_plan;
+            operations.begin(Some(&plan.names));
             return get_mix_step_ops(
                 &self.context_ops,
                 &self.generation_ops,
@@ -1640,10 +3683,19 @@ impl Engine {
                 ctx_tokens,
                 gen_tokens,
                 new_tokens_per_req.max(1),
+                n_prefill,
                 prefix_per_req,
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
                 n_decode,
+                |context, index, op, runtime, result, divisor| {
+                    let (phase, slot) = if context {
+                        ("context", Some(plan.context_slot[index]))
+                    } else {
+                        ("generation", plan.generation_slot[index])
+                    };
+                    operations.add(phase, slot, op, result, divisor, || *runtime);
+                },
             );
         }
 
@@ -1653,36 +3705,156 @@ impl Engine {
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
-            total += run_context_ops(
-                &self.context_ops,
-                &self.db,
-                n_prefill,
-                new_tokens_per_req,
-                prefix_per_req,
-                1.0,
-                ContextOpFilter::All,
-            )?;
+            total += match &mut *operations {
+                OperationObserver::Latency => run_context_ops(
+                    &self.context_ops,
+                    &self.db,
+                    n_prefill,
+                    new_tokens_per_req,
+                    prefix_per_req,
+                    1.0,
+                    ContextOpFilter::All,
+                )?,
+                operations => {
+                    // The walk visits every op in order, so names fold by
+                    // the plan's first-encounter slots.
+                    operations.begin(Some(self.context_plan.slot_names()));
+                    run_context_ops_planned(
+                        &self.context_ops,
+                        None,
+                        &self.db,
+                        n_prefill,
+                        new_tokens_per_req,
+                        prefix_per_req,
+                        1.0,
+                        ContextOpFilter::All,
+                        |index, op, result| {
+                            let slot = Some(self.context_plan.name_slot(index));
+                            operations.add("context", slot, op, result, 1.0, || {
+                                context_op_runtime(
+                                    op,
+                                    n_prefill,
+                                    new_tokens_per_req,
+                                    prefix_per_req,
+                                    1.0,
+                                    None,
+                                )
+                            });
+                        },
+                    )?
+                }
+            };
         }
 
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
-            total += run_generation_ops_step(
+            let runtime = generation_op_runtime(n_decode, 1, kv_per_req, 1.0, 0, None);
+            operations.begin(Some(self.generation_plan.slot_names()));
+            total += run_generation_ops_step_planned(
                 &self.generation_ops,
+                None,
                 &self.db,
                 n_decode,
+                1,
                 kv_per_req,
                 1.0,
                 false,
+                |index, op, result| {
+                    let slot = Some(self.generation_plan.name_slot(index));
+                    operations.add("generation", slot, op, result, 1.0, || runtime);
+                },
             )?;
         }
 
         Ok(total)
     }
+
+    /// Decode term of a whole-model FPM rank at exact iteration totals: the
+    /// full decode pass, or, when the rank also computes prefill, only the
+    /// latency its decode requests add to that pass. The mixed term mirrors
+    /// `_get_fpm_mix_step_latency`: `max(0, decode - decode_pass_baseline)`.
+    fn fpm_decode_term_ms(
+        &self,
+        decode_op: &FpmForwardOp,
+        num_decode_requests: u32,
+        sum_decode_kv_tokens: u32,
+        rides_prefill: bool,
+        mut evidence: Option<&mut crate::FpmRankEstimate>,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        let result = decode_op.query_totals_with_coverage(
+            &self.db,
+            &[num_decode_requests as f64, sum_decode_kv_tokens as f64],
+            coverage.as_deref_mut(),
+        )?;
+        let decode_ms = result.latency_ms;
+        if let Some(evidence) = evidence.as_deref_mut() {
+            evidence.decode_ms = Some(decode_ms);
+            evidence
+                .queries
+                .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+        }
+        if !rides_prefill {
+            return Ok(decode_ms);
+        }
+        let baseline = decode_op.query_pass_baseline_with_coverage(
+            &self.db,
+            num_decode_requests,
+            sum_decode_kv_tokens as f64,
+            coverage,
+        )?;
+        let baseline_ms = baseline.latency_ms;
+        let marginal_decode_ms = (decode_ms - baseline_ms).max(0.0);
+        if let Some(evidence) = evidence {
+            evidence.decode_baseline_ms = Some(baseline_ms);
+            evidence.marginal_decode_ms = Some(marginal_decode_ms);
+            evidence.queries.extend(
+                baseline
+                    .fpm_queries
+                    .into_iter()
+                    .flat_map(|queries| *queries),
+            );
+        }
+        Ok(marginal_decode_ms)
+    }
+
+    /// The mixed decode term of [`Self::rank_latency_ms`] for a pass whose
+    /// prefill is priced separately. `None` when this engine has no such
+    /// composition: operation-level and stage graphs, speculative or SD-round
+    /// FPM, and measured execution profiles. Callers then price a separate
+    /// full decode pass; for a measured SD-round profile that is the full
+    /// decode round [`Self::rank_latency_ms`] adds to a mixed rank's prefill.
+    fn fpm_mixed_decode_term_ms(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        evidence: Option<&mut crate::FpmRankEstimate>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        let Some((_, decode_op, [], [])) = self.fpm_split() else {
+            return Ok(None);
+        };
+        if self.nextn > 0 || self.fpm_execution_profile.is_some() || self.profile_phase.is_some() {
+            return Ok(None);
+        }
+        if batch_size == 0 && total_past_kv_tokens == 0 {
+            return Ok(Some(0.0));
+        }
+        self.fpm_decode_term_ms(
+            decode_op,
+            batch_size,
+            total_past_kv_tokens,
+            true,
+            evidence,
+            coverage,
+        )
+        .map(Some)
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1698,7 +3870,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
@@ -1721,7 +3893,8 @@ mod tests {
                 scale_factor: 1.0,
                 n: 4096,
                 k: 4096,
-                quant_mode: GemmQuantMode::Fp8Block,
+                // 0.24.0's invalid FP8-block rows were removed; use its measured FP8 lane.
+                quant_mode: GemmQuantMode::Fp8,
                 scale_num_tokens: 0,
                 low_precision_input: false,
                 seq_split: 1,
@@ -1740,6 +3913,7 @@ mod tests {
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
                 apply_rope: true,
+                dcp_size: 1,
             }),
         ]
     }
@@ -1763,6 +3937,9 @@ mod tests {
                 kv_cache_dtype: KvCacheQuantMode::Fp8,
                 lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
                 use_qk_norm: false,
+                scale_num_tokens: 1,
+                verify_query_tokens: 0,
+                dcp_size: 1,
             }),
         ]
     }
@@ -1776,6 +3953,9 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
+            decoder_replay: false,
+            moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -1784,11 +3964,13 @@ mod tests {
                 moe_tp_size: Some(1),
                 moe_ep_size: Some(8),
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: nextn.map(|n| crate::SpeculativeConfig { nextn: Some(n) }),
@@ -1801,9 +3983,104 @@ mod tests {
         }
     }
 
+    /// A vision tower of DB-free `Elementwise` ops over the fixture DB, laid out
+    /// over two tensor-parallel ranks.
+    fn vision_engine(encoder_parallel: EncoderParallel) -> Engine {
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        let elementwise = |name: &str| {
+            Op::Elementwise(ElementwiseOp {
+                name: name.into(),
+                scale_factor: 1.0,
+                bytes_per_token: 8192.0,
+                scale_num_tokens: 1,
+                seq_split: 1,
+            })
+        };
+        let mut engine = fixture_engine_config(None);
+        engine.parallel.tp_size = 2;
+        let mut spec = EngineSpec::new(engine, context_ops(), generation_ops());
+        spec.vision = Some(VisionSpec {
+            encoder_parallel,
+            patch_ops: vec![elementwise("patch_embed")],
+            transformer_ops: vec![elementwise("vit_norm")],
+            output_ops: vec![elementwise("merger")],
+        });
+        Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    fn vision_ms(engine: &Engine, images: u32, patch_tokens: u32) -> f64 {
+        engine
+            .evaluate_vision(&[EncoderImageShape {
+                sequences: 1,
+                patch_tokens,
+                transformer_tokens: 16,
+                output_tokens: 4,
+                images,
+            }])
+            .unwrap()
+            .iter()
+            .map(|(_, latency_ms, _, _)| *latency_ms)
+            .sum()
+    }
+
+    #[test]
+    fn vision_dp_charges_the_busiest_rank_its_ceil_share_of_the_images() {
+        // Independent expectation from SGLang `--mm-enable-dp-encoder`: two ranks split
+        // the images, so three images cost the busiest rank what two images cost on a
+        // TP tower, which encodes every image on every rank; one image costs the same
+        // under both layouts.
+        let tp = vision_engine(EncoderParallel::Tp);
+        let dp = vision_engine(EncoderParallel::Dp);
+        assert!(vision_ms(&tp, 1, 16) > 0.0);
+        assert_eq!(vision_ms(&dp, 3, 16), vision_ms(&tp, 2, 16));
+        assert_eq!(vision_ms(&dp, 1, 16), vision_ms(&tp, 1, 16));
+        assert!(vision_ms(&tp, 3, 16) > vision_ms(&dp, 3, 16));
+    }
+
+    #[test]
+    fn vision_skips_token_classes_and_images_that_are_absent() {
+        let tp = vision_engine(EncoderParallel::Tp);
+        let no_patches = tp
+            .evaluate_vision(&[EncoderImageShape {
+                sequences: 1,
+                patch_tokens: 0,
+                transformer_tokens: 16,
+                output_tokens: 4,
+                images: 1,
+            }])
+            .unwrap();
+        let names = no_patches
+            .iter()
+            .map(|(name, ..)| name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["vit_norm", "merger"]);
+        assert!(tp.evaluate_vision(&[]).unwrap().is_empty());
+        assert!(vision_ms(&tp, 0, 16) == 0.0);
+    }
+
     /// Build an `Engine` from the hand-built op lists over the real fixture DB.
     fn build_engine(nextn: Option<u32>) -> Engine {
-        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        // Match SILICON's shared-layer default and honor the declared reuse
+        // of graph-timed FP8-block GEMM measurements from vLLM 0.25.0.
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
         let spec = EngineSpec::new(
             fixture_engine_config(nextn),
             context_ops(),
@@ -1819,6 +4096,618 @@ mod tests {
             osl,
             ..Default::default()
         }
+    }
+
+    fn measured_profile_engine(prefill: bool, complete: bool) -> Engine {
+        use crate::operators::measured_composite::{MeasuredCell, MeasuredCompositeOp};
+
+        let db = build_engine(None).db;
+        let mut config = fixture_engine_config(None);
+        config.extra.insert(
+            "execution_profile_phase".into(),
+            if prefill { "prefill" } else { "decode" }.into(),
+        );
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
+        let values: &[f64] = if complete {
+            &[2.0, 5.0, 7.0, 11.0]
+        } else {
+            &[2.0]
+        };
+        let op = Op::MeasuredComposite(MeasuredCompositeOp {
+            name: "measured_scope".into(),
+            system: "b200_sxm".into(),
+            backend: "vllm".into(),
+            version: "0.24.0".into(),
+            is_context: prefill,
+            weight_bytes: 0.0,
+            scale_factor: 3.0,
+            cells: values
+                .iter()
+                .enumerate()
+                .map(|(i, &latency_ms)| MeasuredCell {
+                    shape: [2, 5 + i as u32, 0],
+                    latency_ms,
+                })
+                .collect(),
+        });
+        let (context, generation) = if prefill {
+            (vec![op], vec![])
+        } else {
+            (vec![], vec![op])
+        };
+        Engine::build(EngineSpec::new(config, context, generation), db).unwrap()
+    }
+
+    #[test]
+    fn execution_profile_common_forward_pass_query() {
+        for prefill in [false, true] {
+            let engine = measured_profile_engine(prefill, true);
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: if prefill {
+                    crate::ScheduledRequestMetrics {
+                        num_prefill_requests: 2,
+                        sum_prefill_tokens: 10,
+                        ..Default::default()
+                    }
+                } else {
+                    crate::ScheduledRequestMetrics {
+                        num_decode_requests: 2,
+                        sum_decode_kv_tokens: 10,
+                        ..Default::default()
+                    }
+                },
+                ..Default::default()
+            };
+            // The first exact cell is a 2 ms scope repeated three times.
+            assert_eq!(
+                engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+                6.0
+            );
+            let detailed = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            assert_eq!(detailed.latency_ms, Some(6.0));
+            assert_eq!(detailed.native_latency_ms, Some(6.0));
+        }
+    }
+
+    #[test]
+    fn execution_profile_mixed_query_counts_shared_work_once() {
+        use crate::operators::measured_composite::{MeasuredCell, MeasuredCompositeOp};
+
+        let mut config = fixture_engine_config(None);
+        config
+            .extra
+            .insert("execution_profile_phase".into(), "aggregated".into());
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
+        let scope = |name: &str, context: bool, shape, latency_ms| {
+            Op::MeasuredComposite(MeasuredCompositeOp {
+                name: name.into(),
+                system: "b200_sxm".into(),
+                backend: "vllm".into(),
+                version: "0.24.0".into(),
+                is_context: context,
+                weight_bytes: 0.0,
+                scale_factor: 3.0,
+                cells: vec![MeasuredCell { shape, latency_ms }],
+            })
+        };
+        let engine = Engine::build(
+            EngineSpec::new(
+                config,
+                vec![
+                    scope("shared_compute", true, [1, 12, 0], 5.0),
+                    scope("context_attention", true, [2, 5, 0], 2.0),
+                ],
+                vec![
+                    // This whole-phase-only cell must not be queried in a mixed step.
+                    scope("decode_compute", false, [99, 99, 0], 100.0),
+                    scope("generation_attention", false, [2, 5, 0], 7.0),
+                ],
+            ),
+            build_engine(None).db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Independent measured scopes: (5 shared + 2 prefill + 7 decode) ms,
+        // each repeated three times. Both input sources use the same KV coordinate.
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            42.0
+        );
+        assert_eq!(
+            engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap()
+                .latency_ms,
+            Some(42.0)
+        );
+    }
+
+    #[test]
+    fn measured_scope_mixed_queries_require_attention_decomposition() {
+        let context = measured_profile_engine(true, true);
+        let generation = measured_profile_engine(false, true);
+        // Apply the same composition boundary to a raw EngineSpec, without a profile.
+        let engine = Engine::build(
+            EngineSpec::new(
+                fixture_engine_config(None),
+                context.context_ops,
+                generation.generation_ops,
+            ),
+            context.db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for error in [
+            engine.forward_pass_time_ms(&[metrics]).unwrap_err(),
+            engine
+                .mixed_step_latency(10, 2, 5, 2, 0, 1.0, 1.0)
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("top-level phase attention"),
+                "{error}"
+            );
+        }
+        let mut context_ops = engine.context_ops.clone();
+        let mut generation_ops = engine.generation_ops.clone();
+        if let Op::MeasuredComposite(op) = &mut context_ops[0] {
+            op.name = "context_attention".into();
+        }
+        if let Op::MeasuredComposite(op) = &mut generation_ops[0] {
+            op.name = "generation_attention".into();
+        }
+        assert!(Engine::supports_mixed_ops(&context_ops, &generation_ops));
+        let nested = vec![Op::Overlap(crate::operators::op::OverlapOp {
+            name: "nested".into(),
+            group_a: context_ops,
+            group_b: vec![],
+        })];
+        assert!(!Engine::supports_mixed_ops(&nested, &generation_ops));
+    }
+
+    #[test]
+    fn execution_profile_reuses_static_trajectory_and_total_queries() {
+        let decode = measured_profile_engine(false, true);
+        // Four measured steps: (2 + 5 + 7 + 11) ms, each repeated three times.
+        assert_eq!(
+            decode.run_generation_phase(&runtime(2, 4, 5), 1).unwrap(),
+            75.0
+        );
+        let prefill = measured_profile_engine(true, true);
+        // Ordinary totals queries use integer per-request means: 11/2 = 5.
+        assert_eq!(
+            prefill.predict_prefill_latency_total(2, 11, 0).unwrap(),
+            6.0
+        );
+    }
+
+    #[test]
+    fn execution_profile_phase_guard_covers_per_op_consumers() {
+        let prefill = measured_profile_engine(true, false);
+        for batch in [0, 2] {
+            let errors = [
+                prefill.decode_step_per_op(batch, 4, 1, 1.0).unwrap_err(),
+                prefill
+                    .decode_step_per_op_with_metadata(batch, 4, 1, 1.0)
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert!(
+                    error.to_string().contains("phase is not qualified"),
+                    "{error}"
+                );
+            }
+        }
+        let decode = measured_profile_engine(false, false);
+        for mode in [StaticMode::Context, StaticMode::Both] {
+            for error in [
+                decode
+                    .run_static_per_op(&runtime(2, 4, 2), mode, 32)
+                    .unwrap_err(),
+                decode
+                    .run_static_per_op_with_metadata(&runtime(2, 4, 2), mode, 32)
+                    .unwrap_err(),
+            ] {
+                assert!(
+                    error.to_string().contains("phase is not qualified"),
+                    "{error}"
+                );
+            }
+        }
+        // A valid decode profile keeps the existing empty-batch result.
+        assert!(decode.decode_step_per_op(0, 4, 1, 1.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn execution_profile_phase_guard_covers_ad_hoc_queries() {
+        let prefill = measured_profile_engine(true, false);
+        let decode = measured_profile_engine(false, false);
+        let opposite = [
+            prefill
+                .evaluate_ops_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            prefill
+                .evaluate_ops_sol_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_ops_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_ops_sol_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_context_attention_kernels_json("[]", 1, 4, 0, 1.0, false)
+                .unwrap_err(),
+        ];
+        for error in opposite {
+            assert!(
+                error.to_string().contains("phase is not qualified"),
+                "{error}"
+            );
+        }
+        // The qualified phase still serves ad-hoc lists.
+        assert!(
+            prefill
+                .evaluate_ops_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            decode
+                .evaluate_ops_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            prefill
+                .evaluate_context_attention_kernels_json("[]", 1, 4, 0, 1.0, false)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// GLM-5.3-Flash-shaped op list: per-layer names over repeated geometry,
+    /// generic ops with unique and repeated names.
+    fn glm_layer_ops(is_context: bool) -> Vec<Op> {
+        use crate::operators::glm53flash::tests::{attention, mhc_site};
+        let mut ops = Vec::new();
+        for layer in 0..6 {
+            let mut mhc = mhc_site(if layer == 0 { "pre" } else { "fused_post_pre" });
+            mhc.name = format!("mhc_{layer}");
+            mhc.is_context = is_context;
+            mhc.checkpoint_format = "nvfp4".into();
+            ops.push(Op::Glm53Mhc(mhc));
+            let mut attn = attention(if layer % 3 == 2 { "sparse_mla" } else { "kda" });
+            attn.name = format!("attention_{layer}");
+            attn.is_context = is_context;
+            attn.backend = "sglang".into();
+            if attn.layer_kind == "kda" {
+                attn.measured = vec![Op::Gemm(GemmOp::new(
+                    format!("kda_{layer}_o_proj"),
+                    4096,
+                    4096,
+                    GemmQuantMode::Bfloat16,
+                ))];
+            }
+            ops.push(Op::Glm53Attention(attn));
+            ops.push(Op::Gemm(GemmOp::new(
+                format!("gemm_{layer}"),
+                4096,
+                4096,
+                GemmQuantMode::Bfloat16,
+            )));
+        }
+        ops.push(Op::Gemm(GemmOp::new(
+            "gemm_0",
+            4096,
+            4096,
+            GemmQuantMode::Bfloat16,
+        )));
+        ops
+    }
+
+    fn glm_layer_engine() -> Engine {
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "gb300",
+            "sglang",
+            "0.5.14",
+            true,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_mode(DatabaseMode::Hybrid, TransferPolicy::default());
+        let mut config = fixture_engine_config(None);
+        config.system_name = "gb300".into();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.14".into());
+        config.database_mode = DatabaseMode::Hybrid;
+        let spec = EngineSpec::new(config, glm_layer_ops(true), glm_layer_ops(false));
+        Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    #[test]
+    fn mix_step_passes_name_each_folded_operation_or_decline_merged_names() {
+        // The fixture's mix step: every context operation but context
+        // attention is shared, and generation attention is decode.
+        let passes = build_engine(None).mix_step_passes().unwrap();
+        let mut expected = context_ops()
+            .iter()
+            .map(|op| {
+                let pass = if op.name() == "context_attention" {
+                    MixedPass::ContextAttention
+                } else {
+                    MixedPass::SharedNonAttention
+                };
+                (op.name().to_owned(), pass)
+            })
+            .collect::<HashMap<_, _>>();
+        expected.insert("generation_attention".into(), MixedPass::DecodeAttention);
+        assert!(expected.len() > 2);
+        assert_eq!(passes, expected);
+        // GLM-5.3 runs `attention_{layer}` in both attention passes, which
+        // name folding merges; DSv4.1 stages compose their own mixed work.
+        assert!(glm_layer_engine().mix_step_passes().is_none());
+        assert!(dsv41_probe_engine(false).mix_step_passes().is_none());
+    }
+
+    fn per_op_bits(entries: &[PerOpValueWithMetadata]) -> Vec<(String, u64, u64, &'static str)> {
+        entries
+            .iter()
+            .map(|e| (e.0.clone(), e.1.to_bits(), e.2.to_bits(), e.3))
+            .collect()
+    }
+
+    #[test]
+    fn static_slot_values_are_the_named_per_op_values_by_slot() {
+        // Repeated GLM names, multi-step decode quadrature and MTP scaling.
+        for engine in [
+            build_engine(None),
+            build_engine(Some(1)),
+            glm_layer_engine(),
+        ] {
+            for (mode, osl, prefix) in [
+                (StaticMode::Context, 40, 200),
+                (StaticMode::Generation, 40, 0),
+                (StaticMode::Generation, 2, 0),
+                (StaticMode::Generation, 1, 0),
+                (StaticMode::Both, 40, 200),
+            ] {
+                let rt = RuntimeConfig {
+                    batch_size: 3,
+                    isl: 700,
+                    osl,
+                    prefix,
+                    ..Default::default()
+                };
+                let (context, generation) = engine.run_static_per_op(&rt, mode, 32).unwrap();
+                let named = if mode == StaticMode::Context {
+                    context
+                } else {
+                    generation
+                };
+                let (names, slots) = engine.run_static_slot_values(&rt, mode, 32).unwrap();
+                // Callers rely on every call sharing one name list.
+                let (again, _) = engine.run_static_slot_values(&rt, mode, 32).unwrap();
+                assert!(Arc::ptr_eq(names, again));
+                if !named.is_empty() {
+                    assert_eq!(slots.len(), names.len());
+                }
+                let actual = names
+                    .iter()
+                    .zip(&slots)
+                    .map(|(name, &(latency, energy, source))| {
+                        (name.clone(), latency.to_bits(), energy.to_bits(), source)
+                    })
+                    .collect::<Vec<_>>();
+                let expected = named
+                    .into_iter()
+                    .map(|(name, latency, energy, source)| {
+                        (name, latency.to_bits(), energy.to_bits(), source)
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "{mode:?} osl={osl}");
+            }
+        }
+        // 19 GLM ops fold to 18 names; the trailing "gemm_0" joins slot 2.
+        let glm = glm_layer_engine();
+        let (names, _) = glm
+            .run_static_slot_values(&runtime(3, 700, 1), StaticMode::Context, 32)
+            .unwrap();
+        assert_eq!(names.len(), 18);
+        assert_eq!(
+            names[..3],
+            ["mhc_0", "attention_0", "gemm_0"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn slot_fold_accumulates_by_slot_and_rejects_misordered_slots() {
+        use crate::operators::base::Source;
+        let gemm = |name: &str| Op::Gemm(GemmOp::new(name, 64, 64, GemmQuantMode::Bfloat16));
+        let plan = OpListPlan::new(&[gemm("a"), gemm("b"), gemm("a")]);
+        let mut fold = PerOpSlotFold::for_plan(&plan);
+        fold.add(0, PerformanceResult::with_energy(1.0, 2.0, Source::Silicon));
+        fold.add(1, PerformanceResult::with_energy(0.5, 0.0, Source::Sol));
+        fold.add(
+            0,
+            PerformanceResult::with_energy(0.25, 4.0, Source::Empirical),
+        );
+        // "a": 1.0 + 0.25 ms and 2.0 + 4.0 W-ms; its sources differ.
+        assert_eq!(
+            fold.into_values(&plan).unwrap(),
+            [(1.25, 6.0, "mixed"), (0.5, 0.0, "sol")]
+        );
+        let mut fold = PerOpSlotFold::for_plan(&plan);
+        fold.add(1, PerformanceResult::new(1.0, Source::Sol));
+        fold.add(0, PerformanceResult::new(1.0, Source::Sol));
+        assert!(fold.into_values(&plan).is_err(), "slot 1 before slot 0");
+        let mut fold = PerOpSlotFold::for_plan(&plan);
+        fold.add(0, PerformanceResult::new(1.0, Source::Sol));
+        assert!(fold.into_values(&plan).is_err(), "unvisited name slot");
+        assert!(
+            PerOpSlotFold::for_plan(&plan)
+                .into_values(&plan)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn repeated_glm_layers_share_queries_with_identical_per_op_values() {
+        let engine = glm_layer_engine();
+        // Per layer: mhc, attention, gemm; then a repeated "gemm_0".
+        for plan in [&engine.context_plan, &engine.generation_plan] {
+            let (kda, sparse) = (plan.query_slot(1), plan.query_slot(7));
+            assert!(kda.is_some() && sparse.is_some() && kda != sparse);
+            assert_eq!(plan.query_slot(4), kda, "KDA layers 0 and 1 share");
+            assert_eq!(plan.query_slot(16), sparse, "sparse layers 2 and 5 share");
+            assert_eq!(plan.query_slot(5), None, "generic ops always query");
+            assert_eq!(plan.query_slot(18), None);
+            assert_eq!(plan.query_slots(), 4);
+            assert_eq!(plan.name_slot(18), plan.name_slot(2));
+        }
+        let ctx_ops = glm_layer_ops(true);
+        let gen_ops = glm_layer_ops(false);
+        let db = engine.database().clone();
+        // Prefill: reference folds every op's own query by name scan.
+        let rt = RuntimeConfig {
+            batch_size: 3,
+            isl: 700,
+            osl: 40,
+            prefix: 200,
+            ..Default::default()
+        };
+        let mut reference = PerOpFold::new("context");
+        let context_total = run_context_ops_with(
+            &ctx_ops,
+            &db,
+            3,
+            500,
+            200,
+            1.0,
+            ContextOpFilter::All,
+            |op, r| reference.add(op, r),
+        )
+        .unwrap();
+        let (context, _) = engine
+            .run_static_per_op_with_metadata(&rt, StaticMode::Context, 32)
+            .unwrap();
+        assert_eq!(per_op_bits(&context), per_op_bits(&reference.into_values()));
+        // Decode over two stride steps (repeat 32 and 7): reference is the
+        // name-scan step fold, then the stride weight, then the phase fold.
+        let mut reference = PerOpFold::new("generation");
+        let mut generation_total = 0.0;
+        for (i, repeat) in [(0u32, 32u32), (32, 7)] {
+            let mut step_fold: Vec<(&Op, PerformanceResult)> = Vec::new();
+            let step = run_generation_ops_step_beamed_with(
+                &gen_ops,
+                &db,
+                3,
+                1,
+                rt.isl + i + 1,
+                1.0,
+                false,
+                |op, r| {
+                    if let Some(entry) = step_fold.iter_mut().find(|(e, _)| e.name() == op.name()) {
+                        entry.1.latency_ms += r.latency_ms;
+                        entry.1.energy_wms += r.energy_wms;
+                        if entry.1.source != r.source {
+                            entry.1.source = crate::operators::base::Source::Mixed;
+                        }
+                    } else {
+                        step_fold.push((op, r));
+                    }
+                },
+            )
+            .unwrap();
+            for (op, folded) in step_fold {
+                reference.add(op, folded.scaled(repeat as f64));
+            }
+            generation_total += step * repeat as f64;
+        }
+        let (_, generation) = engine
+            .run_static_per_op_with_metadata(&rt, StaticMode::Generation, 32)
+            .unwrap();
+        assert_eq!(
+            per_op_bits(&generation),
+            per_op_bits(&reference.into_values())
+        );
+        let totals = engine.run_static(&rt, StaticMode::Both, 32).unwrap();
+        assert_eq!(totals.context_ms.to_bits(), context_total.to_bits());
+        assert_eq!(totals.generation_ms.to_bits(), generation_total.to_bits());
+        // Diagnostics: the SOL comparison sums each name's own SOL queries.
+        let sol_db = db.sol_full_view();
+        for prefill in [true, false] {
+            let ops = if prefill { &ctx_ops } else { &gen_ops };
+            let rows = engine
+                .static_phase_diagnostics(3, 700, if prefill { 200 } else { 0 }, prefill)
+                .unwrap();
+            assert_eq!(rows.len(), 18);
+            for row in rows {
+                let mut sol = PerOpSolFold::default();
+                ops.iter()
+                    .filter(|op| op.name() == row.name)
+                    .try_for_each(|op| {
+                        let result = if prefill {
+                            query_context_op(op, &sol_db, 3, 500, 200, 1.0, None)
+                        } else {
+                            query_generation_op(op, &sol_db, 3, 1, 701, 1.0, 0, None)
+                        }?;
+                        sol.add(op, result)
+                    })
+                    .unwrap();
+                let (_, latency_ms, math_ms, memory_ms) = sol.into_values().remove(0);
+                let actual = row.details.sol.unwrap();
+                assert_eq!(
+                    [actual.latency_ms, actual.math_ms, actual.memory_ms].map(f64::to_bits),
+                    [latency_ms, math_ms, memory_ms].map(f64::to_bits),
+                    "{}",
+                    row.name
+                );
+            }
+        }
+    }
+
+    /// A shared GLM query must price every op in its slot alike; a name-keyed
+    /// price that differs fails debug builds instead of being masked.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "shares query slot")]
+    fn debug_builds_reject_a_shared_query_that_prices_differently() {
+        use crate::operators::base::Source;
+        let ops = glm_layer_ops(false);
+        let plan = OpListPlan::new(&ops);
+        let mut memo = QueryMemo::new(Some(&plan), &ops);
+        // KDA attention of layers 0 and 1 (indices 1 and 4) share a slot.
+        memo.query(1, || Ok(PerformanceResult::new(1.0, Source::Silicon)))
+            .unwrap();
+        let _ = memo.query(4, || Ok(PerformanceResult::new(2.0, Source::Silicon)));
     }
 
     #[test]
@@ -1952,6 +4841,17 @@ mod tests {
         let (_, generation) = engine
             .run_static_per_op_with_metadata(&runtime, StaticMode::Generation, 32)
             .unwrap();
+        let diagnostics = engine.static_phase_diagnostics(1, 1024, 0, false).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].latency_ms, generation[0].1);
+        assert_eq!(diagnostics[0].source, generation[0].3);
+        let records = &diagnostics[0].details.fallbacks;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].requested_ep_size, 32);
+        assert_eq!(records[1].requested_ep_size, 64);
+        assert!(records.iter().all(|r| r.measurement_ep_size == 4
+            && r.measurement_node_num == 1
+            && r.inference_phase == "generation"));
         assert_eq!(generation.len(), 1, "same-name ops must remain name-folded");
         assert_eq!(
             generation[0].4,
@@ -1960,6 +4860,51 @@ mod tests {
                 vec![("generation", "deepep_ll", 64, 16, 4, 1)],
             ))
         );
+    }
+
+    #[test]
+    fn phase_diagnostics_match_latency_and_preserve_sol_with_prefix_and_mtp() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            assert!(
+                engine
+                    .static_phase_diagnostics(u32::MAX, 2, 0, true)
+                    .is_err()
+            );
+            if nextn.is_some() {
+                assert!(
+                    engine
+                        .static_phase_diagnostics(u32::MAX, 2, 0, false)
+                        .is_err()
+                );
+            }
+            for prefill in [true, false] {
+                let prefix = if prefill { 128 } else { 0 };
+                let rows = engine
+                    .static_phase_diagnostics(4, 512, prefix, prefill)
+                    .unwrap();
+                let expected = if prefill {
+                    engine.predict_prefill_latency(4, 512, prefix).unwrap()
+                } else {
+                    engine.predict_decode_latency(4, 512, 2).unwrap()
+                };
+                assert!((rows.iter().map(|r| r.latency_ms).sum::<f64>() - expected).abs() < 1e-10);
+                // RMSNorm moves 8192 bytes per token; SOL is memory bandwidth only.
+                let norm = rows.iter().find(|r| r.name == "rmsnorm").unwrap();
+                let tokens = if prefill {
+                    4 * (512 - prefix)
+                } else {
+                    4 * (nextn.unwrap_or(0) + 1)
+                };
+                let expected_sol =
+                    8192.0 * tokens as f64 / engine.database().system_spec.gpu.mem_bw * 1000.0;
+                let sol = norm.details.sol.as_ref().unwrap();
+                assert!((sol.memory_ms - expected_sol).abs() < 1e-12);
+                assert_eq!(sol.math_ms, 0.0);
+                assert_eq!(sol.latency_ms, sol.memory_ms);
+                assert!(norm.details.fallbacks.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -2049,6 +4994,658 @@ mod tests {
                     && message.contains("Silicon")
                     && message.contains("Empirical")
         ));
+    }
+
+    // Linear memory probes isolate the engine's workload orchestration from
+    // kernel formulas. Their expected token counts are request-level contracts.
+    fn dsv41_probe_engine(replay: bool) -> Engine {
+        let leaf = |name: &str| {
+            Op::Elementwise(ElementwiseOp {
+                name: name.into(),
+                scale_factor: 1.0,
+                bytes_per_token: 8192.0,
+                scale_num_tokens: 1,
+                seq_split: 1,
+            })
+        };
+        let stage = |is_context, bounded| {
+            Op::Dsv41Stage(crate::operators::Dsv41StageOp {
+                name: if bounded { "decoder" } else { "encoder" }.into(),
+                is_context,
+                bounded,
+                decoder_replay: replay,
+                window_size: 128,
+                children: vec![
+                    leaf("norm"),
+                    leaf(if is_context {
+                        "context_attention"
+                    } else {
+                        "generation_attention"
+                    }),
+                ],
+            })
+        };
+        let mut engine = build_engine(None);
+        engine.db = Arc::new(
+            PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::default()),
+        );
+        engine.context_ops = vec![stage(true, false), stage(true, true)];
+        engine.generation_ops = vec![stage(false, false), stage(false, true)];
+        engine.context_plan = OpListPlan::new(&engine.context_ops);
+        engine.generation_plan = OpListPlan::new(&engine.generation_ops);
+        engine
+    }
+
+    fn dsv41_probe_token_ms(engine: &Engine) -> f64 {
+        let Op::Dsv41Stage(stage) = &engine.context_ops[0] else {
+            unreachable!()
+        };
+        query_context_op(&stage.children[0], &engine.db, 1, 1, 0, 1.0, None)
+            .unwrap()
+            .latency_ms
+    }
+
+    fn rank_fpm(
+        num_prefill_requests: u32,
+        sum_prefill_tokens: u32,
+        sum_prefill_kv_tokens: u32,
+        num_decode_requests: u32,
+        sum_decode_kv_tokens: u32,
+    ) -> ForwardPassMetrics {
+        ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests,
+                sum_prefill_tokens,
+                sum_prefill_kv_tokens,
+                num_decode_requests,
+                sum_decode_kv_tokens,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Every rank's operations sum to its latency, and observing them does not
+    /// change a value. Returns the detailed ranks.
+    fn assert_rank_operations_sum(
+        engine: &Engine,
+        ranks: &[ForwardPassMetrics],
+    ) -> Vec<crate::FpmRankEstimate> {
+        let detailed = engine.forward_pass_estimate(ranks, true, None).unwrap();
+        assert_eq!(
+            detailed.native_latency_ms,
+            Some(engine.forward_pass_time_ms(ranks).unwrap())
+        );
+        assert_eq!(detailed.ranks.len(), ranks.len());
+        for (rank, metrics) in detailed.ranks.iter().zip(ranks) {
+            assert_eq!(
+                rank.latency_ms,
+                engine
+                    .forward_pass_time_ms(std::slice::from_ref(metrics))
+                    .unwrap()
+            );
+            let sum: f64 = rank.operations.iter().map(|op| op.latency_ms).sum();
+            assert!(
+                (sum - rank.latency_ms).abs() <= 1e-12 * rank.latency_ms.max(1.0),
+                "{sum} != {}",
+                rank.latency_ms
+            );
+            assert!(rank.queries.is_empty() && rank.prefill_ms.is_none());
+            assert!(rank.operations.iter().all(|op| {
+                op.details.sol.is_some() != op.details.sol_unavailable_reason.is_some()
+            }));
+        }
+        detailed.ranks
+    }
+
+    #[test]
+    fn operation_rank_evidence_matches_static_phases_and_sums_to_each_rank() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            let width = nextn.unwrap_or(0) + 1;
+            // Prefill: two requests computing 512 tokens over a 128-token
+            // prefix. Decode: four real requests at s=513, packed at the
+            // verification width. Mixed: one 256-token prefill riding the
+            // same decode work. The last rank is idle.
+            let ranks = [
+                rank_fpm(2, 1024, 256, 0, 0),
+                rank_fpm(0, 0, 0, 4 * width, 4 * width * 513),
+                rank_fpm(1, 256, 0, 4 * width, 4 * width * 513),
+                ForwardPassMetrics::default(),
+            ];
+            let detailed = assert_rank_operations_sum(&engine, &ranks);
+            // Oracle: the existing static phase diagnostics price the same
+            // shapes (decode one step at context_length + 1, batch widened
+            // internally), with identical values, sources and SOL details.
+            assert_eq!(
+                detailed[0].operations,
+                engine.static_phase_diagnostics(2, 640, 128, true).unwrap()
+            );
+            assert_eq!(
+                detailed[1].operations,
+                engine.static_phase_diagnostics(4, 512, 0, false).unwrap()
+            );
+            assert!(detailed[3].operations.is_empty());
+            // The mixed rank folds its three passes: shared non-attention
+            // work, context attention at the prefill shape, decode attention
+            // at the decode shape. Oracle: each attention entry is its own
+            // single-op query (pass 2's amortization divisor is 1 here).
+            let mixed = &detailed[2].operations;
+            let names: Vec<_> = mixed.iter().map(|op| op.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "rmsnorm",
+                    "qkv_gemm",
+                    "context_attention",
+                    "generation_attention"
+                ]
+            );
+            let prefill =
+                query_context_op(&engine.context_ops[2], &engine.db, 1, 256, 0, 1.0, None).unwrap();
+            let decode = query_generation_op(
+                &engine.generation_ops[1],
+                &engine.db,
+                4 * width,
+                1,
+                513,
+                1.0,
+                0,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                (mixed[2].latency_ms, mixed[3].latency_ms),
+                (prefill.latency_ms, decode.latency_ms)
+            );
+        }
+    }
+
+    #[test]
+    fn operation_rank_evidence_reports_dsv41_stage_children() {
+        for replay in [false, true] {
+            let engine = dsv41_probe_engine(replay);
+            let ranks = [
+                rank_fpm(1, 129, 1024, 0, 0),
+                rank_fpm(0, 0, 0, 2, 2 * 1025),
+                rank_fpm(1, 129, 1024, 2, 2 * 1025),
+            ];
+            for rank in assert_rank_operations_sum(&engine, &ranks) {
+                // Stage children are reported, folded across both stages.
+                let names: Vec<_> = rank.operations.iter().map(|op| op.name.as_str()).collect();
+                assert!(names.contains(&"norm"), "{names:?}");
+                assert!(
+                    names
+                        .iter()
+                        .all(|name| ["norm", "context_attention", "generation_attention"]
+                            .contains(name)),
+                    "{names:?}"
+                );
+            }
+        }
+    }
+
+    /// `ranks` priced without diagnostics: each rank's latency and operation
+    /// values, bit for bit, are those its diagnostics report (the oracle of
+    /// `operation_rank_evidence_matches_static_phases_and_sums_to_each_rank`).
+    fn assert_rank_values_match_diagnostics(
+        engine: &Engine,
+        ranks: &[ForwardPassMetrics],
+    ) -> NativeIteration {
+        let detailed = assert_rank_operations_sum(engine, ranks);
+        let iteration = engine
+            .forward_pass_ranks(ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(
+            iteration.latency_ms.to_bits(),
+            engine.forward_pass_time_ms(ranks).unwrap().to_bits()
+        );
+        assert_eq!(iteration.ranks.len(), ranks.len());
+        for (rank, diagnostics) in iteration.ranks.iter().zip(&detailed) {
+            assert_eq!(rank.latency_ms.to_bits(), diagnostics.latency_ms.to_bits());
+            let operations = rank.operations.as_ref().unwrap();
+            assert_eq!(operations.names.len(), operations.values.len());
+            let actual: Vec<_> = operations
+                .names
+                .iter()
+                .zip(&operations.values)
+                .map(|(name, (latency_ms, energy_wms, source))| {
+                    (
+                        name.clone(),
+                        latency_ms.to_bits(),
+                        energy_wms.to_bits(),
+                        source.to_string(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = diagnostics
+                .operations
+                .iter()
+                .map(|op| {
+                    (
+                        op.name.clone(),
+                        op.latency_ms.to_bits(),
+                        op.energy_wms.to_bits(),
+                        op.source.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        iteration
+    }
+
+    fn rank_names(iteration: &NativeIteration, rank: usize) -> &Arc<[String]> {
+        &iteration.ranks[rank].operations.as_ref().unwrap().names
+    }
+
+    #[test]
+    fn rank_values_match_diagnostics_under_shared_names() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            let width = nextn.unwrap_or(0) + 1;
+            let ranks = [
+                rank_fpm(2, 1024, 256, 0, 0),
+                rank_fpm(0, 0, 0, 4 * width, 4 * width * 513),
+                rank_fpm(1, 256, 0, 4 * width, 4 * width * 513),
+                ForwardPassMetrics::default(),
+                rank_fpm(3, 300, 0, 0, 0),
+                rank_fpm(0, 0, 0, width, width * 2049),
+                rank_fpm(2, 100, 50, 2 * width, 2 * width * 4097),
+            ];
+            let iteration = assert_rank_values_match_diagnostics(&engine, &ranks);
+            // Every rank that runs the same walk shares its name list: the
+            // phase plans' for pure ranks, the mix step's for mixed ranks.
+            for (rank, names) in [
+                (0, engine.context_plan.slot_names()),
+                (4, engine.context_plan.slot_names()),
+                (1, engine.generation_plan.slot_names()),
+                (5, engine.generation_plan.slot_names()),
+                (2, &engine.mix_plan.names),
+                (6, &engine.mix_plan.names),
+            ] {
+                assert!(Arc::ptr_eq(rank_names(&iteration, rank), names), "{rank}");
+            }
+            let idle = iteration.ranks[3].operations.as_ref().unwrap();
+            assert!(idle.names.is_empty() && idle.values.is_empty());
+        }
+        // GLM-5.3 names attention alike in both attention passes: the mix
+        // step folds both into one name, as diagnostics do.
+        let engine = glm_layer_engine();
+        let iteration = assert_rank_values_match_diagnostics(
+            &engine,
+            &[
+                rank_fpm(1, 512, 0, 0, 0),
+                rank_fpm(0, 0, 0, 8, 8 * 1025),
+                rank_fpm(1, 512, 0, 8, 8 * 1025),
+            ],
+        );
+        assert!(Arc::ptr_eq(
+            rank_names(&iteration, 2),
+            &engine.mix_plan.names
+        ));
+        // DSv4.1 stage children fold by name; equal lists are shared.
+        for replay in [false, true] {
+            let engine = dsv41_probe_engine(replay);
+            let first = assert_rank_values_match_diagnostics(
+                &engine,
+                &[
+                    rank_fpm(1, 129, 1024, 0, 0),
+                    rank_fpm(0, 0, 0, 2, 2 * 1025),
+                    rank_fpm(1, 129, 1024, 2, 2 * 1025),
+                ],
+            );
+            let second = assert_rank_values_match_diagnostics(
+                &engine,
+                &[
+                    rank_fpm(1, 257, 512, 0, 0),
+                    rank_fpm(0, 0, 0, 3, 3 * 2049),
+                    rank_fpm(1, 257, 512, 3, 3 * 2049),
+                ],
+            );
+            for rank in 0..3 {
+                assert!(Arc::ptr_eq(
+                    rank_names(&first, rank),
+                    rank_names(&second, rank)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn rank_memo_answers_repeated_workloads_with_the_dispatch_result() {
+        let engine = build_engine(None);
+        let ranks = [
+            rank_fpm(2, 1024, 256, 0, 0),
+            rank_fpm(0, 0, 0, 4, 4 * 513),
+            rank_fpm(1, 256, 0, 4, 4 * 513),
+        ];
+        let memo_len = |engine: &Engine| engine.rank_memo.get().map_or(0, |memo| memo.len());
+        assert_eq!(memo_len(&engine), 0);
+        let first = engine
+            .forward_pass_ranks(&ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(memo_len(&engine), 3);
+        // A hit is the stored pricing, which a fresh dispatch reproduces.
+        let again = engine
+            .forward_pass_ranks(&ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(memo_len(&engine), 3);
+        assert_eq!(again.latency_ms.to_bits(), first.latency_ms.to_bits());
+        for (rank, metrics) in again.ranks.iter().zip(&ranks) {
+            assert!(first.ranks.iter().any(|stored| Arc::ptr_eq(stored, rank)));
+            let fresh = engine
+                .price_rank(metrics, Some(RankDetail::Values), None)
+                .unwrap();
+            assert_eq!(rank.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+            assert_eq!(rank.operations, fresh.operations);
+        }
+        // Latency-only queries read the same entries.
+        assert_eq!(
+            engine.forward_pass_time_ms(&ranks).unwrap().to_bits(),
+            first.latency_ms.to_bits()
+        );
+        assert_eq!(memo_len(&engine), 3);
+        // Diagnostics are kept apart, and a hit reports every operation
+        // with its SOL comparison as the dispatch did.
+        let detailed = engine.forward_pass_estimate(&ranks, true, None).unwrap();
+        assert_eq!(memo_len(&engine), 6);
+        assert_eq!(
+            engine.forward_pass_estimate(&ranks, true, None).unwrap(),
+            detailed
+        );
+        assert_eq!(memo_len(&engine), 6);
+        for (rank, metrics) in detailed.ranks.iter().zip(&ranks) {
+            let fresh = engine
+                .price_rank(metrics, Some(RankDetail::Diagnostics), None)
+                .unwrap();
+            assert_eq!(Some(&rank.operations), fresh.diagnostics.as_ref());
+            assert_eq!(rank.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+        }
+        assert_rank_operations_sum(&engine, &ranks);
+        // The memo stays bounded however many workloads replay prices.
+        for tokens in 1..=(RANK_MEMO_CAPACITY as u32 + 512) {
+            engine
+                .forward_pass_time_ms(&[rank_fpm(0, 0, 0, 1, tokens)])
+                .unwrap();
+        }
+        assert!(
+            memo_len(&engine) <= RANK_MEMO_CAPACITY,
+            "{}",
+            memo_len(&engine)
+        );
+    }
+
+    #[test]
+    fn rank_memo_never_answers_for_lookup_coverage_or_query_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        let prefill = [rank_fpm(1, 256, 128, 0, 0)];
+        let lookups = |coverage: &FpmQueryCoverage| {
+            let counts = &coverage.queries;
+            counts.measured + counts.interpolated + counts.unsupported
+        };
+        let mut coverage = FpmQueryCoverage::default();
+        let covered = engine
+            .forward_pass_time_ms_with_coverage(&prefill, Some(&mut coverage))
+            .unwrap();
+        let per_query = lookups(&coverage);
+        assert!(per_query > 0);
+        // Uncovered queries fill the memo...
+        for _ in 0..2 {
+            assert_eq!(engine.forward_pass_time_ms(&prefill).unwrap(), covered);
+        }
+        assert_eq!(engine.rank_memo.get().unwrap().len(), 1);
+        // ...which neither answers nor joins a covered query: every
+        // invocation is counted, and coverage leaves no entry.
+        for repeat in 2..=3 {
+            engine
+                .forward_pass_time_ms_with_coverage(&prefill, Some(&mut coverage))
+                .unwrap();
+            assert_eq!(lookups(&coverage), repeat * per_query);
+        }
+        engine
+            .forward_pass_time_ms_with_coverage(&[rank_fpm(1, 384, 128, 0, 0)], Some(&mut coverage))
+            .unwrap();
+        assert_eq!(engine.rank_memo.get().unwrap().len(), 1);
+        // Diagnostics record their direct lookups on every call.
+        let fresh = full_round_engine(tmp.path());
+        let expected = fresh.forward_pass_estimate(&prefill, true, None).unwrap();
+        assert!(!expected.ranks[0].queries.is_empty());
+        for _ in 0..2 {
+            assert_eq!(
+                engine.forward_pass_estimate(&prefill, true, None).unwrap(),
+                expected
+            );
+        }
+        // Whole-model ranks keep no operation values.
+        let iteration = engine
+            .forward_pass_ranks(&prefill, RankDetail::Values, None)
+            .unwrap();
+        assert!(iteration.ranks[0].operations.is_none());
+        assert_eq!(iteration.latency_ms, covered);
+    }
+
+    #[test]
+    fn rank_memo_notes_the_provenance_its_lookups_fired() {
+        let engine = build_engine(None);
+        let ranks = [rank_fpm(2, 1024, 256, 0, 0), rank_fpm(0, 0, 0, 4, 4 * 513)];
+        // Reference: the tiers a dispatch fires on a fresh accumulator.
+        engine.reset_provenance();
+        engine
+            .price_rank(&ranks[0], Some(RankDetail::Values), None)
+            .unwrap();
+        engine
+            .price_rank(&ranks[1], Some(RankDetail::Values), None)
+            .unwrap();
+        let fired = engine.database().worst_provenance();
+        for _ in 0..2 {
+            // A miss, then a hit: the same tiers, and an earlier worse tier
+            // is kept.
+            engine.reset_provenance();
+            engine.forward_pass_time_ms(&ranks).unwrap();
+            assert_eq!(engine.database().worst_provenance(), fired);
+            engine.reset_provenance();
+            engine.database().note_provenance(ProvenanceTier::XShape);
+            engine.forward_pass_time_ms(&ranks).unwrap();
+            assert_eq!(
+                engine.database().worst_provenance(),
+                fired.max(ProvenanceTier::XShape)
+            );
+        }
+        for rank in &ranks {
+            let stored = engine
+                .rank_memo
+                .get()
+                .unwrap()
+                .get(&RankKey::of(rank, RankDetail::Values))
+                .unwrap();
+            assert!(stored.provenance <= fired);
+        }
+    }
+
+    #[test]
+    fn phase_diagnostics_preserve_dsv41_bounded_prefill_and_decode_geometry() {
+        for replay in [false, true] {
+            let engine = dsv41_probe_engine(replay);
+            let unit = dsv41_probe_token_ms(&engine);
+            for query in [1, 127, 128, 129, 256] {
+                let prefill = engine
+                    .static_phase_diagnostics(2, 1024 + query, 1024, true)
+                    .unwrap();
+                let decoder_tokens = if replay { query.min(128) } else { query };
+                // Two requests, two memory probes per stage. Only the decoder
+                // stage clips its new-token work when bounded replay is enabled.
+                let expected = 4.0 * f64::from(query + decoder_tokens) * unit;
+                assert!(
+                    (prefill.iter().map(|row| row.latency_ms).sum::<f64>() - expected).abs()
+                        < 1e-12
+                );
+                let decode = engine
+                    .static_phase_diagnostics(2, 1024 + query, 0, false)
+                    .unwrap();
+                assert!(
+                    (decode.iter().map(|row| row.latency_ms).sum::<f64>() - 8.0 * unit).abs()
+                        < 1e-12
+                );
+                for row in prefill.iter().chain(&decode) {
+                    let sol = row.details.sol.as_ref().unwrap();
+                    assert!((sol.latency_ms - row.latency_ms).abs() < 1e-12);
+                    assert!(row.details.sol_unavailable_reason.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dsv41_mixed_scopes_each_request_before_adding_decode() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        // Two 256-token extends: encoder 512, decoder 2*128; both
+        // stages also execute all 200 decode requests, not one 128-token tail.
+        let parts = engine
+            .mixed_step_breakdown(512, 200, 256, 32, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((parts[1] / unit - (512.0 + 256.0 + 400.0)).abs() < 1e-9);
+        assert!((parts[2] / unit - 768.0).abs() < 1e-9);
+        assert!((parts[3] / unit - 400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dsv41_partial_extend_and_prefix_do_not_fill_decoder_tail() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        for q in [1, 127, 128, 129] {
+            let parts = engine
+                .mixed_step_breakdown(q, 3, 4096, 32, 2048, 1.0, 1.0)
+                .unwrap();
+            assert!((parts[2] / unit - f64::from(q + q.min(128))).abs() < 1e-9);
+            assert!((parts[1] / unit - f64::from(q + q.min(128) + 6)).abs() < 1e-9);
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(q, 3, 4096, 32, 2048, 1.0, 1.0)
+                .unwrap();
+            assert!((shared.iter().map(|v| v.1).sum::<f64>() - parts[1]).abs() < 1e-12);
+            assert!((context.iter().map(|v| v.1).sum::<f64>() - parts[2]).abs() < 1e-12);
+            assert!((decode.iter().map(|v| v.1).sum::<f64>() - parts[3]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn dsv41_replay_never_changes_decode_work() {
+        for replay in [false, true] {
+            let mut engine = dsv41_probe_engine(replay);
+            for outer in &mut engine.generation_ops {
+                let Op::Dsv41Stage(stage) = outer else {
+                    unreachable!()
+                };
+                let norm = stage.children[0].clone();
+                stage.children[0] = Op::Overlap(crate::operators::op::OverlapOp::new(
+                    "decode_fused",
+                    vec![norm.clone(), norm.clone()],
+                    vec![norm],
+                ));
+            }
+            let mixed = engine
+                .mixed_step_latency(0, 257, 2048, 32, 0, 1.0, 1.0)
+                .unwrap();
+            let decode = engine.decode_step_latency(257, 2048, 32, 1.0).unwrap();
+            assert!((mixed - decode).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn dsv41_telemetry_retains_prefill_remainders() {
+        let engine = dsv41_probe_engine(false);
+        let unit = dsv41_probe_token_ms(&engine);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        metrics.scheduled_requests.sum_prefill_tokens = 257;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        metrics.scheduled_requests.num_decode_requests = 3;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 1536;
+        let result = engine.forward_pass_time_ms(&[metrics]).unwrap();
+        assert!((result / unit - 4.0 * 260.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dsv41_replay_rejects_equal_prompt_heterogeneous_extends() {
+        // The scheduler observes identical 1024-token prompts, but different
+        // cached prefixes leave extends of 1 and 1023 tokens. Prompt variance
+        // is zero although the real bounded tails total 129, not 2 * 128.
+        let requests = [(1024, 1023, 1), (1024, 1, 1023)];
+        assert!(
+            requests
+                .iter()
+                .all(|&(prompt, prefix, query)| { prompt == 1024 && prefix + query == prompt })
+        );
+        let engine = dsv41_probe_engine(true);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = requests.len() as u32;
+        metrics.scheduled_requests.sum_prefill_tokens = requests.iter().map(|r| r.2).sum();
+        metrics.scheduled_requests.sum_prefill_kv_tokens = requests.iter().map(|r| r.1).sum();
+        // Matches build_fpm_snapshot: variance is over prompt, not query.
+        metrics.scheduled_requests.var_prefill_length = 0.0;
+        let error = engine.forward_pass_time_ms(&[metrics]).unwrap_err();
+        assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+        assert!(error.to_string().contains("multiple prefill requests"));
+    }
+
+    #[test]
+    fn dsv41_replay_rejects_multiple_prefills_without_geometry() {
+        let engine = dsv41_probe_engine(true);
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        for tokens in [1, 2, 127, 128, 129, 256, 1024] {
+            for variance in [0.0, 64.0] {
+                metrics.scheduled_requests.sum_prefill_tokens = tokens;
+                metrics.scheduled_requests.var_prefill_length = variance;
+                for decode_batch in [0, 3] {
+                    metrics.scheduled_requests.num_decode_requests = decode_batch;
+                    metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+                    assert!(matches!(
+                        engine.forward_pass_time_ms(std::slice::from_ref(&metrics)),
+                        Err(AicError::InvalidForwardPassMetrics(_))
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dsv41_replay_telemetry_keeps_single_prefill_and_decode_boundaries() {
+        let engine = dsv41_probe_engine(true);
+        let unit = dsv41_probe_token_ms(&engine);
+        let mut metrics = ForwardPassMetrics::default();
+        for query in [0, 1, 127, 128, 129, 1024] {
+            for prefix in [0, 1024] {
+                metrics.scheduled_requests.num_prefill_requests = 1;
+                metrics.scheduled_requests.sum_prefill_tokens = query;
+                metrics.scheduled_requests.sum_prefill_kv_tokens = prefix;
+                for decode_batch in [0, 3] {
+                    metrics.scheduled_requests.num_decode_requests = decode_batch;
+                    metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+                    let result = engine
+                        .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                        .unwrap();
+                    let expected = 2 * (query + query.min(128) + 2 * decode_batch);
+                    assert!((result / unit - f64::from(expected)).abs() < 1e-9);
+                }
+            }
+        }
+        // Cached-prefill metadata alone is not fresh prefill work. Keep the
+        // decode-only path (and an otherwise empty iteration) available.
+        metrics.scheduled_requests.num_prefill_requests = 2;
+        metrics.scheduled_requests.sum_prefill_tokens = 0;
+        for decode_batch in [0, 3] {
+            metrics.scheduled_requests.num_decode_requests = decode_batch;
+            metrics.scheduled_requests.sum_decode_kv_tokens = decode_batch * 512;
+            let result = engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap();
+            assert!((result / unit - f64::from(4 * decode_batch)).abs() < 1e-9);
+        }
     }
 
     #[test]
@@ -2174,39 +5771,306 @@ mod tests {
         assert_eq!(ms, breakdown[0]);
     }
 
+    #[test]
+    fn mixed_draft_phases_preserve_native_results_and_target_composition() {
+        use crate::operators::op::TokenScaleOp;
+
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            let db = Arc::new(
+                PerfDatabase::load_resolved(
+                    &systems_root(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.24.0",
+                    mode == DatabaseMode::Silicon,
+                    false,
+                    false,
+                )
+                .unwrap()
+                .with_mode(mode, TransferPolicy::default()),
+            );
+            let mut config = fixture_engine_config(Some(3));
+            config.database_mode = mode;
+            let target = Engine::build(
+                EngineSpec::new(config.clone(), context_ops(), generation_ops()),
+                db.clone(),
+            )
+            .unwrap();
+            let ctx_draft: Vec<_> = context_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    op
+                })
+                .collect();
+            let gen_draft: Vec<_> = generation_ops()
+                .into_iter()
+                .map(|mut op| {
+                    op.set_name(format!("draft_{}", op.name()));
+                    Op::TokenScale(TokenScaleOp {
+                        op: Box::new(op),
+                        numerator: 1,
+                        denominator: 4,
+                    })
+                })
+                .collect();
+            let mut ctx_ops = context_ops();
+            ctx_ops.extend(ctx_draft.clone());
+            let mut gen_ops = generation_ops();
+            gen_ops.extend(gen_draft.clone());
+            let engine = Engine::build(EngineSpec::new(config, ctx_ops, gen_ops), db).unwrap();
+
+            for (ctx, generation, prefix) in
+                [(0_u32, 7, 0), (128, 0, 64), (128, 7, 64), (8192, 7, 64)]
+            {
+                let mut ctx_expected = PerformanceResult::zero();
+                if ctx > 0 {
+                    for op in &ctx_draft {
+                        ctx_expected = ctx_expected.plus(
+                            query_context_op(
+                                op,
+                                &engine.db,
+                                ctx.div_ceil(4096),
+                                4096 - prefix,
+                                prefix,
+                                1.0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    ctx_expected = ctx_expected.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                let mut gen_expected = PerformanceResult::zero();
+                if generation > 0 {
+                    for op in &gen_draft {
+                        // Independent width-one draft queries, before the
+                        // verification-width wrapper is applied.
+                        let Op::TokenScale(wrapper) = op else {
+                            unreachable!()
+                        };
+                        gen_expected = gen_expected.plus(
+                            query_generation_op(
+                                &wrapper.op,
+                                &engine.db,
+                                generation,
+                                1,
+                                4129,
+                                1.0,
+                                0,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                }
+                let mut observed_ctx = PerformanceResult::zero();
+                let mut observed_gen = PerformanceResult::zero();
+                let result = engine
+                    .mixed_step_breakdown_with(
+                        ctx,
+                        generation,
+                        4096,
+                        64,
+                        prefix,
+                        1.0,
+                        1.0,
+                        |pass, op, r| {
+                            if op.name().starts_with("draft_") {
+                                match pass {
+                                    MixedPass::SharedNonAttention => {
+                                        panic!("draft charged as shared target work")
+                                    }
+                                    MixedPass::ContextAttention => {
+                                        observed_ctx = observed_ctx.clone().plus(r)
+                                    }
+                                    MixedPass::DecodeAttention => {
+                                        observed_gen = observed_gen.clone().plus(r)
+                                    }
+                                }
+                            }
+                        },
+                    )
+                    .unwrap();
+                if ctx > 0 {
+                    observed_ctx = observed_ctx.scaled(1.0 / 4096_u32.div_ceil(ctx) as f64);
+                }
+                // Includes energy, source, SOL components and fallback records.
+                assert_eq!(observed_ctx, ctx_expected);
+                assert_eq!(observed_gen, gen_expected);
+                let baseline = target
+                    .mixed_step_breakdown(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                assert_eq!(result[1], baseline[1]);
+                assert!((result[2] - baseline[2] - ctx_expected.latency_ms).abs() < 1e-10);
+                assert!((result[3] - baseline[3] - gen_expected.latency_ms).abs() < 1e-10);
+                let (shared, prefill, decode) = engine
+                    .mixed_step_breakdown_per_op(ctx, generation, 4096, 64, prefix, 1.0, 1.0)
+                    .unwrap();
+                let per_op_sum: f64 = shared
+                    .iter()
+                    .chain(&prefill)
+                    .chain(&decode)
+                    .map(|r| r.1)
+                    .sum();
+                assert!((result[0] - per_op_sum).abs() < 1e-10);
+                for (rows, expected) in [(prefill, ctx_expected), (decode, gen_expected)] {
+                    let draft_energy: f64 = rows
+                        .iter()
+                        .filter(|r| r.0.starts_with("draft_"))
+                        .map(|r| r.2)
+                        .sum();
+                    assert!((draft_energy - expected.energy_wms).abs() < 1e-10);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_draft_composites_keep_executed_fallback_metadata() {
+        use crate::operators::op::{FallbackOp, OverlapOp, TokenScaleOp};
+
+        let mut config = fixture_engine_config(Some(3));
+        config.system_name = "gb200".to_string();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.16".to_string());
+        let comm = Op::MoeAllToAll(MoeAllToAllOp {
+            name: "comm".into(),
+            scale_factor: 1.0,
+            phase: "dispatch".into(),
+            comm_backend: "deepep_ll".into(),
+            comm_dtype: "default".into(),
+            hidden_size: 7168,
+            topk: 8,
+            num_experts: 256,
+            moe_ep_size: 32,
+            node_num: 8,
+            sms: 0,
+            attention_tp_size: 1,
+            workload_distribution: "power_law_1.2".into(),
+            enable_eplb: false,
+        });
+        let composite = Op::Overlap(OverlapOp::new(
+            "draft_overlap",
+            vec![Op::Fallback(FallbackOp::new(
+                "fallback",
+                comm.clone(),
+                vec![],
+            ))],
+            vec![comm],
+        ));
+        let generation = Op::TokenScale(TokenScaleOp {
+            op: Box::new(composite.clone()),
+            numerator: 1,
+            denominator: 4,
+        });
+        let spec = EngineSpec::new(config, vec![composite], vec![generation; 3]);
+        let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root()).unwrap();
+        let (shared, prefill, decode) = engine
+            .mixed_step_breakdown_per_op_with_metadata(1, 1, 2, 2, 0, 1.0, 1.0)
+            .unwrap();
+        assert!(shared.is_empty());
+        for (rows, phase) in [(&prefill, "context"), (&decode, "generation")] {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].4, Some(((phase, "deepep_ll", 32, 8, 4, 1), vec![])));
+            assert!(rows[0].1 > 0.0);
+        }
+        let standalone =
+            query_generation_op(&engine.generation_ops[0], &engine.db, 4, 1, 4, 1.0, 0, None)
+                .unwrap();
+        assert!((decode[0].1 - 3.0 * standalone.latency_ms).abs() < 1e-12);
+        assert!((decode[0].2 - 3.0 * standalone.energy_wms).abs() < 1e-12);
+        assert_eq!(decode[0].3, standalone.source.as_str());
+    }
+
     // ---- FPM whole-model engine branches ----
 
     /// FPM engine over the synthetic pair fixture: context = [FpmForward
     /// prefill], generation = [FpmForward decode], empty sol_ops (grid-exact
     /// queries never call SOL).
     fn build_fpm_engine(tmp: &std::path::Path, nextn: Option<u32>) -> Result<Engine, AicError> {
+        let spec = build_fpm_spec(tmp, nextn);
+        Engine::from_spec_bytes(&spec.to_bincode()?, tmp)
+    }
+
+    fn build_fpm_spec(tmp: &std::path::Path, nextn: Option<u32>) -> EngineSpec {
         use crate::perf_database::fpm_forward::tests::{
             default_identity, default_rows, write_pair,
         };
-        write_pair(tmp, &default_rows());
-        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
-            tmp.to_path_buf(),
-            "b200_sxm",
-            "vllm",
-            "0.25.1",
-        ));
+        let parquet = write_pair(tmp, &default_rows());
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        let mut config = fixture_engine_config(nextn);
+        config.backend_version = Some("0.25.1".into());
+        config.forward_model = Some("fpm".into());
+        config.fpm_parquet_path = Some(parquet);
+        config.systems_path = Some(tmp.to_path_buf());
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
+                dcp_size: None,
                 name: format!("fpm_forward_{}", phase.as_str()),
                 phase,
                 model_path: "org/model-a".to_string(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
-        let spec = EngineSpec::new(
-            fixture_engine_config(nextn),
+        EngineSpec::new(
+            config,
             vec![fpm_op(FpmPhase::Prefill)],
             vec![fpm_op(FpmPhase::Decode)],
-        );
-        Engine::build(spec, Arc::new(db))
+        )
+    }
+
+    #[test]
+    fn external_fpm_engines_share_tables_without_backend_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = build_fpm_engine(tmp.path(), None).unwrap();
+        let second = build_fpm_engine(tmp.path(), None).unwrap();
+        assert!(!tmp.path().join("data").exists());
+        assert!(Arc::ptr_eq(
+            first.database().tables_arc(),
+            second.database().tables_arc()
+        ));
+    }
+
+    #[test]
+    fn external_fpm_rejects_invalid_specs_before_database_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        for path in ["", "/missing/reviewed-fpm.parquet"] {
+            let mut config = fixture_engine_config(None);
+            config.fpm_parquet_path = Some(path.into());
+            let spec = EngineSpec::new(config, context_ops(), generation_ops());
+            let err = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(matches!(err, AicError::InvalidEngineConfig(_)), "{err}");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
+    fn external_fpm_invalid_artifacts_fail_on_first_query() {
+        for missing_parquet in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let spec = build_fpm_spec(tmp.path(), None);
+            let path = spec.engine.fpm_parquet_path.as_ref().unwrap();
+            let expected = if missing_parquet {
+                std::fs::remove_file(path).unwrap();
+                "does not exist"
+            } else {
+                std::fs::write(path.with_extension("metadata.json"), "not JSON").unwrap();
+                "metadata"
+            };
+            let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap();
+            let err = engine.predict_prefill_latency(1, 512, 0).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
     }
 
     #[test]
@@ -2219,11 +6083,15 @@ mod tests {
         use crate::perf_database::fpm_forward::tests::default_identity;
         let db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
         let fpm_op = Op::FpmForward(FpmForwardOp {
+            interpolation: Default::default(),
+            dcp_size: None,
             name: "fpm_forward_prefill".into(),
             phase: FpmPhase::Prefill,
             model_path: "org/model-a".into(),
             match_identity: default_identity(4),
             weight_bytes: 0.0,
+            verify_width: 1,
+            original_fmha_quant_mode: None,
             sol_ops: vec![],
         });
         let spec = EngineSpec::new(
@@ -2233,6 +6101,428 @@ mod tests {
         );
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn identity_only_sd_tables_cannot_be_consumed_by_a_public_ar_spec() {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let binding: crate::FpmExecutionBinding = serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40), "execution_profile": {
+                "kind": "speculative_round", "method": "eagle3", "num_draft_tokens": 3,
+                "draft_model": "test/draft", "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap();
+        let selector: &'static str = Box::leak(binding.selector().unwrap().into_boxed_str());
+        let mut spec = build_fpm_spec(tmp.path(), Some(0));
+        spec.engine.model_name = "org/model-a".into();
+        spec.engine.parallel.tp_size = 4;
+        spec.engine.parallel.moe_tp_size = Some(4);
+        spec.engine.parallel.moe_ep_size = Some(1);
+        let rows: Vec<_> = default_rows()
+            .into_iter()
+            .map(|mut row| {
+                row.execution = Some(["", selector, "none", "text"]);
+                row.kv_seed_regime = Some("real_kv");
+                row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+                    scope: "model_step_cuda",
+                    reduction: "single_sample",
+                    source_sample_count: 1,
+                });
+                row
+            })
+            .collect();
+        write_pair(tmp.path(), &rows);
+        for op in spec.context_ops.iter_mut().chain(&mut spec.generation_ops) {
+            let Op::FpmForward(op) = op else {
+                unreachable!()
+            };
+            op.match_identity[16] = selector.into();
+            op.interpolation = FpmInterpolation::Direct;
+        }
+        let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path());
+        if let Ok(engine) = result {
+            // Independent fixture oracle: this 7ms row is a complete K3 round,
+            // but the forged public spec declares AR (nextn=0, verify_width=1).
+            assert_eq!(engine.predict_decode_latency_total(8, 4096).unwrap(), 7.0);
+            panic!("identity-only PR consumed a measured K3 round through an AR EngineSpec");
+        }
+        let error = result.unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
+        spec.engine.fpm_parquet_path = Some("/missing/identity-only-sd.parquet".into());
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
+    }
+
+    fn full_round_binding() -> FpmExecutionBinding {
+        serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40),
+            "execution_profile": {
+                "kind": "speculative_round",
+                "method": "eagle3",
+                "num_draft_tokens": 3,
+                "draft_model": "org/draft-model",
+                "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap()
+    }
+
+    fn full_round_spec(tmp: &std::path::Path) -> EngineSpec {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        use crate::perf_database::fpm_forward::tests::{NativeCudaSampleSpec, RowSpec, write_pair};
+        let binding = full_round_binding();
+        let selector = binding.selector().unwrap();
+        // The existing RowSpec fixture stores static strings. The few small
+        // test selectors live for this test process, not in production state.
+        let selector: &'static str = Box::leak(selector.into_boxed_str());
+        let rows: Vec<_> = [
+            ("prefill", 1, 256, 0, 11.0),
+            ("prefill", 1, 512, 0, 17.0),
+            ("prefill", 1, 256, 128, 13.0),
+            ("prefill", 1, 512, 128, 19.0),
+            ("decode", 1, 0, 4096, 7.0),
+            ("decode", 1, 0, 8192, 9.0),
+            ("decode", 4, 0, 4096, 31.0),
+            ("decode", 4, 0, 8192, 33.0),
+        ]
+        .into_iter()
+        .map(|(kind, batch, prefill, kv, latency)| RowSpec {
+            workload_kind: kind,
+            batch_size: batch,
+            total_prefill_tokens: prefill,
+            total_kv_read_tokens: kv,
+            latency_ms: latency,
+            execution: Some(["", selector, "none", "text"]),
+            kv_seed_regime: (kv > 0).then_some("real_kv"),
+            native_cuda: Some(NativeCudaSampleSpec {
+                policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+                scope: "model_step_cuda",
+                reduction: "single_sample",
+                source_sample_count: 1,
+            }),
+            ..RowSpec::default()
+        })
+        .collect();
+        let mut spec = build_fpm_spec(tmp, Some(3));
+        write_pair(tmp, &rows);
+        spec.engine.model_name = "org/model-a".into();
+        spec.engine.parallel.tp_size = 4;
+        spec.engine.parallel.moe_tp_size = Some(4);
+        spec.engine.parallel.moe_ep_size = Some(1);
+        spec.engine.extra.insert(
+            "fpm_execution_profile".into(),
+            serde_json::to_string(&binding).unwrap(),
+        );
+        for op in spec.context_ops.iter_mut().chain(&mut spec.generation_ops) {
+            let Op::FpmForward(op) = op else {
+                unreachable!()
+            };
+            op.interpolation = FpmInterpolation::Direct;
+            op.match_identity[16] = selector.into();
+        }
+        spec
+    }
+
+    pub(crate) fn full_round_engine(tmp: &std::path::Path) -> Engine {
+        let spec = full_round_spec(tmp);
+        Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
+    }
+
+    #[test]
+    fn speculative_scaling_rejects_a_measured_round_without_construction_provenance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(full_round_engine(tmp.path())),
+            Default::default(),
+        );
+        let metrics = [ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(&metrics).unwrap(),
+            Some(7.0)
+        );
+        // Path 2 rejects path 1's query option with its own reason.
+        for error in [
+            model
+                .estimate_speculative_forward_pass_time_ms(&metrics, 3)
+                .unwrap_err(),
+            model
+                .estimate_speculative_forward_pass_detailed(&metrics, 3)
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains(
+                    "measured speculative-round profile already includes speculative decoding; omit draft_length"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_round_mixed_rank_is_prefill_plus_a_full_decode_round() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(full_round_engine(tmp.path())),
+            Default::default(),
+        );
+        let mixed = |num_prefill_requests, sum_prefill_tokens| ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests,
+                sum_prefill_tokens,
+                sum_prefill_kv_tokens: 128,
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Hand-authored rows: prefill B1/256 tokens/128 KV is 13ms and the
+        // complete K3 decode round B1/KV4096 is 7ms. No pass baseline exists,
+        // so the round is not reduced to a marginal decode share.
+        let estimate = model
+            .estimate_forward_pass_detailed(&[mixed(1, 256)])
+            .unwrap();
+        assert_eq!(estimate.latency_ms, Some(20.0));
+        let rank = &estimate.ranks[0];
+        assert_eq!(
+            (rank.latency_ms, rank.prefill_ms, rank.decode_ms),
+            (20.0, Some(13.0), Some(7.0))
+        );
+        assert_eq!(
+            (rank.decode_baseline_ms, rank.marginal_decode_ms),
+            (None, None)
+        );
+        assert!(rank.queries.iter().all(|query| !query.decode_baseline));
+        assert_eq!(
+            model
+                .estimate_forward_pass_time_ms(&[mixed(1, 256)])
+                .unwrap(),
+            Some(20.0)
+        );
+        // A fully prefix-cached prefill computes no token: one decode round.
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(&[mixed(1, 0)]).unwrap(),
+            Some(7.0)
+        );
+        // Attention DP remains outside the measured identity.
+        assert!(
+            model
+                .estimate_forward_pass_time_ms(&[mixed(1, 256), mixed(1, 256)])
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one attention-DP rank")
+        );
+    }
+
+    #[test]
+    fn full_round_raw_counts_price_one_measured_round_without_draft_recharge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        assert_eq!(
+            engine.nextn, 3,
+            "scheduler identity must retain its real depth"
+        );
+        // Hand-authored measured rows: B1/KV4096 is a COMPLETE 7ms K3 round;
+        // the B4 row is deliberately 31ms. Widening or charging draft again
+        // cannot satisfy these independent table oracles.
+        assert_eq!(engine.predict_decode_latency_total(1, 4096).unwrap(), 7.0);
+        assert_eq!(engine.predict_decode_latency_total(4, 4096).unwrap(), 31.0);
+        let mut coverage = FpmQueryCoverage::default();
+        assert_eq!(
+            engine
+                .predict_decode_latency_total_with_coverage(1, 4096, Some(&mut coverage))
+                .unwrap(),
+            7.0
+        );
+        // Measured SD-prefill rows include their own draft-prefill work.
+        assert_eq!(engine.predict_prefill_latency(1, 256, 0).unwrap(), 11.0);
+        assert_eq!(
+            engine
+                .predict_prefill_detailed(1, 384, 128, Some(&mut coverage))
+                .unwrap()
+                .latency_ms,
+            Some(13.0)
+        );
+        let prefill = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 256,
+                sum_prefill_kv_tokens: 128,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(engine.forward_pass_time_ms(&[prefill]).unwrap(), 13.0);
+        let context = engine
+            .run_static(&runtime(1, 256, 1), StaticMode::Context, 32)
+            .unwrap();
+        assert_eq!(context.total_ms, 11.0);
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics::default()])
+                .unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn full_round_unsupported_surfaces_fail_before_pricing_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        for osl in [2, 32] {
+            let err = engine.predict_decode_latency(1, 4096, osl).unwrap_err();
+            assert!(err.to_string().contains("static generation"), "{err}");
+        }
+        assert!(
+            engine
+                .run_static(&runtime(1, 256, 2), StaticMode::Both, 32)
+                .is_err()
+        );
+        assert!(
+            engine
+                .run_static_per_op(&runtime(1, 256, 1), StaticMode::Context, 32)
+                .is_err()
+        );
+        assert!(engine.decode_step_latency(1, 4096, 2, 1.0).is_err());
+        assert!(engine.decode_step_per_op(1, 4096, 2, 1.0).is_err());
+        assert!(
+            engine
+                .mixed_step_latency(256, 1, 256, 2, 0, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .mixed_step_breakdown_per_op(256, 1, 256, 2, 0, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_generation_ops(&[0], 4, 4096, 1.0, 0, None)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_ops_json("[]", true, 1, 256, 0, 1.0, None)
+                .is_err()
+        );
+        assert!(
+            engine
+                .forward_pass_time_ms(&[
+                    ForwardPassMetrics::default(),
+                    ForwardPassMetrics::default()
+                ])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn full_round_forged_specs_are_rejected_before_database_loading() {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        for case in 0..15 {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut spec = full_round_spec(tmp.path());
+            match case {
+                0 => {
+                    spec.engine.extra.remove("fpm_execution_profile");
+                }
+                1 => {
+                    spec.engine.speculative.as_mut().unwrap().nextn = Some(2);
+                }
+                2 => {
+                    spec.engine.parallel.attention_dp_size = Some(2);
+                }
+                3 => {
+                    spec.engine.parallel.moe_ep_size = Some(2);
+                }
+                4 => {
+                    spec.engine.database_mode = DatabaseMode::Hybrid;
+                }
+                5 => {
+                    spec.generation_ops.push(context_ops().remove(0));
+                }
+                6 => {
+                    spec.engine.backend = BackendKind::Sglang;
+                }
+                7 => {
+                    spec.engine.parallel.dcp_size = Some(2);
+                }
+                8 => {
+                    spec.engine.parallel.cp_size = Some(2);
+                }
+                _ => {
+                    let Op::FpmForward(op) = &mut spec.generation_ops[0] else {
+                        unreachable!()
+                    };
+                    match case {
+                        9 => op.verify_width = 4,
+                        10 => op.interpolation = FpmInterpolation::Sol,
+                        11 => op.match_identity.truncate(15),
+                        12 => op.sol_ops.push(context_ops().remove(0)),
+                        13 => op.match_identity[16] = "full".into(),
+                        14 => {
+                            let mut other = full_round_binding();
+                            other.model_revision = "3".repeat(40);
+                            op.match_identity[16] = other.selector().unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            // A nonexistent path proves validation runs before database IO.
+            spec.engine.fpm_parquet_path = Some("/missing/full-round-test.parquet".into());
+            let error =
+                Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(
+                matches!(error, AicError::InvalidEngineConfig(_)),
+                "case {case}: {error}"
+            );
+            assert!(
+                error.to_string().contains("full SD-round"),
+                "case {case}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_only_sd_selector_in_nested_stage_is_rejected_before_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = build_fpm_spec(tmp.path(), None);
+        spec.engine.forward_model = None;
+        spec.engine.fpm_parquet_path = None;
+        for ops in [&mut spec.context_ops, &mut spec.generation_ops] {
+            let Op::FpmForward(op) = &mut ops[0] else {
+                unreachable!()
+            };
+            op.match_identity[16] = "speculative_round_v1:invalid".into();
+            *ops = vec![Op::Dsv41Stage(crate::operators::Dsv41StageOp {
+                name: "nested_fpm".into(),
+                is_context: op.phase == FpmPhase::Prefill,
+                decoder_replay: false,
+                bounded: false,
+                window_size: 128,
+                children: std::mem::take(ops),
+            })];
+        }
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
     }
 
     /// The marginal-decode mixed composition, exact arithmetic over the
@@ -2260,7 +6550,7 @@ mod tests {
 
     /// FPM engine over CUSTOM rows (cliff pair + chunk coordinates); same
     /// wiring as [`build_fpm_engine`].
-    fn build_fpm_engine_with_rows(
+    pub(crate) fn build_fpm_engine_with_rows(
         tmp: &std::path::Path,
         rows: &[crate::perf_database::fpm_forward::tests::RowSpec],
     ) -> Result<Engine, AicError> {
@@ -2275,11 +6565,15 @@ mod tests {
         ));
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
+                dcp_size: None,
                 name: format!("fpm_forward_{}", phase.as_str()),
                 phase,
                 model_path: "org/model-a".to_string(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
@@ -2289,6 +6583,306 @@ mod tests {
             vec![fpm_op(FpmPhase::Decode)],
         );
         Engine::build(spec, Arc::new(db))
+    }
+
+    #[test]
+    fn prefill_totals_query_the_scheduled_iteration_without_mean_rounding() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let row =
+            |workload_kind, batch_size, total_prefill_tokens, total_kv_read_tokens, latency_ms| {
+                RowSpec {
+                    workload_kind,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                    latency_ms,
+                    ..RowSpec::default()
+                }
+            };
+        let rows = [
+            row("prefill", 1, 1, 0, 2.0),
+            row("prefill", 3, 16, 8, 5.0),
+            row("decode", 1, 0, 8, 3.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+        // Three requests computed 16 tokens after reading 8 cached tokens.
+        assert_eq!(engine.predict_prefill_latency_total(3, 16, 8).unwrap(), 5.0);
+        let estimate = engine
+            .predict_prefill_detailed_total(3, 16, 8, None)
+            .unwrap();
+        assert_eq!(estimate.latency_ms, Some(5.0));
+        assert_eq!(estimate.ranks[0].prefill_ms, Some(5.0));
+        // Their integer means (24 / 3, 8 / 3) reconstruct (3, 18, 6), which
+        // lies outside the collected 16-token prefill domain.
+        let error = engine.predict_prefill_latency(3, 8, 2).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("total_prefill_tokens=18 is outside the collected domain [1, 16]"),
+            "{error}"
+        );
+        assert_eq!(engine.predict_prefill_latency_total(3, 0, 8).unwrap(), 0.0);
+    }
+
+    fn fpm_replay_guard_probe(tmp: &std::path::Path, replay: bool) -> Engine {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let rows = [
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 511,
+                total_kv_read_tokens: 0,
+                latency_ms: 23.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 257,
+                total_kv_read_tokens: 513,
+                latency_ms: 31.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 1024,
+                total_kv_read_tokens: 1024,
+                latency_ms: 43.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 129,
+                total_kv_read_tokens: 513,
+                latency_ms: 17.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "decode",
+                batch_size: 8,
+                total_prefill_tokens: 0,
+                total_kv_read_tokens: 4096,
+                latency_ms: 7.0,
+                ..RowSpec::default()
+            },
+        ];
+        let mut engine = build_fpm_engine_with_rows(tmp, &rows).unwrap();
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        // The real Python FPM rewrite retains the original V4.1 stage graph.
+        prefill.sol_ops = dsv41_probe_engine(replay).context_ops;
+        engine
+    }
+
+    fn fpm_replay_guard_metrics(variance: f64) -> ForwardPassMetrics {
+        ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 511,
+                // Prompt-length variance does not identify current extends;
+                // these totals also address the balanced [256, 255] row.
+                var_prefill_length: variance,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_before_balanced_table_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        for variance in [0.0, 16512.25, 0.25, -1.0, f64::NAN, f64::INFINITY] {
+            let result = engine.forward_pass_time_ms(&[fpm_replay_guard_metrics(variance)]);
+            assert!(
+                matches!(result, Err(AicError::InvalidForwardPassMetrics(_))),
+                "bounded replay variance {variance:?} must not query a balanced table: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_mixed_prefill_before_table_composition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_requires_a_bounded_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), true);
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        for op in &mut prefill.sol_ops {
+            let Op::Dsv41Stage(stage) = op else {
+                unreachable!()
+            };
+            stage.bounded = false;
+        }
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(&[fpm_replay_guard_metrics(16512.25)])
+                .unwrap(),
+            23.0
+        );
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_off_and_ordinary_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), false);
+        let metrics = fpm_replay_guard_metrics(16512.25);
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            23.0
+        );
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        prefill.sol_ops.clear();
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 23.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_zero_variance_remainders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = 257;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_equal_prompt_heterogeneous_extends() {
+        // Both prompts have 1024 tokens, but their (new, prefix) pairs are
+        // (1, 1023) and (1023, 1). The bounded tails total 129 tokens, while
+        // the same aggregate addresses a balanced table cell with 256 tails.
+        let requests = [(1024, 1, 1023), (1024, 1023, 1)];
+        assert!(
+            requests
+                .iter()
+                .all(|&(prompt, query, prefix)| { prompt == 1024 && query + prefix == prompt })
+        );
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = requests.iter().map(|r| r.1).sum();
+        metrics.scheduled_requests.sum_prefill_kv_tokens = requests.iter().map(|r| r.2).sum();
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Exercise both the whole-forward rewrite and direct stage engine.
+        for probe in [&engine, &dsv41_probe_engine(true)] {
+            let error = probe
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("multiple prefill requests"));
+        }
+        // OFF still consumes exactly the table cell that ON must not borrow.
+        let off = fpm_replay_guard_probe(tmp.path(), false);
+        assert_eq!(off.forward_pass_time_ms(&[metrics]).unwrap(), 43.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_single_prefill_and_rejects_invalid_variance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.num_prefill_requests = 1;
+        metrics.scheduled_requests.sum_prefill_tokens = 129;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap(),
+            17.0
+        );
+        for variance in [-1.0, f64::NAN, f64::INFINITY] {
+            metrics.scheduled_requests.var_prefill_length = variance;
+            let error = engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("finite nonnegative"));
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_explicit_static_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Static input explicitly declares two identical (new, prefix)
+        // pairs. It is not the ambiguous FPM v1 telemetry entry point.
+        let mut input = runtime(2, 1024, 1);
+        input.prefix = 512;
+        assert_eq!(
+            engine
+                .run_static(&input, StaticMode::Context, 32)
+                .unwrap()
+                .context_ms,
+            43.0
+        );
+        let detailed = engine
+            .predict_prefill_detailed(input.batch_size, input.isl, input.prefix, None)
+            .unwrap();
+        assert_eq!(detailed.latency_ms, Some(43.0));
+        assert_eq!(
+            engine
+                .predict_prefill_latency(input.batch_size, input.isl, input.prefix)
+                .unwrap(),
+            43.0
+        );
+        // Capturing the known static geometry does not weaken the aggregate
+        // telemetry guard for multi-request bounded decoder replay.
+        assert!(
+            engine
+                .forward_pass_estimate(&[fpm_replay_guard_metrics(0.0)], true, None)
+                .is_err()
+        );
+        for (isl, prefix) in [(0, 0), (512, 512)] {
+            assert!(engine.predict_prefill_latency(2, isl, prefix).is_err());
+            assert!(
+                engine
+                    .predict_prefill_detailed(2, isl, prefix, None)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_ignores_prefill_metadata_without_compute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(16512.25);
+        metrics.scheduled_requests.sum_prefill_tokens = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            0.0
+        );
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            7.0
+        );
+        metrics.scheduled_requests.num_prefill_requests = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 0;
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 7.0);
     }
 
     fn cliff_rows() -> Vec<crate::perf_database::fpm_forward::tests::RowSpec> {
@@ -2430,9 +7024,213 @@ mod tests {
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
     }
 
+    /// A caller that prices a mixed pass's prefill and decode separately
+    /// reproduces the one-pass estimate bit for bit with the mixed decode
+    /// term, while a decode-only query still charges the whole pass.
+    #[test]
+    fn fpm_mixed_decode_term_completes_the_one_pass_estimate() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine(tmp.path(), None).unwrap();
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 2 * 1024,
+                sum_prefill_kv_tokens: 0,
+                num_decode_requests: 8,
+                sum_decode_kv_tokens: 8 * 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let prefill = engine.predict_prefill_latency_total(2, 2048, 0).unwrap();
+        let share = engine
+            .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&mixed))
+                .unwrap(),
+            prefill + share
+        );
+        let decode = engine.predict_decode_latency_total(8, 32768).unwrap();
+        assert_eq!(share, decode - 6.0);
+
+        let detailed = engine
+            .predict_mixed_decode_detailed_total(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detailed.latency_ms, Some(share));
+        let rank = &detailed.ranks[0];
+        let one_pass = engine.forward_pass_estimate(&[mixed], true, None).unwrap();
+        let mixed_rank = &one_pass.ranks[0];
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (Some(decode), Some(6.0), Some(share))
+        );
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (
+                mixed_rank.decode_ms,
+                mixed_rank.decode_baseline_ms,
+                mixed_rank.marginal_decode_ms
+            )
+        );
+        assert_eq!(
+            engine
+                .predict_mixed_decode_latency_total_with_coverage(0, 0, None)
+                .unwrap(),
+            Some(0.0)
+        );
+
+        // SD-round FPM profiles and operation graphs define no such term.
+        let round = tempfile::tempdir().unwrap();
+        assert_eq!(
+            full_round_engine(round.path())
+                .predict_mixed_decode_latency_total_with_coverage(1, 4096, None)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            build_engine(None)
+                .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+                .unwrap(),
+            None
+        );
+    }
+
     /// Mixed telemetry may request a synthetic decode baseline below the KV
     /// floor of its padded bracket rows. Only that baseline holds each row at
     /// its measured floor; the actual decode query remains in-range and strict.
+    #[test]
+    fn direct_fpm_detailed_result_explains_mixed_rank_max_and_correction() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let rows = vec![
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 4,
+                total_kv_read_tokens: 0,
+                latency_ms: 10.0,
+                ..Default::default()
+            },
+            RowSpec {
+                batch_size: 2,
+                total_kv_read_tokens: 4,
+                latency_ms: 10.0,
+                ..Default::default()
+            },
+            RowSpec {
+                batch_size: 2,
+                total_kv_read_tokens: 20,
+                latency_ms: 26.0,
+                ..Default::default()
+            },
+            RowSpec {
+                batch_size: 4,
+                total_kv_read_tokens: 8,
+                latency_ms: 20.0,
+                ..Default::default()
+            },
+            RowSpec {
+                batch_size: 4,
+                total_kv_read_tokens: 24,
+                latency_ms: 52.0,
+                ..Default::default()
+            },
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+        for op in engine
+            .context_ops
+            .iter_mut()
+            .chain(engine.generation_ops.iter_mut())
+        {
+            if let Op::FpmForward(op) = op {
+                op.interpolation =
+                    crate::perfmodel::operators::fpm_forward::FpmInterpolation::Direct;
+            }
+        }
+        let mut model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(engine),
+            crate::ForwardPassPerfOptions {
+                min_observations: 1,
+                ..Default::default()
+            },
+        );
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 4,
+                num_decode_requests: 3,
+                sum_decode_kv_tokens: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let decode = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: 4,
+                sum_decode_kv_tokens: 24,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let metrics = [mixed, decode];
+        let result = model.estimate_forward_pass_detailed(&metrics).unwrap();
+        assert_eq!(
+            result.latency_ms,
+            model.estimate_forward_pass_time_ms(&metrics).unwrap()
+        );
+        assert_eq!(result.latency_ms, Some(52.0));
+        assert_eq!(result.max_rank, Some(1));
+        let rank = &result.ranks[0];
+        assert_eq!(
+            (
+                rank.prefill_ms,
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms,
+                rank.latency_ms
+            ),
+            (Some(10.0), Some(23.0), Some(15.0), Some(8.0), 18.0)
+        );
+        assert_eq!(rank.queries.len(), 3);
+        // Whole-model FPM evidence is its lookups; the operations field is
+        // empty and absent from the serialized schema.
+        assert!(result.ranks.iter().all(|rank| rank.operations.is_empty()));
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("\"operations\"")
+        );
+        let mut observed = metrics.clone();
+        observed[1].wall_time = 0.104;
+        model.tune_with_fpms(&[observed.to_vec()]).unwrap();
+        let corrected = model.estimate_forward_pass_detailed(&metrics).unwrap();
+        assert_eq!(corrected.correction_factor, Some(2.0));
+        assert_eq!(corrected.latency_ms, Some(104.0));
+        assert_eq!(corrected.ranks, result.ranks);
+        assert_eq!(
+            corrected.latency_ms,
+            model.estimate_forward_pass_time_ms(&metrics).unwrap()
+        );
+        let empty = model
+            .estimate_forward_pass_detailed(&[ForwardPassMetrics::default()])
+            .unwrap();
+        assert_eq!(empty.latency_ms, Some(0.0));
+        assert!(empty.ranks.iter().all(|rank| rank.queries.is_empty()));
+    }
+
     #[test]
     fn fpm_rank_mixed_baseline_holds_bracket_curve_floors() {
         use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
@@ -2583,11 +7381,15 @@ mod tests {
         let hidden = Op::Overlap(crate::operators::OverlapOp::new(
             "hidden",
             vec![Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
+                dcp_size: None,
                 name: "fpm_forward_prefill".into(),
                 phase: FpmPhase::Prefill,
                 model_path: "org/model-a".into(),
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
+                verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })],
             vec![],
@@ -2786,6 +7588,7 @@ mod tests {
                 0,
                 op.num_heads as i64,
                 skip,
+                engine.database().dsa.reuse_sol_policy,
                 flops,
             )
         };
@@ -2877,5 +7680,584 @@ mod tests {
             err.to_string().contains("no SOL decomposition"),
             "unexpected error: {err}"
         );
+    }
+    // ---- Hybrid speculative FPM (verify-on-FPM) ----
+
+    /// Oracle: the decode query with `verify_width = w` maps the WIDENED
+    /// token batch onto the equivalent-AR point `(tokens, tokens/w * s)` —
+    /// exact-row hit on the fixture; width 1 keeps the legacy `(b, b*s)`.
+    #[test]
+    fn fpm_verify_width_maps_decode_to_equivalent_ar_point() {
+        use crate::operators::op::RuntimeContext;
+        let tmp = tempfile::tempdir().unwrap();
+        use crate::perf_database::fpm_forward::tests::{
+            default_identity, default_rows, write_pair,
+        };
+        write_pair(tmp.path(), &default_rows());
+        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+            tmp.path().to_path_buf(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+        ));
+        let mut op = FpmForwardOp {
+            interpolation: Default::default(),
+            dcp_size: None,
+            name: "fpm_forward_decode".into(),
+            phase: FpmPhase::Decode,
+            model_path: "org/model-a".into(),
+            match_identity: default_identity(4),
+            weight_bytes: 0.0,
+            verify_width: 8,
+            original_fmha_quant_mode: None,
+            sol_ops: vec![],
+        };
+        // 8 requests x width 8 arrive as batch = 8 widened tokens with ...
+        // here: batch = 8 tokens = 1 request x 8, s = 4096 -> coords
+        // (8, 8/8*4096 = 4096): EXACT fixture row -> 7.0.
+        let ctx = RuntimeContext {
+            batch_size: 8,
+            s: 4096,
+            ..Default::default()
+        };
+        let wide = op.query(&db, &ctx).unwrap().latency_ms;
+        assert!((wide - 7.0).abs() < 1e-12, "verify width coords: {wide}");
+        // Same call at width 1 = legacy token basis: (8, 32768) in-curve lerp.
+        op.verify_width = 1;
+        let ar = op.query(&db, &ctx).unwrap().latency_ms;
+        let want = 7.0 + 2.0 * (32768.0 - 4096.0) / (65536.0 - 4096.0);
+        assert!((ar - want).abs() < 1e-12, "legacy coords: {ar} vs {want}");
+    }
+
+    fn fpm_hybrid_spec(
+        tmp: &std::path::Path,
+        nextn: Option<u32>,
+        verify_width: u32,
+        gen_tail: Vec<Op>,
+        ctx_tail: Vec<Op>,
+    ) -> (EngineSpec, PerfDatabase) {
+        use crate::perf_database::fpm_forward::tests::{
+            default_identity, default_rows, write_pair,
+        };
+        write_pair(tmp, &default_rows());
+        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+            tmp.to_path_buf(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+        ));
+        let fpm_op = |phase: FpmPhase, width: u32| {
+            Op::FpmForward(FpmForwardOp {
+                interpolation: Default::default(),
+                dcp_size: None,
+                name: format!("fpm_forward_{}", phase.as_str()),
+                phase,
+                model_path: "org/model-a".to_string(),
+                match_identity: default_identity(4),
+                weight_bytes: 0.0,
+                verify_width: width,
+                original_fmha_quant_mode: None,
+                sol_ops: vec![],
+            })
+        };
+        let mut ctx_tail = ctx_tail;
+        let mut gen_tail = gen_tail;
+        for op in ctx_tail.iter_mut().chain(&mut gen_tail) {
+            op.set_name(format!("draft_{}", op.name()));
+        }
+        let mut context_ops_list = vec![fpm_op(FpmPhase::Prefill, 1)];
+        context_ops_list.extend(ctx_tail);
+        let mut generation_ops_list = vec![fpm_op(FpmPhase::Decode, verify_width)];
+        generation_ops_list.extend(gen_tail);
+        let spec = EngineSpec::new(
+            fixture_engine_config(nextn),
+            context_ops_list,
+            generation_ops_list,
+        );
+        (spec, db)
+    }
+
+    #[test]
+    fn fpm_readiness_checks_granular_draft_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        for missing_gemm in [false, true] {
+            let tail = if missing_gemm {
+                Op::Gemm(GemmOp::new("draft_gemm", 16, 16, GemmQuantMode::Bfloat16))
+            } else {
+                generation_ops().remove(0)
+            };
+            let (spec, _) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![tail], vec![]);
+            let mut db = PerfDatabase::load(tmp.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated);
+            if missing_gemm {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("gemm_perf.parquet")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn fpm_readiness_rejects_speculative_verify_on_ar_native_cuda_table() {
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        for ar in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (spec, db) = fpm_hybrid_spec(
+                tmp.path(),
+                Some(1),
+                2,
+                vec![generation_ops().remove(0)],
+                vec![],
+            );
+            if ar {
+                let rows: Vec<_> = default_rows()
+                    .into_iter()
+                    .map(|mut row| {
+                        row.execution = Some(["", "full", "none", "text"]);
+                        row.kv_seed_regime = Some("real_kv");
+                        row.native_cuda = Some(NativeCudaSampleSpec {
+                            policy: crate::perf_database::fpm_forward::FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+                            scope: "model_step_cuda",
+                            reduction: "single_sample",
+                            source_sample_count: 1,
+                        });
+                        row
+                    })
+                    .collect();
+                write_pair(tmp.path(), &rows);
+            }
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Decode);
+            if ar {
+                assert!(
+                    result.unwrap_err().to_string().contains("verify_width=2"),
+                    "AR table must reject a speculative verify step"
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    /// Hybrid shape validation: draft tails are legal; a width/nextn
+    /// mismatch (plain MTP) stays rejected; FpmForward in a tail is illegal.
+    #[test]
+    fn fpm_hybrid_build_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        // nextn=7 + decode verify_width=8 + granular draft tail: builds.
+        let (spec, db) = fpm_hybrid_spec(
+            tmp.path(),
+            Some(7),
+            8,
+            vec![generation_ops().remove(0)],
+            vec![],
+        );
+        Engine::build(spec, Arc::new(db)).expect("hybrid spec must build");
+
+        // nextn=7 with verify_width=1 (plain MTP): rejected.
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 1, vec![], vec![]);
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("verify_width"), "{err}");
+
+        // FpmForward hiding in the tail: rejected.
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
+        let dup = spec.generation_ops[0].clone();
+        spec.generation_ops.push(dup);
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn fpm_hybrid_rejects_fpm_hidden_in_draft_token_scale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), None, 1, vec![], vec![]);
+        spec.generation_ops
+            .push(Op::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(spec.generation_ops[0].clone()),
+                numerator: 1,
+                denominator: 4,
+            }));
+        let err = Engine::build(spec, Arc::new(db)).unwrap_err();
+        assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    /// Hybrid decode step = FpmForward at the equivalent-AR point + the
+    /// draft tail priced generically at the WIDENED batch. Exact arithmetic:
+    /// the tail contribution equals the same op run standalone.
+    #[test]
+    fn fpm_hybrid_decode_step_adds_draft_tail_at_widened_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let draft_op = generation_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![draft_op.clone()], vec![]);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        // gen_tokens=1 request, isl=4095, osl=2 -> fpm branch routes through
+        // run_generation_phase: one step, bs = 1*(7+1) = 8 tokens,
+        // s = (4095 + 2/2) + 0 + 1 = 4097.
+        let hybrid = engine.decode_step_latency(1, 4095, 2, 1.0).unwrap();
+        // FpmForward at (8, 8/8*4097 = 4097): in-curve lerp.
+        let fpm_expected = 7.0 + 2.0 * (4097.0 - 4096.0) / (65536.0 - 4096.0);
+        // Tail standalone at the same widened step.
+        let tail_ms =
+            run_generation_ops_step(std::slice::from_ref(&draft_op), &db, 8, 4097, 1.0, false)
+                .unwrap();
+        assert!(
+            (hybrid - (fpm_expected + tail_ms)).abs() < 1e-9,
+            "hybrid {hybrid} vs fpm {fpm_expected} + tail {tail_ms}"
+        );
+    }
+
+    /// Hybrid mixed step: the draft context tail is priced at the prefill
+    /// shape and added to the prefill component (decode side rides the
+    /// generic generation phase, covered above).
+    #[test]
+    fn fpm_hybrid_mixed_step_adds_ctx_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_op = context_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![ctx_op.clone()]);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        let (base_spec, base_db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        let base = Engine::build(base_spec, Arc::new(base_db)).unwrap();
+        // Whole-prefill iteration: ctx=2048, isl=2048 -> batch 1, prefix 0.
+        // gen_tokens=1 request widens to bs = 8 tokens (nextn=7), inside the
+        // fixture decode batch domain [8, 16].
+        let with_tail = engine
+            .mixed_step_latency(2048, 1, 2048, 0, 0, 1.0, 1.0)
+            .unwrap();
+        let without = base
+            .mixed_step_latency(2048, 1, 2048, 0, 0, 1.0, 1.0)
+            .unwrap();
+        let tail_ms = run_context_ops(
+            std::slice::from_ref(&ctx_op),
+            &db,
+            1,
+            2048,
+            0,
+            1.0,
+            ContextOpFilter::All,
+        )
+        .unwrap();
+        assert!(
+            ((with_tail - without) - tail_ms).abs() < 1e-9,
+            "ctx tail delta {} vs {tail_ms}",
+            with_tail - without
+        );
+    }
+    #[test]
+    fn fpm_hybrid_rejects_invalid_widths_and_unclassified_tails() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (nextn, width) in [(None, 0), (None, 8), (Some(7), 7), (Some(u32::MAX), 1)] {
+            let (spec, db) = fpm_hybrid_spec(tmp.path(), nextn, width, vec![], vec![]);
+            assert!(matches!(
+                Engine::build(spec, Arc::new(db)),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        if let Op::FpmForward(prefill) = &mut spec.context_ops[0] {
+            prefill.verify_width = 8;
+        }
+        assert!(
+            Engine::build(spec, Arc::new(db))
+                .unwrap_err()
+                .to_string()
+                .contains("prefill verify_width=1")
+        );
+
+        let (mut spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        spec.generation_ops.push(generation_ops().remove(0));
+        assert!(
+            Engine::build(spec, Arc::new(db))
+                .unwrap_err()
+                .to_string()
+                .contains("draft_ operations")
+        );
+    }
+
+    #[test]
+    fn fpm_hybrid_rejects_ar_telemetry_dispatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![], vec![]);
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let error = engine.predict_decode_latency_total(8, 4096).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("ForwardPassMetrics rank dispatch"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fpm_hybrid_mixed_preserves_draft_cost_when_target_marginal_is_zero() {
+        use crate::perf_database::fpm_forward::tests::{default_rows, write_pair};
+        let tmp = tempfile::tempdir().unwrap();
+        let draft_op = generation_ops().remove(0);
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![draft_op.clone()], vec![]);
+        // Deliberately noisy synthetic curve: baseline is above the decode
+        // query. The clamp applies only to target work, never the draft tail.
+        let mut rows = default_rows();
+        for row in &mut rows {
+            if row.workload_kind == "decode" && row.total_kv_read_tokens == 8 {
+                row.latency_ms = 20.0;
+            }
+        }
+        write_pair(tmp.path(), &rows);
+        let db = Arc::new(db);
+        let engine = Engine::build(spec, db.clone()).unwrap();
+        let (_, _, decode) = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let expected =
+            run_generation_ops_step(std::slice::from_ref(&draft_op), &db, 8, 2050, 1.0, false)
+                .unwrap();
+        let draft = decode
+            .iter()
+            .find(|row| row.0.starts_with("draft_"))
+            .unwrap();
+        let target = decode
+            .iter()
+            .find(|row| row.0 == "fpm_forward_decode")
+            .unwrap();
+        assert!((draft.1 - expected).abs() < 1e-12);
+        assert_eq!(draft.3, "empirical");
+        assert_eq!(target.1, 0.0);
+    }
+
+    #[test]
+    fn fpm_hybrid_draft_attention_retains_imbalance_scales() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx_draft = context_ops()
+            .into_iter()
+            .find(Op::is_context_attention)
+            .unwrap();
+        let gen_draft = generation_ops()
+            .into_iter()
+            .find(Op::is_generation_attention)
+            .unwrap();
+        let (spec, db) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![gen_draft], vec![ctx_draft]);
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let baseline = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        for (context_scale, generation_scale) in [(1.5, 1.0), (1.0, 2.5), (1.5, 2.5)] {
+            let (prefill, _, decode) = engine
+                .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let expected_context = query_context_op(
+                &engine.context_ops[1],
+                &engine.db,
+                1,
+                2048,
+                0,
+                context_scale,
+                None,
+            )
+            .unwrap();
+            let expected_generation = query_generation_op(
+                &engine.generation_ops[1],
+                &engine.db,
+                8,
+                1,
+                2050,
+                generation_scale,
+                0,
+                None,
+            )
+            .unwrap();
+            for (rows, original, expected) in [
+                (&prefill, &baseline.0, expected_context),
+                (&decode, &baseline.2, expected_generation),
+            ] {
+                let target = rows
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                let original_target = original
+                    .iter()
+                    .find(|row| row.0.starts_with("fpm_forward_"))
+                    .unwrap();
+                assert_eq!(
+                    target, original_target,
+                    "measured target FPM stays unscaled"
+                );
+                let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+                assert!((draft.1 - expected.latency_ms).abs() < 1e-12);
+                assert!((draft.2 - expected.energy_wms).abs() < 1e-12);
+            }
+            let scalar = engine
+                .mixed_step_latency(2048, 1, 2048, 2, 0, context_scale, generation_scale)
+                .unwrap();
+            let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+            assert!((scalar - reported).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn fpm_hybrid_mixed_reports_draft_provenance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (spec, db) = fpm_hybrid_spec(
+            tmp.path(),
+            Some(7),
+            8,
+            vec![generation_ops().remove(0)],
+            vec![context_ops().remove(0)],
+        );
+        let engine = Engine::build(spec, Arc::new(db)).unwrap();
+        let (prefill, _, decode) = engine
+            .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let expected_context =
+            query_context_op(&engine.context_ops[1], &engine.db, 1, 2048, 0, 1.0, None).unwrap();
+        let expected_generation = query_generation_op(
+            &engine.generation_ops[1],
+            &engine.db,
+            8,
+            1,
+            2050,
+            1.0,
+            0,
+            None,
+        )
+        .unwrap();
+        for (rows, expected) in [(&prefill, expected_context), (&decode, expected_generation)] {
+            assert_eq!(rows.len(), 2);
+            let target = rows
+                .iter()
+                .find(|row| row.0.starts_with("fpm_forward_"))
+                .unwrap();
+            let draft = rows.iter().find(|row| row.0.starts_with("draft_")).unwrap();
+            assert_eq!(target.3, "silicon");
+            assert_eq!(draft.3, "empirical");
+            assert!(draft.1 > 0.0);
+            assert_eq!(draft.1, expected.latency_ms);
+            // This fixture can carry the existing unavailable-energy sentinel.
+            assert_eq!(draft.2, expected.energy_wms);
+        }
+        let scalar = engine
+            .mixed_step_latency(2048, 1, 2048, 2, 0, 1.0, 1.0)
+            .unwrap();
+        let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
+        assert!((scalar - reported).abs() < 1e-12);
+    }
+
+    #[test]
+    fn glm53_mixed_step_queries_each_attention_phase_at_its_own_shape() {
+        use crate::operators::glm53flash::tests::attention;
+        let db = Arc::new(
+            PerfDatabase::load(&systems_root(), "gb300", "sglang", "0.5.14")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::default()),
+        );
+        let phase = |kind: &str, is_context: bool| {
+            let mut op = attention(kind);
+            op.is_context = is_context;
+            op
+        };
+        let ctx_attn = [phase("kda", true), phase("sparse_mla", true)];
+        let gen_attn = [phase("kda", false), phase("sparse_mla", false)];
+        let ctx_ops: Vec<Op> = ctx_attn.iter().cloned().map(Op::Glm53Attention).collect();
+        let gen_ops: Vec<Op> = gen_attn.iter().cloned().map(Op::Glm53Attention).collect();
+        assert!(ctx_ops.iter().all(|op| op.is_context_attention()));
+        assert!(gen_ops.iter().all(|op| op.is_generation_attention()));
+        assert!(!ctx_ops.iter().any(Op::is_generation_attention));
+        assert!(!gen_ops.iter().any(Op::is_context_attention));
+
+        let spec = &db.system_spec;
+        let sol = |ops: &[crate::operators::Glm53AttentionOp], batch: u32, s: u32, prefix: u32| {
+            ops.iter()
+                .map(|op| {
+                    op.sol(spec, f64::from(batch), f64::from(s), f64::from(prefix))
+                        .unwrap()
+                        .latency_ms
+                })
+                .sum::<f64>()
+        };
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs().max(1.0);
+
+        let mut config = fixture_engine_config(None);
+        config.database_mode = DatabaseMode::Sol;
+        let engine = Engine::build(
+            EngineSpec::new(config, ctx_ops.clone(), gen_ops.clone()),
+            db.clone(),
+        )
+        .unwrap();
+        let (isl, osl, prefix, generation) = (4096_u32, 256_u32, 1024_u32, 8_u32);
+        // One and two complete prefills, prefill-only and decode-only steps.
+        for (ctx, gen_tokens) in [
+            (4096_u32, generation),
+            (8192, generation),
+            (4096, 0),
+            (0, generation),
+        ] {
+            let parts = engine
+                .mixed_step_breakdown(ctx, gen_tokens, isl, osl, prefix, 1.0, 1.0)
+                .unwrap();
+            let context = if ctx > 0 {
+                sol(&ctx_attn, ctx.div_ceil(isl), isl - prefix, prefix)
+                    / f64::from(isl.div_ceil(ctx))
+            } else {
+                0.0
+            };
+            let decode = if gen_tokens > 0 {
+                sol(&gen_attn, gen_tokens, isl + osl / 2 + 1, 0)
+            } else {
+                0.0
+            };
+            assert_eq!(parts[1], 0.0, "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[2], context), "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[3], decode), "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[0], context + decode));
+        }
+
+        // Observed-FPM rank dispatch shares the same phase classification.
+        // Context attention prices the pass's own requests at their integer
+        // mean, also when the count does not divide the prefill tokens.
+        let (new_tokens, kv) = (3072_u32, 8192_u32);
+        for (requests, remainder) in [(2_u32, 0_u32), (3, 2)] {
+            let got = crate::session::get_mix_step_ops(
+                &ctx_ops,
+                &gen_ops,
+                &db,
+                requests * new_tokens + remainder,
+                generation,
+                new_tokens,
+                requests,
+                prefix,
+                requests * prefix,
+                kv,
+                generation,
+                |_, _, _, _, _, _| {},
+            )
+            .unwrap();
+            let want =
+                sol(&ctx_attn, requests, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
+            assert!(close(got, want), "{requests} requests: {got} != {want}");
+        }
     }
 }

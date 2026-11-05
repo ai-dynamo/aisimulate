@@ -4,16 +4,16 @@
 """Unit tests for tools/perf_database/check_collector_data.py.
 
 Builds synthetic family-layout trees (`<system>/<family>/<backend>/<version>/`)
-under `tmp_path` and exercises each of the seven fail-closed rules (R1-R7,
-design §6/§6.5/§8) both green (a fully compliant tree) and red (one named
-offender per rule). Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
+under `tmp_path` and exercises each of the seven fail-closed rules (R1-R7)
+both green (a fully compliant tree) and red (one named offender per rule).
+Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
 for family-placement checks -- same convention as
 `tests/unit/tools/test_backend_facts.py` -- so table/family names below
 (`gemm_perf`/`gemm`, `context_attention_perf`/`attention`,
 `custom_allreduce_perf`/`comm`) are real catalog entries, not fixtures.
 
 Also runs the checks against the REAL data tree
-(`src/aiconfigurator_core/systems/data`) -- this is the CI-riding
+(`src/aisimulate_core/systems/data`) -- this is the CI-riding
 gate: it must pass on the tree as committed.
 """
 
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "tools" / "perf_database" / "check_collector_data.py"
 REAL_CATALOG = REPO_ROOT / "collector" / "op_backend_catalog.yaml"
-REAL_DATA_ROOT = REPO_ROOT / "src" / "aiconfigurator_core" / "systems" / "data"
+REAL_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 
 @pytest.fixture

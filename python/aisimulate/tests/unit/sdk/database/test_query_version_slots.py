@@ -5,11 +5,12 @@
 
 Each (system, framework) exposes at most three queryable versions:
 authored current/previous plus a fleet-derived next (highest data-backed
-version newer than current; override systems are frozen baselines with no
-next). The literal aliases current/previous/next resolve anywhere a version is
-requested; anything else fails loudly unless the caller (a test fixture
-pinning data coordinates) passes allow_unlisted_version=True. Absent slots
-file = gate off (synthetic/external trees unchanged).
+version newer than current, or current itself when nothing newer has data;
+override systems are frozen baselines with no next). The literal aliases
+current/previous/next resolve anywhere a version is requested; anything else
+fails loudly unless the caller (a test fixture pinning data coordinates)
+passes allow_unlisted_version=True. Absent slots file = gate off
+(synthetic/external trees unchanged).
 """
 
 import os
@@ -17,7 +18,7 @@ import os
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk import perf_database as pdb
+from aisimulate_core.sdk import perf_database as pdb
 
 pytestmark = pytest.mark.unit
 
@@ -86,11 +87,35 @@ def test_aliases_resolve(systems_root):
 
 def test_slot_values_pass_and_unlisted_raise(systems_root):
     assert pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc20", systems_root) == "1.3.0rc20"
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root)
     assert (
         pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root, allow_unlisted=True) == "1.3.0rc10"
     )
+
+
+def test_unlisted_version_error_names_accepted_versions_and_fixes(systems_root, monkeypatch):
+    # A user copying a version from a support-matrix row must learn which
+    # versions are accepted and how to switch or opt in.
+    monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
+    with pytest.raises(pdb.UnlistedQueryVersionError) as excinfo:
+        pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root)
+    message = str(excinfo.value)
+    assert isinstance(excinfo.value, ValueError)
+    assert "trtllm version '1.3.0rc10' is not a queryable version on h200_sxm" in message
+    accepted = "Accepted versions for h200_sxm/trtllm: current = 1.3.0rc20, previous = 1.2.0rc5, next = 1.3.0rc23"
+    assert accepted in message
+    assert "`backend_version: current`" in message
+    assert "`--backend-version current`" in message
+    assert "Support-matrix rows at other versions" in message
+    assert "AIC_ALLOW_UNLISTED_VERSIONS=1" in message
+    assert "old-style" not in message
+
+
+def test_unlisted_version_error_lists_only_populated_slots(systems_root, monkeypatch):
+    monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
+    with pytest.raises(pdb.UnlistedQueryVersionError, match=r"a100_sxm/trtllm: current = 1\.0\.0\. Fix:"):
+        pdb.resolve_query_version("a100_sxm", "trtllm", "1.3.0rc15", systems_root)
 
 
 def test_missing_alias_raises_with_slots_listed(systems_root):
@@ -125,3 +150,17 @@ def test_supported_databases_enumerate_slots(systems_root):
 
 def test_latest_is_current_not_dev(systems_root):
     assert pdb.get_latest_database_version("h200_sxm", "trtllm", systems_paths=systems_root) == "1.3.0rc20"
+
+
+def test_next_resolves_to_current_when_nothing_newer_has_data(systems_root):
+    """next is the in-development version; with no data newer than current
+    anywhere on the fleet there is nothing in development, so the alias
+    resolves to current instead of raising (query_versions.yaml rule)."""
+    root = systems_root
+    _touch_data(__import__("pathlib").Path(root), "h200_sxm", "gemm", "sglang", "0.5.14")
+    pdb._load_query_slots_doc.cache_clear()
+    pdb._derive_fleet_next.cache_clear()
+    assert pdb.get_version_slots("h200_sxm", "sglang", root) == {"current": "0.5.14", "next": "0.5.14"}
+    assert pdb.resolve_query_version("h200_sxm", "sglang", "next", root) == "0.5.14"
+    # Override baselines still expose no next.
+    assert "next" not in pdb.get_version_slots("a100_sxm", "trtllm", root)

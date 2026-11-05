@@ -17,8 +17,8 @@ The redesign's first goal (spec section 4.1) has two enforceable halves:
 - DELETION: the five per-regime wideEP model classes
   (``SGLangEPMOEModel``, ``WideEPDeepSeekModel``, ``TrtllmWideEPDeepSeekModel``,
   ``WideEPDeepSeekV32Model``, ``TrtllmWideEPDeepSeekV32Model``) are gone: not
-  importable from ``aiconfigurator_core.sdk.models`` nor from the legacy
-  ``aiconfigurator.sdk.models`` alias, absent from their old defining
+  importable from ``aisimulate_core.sdk.models`` nor from the legacy
+  ``aisimulate.sdk.models`` alias, absent from their old defining
   submodules, and listed in no ``__all__``.
 """
 
@@ -32,10 +32,10 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-MODELS_ROOT = Path(__file__).parents[4] / "aic-core" / "src" / "aiconfigurator_core" / "sdk" / "models"
+MODELS_ROOT = Path(__file__).parents[4] / "src" / "aisimulate_core" / "sdk" / "models"
 
 #: Package parts used to resolve relative imports inside models/<module>.py.
-_MODELS_PACKAGE_PARTS = ("aiconfigurator_core", "sdk", "models")
+_MODELS_PACKAGE_PARTS = ("aisimulate_core", "sdk", "models")
 
 LARGE_EP_OP_NAMES = frozenset({"MoEAllToAll", "MoEExpertCompute"})
 
@@ -47,7 +47,7 @@ DELETED_WIDEEP_CLASSES = (
     "TrtllmWideEPDeepSeekV32Model",
 )
 
-MODEL_PACKAGES = ("aiconfigurator_core.sdk.models", "aiconfigurator.sdk.models")
+MODEL_PACKAGES = ("aisimulate_core.sdk.models", "aisimulate.sdk.models")
 
 #: The submodules the deleted classes used to live in.
 FORMER_DEFINING_SUBMODULES = ("moe", "deepseek", "deepseek_v32")
@@ -176,9 +176,9 @@ def test_blocks_moe_is_the_large_ep_emission_site() -> None:
 @pytest.mark.parametrize(
     ("path", "source"),
     [
-        (Path("memory.py"), "import aiconfigurator_core.sdk.operations.moe_comm\n"),
-        (Path("memory.py"), "from aiconfigurator_core.sdk.operations.moe_comm import MoEAllToAll\n"),
-        (Path("memory.py"), "from aiconfigurator_core.sdk.operations import moe_comm\n"),
+        (Path("memory.py"), "import aisimulate_core.sdk.operations.moe_comm\n"),
+        (Path("memory.py"), "from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll\n"),
+        (Path("memory.py"), "from aisimulate_core.sdk.operations import moe_comm\n"),
         (Path("memory.py"), "from .operations.moe_comm import nodes_for\n"),
         (Path("memory.py"), "from ..operations.moe_comm import MoEExpertCompute\n"),
         (Path("memory.py"), "from ..operations import moe_comm\n"),
@@ -191,8 +191,8 @@ def test_moe_comm_import_scanner_flags_all_spellings(path: Path, source: str) ->
 @pytest.mark.parametrize(
     ("path", "source"),
     [
-        (Path("memory.py"), "import aiconfigurator_core.sdk.operations as ops\n"),
-        (Path("memory.py"), "from aiconfigurator_core.sdk.operations import base\n"),
+        (Path("memory.py"), "import aisimulate_core.sdk.operations as ops\n"),
+        (Path("memory.py"), "from aisimulate_core.sdk.operations import base\n"),
         (Path("memory.py"), "x = 'operations.moe_comm'\n"),
         (Path("memory.py"), "# operations.moe_comm is documented here\npass\n"),
     ],

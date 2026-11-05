@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aiconfigurator.generator.naive import (
+from aisimulate.generator.naive import (
     _ENGINE_LIMIT_KEYS,
     _calculate_min_tp,
     _estimate_model_weight_bytes,
@@ -77,11 +77,11 @@ class TestBuildNaiveGeneratorParams:
     """Verify build_naive_generator_params produces correct keys for the rendering engine."""
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_uses_service_config_and_k8s_config_keys(self, _mock_sys, _mock_est):
@@ -97,11 +97,11 @@ class TestBuildNaiveGeneratorParams:
         assert "k8s" not in result
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_name_prefix_is_rfc1123_valid(self, _mock_sys, _mock_est):
@@ -116,11 +116,11 @@ class TestBuildNaiveGeneratorParams:
         assert _RFC1123_LABEL_RE.match(prefix), f"{prefix!r} is not RFC 1123 compliant"
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_model_path_propagated(self, _mock_sys, _mock_est):
@@ -134,11 +134,11 @@ class TestBuildNaiveGeneratorParams:
         assert result["ServiceConfig"]["model_name"] == "Qwen/Qwen3-32B"
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_agg_mode_set(self, _mock_sys, _mock_est):
@@ -151,11 +151,11 @@ class TestBuildNaiveGeneratorParams:
         assert result["DynConfig"]["mode"] == "agg"
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_include_frontend_true(self, _mock_sys, _mock_est):
@@ -168,15 +168,15 @@ class TestBuildNaiveGeneratorParams:
         assert result["ServiceConfig"]["include_frontend"] is True
 
     @patch(
-        "aiconfigurator.generator.naive.get_model_config_from_model_path",
+        "aisimulate.generator.naive.get_model_config_from_model_path",
         return_value={"architecture": "Qwen3ForCausalLM", "num_experts": 0},
     )
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_generator_dynamo_version_sets_backend_image_default(self, _mock_sys, _mock_est, _mock_model):
@@ -192,15 +192,15 @@ class TestBuildNaiveGeneratorParams:
         assert result["K8sConfig"]["k8s_image"] == "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.0"
 
     @patch(
-        "aiconfigurator.generator.naive.get_model_config_from_model_path",
+        "aisimulate.generator.naive.get_model_config_from_model_path",
         return_value={"architecture": "Qwen3ForCausalLM", "num_experts": 0},
     )
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_generator_overrides_are_applied_before_schema_defaults(self, _mock_sys, _mock_est, _mock_model):
@@ -235,7 +235,7 @@ class TestEstimateModelWeightBytes:
         assert _estimate_model_weight_bytes(str(tmp_path)) == 153354240
 
     @patch(
-        "aiconfigurator.generator.naive._load_model_config_from_model_path",
+        "aisimulate.generator.naive._load_model_config_from_model_path",
         return_value=_UNSUPPORTED_GPT_NEOX_CONFIG,
     )
     def test_remote_unsupported_architecture_loads_config_once(self, mock_load_config):
@@ -243,7 +243,7 @@ class TestEstimateModelWeightBytes:
         mock_load_config.assert_called_once_with("EleutherAI/pythia-70m")
 
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 80 * 1024**3},
     )
     def test_builds_params_for_unsupported_architecture(self, _mock_system, tmp_path):
@@ -260,7 +260,7 @@ class TestEstimateModelWeightBytes:
         assert result["ModelConfig"]["fits_in_memory"] is True
 
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 512 * 1024**2},
     )
     def test_builds_tep_params_for_unsupported_moe_architecture(self, _mock_system, tmp_path):
@@ -278,7 +278,7 @@ class TestEstimateModelWeightBytes:
         assert result["params"]["agg"]["moe_tensor_parallel_size"] == 2
         assert result["params"]["agg"]["moe_expert_parallel_size"] == 1
 
-    @patch("aiconfigurator.generator.naive._load_model_config_from_model_path")
+    @patch("aisimulate.generator.naive._load_model_config_from_model_path")
     def test_raises_when_config_download_fails(self, mock_get_config):
         mock_get_config.side_effect = Exception(
             "Failed to download nonexistent-org/fake-model-12345's config.json from HuggingFace: "
@@ -287,8 +287,8 @@ class TestEstimateModelWeightBytes:
         with pytest.raises(RuntimeError, match=r"Model .* not found or config unavailable"):
             _estimate_model_weight_bytes("nonexistent-org/fake-model-12345")
 
-    @patch("aiconfigurator.generator.naive._get_system_config")
-    @patch("aiconfigurator.generator.naive._estimate_model_weight_bytes")
+    @patch("aisimulate.generator.naive._get_system_config")
+    @patch("aisimulate.generator.naive._estimate_model_weight_bytes")
     def test_build_naive_generator_params_propagates_model_not_found(self, mock_est, _mock_sys):
         mock_est.side_effect = RuntimeError("Model 'nonexistent-org/fake-model-12345' not found or config unavailable")
         with pytest.raises(RuntimeError, match="not found or config unavailable"):
@@ -368,11 +368,11 @@ class TestPreserveEngineLimits:
     """The FPM collector's declared entry point: preserve_engine_limits=True."""
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_strips_engine_limit_keys_and_sets_guard(self, _mock_sys, _mock_est):
@@ -405,11 +405,11 @@ class TestPreserveEngineLimits:
         assert result["params"]["agg"]["trust_remote_code"] is True
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_default_keeps_naive_engine_limits(self, _mock_sys, _mock_est):
@@ -429,7 +429,7 @@ class TestRenderingNameFallback:
     """Verify prepare_template_context uses 'dynamo' fallback for missing name_prefix."""
 
     def test_none_name_prefix_becomes_dynamo(self):
-        from aiconfigurator.generator.rendering.engine import prepare_template_context
+        from aisimulate.generator.rendering.engine import prepare_template_context
 
         params = {
             "K8sConfig": {},
@@ -443,7 +443,7 @@ class TestRenderingNameFallback:
         assert ctx["name"] == "dynamo-agg"
 
     def test_include_frontend_yields_one_replica(self):
-        from aiconfigurator.generator.rendering.engine import prepare_template_context
+        from aisimulate.generator.rendering.engine import prepare_template_context
 
         params = {
             "K8sConfig": {"name_prefix": "test"},
@@ -456,7 +456,7 @@ class TestRenderingNameFallback:
         assert ctx["frontend_replicas"] == 1
 
     def test_no_include_frontend_yields_zero_replica(self):
-        from aiconfigurator.generator.rendering.engine import prepare_template_context
+        from aisimulate.generator.rendering.engine import prepare_template_context
 
         params = {
             "K8sConfig": {"name_prefix": "test"},
@@ -469,7 +469,7 @@ class TestRenderingNameFallback:
         assert ctx["frontend_replicas"] == 0
 
     def test_benchmark_prefix_preserves_explicit_model_zero(self):
-        from aiconfigurator.generator.rendering.engine import prepare_template_context
+        from aisimulate.generator.rendering.engine import prepare_template_context
 
         params = {
             "K8sConfig": {"name_prefix": "test"},
@@ -488,12 +488,12 @@ class TestRenderingNameFallback:
 def test_frozen_model_config_renders_without_model_resolution(monkeypatch):
     # E3: with a frozen config the builder must not touch the filesystem or
     # network for model metadata, even for unreachable checkpoints.
-    import aiconfigurator.generator.naive as naive_module
+    import aisimulate.generator.naive as naive_module
 
     def _boom(*_a, **_k):
         raise AssertionError("model resolution must not run when model_config is provided")
 
-    monkeypatch.setattr("aiconfigurator.sdk.utils.get_model_config_from_model_path", _boom)
+    monkeypatch.setattr("aisimulate.sdk.utils.get_model_config_from_model_path", _boom)
     frozen = {
         "layers": 4,
         "hidden_size": 128,

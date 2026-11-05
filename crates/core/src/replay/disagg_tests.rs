@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
@@ -99,6 +102,7 @@ fn a_non_finite_scaling_next_tick_is_rejected() {
 }
 
 struct CaptureAndScaleOncePolicy {
+    at_ms: f64,
     captured: Rc<RefCell<Option<ReplayScalingSnapshot>>>,
 }
 
@@ -117,6 +121,8 @@ impl ReplayTelemetryObserver for CaptureTelemetryObserver {
 struct QueueUntilWorkerPlacement {
     scheduler_id: Option<usize>,
     pending: VecDeque<Uuid>,
+    abort_count: usize,
+    fail_abort: bool,
 }
 
 impl QueueUntilWorkerPlacement {
@@ -124,6 +130,8 @@ impl QueueUntilWorkerPlacement {
         Self {
             scheduler_id: None,
             pending: VecDeque::new(),
+            abort_count: 0,
+            fail_abort: false,
         }
     }
 
@@ -138,6 +146,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             })
             .collect()
@@ -162,6 +171,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             None => {
@@ -183,6 +193,13 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
         let before = self.pending.len();
         self.pending.retain(|pending| *pending != request_id);
         self.pending.len() != before
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, _now_ms: f64) -> anyhow::Result<()> {
+        self.abort_count += 1;
+        self.cancel_pending(request_id);
+        anyhow::ensure!(!self.fail_abort, "injected abort failure");
+        Ok(())
     }
 
     fn request_terminal(
@@ -373,7 +390,7 @@ fn a_placement_naming_another_request_is_refused_at_the_routing_boundary() {
 
 impl ReplayScalingPolicy for CaptureAndScaleOncePolicy {
     fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
-        Ok(0.1)
+        Ok(self.at_ms)
     }
 
     fn on_tick(
@@ -432,25 +449,36 @@ struct TestDisaggConfig {
 
 impl TestDisaggConfig {
     fn runtime_config(&self, emit_kv_events: bool) -> anyhow::Result<OfflineDisaggReplayConfig> {
+        self.runtime_config_with_factory(emit_kv_events, ReplayEngineFactory::new())
+    }
+
+    fn runtime_config_with_factory(
+        &self,
+        emit_kv_events: bool,
+        factory: ReplayEngineFactory,
+    ) -> anyhow::Result<OfflineDisaggReplayConfig> {
         let engine = ReplayEngineConfig {
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
         };
-        let factory = ReplayEngineFactory::new();
         let prefill_factory =
             factory.role_factory(&engine, crate::replay::WorkerStage::Prefill, emit_kv_events)?;
         let decode_factory =
@@ -614,6 +642,30 @@ fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
     assert!(conformance.destination_drained);
 }
 
+#[test]
+fn sglang_destination_stores_nothing_before_running_admission() {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 128, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Sglang).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::DestinationFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::DestinationFirst)
+    );
+    assert_eq!(
+        conformance.destination_stored,
+        crate::replay::NormalizedStoredTiming::default()
+    );
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
+}
+
 fn request(
     uuid: u128,
     prompt_tokens: usize,
@@ -628,6 +680,43 @@ fn request(
         arrival_timestamp_ms: Some(arrival_ms),
         ..Default::default()
     }
+}
+
+#[test]
+fn simultaneous_handoffs_follow_arrival_order_across_replays() {
+    let request_ids = [3, 1, 2].map(Uuid::from_u128);
+    let run = || {
+        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, None, false);
+        let mut collector = TraceCollector::default();
+        let handoffs = request_ids.map(|uuid| {
+            flow.on_external_arrival(
+                ReplayRequestPayload::materialized(request(uuid.as_u128(), 64, 1, 0.0)),
+                0.0,
+                None,
+                None,
+                false,
+                &mut collector,
+            )
+            .unwrap();
+            flow.state(uuid).unwrap().handoff_id
+        });
+
+        // Completion callback order and request UUID order must not change
+        // which request reaches decode first when transfers complete together.
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        for handoff_id in handoffs.into_iter().rev() {
+            push_transfer_complete(&mut events, &mut next_event_seq, 10.0, handoff_id);
+        }
+        let mut released = Vec::new();
+        while let Some(handoff_id) = pop_ready_transfer_complete(&mut events, 10.0) {
+            released.push(flow.uuid_for_handoff(handoff_id).unwrap());
+        }
+        assert_eq!(released, request_ids);
+        handoffs
+    };
+
+    assert_eq!(run(), run());
 }
 
 fn agentic_row(
@@ -747,8 +836,92 @@ fn run_trace_collect(
     let pending = crate::replay::normalize_trace_requests(requests, arrival_speedup_ratio).unwrap();
     DisaggRuntime::from_requests(config, router_config, None, pending, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
+}
+
+#[test]
+fn disagg_settled_steps_resume_without_changing_the_result() {
+    let config = disagg_config();
+    let pending = VecDeque::from([request(1, 64, 4, 0.0), request(2, 64, 1, 3.0)]);
+    let (continuous, _) =
+        DisaggRuntime::from_requests(&config, None, None, pending.clone(), ReplayMode::Trace)
+            .unwrap()
+            .run()
+            .unwrap();
+
+    let mut stepped =
+        DisaggRuntime::from_requests(&config, None, None, pending, ReplayMode::Trace).unwrap();
+    for _ in 0..2 {
+        match stepped.step().unwrap() {
+            ReplayStepOutcome::Settled { .. } => {}
+            ReplayStepOutcome::Complete => panic!("replay completed before resume point"),
+            ReplayStepOutcome::TimeLimitReached { .. } => panic!("unexpected time limit"),
+        }
+    }
+    assert!(
+        stepped.cluster_in_flight() > 0,
+        "resume must retain live work"
+    );
+    let (resumed, _) = stepped.run().unwrap();
+    let resumed = resumed.finish();
+
+    assert_eq!(resumed.request_counts.completed_requests, 2);
+    assert_eq!(
+        serde_json::to_value(continuous.finish()).unwrap(),
+        serde_json::to_value(resumed).unwrap()
+    );
+}
+
+#[test]
+fn disagg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
+    let mut config = disagg_config().runtime_config(false).unwrap();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    config.prefill_startup_time_ms = Some(0.0);
+    config.decode_startup_time_ms = Some(0.0);
+    let captured = Rc::new(RefCell::new(None));
+    let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
+    let mut stepped = RoundRobinDisaggRuntime::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                PoolRoundRobinPlacement::new(prefill_topology),
+                PoolRoundRobinPlacement::new(decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .with_telemetry_observer(
+        1.0,
+        Box::new(CaptureTelemetryObserver {
+            samples: Arc::clone(&telemetry_samples),
+        }),
+    )
+    .with_scaling_policy(Box::new(CaptureAndScaleOncePolicy {
+        at_ms: 0.0,
+        captured: Rc::clone(&captured),
+    }));
+
+    assert_eq!(
+        stepped.step().unwrap(),
+        ReplayStepOutcome::Settled { now_ms: 0.0 }
+    );
+    assert_eq!(captured.borrow().as_ref().unwrap().now_ms, 0.0);
+    assert_eq!(stepped.prefill_engine.active_group_ids(), vec![0, 1]);
+    assert_eq!(stepped.decode_engine.active_group_ids(), vec![0, 1]);
+    assert!(stepped.prefill_engine.starting_group_ids().is_empty());
+    assert!(stepped.decode_engine.starting_group_ids().is_empty());
+    assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
+    assert!(stepped.next_timestamps().1.unwrap() > 0.0);
+    let samples = telemetry_samples.lock().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+    assert_eq!(samples[0].active_prefill_ids, vec![0]);
+    assert_eq!(samples[0].active_decode_ids, vec![0]);
 }
 
 fn run_concurrency_collect(
@@ -765,6 +938,7 @@ fn run_concurrency_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -779,6 +953,7 @@ fn run_trace_workload_collect(
         .unwrap();
     DisaggRuntime::new_workload(config, router_config, None, driver, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
 }
@@ -800,6 +975,7 @@ fn run_concurrency_workload_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -919,6 +1095,7 @@ fn telemetry_samples_router_queues_before_a_coincident_scale_up() {
         crate::replay::normalize_trace_requests(vec![request(9_303, 64, 1, 0.0)], 1.0).unwrap();
     let captured = Rc::new(RefCell::new(None));
     let policy = CaptureAndScaleOncePolicy {
+        at_ms: 0.1,
         captured: Rc::clone(&captured),
     };
     let telemetry_samples = Arc::new(Mutex::new(Vec::new()));
@@ -1248,6 +1425,113 @@ fn decode_terminal_retains_handoff_until_deferred_cleanup_drains() {
     }
 }
 
+/// `decode_terminal_retains_handoff_until_deferred_cleanup_drains` documents the
+/// window where a request is already logically finished while its handoff is
+/// still retained pending cleanup. A cancellation landing in that window drives
+/// the coordinator to a `Canceled` completion, and completing the handoff must
+/// not finalize the request a second time -- that aborts the whole replay run.
+///
+/// Drive the production decode-terminal handler while the handoff is retained,
+/// then cancel and drain cleanup. The original completed record must survive.
+#[test]
+fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
+    let config = disagg_config_with_handoff_delay();
+    let uuid = Uuid::from_u128(1);
+    let input_tokens = config.prefill_args.block_size * 2;
+    let mut runtime = DisaggRuntime::from_requests(
+        &config,
+        None,
+        None,
+        VecDeque::from([request(1, input_tokens, 2, 0.0)]),
+        ReplayMode::Trace,
+    )
+    .unwrap()
+    .with_per_request_records(true);
+
+    runtime.drain_current_timestamp().unwrap();
+    for _ in 0..16 {
+        if runtime.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+            break;
+        }
+        let next = runtime.next_timestamp().unwrap();
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+    assert_eq!(
+        runtime.state(uuid).unwrap().phase,
+        DisaggPhase::TransferPending
+    );
+
+    let decode_completed_at = runtime.now_ms;
+    runtime
+        .process_decode_signal(
+            OutputSignal {
+                uuid,
+                token_id: Some(42),
+                completed: true,
+                rejected: false,
+                handoff_delay_ms: None,
+                cached_tokens: None,
+            },
+            decode_completed_at,
+        )
+        .unwrap();
+    assert!(!runtime.state(uuid).unwrap().counted_in_flight);
+    assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
+    assert_eq!(
+        runtime.state(uuid).unwrap().terminal_status(),
+        Some(ReplayTerminalStatus::Completed)
+    );
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].output_length, 1);
+
+    let handoff_id = runtime.state(uuid).unwrap().handoff_id;
+    runtime
+        .apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })
+        .unwrap();
+    while !runtime.is_done() {
+        let Some(next) = runtime.next_timestamp() else {
+            break;
+        };
+        runtime.advance_now_ms(next);
+        runtime.drain_current_timestamp().unwrap();
+    }
+
+    assert_eq!(
+        runtime.state(uuid).unwrap().coordinator.completion(),
+        Some(HandoffCompletion::Canceled)
+    );
+    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+    assert!(runtime.is_done(), "cancellation cleanup must fully drain");
+    let links = runtime.flow.links.as_mut().unwrap();
+    assert!(links.jobs.is_empty() && links.next_event_ms().is_none());
+    // Tolerating an already finalized request must not hide double retirement.
+    let error = runtime.complete_handoff(uuid).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("offline disagg replay handoff index is inconsistent for {uuid}")
+    );
+    // The retained handoff must still retire into exactly one reported record,
+    // carrying the first terminal status observed for the request.
+    let records = runtime.collector.per_request_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].terminal_status, ReplayTerminalStatus::Completed);
+    assert_eq!(records[0].terminal_time_ms, decode_completed_at);
+    assert_eq!(records[0].output_length, 1);
+    assert_eq!(
+        runtime
+            .stats
+            .transition_log
+            .iter()
+            .filter(|event| **event == DisaggTransition::RequestMarkedDone { uuid })
+            .count(),
+        1,
+        "handoff cleanup must not finalize the logical request again"
+    );
+}
+
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
@@ -1314,12 +1598,29 @@ fn agentic_pd_edges_use_emission_and_final_decode_boundaries(#[case] engine_type
     assert_eq!(trajectories.total, 1);
     assert_eq!(trajectories.completed, 1);
     assert_eq!(trajectories.incomplete, 0);
+    let outcomes = report.agentic_play_outcomes.as_ref().unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].status,
+        crate::replay::loadgen::AgenticPlayStatus::Completed
+    );
+    assert!(outcomes[0].settled_at_ms.is_some());
+    assert!(
+        report
+            .agentic_lifecycle
+            .as_ref()
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.event
+                == crate::replay::loadgen::AgenticLifecycleEventKind::PlayQuiescent)
+    );
 }
 
 #[rstest::rstest]
 #[case(EngineType::Vllm)]
 #[case(EngineType::Sglang)]
-fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineType) {
+fn agentic_lane_waits_for_background_child_terminal(#[case] engine_type: EngineType) {
     let mut config = cleanup_overtake_config(engine_type);
     config.num_prefill_workers = 1;
     config.num_decode_workers = 1;
@@ -1372,12 +1673,250 @@ fn agentic_lane_recycles_only_after_pd_quiescence(#[case] engine_type: EngineTyp
     for request_id in ["first-root", "long-prefill-child"] {
         let prior = by_id[request_id];
         assert!(next_dispatch >= prior.terminal_time_ms);
-        assert!(next_dispatch >= prior.source_released_ms.unwrap());
     }
+    assert_eq!(
+        next_dispatch,
+        by_id["first-root"]
+            .terminal_time_ms
+            .max(by_id["long-prefill-child"].terminal_time_ms)
+    );
     let trajectories = report.trajectories.unwrap();
     assert_eq!(trajectories.total, 2);
     assert_eq!(trajectories.completed, 2);
     assert_eq!(trajectories.incomplete, 0);
+}
+
+#[rstest::rstest]
+#[case(EngineType::Vllm)]
+#[case(EngineType::Sglang)]
+fn agentic_lane_submission_is_independent_of_pd_source_cleanup(#[case] engine_type: EngineType) {
+    struct BusyPrefillTiming {
+        large_prefill_ms: f64,
+    }
+
+    impl crate::engine::TimingModel for BusyPrefillTiming {
+        fn predict_prefill_ms(
+            &self,
+            batch_size: usize,
+            mean_isl: usize,
+            _mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 {
+                0.0
+            } else if mean_isl >= 1_024 {
+                self.large_prefill_ms
+            } else {
+                1.0
+            })
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch_size: usize,
+            _active_kv_tokens: usize,
+            _mean_context_length: usize,
+            _total_kv_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            Ok(if batch_size == 0 { 0.0 } else { 1.0 })
+        }
+    }
+
+    let mut config = match engine_type {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        EngineType::Trtllm => unreachable!(),
+    };
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    for args in [&mut config.prefill_args, &mut config.decode_args] {
+        args.speedup_ratio = 1.0;
+        args.decode_speedup_ratio = 1.0;
+    }
+    let block_size = config.prefill_args.block_size;
+    // Play IDs sort into lane 0's first-play then next-play. An independent play on lane 1
+    // starts a long prefill at t=2, after both short roots finish prefill but
+    // before their transfers finish at t=3. Its busy source worker delays
+    // ReleaseSource without changing first-root's final decode terminal.
+    let trace = agentic_trace(
+        block_size,
+        vec![
+            agentic_row(
+                "first-root",
+                "00-first-play",
+                4,
+                2,
+                block_size,
+                10_000,
+                vec![],
+            ),
+            agentic_row(
+                "other-root",
+                "01-other-play",
+                4,
+                1,
+                block_size,
+                20_000,
+                vec![],
+            ),
+            agentic_row(
+                "busy-prefill",
+                "01-other-play",
+                4_096,
+                1,
+                block_size,
+                30_000,
+                vec![AgenticDependency {
+                    request_id: "other-root".to_string(),
+                    trigger: AgenticDependencyTrigger::Dispatch,
+                    delay_ms: 2.0,
+                    relation: AgenticDependencyRelation::Spawn,
+                }],
+            ),
+            agentic_row(
+                "next-root",
+                "02-next-play",
+                4,
+                1,
+                block_size,
+                40_000,
+                vec![],
+            ),
+        ],
+    );
+
+    let run = |large_prefill_ms, stepped| {
+        let factory = ReplayEngineFactory::with_timing_model(Arc::new(BusyPrefillTiming {
+            large_prefill_ms,
+        }));
+        let mut runtime_config = config.runtime_config_with_factory(false, factory).unwrap();
+        runtime_config.handoff_latency_ms = 2.0;
+        let driver =
+            WorkloadDriver::new_agentic_trace_with_lanes(trace.clone(), block_size, 2).unwrap();
+        let mut runtime = RoundRobinDisaggRuntime::new_round_robin_workload(
+            &runtime_config,
+            driver,
+            ReplayMode::Trace,
+        )
+        .unwrap()
+        .with_per_request_records(true);
+
+        if stepped {
+            let mut observed_terminal_with_source_held = false;
+            while !runtime.is_done() {
+                runtime.step().unwrap();
+                let first = runtime
+                    .collector
+                    .per_request_records()
+                    .into_iter()
+                    .find(|record| record.request_id.as_deref() == Some("first-root"));
+                if let Some(first) = first
+                    && !observed_terminal_with_source_held
+                {
+                    assert_eq!(first.terminal_status, ReplayTerminalStatus::Completed);
+                    assert!(first.source_released_ms.is_none());
+                    let uuid = Uuid::parse_str(&first.uuid).unwrap();
+                    let state = runtime.state(uuid).unwrap();
+                    assert_eq!(state.phase, DisaggPhase::CleanupPending);
+                    assert!(!state.counted_in_flight);
+                    assert!(!state.coordinator.is_complete());
+                    assert!(
+                        runtime
+                            .flow
+                            .requests_by_handoff
+                            .contains_key(&state.handoff_id)
+                    );
+                    assert!(runtime.flow.action_queues.contains(uuid));
+                    assert!(runtime.prefill_engine.worker_is_busy(0).unwrap());
+                    assert!(!runtime.prefill_engine.is_drained());
+                    assert!(!CoreAdmissionSource::is_drained(&runtime.admission));
+                    let transcript = runtime.admission.agentic_lifecycle_transcript().unwrap();
+                    assert!(
+                        transcript.events.iter().any(|event| {
+                            event.request_id.as_deref() == Some("next-root")
+                                && event.event
+                                    == crate::replay::loadgen::AgenticLifecycleEventKind::Dispatch
+                                && event.at_ms == first.terminal_time_ms
+                        }),
+                        "the next play must be submitted while source cleanup is still pending"
+                    );
+                    observed_terminal_with_source_held = true;
+                }
+            }
+            assert!(observed_terminal_with_source_held);
+        } else {
+            runtime.run_to_completion().unwrap();
+        }
+
+        assert!(runtime.is_done());
+        assert!(runtime.prefill_engine.is_drained());
+        assert!(runtime.decode_engine.is_drained());
+        assert!(runtime.flow.action_queues.is_empty());
+        assert!(runtime.flow.requests_by_handoff.is_empty());
+        assert!(CoreAdmissionSource::is_drained(&runtime.admission));
+        let drained_at_ms = runtime.now_ms;
+        let (collector, stats) = runtime.run().unwrap();
+        assert!(
+            stats
+                .request_snapshots
+                .values()
+                .all(|state| state.phase == DisaggPhase::Done)
+        );
+        let report = collector.finish();
+        assert_eq!(report.request_counts.completed_requests, 4);
+        assert_eq!(report.request_counts.total_output_tokens, 5);
+        (report, drained_at_ms)
+    };
+
+    let mut observations = Vec::new();
+    for large_prefill_ms in [20.0, 40.0] {
+        let (report, drained_at_ms) = run(large_prefill_ms, false);
+        let (stepped, stepped_drained_at_ms) = run(large_prefill_ms, true);
+        assert_eq!(drained_at_ms, stepped_drained_at_ms);
+        assert_eq!(report.agentic_lifecycle, stepped.agentic_lifecycle);
+        assert_eq!(
+            serde_json::to_vec(&report.per_request).unwrap(),
+            serde_json::to_vec(&stepped.per_request).unwrap()
+        );
+        let by_id = report
+            .per_request
+            .iter()
+            .map(|record| (record.request_id.as_deref().unwrap(), record))
+            .collect::<std::collections::HashMap<_, _>>();
+        let first = by_id["first-root"];
+        let next = by_id["next-root"];
+        let source_released_ms = first.source_released_ms.unwrap();
+        let next_dispatch_ms = next.dispatched_at_ms.unwrap();
+        let next_admit_ms = next.first_admit_ms.unwrap();
+        assert_eq!(next_dispatch_ms, first.terminal_time_ms);
+        assert!(source_released_ms > first.terminal_time_ms);
+        assert!(next_admit_ms >= source_released_ms);
+        assert!(next_admit_ms > next_dispatch_ms);
+        assert!(drained_at_ms > source_released_ms);
+        observations.push((
+            first.terminal_time_ms,
+            next_dispatch_ms,
+            source_released_ms,
+            next_admit_ms,
+            drained_at_ms,
+        ));
+    }
+    let [short, long] = observations.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(short.0, long.0, "client terminal must stay fixed");
+    assert_eq!(short.1, long.1, "client lane timing must stay fixed");
+    assert!(
+        short.2 < long.2,
+        "source ownership must reflect the cleanup delay"
+    );
+    assert!(
+        short.3 < long.3,
+        "backend admission must respect the occupied worker"
+    );
+    assert!(
+        short.4 < long.4,
+        "final drain must still wait for all server work"
+    );
 }
 
 #[test]
@@ -1433,6 +1972,29 @@ fn agentic_prefill_rejection_skips_descendants_and_releases_the_lane() {
     assert_eq!(trajectories.total, 2);
     assert_eq!(trajectories.completed, 1);
     assert_eq!(trajectories.incomplete, 1);
+    let outcomes = report
+        .agentic_play_outcomes
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|outcome| (outcome.play_id.as_str(), outcome))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        outcomes["play-0"].status,
+        crate::replay::loadgen::AgenticPlayStatus::Failed
+    );
+    assert_eq!(
+        outcomes["play-0"].failure_request_id.as_deref(),
+        Some("rejected-root")
+    );
+    assert_eq!(
+        outcomes["play-0"].failure_status,
+        Some(ReplayTerminalStatus::Rejected)
+    );
+    assert_eq!(
+        outcomes["play-1"].status,
+        crate::replay::loadgen::AgenticPlayStatus::Completed
+    );
 }
 
 #[test]
@@ -1792,6 +2354,92 @@ fn per_request_handoff_detail_preserves_backend_causality_and_stage_reuse() {
     }
 }
 
+#[rstest::rstest]
+#[case::prefill(true, disagg_config())]
+#[case::decode(false, sglang_disagg_config())]
+fn command_failure_aborts_placement_and_preserves_request_failure(
+    #[case] prefill: bool,
+    #[case] config: TestDisaggConfig,
+    #[values(false, true)] fail_abort: bool,
+) {
+    let config = config.runtime_config(false).unwrap();
+    let mut runtime =
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &config,
+            AdmissionQueue::new_requests(
+                VecDeque::from([request(1, 64, 2, 0.0), request(2, 64, 2, 100.0)]),
+                ReplayMode::Trace,
+            ),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+        .with_per_request_records(true);
+    runtime.step().unwrap();
+    let uuid = Uuid::from_u128(1);
+    let state = runtime.state_mut(uuid).unwrap();
+    let action = if prefill {
+        state.pending_prefill_action.take()
+    } else {
+        state.pending_destination_action.take()
+    }
+    .unwrap();
+    runtime.prefill_placement.fail_abort = fail_abort;
+    runtime.decode_placement.fail_abort = fail_abort;
+    // Inject failure at the command boundary after a real route/action exists.
+    // No engine accepts ownership, so cleanup must not block subsequent requests.
+    let result = if prefill {
+        runtime.submit_prefill(uuid, usize::MAX, action, None)
+    } else {
+        runtime.reserve_destination(uuid, usize::MAX, action)
+    };
+    assert_eq!(
+        (
+            runtime.prefill_placement.abort_count,
+            runtime.decode_placement.abort_count
+        ),
+        (usize::from(prefill), usize::from(!prefill))
+    );
+    if fail_abort {
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("unknown rank") && error.contains("injected abort failure"),
+            "{error}"
+        );
+    } else {
+        result.unwrap();
+        assert_eq!(
+            runtime.state(uuid).unwrap().terminal_status(),
+            Some(ReplayTerminalStatus::Failed)
+        );
+        runtime.prefill_placement.scheduler_id = Some(0);
+        runtime.decode_placement.scheduler_id = Some(0);
+        runtime.run_to_completion().unwrap();
+        assert_eq!(
+            runtime.prefill_placement.abort_count + runtime.decode_placement.abort_count,
+            1
+        );
+        let report = runtime.run().unwrap().0.finish();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(
+            report
+                .per_request
+                .iter()
+                .map(|r| r.terminal_status)
+                .collect::<Vec<_>>(),
+            [
+                ReplayTerminalStatus::Failed,
+                ReplayTerminalStatus::Completed
+            ],
+        );
+    }
+}
+
 #[test]
 fn rejected_prefill_remains_rejected_during_failed_handoff_cleanup() {
     let mut config = disagg_config();
@@ -1906,6 +2554,160 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
         DisaggTransition::DestinationActivated { uuid },
     );
     assert!(queued_idx < activated_idx);
+}
+
+#[test]
+fn prefill_bandwidth_without_transfer_bytes_is_rejected() {
+    let mut config = disagg_config_with_handoff_delay();
+    config.prefill_args.kv_transfer_bytes_per_token = None;
+    let error = config
+        .runtime_config(false)
+        .err()
+        .expect("missing transfer bytes");
+    assert!(
+        error
+            .to_string()
+            .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+        "{error}"
+    );
+}
+
+#[test]
+fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
+    let handoff_ms = |state: bool| {
+        let mut config = disagg_config_with_handoff_delay();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        if state {
+            for args in [&mut config.prefill_args, &mut config.decode_args] {
+                args.kv_cache_bytes_per_token = Some(1_000_000);
+                args.state_cache = Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 8_000_000,
+                });
+            }
+        }
+        let (_, stats) = run_trace_collect(&config, vec![request(1, 128, 2, 0.0)], None, 1.0);
+        stats.handoff_ms[&Uuid::from_u128(1)]
+    };
+    // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
+    let delta = handoff_ms(true) - handoff_ms(false);
+    assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
+}
+
+#[test]
+fn same_instant_transfers_compute_rates_once() {
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0);
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    let before = links.transfers.rate_refreshes.get();
+    // Independent pairs submitted later at one instant.
+    for pair in 1..=64u32 {
+        let handoff_id = HandoffId::new(Uuid::from_u128(u128::from(pair) + 1));
+        links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5);
+    }
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    // The step to the shared instant reuses the earlier rates; the new
+    // transfers need one snapshot for the next event.
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 1);
+    // Landing the first transfer changes the job set and needs one more.
+    links.advance(1.0);
+    assert_eq!(links.completed, [HandoffId::new(Uuid::from_u128(1))]);
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
+}
+
+#[test]
+fn an_uncontended_transfer_finishes_exactly_at_its_standalone_delay() {
+    // Unlinked replay schedules a handoff at `now + delay`; a transfer alone on
+    // its links must land on the same bits so same-instant ordering is kept.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for destination_gbps in [None, Some(1.7), Some(32.0)] {
+        for _ in 0..1_000 {
+            let mut links = TransferLinks::new(Some(1.7), destination_gbps).unwrap();
+            let (now_ms, delay_ms) = (1.0e6 * unit(), 1.0e3 * unit());
+            links.submit(HandoffId::new(Uuid::from_u128(1)), delay_ms, 0, 0, now_ms);
+            assert_eq!(links.next_event_ms(), Some(now_ms + delay_ms));
+        }
+    }
+}
+
+#[test]
+fn a_sub_ulp_transfer_residual_completes_at_the_current_time() {
+    // Stopping one ULP short of a completion can leave a residual whose event
+    // is the links' own clock. That event must still complete instead of
+    // pinning the replay to one timestamp. A slower receiving link makes the
+    // rate inexact, which is what leaves such residuals.
+    let mut residuals = 0;
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..20_000 {
+        let mut links = TransferLinks::new(Some(1.0), Some(0.7)).unwrap();
+        let handoff_id = HandoffId::new(Uuid::from_u128(1));
+        let start_ms = 1.0e6 * unit();
+        links.submit(handoff_id, 1.0e3 * unit(), 0, 0, start_ms);
+        let event_ms = links.next_event_ms().unwrap();
+        let before_ms = event_ms.next_down();
+        links.advance(before_ms);
+        if links.completed.is_empty() && links.next_event_ms() == Some(before_ms) {
+            residuals += 1;
+            links.complete_due(before_ms);
+            assert_eq!(links.completed, [handoff_id]);
+            assert!(links.next_event_ms().is_none());
+        }
+    }
+    assert!(residuals > 0, "no sub-ULP residual case was exercised");
+}
+
+/// Two 128-token prompts on separate prefill workers hand off together. Alone,
+/// each transfer takes 128 ms at 1 GB/s.
+fn concurrent_handoff_delays(
+    engine_type: EngineType,
+    decode_workers: usize,
+    decode_bandwidth: Option<f64>,
+) -> Vec<f64> {
+    let mut config = transfer_timing_config(engine_type, KvTransferTimingMode::FullPrompt, 1);
+    config.num_prefill_workers = 2;
+    config.num_decode_workers = decode_workers;
+    config.decode_args.kv_transfer_bandwidth = decode_bandwidth;
+    let distinct = |uuid: u128| DirectRequest {
+        tokens: vec![uuid as u32; 128],
+        ..request(uuid, 128, 2, 0.0)
+    };
+    let (_, alone) = run_trace_collect(&config, vec![distinct(1)], None, 1.0);
+    let (_, together) = run_trace_collect(&config, vec![distinct(1), distinct(2)], None, 1.0);
+    let alone_ms = alone.handoff_ms[&Uuid::from_u128(1)];
+    [1, 2]
+        .map(|uuid| together.handoff_ms[&Uuid::from_u128(uuid)] - alone_ms + 128.0)
+        .to_vec()
+}
+
+#[test]
+fn concurrent_handoffs_into_one_decode_rank_share_its_link() {
+    for engine_type in [EngineType::Vllm, EngineType::Sglang] {
+        // Both transfers share the decode rank's 1 GB/s, so both finish
+        // after 256 ms instead of 128 ms.
+        for delay in concurrent_handoff_delays(engine_type, 1, Some(1.0)) {
+            assert!((delay - 256.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Separate decode ranks give each transfer its own links.
+        for delay in concurrent_handoff_delays(engine_type, 2, Some(1.0)) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Without decode bandwidth only the distinct prefill links bind.
+        for delay in concurrent_handoff_delays(engine_type, 1, None) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+    }
 }
 
 #[test]
@@ -2026,8 +2828,10 @@ fn source_only_reuse_does_not_reduce_destination_missing_transfer() {
 /// The backend axis varies capacity, not the handoff path: vLLM and TRT-LLM are
 /// both `HandoffOrder::SourceFirst` (`handoff.rs`). `DestinationFirst`
 /// cancellation-during-transfer is not covered here.
-#[test]
-fn test_cancellation_during_transfer_purges_retired_completion_event() {
+#[rstest::rstest]
+fn test_cancellation_during_transfer_purges_retired_completion_event(
+    #[values(false, true)] batch_reporting: bool,
+) {
     for mode in [
         KvTransferTimingMode::FullPrompt,
         KvTransferTimingMode::DestinationMissing,
@@ -2051,6 +2855,9 @@ fn test_cancellation_during_transfer_purges_retired_completion_event() {
             )
             .unwrap()
             .with_per_request_records(true);
+            if batch_reporting {
+                runtime.collector.begin_batch_reporting();
+            }
 
             runtime.drain_current_timestamp().unwrap();
             for _ in 0..16 {
@@ -2090,7 +2897,15 @@ fn test_cancellation_during_transfer_purges_retired_completion_event() {
                 runtime.advance_now_ms(next);
                 runtime.drain_current_timestamp().unwrap();
             }
-            assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            if batch_reporting {
+                assert_eq!(
+                    runtime.stats.request_snapshots[&uuid].phase,
+                    DisaggPhase::Done
+                );
+                assert!(!runtime.flow.requests.contains_key(&uuid));
+            } else {
+                assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            }
             assert_eq!(runtime.total_prefill_count(), 0);
             assert_eq!(runtime.total_decode_count(), 0);
             assert!(
@@ -2141,6 +2956,109 @@ fn test_source_first_handoff_waits_for_decode_scale_up() {
     runtime.apply_scaling(1, 1).unwrap();
     let (_, stats) = runtime.run().unwrap();
     assert_eq!(stats.request_snapshots[&uuid].phase, DisaggPhase::Done);
+}
+
+#[test]
+fn shared_g2_outlives_a_prefill_role_scaled_to_zero_and_back() {
+    use crate::engine::{NativeHostOffloadConfig, TimingModelConfig};
+    let args = |worker_type| MockEngineArgs {
+        block_size: 4,
+        num_gpu_blocks: 16,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        enable_prefix_caching: true,
+        kv_cache_bytes_per_token: Some(250_000),
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        worker_type,
+        ..Default::default()
+    };
+    // Two 1 MB prompt blocks: the D2H takes 2 ms at 1 GB/s.
+    let mut prefill_args = args(WorkerType::Prefill);
+    prefill_args.native_host_offload = Some(
+        NativeHostOffloadConfig::new(8)
+            .with_bandwidths(1.0, 1.0)
+            .cluster_shared("tp1"),
+    );
+    let config = TestDisaggConfig {
+        prefill_args,
+        decode_args: args(WorkerType::Decode),
+        prefill_dp_size: 1,
+        decode_dp_size: 1,
+        num_prefill_workers: 1,
+        num_decode_workers: 1,
+    };
+    let prompt = |id, arrival_ms| DirectRequest {
+        tokens: (1..=9).collect(),
+        max_output_tokens: 1,
+        uuid: Some(Uuid::from_u128(id)),
+        arrival_timestamp_ms: Some(arrival_ms),
+        ..Default::default()
+    };
+    let mut runtime = DisaggRuntime::from_requests(
+        &config,
+        None,
+        None,
+        VecDeque::from([prompt(1, 0.0), prompt(2, 100.0)]),
+        ReplayMode::Trace,
+    )
+    .unwrap()
+    .with_per_request_records(true);
+    let pool = |runtime: &RoundRobinDisaggRuntime| {
+        let [domain] = runtime.prefill_engine.g2_domains()[..] else {
+            panic!("one deployment pool")
+        };
+        (domain.resident_blocks, domain.used_blocks)
+    };
+    let step = |runtime: &mut RoundRobinDisaggRuntime| match runtime.step().unwrap() {
+        ReplayStepOutcome::Settled { now_ms } => now_ms,
+        outcome => panic!("unexpected {outcome:?}"),
+    };
+    let settled = (0..3).map(|_| step(&mut runtime)).collect::<Vec<_>>();
+    assert_eq!(settled, [0.0, 1.0, 2.0]);
+    // r1 finished decode at 2 ms; the prefill worker's D2H runs until 3 ms.
+    assert_eq!(
+        runtime.state(Uuid::from_u128(1)).unwrap().phase,
+        DisaggPhase::Done
+    );
+    assert_eq!(pool(&runtime), (0, 2));
+    runtime.apply_scaling(0, 1).unwrap();
+    assert_eq!(runtime.total_prefill_count(), 1);
+    assert_eq!(step(&mut runtime), 3.0);
+    assert_eq!(runtime.total_prefill_count(), 0);
+    assert_eq!(pool(&runtime), (2, 2));
+    // A fresh prefill worker joins the same deployment pool.
+    runtime.apply_scaling(1, 1).unwrap();
+    let (collector, _) = runtime.run().unwrap();
+    let report = collector.finish();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let reuse = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.uuid.clone(),
+                record.first_admission_host_reused_input_tokens,
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reuse,
+        BTreeSet::from([
+            (Uuid::from_u128(1).to_string(), Some(0)),
+            (Uuid::from_u128(2).to_string(), Some(8)),
+        ])
+    );
+    assert_eq!(
+        report.g2_domains,
+        [crate::replay::G2DomainStats {
+            capacity_blocks: 8,
+            resident_blocks: 2,
+            used_blocks: 2,
+        }]
+    );
 }
 
 #[test]
@@ -2249,8 +3167,10 @@ fn destination_first_workload_materializes_for_decode_reservation_then_completes
     assert_eq!(collector.finish().request_counts.total_output_tokens, 4);
 }
 
-#[test]
-fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
+#[rstest::rstest]
+fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt(
+    #[values(false, true)] batch_reporting: bool,
+) {
     let mut config = disagg_config();
     config.num_prefill_workers = 1;
     let trace = Trace {
@@ -2269,6 +3189,9 @@ fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
     let driver = WorkloadDriver::new_trace(trace, 64).unwrap();
     let mut runtime =
         DisaggRuntime::new_workload(&config, None, None, driver, ReplayMode::Trace).unwrap();
+    if batch_reporting {
+        runtime.collector.begin_batch_reporting();
+    }
     runtime.apply_scaling(0, config.num_decode_workers).unwrap();
 
     assert!(runtime.release_ready_arrivals().unwrap());
@@ -2289,11 +3212,22 @@ fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
         .unwrap();
     runtime.drain_current_timestamp().unwrap();
 
-    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
-    assert!(
-        runtime.state(uuid).unwrap().materialized_tokens().is_err(),
-        "cancellation should release the deferred request payload"
-    );
+    if batch_reporting {
+        assert_eq!(
+            runtime.stats.request_snapshots[&uuid].phase,
+            DisaggPhase::Done
+        );
+        assert!(
+            !runtime.flow.requests.contains_key(&uuid),
+            "batch cancellation releases request state"
+        );
+    } else {
+        assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+        assert!(
+            runtime.state(uuid).unwrap().materialized_tokens().is_err(),
+            "cancellation releases the deferred payload"
+        );
+    }
 }
 
 #[test]
@@ -2861,4 +3795,989 @@ fn cancel_during_decode_retires_the_request_instead_of_letting_it_finish() {
          (retired at {}ms, decode began at {decode_start_ms}ms)",
         runtime.now_ms()
     );
+}
+
+mod agentic_pd_qualification {
+    use super::*;
+    use crate::engine::{TimingModel, TimingModelConfig};
+    use crate::replay::loadgen::{
+        AgenticReplayPhase, AgenticSnapshotOptions, PreparedAgenticSnapshots,
+    };
+
+    fn config(backend: EngineType, caching: bool) -> TestDisaggConfig {
+        let mut config = match backend {
+            EngineType::Vllm => disagg_config(),
+            EngineType::Sglang => sglang_disagg_config(),
+            EngineType::Trtllm => unreachable!(),
+        };
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        for args in [&mut config.prefill_args, &mut config.decode_args] {
+            args.speedup_ratio = 1.0;
+            args.decode_speedup_ratio = 1.0;
+            args.enable_prefix_caching = caching;
+            args.max_num_seqs = 1;
+            args.timing_model = TimingModelConfig::Fixed {
+                prefill_ms: 3.0,
+                decode_ms: 2.0,
+            };
+        }
+        config
+    }
+
+    fn graph(with_frontier: bool) -> AgenticTrace {
+        let mut history = agentic_row("history", "play", 128, 1, 64, 10, vec![]);
+        history.recorded_api_time_ms = Some(5.0);
+        let mut future = agentic_row(
+            "future",
+            "play",
+            192,
+            2,
+            64,
+            10,
+            vec![AgenticDependency {
+                request_id: "history".into(),
+                trigger: AgenticDependencyTrigger::Completion,
+                relation: AgenticDependencyRelation::Sequence,
+                delay_ms: 0.0,
+            }],
+        );
+        future.not_before_ms = 100.0;
+        let mut rows = vec![history, future];
+        if with_frontier {
+            let mut child = agentic_row(
+                "child",
+                "play",
+                256,
+                2,
+                64,
+                30,
+                vec![AgenticDependency {
+                    request_id: "future".into(),
+                    trigger: AgenticDependencyTrigger::Dispatch,
+                    relation: AgenticDependencyRelation::Spawn,
+                    delay_ms: 12.0,
+                }],
+            );
+            child.session_id = "background".into();
+            child.not_before_ms = 112.0;
+            let mut join = agentic_row(
+                "join",
+                "play",
+                320,
+                2,
+                64,
+                40,
+                ["future", "child"]
+                    .into_iter()
+                    .map(|id| AgenticDependency {
+                        request_id: id.into(),
+                        trigger: AgenticDependencyTrigger::Completion,
+                        relation: AgenticDependencyRelation::Join,
+                        delay_ms: 8.0,
+                    })
+                    .collect(),
+            );
+            join.not_before_ms = 112.0;
+            rows.extend([child, join]);
+        }
+        agentic_trace(64, rows)
+    }
+
+    fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
+        let prepared = graph
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
+            .unwrap();
+        PreparedAgenticSnapshots::from_plays(
+            (0..lanes)
+                .map(|lane| {
+                    prepared
+                        .context()
+                        .prepare_play(lane, 0, Some(50.0))
+                        .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn runtime(
+        config: &TestDisaggConfig,
+        prepared: PreparedAgenticSnapshots,
+        warmup: bool,
+        speedup: f64,
+        factory: ReplayEngineFactory,
+    ) -> RoundRobinDisaggRuntime {
+        let driver = if warmup {
+            WorkloadDriver::new_agentic_warmup(prepared, 64, true, speedup)
+        } else {
+            WorkloadDriver::new_agentic_snapshots(prepared, 64, true, speedup)
+        }
+        .unwrap();
+        let mut config = config.runtime_config_with_factory(false, factory).unwrap();
+        config.handoff_latency_ms = 5.0;
+        RoundRobinDisaggRuntime::new_round_robin_workload(&config, driver, ReplayMode::Trace)
+            .unwrap()
+            .with_per_request_records(true)
+    }
+
+    fn finish(mut runtime: RoundRobinDisaggRuntime) -> ReplayReport {
+        runtime.run_to_completion().unwrap();
+        assert!(runtime.is_done());
+        assert!(runtime.prefill_engine.is_drained());
+        assert!(runtime.decode_engine.is_drained());
+        assert!(runtime.flow.action_queues.is_empty());
+        assert!(runtime.flow.requests_by_handoff.is_empty());
+        let (collector, _) = runtime.run().unwrap();
+        collector.finish()
+    }
+
+    #[test]
+    fn duration_profile_recycles_and_preserves_cross_cutoff_handoff() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for duration in [0.051, 0.35] {
+                let mut replay = runtime(
+                    &config(backend, true),
+                    prepared(graph(false), 1),
+                    true,
+                    1.0,
+                    ReplayEngineFactory::new(),
+                );
+                replay
+                    .admission
+                    .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                        duration_seconds: duration,
+                        response_grace_seconds: 0.1,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let report = replay.run().unwrap().0.finish();
+                let profile = report.agentic_profile.as_ref().unwrap();
+                let origin = profile.profile_start_ms.unwrap();
+                assert!(
+                    report
+                        .per_request
+                        .iter()
+                        .all(|request| request.arrival_time_ms + origin
+                            < profile.admission_cutoff_ms.unwrap())
+                );
+                assert!(
+                    report
+                        .per_request
+                        .iter()
+                        .all(|request| request.terminal_status == ReplayTerminalStatus::Completed)
+                );
+                assert_eq!(profile.client_in_flight_requests, 0);
+                assert_eq!(profile.canceled_requests, 0);
+                if duration < 0.1 {
+                    assert!(profile.finished_at_ms.unwrap() > profile.admission_cutoff_ms.unwrap());
+                    assert_eq!(report.per_request.len(), 1);
+                    let request = &report.per_request[0];
+                    let cutoff = profile.admission_cutoff_ms.unwrap();
+                    // This case must cross C during P/D handoff, not merely
+                    // finish a decode request that was already admitted at C.
+                    assert!(request.arrival_time_ms + origin < cutoff);
+                    assert!(request.prefill_admit_ms.unwrap() + origin < cutoff);
+                    assert!(request.decode_admit_ms.unwrap() + origin > cutoff);
+                } else {
+                    assert!(profile.plays_started >= 3, "{backend:?}: {profile:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duration_profile_drains_a_router_queue_after_admission_cutoff() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let mut driver =
+                WorkloadDriver::new_agentic_snapshots(prepared(graph(false), 1), 64, true, 1.0)
+                    .unwrap();
+            driver
+                .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                    duration_seconds: 0.051,
+                    response_grace_seconds: 0.1,
+                    ..Default::default()
+                })
+                .unwrap();
+            let mut config = config(backend, true).runtime_config(false).unwrap();
+            config.handoff_latency_ms = 5.0;
+            let captured = Rc::new(RefCell::new(None));
+            let mut replay =
+                DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+                    &config,
+                    AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+                    false,
+                    |_, prefill_topology, _, decode_topology| {
+                        Ok((
+                            QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                            QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                        ))
+                    },
+                )
+                .unwrap()
+                .with_per_request_records(true)
+                .with_scaling_policy(Box::new(CaptureAndScaleOncePolicy {
+                    at_ms: 60.0,
+                    captured: Rc::clone(&captured),
+                }));
+            replay.run_to_completion().unwrap();
+            let max_pending = replay.stats.max_prefill_router_pending_count
+                + replay.stats.max_decode_router_pending_count;
+            let report = replay.run().unwrap().0.finish();
+            let profile = report.agentic_profile.as_ref().unwrap();
+            assert_eq!(
+                max_pending, 1,
+                "{backend:?}: {profile:?}; {:?}",
+                report.per_request
+            );
+            assert_eq!(captured.borrow().as_ref().unwrap().now_ms, 60.0);
+            let cutoff = profile.admission_cutoff_ms.unwrap();
+            assert_eq!(cutoff, 51.0);
+            assert_eq!(report.per_request.len(), 1);
+            let request = &report.per_request[0];
+            assert_eq!(request.arrival_time_ms, 50.0);
+            assert!(request.arrival_time_ms < cutoff);
+            assert_eq!(request.prefill_admit_ms, Some(60.0));
+            assert!(request.prefill_admit_ms.unwrap() > cutoff);
+            assert!(request.decode_admit_ms.unwrap() > cutoff);
+            // vLLM routes prefill first; SGLang reserves its decode destination
+            // first. In either order the client was already queued before C.
+            let queued = request
+                .routing_history
+                .iter()
+                .find(|route| route.outcome == crate::replay::ReplayRoutingOutcome::Queued)
+                .unwrap();
+            assert_eq!(queued.queue_entered_at_ms, Some(50.0));
+            assert_eq!(queued.released_at_ms, Some(60.0));
+            assert_eq!(queued.queue_wait_ms, Some(10.0));
+            assert_eq!(
+                queued.pool,
+                if backend == EngineType::Vllm {
+                    crate::replay::ReplayRequestPool::Prefill
+                } else {
+                    crate::replay::ReplayRequestPool::Decode
+                }
+            );
+            assert_eq!(request.terminal_status, ReplayTerminalStatus::Completed);
+            assert_eq!(profile.successful_responses, 1);
+            assert_eq!(profile.canceled_requests, 0);
+            assert_eq!(profile.client_in_flight_requests, 0);
+        }
+    }
+
+    #[rstest::rstest]
+    fn duration_profile_cancel_does_not_wait_for_server_quiescence(
+        #[values(0.0, 10.0)] cancel_drain_seconds: f64,
+    ) {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let mut replay = runtime(
+                &config(backend, true),
+                prepared(graph(false), 1),
+                true,
+                1.0,
+                ReplayEngineFactory::new(),
+            );
+            replay
+                .admission
+                .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                    duration_seconds: 0.051,
+                    response_grace_seconds: 0.0,
+                    cancel_drain_seconds,
+                    ..Default::default()
+                })
+                .unwrap();
+            let report = replay.run().unwrap().0.finish();
+            let profile = report.agentic_profile.as_ref().unwrap();
+            assert_eq!(profile.finished_at_ms, profile.admission_cutoff_ms);
+            assert_eq!(profile.canceled_requests, 1);
+            assert!(!profile.cancel_drain_timed_out);
+            assert_eq!(
+                profile.cancel_drain_deadline_ms,
+                profile
+                    .response_grace_deadline_ms
+                    .map(|at| at + cancel_drain_seconds * 1000.0)
+            );
+            assert_eq!(profile.client_in_flight_requests, 0);
+            assert!(profile.unsettled_server_requests > 0);
+            assert_eq!(
+                report.per_request[0].terminal_status,
+                ReplayTerminalStatus::Canceled
+            );
+        }
+    }
+
+    #[test]
+    fn batch_warmup_summary_preserves_preparation_admissions_and_profile_epoch() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let prepared = prepared(graph(true), 2);
+            let run = |capture| {
+                runtime(
+                    &config(backend, true),
+                    prepared.clone(),
+                    true,
+                    2.0,
+                    ReplayEngineFactory::new(),
+                )
+                .with_per_request_records(capture)
+                .run()
+                .unwrap()
+                .0
+                .finish()
+            };
+            let detailed = run(true);
+            let summary = run(false);
+            assert!(summary.per_request.is_empty());
+            assert!(
+                summary
+                    .agentic_phases
+                    .as_ref()
+                    .unwrap()
+                    .requests
+                    .iter()
+                    .all(|request| request.first_admit_ms.is_some())
+            );
+            assert_eq!(
+                serde_json::to_value(summary).unwrap(),
+                serde_json::to_value(detailed).unwrap(),
+                "{backend:?} batch summary must retain the same preparation evidence and profile metrics"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_identity_cache_and_reports_survive_both_native_handoff_orders() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for caching in [false, true] {
+                let prepared = prepared(graph(false), 2);
+                let expected = prepared
+                    .snapshots()
+                    .iter()
+                    .map(|snapshot| {
+                        snapshot
+                            .requests
+                            .iter()
+                            .find(|r| r.source_request_id == "future")
+                            .unwrap()
+                            .identity
+                            .clone()
+                    })
+                    .collect::<Vec<_>>();
+                assert_ne!(expected[0].play_id, expected[1].play_id);
+                assert_ne!(expected[0].cache_id, expected[1].cache_id);
+                for warmup in [false, true] {
+                    let run = || {
+                        finish(runtime(
+                            &config(backend, caching),
+                            prepared.clone(),
+                            warmup,
+                            1.0,
+                            ReplayEngineFactory::new(),
+                        ))
+                    };
+                    let report = run();
+                    assert_eq!(
+                        serde_json::to_value(&report).unwrap(),
+                        serde_json::to_value(run()).unwrap(),
+                        "same topology and input must reproduce the complete report"
+                    );
+                    assert_eq!(report.request_counts.num_requests, 2);
+                    assert_eq!(report.request_counts.completed_requests, 2);
+                    for identity in &expected {
+                        let record = report
+                            .per_request
+                            .iter()
+                            .find(|r| r.agentic.as_ref() == Some(identity))
+                            .unwrap();
+                        // Equality above covers request, lane, incarnation, root,
+                        // parent, conversation and cache, after native P -> D.
+                        assert!(identity.root_id.is_some());
+                        assert!(identity.lane_id.is_some());
+                        assert_eq!(record.play_id.as_ref(), Some(&identity.play_id));
+                        assert_eq!(record.session_id.as_ref(), Some(&identity.conversation_id));
+                        assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+                        assert_eq!(record.output_length, 2);
+                        assert!(record.prefill_admit_ms.is_some());
+                        assert!(record.destination_activated_ms.is_some());
+                        assert!(record.decode_admit_ms.is_some());
+                        assert!(record.source_released_ms.is_some());
+                        assert_eq!(record.prefill_route_overlap_tokens, Some(0));
+                        assert_eq!(
+                            record.admission_history[0].reused_input_tokens,
+                            if caching && warmup { 128 } else { 0 }
+                        );
+                    }
+                    if warmup {
+                        let phases = report.agentic_phases.as_ref().unwrap();
+                        assert_eq!(phases.requests.len(), 22);
+                        assert_eq!(phases.phase, AgenticReplayPhase::Profile);
+                        let barrier = phases.profile_start_ms.unwrap();
+                        for request in &phases.requests {
+                            assert_eq!(request.observed_output_tokens, 1);
+                            assert_eq!(
+                                request.terminal_status,
+                                Some(ReplayTerminalStatus::Completed)
+                            );
+                            assert!(request.quiescent_at_ms.unwrap() <= barrier);
+                            assert_eq!(
+                                request.first_admission_reused_input_tokens,
+                                Some(if caching && request.phase == AgenticReplayPhase::Warmup {
+                                    64
+                                } else {
+                                    0
+                                })
+                            );
+                        }
+                        assert!(
+                            report
+                                .per_request
+                                .iter()
+                                .all(|r| r.agentic_phase == Some(AgenticReplayPhase::Profile))
+                        );
+                    } else {
+                        assert!(report.agentic_phases.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_retains_snapshot_frontier_and_scaled_spawn_join_timers() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let prepared = prepared(graph(true), 1);
+            let run = |warmup| {
+                finish(runtime(
+                    &config(backend, false),
+                    prepared.clone(),
+                    warmup,
+                    2.0,
+                    ReplayEngineFactory::new(),
+                ))
+            };
+            let cold = run(false);
+            let warm = run(true);
+            assert_eq!(cold.agentic_snapshots, warm.agentic_snapshots);
+            assert_eq!(warm.request_counts.completed_requests, 3);
+            for record in &warm.per_request {
+                let original = cold
+                    .per_request
+                    .iter()
+                    .find(|r| r.agentic == record.agentic)
+                    .unwrap();
+                assert_eq!(record.arrival_time_ms, original.arrival_time_ms);
+                assert_eq!(record.terminal_time_ms, original.terminal_time_ms);
+                assert_eq!(record.output_length, original.output_length);
+                assert_eq!(record.reused_input_tokens, 0);
+            }
+            let by_id = warm
+                .per_request
+                .iter()
+                .map(|r| (r.request_id.as_deref().unwrap(), r))
+                .collect::<std::collections::HashMap<_, _>>();
+            let child_identity = &prepared.snapshots()[0]
+                .requests
+                .iter()
+                .find(|r| r.source_request_id == "child")
+                .unwrap()
+                .identity;
+            assert!(child_identity.parent_id.is_some());
+            assert_eq!(by_id["child"].agentic.as_ref(), Some(child_identity));
+            assert_eq!(by_id["future"].arrival_time_ms, 25.0);
+            assert_eq!(by_id["child"].arrival_time_ms, 31.0);
+            assert_eq!(
+                by_id["join"].arrival_time_ms,
+                by_id["future"]
+                    .terminal_time_ms
+                    .max(by_id["child"].terminal_time_ms)
+                    + 4.0
+            );
+        }
+    }
+
+    #[derive(Default)]
+    struct RoleEvidenceTiming {
+        evidence: Mutex<crate::engine::TimingEvidenceSummary>,
+        cleared: Mutex<Vec<crate::engine::TimingEvidenceSummary>>,
+    }
+
+    impl TimingModel for RoleEvidenceTiming {
+        fn predict_prefill_ms(&self, batch: usize, input: usize, _prefix: usize) -> Result<f64> {
+            let latency = if batch == 0 {
+                0.0
+            } else if input >= 1024 {
+                40.0
+            } else {
+                3.0
+            };
+            self.evidence.lock().unwrap().prefill.try_accumulate(
+                crate::engine::TimingPhaseEvidence::try_from_operations(vec![
+                    crate::engine::TimingOperationEvidence::new(
+                        format!("prefill-{input}"),
+                        latency,
+                        Some(latency * 100.0),
+                        crate::engine::TimingEvidenceSource::Silicon,
+                    )?,
+                ])?,
+            )?;
+            Ok(latency)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _active: usize,
+            _context: usize,
+            _total: usize,
+        ) -> Result<f64> {
+            let latency = if batch == 0 { 0.0 } else { 2.0 };
+            self.evidence.lock().unwrap().decode.try_accumulate(
+                crate::engine::TimingPhaseEvidence::try_from_operations(vec![
+                    crate::engine::TimingOperationEvidence::new(
+                        "decode",
+                        latency,
+                        Some(latency * 200.0),
+                        crate::engine::TimingEvidenceSource::Silicon,
+                    )?,
+                ])?,
+            )?;
+            Ok(latency)
+        }
+
+        fn evidence_summary(&self) -> Option<crate::engine::TimingEvidenceSummary> {
+            Some(self.evidence.lock().unwrap().clone())
+        }
+
+        fn reset_evidence(&self) -> Result<()> {
+            self.cleared
+                .lock()
+                .unwrap()
+                .push(std::mem::take(&mut *self.evidence.lock().unwrap()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn barrier_resets_both_power_roles_and_profile_measurement_windows() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let prepared = prepared(graph(false), 1);
+            let run = |warmup| {
+                let prefill = Arc::new(RoleEvidenceTiming::default());
+                let decode = Arc::new(RoleEvidenceTiming::default());
+                let samples = Arc::new(Mutex::new(Vec::new()));
+                let ticks = Rc::new(RefCell::new(None));
+                let replay = runtime(
+                    &config(backend, false),
+                    prepared.clone(),
+                    warmup,
+                    1.0,
+                    ReplayEngineFactory::with_optional_role_timing_models(
+                        Some(prefill.clone()),
+                        Some(decode.clone()),
+                    ),
+                )
+                .with_max_sim_time_ms(Some(70.0))
+                .with_telemetry_observer(
+                    7.0,
+                    Box::new(CaptureTelemetryObserver {
+                        samples: samples.clone(),
+                    }),
+                )
+                .with_scaling_policy(Box::new(CaptureOncePolicy {
+                    at_ms: 0.0,
+                    captured: ticks.clone(),
+                }));
+                let report = finish(replay);
+                (report, prefill, decode, samples, ticks)
+            };
+            let (cold, cold_p, cold_d, _, _) = run(false);
+            let (warm, warm_p, warm_d, samples, ticks) = run(true);
+            let barrier = warm
+                .agentic_phases
+                .as_ref()
+                .unwrap()
+                .profile_start_ms
+                .unwrap();
+            assert!(
+                barrier > 70.0,
+                "preparation must not consume the profile cap"
+            );
+            assert_eq!(warm.request_counts.completed_requests, 1);
+            assert_eq!(warm.per_request[0].arrival_time_ms, 50.0);
+            assert_eq!(warm.throughput.duration_ms, cold.throughput.duration_ms);
+            assert!(
+                (warm.throughput.prefill_worker_seconds - cold.throughput.prefill_worker_seconds)
+                    .abs()
+                    < 1e-9
+            );
+            assert!(
+                (warm.throughput.decode_worker_seconds - cold.throughput.decode_worker_seconds)
+                    .abs()
+                    < 1e-9
+            );
+            assert_eq!(warm_p.evidence_summary(), cold_p.evidence_summary());
+            assert_eq!(warm_d.evidence_summary(), cold_d.evidence_summary());
+            assert_eq!(warm_p.cleared.lock().unwrap().len(), 1);
+            assert_eq!(warm_d.cleared.lock().unwrap().len(), 1);
+            assert!(warm_p.cleared.lock().unwrap()[0].prefill.latency_ms > 0.0);
+            assert!(cold_p.cleared.lock().unwrap().is_empty());
+            assert!(cold_d.cleared.lock().unwrap().is_empty());
+            let samples = samples.lock().unwrap();
+            assert_eq!(samples[0].kind, ReplayTelemetrySampleKind::Baseline);
+            assert_eq!(samples[0].sampled_at_ms, barrier);
+            assert!(samples.iter().all(|s| s.interval_start_ms >= barrier));
+            assert_eq!(
+                samples
+                    .iter()
+                    .map(|s| s.traffic.arriving_requests)
+                    .sum::<usize>(),
+                1
+            );
+            assert_eq!(
+                samples
+                    .iter()
+                    .map(|s| s.traffic.completed_requests)
+                    .sum::<usize>(),
+                1
+            );
+            let ticks = ticks.borrow();
+            let tick = ticks.as_ref().unwrap();
+            assert_eq!(tick.now_ms, barrier);
+            assert_eq!(tick.traffic.num_req, 0);
+            assert!(tick.prefill_fpm.is_empty());
+            assert!(tick.decode_fpm.is_empty());
+        }
+    }
+
+    #[test]
+    fn warmup_tracks_client_terminal_before_source_cleanup_and_waits_for_quiescence() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let rows = [("small", 128), ("large", 4096)]
+                .into_iter()
+                .flat_map(|(play, length)| {
+                    let history_id = format!("{play}-history");
+                    let mut history = agentic_row(&history_id, play, length, 1, 64, 10, vec![]);
+                    history.recorded_api_time_ms = Some(5.0);
+                    let mut future = agentic_row(
+                        &format!("{play}-future"),
+                        play,
+                        length,
+                        2,
+                        64,
+                        10,
+                        vec![AgenticDependency {
+                            request_id: history_id,
+                            trigger: AgenticDependencyTrigger::Completion,
+                            relation: AgenticDependencyRelation::Sequence,
+                            delay_ms: 0.0,
+                        }],
+                    );
+                    future.not_before_ms = 100.0;
+                    [history, future]
+                })
+                .collect();
+            let prepared = prepared(agentic_trace(64, rows), 2);
+            let mut replay = runtime(
+                &config(backend, false),
+                prepared,
+                true,
+                1.0,
+                ReplayEngineFactory::with_timing_model(Arc::new(RoleEvidenceTiming::default())),
+            );
+            let mut saw_cleanup = false;
+            for _ in 0..256 {
+                replay.step().unwrap();
+                let phases = replay.admission.agentic_phase_evidence().unwrap();
+                if let Some(request) = phases
+                    .requests
+                    .iter()
+                    .find(|r| r.causal_terminal_at_ms.is_some() && r.quiescent_at_ms.is_none())
+                {
+                    let state = replay.state(request.uuid).unwrap();
+                    assert_eq!(state.phase, DisaggPhase::CleanupPending);
+                    assert!(!state.counted_in_flight);
+                    assert!(!state.coordinator.is_complete());
+                    assert!(
+                        replay
+                            .flow
+                            .requests_by_handoff
+                            .contains_key(&state.handoff_id)
+                    );
+                    assert!(phases.profile_start_ms.is_none());
+                    assert!(!replay.finish_agentic_preparation().unwrap());
+                    saw_cleanup = true;
+                }
+                if !replay.admission.is_agentic_preparing() {
+                    break;
+                }
+            }
+            assert!(
+                saw_cleanup,
+                "{backend:?}: fixture must expose deferred source cleanup"
+            );
+            let report = finish(replay);
+            assert_eq!(report.request_counts.completed_requests, 2);
+            let phases = report.agentic_phases.unwrap();
+            let barrier = phases.profile_start_ms.unwrap();
+            assert!(
+                phases
+                    .requests
+                    .iter()
+                    .all(|r| r.quiescent_at_ms.is_some_and(|at| at <= barrier))
+            );
+            assert!(
+                phases
+                    .requests
+                    .iter()
+                    .any(|r| r.causal_terminal_at_ms < r.quiescent_at_ms)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_or_canceled_preparation_handoff_drains_without_profile() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for canceled in [false, true] {
+                let mut replay = runtime(
+                    &config(backend, true),
+                    prepared(graph(false), 1),
+                    true,
+                    1.0,
+                    ReplayEngineFactory::new(),
+                );
+                let uuid = replay.admission.agentic_phase_evidence().unwrap().requests[0].uuid;
+                for _ in 0..16 {
+                    replay.step().unwrap();
+                    if replay.state(uuid).unwrap().phase == DisaggPhase::TransferPending {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    replay.state(uuid).unwrap().phase,
+                    DisaggPhase::TransferPending
+                );
+                let handoff_id = replay.state(uuid).unwrap().handoff_id;
+                replay
+                    .apply_handoff_fact(
+                        uuid,
+                        if canceled {
+                            HandoffFact::Canceled { handoff_id }
+                        } else {
+                            HandoffFact::Failed { handoff_id }
+                        },
+                    )
+                    .unwrap();
+                replay.run_to_completion().unwrap();
+                assert!(!replay.profile_observers_started);
+                assert!(replay.is_done());
+                // An old preparation callback cannot become a profile token.
+                let before = replay.admission.agentic_phase_evidence().unwrap();
+                for prefill in [false, true] {
+                    let signal = OutputSignal {
+                        uuid,
+                        token_id: Some(999),
+                        completed: true,
+                        rejected: false,
+                        handoff_delay_ms: None,
+                        cached_tokens: None,
+                    };
+                    if prefill {
+                        replay.process_prefill_signal(signal).unwrap();
+                    } else {
+                        let now_ms = replay.now_ms;
+                        replay.process_decode_signal(signal, now_ms).unwrap();
+                    }
+                }
+                assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), before);
+                let report = finish(replay);
+                assert_eq!(report.request_counts.num_requests, 0);
+                assert!(report.per_request.is_empty());
+                let phases = report.agentic_phases.unwrap();
+                assert_eq!(phases.phase, AgenticReplayPhase::Aborted);
+                assert_eq!(phases.profile_start_ms, None);
+                assert_eq!(phases.failure_request_id, Some(uuid));
+                assert_eq!(
+                    phases.requests[0].terminal_status,
+                    Some(if canceled {
+                        ReplayTerminalStatus::Canceled
+                    } else {
+                        ReplayTerminalStatus::Failed
+                    })
+                );
+                assert!(phases.requests[0].quiescent_at_ms.is_some());
+                assert!(
+                    phases.requests[1..]
+                        .iter()
+                        .all(|r| r.dispatched_at_ms.is_none())
+                );
+            }
+        }
+    }
+}
+
+/// Admission metadata that carries replay hashes through unchanged, so each
+/// placement call sees exactly what the runtime handed it.
+struct HashFlag(Option<crate::replay::loadgen::ReplayRequestHashes>);
+
+impl crate::replay::ReplayAdmissionMetadata for HashFlag {
+    fn from_hashes(hashes: Option<crate::replay::loadgen::ReplayRequestHashes>) -> Self {
+        Self(hashes)
+    }
+
+    fn for_prefill(self) -> Self {
+        self
+    }
+
+    fn max_output_tokens_override(&self) -> Option<usize> {
+        None
+    }
+
+    fn into_hashes(self) -> Option<crate::replay::loadgen::ReplayRequestHashes> {
+        self.0
+    }
+}
+
+/// Round-robin placement that records which stage saw hashes.
+struct HashRecordingPlacement {
+    stage: &'static str,
+    inner: PoolRoundRobinPlacement<()>,
+    seen: Rc<RefCell<Vec<(&'static str, bool)>>>,
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for HashRecordingPlacement {
+    type Metadata = HashFlag;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        metadata: HashFlag,
+        session_id: Option<String>,
+        now_ms: f64,
+    ) -> anyhow::Result<PlacementEffects> {
+        self.seen
+            .borrow_mut()
+            .push((self.stage, metadata.0.is_some()));
+        PlacementPolicy::<ReplayRequestPayload>::place(
+            &mut self.inner,
+            request,
+            (),
+            session_id,
+            now_ms,
+        )
+    }
+
+    fn observe(&mut self, events: (), now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::observe(&mut self.inner, events, now_ms)
+    }
+
+    fn cancel_pending(&mut self, request_id: Uuid) -> bool {
+        PlacementPolicy::<ReplayRequestPayload>::cancel_pending(&mut self.inner, request_id)
+    }
+
+    fn request_terminal(
+        &mut self,
+        request_id: Uuid,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::request_terminal(
+            &mut self.inner,
+            request_id,
+            now_ms,
+        )
+    }
+
+    fn prefill_completed(
+        &mut self,
+        request_id: Uuid,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::prefill_completed(
+            &mut self.inner,
+            request_id,
+            now_ms,
+        )
+    }
+
+    fn pending_count(&self) -> usize {
+        PlacementPolicy::<ReplayRequestPayload>::pending_count(&self.inner)
+    }
+
+    fn worker_ready(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_ready(&mut self.inner, worker, now_ms)
+    }
+
+    fn worker_draining(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_draining(&mut self.inner, worker, now_ms)
+    }
+
+    fn worker_removed(
+        &mut self,
+        worker: WorkerTopology,
+        now_ms: f64,
+    ) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::worker_removed(&mut self.inner, worker, now_ms)
+    }
+
+    fn topology_settled(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        PlacementPolicy::<ReplayRequestPayload>::topology_settled(&mut self.inner, now_ms)
+    }
+}
+
+#[rstest::rstest]
+#[case(EngineType::Vllm, [("prefill", true), ("decode", false)])]
+#[case(EngineType::Sglang, [("decode", false), ("prefill", true)])]
+fn prefill_placement_receives_replay_hashes_in_both_handoff_orders(
+    #[case] engine_type: EngineType,
+    #[case] expected: [(&'static str, bool); 2],
+) {
+    let config = match engine_type {
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => disagg_config(),
+    };
+    // One hashed trace turn: its replay hashes come from the workload, not
+    // from the metadata fixture.
+    let driver = Trace {
+        block_size: 64,
+        sessions: vec![SessionTrace {
+            session_id: "hashed".to_string(),
+            first_arrival_timestamp_ms: Some(0.0),
+            turns: vec![TurnTrace {
+                input_length: 64,
+                max_output_tokens: 2,
+                hash_ids: vec![11],
+                ..Default::default()
+            }],
+        }],
+    }
+    .into_trace_driver_with_block_size(config.prefill_args.block_size)
+    .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let placement = |stage, topology| HashRecordingPlacement {
+        stage,
+        inner: PoolRoundRobinPlacement::new(topology),
+        seen: Rc::clone(&seen),
+    };
+    DisaggRuntimeImpl::<HashRecordingPlacement, NoEngineEvents, HashFlag>::new_composed(
+        &config.runtime_config(false).unwrap(),
+        AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+        false,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                placement("prefill", prefill_topology),
+                placement("decode", decode_topology),
+            ))
+        },
+    )
+    .unwrap()
+    .run()
+    .unwrap();
+    assert_eq!(*seen.borrow(), expected);
 }

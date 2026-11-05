@@ -4,7 +4,6 @@
 """Tests for the op_backend_catalog family-map loader (Collector V3 identity)."""
 
 import pytest
-
 from collector.op_catalog import family_for_perf_file, load_family_map
 from collector.registry_types import PerfFile
 

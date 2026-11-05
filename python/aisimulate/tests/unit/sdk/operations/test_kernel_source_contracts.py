@@ -12,7 +12,7 @@ calib v1/v2 phase split), D2 (GDN decode-recurrence aliases).
 
 import pytest
 
-from aiconfigurator.sdk import common
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.unit
 
@@ -29,8 +29,8 @@ def _dsa_bucket_view(tmp_path, rows):
     import pyarrow.parquet as pq
     import yaml
 
-    from aiconfigurator.sdk.perf_database import PerfDatabase
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate.sdk.perf_database import PerfDatabase
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     root = tmp_path / "systems"
     root.mkdir(exist_ok=True)
@@ -125,7 +125,7 @@ def test_dsa_fp8_rows_bucket_by_executed_kernel_name(tmp_path):
 
 
 def test_dsv4_native_checkpoints_remap_by_system_family():
-    from aiconfigurator.sdk.models.helpers import resolve_dsv4_moe_arch_mode
+    from aisimulate.sdk.models.helpers import resolve_dsv4_moe_arch_mode
 
     for path in ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Flash"):
         assert resolve_dsv4_moe_arch_mode(path, "b200_sxm", "sglang") is common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
@@ -139,7 +139,7 @@ def test_dsv4_native_checkpoints_remap_by_system_family():
 
 
 def test_kimi_k3_moe_remaps_to_w4a8_on_blackwell_only():
-    from aiconfigurator.sdk.models.helpers import resolve_kimi_k3_moe_arch_mode
+    from aisimulate.sdk.models.helpers import resolve_kimi_k3_moe_arch_mode
 
     # Blackwell serving quantizes activations to mxfp8 (kimi-k3 branch
     # Mxfp4MoEMethod default precision); Hopper keeps the checkpoint's plain
@@ -154,7 +154,7 @@ def test_kimi_k3_moe_remaps_to_w4a8_on_blackwell_only():
 
 
 def test_dsv4_arch_remap_never_overrides_explicit_mode():
-    from aiconfigurator.sdk.models.helpers import resolve_dsv4_moe_arch
+    from aisimulate.sdk.models.helpers import resolve_dsv4_moe_arch
 
     class _Cfg:
         moe_quant_mode = common.MoEQuantMode.fp8_block

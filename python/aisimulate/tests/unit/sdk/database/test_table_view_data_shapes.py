@@ -43,8 +43,8 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -101,7 +101,7 @@ def _write_parquet(systems_root: Path, rel: str, columns: dict[str, list]) -> Pa
 
 
 def _fetch(db: PerfDatabase, attribute: str):
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     return fetch_table_view(db, attribute)
 
@@ -343,7 +343,7 @@ def test_incomplete_family_dir_vetoes_megamoe_view(systems_root: Path) -> None:
     assert _fetch(db, "_dsv4_megamoe_module_data") is not None  # positive control
 
     (systems_root / "data/h100_sxm/dsv4/sglang/0.5.16/INCOMPLETE.txt").write_bytes(b"partial collection\n")
-    from aiconfigurator_core.sdk.operations.base import clear_all_op_caches
+    from aisimulate_core.sdk.operations.base import clear_all_op_caches
 
     clear_all_op_caches()  # drop the memoized probe spec so sources re-resolve
     assert _fetch(db, "_dsv4_megamoe_module_data") is None
@@ -369,7 +369,7 @@ def test_incomplete_comm_dir_vetoes_nccl_view(systems_root: Path) -> None:
     assert loaded[common.CommQuantMode.half]["all_reduce"][8][1048576]["latency"] == pytest.approx(0.3)
 
     (systems_root / "data/h100_sxm/comm/nccl/2.26.2/INCOMPLETE.txt").write_bytes(b"partial collection\n")
-    from aiconfigurator_core.sdk.operations.base import clear_all_op_caches
+    from aisimulate_core.sdk.operations.base import clear_all_op_caches
 
     clear_all_op_caches()
     assert _fetch(db, "_nccl_data") is None
@@ -406,7 +406,7 @@ class _LaneDensityDatabase:
 
 
 def test_repeated_attention_density_fetches_reuse_engine_result_and_isolate_callers(monkeypatch) -> None:
-    from aiconfigurator_core.sdk import engine, engine_table_view
+    from aisimulate_core.sdk import engine, engine_table_view
 
     def response(attribute, _call_count):
         assert attribute == "_context_attention_data"
@@ -428,7 +428,7 @@ def test_repeated_attention_density_fetches_reuse_engine_result_and_isolate_call
 
 
 def test_attention_density_cache_separates_effective_shared_layer_views(monkeypatch) -> None:
-    from aiconfigurator_core.sdk import engine, engine_table_view
+    from aisimulate_core.sdk import engine, engine_table_view
 
     database = _LaneDensityDatabase()
     probed_views = []
@@ -461,7 +461,7 @@ def test_attention_density_cache_separates_effective_shared_layer_views(monkeypa
 
 
 def test_attention_density_cache_separates_attributes_and_refetches_after_generation_advance(monkeypatch) -> None:
-    from aiconfigurator_core.sdk import engine, engine_table_view
+    from aisimulate_core.sdk import engine, engine_table_view
 
     def response(attribute, call_count):
         return [(f"{attribute}:{call_count}", call_count, call_count)]
@@ -496,7 +496,7 @@ def test_attention_density_cache_separates_attributes_and_refetches_after_genera
 def test_store_loaded_database_refreshes_same_path_attention_probes(systems_root: Path) -> None:
     """Publishing a freshly loaded database after an in-place parquet update
     must evict the Rust probe snapshot and every generation-tagged Python memo."""
-    from aiconfigurator_core.sdk import engine, engine_table_view, perf_database
+    from aisimulate_core.sdk import engine, engine_table_view, perf_database
 
     rel = "data/h100_sxm/attention/trtllm/1.0.0/context_attention_perf.parquet"
     old_columns = _attention_columns([0])
@@ -547,7 +547,7 @@ def test_clear_database_runtime_caches_reaches_the_view_after_a_disk_update(syst
     """The documented lever contract: after clear_database_runtime_caches, a
     reload reads fresh rows from disk — including through the table views
     (the per-database memo must not pin a stale Rust snapshot)."""
-    from aiconfigurator_core.sdk.perf_database import clear_database_runtime_caches
+    from aisimulate_core.sdk.perf_database import clear_database_runtime_caches
 
     rel = "data/h100_sxm/gemm/trtllm/1.0.0/gemm_perf.parquet"
     _write_parquet(systems_root, rel, _gemm_columns(1.0))
@@ -582,8 +582,8 @@ def test_warmed_database_stays_picklable_and_deepcopyable(systems_root: Path) ->
 
 
 def test_moe_load_data_retry_recovers_after_a_failed_later_fetch(systems_root: Path, monkeypatch) -> None:
-    from aiconfigurator_core.sdk import engine_table_view
-    from aiconfigurator_core.sdk.operations.moe import MoE
+    from aisimulate_core.sdk import engine_table_view
+    from aisimulate_core.sdk.operations.moe import MoE
 
     _write_parquet(
         systems_root,
@@ -637,8 +637,8 @@ def test_composite_weights_respect_child_weight_shields() -> None:
     query refuse it) nested inside Overlap/Fallback must not crash memory
     estimation: the Rust ``Op::weight_bytes`` dispatch arm is 0.0 for every
     flavor and the composite arms recurse natively."""
-    from aiconfigurator.sdk.operations.moe import MoEDispatch
-    from aiconfigurator.sdk.operations.overlap import FallbackOp, OverlapOp
+    from aisimulate.sdk.operations.moe import MoEDispatch
+    from aisimulate.sdk.operations.overlap import FallbackOp, OverlapOp
 
     dispatch = MoEDispatch(
         "d",

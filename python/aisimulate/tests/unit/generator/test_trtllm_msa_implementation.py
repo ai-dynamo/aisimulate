@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
+from aisimulate.generator.api import generate_backend_artifacts
 
 pytestmark = pytest.mark.unit
 
@@ -99,7 +99,7 @@ class _FakeTask:
     ],
 )
 def test_bridge_prescribes_msa_only_for_m3_on_the_sm100_family(backend, model, system, expected):
-    from aiconfigurator.generator.module_bridge import _msa_sparse_implementation
+    from aisimulate.generator.module_bridge import _msa_sparse_implementation
 
     assert _msa_sparse_implementation(_FakeTask(backend, model, system)) == expected
 
@@ -109,7 +109,7 @@ def test_naive_generator_carries_the_msa_prescription():
     MiniMax-M3/SM100-family prescription as the optimized path — otherwise a
     naive deployment runs the TRT-LLM default the perf rows do not represent
     (review 4972622548 item 1)."""
-    from aiconfigurator.generator.naive import build_naive_generator_params
+    from aisimulate.generator.naive import build_naive_generator_params
 
     params = build_naive_generator_params(
         model_name="MiniMaxAI/MiniMax-M3",
@@ -128,3 +128,60 @@ def test_naive_generator_carries_the_msa_prescription():
         mode="agg",
     )
     assert "msa_sparse_implementation" not in off_family["ModelConfig"]
+
+
+# --- rc29: sparse_attention_config.algorithm (required on every SM) ---------------------
+_RC29 = "1.3.0rc29"
+
+
+def test_rc29_template_renders_algorithm_for_m3_without_implementation():
+    """SM90 M3 (no fmha_sm100 prescription) still needs algorithm=minimax_m3 at rc29."""
+    artifacts = generate_backend_artifacts(
+        backend="trtllm", backend_version=_RC29, params=_params({"msa_sparse_algorithm": "minimax_m3"})
+    )
+    assert _engine_yaml(artifacts).get("sparse_attention_config") == {"algorithm": "minimax_m3"}
+
+
+def test_rc29_template_renders_both_keys_on_sm100():
+    artifacts = generate_backend_artifacts(
+        backend="trtllm",
+        backend_version=_RC29,
+        params=_params({"msa_sparse_algorithm": "minimax_m3", "msa_sparse_implementation": "msa"}),
+    )
+    assert _engine_yaml(artifacts).get("sparse_attention_config") == {
+        "algorithm": "minimax_m3",
+        "implementation": "msa",
+    }
+
+
+def test_rc23_template_ignores_the_algorithm_key():
+    """Prior template untouched: rc23 never read `algorithm`, so it must not appear."""
+    artifacts = generate_backend_artifacts(
+        backend="trtllm", backend_version=_BACKEND_VERSION, params=_params({"msa_sparse_algorithm": "minimax_m3"})
+    )
+    assert "sparse_attention_config" not in _engine_yaml(artifacts)
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "expected"),
+    [
+        ("trtllm", "MiniMaxAI/MiniMax-M3", "minimax_m3"),
+        ("trtllm", "nvidia/MiniMax-M3-NVFP4", "minimax_m3"),
+        ("trtllm", "deepseek-ai/DeepSeek-V3", None),
+        ("sglang", "MiniMaxAI/MiniMax-M3", None),
+    ],
+)
+def test_algorithm_prescription_is_architecture_keyed_and_trtllm_only(backend, model, expected):
+    from aisimulate.generator.module_bridge import _msa_sparse_algorithm
+
+    assert _msa_sparse_algorithm(_FakeTask(backend, model, "h200_sxm")) == expected
+
+
+def test_naive_generator_carries_the_algorithm_on_every_system():
+    from aisimulate.generator.naive import build_naive_generator_params
+
+    for system in ("b200_sxm", "h200_sxm"):
+        params = build_naive_generator_params(
+            model_name="MiniMaxAI/MiniMax-M3", total_gpus=8, system_name=system, backend_name="trtllm", mode="agg"
+        )
+        assert params["ModelConfig"]["msa_sparse_algorithm"] == "minimax_m3"

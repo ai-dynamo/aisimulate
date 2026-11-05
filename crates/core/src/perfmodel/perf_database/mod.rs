@@ -23,11 +23,11 @@ use crate::operators::util_empirical::{DeltaLookupCache, ProvenanceTier, UtilGri
 
 /// The five known legacy/framework-agnostic backend directory names. Mirrors the
 /// SDK loader's `KNOWN_BACKEND_DIRS`
-/// (`python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py`): any other
+/// (`python/aisimulate/src/aisimulate_core/sdk/perf_database.py`): any other
 /// first-level directory under a system's data dir is a family dir containing
 /// `<backend>/<version>` subtrees.
 /// Keep textually identical to the CANONICAL `_KNOWN_BACKEND_DIRS` in
-/// `python/aisimulate/src/aiconfigurator_core/sdk/operations/base.py`, which lists
+/// `python/aisimulate/src/aisimulate_core/sdk/operations/base.py`, which lists
 /// every copy that must stay in sync (Rust cannot import the Python set).
 const KNOWN_BACKEND_DIRS: [&str; 5] = ["trtllm", "sglang", "vllm", "nccl", "oneccl"];
 
@@ -50,8 +50,9 @@ pub(crate) fn resolve_op_sources(
 /// function of the load identity + policy; a fixed map renders its full
 /// contents. `\x1f` (unit separator) keeps boundaries unambiguous; non-UTF-8
 /// paths degrade lossily instead of failing.
-/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`].
-type SharedTablesMemo = Mutex<HashMap<String, Weak<PerfTables>>>;
+/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`],
+/// keeping the systems root each entry was loaded from.
+type SharedTablesMemo = Mutex<HashMap<String, (PathBuf, Weak<PerfTables>)>>;
 
 fn shared_tables_key(
     systems_root: &Path,
@@ -59,12 +60,47 @@ fn shared_tables_key(
     backend: &str,
     version: &str,
     resolver: &SourceResolver,
+    fpm_parquet_path: Option<&Path>,
 ) -> String {
     format!(
-        "{}\x1f{system}\x1f{backend}\x1f{version}\x1f{}",
+        "{}\x1f{system}\x1f{backend}\x1f{version}\x1f{}\x1f{}",
         systems_root.display(),
-        resolver.identity_key()
+        resolver.identity_key(),
+        fpm_parquet_path.map_or_else(String::new, |path| path.display().to_string())
     )
+}
+
+fn global_shared_tables() -> &'static SharedTablesMemo {
+    static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
+    SHARED_TABLES.get_or_init(Default::default)
+}
+
+/// Stop sharing the tables loaded for `system` from `systems_root`, under any
+/// spelling of that directory, except `keep`. Databases that hold them keep
+/// them; the next shared load parses the files again. A state snapshot
+/// fingerprints the data before its estimator loads it, so the estimator must
+/// not adopt tables that another engine parsed before that fingerprint.
+pub(crate) fn unshare_tables(systems_root: &Path, system: &str, keep: &[Arc<PerfTables>]) {
+    unshare_tables_in(global_shared_tables(), systems_root, system, keep);
+}
+
+fn unshare_tables_in(
+    memo: &SharedTablesMemo,
+    systems_root: &Path,
+    system: &str,
+    keep: &[Arc<PerfTables>],
+) {
+    let identity = |path: &Path| std::fs::canonicalize(path).or_else(|_| std::path::absolute(path));
+    let Ok(target) = identity(systems_root) else {
+        return;
+    };
+    memo.lock().unwrap().retain(|_, (root, tables)| {
+        tables.upgrade().is_some_and(|tables| {
+            tables.system != system
+                || identity(root).map_or(true, |root| root != target)
+                || keep.iter().any(|kept| Arc::ptr_eq(kept, &tables))
+        })
+    });
 }
 
 /// Whether a version dir is excluded from data loading wholesale: a legacy
@@ -188,9 +224,11 @@ mod axis_curve;
 pub mod communication;
 pub mod dsa;
 pub mod dsv4;
+pub mod dsv41;
 pub mod dsv4_megamoe;
 pub mod fpm_forward;
 pub mod gemm;
+pub mod glm53flash;
 mod interpolation;
 pub mod mhc;
 pub mod mla;
@@ -213,8 +251,10 @@ pub use dsa::DsaTable;
 #[allow(unused_imports)]
 pub use dsv4::{AttnKind, Dsv4Table};
 pub use dsv4_megamoe::Dsv4MegaMoeTable;
+pub use dsv41::Dsv41Table;
 pub use fpm_forward::FpmForwardTable;
 pub use gemm::GemmTable;
+pub use glm53flash::Glm53AttentionTable;
 pub use mhc::MhcTable;
 pub use mla::MlaTable;
 pub use moe::MoeTable;
@@ -247,6 +287,9 @@ pub struct PerfTables {
     pub dsa: DsaTable,
     pub msa: MsaTable,
     pub dsv4: Dsv4Table,
+    pub dsv41: Dsv41Table,
+    /// GLM-5.3-Flash sparse-MLA attention module (exact runtime only).
+    pub glm53_attention: Glm53AttentionTable,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
     pub trtllm_alltoall: TrtllmAlltoallTable,
@@ -322,7 +365,7 @@ impl PerfDatabase {
     /// Resolve and parse the system YAML, locate the per-version data
     /// directory, and construct lazy table owners.
     ///
-    /// `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems`. `system` is a
+    /// `systems_root` points at `python/aisimulate/src/aisimulate_core/systems`. `system` is a
     /// basename like `b200_sxm`. `backend` is `vllm` / `sglang` / `trtllm`.
     /// `version` is the backend version directory name (e.g. `0.24.0`).
     pub fn load(
@@ -387,6 +430,7 @@ impl PerfDatabase {
             version,
             Arc::new(SourceResolver::fixed(perf_db_sources.clone())),
             tolerate_missing_data,
+            None,
         )
     }
 
@@ -443,6 +487,7 @@ impl PerfDatabase {
             version,
             Arc::new(SourceResolver::live(ctx)),
             tolerate_missing_data,
+            None,
         )
     }
 
@@ -453,6 +498,7 @@ impl PerfDatabase {
         version: &str,
         resolver: Arc<SourceResolver>,
         tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
         let system_yaml = systems_root.join(format!("{system}.yaml"));
         let spec = SystemSpec::load(&system_yaml)?;
@@ -464,7 +510,10 @@ impl PerfDatabase {
         // the known legacy backend names). `data_root` stays the legacy path
         // either way — each table's `resolver.sources_for` call resolves the
         // actual per-file location (legacy or family) independently.
+        // External FPM cells do not need op data. This allowance is separate
+        // from estimate-only tolerance, so external tables remain memoized.
         if !tolerate_missing_data
+            && fpm_parquet_path.is_none()
             && !data_root.is_dir()
             && !has_family_backend_version(&system_data_root, backend, version)
         {
@@ -521,8 +570,14 @@ impl PerfDatabase {
                 oneccl_root,
                 &resolver,
             )?,
-            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?,
+            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?.with_backend(backend),
             dsv4: Dsv4Table::with_sources(data_root.clone(), &resolver)?,
+            // Exact backend/version only: V41 module provenance must not be
+            // inherited from legacy or sibling runtime measurements.
+            dsv41: Dsv41Table::with_sources(&data_root, &resolver)?,
+            // Exact backend/version only, like V41: GLM attention is never
+            // borrowed from sibling runtimes.
+            glm53_attention: Glm53AttentionTable::with_sources(&data_root, &resolver)?,
             // Single-primary by design: the MegaMoE loader reads one unified
             // path and never the shared-layer source list (see
             // `dsv4_megamoe.rs`) — but that one path IS family-first
@@ -548,7 +603,15 @@ impl PerfDatabase {
             )?,
             // Deliberately NOT shared-layer aware: FPM whole-model data is
             // valid only for its exact backend/version (fpm_forward.rs).
-            fpm_forward: FpmForwardTable::new(data_root.clone(), system, backend, version),
+            fpm_forward: match fpm_parquet_path {
+                Some(path) => FpmForwardTable::from_parquet_path(
+                    path.to_path_buf(),
+                    system,
+                    backend,
+                    version,
+                )?,
+                None => FpmForwardTable::new(data_root.clone(), system, backend, version),
+            },
             system_spec: spec,
             // Kept for the table-view folds (`table_view.rs`), which resolve
             // every basename themselves — including the wideep/deepep files
@@ -587,9 +650,7 @@ impl PerfDatabase {
         strict_provenance: bool,
         tolerate_missing_data: bool,
     ) -> Result<Self, AicError> {
-        static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
-        Self::load_resolved_shared_in(
-            SHARED_TABLES.get_or_init(Default::default),
+        Self::load_resolved_shared_with_fpm(
             systems_root,
             system,
             backend,
@@ -597,6 +658,34 @@ impl PerfDatabase {
             enable_shared_layer,
             strict_provenance,
             tolerate_missing_data,
+            None,
+        )
+    }
+
+    /// [`Self::load_resolved_shared`] with an optional external FPM parquet.
+    /// The path is part of the shared-table cache identity, so two engines
+    /// using different FPM artifacts cannot share the wrong loaded table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_resolved_shared_with_fpm(
+        systems_root: &Path,
+        system: &str,
+        backend: &str,
+        version: &str,
+        enable_shared_layer: bool,
+        strict_provenance: bool,
+        tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
+    ) -> Result<Self, AicError> {
+        Self::load_resolved_shared_in(
+            global_shared_tables(),
+            systems_root,
+            system,
+            backend,
+            version,
+            enable_shared_layer,
+            strict_provenance,
+            tolerate_missing_data,
+            fpm_parquet_path,
         )
     }
 
@@ -616,20 +705,40 @@ impl PerfDatabase {
         enable_shared_layer: bool,
         strict_provenance: bool,
         tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
+        // Pin external data before memo lookup and lazy loading. The same
+        // relative spelling can name different pairs after a cwd change.
+        let fpm_parquet_path = fpm_parquet_path
+            .map(|path| {
+                std::path::absolute(path).map_err(|source| AicError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            })
+            .transpose()?;
+        let fpm_parquet_path = fpm_parquet_path.as_deref();
         if tolerate_missing_data {
             // Estimate-only loads bypass the memo entirely: caching a set of
             // empty tables under the plain identity key would let a later
             // STRICT load of the same identity silently succeed with empty
             // tables instead of raising the loud missing-directory error.
-            return Self::load_resolved(
+            let ctx = Self::resolve_ctx(
                 systems_root,
                 system,
                 backend,
                 version,
                 enable_shared_layer,
                 strict_provenance,
+            );
+            return Self::load_with_resolver(
+                systems_root,
+                system,
+                backend,
+                version,
+                Arc::new(SourceResolver::live(ctx?)),
                 true,
+                fpm_parquet_path,
             );
         }
         let ctx = Self::resolve_ctx(
@@ -641,14 +750,37 @@ impl PerfDatabase {
             strict_provenance,
         )?;
         let resolver = Arc::new(SourceResolver::live(ctx));
-        let key = shared_tables_key(systems_root, system, backend, version, &resolver);
-        if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
+        let key = shared_tables_key(
+            systems_root,
+            system,
+            backend,
+            version,
+            &resolver,
+            fpm_parquet_path,
+        );
+        if let Some(tables) = memo
+            .lock()
+            .unwrap()
+            .get(&key)
+            .and_then(|(_, tables)| tables.upgrade())
+        {
             return Ok(Self::from_tables(tables));
         }
-        let db = Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
+        let db = Self::load_with_resolver(
+            systems_root,
+            system,
+            backend,
+            version,
+            resolver,
+            false,
+            fpm_parquet_path,
+        )?;
         let mut map = memo.lock().unwrap();
-        map.retain(|_, weak| weak.strong_count() > 0);
-        map.insert(key, Arc::downgrade(&db.tables));
+        map.retain(|_, (_, tables)| tables.strong_count() > 0);
+        map.insert(
+            key,
+            (systems_root.to_path_buf(), Arc::downgrade(&db.tables)),
+        );
         Ok(db)
     }
 
@@ -667,9 +799,8 @@ impl PerfDatabase {
         }
     }
 
-    /// The shared tables `Arc` (the load identity of the underlying data).
-    /// Exposed for the engine layer's table-sharing tests.
-    #[cfg(test)]
+    /// The shared tables `Arc` (the load identity of the underlying data),
+    /// for state snapshots that track which tables they verified.
     pub(crate) fn tables_arc(&self) -> &Arc<PerfTables> {
         &self.tables
     }
@@ -685,6 +816,17 @@ impl PerfDatabase {
     /// MSA cross-op "xop", ...).
     pub fn note_provenance(&self, tier: ProvenanceTier) {
         self.provenance.fetch_max(tier as u8, Ordering::Relaxed);
+    }
+
+    /// Clear the accumulator back to `Silicon`, returning the tier it held.
+    /// Noting that tier again afterwards leaves the accumulator as if it had
+    /// never been cleared, so a caller can observe the tiers one computation
+    /// fires.
+    pub(crate) fn take_provenance(&self) -> ProvenanceTier {
+        ProvenanceTier::from_rank(
+            self.provenance
+                .swap(ProvenanceTier::Silicon as u8, Ordering::Relaxed),
+        )
     }
 
     /// Clear the accumulator back to `Silicon` (start of a run).
@@ -769,8 +911,8 @@ impl PerfDatabase {
 /// ```text
 /// cd <repo> && uv run python - <<'PY'
 /// import pandas as pd, yaml, tempfile, os
-/// from aiconfigurator_core.sdk.perf_database import PerfDatabase
-/// from aiconfigurator_core.sdk import common
+/// from aisimulate_core.sdk.perf_database import PerfDatabase
+/// from aisimulate_core.sdk import common
 /// root = tempfile.mkdtemp(); data = os.path.join(root, "data", "vllm", "1.0")
 /// os.makedirs(data)
 /// yaml.safe_dump({...the testsys spec below...},
@@ -852,6 +994,7 @@ pub(crate) mod energy_test_fixtures {
         SystemSpec {
             data_dir: "data".into(),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 7.7e12,
                 mem_bw_empirical_scaling_factor: 0.92,
                 mem_empirical_constant_latency: 2e-6,
@@ -910,13 +1053,14 @@ misc:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn systems_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     #[test]
@@ -940,6 +1084,107 @@ mod tests {
     }
 
     #[test]
+    fn b200_trtllm_rc20_power_reaches_gemm_query() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let value = db
+            .gemm
+            .query(GemmQuantMode::Bfloat16, 16_384, 65_536, 51_200)
+            .expect("the shipped measured GEMM identity must be queryable");
+
+        assert!(value.latency > 0.0);
+        assert!(value.power > 0.0);
+        assert_eq!(
+            value.energy.to_bits(),
+            (value.power * value.latency).to_bits()
+        );
+    }
+
+    #[test]
+    fn b200_trtllm_rc20_attention_power_sentinels_reach_queries() {
+        let db = PerfDatabase::load(&systems_root(), "b200_sxm", "trtllm", "1.3.0rc20")
+            .expect("b200_sxm/trtllm/1.3.0rc20 must load");
+        let lanes = vec!["torch_flow".to_string()];
+
+        let measured_context = db
+            .attention
+            .query_context(
+                &lanes,
+                4,
+                16_384,
+                96,
+                96,
+                64,
+                0,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+            )
+            .expect("the shipped measured context-attention identity must be queryable");
+        let sentinel_context = db
+            .attention
+            .query_context(
+                &lanes,
+                64,
+                2_048,
+                64,
+                1,
+                256,
+                0,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Fp8,
+            )
+            .expect("the shipped sentinel context-attention identity must be queryable");
+        assert!(measured_context.power > 0.0);
+        assert!(measured_context.energy > 0.0);
+        assert_eq!(sentinel_context.power.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(sentinel_context.energy.to_bits(), 0.0_f64.to_bits());
+
+        let measured_generation = db
+            .attention
+            .query_generation(&lanes, 32, 2, 64, 64, 64, 0, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped measured generation-attention identity must be queryable");
+        let sentinel_generation = db
+            .attention
+            .query_generation(&lanes, 32, 3, 32, 2, 128, 2_048, KvCacheQuantMode::Bfloat16)
+            .expect("the shipped sentinel generation-attention identity must be queryable");
+        assert!(measured_generation.energy > 0.0);
+        assert_eq!(sentinel_generation.energy.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn external_fpm_load_does_not_require_a_backend_version_directory() {
+        use super::fpm_forward::tests::{default_identity, default_rows, write_pair};
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .expect("copy system yaml");
+        let external_dir = tmp.path().join("downloaded");
+        std::fs::create_dir_all(&external_dir).expect("create external dir");
+        let parquet = write_pair(&external_dir, &default_rows());
+
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
+            tmp.path(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+            false,
+            false,
+            false,
+            Some(&parquet),
+        )
+        .expect("external FPM should load without in-repository perf data");
+
+        assert!(
+            db.fpm_forward
+                .select_cell(&default_identity(4), "org/model-a", None)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn shared_load_reuses_tables_and_isolates_view_state() {
         // A PRIVATE memo: against the process-global one this assertion is
         // flaky under parallel `cargo test` — other tests loading the same
@@ -956,6 +1201,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         )
         .expect("shared load must succeed");
         let db2 = PerfDatabase::load_resolved_shared_in(
@@ -967,6 +1213,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         )
         .expect("shared load must succeed");
         assert!(
@@ -980,6 +1227,40 @@ mod tests {
         assert_eq!(db2.worst_provenance(), ProvenanceTier::Silicon);
         assert!(!Arc::ptr_eq(&db1.util_grids, &db2.util_grids));
         assert!(!Arc::ptr_eq(&db1.delta_lookups, &db2.delta_lookups));
+    }
+
+    #[test]
+    fn unsharing_a_root_under_another_spelling_reloads_only_that_system() {
+        let memo = SharedTablesMemo::default();
+        let load = |system: &str| {
+            PerfDatabase::load_resolved_shared_in(
+                &memo,
+                &systems_root(),
+                system,
+                "vllm",
+                "0.24.0",
+                false,
+                false,
+                false,
+                None,
+            )
+            .expect("shared load must succeed")
+        };
+        let (b200, h200) = (load("b200_sxm"), load("h200_sxm"));
+        // `systems_root()` is spelled with `..`; the canonical path is the same root.
+        let canonical = std::fs::canonicalize(systems_root()).unwrap();
+        unshare_tables_in(&memo, &canonical, "b200_sxm", &[]);
+        let reloaded = load("b200_sxm");
+        assert!(!Arc::ptr_eq(&reloaded.tables, &b200.tables));
+        assert!(Arc::ptr_eq(&load("h200_sxm").tables, &h200.tables));
+        // Kept tables stay shared.
+        unshare_tables_in(
+            &memo,
+            &canonical,
+            "b200_sxm",
+            &[Arc::clone(&reloaded.tables)],
+        );
+        assert!(Arc::ptr_eq(&load("b200_sxm").tables, &reloaded.tables));
     }
 
     #[test]

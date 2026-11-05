@@ -17,14 +17,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends import base_backend as base_backend_module
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.models.vit_ops import build_kimi_k3_encoder_ops
-from aiconfigurator.sdk.perf_database import get_database_view
-from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends import base_backend as base_backend_module
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.vit_ops import build_kimi_k3_encoder_ops
+from aisimulate.sdk.perf_database import get_database_view
+from aisimulate.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -93,7 +93,7 @@ def test_kimi_config_additions_preserve_existing_positional_constructors(config_
 @pytest.mark.parametrize("language_only", [False, True])
 @pytest.mark.parametrize("value", ["missing", None, 0, -1, False, 1.5, "4"])
 def test_kimi_k3_rejects_invalid_temporal_limit_before_building_encoder(monkeypatch, language_only, value):
-    from aiconfigurator_core.sdk import models as models_module
+    from aisimulate_core.sdk import models as models_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     if value == "missing":
@@ -570,7 +570,7 @@ def test_kimi_processor_geometry_reaches_context_and_encoder(kimi_k3_model, heig
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("layout", ["native", "legacy-top-level", "legacy-nested"])
 def test_checkpoint_processor_limits_reach_runtime(tmp_path, monkeypatch, remote, layout):
-    from aiconfigurator_core.sdk import utils as utils_module
+    from aisimulate_core.sdk import utils as utils_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     if layout == "native":
@@ -684,7 +684,7 @@ def test_kimi_processor_rejects_different_effective_native_side_limits(processor
 def test_loaded_native_side_override_cannot_change_other_processor_default(
     tmp_path, monkeypatch, remote, image_processor, video_processor
 ):
-    from aiconfigurator_core.sdk import utils as utils_module
+    from aisimulate_core.sdk import utils as utils_module
 
     raw = deepcopy(get_model_config_from_model_path("moonshotai/Kimi-K3")["raw_config"])
     files = {

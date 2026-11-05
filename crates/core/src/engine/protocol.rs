@@ -6,7 +6,63 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{HandoffId, HandoffTransferTiming};
+use super::{G2Scope, HandoffId, HandoffTransferTiming};
+
+/// Encoder work behind one image, as the checkpoint's processor lays it out.
+///
+/// An image becomes `sequences` independent encoder sequences (tiles, or one
+/// for a dynamic-resolution tower) that attention never crosses; the token
+/// counts are per sequence. The placeholder span an image occupies in the
+/// prompt can exceed `sequences * output_tokens` by structural tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence.
+    pub output_tokens: u32,
+}
+
+/// One image placeholder span and the encoder shape behind it.
+///
+/// `token_start..token_end` is the half-open placeholder interval inside the
+/// prompt; its length is the image's visual token count. `identity` keys the
+/// vision embedding cache and repeats only when the workload reuses an image.
+/// `embedding_bytes` is the encoder output retained by the embedding cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSpec {
+    pub identity: u64,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub encoder: EncoderShape,
+    pub embedding_bytes: u64,
+}
+
+impl ImageSpec {
+    /// Placeholder tokens occupied by this image.
+    pub fn visual_tokens(&self) -> usize {
+        self.token_end - self.token_start
+    }
+
+    /// Whether the placeholder interval intersects the half-open `start..end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.token_start < end && start < self.token_end
+    }
+}
+
+/// Rank named by a router's `kv.fetch` hint as the holder of a prompt prefix.
+///
+/// It stands in for the hint's `source_control_endpoint`, which identifies one
+/// worker and attention-DP rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KvHintSource {
+    /// Logical worker owning the source rank.
+    pub worker_id: u64,
+    /// Attention-DP rank within that worker.
+    pub dp_rank: u32,
+}
 
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,8 +74,20 @@ pub struct Request {
     /// Requested output length.
     pub max_output_tokens: usize,
     /// Optional exact output IDs. Its length overrides `max_output_tokens`.
+    /// When absent, each output token is derived from `request_id` and its
+    /// output position, so reusing a request ID reproduces the same stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Optional session attribution; does not affect scheduling or cache identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
+    /// Optional router hint naming another rank that may hold a prefix of
+    /// `tokens`. Never the receiving rank itself. Engines without KVCR ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hint: Option<KvHintSource>,
 }
 
 /// Commands supported by the standalone scheduler.
@@ -86,6 +154,26 @@ pub enum LifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
+    /// A host-aware scheduler reached a scheduler-thread stage for one request.
+    TtftMilestone {
+        request_id: Uuid,
+        stage: TtftMilestone,
+        at_ms: f64,
+    },
+}
+
+/// Scheduler-thread stages reported by a host-aware scheduler for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtftMilestone {
+    /// Left the frontend worker pools; delivered to the scheduler process.
+    FrontendReady,
+    /// Drained from the scheduler inbox at an iteration start.
+    Received,
+    /// Selected into its first batch.
+    Selected,
+    /// The forward that finished its prompt completed on the device.
+    PrefillComplete,
 }
 
 /// One runtime-neutral KV block identity.
@@ -107,13 +195,18 @@ pub struct StoredBlocks {
     pub parent_hash: Option<u64>,
     /// Optional absolute zero-based position of the first block.
     ///
-    /// `None` preserves the parent-linked stream emitted by the native
+    /// `None` preserves the parent-linked device stream emitted by the native
     /// schedulers; adapters must not invent an absolute position because that
     /// changes how downstream radix indexes reconcile stores and removals.
+    /// `HostPinned` events carry the prompt block index, because shared-pool
+    /// residency can land a child before its parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_position: Option<usize>,
     /// Blocks in sequence order.
     pub blocks: Vec<KvBlock>,
+    /// Session of the request making these blocks visible, not exclusive ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Runtime-neutral KV event payload.
@@ -126,6 +219,24 @@ pub enum KvEventData {
     Removed { block_hashes: Vec<u64> },
 }
 
+/// Cache tier whose residency a [`KvEvent`] describes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KvEventTier {
+    /// Device (G1) KV cache. Omitted from serialized events.
+    #[default]
+    Device,
+    /// The native G2 host cache reachable by the publishing rank: its private
+    /// `dp_rank_local` cache or a `cluster_shared` pool.
+    HostPinned,
+}
+
+impl KvEventTier {
+    fn is_device(&self) -> bool {
+        *self == Self::Device
+    }
+}
+
 /// Ordered runtime-neutral KV event emitted by one rank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvEvent {
@@ -135,6 +246,9 @@ pub struct KvEvent {
     pub dp_rank: u32,
     /// Event payload.
     pub data: KvEventData,
+    /// Residency tier; absent means [`KvEventTier::Device`].
+    #[serde(default, skip_serializing_if = "KvEventTier::is_device")]
+    pub tier: KvEventTier,
 }
 
 /// First-admission provenance for prompt tokens reused across cache tiers.
@@ -232,8 +346,14 @@ pub struct Metrics {
     /// currently populated by vLLM; SGLang reports zero because its legacy
     /// occupied count already includes radix-resident pages.
     pub inactive_blocks: u64,
+    /// Zero for grouped caches: heterogeneous page sizes have no single
+    /// block capacity. Use `kv_cache_capacity_bytes` in that case.
     pub total_blocks: u64,
-    /// `active_blocks / total_blocks`, with backend-native semantics above.
+    /// Physical grouped-cache occupancy, including scheduled chunk storage.
+    pub kv_cache_used_bytes: Option<u64>,
+    /// Physical grouped-cache capacity; absent for the legacy linear pool.
+    pub kv_cache_capacity_bytes: Option<u64>,
+    /// Byte occupancy for grouped caches; otherwise `active_blocks / total_blocks`.
     pub cache_usage: f64,
     /// Physical resident fraction. This includes inactive reusable vLLM blocks
     /// and equals `cache_usage` for SGLang's legacy occupied-page metric.
@@ -289,12 +409,96 @@ pub struct CommandEffects {
     pub suppressed_pending_output: bool,
 }
 
+/// G1 prefix-cache lookup observations at scheduler pass start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PrefixCacheLookupCounts {
+    pub query_count: u64,
+    /// Known sequence tokens submitted to G1 prefix-cache lookup, including
+    /// repeated admission attempts and recomputation after preemption.
+    pub queried_tokens: u64,
+    /// G1 lookup matches before scheduler recomputation clipping or G2
+    /// attribution. These are not first-admission request reuse counters.
+    pub matched_tokens: u64,
+}
+
+impl PrefixCacheLookupCounts {
+    pub(crate) fn checked_add_assign(&mut self, other: Self) -> anyhow::Result<()> {
+        self.query_count = self
+            .query_count
+            .checked_add(other.query_count)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup query counter overflow"))?;
+        self.queried_tokens = self
+            .queried_tokens
+            .checked_add(other.queried_tokens)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup token counter overflow"))?;
+        self.matched_tokens = self
+            .matched_tokens
+            .checked_add(other.matched_tokens)
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup match counter overflow"))?;
+        Ok(())
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        queried_tokens: usize,
+        matched_tokens: usize,
+    ) -> anyhow::Result<()> {
+        self.checked_add_assign(Self {
+            query_count: 1,
+            queried_tokens: queried_tokens as u64,
+            matched_tokens: matched_tokens as u64,
+        })
+    }
+}
+
+/// Physical occupancy of one host-cache ownership domain. Shared pools omit
+/// worker/rank identity and must be sampled only once per deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostCacheMetrics {
+    pub scope: G2Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dp_rank: Option<u32>,
+    pub capacity_blocks: u64,
+    pub resident_blocks: u64,
+    /// Includes reserved transfer destinations that are not resident yet.
+    pub used_blocks: u64,
+    pub capacity_bytes: u64,
+    pub resident_bytes: u64,
+    pub used_bytes: u64,
+}
+
 /// Effects visible as soon as an engine pass starts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassStartEffects {
+    /// Requests selected for this committed pass, including chunked prefill.
+    /// Queue ownership alone does not imply unfinished model work.
+    pub committed_requests: Vec<Uuid>,
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,
+    /// vLLM G1 prefix-cache lookup attempts at this pass's admission boundary.
+    /// Absent for other backends or when prefix caching is disabled. Counters
+    /// alone do not imply model work or scheduler progress.
+    pub g1_prefix_cache_lookup: Option<PrefixCacheLookupCounts>,
+}
+
+/// Decode/verification work contributing to acceptance-length telemetry.
+///
+/// IMPORTANT: Never reconstruct these counters from merged visible outputs.
+/// Prefill's first token is not a decode sample, and stop/output limits can
+/// truncate a verified burst. Count accepted draft tokens plus the base token
+/// BEFORE that truncation, once per request that actually executes decode.
+/// Ordinary non-speculative decode contributes (1, 1) as a simulator baseline.
+///
+/// Upstream accounting references (independently implemented):
+/// - SGLang: https://github.com/sgl-project/sglang/blob/5c8bd8b51b53b9b39eb1edec582ee43b21002106/python/sglang/srt/managers/scheduler_metrics_mixin.py#L80-L82
+/// - vLLM: https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/spec_decode/metrics.py#L113-L114
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeAcceptance {
+    pub accepted_tokens: usize,
+    pub forwards: usize,
 }
 
 /// Effects released at the modeled pass completion boundary.
@@ -306,6 +510,7 @@ pub struct PassCompletionEffects {
     pub kv_events: Vec<KvEvent>,
     pub metrics: Metrics,
     pub forward_pass_metrics: ForwardPassMetrics,
+    pub decode_acceptance: DecodeAcceptance,
 }
 
 /// Retained completion effects of an eagerly executed engine pass.
@@ -313,4 +518,38 @@ pub struct PassCompletionEffects {
 pub struct PendingPass {
     pub(crate) started_at_ms: f64,
     pub(crate) effects: PassCompletionEffects,
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn optional_session_metadata_is_json_compatible() {
+        let request_json = serde_json::json!({"request_id": Uuid::nil(), "tokens": [1, 2], "max_output_tokens": 1});
+        let mut request: Request = serde_json::from_value(request_json).unwrap();
+        assert!(request.session_id.is_none());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("session_id")
+                .is_none()
+        );
+        request.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<Request>(serde_json::to_value(&request).unwrap()).unwrap(),
+            request
+        );
+        let legacy = serde_json::json!({"event_id": 1, "dp_rank": 0, "data": {"stored": {"parent_hash": null, "blocks": []}}});
+        let mut event: KvEvent = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&event).unwrap(), legacy);
+        let KvEventData::Stored(stored) = &mut event.data else {
+            panic!("expected store");
+        };
+        stored.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<KvEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+            event
+        );
+    }
 }

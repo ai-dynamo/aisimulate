@@ -5,7 +5,7 @@
 //! `load_*_data` parsers (PR-6, #1357 phase 3).
 //!
 //! Each `view_*` function here reproduces, row for row, what one Python
-//! loader in `aiconfigurator_core/sdk/operations/*.py` produced before the
+//! loader in `aisimulate_core/sdk/operations/*.py` produced before the
 //! Python data plane was deleted: the same source order (shared-layer
 //! first-wins), the same column reads and casts, the same key layering, the
 //! same derived fields (`energy = power * latency`), and the same INSERTION
@@ -912,12 +912,22 @@ pub fn view_kda(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError> {
 /// `operations/moe.py::load_moe_data` — 9-level
 /// `[moe_dtype][distribution][topk][num_experts][hidden][inter][moe_tp][moe_ep][num_tokens]`,
 /// with `kernel_source == "moe_torch_flow_min_latency"` rows routed to the
-/// low-latency twin table. Returns (default, low_latency).
+/// low-latency twin table. Only default-eligible rows enter these automatic
+/// coverage views; raw parquet enumeration retains every measured row.
+/// Returns (default, low_latency).
 pub fn view_moe(sources: &[PerfSource]) -> Result<Option<(ViewNode, ViewNode)>, AicError> {
     let mut default = ViewNode::branch();
     let mut low_latency = ViewNode::branch();
     let found = fold_sources(sources, |ctx| {
         let r = ctx.reader;
+        if !crate::perf_database::moe::moe_default_eligible(
+            r,
+            ctx.row,
+            r.col_optional("default_eligible"),
+            ctx.ks_col,
+        )? {
+            return Ok(());
+        }
         let num_tokens = ctx.row.u32(r.col("num_tokens")?)?;
         let hidden = ctx.row.u32(r.col("hidden_size")?)?;
         let inter = ctx.row.u32(r.col("inter_size")?)?;
@@ -2304,7 +2314,7 @@ fn merge_dsv4_split(parts: Vec<Option<ViewNode>>) -> Option<ViewNode> {
 
 /// Attribute registry: every table-view attribute [`table_view_json`]'s
 /// dispatch accepts, with the parquet basenames its fold consumes — exported
-/// over the FFI (`aiconfigurator_core.table_view_attributes()`) so the Python
+/// over the FFI (`aisimulate_core.table_view_attributes()`) so the Python
 /// side derives its mirrors from THIS table instead of hand-syncing four
 /// stringly-typed sites (Rust match arms / `VIEW_KEY_LAYERS` / per-class
 /// `load_data` literals / the baseline codec) — the same
@@ -2438,9 +2448,9 @@ pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
 /// The engine-side table view: `attribute` is the PerfDatabase attribute name
 /// the retired Python loader used to fill (`"_gemm_data"`, ...). Returns
 /// `Ok(None)` exactly when that loader returned `None` (every source path
-/// missing), and the loader-shaped nested JSON otherwise. The three DSV4
-/// sparse sub-tables are addressed as
-/// `"_dsv4_sparse_kernel_data.<paged_mqa_logits|hca_attn|csa_attn>"`.
+/// missing), and the loader-shaped nested JSON otherwise. The DSV4 sparse
+/// sub-table is addressed as `"_dsv4_sparse_kernel_data.paged_mqa_logits"`
+/// (the hca_attn / csa_attn sidecars were retired 2026-10-15).
 pub fn table_view_json(tables: &PerfTables, attribute: &str) -> Result<Option<String>, AicError> {
     let src = |basename: &str| {
         tables

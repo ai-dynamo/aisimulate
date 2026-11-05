@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-import aiconfigurator.sdk.common as common
-import aiconfigurator.sdk.operations as ops
-from aiconfigurator.sdk.operations.base import PythonOperation
+import aisimulate.sdk.common as common
+import aisimulate.sdk.operations as ops
+from aisimulate.sdk.operations.base import PythonOperation
 
 pytestmark = pytest.mark.unit
 

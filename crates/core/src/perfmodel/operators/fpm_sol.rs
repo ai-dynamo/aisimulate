@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/fpm_sol.rs
 
 //! SOL-mode op queries for the FPM whole-model roofline.
 //!
@@ -38,6 +40,12 @@
 //!   `:556-559` (always `inter_node_bw`, NO `p2p_latency` under SOL).
 //! - Embedding/ElementWise: `operations/embedding.py:49-62`,
 //!   `elementwise.py:49-66` over the SOL mem-op.
+//! - DSA (DeepSeek sparse attention): `operations/dsa.py`
+//!   `ContextDSAModule`/`GenerationDSAModule` `get_sol`, reused verbatim via
+//!   `perf_database::dsa::{dsa_context_sol_ms, dsa_generation_sol_ms}` rather
+//!   than re-derived here; this module only maps FPM coordinates, blends
+//!   `full_frac` (context only, mirroring `DsaModuleOp::query_context` under
+//!   `DatabaseMode::Sol`), and applies `scale_factor`.
 //!
 //! Known, documented approximation: Python `ElementWise` floors
 //! `x // scale_num_tokens` before converting tokens to bytes; the Rust
@@ -46,16 +54,29 @@
 //! `x % scale_num_tokens != 0`. This is the SAME approximation the silicon
 //! engine-step path already ships; the error is bounded by one token's bytes
 //! and is negligible against the whole-model roofline.
+//!
+//! A second known approximation: the DSA arms round `batch`, `s`, and
+//! `prefix` to `i64` (`b.round().max(1.0) as i64`, see
+//! `dsa_context_module_sol` / `dsa_generation_module_sol`) because
+//! `perf_database::dsa`'s SOL ports take integer coordinates (the triangular
+//! `total_kv_pairs` sum, `perf_database/dsa.rs:824-832`, is integer-only);
+//! the error is bounded by one token per coordinate and only arises when
+//! `batch` does not divide the FPM totals.
 
 use crate::common::enums::{BackendKind, GemmQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::SystemSpec;
+use crate::operators::DsaModuleOp;
 use crate::operators::op::Op;
 use crate::operators::{
     ContextAttentionOp, CustomAllReduceOp, ElementwiseOp, EmbeddingOp, GemmOp,
     GenerationAttentionOp, MoEDispatchOp, MoeOp, NcclOp, P2POp,
 };
 use crate::perf_database::PerfDatabase;
+use crate::perf_database::dsa::{
+    dsa_context_sol_flops, dsa_context_sol_ms, dsa_dims, dsa_generation_sol_flops,
+    dsa_generation_sol_ms,
+};
 
 /// Python float floor-division `a // b`.
 fn floor_div(a: f64, b: f64) -> f64 {
@@ -83,11 +104,67 @@ pub(crate) fn op_sol_latency_ms(
 ) -> Result<f64, AicError> {
     let spec = &db.system_spec;
     match op {
+        Op::TokenScale(o) => {
+            // Reject malformed directly constructed Rust values as well as
+            // serialized input (which validates the widths on deserialize).
+            o.scale_tokens(0)?;
+            let ratio = f64::from(o.numerator) / f64::from(o.denominator);
+            op_sol_latency_ms(&o.op, db, x * ratio, batch * ratio, s, prefix)
+        }
+        Op::MeasuredComposite(_) => Err(AicError::InvalidEngineConfig(
+            "measured composite has no SOL model".into(),
+        )),
         Op::Gemm(o) => Ok(gemm_sol(o, spec, x)),
         Op::Embedding(o) => Ok(embedding_sol(o, spec, x)),
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
+        Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Glm53Primitive(o) => {
+            o.validate()?;
+            let child_x = if o.token_selection == "last_per_request" {
+                batch
+            } else {
+                x
+            };
+            o.children.iter().try_fold(0.0, |sum, child| {
+                Ok(sum + op_sol_latency_ms(child, db, child_x, batch, s, prefix)?)
+            })
+        }
+        Op::Glm53Ffn(o) => {
+            o.validate()?;
+            o.children.iter().try_fold(0.0, |sum, child| {
+                Ok(sum
+                    + match child {
+                        Op::Moe(m) => {
+                            crate::operators::glm53flash::routed_moe_sol(m, spec, x)?.latency_ms
+                        }
+                        _ => op_sol_latency_ms(child, db, x, batch, s, prefix)?,
+                    })
+            })
+        }
+        Op::Glm53Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Glm53Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Glm53Router(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Linear(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Engram(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Stage(o) => {
+            let (stage_s, stage_prefix) = o.scope(s, prefix);
+            let stage_x = if o.is_context { batch * stage_s } else { x };
+            let mut total = 0.0;
+            for inner in &o.children {
+                let child_x = if inner.is_logits_gemm() {
+                    batch
+                } else {
+                    stage_x
+                };
+                total += op_sol_latency_ms(inner, db, child_x, batch, stage_s, stage_prefix)?;
+            }
+            Ok(total)
+        }
+        Op::DsaContext(o) => dsa_context_module_sol(o, db, batch, s, prefix),
+        Op::DsaGeneration(o) => dsa_generation_module_sol(o, db, batch, s),
         Op::Moe(o) => Ok(moe_sol(o, spec, x)),
         Op::MoeDispatch(o) => moe_dispatch_sol(o, spec, x),
         Op::CustomAllReduce(o) => Ok(custom_allreduce_op_sol(o, spec, x)),
@@ -243,22 +320,39 @@ fn context_attention_sol(
     }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
-    (fmha + extra * 1.1) * op.scale_factor
+    // Decode CP on the same engine: all-gather the cached-context KV stripes
+    // (per-rank K+V of `p` tokens, comm half-elements) over the DCP group.
+    let gather = if op.dcp_size > 1 && p > 0.0 {
+        let kv_elems =
+            2.0 * (op.n_kv * op.head_size) as f64 * op.kv_cache_dtype.mapping().memory / 2.0;
+        nccl_sol(spec, op.dcp_size, "all_gather", b * p * kv_elems, 2.0)
+    } else {
+        0.0
+    };
+    (fmha + extra * 1.1 + gather) * op.scale_factor
 }
 
 /// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
 /// is no 5-sample smoothing and no prefix in SOL mode.
 fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f64, s: f64) -> f64 {
+    // Decode CP: the kernel sees the DCP group's `n * dcp` gathered query
+    // heads over this rank's `ceil(s / dcp)` KV stripe (op-level
+    // `GenerationAttentionOp::dcp_size` docs); the Q/K norm extra below stays
+    // on the rank-local heads because it runs before the query gather.
+    let dcp = op.dcp_size.max(1) as f64;
     let (n, n_kv, h, w) = (
-        op.n as f64,
+        op.n as f64 * dcp,
         op.n_kv as f64,
         op.head_size as f64,
         op.window_size as f64,
     );
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
+    // The stripe holds every dcp-th position, so a sliding window of `w`
+    // occupies ~`w / dcp` local tokens.
     let kv_len = if op.window_size > 0 {
-        (s - 1.0).min(w)
+        (s_local - 1.0).min(ceil_div(w, dcp))
     } else {
-        s - 1.0
+        s_local - 1.0
     };
     // fp8 KV -> fp8 compute; everything else (incl. int8 KV) -> bf16 compute.
     let compute = if op.kv_cache_dtype == crate::common::enums::KvCacheQuantMode::Fp8 {
@@ -274,13 +368,156 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
     let mut latency = sol_math.max(sol_mem);
     if op.use_qk_norm {
-        let q_num = n * h;
+        let q_num = op.n as f64 * h;
         let k_num = n_kv * h;
         let qk_norm =
             2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
         latency += qk_norm * 2.0 * 1.1;
     }
     latency * op.scale_factor
+}
+
+/// Whole-forward SOL leaf for the DSA context module (`Op::DsaContext`). Reuses the
+/// op-level DSA roofline exactly as `operators::dsa::query_context_table` does under
+/// `DatabaseMode::Sol`: `dsa_context_sol_ms` with the op's dims, top-k and quant modes,
+/// blended between the full and skip-indexer variants by the configured `full_frac`
+/// (SOL mode weights by `full_frac` directly, without probing the skip table), then
+/// `scale_factor`. FPM hands per-request coordinates as f64 (`s = total_prefill / batch`,
+/// `prefix = total_kv / batch`); the roofline takes integers, so they are rounded.
+/// DSA context parallelism composes latency-only table deltas in the op-level path
+/// and has no roofline, so it stays a typed `SolNotImplemented`, and a `full_frac`
+/// outside `[0, 1]` a typed `InvalidEngineConfig`.
+fn dsa_context_module_sol(
+    op: &DsaModuleOp,
+    db: &PerfDatabase,
+    b: f64,
+    s: f64,
+    p: f64,
+) -> Result<f64, AicError> {
+    if op.cp_size > 1 {
+        return Err(AicError::SolNotImplemented(format!(
+            "forward_model='fpm' SOL roofline has no Rust implementation for DSA context \
+             parallelism (cp_size={}) on op {}",
+            op.cp_size, op.name
+        )));
+    }
+    let spec = &db.system_spec;
+    let dims = dsa_dims(&op.architecture);
+    let flops = dsa_context_sol_flops(spec, op.gemm_quant_mode, op.fmha_quant_mode)?;
+    let (b, s, p) = (
+        b.round().max(1.0) as i64,
+        s.round().max(1.0) as i64,
+        p.round().max(0.0) as i64,
+    );
+    let sol = |skip_indexer: bool| {
+        dsa_context_sol_ms(
+            spec,
+            dims,
+            op.index_topk as i64,
+            op.kv_cache_dtype,
+            op.fmha_quant_mode,
+            op.gemm_quant_mode,
+            b,
+            s,
+            p,
+            op.num_heads as i64,
+            skip_indexer,
+            db.dsa.reuse_sol_policy,
+            flops,
+        )
+    };
+    // `full_frac` is a fraction of layers (Python `dsa_full_layer_fraction`), copied
+    // verbatim by the `py_ops` constructors and defaulted — never validated — on the
+    // wire, so a bad value first becomes observable here, and every way it lands is
+    // a plausible-looking wrong number rather than a failure: w < 0 extrapolates
+    // BELOW both legs, w > 1 and +inf are silently swallowed by the `w >= 1.0`
+    // short-circuit, and NaN / -inf are laundered into 0.0 by the `max(0.0)` floor —
+    // a free attention module. Reject instead of clamping: a clamp would price a
+    // misconfigured model as if it had been configured correctly. `contains` is
+    // false for NaN and for both infinities, so this one gate covers them all.
+    let w = op.full_frac;
+    if !(0.0..=1.0).contains(&w) {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "DSA context op {} has dsa_full_layer_fraction={w}, which is not a fraction \
+             in [0, 1]; the full/skip SOL blend is undefined outside that range",
+            op.name
+        )));
+    }
+    let ms = if w >= 1.0 {
+        sol(false)
+    } else {
+        w * sol(false) + (1.0 - w) * sol(true)
+    };
+    // Decode CP on the same engine: all-gather the cached latent-KV stripes plus
+    // the indexer K cache weighted by the full-indexer fraction (mirrors
+    // `DsaModuleOp::query_context`'s `dcp_context_gather`).
+    let gather = if op.dcp_size > 1 && p > 0 {
+        let kv_elems = crate::operators::dsa::dsa_cached_context_gather_elems(op.kv_cache_dtype, w);
+        nccl_sol(
+            spec,
+            op.dcp_size,
+            "all_gather",
+            b as f64 * p as f64 * kv_elems,
+            2.0,
+        )
+    } else {
+        0.0
+    };
+    Ok((ms.max(0.0) + gather) * op.scale_factor)
+}
+
+/// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
+/// op-level decode roofline (`dsa_generation_sol_ms`; the attention group is bf16),
+/// blended over full/reuse layers for vLLM/SGLang, then `scale_factor`. Other serving
+/// backends retain the legacy full-indexer approximation.
+fn dsa_generation_module_sol(
+    op: &DsaModuleOp,
+    db: &PerfDatabase,
+    b: f64,
+    s: f64,
+) -> Result<f64, AicError> {
+    let spec = &db.system_spec;
+    let dims = dsa_dims(&op.architecture);
+    let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
+    // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
+    // heads over this rank's KV stripe, sparse attention over the rank's
+    // `ceil(topk / dcp)` owned slots.
+    let dcp = op.dcp_size.max(1) as f64;
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
+    // vLLM and SGLang use reuse-aware decode SOL; other serving backends retain
+    // the previous full-indexer approximation without an extra blend.
+    let w = if matches!(db.backend.as_str(), "vllm" | "sglang") {
+        op.full_frac
+    } else {
+        1.0
+    };
+    if !(0.0..=1.0).contains(&w) {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "DSA generation op {} has dsa_full_layer_fraction={w}, which is not a fraction in [0, 1]",
+            op.name
+        )));
+    }
+    let sol = |skip_indexer| {
+        dsa_generation_sol_ms(
+            spec,
+            dims,
+            op.kv_cache_dtype,
+            op.gemm_quant_mode,
+            b.round().max(1.0) as i64,
+            s_local.round().max(1.0) as i64,
+            (op.num_heads as f64 * dcp) as i64,
+            dcp as i64,
+            skip_indexer,
+            db.dsa.reuse_sol_policy,
+            flops,
+        )
+    };
+    let ms = if w >= 1.0 {
+        sol(false)
+    } else {
+        w * sol(false) + (1.0 - w) * sol(true)
+    };
+    Ok(ms.max(0.0) * op.scale_factor)
 }
 
 /// moe.py:297-325: MoE SOL with the activated-expert clamp. The `//` sites
@@ -517,13 +754,13 @@ mod tests {
     /// intra_node_bw 8.1e11, inter_node_bw 4e10 (systems/b200_sxm.yaml).
     fn spec() -> SystemSpec {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("../../python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         SystemSpec::load(&root).expect("b200 spec")
     }
 
     fn db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems");
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db")
     }
 
@@ -534,10 +771,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn v41_stage_roofline_retains_fractional_tokens_and_bounds_only_prefill() {
+        use crate::operators::{Dsv41MhcOp, Dsv41StageOp};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        let db = PerfDatabase::load(&root, "gb200", "vllm", "0.19.0").expect("GB200 db");
+        let leaf = Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 32,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        let mut stage = Dsv41StageOp {
+            name: "decoder".into(),
+            is_context: true,
+            decoder_replay: true,
+            bounded: true,
+            window_size: 128,
+            children: vec![Op::Dsv41Mhc(leaf.clone())],
+        };
+        // One balanced iteration has 385 new tokens over three requests;
+        // replay executes 128 each, while a short fractional extend stays short.
+        approx(
+            op_sol_latency_ms(
+                &Op::Dsv41Stage(stage.clone()),
+                &db,
+                385.0,
+                3.0,
+                385.0 / 3.0,
+                17.5,
+            )
+            .unwrap(),
+            leaf.sol(&db.system_spec, 384.0).unwrap().latency_ms,
+        );
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage.clone()), &db, 2.5, 1.0, 2.5, 17.5).unwrap(),
+            leaf.sol(&db.system_spec, 2.5).unwrap().latency_ms,
+        );
+        stage.is_context = false;
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage), &db, 3.0, 3.0, 2048.0, 0.0).unwrap(),
+            leaf.sol(&db.system_spec, 3.0).unwrap().latency_ms,
+        );
+    }
+
     /// Python oracle:
     /// PYTHONPATH=aic-core/src python3 -c "
-    /// from aiconfigurator_core.sdk import perf_database, common
-    /// from aiconfigurator_core.sdk.operations.gemm import GEMM
+    /// from aisimulate_core.sdk import perf_database, common
+    /// from aisimulate_core.sdk.operations.gemm import GEMM
     /// view = perf_database.get_database_view('b200_sxm','vllm','0.19.0',database_mode='SOL',allow_missing_data=True)
     /// op = GEMM('qkv_gemm', 1.0, 4096, 4096, common.GEMMQuantMode.nvfp4)
     /// print(repr(float(op.query(view, x=8192.0, batch_size=4, beam_width=1, s=2048.0, prefix=0.0))))"
@@ -600,8 +883,8 @@ mod tests {
 
     /// Python oracle:
     /// PYTHONPATH=aic-core/src python3 -c "
-    /// from aiconfigurator_core.sdk import perf_database, common
-    /// from aiconfigurator_core.sdk.operations.attention import ContextAttention, GenerationAttention
+    /// from aisimulate_core.sdk import perf_database, common
+    /// from aisimulate_core.sdk.operations.attention import ContextAttention, GenerationAttention
     /// view = perf_database.get_database_view('b200_sxm','vllm','0.19.0',database_mode='SOL',allow_missing_data=True)
     /// op = ContextAttention('context_attention', 1.0, 48, 8, 128, kvcache_quant_mode=common.KVCacheQuantMode.fp8, fmha_quant_mode=common.FMHAQuantMode.bfloat16)
     /// print(repr(float(op.query(view, x=1, batch_size=4.0, beam_width=1, s=682.6666666666666, prefix=128.5))))"
@@ -621,6 +904,7 @@ mod tests {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -661,6 +945,9 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             lane_order: crate::operators::attention::b200_vllm_generation_lane_order(),
             use_qk_norm: false,
+            scale_num_tokens: 1,
+            verify_query_tokens: 0,
+            dcp_size: 1,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -702,6 +989,7 @@ mod tests {
             workload_distribution: "uniform".into(),
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: true,
         };
@@ -857,5 +1145,393 @@ mod tests {
             err.to_string()
                 .contains("no Rust implementation for op mamba2")
         );
+    }
+
+    /// Decode CP in the whole-forward SOL leaf: `n * dcp` gathered heads over
+    /// a `ceil(s / dcp)` KV stripe, identical to the un-striped equivalent.
+    #[test]
+    fn generation_attention_fpm_sol_applies_dcp_geometry() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        let plain =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            2048.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(plain),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!((a - b).abs() < 1e-9, "striped {a} vs gathered {b}");
+        assert!(
+            a < c,
+            "dcp must shrink the KV-read-bound decode roofline: {a} vs {c}"
+        );
+    }
+
+    /// A sliding window of `w` occupies ~`w / dcp` positions of the stripe, so a
+    /// striped windowed op prices like the gathered op over a `w / dcp` window.
+    #[test]
+    fn generation_attention_fpm_sol_stripes_the_sliding_window() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.window_size = 4096;
+        striped.dcp_size = 4;
+        let mut gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        gathered.window_size = 1024;
+        let mut unstriped_window =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        unstriped_window.window_size = 4096;
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            32768.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(unstriped_window),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!(
+            (a - b).abs() < 1e-9,
+            "striped window {a} vs gathered w/dcp {b}"
+        );
+        assert!(a < c, "the window must shrink with the stripe: {a} vs {c}");
+    }
+
+    /// DSA decode under DCP: the sparse attention reads ~`topk / dcp` owned
+    /// slots, so the striped leaf must undercut the gathered-heads op that keeps
+    /// the whole top-k (the previous upper bound).
+    #[test]
+    fn dsa_generation_fpm_sol_stripes_the_top_k() {
+        let d = db();
+        let mut striped = glm_dsa_op("generation_attention");
+        striped.dcp_size = 4;
+        let mut gathered = glm_dsa_op("generation_attention");
+        gathered.num_heads = 256;
+        let a =
+            op_sol_latency_ms(&Op::DsaGeneration(striped), &d, 8.0, 8.0, 100000.0, 0.0).unwrap();
+        let b =
+            op_sol_latency_ms(&Op::DsaGeneration(gathered), &d, 8.0, 8.0, 25000.0, 0.0).unwrap();
+        assert!(a.is_finite() && a > 0.0, "{a}");
+        assert!(
+            a < b,
+            "striped top-k must undercut the whole-top-k bound: {a} vs {b}"
+        );
+    }
+
+    fn glm_dsa_op(name: &str) -> DsaModuleOp {
+        // nvidia/GLM-5.2-NVFP4: 64 heads, fp8 KV cache, bf16 context FMHA, nvfp4 GEMMs, index_topk 2048
+        DsaModuleOp::new(
+            name,
+            64,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+            GemmQuantMode::Nvfp4,
+            "GlmMoeDsaForCausalLM",
+            2048,
+        )
+    }
+
+    #[test]
+    fn dsa_context_fpm_sol_reuses_the_dsa_roofline() {
+        let d = db();
+        let spec = &d.system_spec;
+        let op = glm_dsa_op("context_attention");
+        // FPM prefill coords: batch 1, 8192 new tokens, 24576 cached tokens (a chunk boundary
+        // that is not a collected site in the GLM cells).
+        let got = op_sol_latency_ms(&Op::DsaContext(op), &d, 8192.0, 1.0, 8192.0, 24576.0).unwrap();
+        let flops =
+            dsa_context_sol_flops(spec, GemmQuantMode::Nvfp4, FmhaQuantMode::Bfloat16).unwrap();
+        let expected = dsa_context_sol_ms(
+            spec,
+            dsa_dims("GlmMoeDsaForCausalLM"),
+            2048,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+            GemmQuantMode::Nvfp4,
+            1,
+            8192,
+            24576,
+            64,
+            false,
+            d.dsa.reuse_sol_policy,
+            flops,
+        );
+        assert!(got.is_finite() && got > 0.0, "{got}");
+        approx(got, expected);
+    }
+
+    #[test]
+    fn dsa_context_fpm_sol_blends_skip_indexer_by_full_frac_and_scales() {
+        let d = db();
+        let spec = &d.system_spec;
+        let mut op = glm_dsa_op("context_attention");
+        op.full_frac = 0.25;
+        op.scale_factor = 1.5;
+        let got = op_sol_latency_ms(&Op::DsaContext(op), &d, 8192.0, 2.0, 4096.0, 65536.0).unwrap();
+        let flops =
+            dsa_context_sol_flops(spec, GemmQuantMode::Nvfp4, FmhaQuantMode::Bfloat16).unwrap();
+        let sol = |skip: bool| {
+            dsa_context_sol_ms(
+                spec,
+                dsa_dims("GlmMoeDsaForCausalLM"),
+                2048,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Nvfp4,
+                2,
+                4096,
+                65536,
+                64,
+                skip,
+                d.dsa.reuse_sol_policy,
+                flops,
+            )
+        };
+        approx(got, (0.25 * sol(false) + 0.75 * sol(true)) * 1.5);
+    }
+
+    #[test]
+    fn dsa_generation_fpm_sol_reuses_the_dsa_roofline() {
+        let d = db();
+        let spec = &d.system_spec;
+        let op = glm_dsa_op("generation_attention");
+        // FPM decode coords: batch 8, 100000 KV tokens per request (x is the batch for decode).
+        let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 8.0, 8.0, 100000.0, 0.0).unwrap();
+        let flops = dsa_generation_sol_flops(spec, GemmQuantMode::Nvfp4).unwrap();
+        let expected = dsa_generation_sol_ms(
+            spec,
+            dsa_dims("GlmMoeDsaForCausalLM"),
+            KvCacheQuantMode::Fp8,
+            GemmQuantMode::Nvfp4,
+            8,
+            100000,
+            64,
+            1,
+            false,
+            d.dsa.reuse_sol_policy,
+            flops,
+        );
+        assert!(got.is_finite() && got > 0.0, "{got}");
+        approx(got, expected);
+    }
+
+    /// FROZEN parity record for the DSA context arm at FPM totals that are NOT
+    /// divisible by the batch. `sol_total` back-maps the raw prefill totals
+    /// (batch=2, total_prefill=8193, total_kv=2049) to `s = 8193/2 = 4096.5` and
+    /// `prefix = 2049/2 = 1024.5`, which the arm rounds with `f64::round`'s
+    /// half-AWAY-from-zero tie-break to `s = 4097`, `prefix = 1025` (half-to-even
+    /// would give 4096/1024 and 1.3674139411342223 ms instead).
+    ///
+    /// Expected value derived by hand from the `dsa_context_sol` terms
+    /// (`perf_database/dsa.rs:771-867`) at b=2, s=4097, prefix=1025, num_heads=64,
+    /// index_topk=2048, `GLM_MOE_DSA_DIMS` (hidden 6144, q_lora 2048, kv_lora 512,
+    /// qk_nope 192, qk_rope 64, v 256, index 32x128) on b200_sxm (mem_bw 7.7e12,
+    /// fp4 9e15, fp8 4.5e15, bf16 2.25e15), nvfp4 GEMM weights (9/16 B/elem),
+    /// fp8 KV (1 B/elem), bf16 context FMHA (2 B/elem):
+    ///   full_s = 4097 + 1025 = 5122 > 2048 = topk, prefix 1025 < topk
+    ///     -> the ramp+saturation KV-pair branch (`dsa.rs:824-832`):
+    ///        ramp = 2*(2048*2049 - 1025*1026)/2 =  3_144_702
+    ///        sat  = 2*(5122 - 2048)*2048        = 12_591_104
+    ///        total_kv_pairs                     = 15_735_806
+    ///   gemm_group_ops     = 2_857_924_558_848 / 9.0e15
+    ///   indexer_logits_ops =   343_815_520_256 / 4.5e15   (= 2*8194*32*128*5122)
+    ///   sparse_attn_ops    = 2_191_431_286_784 / 2.25e15  (= 2*64*(576+512)*pairs)
+    ///   sol_math = (that sum) * 1000                      = 1.3679200829440001 ms
+    ///   sol_mem  = (89_837_568 + 150_994_944 + 1_352_208 + 537_001_984) B
+    ///            = 779_186_704 / 7.7e12 * 1000            = 0.1011930784415... ms
+    ///   time_ms  = max(math, mem)                         -> math-bound
+    #[test]
+    fn dsa_context_fpm_sol_frozen_at_fractional_fpm_coordinates() {
+        let d = db();
+        let op = glm_dsa_op("context_attention");
+        let got = op_sol_latency_ms(&Op::DsaContext(op), &d, 8193.0, 2.0, 4096.5, 1024.5).unwrap();
+        approx(got, 1.3679200829440001);
+    }
+
+    /// FROZEN parity record for the DSA generation arm at a decode total that is
+    /// NOT divisible by the batch: `sol_total` back-maps (batch=6,
+    /// total_kv=393219) to `s = 393219/6 = 65536.5`, which rounds half-away-from-zero
+    /// to 65537 (half-to-even would give 65536 and 0.019327268571428573 ms).
+    ///
+    /// Expected value derived by hand from the `dsa_generation_sol` terms
+    /// (`perf_database/dsa.rs:907-973`) at b=6, s=65537, num_heads=64, same dims,
+    /// system and quant modes as the context record above. Decode clamps the
+    /// attention window with the DIMS top-k, not the op's:
+    /// `effective_kv = min(65537, 2048) = 2048`.
+    ///   gemm_group_ops     = 2_092_695_552 / 9.0e15
+    ///   indexer_logits_ops = 3_221_274_624 / 4.5e15   (= 2*6*32*128*65537)
+    ///   sparse_attn_ops    = 1_711_276_032 / 2.25e15  (= 2*6*64*(576+512)*2048)
+    ///   sol_math = (that sum) * 1000 = 0.00170892765866... ms
+    ///   sol_mem: weights  159_711_232 elems * 9/16      =  89_837_568 B
+    ///            indexer  6*65537*132 (entry_bytes 128) =  51_905_304 B
+    ///            kv       6*2048*576 * 1                =   7_077_888 B
+    ///            total   148_820_760 / 7.7e12 * 1000    = 0.019327371428571428 ms
+    ///   time_ms  = max(math, mem) -> memory-bound, so the frozen literal pins the
+    ///   generation memory model and the rounded `s` through the indexer cache term.
+    #[test]
+    fn dsa_generation_fpm_sol_frozen_at_fractional_fpm_coordinates() {
+        let d = db();
+        let op = glm_dsa_op("generation_attention");
+        let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
+        approx(got, 0.019327371428571428);
+    }
+
+    /// Same independent ledger as the full-only frozen case above, omitting
+    /// 9,371,648 indexer weight elements and all indexer-cache bytes on each
+    /// reuse layer: (150,339,584 * 9/16 + 7,077,888) / 7.7e12 * 1000
+    /// = 0.011901805714285714 ms, memory-bound. GLM-5.2 has 21 full and
+    /// 57 reuse layers, so its attention SOL is 1.0842777257142857 ms.
+    #[test]
+    fn dsa_generation_fpm_sol_reuse_layers_have_no_indexer_cost() {
+        let d = db();
+        let mut op = glm_dsa_op("generation_attention");
+        op.full_frac = 21.0 / 78.0;
+        op.scale_factor = 78.0;
+        let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
+        approx(got, 1.0842777257142857);
+    }
+
+    /// SGLang uses the same reuse ledger as vLLM above; TRTLLM retains the
+    /// full-indexer ledger on every layer: 78 * 0.019327371428571428 ms.
+    /// The serving backend selects the policy even with an explicit reuse fraction.
+    #[test]
+    fn dsa_generation_fpm_sol_scopes_reuse_policy_by_backend() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        for (backend, version, expected) in [
+            ("sglang", "0.5.14", 1.0842777257142857),
+            ("trtllm", "1.3.0rc20", 78.0 * 0.019327371428571428),
+        ] {
+            let d = PerfDatabase::load(&root, "b200_sxm", backend, version).unwrap();
+            let mut op = glm_dsa_op("generation_attention");
+            op.full_frac = 21.0 / 78.0;
+            op.scale_factor = 78.0;
+            let got =
+                op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
+            approx(got, expected);
+        }
+    }
+
+    #[test]
+    fn dsa_generation_fpm_sol_rejects_invalid_layer_fractions() {
+        let d = db();
+        for fraction in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut op = glm_dsa_op("generation_attention");
+            op.full_frac = fraction;
+            assert!(matches!(
+                op_sol_latency_ms(&Op::DsaGeneration(op), &d, 1.0, 1.0, 8193.0, 0.0),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+    }
+
+    /// `full_frac` domain. The two valid boundaries select the pure legs, and every
+    /// value outside [0, 1] is a typed `InvalidEngineConfig` rather than an
+    /// extrapolated blend (negative / > 1) or a silent 0 (NaN, -inf) — see the gate
+    /// in `dsa_context_module_sol`.
+    #[test]
+    fn dsa_context_fpm_sol_full_frac_boundaries_and_domain_gate() {
+        let d = db();
+        let spec = &d.system_spec;
+        let flops =
+            dsa_context_sol_flops(spec, GemmQuantMode::Nvfp4, FmhaQuantMode::Bfloat16).unwrap();
+        let leg = |skip: bool| {
+            dsa_context_sol_ms(
+                spec,
+                dsa_dims("GlmMoeDsaForCausalLM"),
+                2048,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Nvfp4,
+                2,
+                4096,
+                65536,
+                64,
+                skip,
+                d.dsa.reuse_sol_policy,
+                flops,
+            )
+        };
+        let at = |w: f64| {
+            let mut op = glm_dsa_op("context_attention");
+            op.full_frac = w;
+            op_sol_latency_ms(&Op::DsaContext(op), &d, 8192.0, 2.0, 4096.0, 65536.0)
+        };
+
+        let full = at(1.0).unwrap();
+        let skip = at(0.0).unwrap();
+        assert!(full.is_finite() && full > 0.0, "{full}");
+        assert!(skip.is_finite() && skip > 0.0, "{skip}");
+        approx(full, leg(false));
+        approx(skip, leg(true));
+        // The skip leg drops the per-layer indexer, so it is strictly cheaper —
+        // proof the two boundaries are not the same code path.
+        assert!(
+            skip < full,
+            "skip-only {skip} must be below full-only {full}"
+        );
+
+        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                matches!(at(bad), Err(AicError::InvalidEngineConfig(_))),
+                "full_frac={bad} must be rejected, got {:?}",
+                at(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn dsa_context_cp_keeps_the_typed_sol_not_implemented() {
+        let d = db();
+        let mut op = glm_dsa_op("context_attention");
+        op.cp_size = 2;
+        let err = op_sol_latency_ms(&Op::DsaContext(op), &d, 8192.0, 1.0, 8192.0, 0.0).unwrap_err();
+        assert!(matches!(&err, AicError::SolNotImplemented(_)));
+        assert!(err.to_string().contains("cp_size=2"));
     }
 }

@@ -9,6 +9,9 @@ output into AIC perf rows and optionally samples representative GPU power while
 each collective size is measured.
 """
 
+import math
+import os
+import re
 import subprocess
 import sys
 from argparse import ArgumentParser
@@ -21,10 +24,55 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from helper import PowerMonitor, log_perf
 
 
+def parse_nccl_latency(stdout: str, stderr: str, size: int, expected_version: str) -> float:
+    """Accept only the requested size and the actual expected NCCL runtime."""
+    versions = set(re.findall(r"NCCL version\s+(\d+\.\d+\.\d+)", stdout + "\n" + stderr))
+    if versions != {expected_version}:
+        raise RuntimeError(f"nccl-tests runtime version {sorted(versions)} does not match {expected_version}")
+    timings = []
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 13 or not fields[0].isdigit() or int(fields[0]) != size:
+            continue
+        latency_ms = float(fields[5]) * 1e-3
+        if not math.isfinite(latency_ms) or latency_ms <= 0:
+            raise RuntimeError(f"Invalid nccl-tests latency: {fields[5]}")
+        timings.append(latency_ms)
+    if len(timings) != 1:
+        raise RuntimeError(f"Expected one nccl-tests row for {size} bytes, got {len(timings)}")
+    return timings[0]
+
+
+def runtime_nccl_version() -> str:
+    """Version of the NCCL shared library the framework loads at runtime.
+
+    Frameworks' own collectives (vLLM/SGLang pynccl) dlopen ``libnccl.so.2``;
+    in some images that library differs from the version torch reports at
+    ``torch.cuda.nccl.version()`` (e.g. the vLLM 0.30.0 / SGLang 0.5.20 images:
+    torch reports 2.29.7 while the loaded libnccl.so.2 is 2.30.7; the vLLM
+    0.31.0 image ships the same torch 2.13.0+cu130 and nvidia-nccl-cu13
+    2.30.7). nccl-tests link the same shared library, so its version is the
+    one to require.
+    Falls back to torch when no shared libnccl is loadable.
+    """
+    import ctypes
+
+    try:
+        library = ctypes.CDLL("libnccl.so.2")
+    except OSError:
+        major, minor, patch = torch.cuda.nccl.version()
+        return f"{major}.{minor}.{patch}"
+    code = ctypes.c_int()
+    if library.ncclGetVersion(ctypes.byref(code)) != 0:
+        raise RuntimeError("ncclGetVersion failed")
+    # NCCL >= 2.9 encodes major*10000 + minor*100 + patch.
+    return f"{code.value // 10000}.{code.value % 10000 // 100}.{code.value % 100}"
+
+
 def nccl_benchmark(
     dtype: str,
     nccl_op: str = "all_gather",
-    test_range: str = "10,10000000,1000",
+    test_range: str = "512,1073741825,2",
     num_gpus: int = 8,
     measure_power: bool = False,
 ):
@@ -42,8 +90,7 @@ def nccl_benchmark(
     min_size, max_size, ratio = [int(i) for i in test_range.split(",")]
     size = min_size
 
-    major, minor, patch = torch.cuda.nccl.version()
-    nccl_version = f"{major}.{minor}.{patch}"
+    nccl_version = runtime_nccl_version()
 
     bytes_per_element = 2 if dtype == "half" else 1
 
@@ -83,17 +130,30 @@ def nccl_benchmark(
         if power_monitor:
             power_monitor.start_sampling()
 
-        result = subprocess.run(cmd_args, capture_output=True, text=True)
+        benchmark_error = None
+        try:
+            result = subprocess.run(
+                cmd_args,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, "NCCL_DEBUG": "VERSION"},
+            )
+        except BaseException as error:
+            benchmark_error = error
+            raise
+        finally:
+            if power_monitor:
+                try:
+                    power_stats = power_monitor.stop_sampling()
+                except Exception as cleanup_error:
+                    if benchmark_error is None:
+                        raise
+                    # Do not replace the original process failure with a
+                    # secondary sampling-cleanup failure.
+                    print(f"Warning: power sampling cleanup also failed: {cleanup_error}", file=sys.stderr)
 
-        # Stop power monitoring after benchmark
-        if power_monitor:
-            power_stats = power_monitor.stop_sampling()
-
-        print_lines = result.stdout.split("\n")
-        for index_line in range(len(print_lines)):
-            if "time" in print_lines[index_line]:
-                break
-        latency = float(print_lines[index_line + 2].split()[5]) * 1e-3  # us to ms
+        latency = parse_nccl_latency(result.stdout, result.stderr, size, nccl_version)
 
         print(nccl_test_bin, f"{size=}, {latency=}")
         if power_stats:
@@ -108,7 +168,7 @@ def nccl_benchmark(
                     "latency": latency,
                 }
             ],
-            framework="TRTLLM",
+            framework="NCCL",
             version=nccl_version,
             device_name=torch.cuda.get_device_name(),
             op_name=nccl_op,
@@ -133,8 +193,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--range",
         "-r",
-        default="512,536870913,2",  # 512B to 512MB
-        help="min_size,max_size,multiplicative_ratio",
+        default="512,1073741825,2",  # Through 1 GiB; upper endpoint is exclusive.
+        help="min_bytes,max_bytes_exclusive,multiplicative_ratio",
     )
     parser.add_argument("--num_gpus", "-n", default=8, type=int)
     parser.add_argument(

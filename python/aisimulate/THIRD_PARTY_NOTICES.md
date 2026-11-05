@@ -13,6 +13,58 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## AIPerf AgentX snapshot oracle
+
+The reference sampling vectors and recycling contract in repository-root
+`crates/core/src/replay/loadgen/snapshot_tests.rs` and
+`docs/replay/workloads.md`, plus the invocation contract in
+`scripts/prediction_regression/export_agentx_snapshots.py`, are derived from
+`src/aiperf/timing/trajectory_source.py` and
+`src/aiperf/timing/strategies/agentic_replay.py` in SemiAnalysisAI/aiperf at
+commit `754356e9a39acc6cc6afb242d123bb57c3fb6f75`:
+https://github.com/SemiAnalysisAI/aiperf/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0. The upstream license is at
+https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE
+and the full license is included in this repository as `LICENSE`.
+Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
+to freeze expected cuts, and documented its sequential recycling behavior.
+No upstream implementation is vendored; AISimulate consumes explicit cuts.
+
+The live warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs` and
+`crates/core/src/replay/loadgen/driver.rs`, its regression tests in those files,
+and `docs/replay/agentic/warmup.md`, `docs/replay/agentic/continuous-profiles.md`
+and `docs/replay/workloads.md` are modified re-implementations of the same
+pinned `agentic_replay.py` behavior: globally aligned primers, per-lane
+admission quotas, compressed dependency waits, shared-cursor recycling, and
+source-clock frontier handoff. NVIDIA modified these algorithms to use the
+native deterministic dependency executor and its transactional server-settlement
+barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
+upstream serving implementation is vendored.
+
+The continuous-profile release rules in the same `driver.rs`, their regression
+tests there, and the release descriptions in
+`docs/replay/agentic/continuous-profiles.md` and `docs/replay/workloads.md` are
+modified re-implementations of the pinned `agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py`,
+`src/aiperf/timing/replay_dependencies.py` and
+`src/aiperf/common/loop_scheduler.py` behavior: dependency-relative release of
+continuations, spawns and joins, joins gated by the parent's own replay
+deadline, detected chains released when their replay barrier clears, and
+uniform idle shifts of every pending replay timer, repeated when a shift lands
+on a request still held by its replay barrier. The `agentx` Weka client in
+repository-root `crates/core/src/replay/loadgen/weka.rs`, its regression tests
+there, and its descriptions in the same two documents likewise re-implement
+the pinned `branch_orchestrator.py` branch dispatch with
+`src/aiperf/dataset/loader/weka_trace.py` and
+`src/aiperf/dataset/loader/weka_synth_buf.py`: subagents and flattened chains
+spawned and joined in groups by main-conversation turn, and each stream
+rendered as its own chat conversation. NVIDIA modified these rules to operate
+on the native dependency graph. The original NVIDIA copyright and Apache-2.0
+license apply; no upstream implementation is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
@@ -27,7 +79,7 @@ Pinned upstream collection and preserved-file SHA-256:
 `5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
 
 AISimulate-modified root overlay SHA-256:
-`70960b92994caaad52f806bd5c618353670c9e754a4d61525962f561360d9d48`
+`a70a21425533b419feaafcec67b176b3048a0893c4833bb802f46dc6e9a8f57e`
 
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
@@ -35,7 +87,282 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
+The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
+`src/aisimulate_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+power measurements derived from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Fourteen tables remain
+unmodified, byte-identical copies after the September 17-18 refresh. The
+context-MLA table was replaced with locally collected measurements, and the
+MoE table has locally refreshed MXFP4 rows with unavailable-power sentinels.
+The context-attention and
+generation-attention tables are modified derivatives: AISimulate preserves
+newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
+to those local-only identities. Source paths, row counts, measured coverage,
+and merge details are recorded in
+`src/aisimulate_core/systems/data/b200_sxm/README.md`. The two unmodified
+upstream attention copies under
+`src/aisimulate_core/systems/data/b200_sxm/power_upstream/` support focused
+import regression tests, which pin source and packaged SHA-256 digests.
+
+The corresponding energy expectations in the repository-root file
+`crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
+derivatives of those measurements. AISimulate's native pinning workflow at
+commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;
+the adjacent parity README records the reviewed energy-only delta.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
+
+## Dynamo V4.1 FPM collection adapter
+
+`collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py` is modified code
+adapted from `components/src/dynamo/vllm/instrumented_scheduler.py` in
+https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9.
+It adds bounded same-request real-KV collection while preserving the native
+benchmark and FPM contracts. Copyright (c) 2025-2026 NVIDIA CORPORATION &
+AFFILIATES. All rights reserved. Licensed under Apache-2.0; the upstream
+license is preserved in the adapter's adjacent `LICENSE`. The adjacent README
+records the inspected vLLM API revision and immutable runtime image/source
+hashes. vLLM implementation files are not vendored. The text fixture and
+lifecycle tests are original work for this change, with no external corpus.
+
+## Dynamo GLM-5.3-Flash default-serving (prefix-cache) FPM adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9
+(benchmark state machine on the native scheduler). Its prefix-cache real-seed staging
+(seed shot, untimed warm shot, validated measured shot; `_bench_realseed_stage_point` /
+`_bench_realseed_pending_step`) is ported from the same path at
+https://github.com/ai-dynamo/dynamo/tree/99dae1f53e5a0534c274223ff9daa97f0b1fc2ea, the revision
+shipped as ai-dynamo 1.5.0.dev20260917 in
+`lmsysorg/sglang@sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862`
+(file SHA256 `76cdd291e92c3c41f259279c316bcdedcc6a9aa615ad61e29ca6997105950047`, git blob
+`cbc2a12947ce18304721ac0549274fbeac51ddef`). Its queued-request classification for vLLM
+v0.31.0 (`_compute_queued` over `waiting` and `kv_holding_waiting`, replacing the removed
+`skipped_waiting`) is ported from the same path at
+https://github.com/ai-dynamo/dynamo/tree/395f02405c1dd1835ab73a39f7a5984ae5fd4552 (file SHA256
+`06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e`, git blob
+`c19f8174b2e232cf8c0f5a26da83b8085ef71776`). Changes: GLM-5.3-Flash
+default serving state (prefix caching on, Mamba align mode), seeded token inputs, executed
+per-request geometries on the 4-token IndexPool grid with recorded prefill chunk starts,
+5+10 repetitions with native-FPM validation, and compact deferred evidence. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent `LICENSE`.
+No upstream root NOTICE exists. vLLM and SGLang implementation files are not vendored.
+
+## NVIDIA AIConfigurator speculative decoding
+
+The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
+
+Derived AISimulate paths are under `python/aisimulate/src/aisimulate_core/sdk/`, `python/aisimulate/src/aisimulate/sdk/speculation/`, `python/aisimulate/src/aisimulate_core/sdk/speculation/`, `python/aisimulate/src/aisimulate/legacy_cli/`, `python/aisimulate/src/aisimulate/sdk/{speculative,task_v2}.py`, and `python/aisimulate/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's [synchronization provenance](https://github.com/ai-dynamo/aisimulate/blob/main/docs/ci/aic-sync.md#source-provenance) records import boundaries and links the current path mapping. Changes preserve AISimulate's current native contracts and strengthen configuration validation and regression coverage.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. Licensed under Apache-2.0; the original license is at:
+https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/LICENSE
+
+This records provenance for NVIDIA-authored predecessor code, without implying ownership by an unaffiliated third party.
+
+## NVIDIA AIConfigurator CI provenance
+
+Selected CI definitions and a recommendation test were adapted from NVIDIA's
+AIConfigurator repository at commit
+`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISimulate's
+unified package layout and Fast CI / Full CI execution model:
+
+- repository-root `.github/workflows/ci.yml` (selected jobs)
+- repository-root `.github/actions/build-platform-wheel/action.yml`
+- repository-root `.github/actions/setup-python-rust/action.yml`
+- repository-root `.github/workflows/collector-check.yml`
+- repository-root `.github/workflows/prediction-regression-gate.yml`
+- repository-root `.github/workflows/validate-platform-wheels.yml`
+- `tests/e2e/cli/test_cli_recommend.py`
+
+Upstream source:
+https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+
+Copyright (c) NVIDIA CORPORATION & AFFILIATES.
+
+AIConfigurator is licensed under the Apache License, Version 2.0. The full
+Apache-2.0 license text is reproduced in `LICENSE`. This section records
+cross-repository provenance for NVIDIA-authored predecessor code; it is not a
+claim that AIConfigurator is owned by an unaffiliated third party.
+
+## NVIDIA Dynamo Weka regression provenance
+
+The `weka_seam_rekey_never_uses_a_future_parent` regression in repository-root
+`crates/core/src/replay/loadgen/weka.rs` is adapted and modified from NVIDIA
+Dynamo's `lib/mocker/src/loadgen/tests.rs` at immutable commit
+`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISimulate's public
+graph loader and adds assertions that the later continuation was selected while
+the earlier fork retains its original parent.
+
+Upstream source:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License, Version 2.0. The upstream
+license at the identified revision is available at:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/LICENSE
+
+The full Apache-2.0 license text is reproduced in `LICENSE`. This section
+records provenance for NVIDIA-authored predecessor code; it is not a claim
+that Dynamo is owned by an unaffiliated third party.
+
+## SGLang feed-forward/decode composition and quantization exclusions
+
+The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
+
+The vLLM copyright in `src/aisimulate_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISimulate.
+
+Upstream source:
+https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team. These source files are licensed under the Apache License, Version 2.0. The upstream license is at:
+https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fbc6632270e26edc84b/LICENSE
+
 ## vLLM
+
+The grouped-cache config derivation and metadata regression tests in
+`src/aisimulate/support/config_profile.py`,
+`tests/unit/test_support_config_profile.py`, and
+`tests/unit/test_support_topology.py` are adapted and modified from vLLM's
+Inkling cache layout, decoder state construction, and configuration defaults at
+commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- [`vllm/models/inkling/nvidia/sconv_swa_attn.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py)
+- [`vllm/models/inkling/nvidia/model.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/model.py)
+- [`vllm/models/inkling/configs.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/configs.py)
+
+Copyright contributors to the vLLM project.
+
+This material is licensed under Apache-2.0; the upstream license at the
+identified revision is available at:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+AISimulate modifies these contracts for metadata-only rank-local aggregate
+cache sizing and validation, without constructing runtime tensors or a model.
+The derived tests use original synthetic geometries and do not copy a
+checkpoint fixture. The derived files retain the upstream copyright and
+identify the modified source material.
+
+The repository-root files `crates/core/src/engine/scheduler/vllm/core.rs`,
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
+`crates/core/src/engine/cache/vllm_block_pool.rs`,
+`crates/core/src/engine/kv_manager/g1_manager.rs`,
+and `crates/core/src/engine/kv_manager/state_cache_tests.rs` adapt the align-mode
+prefill split, state-slot turnover/copy lifetimes and default checkpoint-retention
+behavior from vLLM v0.29.0,
+immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/worker/mamba_utils.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+These are modified Rust simulation adaptations, restricted to no internal
+prefill checkpoints, no speculative decoding and no periodic retention.
+The identified upstream revision has no root NOTICE file. The repository's
+Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
+
+
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
+
+The independently written Rust deferred-queue and post-lookup-touch behavior in
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
+and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at
+immutable revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`:
+[`vllm/v1/core/sched/scheduler.py`](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/core/sched/scheduler.py),
+`vllm/v1/core/sched/request_queue.py` and `vllm/v1/kv_offload/tiering/manager.py`.
+The upstream project is copyright contributors to the vLLM project and licensed
+under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
+no upstream method bodies are copied. The Rust implementation and fixtures are
+modified for simulation and do not reproduce native filesystem timing.
+
+The `offloading_v0_32` and `simple_cpu_v0_32` G2 connector profiles in
+repository-root files `crates/core/src/engine/host_offload/tier.rs` and
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`, their tests in
+those files, and their description in `docs/replay/engine/kv-cache.md` are
+independently written, modified Rust simulation adaptations of behavioral
+contracts at vLLM tag `v0.32.0` (commit `5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/lru.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+which blocks each connector stores, when a lookup hits, misses or defers, the
+eviction order of the CPU cache, how long a store holds its G1 source blocks,
+what a preemption waits for, and the engine step that submits the stores of a
+finished request.
+
+The speculative scheduling/progress corrections in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
+`crates/core/src/engine/common/speculative.rs` are independently written,
+modified Rust simulation adaptations of behavioral contracts at vLLM commit
+`b3563fc65ae0f5359802593d78e7ea097e1fed31`:
+
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/async_scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+scheduled draft positions, first-output and preemption state in virtual time;
+it does not reproduce asynchronous worker execution. That revision has no
+root NOTICE file. The repository LICENSE contains the Apache-2.0 license text.
+
+The async-scheduling admission in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,tests}.rs` is an independently
+written, modified Rust simulation adaptation of behavioral contracts at vLLM
+tag `v0.28.0` (commit `2cf0a6915ce544dc493a0990f2ea38d81601128a`):
+
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/config/vllm.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, which committed batch an arriving request can join while the
+engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
+asynchronous worker execution. That revision has no root NOTICE file.
 
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
@@ -62,6 +389,22 @@ Copyright 2025 The vLLM team.
 Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
 
 This material is licensed under the Apache License 2.0.
+
+The Mistral3 projector topology modeled in
+`src/aisimulate_core/sdk/models/blocks/vit.py` and parsed in
+`src/aisimulate_core/sdk/utils.py`, and Pixtral image geometry and prompt-token
+accounting in `src/aisimulate_core/sdk/backends/base_backend.py`, with regression
+coverage in `tests/unit/sdk/models/test_mistral3.py`, are adapted and modified for
+performance modeling from vLLM v0.24.0 at immutable commit
+`ee0da84ab9e04ac7610e28580af62c365e898389`:
+
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
+
+Copyright contributors to the vLLM project. This material is licensed under
+the Apache License 2.0. The upstream license is available at:
+
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/LICENSE
 
 The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
 PatchMergerV2 adapters modeled in
@@ -341,6 +684,104 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## SGLang DeepSeek-V4.1 serving contracts
+
+The V4.1 execution and performance-model logic in
+`src/aisimulate_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
+(with the same `src/aisimulate_core/` prefix), and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` is informed by and modified from
+SGLang's serving architecture at immutable commit
+`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`:
+
+- `python/sglang/srt/models/deepseek_v4.py` and `deepseek_v2.py`
+- `python/sglang/srt/layers/engram.py`
+- `python/sglang/srt/layers/attention/dsv4/compressor.py`
+- `python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py`
+- `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
+- `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
+- `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py`
+- `python/sglang/benchmark/one_batch.py`
+
+The original integration adapter
+`collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
+builder and request lifecycle. Its component boundaries are modified from
+the serving contracts above; it does not copy framework metadata builders.
+The original attention-only adapter `collector/sglang/dsv41_attention_runner.py`,
+its `tests/unit/collector/test_dsv41_attention.py` fixtures and the attention
+section of `collector/sglang/README.dsv41.md` also adapt those API boundaries
+(modified), including native dummy-loader post-load order from
+`python/sglang/srt/model_loader/loader.py` and random initialization from
+`python/sglang/srt/model_loader/weight_utils.py` at the same immutable revision.
+They call native attention, pool and request builders; they do not copy those
+implementations or represent the isolated stack as the complete model.
+The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
+and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
+modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
+The SM90 index-score arithmetic and query-width formulas in
+`crates/core/src/perfmodel/operators/dsv41.rs`, their Rust regression tests,
+and `docs/perf-model/models/deepseek-v41.md` are independently expressed, modified
+analytical adaptations of those same pinned BF16 indexer contracts.
+
+The measured operator databases and adjacent documentation under
+`src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings
+and geometry adapted from the same serving contracts (modified). Their
+README and adjacent provenance identify the immutable collection runtime
+and source identities. The restored GB300 tables preserve their historical
+timings and documented source-audited indexer metadata correction. The
+B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
+validation; they do not inherit that historical correction.
+
+The FPM table execution identities, geometry, collection sidecars and accompanying
+README under `src/aisimulate_core/systems/profiles/dsv41_fpm/`, including
+B300 TP2/TP4 and GB300 TP2 full/bounded measurements, are modified AISimulate
+adaptations of the SGLang serving-contract paths and immutable commit
+listed above (Copyright 2023-2024 SGLang Team and SGLang contributors,
+Apache-2.0), and of `config.json`, `inference/model.py` and
+`DeepSeek_V41_Tech_Report.pdf` from
+`deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d`
+(Copyright (c) 2023 DeepSeek, MIT; source and license below). The latencies are
+new AISimulate measurements; these files contain no upstream model execution
+code. The SGLang source revision identifies the serving-contract reference,
+not the entire measured runtime image; the immutable image and captured source
+identities remain collection provenance.
+
+Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+reproduced in the repository `LICENSE`. These are analytical adaptations,
+not a copy of the model execution implementation. The modified analytical
+scoring/storage adaptations and their independently written regression cases
+also appear in `python/aisimulate/tests/unit/sdk/models/test_deepseek_v41.py`,
+Rust operator/spec unit tests, `docs/perf-model/models/deepseek-v41.md`. They distinguish candidate masking from scoring
+and physical FlashMLA cache payload from logical FP4 values.
+
+## SGLang 0.5.19 multimodal frontend and scheduler behavior
+
+The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
+`0bcd822377da7b5718e674eaf9c870d349424dd1`. Repository-root paths:
+
+- `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
+  their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
+  `run_batch`, `recv_requests`, `process_batch_result_prefill`,
+  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`,
+  `BaseMultimodalProcessor`, the scheduler's receive preparation
+  (`managers/scheduler_components/request_receiver.py`) and the Rust multimodal workers'
+  feature transport (`RustMmProcessor._use_feature_shm`) as performance models.
+  They do not execute or copy the upstream implementation.
+- `crates/core/src/engine/scheduler/sglang/core.rs` (disaggregated prefill) and
+  `crates/core/src/replay/components/encoder.rs` likewise re-implement the
+  observed behavior of `disaggregation/prefill.py` (`SchedulerDisaggregationPrefillMixin`)
+  and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
+  (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
+  performance models, without copying the upstream implementation.
+- `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
+  upstream frontend objects unmodified on the serving host and times them from
+  the outside; it does not copy or modify their implementations.
+
+Source: https://github.com/sgl-project/sglang/tree/0bcd822377da7b5718e674eaf9c870d349424dd1
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
+
 ## DeepSeek model configuration files
 
 The following model configuration files are copied from, or formatting-only
@@ -348,11 +789,19 @@ adaptations of, the named DeepSeek model repositories:
 
 | AISimulate file | Upstream revision |
 | --- | --- |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
+
+The V4.1 descriptor and performance formulas in `src/aisimulate_core/sdk/deepseek_v41.py`,
+`src/aisimulate_core/sdk/models/deepseek_v41.py`, and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` are AISimulate performance-model
+adaptations of the architecture described by `inference/model.py` and
+`DeepSeek_V41_Tech_Report.pdf` at the same V4.1 revision (modified; no model execution code).
+Source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d
 
 Upstream repositories:
 https://huggingface.co/deepseek-ai
@@ -383,7 +832,7 @@ SOFTWARE.
 
 ## Meta Muse Glimmer model configuration
 
-`src/aiconfigurator_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+`src/aisimulate_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
 is an unmodified copy of `config.json` from the Meta Muse Glimmer model
 repository at immutable revision
 `f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
@@ -405,8 +854,8 @@ named Qwen model repositories at the immutable revisions shown:
 
 | Packaged file | Upstream revision |
 | --- | --- |
-| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
-| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
 
 Upstream repositories:
 https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
@@ -435,15 +884,71 @@ THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT 
 For any questions regarding this license, please contact model-business@notice.qwencloud.com.
 ```
 
+## NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_config.json` | `config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+
+Upstream repository:
+https://huggingface.co/nvidia/Qwen3.5-397B-A17B-NVFP4-V2/tree/8f590eae8f10bf55d9a46f79ea0280bde435c9f8
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Alibaba Cloud (the base Qwen3.5-397B-A17B
+configuration). The copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: the Apache
+License, Version 2.0 (`license: apache-2.0`). The upstream repository ships
+no separate license or NOTICE file. The base model, Qwen/Qwen3.5-397B-A17B,
+uses the same license; its `LICENSE` at revision
+`8472618112abcbd45acbcdc58436aff4233c23f7` states "Copyright 2026 Alibaba
+Cloud". The license text is in the `LICENSE` file distributed with this
+notice. The file digests are recorded in the adjacent
+`src/aisimulate_core/model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md`.
+
+## StepFun Step-3.7-Flash model configuration files
+
+The following files are modified adaptations of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash@5f6244077ac62e04eec3f320501ff8c2b293373a` |
+| `src/aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash-FP8_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash-FP8@b3d7916fccac844cca050d7520f2aaa513f9a84f` |
+
+Upstream repositories:
+https://huggingface.co/stepfun-ai/Step-3.7-Flash and
+https://huggingface.co/stepfun-ai/Step-3.7-Flash-FP8
+
+Copyright owner: StepFun. Both repositories declare the Apache-2.0 license in
+their model cards. Its terms are in this repository's `LICENSE` and at
+https://www.apache.org/licenses/LICENSE-2.0.
+
+The packaged files are modified. They keep the decoder (`text_config`) fields
+that AISimulate reads, moved to the top level, with these changes:
+
+- The architecture is named `Step3p7FlashForCausalLM` and the model type
+  `step3p7`.
+- `num_attention_groups` is written as `num_key_value_heads`.
+- The MoE fields are written as `num_experts`, `num_experts_per_tok`,
+  `first_k_dense_replace`, `n_shared_experts` and `scoring_func`.
+- The `layer_types` entries of the MTP layers are dropped.
+- In the FP8 file, `quantization_config` keeps `quant_method`,
+  `weight_block_size` and `activation_scheme`.
+
 ## Meta Llama 4
 
 The following bundled model configs are modified copies of Meta Llama 4
 checkpoint configuration files:
 
-- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
+- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
   from revision `92f3b1597a195b523d8d9e5700e57e4fbb8f20d3`:
   https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json
-- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
+- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
   from revision `73d14711bcc77c16df3470856949c3764056b617`:
   https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json
 
@@ -550,6 +1055,16 @@ This material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+The Qwen VL `smart_resize` pixel-budget rule in
+`python/aisimulate/src/aisimulate_core/sdk/backends/base_backend.py`
+(`_qwen_smart_resize`) is a modified adaptation of the Qwen2-VL image processor
+in Hugging Face Transformers at tag `v4.57.0`:
+
+- https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+
+Copyright 2024 the HuggingFace Inc. team. All rights reserved.
+This material is licensed under the Apache License 2.0.
 
 The fixed-tile canvas and global-tile logic in
 `src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
@@ -770,3 +1285,512 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## Published FPM dataset pin manifests
+
+The `hf_dataset.json` manifests and adjacent attribution README files under
+`python/aisimulate/src/aisimulate_core/systems/profiles/` in
+`minimax_m27_fpm/`, `dsv4pro_fpm/`, `dsv4flash_fpm/`, `glm52_fpm/`,
+`kimi_k3_fpm/` and `inkling_fpm/` adapt published NVIDIA collection metadata
+into hash-pinned download indexes (modified). No external timing tables,
+model weights or collection implementation are bundled in these directories.
+
+- Source: https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a
+- Immutable revision: `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`.
+- Original paths: configuration `manifest.json` files and `fpm/*.metadata.json`
+  under `data/MiniMaxAI--MiniMax-M2.7/`, `data/deepseek-ai--DeepSeek-V4-Pro/`,
+  `data/deepseek-ai--DeepSeek-V4-Flash-0731/`, `data/nvidia--GLM-5.2-NVFP4/`,
+  `data/moonshotai--Kimi-K3/` and `data/thinkingmachines--Inkling-NVFP4/`.
+  Each derived pin records the exact artifact paths and SHA-256 values.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0, as declared in the dataset card at the pinned revision;
+  the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
+- Modifications: separate deployment roots, explicit development/diagnostic
+  admission, canonical loader targets and explicit references to installed
+  AISimulate hardware configurations. Source artifact bytes are unchanged when
+  downloaded.
+
+The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
+DeepSeek V4.1 source archives; it is not a license grant for these six models.
+This attribution relies on the dataset card for the indexed collection metadata
+and does not relicense model weights, producer code or their upstream projects.
+
+## AISim FPM Gym
+
+- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
+- Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
+  `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
+- Derived files: `scripts/fpm_accuracy/`, `pages/fpm-accuracy/`, and
+  `tests/fpm_accuracy/test_hf_dataset.py`.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
+  publish this code under Apache-2.0.
+- Modified: development-only two-predictor evaluation, public overview export,
+  GitHub Pages presentation, local import paths, and canonical estimator API
+  adaptation with older-wheel compatibility.
+- Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
+  Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
+  `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,
+  and `tests/test_visualization.py`.
+  Derived files: `scripts/fpm_accuracy/dashboard/`,
+  `pages/fpm-accuracy/3d-visualization.html`, `pages/fpm-accuracy/assets/visualization.{js,css}`,
+  `tests/fpm_accuracy/test_visualization.py`, and its synthetic outputs in
+  `tests/fpm_accuracy/fixtures/dashboard/`.
+  Modified imports, reduced contracts, GitHub artifact publication, navigation,
+  theme integration, and tests. Same NVIDIA copyright and Apache-2.0 license.
+
+## Plotly.js (FPM visualization)
+
+- Upstream: https://github.com/plotly/plotly.js/tree/v3.4.0
+- Immutable release tag: `v3.4.0`; original path: `dist/plotly.min.js`.
+- Distributed unmodified as `pages/fpm-accuracy/assets/plotly.min.js`.
+- Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
+  and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
+
+## Plotly.js (replay dashboard)
+
+- The replay HTML renderer embeds the unmodified Plotly.js bundle supplied by
+  the installed `plotly` Python dependency, preserving its version and copyright
+  header. No Plotly.js source is vendored in the Python renderer.
+- `python/aisimulate/src/aisimulate/replay/plotly-js-LICENSE.txt` is an unmodified
+  copy of the MIT license from https://github.com/plotly/plotly.js/blob/v3.4.0/LICENSE
+  (immutable release tag `v3.4.0`, original path `LICENSE`). It is packaged and
+  embedded in generated `report.html` files.
+- Copyright (c) 2012–2026 Plotly, Inc. The dashboard template and telemetry
+  transformations are AISimulate code; they do not modify Plotly.js.
+
+
+## vLLM Kimi KDA state sizing
+
+`src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
+`src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
+`a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
+`vllm/model_executor/layers/mamba/mamba_utils.py`,
+`vllm/model_executor/models/kimi_linear.py`,
+`vllm/model_executor/layers/kda.py`,
+`vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/attention/backends/mla/triton_mla.py`, and `vllm/config/cache.py`.
+The modified implementation reuses AISimulate's Kimi model for token KV geometry,
+resolves the requested block granularity to fit one state using CPU arithmetic,
+and adds AISimulate validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
+
+## GLM-5.3 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/zai-org--GLM-5.3_config.json` | `config.json` from `zai-org/GLM-5.3@ba32f8c19c8738e2c57c71798c601d477a7bf844` |
+| `src/aisimulate_core/model_configs/zai-org--GLM-5.3-BF16_config.json` | `config.json` from `zai-org/GLM-5.3-BF16@abf42e6c0e53bc29a875511301e7b7fcd220315b` |
+
+Upstream repositories:
+https://huggingface.co/zai-org/GLM-5.3 and
+https://huggingface.co/zai-org/GLM-5.3-BF16
+
+Copyright owner: Z.AI. The copied files are unmodified. Both upstream
+revisions ship the GLM-5.3 License, reproduced in full below:
+
+```text
+GLM-5.3 License
+
+Copyright (c) 2026 Z.AI
+
+Permission is hereby granted, free of charge, to any person or entity (the "Licensee") obtaining a copy of this software — including the model weights, parameters, configuration files, inference and training code, and associated documentation (collectively, the "Software") — to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software; to run, deploy, fine-tune, or otherwise modify the Software and create derivative works from it; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. The Licensee's use of the Software must comply with applicable laws and regulations.
+
+2. "Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API) in a manner that allows such third party to exercise meaningful control over the inputs, parameters, or training data. This does not include (a) end-user products with model capabilities solely embedded within specific features or harnesses, or (b) mere relaying of requests to models hosted by others.
+If the Licensee or any of its affiliates operates a Model as a Service business, and the aggregate revenue of the Licensee and its affiliates exceeds 10 billion US dollars (or the equivalent in other currencies) in total over any consecutive 12 months, the Licensee must pass Z.AI's security review before using the Software or its derivative works for any commercial purpose. The scope and method of the security review shall be reasonably determined by Z.AI.
+
+3. THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL Z.AI OR ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For any questions regarding this license, please contact glmlicense@z.ai.
+
+-----
+
+版权所有 (c) 2026 Z.AI
+
+特此免费授予任何获得本软件副本的个人或实体（"被许可方"）——包括模型权重、参数、配置文件、推理和训练代码及相关文档（统称"软件"）——不受限制地处理本软件的权利，包括但不限于：使用、复制、修改、合并、发布、分发、再许可和/或销售软件副本；运行、部署、微调或以其他方式修改软件并创建衍生作品；以及允许获得软件的其他人行使上述权利，但须遵守以下条件：
+
+1. 上述版权声明和本许可声明应包含在软件的所有副本或实质性部分中。被许可方对软件的使用必须符合适用法律法规。
+
+2. "模型即服务"指以允许第三方对输入、参数或训练数据行使实质性控制的方式，向第三方提供语言模型推理或微调服务（如通过API）。不包括：(a) 模型能力仅嵌入特定功能或框架中的终端用户产品，或(b) 单纯转发请求至他人托管的模型。
+若被许可方或其关联方运营"模型即服务"业务，且被许可方及关联方在任意连续12个月内累计总收入超过100亿美元（或等值其他货币），则被许可方在使用软件或其衍生作品进行任何商业用途之前，须通过Z.AI的安全审查。安全审查的范围和方式由Z.AI合理确定。
+
+3. 软件及其任何输出和结果均按"现状"提供，不附带任何形式的保证，无论是明示还是暗示，包括但不限于适销性、特定用途适用性和不侵权的保证。在任何情况下，Z.AI或其关联方或版权持有人均不对任何索赔、损害或其他责任承担责任，无论该责任是基于合同、侵权或其他方式，因软件或使用软件而产生或与之相关。
+
+如对本许可有任何疑问，请联系 glmlicense@z.ai。
+```
+
+## GLM-5.3-Flash configurations and analytical model
+
+Unmodified configurations are included at
+`src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json`,
+`nvidia--GLM-5.3-Flash-NVFP4_config.json`, and
+`nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json` in the same directory.
+Sources are Z.AI's `config.json` at
+https://huggingface.co/zai-org/GLM-5.3-Flash/tree/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
+and NVIDIA's `config.json` / `hf_quant_config.json` at
+https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/09b04e5e74bca08ca8549fc736d4cdd8624bfde3.
+Copyright (c) 2026 Z.AI Co., Ltd. MIT license; the full license is preserved
+in the adjacent distributed `GLM53FLASH_PROVENANCE.md`.
+
+The geometry in `src/aisimulate_core/sdk/glm53flash.py`,
+`src/aisimulate_core/sdk/models/glm53flash.py`, repository-root
+`crates/core/src/perfmodel/operators/glm53flash.rs`, and their GLM tests is a
+modified analytical adaptation of those configurations. Execution boundaries
+and precision partitions are independently expressed adaptations of
+`vllm/models/glm5next/common/{model,attention,kda}.py` and
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`,
+`vllm/model_executor/layers/logits_processor.py`, and
+`vllm/platforms/interface.py` from vLLM at
+https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0)
+(Copyright vLLM contributors, Apache-2.0), and
+`python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
+`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
+`python/sglang/srt/layers/communicator_mhc.py` and
+`python/sglang/srt/layers/logits_processor.py` from SGLang at
+https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+(Copyright SGLang contributors, Apache-2.0). No serving implementation is
+vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
+the repository Apache-2.0 license text applies to these adaptations.
+
+The Hopper SGLang FP8-KV attention precision in
+`crates/core/src/perfmodel/operators/glm53flash.rs` and its arithmetic tests
+is a modified, independently expressed analytical adaptation of
+`python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py` at
+https://github.com/sgl-project/sglang/tree/9336681310c7a7153c4fbd7c2b9ae62011899014
+(Copyright SGLang contributors, Apache-2.0). Changes: express the raw-FP8
+TileLang QK/PV precision as a tensor-core roofline rate on SM90 and verify
+the mathematical work with hand-calculated examples; no kernel source is
+vendored. The upstream license is preserved by the repository and packaged
+Apache-2.0 `LICENSE` text.
+
+## NVIDIA GLM-5.3-NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json` | `config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+
+Upstream repository:
+https://huggingface.co/nvidia/GLM-5.3-NVFP4/tree/e3b8f9f2fad29727dfa95e766c5cac18ea1414bf
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Z.AI (the base GLM-5.3 configuration). The
+copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: "License
+type: NVIDIA Proprietary", with use governed by the NVIDIA Open Model
+Agreement,
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/
+(the card links the unversioned page; the agreement text preserved in the
+provenance file named below was retrieved 2026-10-27 and is v. March 9,
+2026, page release date April 2, 2026). The card metadata declares
+`license_name: nvidia-open-model-license`. The original GLM-5.3 model is
+licensed under the GLM-5.3 License (Copyright (c) 2026 Z.AI), which ships in
+the upstream repository as `LICENSE`; the card states that the NVIDIA Open
+Model Agreement does not modify or supersede it. The full texts of both are
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+
+## NVIDIA Nemotron 3.5 Super VL NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+
+Upstream repository:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/da5b2650a835292c678994a1fa3fb653250fb508
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+License, as declared by the upstream model card at that revision: the
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1),
+https://openmdw.ai/license/1-1/. The card metadata declares
+`license: other` and `license_name: openmdw-1.1`, and the upstream
+repository ships no separate license file. The full agreement text is
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md`.
+
+## vLLM DeepSeek V4 cache sizing
+
+`src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
+control in `src/aisimulate/config/engine.py` are adapted and modified from vLLM
+commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
+`vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,
+`vllm/v1/attention/backends/mla/sparse_swa.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/single_type_kv_cache_manager.py`,
+and `vllm/config/attention.py`. The modified implementation computes DeepSeek V4
+cache pages, packed cache groups and resident sliding-window blocks with CPU
+arithmetic, maps them onto AISimulate's state cache, and adds AISimulate
+validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/LICENSE
+
+## SemiAnalysis AgentX simulation-performance fixture
+
+`python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
+from `traces.jsonl` in the SemiAnalysis dataset
+https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
+at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
+The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
+
+Upstream authors: SemiAnalysis. The upstream card supplies no separate
+copyright or NOTICE statement. License: Apache License 2.0, declared in the
+pinned dataset card and reproduced in `fixtures/LICENSE`.
+
+Modified by NVIDIA: selected four complete plays and normalized JSON whitespace.
+The original play retains its rows-API representation; the three added plays
+retain their raw JSONL request values, dependencies, hashes, and timestamps.
+See the adjacent fixture README and `agentx.json` manifest for the source,
+play identities, counts, and content checksum.
+
+## NVIDIA Dynamo CI handoff compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+is adapted and modified from NVIDIA Dynamo's `lib/mocker/src/common/handoff.rs`
+at commit `def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/handoff.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds zero recurrent-state bytes to the legacy token-only DTO
+conversion for CI builds against the newer AISimulate handoff API. It preserves
+the upstream copyright header and marks the modified conversion in the output.
+
+## NVIDIA Dynamo CI struct-literal compatibility
+
+The exact-source rewrites in `scripts/performance/build_simulation_dynamo.py`
+and their regression fixtures in `tests/test_ci_workflow_contracts.py`
+are adapted and modified from NVIDIA Dynamo's
+`lib/mocker/src/grouped_scheduler/compatibility.rs` and
+`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs`,
+`lib/mocker/src/replay/offline/entrypoints.rs`,
+`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs`, and
+`lib/bindings/python/rust/llm/replay.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
+
+Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds `None` for new optional AISimulate fields to the native
+request and offline KV-router placement struct literals for CI builds against
+newer AISimulate APIs. It also sets an empty image list for the pinned text-only
+request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
+instead of adding multimodal support to Dynamo's adapter. Both offline replay
+specifications disable the encoder pool; the Python binding's synthetic trace
+explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
+rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
+The Weka import adapter retains the default recorded client when the AISimulate
+API adds the client selection field.
+It preserves the upstream copyright headers and marks each modification in the output.
+
+The replay compatibility rewrite in the same script adapts
+`lib/mocker/src/engine_adapter.rs` at that same immutable revision:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
+context parallelism to 1 in four replay descriptors, preserving the pinned
+adapter's topology. It also disables the SGLang host loop and takes the vision
+cache capacity from the canonical SGLang default, preserving text-only behavior.
+Its upstream copyright header is retained and each modified literal is marked
+in the generated output.
+
+## NVIDIA Dynamo CI speculation compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+and its regression fixture in `tests/test_ci_workflow_contracts.py` are adapted
+and modified from NVIDIA Dynamo's
+`lib/bindings/python/rust/llm/ais_callback.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/ais_callback.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation reads the serialized Ngram identity instead of the removed
+enum accessor, retaining legacy `nextn`, accepting disabled speculation, and
+rejecting other replay schemes.
+It preserves the upstream copyright header and marks the modified conversion
+in the output.
+
+The callback contract harness in `scripts/performance/check_dynamo_callback.py`
+compiles that entire adapted callback with the real AISimulate core. Its minimal
+trait interfaces are adapted from `lib/mocker/src/common/perf_model.rs` and
+`lib/kv-router/src/scheduling/prefill_load.rs` at the same immutable commit:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/perf_model.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/kv-router/src/scheduling/prefill_load.rs
+
+These files carry the same NVIDIA copyright and Apache-2.0 license above.
+The harness modifies their module placement to test the callback independently
+of the Dynamo scheduler; it does not replace callback or estimator behavior.
+
+## SGLang simulator and HiSim feature definitions
+
+The per-request feature set of the learned forward-pass model
+(`REQUEST_FEATURE_NAMES` in `python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py` and
+`REQUEST_FEATURE_NAMES` in `crates/core/src/perfmodel/fpm/learned.rs`,
+relative to the repository root) is a re-implementation of the 18 batch
+features defined by `MLTimePredictor.FEATURE_NAMES` in the SGLang simulator,
+and the 32 `(present, past, extend)` request slots follow the feature layout
+of HiSim's XGBoost predictor. No upstream source code is copied; the feature
+names, ordering, and formulas were adapted so that models trained for either
+tool line up with this one.
+
+Upstream sources:
+- https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/tools/sglang-simulator/src/sglang_simulator/time_predictor/ml.py
+  (SGLang, Apache License 2.0; copyright the SGLang project contributors)
+- https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/hisim/src/hisim/time_predictor/aiconfigurator.py
+  (HiSim, Alibaba tair-kvcache, Apache License 2.0; copyright Alibaba Group)
+
+Both upstream licenses at the identified revisions:
+https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/LICENSE
+https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/LICENSE
+
+The AISimulate files are modified re-implementations, not verbatim copies.
+Both derived files carry the source URLs and revisions in their headers.
+
+## SGLang v0.5.20 transferred-prompt publication at running admission and release on ready-queue cancellation
+
+The following repository-root files independently model transferred-prompt publication at running admission and release on ready-queue cancellation:
+
+- `crates/core/src/engine/kv_manager/sglang_backend.rs`
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `crates/core/src/replay/disagg_tests.rs`
+- `crates/core/src/replay/handoff.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/decode.py (get_new_prebuilt_batch), python/sglang/srt/disaggregation/decode_schedule_batch_mixin.py (process_prebuilt), and python/sglang/srt/managers/scheduler.py (waiting-queue cancellation).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 partial-edge access recency and reinsertion of an already cached prefix
+
+The following repository-root files independently model partial-edge access recency and reinsertion of an already cached prefix:
+
+- `crates/core/src/engine/cache/radix_cache.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/mem_cache/radix_cache.py (_match_prefix_helper and _insert_helper).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 stable length-policy retraction order and post-release cache eviction toward the survivor reserve
+
+The following repository-root files independently model stable length-policy retraction order and post-release cache eviction toward the survivor reserve:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/decode.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/managers/schedule_batch.py (_get_decode_retraction_order, retract_decode and release_req).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 completed source-prompt publication before the transfer hold
+
+The following repository-root files independently model completed source-prompt publication before the transfer hold:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/prefill.py (process_batch_result_disagg_prefill).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang cache publication and KV event cadence
+
+The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISimulate request leases, overlap observation, and physical page accounting. No production fixture is included.
+
+Running-request cancellation retains its KV lease until the in-flight forward
+is observed, adapting `Scheduler.abort_request` and result-time
+`release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## SGLang 0.5.21 collector serving-shape adaptation
+
+The synthetic batch staging in repository-root file
+`python/aisimulate/collector/sglang/collect_mla_module.py` adapts the native
+padded-decode buffer contract at SGLang revision
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+
+- `python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py`
+  (`DecodeCudaGraphRunner.load_batch`).
+- `python/sglang/srt/model_executor/cuda_graph_buffer_registry.py`.
+- `python/sglang/srt/model_executor/runner_utils/buffers.py`.
+
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright SGLang Team and contributors, Apache-2.0. Upstream license:
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
+
+Modified for isolated synthetic attention collection: preserve real request
+counts in performance keys while staging sentinel slots for native graph
+buckets. The evidence harness calls the installed native runner; it does not
+vendor its implementation. This source attribution does not assert separate
+OSRB approval.

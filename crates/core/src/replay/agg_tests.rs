@@ -4,12 +4,17 @@
 use std::collections::VecDeque;
 
 use super::*;
-use crate::engine::{EngineConfig, TimingModelConfig};
+use crate::engine::{EngineConfig, G3Scope, TimingModelConfig};
 use crate::replay::components::NoReplayMetadata;
 use crate::replay::core::NoEngineEvents;
 use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
-use crate::replay::{ReplayTelemetryObserver, ReplayTelemetrySnapshot, WorkerStage};
+use crate::replay::scaling::ReplayScalingDecision;
+use crate::replay::{
+    ReplayArtifactKvEventVisibility, ReplayCaptureOptions, ReplayDeterminism, ReplaySpec,
+    ReplayTelemetryObserver, ReplayTelemetrySnapshot, Replayer, WorkerStage, run_engine_replay,
+};
+use serde_json::{Value, json};
 
 type RoundRobinAggRuntime =
     AggRuntimeImpl<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
@@ -33,6 +38,13 @@ fn request(uuid: u128, arrival_ms: f64) -> DirectRequest {
 }
 
 fn runtime(pending: VecDeque<DirectRequest>) -> RoundRobinAggRuntime {
+    runtime_with_startup_time(pending, None)
+}
+
+fn runtime_with_startup_time(
+    pending: VecDeque<DirectRequest>,
+    startup_time_ms: Option<f64>,
+) -> RoundRobinAggRuntime {
     let config = ReplayEngineConfig {
         rank: EngineConfig {
             timing_model: TimingModelConfig::Fixed {
@@ -50,7 +62,7 @@ fn runtime(pending: VecDeque<DirectRequest>) -> RoundRobinAggRuntime {
         role_factory,
         AdmissionQueue::new_requests(pending, ReplayMode::Trace),
         1,
-        None,
+        startup_time_ms,
         |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
     )
     .unwrap()
@@ -237,6 +249,7 @@ impl PlacementPolicy<ReplayRequestPayload> for MismatchedPlacement {
                 scheduler_id: 0,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             released: Vec::new(),
@@ -712,4 +725,688 @@ fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
             .num_requests,
         0
     );
+}
+
+// G3 fixtures independently adapt vLLM behavioral contracts (Apache-2.0).
+// Upstream: https://github.com/vllm-project/vllm/tree/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac
+// Paths: vllm/v1/core/sched/{scheduler,request_queue}.py and
+// vllm/v1/kv_offload/tiering/manager.py. See THIRD_PARTY_NOTICES.md.
+fn g3_spec(
+    scope: G3Scope,
+    workers: usize,
+    g1: usize,
+    g2: usize,
+    block: usize,
+    rows: &[(f64, u32, usize, usize)],
+) -> ReplaySpec {
+    let requests = rows.iter().enumerate().map(|(i, &(arrival, base, count, output))| json!({
+        "id": i.to_string(), "arrival_time_ms": arrival, "input_tokens": count,
+        "input_token_ids": (base..base+count as u32).collect::<Vec<_>>(), "output_tokens": output,
+    })).collect::<Vec<_>>();
+    serde_json::from_value(json!({"topology":{"kind":"aggregated","workers":{"initial_workers":workers}},
+        "engine":{"rank":{"num_gpu_blocks":g1,"block_size":block,"max_num_seqs":3,
+            "max_num_batched_tokens":128,"enable_prefix_caching":true,"kv_cache_bytes_per_token":256,
+            "native_host_offload":{"num_host_blocks":g2,"d2h_bandwidth_gbps":0.0,"h2d_bandwidth_gbps":0.0},
+            "g3_offload":{"scope":scope,"num_g3_blocks":8,"latency_to_first_byte_ms":0.0,
+                "read_bandwidth_gbps":0.0,"write_bandwidth_gbps":0.0,
+                "shared_read_bandwidth_gbps":0.0,"shared_write_bandwidth_gbps":0.0},"timing_model":{"type":"fixed","prefill_ms":0.0,"decode_ms":0.0}}},
+        "requests":requests})).unwrap()
+}
+
+fn g3_patch(spec: ReplaySpec, update: impl FnOnce(&mut Value)) -> ReplaySpec {
+    let mut value = serde_json::to_value(spec).unwrap();
+    update(&mut value);
+    serde_json::from_value(value).unwrap()
+}
+
+fn g3_runtime(input: ReplaySpec) -> RoundRobinAggRuntime {
+    let config: ReplayEngineConfig = serde_json::from_value(input.engine).unwrap();
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    let pending = input
+        .requests
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| DirectRequest {
+            tokens: row.input_token_ids.unwrap(),
+            max_output_tokens: row.output_tokens,
+            uuid: Some(Uuid::from_u128(index as u128)),
+            arrival_timestamp_ms: Some(row.arrival_time_ms),
+            ..DirectRequest::default()
+        })
+        .collect();
+    RoundRobinAggRuntime::new_composed(
+        factory,
+        AdmissionQueue::new_requests(pending, ReplayMode::Trace),
+        1,
+        None,
+        |dp_size, topology| Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn g3_scaling_drains_writes_and_reads_then_reuses_only_shared_storage() {
+    use crate::replay::scaling::{
+        ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    struct ScaleCycle(Rc<RefCell<Vec<Vec<usize>>>>);
+    impl ReplayScalingPolicy for ScaleCycle {
+        fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn on_tick(
+            &mut self,
+            snapshot: ReplayScalingSnapshot,
+        ) -> anyhow::Result<ReplayScalingDecision> {
+            self.0.borrow_mut().push(snapshot.active_decode_ids.clone());
+            let (target, next) = match snapshot.tick_ordinal {
+                0 => (0, Some(20.0)),
+                1 => {
+                    assert!(snapshot.draining_decode_ids.is_empty());
+                    (1, Some(31.0))
+                }
+                2 => (0, Some(50.0)),
+                3 => {
+                    assert!(snapshot.draining_decode_ids.is_empty());
+                    (1, None)
+                }
+                _ => unreachable!(),
+            };
+            Ok(ReplayScalingDecision {
+                target_decode: Some(target),
+                next_tick_ms: next,
+                ..Default::default()
+            })
+        }
+    }
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let mut runs = Vec::new();
+        for _ in 0..2 {
+            let input = g3_patch(
+                g3_spec(
+                    scope,
+                    1,
+                    4,
+                    4,
+                    4,
+                    &[(0.0, 0, 9, 1), (30.0, 0, 9, 1), (60.0, 0, 9, 1)],
+                ),
+                |v| {
+                    v["engine"]["rank"]["g3_offload"]["latency_to_first_byte_ms"] = json!(10.0);
+                },
+            );
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let (collector, _) = g3_runtime(input)
+                .with_scaling_policy(Box::new(ScaleCycle(seen.clone())))
+                .run()
+                .unwrap();
+            assert_eq!(*seen.borrow(), vec![vec![0], vec![], vec![1], vec![]]);
+            let report = collector.finish();
+            assert_eq!(report.request_counts.completed_requests, 3);
+            let stats = report.g3_offload.unwrap();
+            assert_eq!(stats.pending_blocks, 0);
+            assert_eq!(stats.read.submitted_jobs, stats.read.completed_jobs);
+            assert_eq!(stats.write.submitted_jobs, stats.write.completed_jobs);
+            if scope == G3Scope::WorkerLocal {
+                assert_eq!(stats.cross_worker_read_blocks, 0);
+                assert_eq!(stats.read.completed_jobs, 0);
+            } else {
+                assert_eq!(stats.read.completed_jobs, 2);
+                assert_eq!(stats.cross_worker_read_blocks, 4);
+            }
+            runs.push((stats, report.throughput.duration_ms));
+        }
+        assert_eq!(runs[0], runs[1]);
+    }
+}
+
+#[test]
+fn g3_fixed_scaling_policy_preserves_no_policy_results() {
+    use crate::replay::scaling::NoScaling;
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let input = g3_spec(scope, 1, 4, 4, 4, &[(0.0, 0, 9, 1)]);
+        let (plain, _) = g3_runtime(input.clone()).run().unwrap();
+        let (fixed, _) = g3_runtime(input)
+            .with_scaling_policy(Box::new(NoScaling))
+            .run()
+            .unwrap();
+        let summaries = [plain, fixed].map(|collector| {
+            let mut report = serde_json::to_value(collector.finish()).unwrap();
+            for field in [
+                "wall_time_ms",
+                "processed_tokens_per_s",
+                "processed_output_tokens_per_s",
+            ] {
+                report.as_object_mut().unwrap().remove(field);
+            }
+            report
+        });
+        assert_eq!(summaries[0], summaries[1]);
+    }
+}
+
+#[test]
+fn g3_reused_runtime_reports_cumulative_counters_and_keeps_cache() {
+    fn submit_and_drain(runtime: &mut RoundRobinAggRuntime, id: u128, base: u32, count: u32) {
+        runtime
+            .submit_dynamic(DirectRequest {
+                tokens: (base..base + count).collect(),
+                max_output_tokens: 1,
+                uuid: Some(Uuid::from_u128(id)),
+                arrival_timestamp_ms: Some(runtime.now_ms()),
+                ..DirectRequest::default()
+            })
+            .unwrap();
+        for _ in 0..1000 {
+            runtime.step_dynamic_until(f64::INFINITY).unwrap();
+            runtime.take_step_tokens();
+            runtime.take_step_terminals();
+            if runtime.is_workload_done() {
+                return;
+            }
+        }
+        panic!("request and cache I/O did not drain");
+    }
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let mut runtime = g3_runtime(g3_spec(scope, 1, 4, 3, 4, &[])).into_steppable();
+        submit_and_drain(&mut runtime, 1, 0, 9);
+        submit_and_drain(&mut runtime, 2, 100, 15);
+        let first = runtime.take_report_dynamic(0.0).unwrap();
+        assert_eq!(first.request_counts.completed_requests, 2);
+        let first = first.g3_offload.unwrap();
+        assert!(first.write.completed_bytes > 0);
+        assert_eq!(first.read.completed_jobs, 0);
+        assert!(first.resident_blocks > 0);
+        submit_and_drain(&mut runtime, 3, 0, 9);
+        let second = runtime.take_report_dynamic(0.0).unwrap();
+        assert_eq!(second.request_counts.completed_requests, 1);
+        let second = second.g3_offload.unwrap();
+        assert!(
+            second.read.completed_bytes > 0,
+            "second round restores the first round's G3 prefix"
+        );
+        assert_eq!(
+            second.write, first.write,
+            "reporting must not clear cache or counters"
+        );
+        assert_eq!(second.resident_blocks, first.resident_blocks);
+        let idle = runtime.take_report_dynamic(0.0).unwrap();
+        assert_eq!(idle.request_counts.num_requests, 0);
+        assert_eq!(idle.g3_offload.unwrap(), second);
+    }
+}
+
+#[test]
+fn g3_h2d_artifacts_follow_logical_prefix_for_g2_and_g3() {
+    for g3 in [false, true] {
+        let input = g3_spec(
+            G3Scope::WorkerLocal,
+            1,
+            4,
+            if g3 { 3 } else { 8 },
+            4,
+            &[(0.0, 0, 9, 1), (10.0, 100, 15, 1), (20.0, 0, 9, 1)],
+        );
+        let input = g3_patch(input, |v| {
+            v["record_per_request"] = json!(true);
+            if !g3 {
+                v["engine"]["rank"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("g3_offload");
+            }
+        });
+        let (report, artifacts) = Replayer::new(input, ReplayEngineFactory::new())
+            .unwrap()
+            .run_with_artifacts(ReplayArtifactKvEventVisibility::Native)
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        let records = serde_json::to_value(&report.per_request).unwrap();
+        let artifacts = serde_json::to_value(artifacts).unwrap();
+        let uuid = |id: &str| {
+            records
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["request_id"] == id)
+                .unwrap()["uuid"]
+                .clone()
+        };
+        let events = artifacts["host_offload_events"].as_array().unwrap();
+        let mut mappings = events
+            .iter()
+            .filter(|r| {
+                r["request_id"] == uuid("0") && r["event"]["event"] == "store_block_mappings"
+            })
+            .flat_map(|r| r["event"]["mappings"].as_array().unwrap())
+            .map(|m| {
+                (
+                    m["logical_block_index"].as_u64().unwrap(),
+                    m["block_hash"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        mappings.sort_unstable();
+        assert_eq!(mappings.iter().map(|m| m.0).collect::<Vec<_>>(), vec![0, 1]);
+        let expected = json!(mappings.iter().map(|m| m.1).collect::<Vec<_>>());
+        for event in ["load_queued", "load_completed"] {
+            let loads = events
+                .iter()
+                .filter(|r| r["request_id"] == uuid("2") && r["event"]["event"] == event)
+                .collect::<Vec<_>>();
+            assert_eq!(loads.len(), 1);
+            assert_eq!(loads[0]["event"]["block_hashes"], expected);
+        }
+    }
+}
+
+#[test]
+fn g3_zero_time_restore_finishes_without_future_arrival_in_both_scopes() {
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let input = g3_spec(
+            scope,
+            1,
+            5,
+            4,
+            16,
+            &[(0.0, 0, 32, 1), (100.0, 1000, 64, 1), (200.0, 0, 32, 1)],
+        );
+        let report = run_engine_replay(input).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        // Restore, prefill and fixed decode are all zero-time, so the final
+        // request completes at its 200ms arrival without a synthetic floor.
+        assert_eq!(report.throughput.duration_ms, 200.0);
+        let g3 = report.g3_offload.unwrap();
+        assert!(g3.read.completed_jobs > 0);
+        assert!(g3.lookup_hits <= g3.lookup_probes);
+        assert_eq!(g3.read.completed_jobs, g3.read.submitted_jobs);
+    }
+}
+
+#[test]
+fn g3_capacity_head_cannot_block_the_owner_of_reserved_g1() {
+    // User-supplied independent five-request counterexample, preserved literally.
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let input = g3_spec(
+            scope,
+            1,
+            6,
+            7,
+            4,
+            &[
+                (1.0, 100, 19, 0),
+                (1.2, 0, 24, 0),
+                (102.3, 0, 3, 2),
+                (202.3, 100, 14, 1),
+                (203.4, 0, 13, 2),
+            ],
+        );
+        let input = g3_patch(input, |v| {
+            let rank = &mut v["engine"]["rank"];
+            rank["max_num_batched_tokens"] = json!(4);
+            rank["kv_cache_bytes_per_token"] = json!(250000);
+            rank["timing_model"]["prefill_ms"] = json!(10.0);
+            rank["native_host_offload"]["h2d_bandwidth_gbps"] = json!(1.0);
+            rank["g3_offload"]["num_g3_blocks"] = json!(19);
+            rank["g3_offload"]["latency_to_first_byte_ms"] = json!(0.1);
+            rank["g3_offload"]["read_bandwidth_gbps"] = json!(10.0);
+            rank["g3_offload"]["shared_read_bandwidth_gbps"] = json!(10.0);
+            rank["g3_offload"]["shared_write_bandwidth_gbps"] = json!(10.0);
+        });
+        let report = run_engine_replay(input).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 5);
+        assert!(report.g3_offload.unwrap().read.completed_jobs > 0);
+    }
+}
+
+#[test]
+fn g3_replica_sharing_changes_only_reuse_and_is_repeatable() {
+    let rows = [
+        (0.0, 0, 8, 1),
+        (100.0, 100, 8, 1),
+        (200.0, 200, 8, 1),
+        (300.0, 0, 8, 1),
+    ];
+    let mut results = Vec::new();
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let input = g3_spec(scope, 2, 3, 2, 4, &rows);
+        let first = run_engine_replay(input.clone()).unwrap();
+        let second = run_engine_replay(input).unwrap();
+        assert_eq!(first.request_counts.completed_requests, 4);
+        assert_eq!(first.g3_offload, second.g3_offload);
+        let summaries = [&first, &second].map(|report| {
+            let mut summary = serde_json::to_value(report).unwrap();
+            // Only host execution speed is nondeterministic, not simulated timing.
+            for field in [
+                "wall_time_ms",
+                "processed_tokens_per_s",
+                "processed_output_tokens_per_s",
+            ] {
+                summary.as_object_mut().unwrap().remove(field);
+            }
+            summary
+        });
+        assert_eq!(summaries[0], summaries[1]);
+        results.push(first.g3_offload.unwrap());
+    }
+    assert_eq!(results[0].cross_worker_read_blocks, 0);
+    assert!(results[1].cross_worker_read_blocks > 0);
+}
+
+#[test]
+fn g3_zero_output_compute_and_io_settle_at_last_arrival() {
+    let input = g3_spec(
+        G3Scope::ClusterShared,
+        1,
+        5,
+        4,
+        16,
+        &[(0.0, 0, 32, 0), (100.0, 1000, 64, 0), (200.0, 0, 32, 0)],
+    );
+    let report = run_engine_replay(input).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 3);
+    assert_eq!(report.throughput.duration_ms, 200.0);
+    assert!(report.g3_offload.unwrap().read.completed_jobs > 0);
+}
+
+#[test]
+fn g3_raw_replay_g3_without_g2_is_rejected_before_factory_strips_config() {
+    let input = g3_spec(G3Scope::ClusterShared, 1, 5, 4, 16, &[(0.0, 0, 32, 1)]);
+    let input = g3_patch(input, |v| {
+        v["engine"]["rank"]
+            .as_object_mut()
+            .unwrap()
+            .remove("native_host_offload");
+    });
+    let error = run_engine_replay(input).unwrap_err().to_string();
+    assert!(
+        error.contains("g3_offload requires native_host_offload"),
+        "{error}"
+    );
+}
+
+#[test]
+fn g3_zero_duration_promotions_under_temporary_g2_pressure_fall_back_and_drain() {
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let input = g3_spec(
+            scope,
+            1,
+            2,
+            2,
+            4,
+            &[
+                (0.0, 0, 8, 1),
+                (2002.0, 200, 1, 4),
+                (2007.0, 100, 4, 1),
+                (2009.0, 0, 8, 1),
+            ],
+        );
+        let input = g3_patch(input, |v| {
+            let rank = &mut v["engine"]["rank"];
+            rank["max_num_seqs"] = json!(1);
+            rank["kv_cache_bytes_per_token"] = json!(250000);
+            rank["g3_offload"]["write_bandwidth_gbps"] = json!(0.001);
+            rank["g3_offload"]["shared_write_bandwidth_gbps"] = json!(0.001);
+        });
+        // First prefix writes finish at2000ms. A generation-only full block
+        // evicts one G1 block without a G2 prompt store. X evicts the other G1
+        // block and starts a slow write at2007ms, pinning one G2 slot.
+        // The final request's zero-time reads must not
+        // alternate forever in the other slot or fabricate a protected hit.
+        let report = run_engine_replay(input).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 4);
+        // The final restore and fixed decode take zero time after arrival.
+        assert_eq!(report.throughput.duration_ms, 2009.0);
+        let stats = report.g3_offload.unwrap();
+        // Both reads start at the current lookup time2009; neither is backdated
+        // to X's2007 boundary, and the A/B cycle terminates at this timestamp.
+        assert_eq!(stats.read.completed_jobs, 2);
+        assert_eq!(stats.read.completed_bytes, 2_000_000);
+        assert_eq!(stats.pending_blocks, 0);
+        assert_eq!(stats.write.submitted_jobs, stats.write.completed_jobs);
+    }
+}
+
+#[test]
+fn g3_post_lookup_touch_can_evict_a_later_prefix_block() {
+    let input = g3_spec(
+        G3Scope::WorkerLocal,
+        1,
+        2,
+        2,
+        4,
+        &[
+            (0.0, 0, 8, 1),
+            (10.0, 200, 1, 4),
+            (20.0, 100, 4, 1),
+            (100.0, 0, 8, 1),
+        ],
+    );
+    let input = g3_patch(input, |v| {
+        let rank = &mut v["engine"]["rank"];
+        rank["max_num_seqs"] = json!(1);
+        rank["kv_cache_bytes_per_token"] = json!(250000);
+        rank["g3_offload"]["latency_to_first_byte_ms"] = json!(2.0);
+        rank["g3_offload"]["read_bandwidth_gbps"] = json!(1.0);
+        rank["g3_offload"]["shared_read_bandwidth_gbps"] = json!(1.0);
+    });
+    let report = run_engine_replay(input).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 4);
+    // At100ms A is missing. Reserving it precedes the full-prefix touch, so
+    // it evicts the older B; reserving B then evicts X. Both blocks must be
+    // read in one batch:2ms first-byte +2ms data, followed by zero-time fixed decode.
+    assert_eq!(report.throughput.duration_ms, 100.0 + 2.0 + 2.0);
+    let stats = report.g3_offload.unwrap();
+    assert_eq!(stats.read.completed_jobs, 1);
+    assert_eq!(stats.read.completed_bytes, 2_000_000);
+    assert_eq!(stats.read.transfer_ms, 4.0);
+}
+
+#[test]
+fn g3_idle_gap_does_not_consume_first_byte_or_transfer_time_before_arrival() {
+    // A one-block restore has no later prefix block for lookup-touch ordering
+    // to protect or evict. Both idle gaps must pay the same3ms read service.
+    for arrival in [100.0, 1000.0] {
+        let input = g3_spec(
+            G3Scope::WorkerLocal,
+            1,
+            2,
+            1,
+            4,
+            &[
+                (0.0, 0, 4, 1),
+                (10.0, 100, 4, 1),
+                (20.0, 200, 4, 1),
+                (arrival, 0, 4, 1),
+            ],
+        );
+        let input = g3_patch(input, |v| {
+            let rank = &mut v["engine"]["rank"];
+            rank["max_num_seqs"] = json!(1);
+            rank["kv_cache_bytes_per_token"] = json!(250000);
+            rank["g3_offload"]["latency_to_first_byte_ms"] = json!(2.0);
+            rank["g3_offload"]["read_bandwidth_gbps"] = json!(1.0);
+            rank["g3_offload"]["shared_read_bandwidth_gbps"] = json!(1.0);
+        });
+        let report = run_engine_replay(input).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 4);
+        // One block pays 2ms first-byte +1ms data; fixed decode adds zero.
+        assert_eq!(report.throughput.duration_ms, arrival + 2.0 + 1.0);
+        let stats = report.g3_offload.unwrap();
+        assert_eq!(stats.read.completed_jobs, 1);
+        assert_eq!(stats.read.completed_bytes, 1_000_000);
+        assert_eq!(stats.read.transfer_ms, 3.0);
+    }
+}
+
+#[test]
+fn g3_summary_serializes_g3_counters_only_when_enabled() {
+    let input = g3_spec(G3Scope::ClusterShared, 1, 5, 4, 16, &[(0.0, 0, 32, 1)]);
+    let report = run_engine_replay(input.clone()).unwrap();
+    let summary = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        summary["g3_offload"],
+        serde_json::to_value(&report.g3_offload).unwrap()
+    );
+    assert!(
+        summary["g3_offload"]["write"]["completed_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    let input = g3_patch(input, |v| {
+        v["engine"]["rank"]
+            .as_object_mut()
+            .unwrap()
+            .remove("g3_offload");
+    });
+    let report = run_engine_replay(input).unwrap();
+    assert!(report.g3_offload.is_none());
+    assert!(
+        serde_json::to_value(report)
+            .unwrap()
+            .get("g3_offload")
+            .is_none()
+    );
+}
+
+#[test]
+fn kvcr_without_hints_replays_exactly_like_g2_only() {
+    // Request 2 pushes request 1's block out of the one-block G1; request 3 restores it from G2.
+    let replay = |kvcr: bool| {
+        let mut rank = json!({
+            "num_gpu_blocks": 1, "block_size": 4, "max_num_seqs": 2, "max_num_batched_tokens": 8,
+            "kv_cache_bytes_per_token": 250_000,
+            "native_host_offload": {"num_host_blocks": 2, "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0},
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 0.0},
+        });
+        if kvcr {
+            rank["kvcr"] = json!({});
+        }
+        let requests = [
+            (0.0, [1, 2, 3, 4]),
+            (2.0, [5, 6, 7, 8]),
+            (4.0, [1, 2, 3, 4]),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(id, (arrival, tokens))| {
+            json!({"id": id.to_string(), "arrival_time_ms": arrival, "input_tokens": 4,
+                    "input_token_ids": tokens, "output_tokens": 0})
+        })
+        .collect::<Vec<_>>();
+        let spec = serde_json::from_value(json!({
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+            "engine": {"rank": rank}, "requests": requests, "record_per_request": true,
+        }))
+        .unwrap();
+        Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_capture_options(ReplayCaptureOptions {
+                determinism: ReplayDeterminism::CanonicalV1,
+                ..ReplayCaptureOptions::default()
+            })
+            .run()
+            .unwrap()
+    };
+    let (g2_only, with_kvcr) = (replay(false), replay(true));
+    assert!(
+        g2_only
+            .per_request
+            .iter()
+            .any(|record| record.first_admission_host_reused_input_tokens == Some(4)),
+        "the workload must exercise G2"
+    );
+    assert_eq!(
+        serde_json::to_value(&with_kvcr.per_request).unwrap(),
+        serde_json::to_value(&g2_only.per_request).unwrap()
+    );
+    // Only the canonical wall-clock exclusions and the idle `kvcr` section differ.
+    let summary = |report: &crate::replay::ReplayReport| {
+        let mut summary = serde_json::to_value(report).unwrap();
+        for pointer in crate::replay::CANONICAL_RESULT_EXCLUSIONS {
+            if let Some(field) = pointer.strip_prefix("/summary/") {
+                summary.as_object_mut().unwrap().remove(field);
+            }
+        }
+        summary
+    };
+    let (g2_only, mut with_kvcr) = (summary(&g2_only), summary(&with_kvcr));
+    assert_eq!(
+        with_kvcr["kvcr"]["pulls"],
+        json!({"success": 0, "partial": 0})
+    );
+    with_kvcr.as_object_mut().unwrap().remove("kvcr");
+    assert_eq!(with_kvcr, g2_only);
+}
+
+#[test]
+fn agg_settled_steps_resume_without_changing_the_result() {
+    let pending = VecDeque::from([
+        DirectRequest {
+            max_output_tokens: 4,
+            ..request(1, 0.0)
+        },
+        request(2, 3.0),
+    ]);
+    let (continuous, _) = runtime(pending.clone()).run().unwrap();
+
+    let mut stepped = runtime(pending);
+    for _ in 0..2 {
+        match stepped.step().unwrap() {
+            ReplayStepOutcome::Settled { .. } => {}
+            ReplayStepOutcome::Complete => panic!("replay completed before resume point"),
+            ReplayStepOutcome::TimeLimitReached { .. } => panic!("unexpected time limit"),
+        }
+    }
+    assert!(
+        stepped.cluster_in_flight() > 0,
+        "resume must retain live work"
+    );
+    let (resumed, _) = stepped.run().unwrap();
+    let resumed = resumed.finish();
+
+    assert_eq!(resumed.request_counts.completed_requests, 2);
+    assert_eq!(
+        serde_json::to_value(continuous.finish()).unwrap(),
+        serde_json::to_value(resumed).unwrap()
+    );
+}
+
+#[test]
+fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
+    struct ScaleAtZero;
+
+    impl ReplayScalingPolicy for ScaleAtZero {
+        fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+            Ok(0.0)
+        }
+
+        fn on_tick(
+            &mut self,
+            snapshot: ReplayScalingSnapshot,
+        ) -> anyhow::Result<ReplayScalingDecision> {
+            assert_eq!(snapshot.now_ms, 0.0);
+            Ok(ReplayScalingDecision {
+                target_decode: Some(2),
+                ..Default::default()
+            })
+        }
+    }
+
+    let mut stepped = runtime_with_startup_time(VecDeque::from([request(1, 0.0)]), Some(0.0))
+        .with_scaling_policy(Box::new(ScaleAtZero));
+
+    assert_eq!(
+        stepped.step().unwrap(),
+        ReplayStepOutcome::Settled { now_ms: 0.0 }
+    );
+    assert_eq!(stepped.engine.active_group_ids(), vec![0, 1]);
+    assert!(stepped.engine.starting_group_ids().is_empty());
+    assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
+    assert!(stepped.next_timestamps().1.unwrap() > 0.0);
 }

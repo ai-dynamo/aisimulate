@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Layering checks for the standalone ``aiconfigurator_core`` SDK."""
+"""Layering checks for the standalone ``aisimulate_core`` SDK."""
 
 from __future__ import annotations
 
@@ -10,21 +10,21 @@ from pathlib import Path
 
 import pytest
 
-SDK_ROOT = Path(__file__).parents[3] / "aic-core" / "src" / "aiconfigurator_core" / "sdk"
-UPPER_ADAPTER_ROOT = Path(__file__).parents[3] / "src" / "aiconfigurator" / "sdk" / "config_adapter"
-UPPER_MODULES = {"aiconfigurator"}
+SDK_ROOT = Path(__file__).parents[3] / "src" / "aisimulate_core" / "sdk"
+UPPER_ADAPTER_ROOT = Path(__file__).parents[3] / "src" / "aisimulate" / "sdk" / "config_adapter"
+UPPER_MODULES = {"aisimulate"}
 
 
 def _is_cli_child(name: str) -> bool:
-    return name == "cli" or name.startswith("cli.")
+    return name == "legacy_cli" or name.startswith("legacy_cli.")
 
 
 def _is_absolute_cli_import(name: str) -> bool:
-    return name == "aiconfigurator.cli" or name.startswith("aiconfigurator.cli.")
+    return name == "aisimulate.legacy_cli" or name.startswith("aisimulate.legacy_cli.")
 
 
 def _sdk_package_parts(path: Path) -> tuple[str, ...]:
-    return ("aiconfigurator_core", "sdk", *path.parent.parts)
+    return ("aisimulate_core", "sdk", *path.parent.parts)
 
 
 def _resolve_import_from_module(node: ast.ImportFrom, package_parts: tuple[str, ...]) -> str | None:
@@ -72,7 +72,7 @@ def _is_cli_import_from(node: ast.ImportFrom, package_parts: tuple[str, ...]) ->
         return False
     if _is_absolute_cli_import(resolved_module):
         return True
-    if resolved_module == "aiconfigurator":
+    if resolved_module == "aisimulate":
         return any(_is_cli_child(alias.name) for alias in node.names)
     return False
 
@@ -116,11 +116,11 @@ def test_config_adapter_is_owned_only_by_the_upper_package() -> None:
 @pytest.mark.parametrize(
     ("path", "source"),
     [
-        (Path("memory.py"), "import aiconfigurator\n"),
-        (Path("memory.py"), "import aiconfigurator.generator\n"),
-        (Path("memory.py"), "from aiconfigurator.logging_utils import setup_logging\n"),
-        (Path("memory.py"), "from aiconfigurator import main\n"),
-        (Path("subpkg/module.py"), "from aiconfigurator.generator import api\n"),
+        (Path("memory.py"), "import aisimulate\n"),
+        (Path("memory.py"), "import aisimulate.generator\n"),
+        (Path("memory.py"), "from aisimulate.logging_utils import setup_logging\n"),
+        (Path("memory.py"), "from aisimulate import main\n"),
+        (Path("subpkg/module.py"), "from aisimulate.generator import api\n"),
     ],
 )
 def test_upper_import_offenders_flags_upper_packages(path: Path, source: str) -> None:
@@ -130,11 +130,11 @@ def test_upper_import_offenders_flags_upper_packages(path: Path, source: str) ->
 @pytest.mark.parametrize(
     ("path", "source"),
     [
-        (Path("memory.py"), "import aiconfigurator.cli\n"),
-        (Path("memory.py"), "import aiconfigurator.cli.api\n"),
-        (Path("memory.py"), "from aiconfigurator import cli\n"),
-        (Path("memory.py"), "from aiconfigurator.cli import api\n"),
-        (Path("memory.py"), "from aiconfigurator.cli.api import cli_estimate\n"),
+        (Path("memory.py"), "import aisimulate.legacy_cli\n"),
+        (Path("memory.py"), "import aisimulate.legacy_cli.api\n"),
+        (Path("memory.py"), "from aisimulate import legacy_cli\n"),
+        (Path("memory.py"), "from aisimulate.legacy_cli import api\n"),
+        (Path("memory.py"), "from aisimulate.legacy_cli.api import cli_estimate\n"),
     ],
 )
 def test_cli_import_offenders_flags_absolute_and_relative_cli_imports(path: Path, source: str) -> None:
@@ -144,8 +144,8 @@ def test_cli_import_offenders_flags_absolute_and_relative_cli_imports(path: Path
 @pytest.mark.parametrize(
     ("path", "source"),
     [
-        (Path("memory.py"), "import aiconfigurator_core.sdk.memory\n"),
-        (Path("memory.py"), "from aiconfigurator_core import sdk\n"),
+        (Path("memory.py"), "import aisimulate_core.sdk.memory\n"),
+        (Path("memory.py"), "from aisimulate_core import sdk\n"),
         (Path("memory.py"), "from . import cli\n"),
         (Path("subpkg/module.py"), "from .. import cli\n"),
         (Path("subpkg/module.py"), "from ..cli import api\n"),

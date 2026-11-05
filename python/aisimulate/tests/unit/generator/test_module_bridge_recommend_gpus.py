@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
+from aisimulate.generator.module_bridge import task_config_to_generator_config
 
 
 def _task(*, total_gpus: int, serving_mode: str = "agg") -> SimpleNamespace:

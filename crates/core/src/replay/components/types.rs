@@ -12,7 +12,7 @@ use crate::engine::{
 };
 use crate::replay::core::RequestIdentity;
 use crate::replay::loadgen::ReplayRequestPayload;
-use crate::replay::protocol::DirectRequest;
+use crate::replay::protocol::{AuthoredKvHints, DirectRequest};
 use crate::replay::telemetry::ReplayTrafficMetricsSnapshot;
 
 impl RequestIdentity for DirectRequest {
@@ -23,6 +23,10 @@ impl RequestIdentity for DirectRequest {
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.preferred_dp_rank
     }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.kv_hints
+    }
 }
 
 impl RequestIdentity for ReplayRequestPayload {
@@ -32,6 +36,10 @@ impl RequestIdentity for ReplayRequestPayload {
 
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.metadata().preferred_dp_rank
+    }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.metadata().kv_hints
     }
 }
 
@@ -218,8 +226,9 @@ pub struct TrafficStats {
     pub ttft_count: usize,
     /// Completed requests behind `avg_itl_ms`.
     pub itl_count: usize,
-    /// Mean visible tokens produced per decode request-forward, including the
-    /// base token. ``None`` means the window had no decode forwards.
+    /// Mean accepted tokens per decode request-forward, including the base
+    /// token, before output-limit truncation. Prefill is excluded; ordinary
+    /// non-speculative decode contributes one. ``None`` means no decode forwards.
     pub avg_accept_length: Option<f64>,
     /// Mean prefix-cache hit rate (0.0-1.0) across router admissions in
     /// the window, computed as ``mean(overlap_blocks / isl_blocks)`` over
@@ -357,19 +366,19 @@ impl TrafficAccumulator {
         self.hit_rate_count += 1;
     }
 
-    /// Record visible token bursts from decode forwards for accept-length
-    /// scaling. ``visible_output_tokens`` is the numerator and
+    /// Record accepted token bursts before output-limit truncation for
+    /// accept-length scaling. ``accepted_tokens`` is the numerator and
     /// ``decode_forwards`` is the number of requests that participated in the
     /// decode forward.
     pub(crate) fn on_accept_length_sample(
         &mut self,
-        visible_output_tokens: usize,
+        accepted_tokens: usize,
         decode_forwards: usize,
     ) {
-        if visible_output_tokens == 0 || decode_forwards == 0 {
+        if accepted_tokens == 0 || decode_forwards == 0 {
             return;
         }
-        self.total_accept_length_tokens += visible_output_tokens;
+        self.total_accept_length_tokens += accepted_tokens;
         self.accept_length_forward_count += decode_forwards;
     }
 
@@ -495,6 +504,11 @@ impl TrafficAccumulators {
             .on_completion(input_tokens, output_tokens, latencies);
         if let Some(telemetry) = self.telemetry.as_mut() {
             telemetry.on_completion(input_tokens, output_tokens, latencies);
+            // Fixed timing can deliver a token at arrival. Preserve that
+            // measured zero in telemetry without changing planner inputs.
+            if latencies.is_some_and(|(ttft_ms, _)| ttft_ms == 0.0) {
+                telemetry.ttft_count += 1;
+            }
         }
     }
 
@@ -540,6 +554,7 @@ impl TrafficAccumulators {
             router_kv_hit_rate_count: stats.hit_rate_count,
             avg_accept_length: stats.avg_accept_length,
             accept_length_forward_count: stats.accept_length_forward_count,
+            ..ReplayTrafficMetricsSnapshot::default()
         }
     }
 
@@ -689,6 +704,23 @@ mod tests {
 
         acc.on_arrival();
         assert_eq!(acc.drain(400.0).duration_s, 0.0);
+    }
+
+    #[test]
+    fn telemetry_retains_zero_ttft_without_inventing_one_token_itl() {
+        let mut traffic = TrafficAccumulators::new();
+        traffic.enable_telemetry();
+        traffic.on_completion(10, 1, Some((0.0, 0.0)));
+        let observed = traffic.drain_telemetry(1_000.0);
+        assert_eq!(observed.ttft_count, 1);
+        assert_eq!(observed.avg_ttft_ms, 0.0);
+        assert_eq!(observed.itl_count, 0);
+        assert_eq!(traffic.drain_planner(1_000.0).ttft_count, 0);
+
+        traffic.on_completion(10, 0, None);
+        let unavailable = traffic.drain_telemetry(2_000.0);
+        assert_eq!(unavailable.ttft_count, 0);
+        assert_eq!(unavailable.itl_count, 0);
     }
 
     #[test]

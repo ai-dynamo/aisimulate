@@ -9,11 +9,11 @@ Tests CLI argument validation, choices, and default values.
 
 import pytest
 
-from aiconfigurator.cli import api
-from aiconfigurator.cli import main as cli_main
-from aiconfigurator.cli.api import EstimateResult
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aisimulate.legacy_cli import api
+from aisimulate.legacy_cli import main as cli_main
+from aisimulate.legacy_cli.api import EstimateResult
+from aisimulate.sdk import common
+from aisimulate.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
 
 pytestmark = pytest.mark.unit
 
@@ -397,7 +397,7 @@ class TestCLIArgumentParsing:
         assert args.nextn == "auto"
 
     def test_nextn_requires_explicit_acceptance(self, cli_parser):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [
@@ -417,7 +417,7 @@ class TestCLIArgumentParsing:
             _resolve_and_validate_nextn(args)
 
     def test_nextn_auto_requires_explicit_acceptance_when_resolved_positive(self, cli_parser, monkeypatch):
-        import aiconfigurator.cli.main as cli_main
+        import aisimulate.legacy_cli.main as cli_main
 
         args = cli_parser.parse_args(
             [
@@ -695,7 +695,7 @@ class TestCLIArgumentParsing:
         assert args.nextn is None
 
     def test_recommend_nextn_requires_explicit_acceptance(self, cli_parser):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [
@@ -716,7 +716,7 @@ class TestCLIArgumentParsing:
 
     @pytest.mark.parametrize("accepted", ["-0.1", "2.1", "nan", "inf", "-inf"])
     def test_recommend_nextn_rejects_out_of_range_or_non_finite_acceptance(self, cli_parser, accepted):
-        from aiconfigurator.cli.main import _resolve_and_validate_nextn
+        from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
         args = cli_parser.parse_args(
             [

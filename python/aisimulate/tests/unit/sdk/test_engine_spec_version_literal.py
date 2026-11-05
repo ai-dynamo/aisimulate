@@ -15,11 +15,11 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator_core.sdk import perf_database
-from aiconfigurator_core.sdk.config import ModelConfig
-from aiconfigurator_core.sdk.engine import build_engine_spec_json
+from aisimulate.sdk import common
+from aisimulate.sdk.models import get_model
+from aisimulate_core.sdk import perf_database
+from aisimulate_core.sdk.config import ModelConfig
+from aisimulate_core.sdk.engine import build_engine_spec_json
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +28,7 @@ _SYSTEM = "b200_sxm"
 _BACKEND = "vllm"
 
 
-def _spec_backend_version(backend_version, database):
+def _spec_backend_version(backend_version, database, system=_SYSTEM):
     cfg = ModelConfig(
         tp_size=1,
         pp_size=1,
@@ -41,7 +41,7 @@ def _spec_backend_version(backend_version, database):
         build_engine_spec_json(
             model,
             model_path=_MODEL,
-            system=_SYSTEM,
+            system=system,
             backend=_BACKEND,
             backend_version=backend_version,
             kv_block_size=None,
@@ -85,14 +85,16 @@ def test_spec_build_rejects_unlisted_versions_without_the_escape(monkeypatch):
     # Review blocker (2026-08): the shim used to fall back to the raw input
     # when resolution failed, smuggling ungated coordinates onto the wire.
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         _spec_backend_version("0.22.0", None)
 
 
 def test_spec_build_rejects_unpopulated_alias(monkeypatch):
+    # Every fleet default now authors a `previous`; the a100 override baseline
+    # (vllm current 0.14.0, previous null) is the slot table's unpopulated alias.
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
     with pytest.raises(ValueError, match="has no 'previous'"):
-        _spec_backend_version("previous", None)
+        _spec_backend_version("previous", None, system="a100_sxm")
 
 
 def test_engine_handle_reload_path_resolves_the_alias():
@@ -100,7 +102,7 @@ def test_engine_handle_reload_path_resolves_the_alias():
     # construct an EngineHandle from the bytes (the native engine reloads the
     # database from the embedded string verbatim), and get a real answer —
     # possible only if the wire carried the literal.
-    from aiconfigurator_core.sdk.engine import EngineHandle, compile_engine
+    from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 
     blob = compile_engine(_MODEL, _SYSTEM, _BACKEND, "current")
     handle = EngineHandle(blob)
@@ -109,8 +111,8 @@ def test_engine_handle_reload_path_resolves_the_alias():
 
 
 def test_engine_handle_compile_rejects_unlisted_versions(monkeypatch):
-    from aiconfigurator_core.sdk.engine import compile_engine
+    from aisimulate_core.sdk.engine import compile_engine
 
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         compile_engine(_MODEL, _SYSTEM, _BACKEND, "0.22.0")

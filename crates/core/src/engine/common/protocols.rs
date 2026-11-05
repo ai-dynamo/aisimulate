@@ -13,10 +13,10 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::engine::KvEvent;
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
-use crate::engine::config::NativeHostOffloadConfig;
+use crate::engine::config::{NativeHostOffloadConfig, StateCacheConfig};
+use crate::engine::{FrontendConfig, ImageSpec, KvEvent};
 
 /// Sink for neutral KV-cache events emitted by a rank.
 pub(crate) trait KvCacheEventSink: Send + Sync {
@@ -78,6 +78,12 @@ pub(crate) struct DirectRequest {
     pub output_token_ids: Option<Vec<Token>>,
     pub uuid: Option<Uuid>,
     pub arrival_timestamp_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Image placeholders inside `tokens`; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
+    pub kv_hint: Option<crate::engine::KvHintSource>,
 }
 
 impl DirectRequest {
@@ -161,6 +167,9 @@ pub(crate) struct SglangArgs {
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
+    pub vlm_cache_bytes: Option<u64>,
+    pub host_loop: bool,
+    pub frontend: Option<FrontendConfig>,
 }
 
 /// Rank-local view of `EngineConfig`.
@@ -185,6 +194,12 @@ pub(crate) struct MockEngineArgs {
     pub max_num_batched_tokens: Option<usize>,
     #[builder(default = "1")]
     pub prefill_schedule_interval: usize,
+    #[builder(default = "0")]
+    pub prefill_decode_interval: usize,
+    /// Batches the engine keeps committed while busy; see
+    /// `EngineConfig::max_concurrent_batches`.
+    #[builder(default = "1")]
+    pub max_concurrent_batches: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]
@@ -207,8 +222,16 @@ pub(crate) struct MockEngineArgs {
     pub kv_transfer_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
     pub kv_cache_bytes_per_token: Option<usize>,
+    #[builder(default)]
+    pub kv_cache_groups: Vec<crate::perfmodel::FpmCacheGroup>,
+    #[builder(default = "None")]
+    pub kv_cache_capacity_bytes: Option<u64>,
     #[builder(default = "None")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
+    #[builder(default = "None")]
+    pub state_cache: Option<StateCacheConfig>,
+    #[builder(default = "None")]
+    pub prefix_match_unit: Option<usize>,
     #[builder(default = "None")]
     pub kv_transfer_bandwidth: Option<f64>,
     #[builder(default = "KvTransferTimingMode::FullPrompt")]

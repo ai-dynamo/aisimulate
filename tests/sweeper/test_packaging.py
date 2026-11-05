@@ -45,12 +45,13 @@ def _ai_dynamo_distribution_or_skip():
 
 
 def test_aisimulate_distribution_publishes_aisimulate_sweeper_package():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
     packaged_files = {str(path) for path in distribution.files or ()}
 
-    assert distribution.metadata["Name"] == "aisimulate"
+    assert distribution.metadata["Name"] == "aisim"
     assert importlib.util.find_spec("aisimulate.replay") is not None
     assert importlib.util.find_spec("aisimulate.sweeper") is not None
+    assert importlib.util.find_spec("aisimulate.afd_artifacts") is not None
     assert importlib.util.find_spec("aisimulate.replay.__main__") is None
     assert importlib.util.find_spec("aisimulate.sweeper.__main__") is None
     # Editable installs expose only their .pth/dist-info records. In wheel-based
@@ -72,16 +73,13 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
 
 
 def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
 
-    scripts = {
-        entry.name: entry.value
-        for entry in distribution.entry_points
-        if entry.group == "console_scripts"
-    }
+    scripts = {entry.name: entry.value for entry in distribution.entry_points if entry.group == "console_scripts"}
     assert scripts == {
-        "aiconfigurator": "aiconfigurator.main:main",
-        "aisimulate": "aisimulate.main:main",
+        "aiconfigurator": "aisimulate.legacy_cli.entrypoint:main",
+        "aisim": "aisimulate.supervision:main",
+        "aisimulate": "aisimulate.supervision:main",
     }
 
 
@@ -93,7 +91,7 @@ def test_ai_dynamo_has_no_aisimulate_extra():
 
 
 def test_aisimulate_has_no_dynamo_or_component_adapter_dependencies():
-    distribution = importlib.metadata.distribution("aisimulate")
+    distribution = importlib.metadata.distribution("aisim")
 
     requirements = distribution.requires or []
     names = {Requirement(requirement).name.lower() for requirement in requirements}
@@ -137,9 +135,7 @@ def test_ai_dynamo_registers_optional_sweeper_providers():
 
 
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
-def test_ai_dynamo_runner_preserves_independent_sla_bounds(
-    field: str, bound: float
-) -> None:
+def test_ai_dynamo_runner_preserves_independent_sla_bounds(field: str, bound: float) -> None:
     _ai_dynamo_distribution_or_skip()
     from dynamo.replay.simulation import DynamoReplayRunner
 
@@ -170,10 +166,9 @@ def test_aisimulate_source_versions_are_synchronized():
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
 
-    expected_python = "0.12.0"
-    expected_cargo = "0.12.0"
-    assert project["project"]["version"] == expected_python
-    assert core["package"]["version"] == expected_cargo
+    workspace_version = workspace["workspace"]["package"]["version"]
+    assert project["project"]["version"] == workspace_version
+    assert core["package"]["version"] == workspace_version
     assert workspace["workspace"]["members"] == ["crates/core"]
     assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
 

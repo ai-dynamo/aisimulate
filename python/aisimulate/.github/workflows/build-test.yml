@@ -157,7 +157,7 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "${changed_files}"
 
-          if printf '%s\n' "${changed_files}" | grep -Eq '^(src/aiconfigurator/generator/|tests/golden/generator/)'; then
+          if printf '%s\n' "${changed_files}" | grep -Eq '^(src/aisimulate/generator/|tests/golden/generator/)'; then
             echo "run_golden=true" >> "${GITHUB_OUTPUT}"
           else
             echo "run_golden=false" >> "${GITHUB_OUTPUT}"
@@ -172,7 +172,7 @@ jobs:
           # in tools/sanity_check/sanity_full_matrix_triggers.txt (single
           # source of truth, pinned by selector tests inside the container).
           sanity_all_regex="$(cat tools/sanity_check/sanity_full_matrix_triggers.txt)"
-          changed_systems="$(printf '%s\n' "${changed_files}" | grep -E '^aic-core/src/aiconfigurator_core/systems/' || true)"
+          changed_systems="$(printf '%s\n' "${changed_files}" | grep -E '^src/aisimulate_core/systems/' || true)"
           if printf '%s\n' "${changed_files}" | grep -Eq "${sanity_all_regex}"; then
             sanity_targets="all"
           elif [ "$(printf '%s\n' "${changed_systems}" | grep -c .)" -gt 200 ]; then
@@ -258,9 +258,9 @@ jobs:
           python -m pip install uv
           uv sync --extra dev
           uv pip install --python .venv/bin/python maturin
-      - name: Build the aiconfigurator_core Rust extension
+      - name: Build the aisimulate_core Rust extension
         # The AICONFIGURATOR_RUST_CORE_AUTOBUILD env var is a no-op; the compiled
-        # aiconfigurator_core extension must be built explicitly with maturin so
+        # aisimulate_core extension must be built explicitly with maturin so
         # the parity suite exercises the current Rust source. The Maturin project
         # is the standalone core wheel under aic-core.
         run: |

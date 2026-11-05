@@ -9,6 +9,8 @@
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
+use crate::engine::timing::{MixedPassMs, PrefillTotals, mean_prefill_shape};
+
 /// Performance model for predicting prefill and decode timing
 #[derive(Default)]
 pub enum PerfModel {
@@ -42,40 +44,85 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
-    /// Predict prefill time in milliseconds.
+    /// Whether the model prices separate prefill and decode phases (see
+    /// [`crate::engine::TimingModel::prices_phases`]).
+    pub fn prices_phases(&self) -> bool {
+        match self {
+            PerfModel::Polynomial => true,
+            PerfModel::External { timing } => timing.prices_phases(),
+        }
+    }
+
+    pub fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if let PerfModel::External { timing } = self {
+            timing
+                .validate_prefill_batch(requests)
+                .context("external prefill batch cannot be represented")?;
+        }
+        Ok(())
+    }
+
+    /// Predict the vision-encoder time in milliseconds for one batch of
+    /// distinct cache-miss images, grouped by shape for the provider.
+    pub fn predict_vision_time(&self, images: &[crate::engine::ImageSpec]) -> Result<f64> {
+        if images.is_empty() {
+            return Ok(0.0);
+        }
+        let PerfModel::External { timing } = self else {
+            anyhow::bail!("polynomial timing does not support vision batches");
+        };
+        let mut shapes: Vec<crate::engine::VisionShape> = Vec::new();
+        for image in images {
+            match shapes
+                .iter_mut()
+                .find(|shape| shape.encoder == image.encoder)
+            {
+                Some(shape) => shape.count += 1,
+                None => shapes.push(crate::engine::VisionShape {
+                    encoder: image.encoder,
+                    count: 1,
+                }),
+            }
+        }
+        let time = timing
+            .predict_vision_ms(&shapes)
+            .context("external vision prediction failed")?
+            .context("timing provider does not support vision batches")?;
+        ensure!(
+            time.is_finite() && time >= 0.0,
+            "vision timing provider returned invalid duration {time}ms"
+        );
+        Ok(time)
+    }
+
+    /// Predict prefill time in milliseconds from batch totals: `new_tokens`
+    /// computed by the batch and `prefix_tokens` of cached or earlier-chunk
+    /// KV that its requests read.
     ///
-    /// Callers always pass all parameters; each variant uses what it needs:
-    /// The polynomial fallback uses total new tokens across the batch. An
-    /// injected provider receives the original batch-local inputs.
+    /// The polynomial fallback keeps its per-request mean. An injected
+    /// provider receives the exact totals.
     pub fn predict_prefill_time(
         &self,
         batch_size: usize,
-        isl: usize,
-        prefix: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
     ) -> Result<f64> {
-        // An inverted `prefix > isl` is a caller bug, not a fully cached prompt.
-        // It saturates to "no new tokens" and returns 0.0 in release; the assert
-        // makes it a test failure rather than a silently free prefill.
-        debug_assert!(
-            prefix <= isl,
-            "prefix {prefix} exceeds isl {isl}: inverted prefill inputs"
-        );
-        let new_tokens_per_req = isl.saturating_sub(prefix);
-        if batch_size == 0 || new_tokens_per_req == 0 {
+        if batch_size == 0 || new_tokens == 0 {
             return Ok(0.0);
         }
         let time = match self {
-            PerfModel::Polynomial => polynomial_prefill_time(batch_size, new_tokens_per_req),
+            PerfModel::Polynomial => {
+                let (isl, prefix) = mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
+                polynomial_prefill_time(batch_size, isl - prefix)
+            }
             PerfModel::External { timing } => timing
-                .predict_prefill_ms(batch_size, prefix + new_tokens_per_req, prefix)
+                .predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)
                 .context("external prefill prediction failed")?,
         };
-        // `f64::max` returns the non-NaN operand, so clamping first would convert a
-        // NaN prediction into a plausible 0.0 and leave `modeled_duration_ms`'s
-        // finiteness guard permanently dead for this path.
+        // Validate before the floor: f64::max would hide NaN or -infinity.
         ensure!(
             time.is_finite(),
-            "prefill timing provider returned a non-finite duration {time}ms"
+            "prefill timing provider returned non-finite duration {time}ms"
         );
         Ok(time.max(0.0))
     }
@@ -110,29 +157,58 @@ impl PerfModel {
                 )
                 .context("external decode prediction failed")?,
         };
-        // See `predict_prefill_time`: the clamp below would launder a NaN into 1.0.
+        // Reject non-finite provider output before it reaches the scheduler.
         ensure!(
             time.is_finite(),
-            "decode timing provider returned a non-finite duration {time}ms"
+            "decode timing provider returned non-finite duration {time}ms"
         );
-        // Token-emitting decode steps should not collapse onto the same timestamp.
-        //
-        // NOTE: this floor is a latency-model return value doing an event-ordering
-        // job. It reports an AIC-modeled 0.3 ms decode step as 1.0 ms — a 3.3x
-        // error applied to every token of every request, systematically inflating
-        // ITL for any configuration whose true decode step is sub-millisecond.
-        // Removing it belongs with a scheduler change that keeps simultaneous
-        // decode events distinct by ordering rather than by duration; it is a
-        // deliberate formula change and is NOT made here.
-        let result = time.max(1.0);
         tracing::trace!(
-            batch_size,
-            active_kv_tokens,
-            context_length,
-            decode_ms = result,
-            "decode time prediction"
+            "Decode time prediction: batch_size={batch_size}, active_kv_tokens={active_kv_tokens}, context_length={context_length}, time={time:.2}ms"
         );
-        Ok(result)
+        // The polynomial applies its own historical floor. External measurements
+        // can legitimately be below one millisecond and must retain that value.
+        Ok(time)
+    }
+
+    /// Predict one forward pass, in milliseconds, that computes `prefill`
+    /// together with a decode batch. A provider that prices such a pass as one
+    /// forward returns its prefill and decode parts. Other providers and the
+    /// polynomial fallback return `None`; callers then price the prefill with
+    /// [`Self::predict_prefill_time`] and a separate decode pass with
+    /// [`Self::predict_decode_time`].
+    pub fn predict_mixed_pass_time(
+        &self,
+        prefill: PrefillTotals,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        let PerfModel::External { timing } = self else {
+            return Ok(None);
+        };
+        if batch_size == 0 || prefill.batch_size == 0 || prefill.new_tokens == 0 {
+            return Ok(None);
+        }
+        let Some(pass) = timing
+            .predict_mixed_pass_ms(
+                prefill,
+                batch_size,
+                active_kv_tokens,
+                context_length,
+                total_kv_tokens,
+            )
+            .context("external mixed pass prediction failed")?
+        else {
+            return Ok(None);
+        };
+        ensure!(
+            [pass.prefill_ms, pass.decode_ms]
+                .iter()
+                .all(|ms| ms.is_finite() && *ms >= 0.0),
+            "mixed pass timing provider returned invalid durations {pass:?}"
+        );
+        Ok(Some(pass))
     }
 }
 
@@ -149,9 +225,7 @@ pub(crate) fn polynomial_decode_time(active_kv_tokens: usize, total_kv_tokens: u
     let active_perc = if total_kv_tokens > 0 {
         (active_kv_tokens as f64 / total_kv_tokens as f64).min(1.0)
     } else {
-        // One decode step per token per request reaches this, so `warn!` here is
-        // log spam plus an output-lock acquisition on a hot path.
-        tracing::debug!("total KV tokens is 0, assuming full utilization");
+        tracing::warn!("Total KV tokens is 0, using 1.0 as capacity");
         1.0
     };
     (-25.74 * active_perc.powi(2) + 54.01 * active_perc + 5.74).max(1.0)
@@ -162,7 +236,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{PerfModel, polynomial_decode_time};
-    use crate::engine::TimingModel;
+    use crate::engine::{MixedPassMs, PrefillTotals, TimingModel};
 
     struct EchoBatchTiming;
 
@@ -210,44 +284,76 @@ mod tests {
         }
     }
 
-    struct NonFiniteTiming(f64);
-
-    impl TimingModel for NonFiniteTiming {
-        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
-            Ok(self.0)
-        }
-
-        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
-            Ok(self.0)
-        }
-    }
-
-    /// `f64::max` returns the non-NaN operand, so an unguarded clamp would report
-    /// a NaN prediction as a legitimate 0ms prefill / 1ms decode.
-    #[test]
-    fn non_finite_provider_predictions_are_rejected_not_clamped() {
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let model = PerfModel::External {
-                timing: Arc::new(NonFiniteTiming(value)),
-            };
-            assert!(
-                model.predict_prefill_time(4, 128, 0).is_err(),
-                "prefill accepted {value}"
-            );
-            assert!(
-                model.predict_decode_time(4, 128, 128, 1024).is_err(),
-                "decode accepted {value}"
-            );
-        }
-    }
-
     #[test]
     fn fully_cached_prompt_skips_prefill() {
         assert_eq!(
             PerfModel::default()
-                .predict_prefill_time(1, 128, 128)
+                .predict_prefill_time(1, 0, 128)
                 .unwrap(),
             0.0
+        );
+    }
+
+    #[test]
+    fn external_mixed_pass_keeps_valid_parts_and_rejects_invalid_ones() {
+        struct FixedPass(f64, f64);
+        impl TimingModel for FixedPass {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+
+            fn predict_mixed_pass_ms(
+                &self,
+                _: PrefillTotals,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<Option<MixedPassMs>> {
+                Ok(Some(MixedPassMs {
+                    prefill_ms: self.0,
+                    decode_ms: self.1,
+                }))
+            }
+        }
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        let pass = |prefill_ms, decode_ms| {
+            PerfModel::External {
+                timing: Arc::new(FixedPass(prefill_ms, decode_ms)),
+            }
+            .predict_mixed_pass_time(prefill, 1, 9, 9, 1024)
+        };
+        // A decode share can legitimately be zero.
+        assert_eq!(
+            pass(2.0, 0.0).unwrap(),
+            Some(MixedPassMs {
+                prefill_ms: 2.0,
+                decode_ms: 0.0
+            })
+        );
+        for (prefill_ms, decode_ms) in [(f64::NAN, 1.0), (1.0, -0.5), (f64::INFINITY, 1.0)] {
+            assert!(pass(prefill_ms, decode_ms).is_err());
+        }
+        // The polynomial fallback has no one-forward composition.
+        assert_eq!(
+            PerfModel::default()
+                .predict_mixed_pass_time(prefill, 1, 9, 9, 1024)
+                .unwrap(),
+            None
         );
     }
 
@@ -258,6 +364,46 @@ mod tests {
         };
         assert_eq!(model.predict_prefill_time(7, 128, 0).unwrap(), 7.0);
         assert_eq!(model.predict_decode_time(9, 0, 128, 0).unwrap(), 9.0);
+    }
+
+    #[test]
+    fn external_decode_preserves_finite_values_and_rejects_non_finite() {
+        struct FixedDecode(f64);
+        impl TimingModel for FixedDecode {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(0.0)
+            }
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(self.0)
+            }
+        }
+        // Finite values retain the provider's submillisecond resolution;
+        // modeled_duration_ms still rejects negative durations downstream.
+        for value in [0.6, 0.0, -1.0] {
+            let model = PerfModel::External {
+                timing: Arc::new(FixedDecode(value)),
+            };
+            assert_eq!(model.predict_decode_time(1, 128, 128, 1024).unwrap(), value);
+        }
+        // Main's finite-time boundary must reject NaN and both infinities before
+        // any duration normalization or scheduling can hide invalid output.
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let model = PerfModel::External {
+                timing: Arc::new(FixedDecode(value)),
+            };
+            let error = model.predict_decode_time(1, 128, 128, 1024).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("decode timing provider returned non-finite duration")
+            );
+        }
     }
 
     #[test]

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from collector.sglang.dsv4_megamoe.render_k8s_indexed_job import _parse_node_selector
 
 pytestmark = pytest.mark.unit

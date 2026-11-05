@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISimulate Core
 
-`aisimulate-core` is the single public Rust package for engine-neutral
-inference simulation. It preserves three explicit implementation and API
-layers:
+`aisim-core` is the single public Rust package for engine-neutral inference
+simulation. Its Rust library namespace remains `aisimulate_core`. It preserves
+three explicit implementation and API layers:
 
 - `aisimulate_core::engine` owns scheduling, native GPU KV accounting,
   preemption, timing, and attention-DP composition.
@@ -20,6 +20,24 @@ layers:
 The crate root promotes the common `EngineConfig`, `ReplaySpec`, `Replayer`,
 canonical `ReplayReport`, and timing-provider contracts. Dynamo-specific Router, Planner,
 transport, and live-runtime adapters remain outside this crate.
+
+## Generated concurrency requests
+
+Programmatic replay callers can provide
+`replay::loadgen::GeneratedRequests::new(request_count, factory)` through
+`ReplayRuntimeInput::GeneratedRequests` instead of constructing every
+`DirectRequest` up front. Set `ReplaySpec::max_in_flight` to the concurrency
+limit. Replay calls the factory with the original zero-based request index
+only when a slot becomes available, and applies the admission timestamp just
+as it does for an eager request queue. The factory should generate one request
+without retaining previous requests or capturing a prebuilt request list.
+
+This keeps pending prompt storage independent of the total request count;
+live requests, engine queues, and explicitly captured per-request output still
+consume memory. The engine receives the same ordinary `DirectRequest` and
+does not participate in source generation. Open-loop and existing trace inputs
+retain their current behavior. Integrations such as Dynamo must opt into the
+generated source after adopting a crate release containing this API.
 
 ## Source layout and upstream syncs
 
@@ -40,4 +58,13 @@ one-time model compilation.
 
 The replay engine models vLLM's attention-DP prefill cadence through
 `EngineConfig::prefill_schedule_interval`. See the
-[configuration and validation notes](../../docs/vllm-prefill-schedule-interval.md).
+[configuration and validation notes](../../docs/replay/engine/workers.md#vllm-prefill-schedule-interval).
+
+`EngineConfig::async_scheduling` models vLLM's async-scheduling batch queue,
+which delays requests that arrive at a busy engine; see
+[vLLM async scheduling](../../docs/replay/engine/workers.md#vllm-async-scheduling).
+
+SGLang uses `EngineConfig::prefill_decode_interval` to block prefill for N
+scheduler rounds after a group-wide EXTEND. Its default is zero and its semantics
+are separate from vLLM's cadence; see the
+[SGLang configuration and scope](../../docs/replay/engine/workers.md#sglang-prefilldecode-interval).

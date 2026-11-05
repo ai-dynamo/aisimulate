@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aiconfigurator.generator.naive import build_naive_generator_params
+from aisimulate.generator.naive import build_naive_generator_params
 
 _SYS_CFG = {"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3}
 
@@ -23,8 +23,8 @@ _SYS_CFG = {"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3}
 @pytest.fixture(autouse=True)
 def _mock_naive_env():
     with (
-        patch("aiconfigurator.generator.naive._estimate_model_weight_bytes", return_value=15 * 1024**3),
-        patch("aiconfigurator.generator.naive._get_system_config", return_value=_SYS_CFG),
+        patch("aisimulate.generator.naive._estimate_model_weight_bytes", return_value=15 * 1024**3),
+        patch("aisimulate.generator.naive._get_system_config", return_value=_SYS_CFG),
     ):
         yield
 

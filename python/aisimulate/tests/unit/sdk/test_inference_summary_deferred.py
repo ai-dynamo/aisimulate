@@ -12,9 +12,9 @@ assert on a DataFrame that was never built.
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk import common
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.inference_summary import InferenceSummary
 
 pytestmark = pytest.mark.unit
 

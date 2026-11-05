@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import csv
 import hashlib
 import importlib.metadata
@@ -16,10 +17,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
-from collector.fpm_forward.capabilities import resolve_model_capability
-from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
+from collector.fpm_forward import capabilities
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID, resolve_model_capability
+from collector.fpm_forward.config import (
+    FPMCollectionOptions,
+    PrefillSamplingProfile,
+    add_fpm_arguments,
+    reject_fpm_arguments_without_fpm,
+)
 from collector.fpm_forward.database import (
     aggregate_cell,
     validate_formal_database_commit,
@@ -36,6 +41,8 @@ from collector.fpm_forward.planner import (
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
 
+from aisimulate.sdk.utils import HuggingFaceDownloadError
+
 pytestmark = pytest.mark.unit
 
 _REQUIRED_INSTALLED_FPM_PAYLOAD = {
@@ -43,6 +50,9 @@ _REQUIRED_INSTALLED_FPM_PAYLOAD = {
     "collector/fpm_forward/runner.py": b"runner-content",
     "collector/fpm_forward/runtime/fpm_exec.sh": b"runtime-content",
     "collector/fpm_forward/runtime/preflight.py": b"preflight-content",
+    "collector/fpm_forward/runtime/fpm_memory_observer.py": b"memory-observer-content",
+    "collector/fpm_forward/runtime/fpm_memory_worker.py": b"memory-worker-content",
+    "collector/fpm_forward/runtime/fpm_memory_scheduler.py": b"memory-scheduler-content",
 }
 
 
@@ -152,7 +162,7 @@ def test_options_leave_point_generation_to_dynamo():
     assert options.parallel_presets == ("auto",)
     assert options.to_dict()["point_source"] == "dynamo_native_self_benchmark"
     assert options.to_dict()["measurement_repeats"] == 1
-    assert options.max_prefill_isl == 8192
+    assert options.max_prefill_isl is None
     assert options.max_prefill_batch_size is None
     assert options.vllm_max_model_len == -1
     assert options.prefill_sampling.max_total_prefill_tokens == 8192
@@ -182,6 +192,125 @@ def test_prefill_limits_expose_no_cli_aliases():
     assert "--fpm-model-config" in help_text
     assert "--fpm-max-isl" not in help_text
     assert "--fpm-max-prefill-bs" not in help_text
+
+
+def test_runtime_graph_policy_leaves_graph_dependent_axes_unresolved():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    options = FPMCollectionOptions.from_args(
+        parser.parse_args(["--fpm-max-gpus", "4", "--fpm-prefill-cudagraph-policy", "runtime"])
+    )
+
+    assert options.max_prefill_cudagraph_size is None
+    sampling = options.prefill_sampling.to_dict()
+    assert sampling["cudagraph_policy"] == "runtime"
+    for field in (
+        "cudagraph_capture_sizes",
+        "cudagraph_capture_size_count",
+        "max_cudagraph_capture_size",
+        "new_token_axis_points",
+        "new_token_axis_point_count",
+        "prefill_max_new_token_samples",
+    ):
+        assert sampling[field] is None
+    assert sampling["prefill_max_kv_read_token_samples"] > 0
+
+
+def test_explicit_graph_policy_preserves_legacy_capture_settings_and_identity():
+    legacy = FPMCollectionOptions.from_args(_args())
+    explicit = FPMCollectionOptions.from_args(_args(fpm_prefill_cudagraph_policy="explicit"))
+    assert explicit.max_prefill_cudagraph_size == 2048
+    assert explicit.to_dict() == legacy.to_dict()
+    assert "gpu_memory_utilization" not in legacy.to_dict()
+
+    custom = FPMCollectionOptions.from_args(_args(fpm_max_prefill_cudagraph_size=1000))
+    assert custom.prefill_cudagraph_policy == "explicit"
+    assert custom.prefill_sampling.cudagraph_capture_sizes[-1] == 1000
+
+
+def test_runtime_graph_policy_rejects_explicit_capture_size():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(
+        [
+            "--fpm-max-gpus",
+            "4",
+            "--fpm-prefill-cudagraph-policy",
+            "runtime",
+            "--fpm-max-prefill-cudagraph-size",
+            "512",
+        ]
+    )
+    with pytest.raises(ValueError, match="runtime cannot use --fpm-max-prefill-cudagraph-size"):
+        FPMCollectionOptions.from_args(args)
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", "1.01", "nan", "inf", "-inf", "true"])
+def test_gpu_memory_fraction_cli_rejects_invalid_values(value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-gpu-memory-utilization={value}"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("value", [True, 0, -0.1, 1.01, float("nan"), float("inf")])
+def test_gpu_memory_fraction_options_reject_invalid_values(value):
+    with pytest.raises(ValueError, match="gpu-memory-utilization must be finite"):
+        FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=value))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--fpm-prefill-cudagraph-policy", "runtime"],
+        ["--fpm-gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_graph_policy_and_memory_fraction_require_fpm_collection(arguments):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(arguments)
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_runtime_limit_cli_rejects_nonpositive_values_except_context_auto_fit(option, value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    if option == "max-model-len" and value == "-1":
+        args = parser.parse_args([f"--fpm-{option}", value])
+        assert args.fpm_max_model_len == -1
+        return
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-{option}", value])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+def test_runtime_limits_require_fpm_collection(option):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args([f"--fpm-{option}", "64"])
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ({"fpm_max_num_batched_tokens": 1024, "fpm_max_prefill_isl": 2048}, "prefill-isl exceeds"),
+        ({"fpm_max_num_seqs": 8, "fpm_max_prefill_batch_size": 16}, "prefill-batch-size exceeds"),
+        ({"fpm_max_num_seqs": 8, "fpm_max_decode_batch_size": 16}, "decode-batch-size exceeds"),
+    ],
+)
+def test_phase_limits_cannot_exceed_shared_limits(arguments, message):
+    with pytest.raises(ValueError, match=message):
+        FPMCollectionOptions.from_args(_args(**arguments))
 
 
 def test_prefill_sampling_profile_keeps_vllm_strides_and_exact_endpoint():
@@ -233,12 +362,24 @@ def test_pure_tp_requires_explicit_model_runtime_capability():
         enumerate_fpm_topologies(backend="vllm", is_moe=True, options=options)
 
 
-def test_plan_contains_only_cell_matrix_and_native_point_contract():
+@pytest.mark.parametrize("explicit", [False, True])
+def test_plan_contains_only_cell_matrix_and_native_point_contract(tmp_path, explicit):
+    points_file = tmp_path / "points.json"
+    points_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0}],
+                "decode": [],
+            }
+        )
+    )
     options = FPMCollectionOptions.from_args(
         _args(
             fpm_parallel_axes=["dp", "moe_ep"],
             fpm_dp_sizes=[4],
             fpm_moe_ep_sizes=[4],
+            fpm_benchmark_points_file=str(points_file) if explicit else None,
         )
     )
     kwargs = {
@@ -264,7 +405,7 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert {cell.workload_kind for cell in first.cells} == {"prefill", "decode"}
     assert {cell.parallel_strategy for cell in first.cells} == {"dep"}
     payload = first.to_dict()
-    assert payload["schema_version"] == 10
+    assert payload["schema_version"] == 11
     assert payload["capability"]["model_config"]["source_kind"] == "aic_cache"
     assert len(payload["capability"]["model_config"]["sha256"]) == 64
     assert payload["capability"]["model_config"]["payload"]["architectures"] == ["GlmMoeDsaForCausalLM"]
@@ -273,11 +414,13 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert point_generation == {
         "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
         "method": "native_self_benchmark",
+        "source": "frozen_explicit_manifest" if explicit else "native_auto_grid",
+        "manifest_sha256": options.benchmark_points_sha256,
         "coordinates": ["batch_size", "total_prefill_tokens", "total_kv_read_tokens"],
         "partition_policy": "balanced_v1",
         "point_admission": "dynamo_live_scheduler",
         "precondition": "vllm_engine_initialized",
-        "planned_point_count": None,
+        "planned_point_count": 1 if explicit else None,
     }
     assert prefill_sampling["cudagraph_capture_size_count"] == 99
     assert prefill_sampling["new_token_axis_point_count"] == 199
@@ -293,6 +436,39 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract():
     assert payload["counts"]["memory_rejected_topologies"] == 0
     assert payload["topology_memory_admission"][0]["disposition"] == "admitted"
     assert "runtime_overlay" not in payload
+
+
+def test_kv_warmup_defaults_are_frozen_in_plan_identity():
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_parallel_axes=["dp", "moe_ep"], fpm_dp_sizes=[4], fpm_moe_ep_sizes=[4])
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+        "options": options,
+    }
+    default = build_collection_plan(**kwargs)
+    explicit_on = build_collection_plan(
+        **kwargs,
+        generator_overrides={
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "on"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "on"},
+                ]
+            }
+        },
+    )
+    old_policy = build_collection_plan(
+        **kwargs,
+        generator_overrides={"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "off"}]}},
+    )
+    assert default.aic_revision == explicit_on.aic_revision == old_policy.aic_revision
+    assert default.sha256 == explicit_on.sha256
+    assert default.generator_config_sha256 != old_policy.generator_config_sha256
+    assert default.sha256 != old_policy.sha256
 
 
 def test_backend_policy_is_deeply_immutable():
@@ -432,6 +608,27 @@ def test_memory_admission_drops_only_the_rejected_dtype_cells(monkeypatch, caplo
     assert "fpm_forward: dropped 3/6 (topology, kv_dtype) cell groups (memory budget" in caplog.text
 
 
+def test_model_memory_admission_uses_declared_gpu_fraction(monkeypatch):
+    monkeypatch.setattr(
+        "collector.fpm_forward.memory_admission.KVCacheEstimator.from_request",
+        lambda *_args, **_kwargs: SimpleNamespace(breakdown={"non_kv_bytes": 60, "gpu_memory_capacity_bytes": 100}),
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+    }
+    admitted = build_collection_plan(
+        **kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.9))
+    )
+    for decision in admitted.topology_memory_admission:
+        assert decision.estimates[0].to_dict()["gpu_memory_budget_bytes"] == 90
+        assert decision.estimates[0].to_dict()["headroom_bytes"] == 30
+    with pytest.raises(ValueError, match="memory admission rejected every FPM topology"):
+        build_collection_plan(**kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.6)))
+
+
 def test_plan_identity_ignores_memory_estimator_error_text(monkeypatch):
     """Estimator failure diagnostics vary across runs and hosts (transient
     network errors, host paths); hashing them would spuriously invalidate
@@ -532,7 +729,7 @@ def test_source_revision_prefers_content_addressed_installed_distribution_over_a
     second = _pinned_git_revision()
 
     assert first == second
-    assert first.startswith("installed:aisimulate==0.12.0:record-sha256:")
+    assert first.startswith("installed:aisim==0.12.0:record-sha256:")
     assert "/" not in first
     assert "ambient-host-head" not in first
 
@@ -558,11 +755,14 @@ def test_installed_source_revision_is_stable_across_record_order_quoting_and_ins
     noisy_rows = [
         ("../../../bin/aiconfigurator", "sha256=environment-specific", "123"),
         ("../../../bin/aisimulate", "sha256=environment-specific", "123"),
+        ("../../../bin/aisim", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisim.exe", "sha256=environment-specific", "123"),
+        ("../../../Scripts/aisim-script.py", "sha256=environment-specific", "123"),
         ("../../../Scripts/aiconfigurator.exe", "sha256=environment-specific", "123"),
         ("../../../Scripts/aiconfigurator-script.py", "sha256=environment-specific", "123"),
         ("../../../Scripts/aisimulate.exe", "sha256=environment-specific", "123"),
         ("../../../Scripts/aisimulate-script.py", "sha256=environment-specific", "123"),
-        ("aisimulate-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
+        ("aisim-0.12.0.dist-info/direct_url.json", "sha256=checkout-specific", "99"),
         *reversed(base_rows),
     ]
     noisy_distribution, other_root = _installed_distribution(tmp_path / "other-install", rows=noisy_rows)
@@ -600,7 +800,7 @@ def test_installed_source_revision_rejects_untrusted_record_or_payload(
     ]
     version = "0.12.0"
     if case == "metadata_only":
-        rows = [("aisimulate-0.12.0.dist-info/METADATA", _record_sha256(b"metadata"), "8")]
+        rows = [("aisim-0.12.0.dist-info/METADATA", _record_sha256(b"metadata"), "8")]
     elif case == "missing_required":
         rows.pop()
     elif case == "malformed_row":
@@ -715,14 +915,18 @@ _DSV4_ATTENTION_OPS = {
 
 
 @pytest.mark.parametrize(
-    ("model_path", "expected_strategies", "expected_memory_rejections"),
+    ("model_path", "max_prefill_tokens", "expected_strategies", "expected_memory_rejections"),
     [
-        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep"}, 1),
-        ("sgl-project/DeepSeek-V4-Flash-FP8", {"pure_tp", "tep", "dep"}, 0),
+        # Residual-width MoE workspace fits Pro DEP at 8192 tokens; a larger
+        # activation envelope must still reject it on physical capacity.
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 32768, {"pure_tp", "tep"}, 1),
+        ("sgl-project/DeepSeek-V4-Flash-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
     ],
 )
 def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admission(
     model_path,
+    max_prefill_tokens,
     expected_strategies,
     expected_memory_rejections,
 ):
@@ -736,6 +940,7 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
             _args(
                 fpm_max_gpus=16,
                 fpm_gpu_counts=[16],
+                fpm_max_prefill_isl=max_prefill_tokens,
             )
         ),
     )
@@ -749,6 +954,13 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
     assert plan.dtype_profile.kv_cache_dtypes == ("fp8",)
     assert {cell.parallel_strategy for cell in plan.cells} == expected_strategies
     assert plan.to_dict()["counts"]["memory_rejected_topologies"] == expected_memory_rejections
+    assert plan.to_dict()["counts"]["memory_unknown_topologies"] == 0
+    for decision in plan.topology_memory_admission:
+        assert decision.max_new_tokens == max_prefill_tokens
+        for estimate in decision.estimates:
+            assert (estimate.estimated_non_kv_bytes < estimate.gpu_capacity_bytes) == (
+                decision.disposition == "admitted"
+            )
     assert all(cell.to_dict()["point_source"] == "dynamo_native_self_benchmark" for cell in plan.cells)
 
 
@@ -833,6 +1045,632 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
         "qk_rope_head_dim": 64,
         "max_position_embeddings": 4096,
     }
+
+
+_MODEL_CONFIGS = Path(__file__).parents[3] / "src/aisimulate_core/model_configs"
+_LAYOUT_REFUSAL = (
+    "FPM attention templates cannot represent the cache layout of {architecture!r} ({reasons}). "
+    "Collect it with --fpm-model-profile or --fpm-backend-version. Then precision comes from the checkpoint, "
+    "and the runtime measures the cache."
+)
+
+
+def _layout_capability(model_path, architecture=None, *, native, has_model_cases=False, model_config_path=None):
+    """Resolve on one collection path: ``native`` stands for --fpm-model-profile or --fpm-backend-version."""
+    return resolve_model_capability(
+        backend="vllm",
+        model_path=str(model_path),
+        model_architecture=architecture,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=has_model_cases,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        model_config_path=model_config_path,
+        database_version="0.27.0" if native else None,
+        checkpoint_native_dtypes=native,
+    )
+
+
+def _forbid_templates_and_timing_data(monkeypatch):
+    """A detected layout gets no attention template and, without a flag, is refused before any AIC table loads."""
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a detected cache layout used an attention template or AIC timing data")
+
+    for name in ("_attention_template", "_attention_ops", "get_database", "get_latest_database_version"):
+        monkeypatch.setattr(capabilities, name, forbidden)
+
+
+def _assert_native_runtime(capability, reasons, *, is_moe):
+    assert capability.attention_source == "native_runtime"
+    assert capability.attention_kind == ("moe" if is_moe else "dense") + "_native_runtime"
+    assert capability.support_level == "native_runtime"
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID == "generic:native_runtime"
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reasons}). The native runtime measures every cell."
+    )
+    assert capability.is_moe is is_moe
+    assert capability.allow_pure_tp is is_moe
+    assert capability.aic_database_version == "0.27.0"
+    # Precision comes from the checkpoint, as on every --fpm-model-profile or --fpm-backend-version path.
+    assert capability.dtype.kv_cache_dtypes == (capability.dtype.native_kv_cache_dtype,)
+    assert capability.dtype.fmha_resolution == "checkpoint_native"
+
+
+def _mixed_attention_config(tmp_path, architecture, mixed):
+    config = _unknown_fp8_moe_config()
+    config.update(
+        architectures=[architecture],
+        layer_types=(
+            ["linear_attention", "deepseek_sparse_attention"] * 2 if mixed else ["deepseek_sparse_attention"] * 4
+        ),
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+_MIXED_REASONS = {
+    True: "layer_types deepseek_sparse_attention x2, layer_types linear_attention x2",
+    False: "layer_types deepseek_sparse_attention x4",
+}
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture, mixed):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=_MIXED_REASONS[mixed])
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_with_a_profile_or_version_gets_the_native_runtime_capability(
+    tmp_path, monkeypatch, architecture, mixed
+):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    _assert_native_runtime(_layout_capability(path, architecture, native=True), _MIXED_REASONS[mixed], is_moe=True)
+
+
+def _qwen_gdn_hybrid_config(tmp_path, architecture):
+    config = {
+        "architectures": [architecture],
+        "text_config": {
+            "num_hidden_layers": 4,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False, has_model_cases=True)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(
+        architecture=architecture, reasons="layer_types linear_attention x3"
+    )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_model_cases_cannot_select_exact_dense_attention(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    # The native runtime capability takes precedence over the exact, family and bootstrap levels.
+    capability = _layout_capability(path, architecture, native=True, has_model_cases=True)
+    _assert_native_runtime(capability, "layer_types linear_attention x3", is_moe=False)
+
+
+@pytest.mark.parametrize(
+    "model,architecture,reasons,is_moe",
+    [
+        ("moonshotai/Kimi-K3", "KimiLinearForCausalLM", "recurrent-state field linear_attn_config", True),
+        (
+            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            True,
+        ),
+        (
+            "nvidia/Nemotron-H-56B-Base-8K",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            False,
+        ),
+    ],
+)
+@pytest.mark.parametrize("has_model_cases", [False, True])
+def test_packaged_recurrent_state_configs_get_no_attention_template(
+    monkeypatch, model, architecture, reasons, is_moe, has_model_cases
+):
+    # Kimi K3 declares KDA state and Nemotron-H Mamba state without any layer_types marker.
+    path = str(_MODEL_CONFIGS / f"{model.replace('/', '--')}_config.json")
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(model, native=False, has_model_cases=has_model_cases, model_config_path=path)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+    capability = _layout_capability(model, native=True, has_model_cases=has_model_cases, model_config_path=path)
+    assert capability.architecture == architecture
+    _assert_native_runtime(capability, reasons, is_moe=is_moe)
+
+
+_ENTRY_ERROR = "layer_types entries must be nonempty strings"
+# Config intake's message for a layer count field that is not an integer of at least 1.
+_COUNT_ERROR = "{field} must be an integer >=1, not a boolean, float or numeric string"
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_types,error",
+    [(4, ["linear_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["linear_attention"] * 4, _COUNT_ERROR.format(field="num_hidden_layers"))
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    # A marker does not excuse an entry that is not a nonempty string.
+    + [(4, ["linear_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_types, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    config = _unknown_fp8_moe_config()
+    config.update(num_hidden_layers=declared_layers, layer_types=layer_types)
+    if not layer_types:
+        config["ssm_state_size"] = 16  # An empty layer list declares no marker; recurrent state still does.
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, "NewMoeDsaForCausalLM", native=native)
+    # Config intake refuses the same config with the same message.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(collector.value) == str(intake.value) == error
+
+
+def _layer_config(tmp_path, declarations, layer_count=None):
+    """A small 2-layer config. ``layer_count`` states the layer count in place of num_hidden_layers."""
+    config = {
+        **({"num_hidden_layers": 2} if layer_count is None else layer_count),
+        "hidden_size": 128,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 32,
+        "intermediate_size": 256,
+        "vocab_size": 1024,
+        "max_position_embeddings": 4096,
+        "torch_dtype": "bfloat16",
+        **declarations,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+_GDN_LAYERS = {
+    "architectures": ["Qwen3_5ForConditionalGeneration"],
+    "layer_types": ["linear_attention", "full_attention"],
+}
+_LENGTH_ERROR = "attn_type_list must have one entry per num_hidden_layers"
+
+
+@pytest.mark.parametrize(
+    "declarations,error",
+    [
+        ({**_GDN_LAYERS, "attn_type_list": [0]}, _LENGTH_ERROR),
+        ({**_GDN_LAYERS, "attn_type_list": [0, "bad"]}, "attn_type_list entries must be integers"),
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1, 1]}, _LENGTH_ERROR),
+        # One entry per layer, but a boolean is not an integer entry.
+        (
+            {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, True]},
+            "attn_type_list entries must be integers",
+        ),
+    ],
+    ids=["one-entry-for-two-layers", "string-entry", "three-entries-for-two-layers", "boolean-entry"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations)
+    # Intake refuses each config with this message, and the collector must give the same one.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize(
+    "layer_count,declarations,error",
+    [
+        (
+            {"num_layers": 2},
+            {**_GDN_LAYERS, "layer_types": ["linear_attention"]},
+            "layer_types must have one entry per num_hidden_layers",
+        ),
+        ({"n_layer": 2}, {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0]}, _LENGTH_ERROR),
+        (
+            {"num_hidden_layers": 2, "n_layer": 3},
+            _GDN_LAYERS,
+            "conflicting num_hidden_layers fields: {'num_hidden_layers': 2, 'n_layer': 3}",
+        ),
+        ({"num_layers": "2"}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_layers")),
+        ({"n_layer": 2.0}, _GDN_LAYERS, _COUNT_ERROR.format(field="n_layer")),
+        ({"num_hidden_layers": "x", "num_layers": 2}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_hidden_layers")),
+    ],
+    ids=[
+        "num-layers-with-short-layer-types",
+        "n-layer-with-short-attn-type-list",
+        "conflicting-counts",
+        "string-count",
+        "float-count",
+        "malformed-count-before-a-valid-one",
+    ],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_reads_the_layer_count_as_intake_does(tmp_path, layer_count, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+def test_detected_layout_reads_every_layer_count_field_of_intake(tmp_path):
+    from aisimulate.support.config_profile import _INT_ALIASES
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The collector copies intake's list of layer count fields; a field that intake adds must count here too.
+    for field in _INT_ALIASES["num_hidden_layers"]:
+        directory = tmp_path / field
+        directory.mkdir()
+        path = _layer_config(directory, _GDN_LAYERS, {field: 3})
+        with pytest.raises(ValueError) as intake:
+            load_intake_config(path)
+        with pytest.raises(ValueError) as collector:
+            _layout_capability(path, native=True)
+        assert str(collector.value) == str(intake.value) == "layer_types must have one entry per num_hidden_layers"
+
+
+# Config intake's message for a window field that is not an integer of at least 0.
+_WINDOW_ERROR = "{field} must be an integer >=0, not a boolean, float or numeric string"
+
+
+@pytest.mark.parametrize(
+    "layer_count,window,error",
+    [
+        (None, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window_size": 128.0}, _WINDOW_ERROR.format(field="sliding_window_size")),
+        (None, {"sliding_window": -1}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window": True}, _WINDOW_ERROR.format(field="sliding_window")),
+        (
+            None,
+            {"sliding_window": 128, "sliding_window_size": 256},
+            "conflicting sliding-window fields: {'sliding_window': 128, 'sliding_window_size': 256}",
+        ),
+        # Intake checks the window fields before the layer count: here the layer_types list is also short.
+        ({"num_hidden_layers": 3}, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+    ],
+    ids=["string", "float", "negative", "boolean", "conflicting-values", "window-before-the-layer-count"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_checks_the_window_fields_as_intake_does(tmp_path, layer_count, window, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, {**_GDN_LAYERS, **window}, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize(
+    "declarations,reasons",
+    [
+        # Intake ignores a null window field and takes an integer of at least 0 that the other field agrees with.
+        ({**_GDN_LAYERS, "sliding_window": None}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 0}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 128, "sliding_window_size": 128}, "layer_types linear_attention x1"),
+        # A well-formed attn_type_list, one entry per layer, with an integer other than 1.
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1]}, "attn_type_list 0 x1"),
+    ],
+    ids=["null-window", "zero-window", "agreeing-windows", "attn-type-list-marker"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_well_formed_marker_layout_needs_a_flag_for_the_native_runtime(tmp_path, declarations, reasons, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations)
+    # Intake accepts the config and leaves its cache layout to the runtime probe, for the same reasons.
+    assert load_intake_config(path).runtime_layout == (reasons,)
+    if native:
+        _assert_native_runtime(_layout_capability(path, native=True), reasons, is_moe=False)
+    else:
+        with pytest.raises(ValueError) as refusal:
+            _layout_capability(path, native=False)
+        architecture = declarations["architectures"][0]
+        assert str(refusal.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+
+
+@pytest.mark.parametrize(
+    "layer_count,declarations",
+    [
+        (None, {"attn_type_list": [1, 1, 1]}),
+        (None, {"attn_type_list": [1, "bad"]}),
+        ({"num_layers": 2}, {"layer_types": ["full_attention"]}),
+        ({"num_hidden_layers": 2, "n_layer": 3}, {}),
+        (None, {"sliding_window": "128"}),
+        (None, {"sliding_window": 128, "sliding_window_size": 256}),
+    ],
+    ids=[
+        "three-entries-for-two-layers",
+        "string-entry",
+        "num-layers-with-short-layer-types",
+        "conflicting-counts",
+        "string-window",
+        "conflicting-windows",
+    ],
+)
+def test_config_without_markers_keeps_the_checks_of_main(tmp_path, layer_count, declarations):
+    # Main's collector read only num_hidden_layers and checked neither attn_type_list nor the window fields. The
+    # checks above apply to the marker path only.
+    path = _layer_config(tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], **declarations}, layer_count)
+    capability = _layout_capability(path, native=True)
+    assert (capability.support_level, capability.template_id) == ("bootstrap_template", "generic:dense_gqa")
+
+
+# Captured with resolve_model_capability(...).to_dict() at 4cb2b7d6, before the collector checked cache layout
+# markers. These configs have none, so their template selection and precision stay unchanged. The native path
+# loads no AIC timing tables, so a table update does not change these fields.
+_GOLDEN_CAPABILITIES = Path(__file__).parent / "fixtures/fpm_capability_golden.json"
+_GOLDEN_FIELDS = (
+    "attention_source",
+    "attention_kind",
+    "support_level",
+    "template_id",
+    "support_reason",
+    "allow_pure_tp",
+    "dtype",
+)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "meta-llama/Meta-Llama-3.1-8B",
+        "Qwen/Qwen3-30B-A3B",
+        "deepseek-ai/DeepSeek-V3",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "MiniMaxAI/MiniMax-M3",
+        "openai/gpt-oss-20b",
+    ],
+)
+def test_capability_without_cache_layout_markers_is_unchanged(model):
+    capability = resolve_model_capability(
+        backend="vllm",
+        model_path=model,
+        model_architecture=None,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=True,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        database_version="0.27.0",
+        checkpoint_native_dtypes=True,
+    ).to_dict()
+    golden = json.loads(_GOLDEN_CAPABILITIES.read_text())["capabilities"][model]
+    assert {field: capability[field] for field in _GOLDEN_FIELDS} == golden
+
+
+def test_collector_cache_layout_markers_match_config_intake_for_packaged_configs():
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    detected, unrecognized_only = set(), set()
+    # ModelOpt sidecars share the file suffix but are not model configs.
+    for path in sorted(p for p in _MODEL_CONFIGS.glob("*_config.json") if not p.name.endswith("_hf_quant_config.json")):
+        name = path.name.removesuffix("_config.json")
+        try:
+            intake = load_intake_config(path)
+        except ValueError:
+            continue
+        markers = tuple(
+            reason for reason in intake.runtime_layout if not reason.startswith("unrecognized architecture")
+        )
+        if intake.runtime_layout and not markers:
+            unrecognized_only.add(name)
+        capability = _layout_capability(name.replace("--", "/", 1), native=True, model_config_path=str(path))
+        if markers:
+            detected.add(name)
+            assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID, name
+            assert capability.support_reason == (
+                f"config.json cannot describe this cache layout ({', '.join(markers)}). "
+                "The native runtime measures every cell."
+            ), name
+        else:
+            # The rule for unrecognized architectures stays in intake; AIC model families handle them here.
+            assert capability.template_id != GENERIC_RUNTIME_TEMPLATE_ID, name
+    assert {
+        "zai-org--GLM-5.3-Flash",
+        "moonshotai--Kimi-K3",
+        "nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "Qwen--Qwen3.5-27B",
+    } <= detected
+    assert {"Qwen--Qwen3-VL-8B-Instruct", "XiaomiMiMo--MiMo-7B-Base", "MiniMaxAI--MiniMax-M3"} <= unrecognized_only
+
+
+def _packaged_config(name):
+    return json.loads((_MODEL_CONFIGS / f"{name}_config.json").read_text())
+
+
+def _unnamed_dsa_config():
+    config = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    del config["architectures"]  # model_type glm_moe_dsa still names the decoder for intake.
+    return config
+
+
+def _dsa_text_config_under_a_wrapper():
+    glm = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    text = {key: value for key, value in glm.items() if key not in ("architectures", "quantization_config")}
+    return {
+        "architectures": ["GlmMoeDsaVisionForConditionalGeneration"],
+        "model_type": "glm_moe_dsa_vision",
+        "text_config": text,
+    }
+
+
+def _llama_under_a_mamba_wrapper():
+    llama = _packaged_config("meta-llama--Meta-Llama-3.1-8B")
+    text = {key: value for key, value in llama.items() if key != "architectures"}
+    return {"architectures": ["LlavaMambaForConditionalGeneration"], "model_type": "llava_mamba", "text_config": text}
+
+
+def _dsa_layers(config):
+    layer_types = config.get("text_config", config)["layer_types"]
+    return f"layer_types deepseek_sparse_attention x{layer_types.count('deepseek_sparse_attention')}"
+
+
+def _mamba_wrapper(_config):
+    return "recurrent architecture LlavaMambaForConditionalGeneration"
+
+
+@pytest.mark.parametrize(
+    "build,reason",
+    [
+        (_unnamed_dsa_config, _dsa_layers),
+        (_dsa_text_config_under_a_wrapper, _dsa_layers),
+        (_llama_under_a_mamba_wrapper, _mamba_wrapper),
+    ],
+    ids=["unnamed-dsa-config", "dsa-text-config-under-a-wrapper", "llama-under-a-mamba-wrapper"],
+)
+def test_collector_checks_cache_layout_markers_with_its_own_architecture(tmp_path, build, reason):
+    """Intake checks the decoder architecture, which model_type can name. The collector checks the config's
+    architectures entry, which can name a wrapper, or --model-architecture. In these shapes the collector is
+    stricter."""
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The packaged config is read here, so a missing file fails only the tests that use it.
+    config = build()
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    assert load_intake_config(path).runtime_layout == ()
+    capability = _layout_capability(path, native=True)
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reason(config)}). The native runtime measures every cell."
+    )
+
+
+def test_model_architecture_names_an_unnamed_config_as_intake_does(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(_unnamed_dsa_config()))
+    # Onboarding passes the decoder architecture with --model-architecture, so the DSA layers are recognized.
+    capability = _layout_capability(path, "GlmMoeDsaForCausalLM", native=True)
+    assert capability.template_id == "aic_family:deepseekv32:moe_dsa"
+
+
+def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
+    config = _unknown_fp8_moe_config()
+    config["layer_types"] = ["linear_attention", "full_attention"] * 2
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("the checkpoint is accessible only inside the runtime Pod")
+
+    monkeypatch.setattr("collector.fpm_forward.memory_admission.KVCacheEstimator.from_request", unavailable)
+    return build_collection_plan(
+        backend="vllm",
+        model_path=str(tmp_path),
+        model_architecture="NewMoeDsaForCausalLM",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=False,
+        options=FPMCollectionOptions.from_args(_args()),
+        collector_config={"aic_database_version": "0.27.0"},  # --fpm-backend-version
+        generator_overrides=generator_overrides,
+    )
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "False"])
+def test_detected_layout_refuses_disabled_prefix_seeding_at_plan_time(tmp_path, monkeypatch, value):
+    overrides = {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": value}]}}
+    with pytest.raises(ValueError) as error:
+        _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert str(error.value) == (
+        f"DYN_BENCH_PREFILL_REAL_SEED={value} is not allowed for this cache layout (layer_types linear_attention x2). "
+        "Its cached prefill needs real prefix seeding. Remove the override."
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        None,
+        {
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "TRUE"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "1"},
+                ]
+            }
+        },
+        # Decode keeps the existing classification, so decode warm-up may be off.
+        {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_KV_WARMUP", "value": "off"}]}},
+    ],
+)
+def test_detected_layout_plans_with_real_prefix_seeding(tmp_path, monkeypatch, overrides):
+    plan = _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert plan.capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert plan.cells
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_types,error",
+    [(4, ["full_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["full_attention"] * 4, "num_hidden_layers must be a positive integer")
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    + [(4, ["full_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
+)
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_types, error):
+    config = _unknown_fp8_moe_config()
+    config["num_hidden_layers"] = declared_layers
+    config["layer_types"] = layer_types
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=error):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture="NewMoeDsaForCausalLM",
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
 
 
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
@@ -1156,6 +1994,7 @@ def _synthetic_plan_and_cell(tmp_path):
         model_path="org/model",
         system="b200_sxm",
         backend="vllm",
+        cells=(cell,),
         options=SimpleNamespace(warmup_iterations=0),
         capability=SimpleNamespace(
             support_level="exact",
@@ -1326,7 +2165,7 @@ def test_native_validation_rejects_sub_batch_token_totals(tmp_path):
         _expected_scheduled(decode_point)
 
 
-def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
+def test_formal_database_uses_schema_v7_and_rejects_conflicts(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
@@ -1334,7 +2173,7 @@ def test_formal_database_uses_schema_v6_and_rejects_conflicts(tmp_path):
 
     assert parquet.exists()
     metadata_payload = json.loads(metadata.read_text())
-    assert metadata_payload["schema_version"] == 6
+    assert metadata_payload["schema_version"] == 7
     assert metadata_payload["coordinate_system"] == "iteration_totals_balanced_v1"
     assert metadata_payload["backend_version"] == "0.24.0"
     assert metadata_payload["collector_attempt_ids"] == ["attempt"]
@@ -1374,14 +2213,14 @@ def test_formal_database_first_publisher_wins_on_rerun_overlap(tmp_path):
     assert parquet2.read_bytes() == sealed
 
 
-def test_formal_database_commit_validation_accepts_sealed_schema_v6_pair(tmp_path):
+def test_formal_database_commit_validation_accepts_sealed_schema_v7_pair(tmp_path):
     plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     parquet, metadata, _skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
 
     commit = validate_formal_database_commit(parquet, metadata, plan)
 
-    assert commit["schema_version"] == 6
+    assert commit["schema_version"] == 7
     assert commit["row_count"] == len(rows)
 
 
@@ -1588,6 +2427,89 @@ def test_non_protocol_kvwarm_skips_remain_fake_fallback(tmp_path, skip_reason):
     assert {row["kv_seed_regime"] for row in rows} == {"fake_fallback"}
 
 
+def _seeded_prefill_cell(tmp_path, regime, *, kv_tokens=128):
+    """Two-rank prefill whose native rows report ``regime`` (None: a row without a regime) with its stamp."""
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    stamp = {"real_prefix": "prefill_real_seed", "fake_prefix": "prefill_fake_prefix"}.get(regime)
+
+    def seed(value):
+        if isinstance(value, dict):
+            if "point_type" in value:
+                value["total_kv_read_tokens"] = kv_tokens
+                value["sample_reasons"] = [*value["sample_reasons"], *([stamp] if stamp else [])]
+            if "sum_prefill_kv_tokens" in value:
+                value["sum_prefill_kv_tokens"] = kv_tokens
+            for child in value.values():
+                seed(child)
+        elif isinstance(value, list):
+            for child in value:
+                seed(child)
+
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        seed(payload)
+        if regime is not None:
+            for row in payload["results"]:
+                row["kv_seed_regime"] = regime
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("regime", ["fake_prefix", "not_applicable", None])
+def test_detected_layout_publishes_cached_prefill_only_with_real_prefix_seeding(tmp_path, regime):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime)
+    # Other models keep their classification: the formal prefill regime stays n/a.
+    assert [row["kv_seed_regime"] for row in aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")] == [
+        "n/a"
+    ]
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    with pytest.raises(ValueError) as error:
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert str(error.value) == (
+        f"cached prefill for this cache layout requires real_prefix seeding, got {regime or 'unreported'}"
+    )
+
+
+@pytest.mark.parametrize("regime,kv_tokens", [("real_prefix", 128), (None, 0)])
+def test_detected_layout_publishes_real_prefix_and_uncached_prefill(tmp_path, regime, kv_tokens):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime, kv_tokens=kv_tokens)
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows] == [(kv_tokens, "n/a")]
+
+
+_WARM_ELIGIBLE = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+_DENSE_LABEL = {"enabled": True, "warm_eligible": False, "skip_reason": "dense_model_content_insensitive"}
+
+
+@pytest.mark.parametrize(
+    "kvwarm,marker,strategy,regime",
+    [
+        (_WARM_ELIGIBLE, "kvwarm_real_kv", "tep", "real_kv"),
+        (
+            {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"},
+            "kvwarm_fake_fallback",
+            "tp",
+            "skip:moe_tp_balanced_by_construction",
+        ),
+        # Dynamo labels every dense model content-insensitive before it considers recurrent state. For this
+        # capability the label is fake_fallback, and the row publishes with it.
+        (_DENSE_LABEL, "kvwarm_fake_fallback", "tp", "fake_fallback"),
+        (_WARM_ELIGIBLE, "kvwarm_fake_fallback", "tep", "fake_fallback"),
+        (None, None, "tp", "legacy"),
+    ],
+)
+def test_detected_layout_decode_keeps_the_existing_classification(tmp_path, kvwarm, marker, strategy, regime):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
+    )
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    plan.capability.attention_source = "native_runtime"
+    plan.capability.is_moe = False
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert {row["kv_seed_regime"] for row in rows} == {regime}
+
+
 def test_native_validation_rejects_cross_rank_kvwarm_disagreement(tmp_path):
     """The kvwarm regime describes one shared measurement protocol; DP ranks
     reporting different warm_eligible/skip_reason facts are a contract
@@ -1755,7 +2677,7 @@ def test_formal_database_merge_gate_names_missing_row_key_columns(tmp_path):
     parquet_path = destination / "fpm_forward_perf.parquet"
     pq.write_table(pa.Table.from_pylist(stale_rows), parquet_path)
     (destination / "fpm_forward_perf.metadata.json").write_text(
-        json.dumps({"parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
+        json.dumps({"schema_version": 7, "parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest()})
     )
 
     with pytest.raises(ValueError, match=r"missing columns: \['weight_quantization'\]"):
@@ -1958,14 +2880,14 @@ def test_formal_database_requires_family_measured_version_in_curated_tree(tmp_pa
 
 def test_curated_systems_root_resolves_to_the_sdk_default_tree():
     """The default publication root must be the tree the SDK's
-    --systems-paths default actually reads (the aiconfigurator_core package
+    --systems-paths default actually reads (the aisimulate_core package
     data), not a repo-relative guess."""
 
     from collector.fpm_forward.database import _curated_systems_root
 
     root = _curated_systems_root()
     assert root.parts[-2:] == ("systems", "data")
-    assert "aiconfigurator_core" in root.parts
+    assert "aisimulate_core" in root.parts
     assert root.is_dir()
 
 
@@ -2206,6 +3128,142 @@ def test_native_aggregation_rejects_native_coordinate_collision(tmp_path):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
 
+def _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path, *, seed_samples=3, canonical_first=False):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    count = seed_samples + 1
+    canonical_id = 1 if canonical_first else count
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        template = payload["iteration_groups"][0]
+        payload["results"] = []
+        payload["iteration_groups"] = []
+        for benchmark_id in range(1, count + 1):
+            ordinary = benchmark_id == canonical_id
+            group = copy.deepcopy(template)
+            group["benchmark_id"] = benchmark_id
+            point = group["point"]
+            point.update(
+                benchmark_id=benchmark_id,
+                total_kv_read_tokens=0,
+                sample_reasons=["post_capture"] + ([] if ordinary else ["prefill_real_seed"]),
+                partition=None,
+                rows=None,
+            )
+            for item in group["rank_results"]:
+                fpm = item["fpms"][0]
+                fpm["counter_id"] = benchmark_id
+                fpm["scheduled_requests"]["sum_prefill_kv_tokens"] = 0
+                # The ordinary sample is deliberately slower than the seeded
+                # duplicates: selection must not bias toward minimum latency.
+                fpm["wall_time"] = (0.010 if ordinary else 0.002) + item["dp_rank"] * 0.001
+            group["wall_time"] = max(item["fpms"][0]["wall_time"] for item in group["rank_results"])
+            payload["iteration_groups"].append(group)
+            payload["results"].append(
+                {
+                    "point": point,
+                    "kv_seed_regime": "not_applicable" if ordinary else "real_prefix",
+                    "fpms": group["rank_results"][payload["dp"]["rank"]]["fpms"],
+                }
+            )
+        payload["coverage"].update(expected_points=count, completed_points=count)
+        payload["timing"]["measured_iteration_seconds"] = sum(
+            group["wall_time"] for group in payload["iteration_groups"]
+        )
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("seed_samples", [3, 4])
+@pytest.mark.parametrize("canonical_first", [False, True])
+def test_zero_kv_prefill_duplicates_publish_unique_ordinary_sample(tmp_path, caplog, seed_samples, canonical_first):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(
+        tmp_path, seed_samples=seed_samples, canonical_first=canonical_first
+    )
+    raw_before = {path: path.read_bytes() for path in (cell_dir / "raw").rglob("*.json")}
+
+    with caplog.at_level("INFO", logger="collector.fpm_forward.native_artifact"):
+        rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+    assert len(rows) == 1
+    assert rows[0]["latency_ms"] == pytest.approx(11.0)
+    assert rows[0]["total_kv_read_tokens"] == 0
+    assert rows[0]["kv_seed_regime"] == "n/a"
+    assert rows[0]["measurement_repeats"] == 1
+    assert f"consolidated {seed_samples} zero-KV prefill provenance duplicate sample(s)" in caplog.text
+    assert "context-clamped duplicate" not in caplog.text
+
+    parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert skipped == ()
+    assert pq.read_table(parquet).to_pylist() == rows
+    assert json.loads(metadata.read_text())["row_count"] == 1
+    committed = validate_formal_database_commit(parquet, metadata, plan)
+    validate_formal_database_commit(
+        parquet,
+        metadata,
+        plan,
+        expected_attempt_ids={cell.cell_id: "attempt"},
+        expected_cell_rows=committed["cell_rows"],
+    )
+    write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert all(path.read_bytes() == original for path, original in raw_before.items())
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "duplicate_ordinary",
+        "no_ordinary",
+        "missing_provenance",
+        "positive_kv",
+        "expected_cudagraph_mode",
+        "expected_capture_size",
+        "padding_tokens",
+        "partition",
+        "rows",
+        "sample_reasons",
+        "context_clamped",
+    ],
+)
+def test_prefill_provenance_consolidation_rejects_ambiguous_duplicates(tmp_path, conflict):
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        for index, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            point = row["point"]
+            if conflict == "positive_kv":
+                point["total_kv_read_tokens"] = 128
+                for item in group["rank_results"]:
+                    item["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 128
+                row["fpms"] = group["rank_results"][payload["dp"]["rank"]]["fpms"]
+            elif conflict == "no_ordinary":
+                row["kv_seed_regime"] = "real_prefix"
+                point["sample_reasons"] = ["post_capture", "prefill_real_seed"]
+            elif index == 0:
+                if conflict == "duplicate_ordinary":
+                    row["kv_seed_regime"] = "not_applicable"
+                    point["sample_reasons"] = ["post_capture"]
+                elif conflict == "missing_provenance":
+                    row.pop("kv_seed_regime")
+                elif conflict == "context_clamped":
+                    point["sample_reasons"].append("context_clamped")
+                else:
+                    point[conflict] = {
+                        "expected_cudagraph_mode": "NONE",
+                        "expected_capture_size": 512,
+                        "padding_tokens": 255,
+                        "partition": "different",
+                        "rows": [{"tokens": 257}],
+                        "sample_reasons": ["eager_tail", "prefill_real_seed"],
+                    }[conflict]
+            group["point"] = point
+        path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="unclamped samples share one key"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
 def test_backend_identity_defaults_record_auto_everywhere():
     """v6: unspecified knobs record "auto" (engine decided), plumb nothing."""
 
@@ -2352,7 +3410,7 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
     """Coverage gaps are not structural invalidity: collection may be exactly
     what fills them, so strict admission must not reject them."""
 
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     def unavailable(*_args, **_kwargs):
         raise PerfDataNotAvailableError("no perf rows for this shape")
@@ -2372,3 +3430,379 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
 
     assert len(plan.topologies) == 3
     assert {decision.disposition for decision in plan.topology_memory_admission} == {"unknown"}
+
+
+def _write_v41_token_streams(payload, path):
+    import hashlib
+
+    lines = []
+    for row in payload["results"]:
+        point = row["point"]
+        batch = point["batch_size"]
+        decode = point["point_type"] == "decode"
+        seed = point["total_kv_read_tokens"] - (batch if decode else 0)
+        prompt_total = seed + (0 if decode else point["total_prefill_tokens"])
+        lengths = [prompt_total // batch + (index < prompt_total % batch) for index in range(batch)]
+        stream = {
+            "benchmark_id": point["benchmark_id"],
+            "requests": [
+                {
+                    "request_index": index,
+                    "prompt_token_ids": [11 + index % 2] * length,
+                    "output_token_ids": [37],
+                    "computed_tokens": length + (2 if decode else 0),
+                }
+                for index, length in enumerate(lengths)
+            ],
+        }
+        encoded = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        lines.append(encoded)
+        row["real_kv_witness"] = {
+            "same_request": True,
+            "allocated_fake_tokens": 0,
+            "completed_seed_tokens": seed,
+            "token_stream_sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    raw = b"\n".join(lines) + b"\n"
+    sidecar = path.with_suffix(".token-streams.jsonl")
+    sidecar.write_bytes(raw)
+    payload["input_provenance"]["token_stream_manifest"] = {
+        "file": sidecar.name,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "records": len(lines),
+    }
+
+
+@pytest.mark.parametrize("marker", ["kvwarm_real_kv", "kvwarm_fake_fallback", None])
+def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        payload["kvwarm"] = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+
+        def mark(value):
+            if isinstance(value, dict):
+                if "point_type" in value:
+                    value["sample_reasons"] = [marker] if marker else []
+                for child in value.values():
+                    mark(child)
+            elif isinstance(value, list):
+                for child in value:
+                    mark(child)
+
+        mark(payload)
+        _write_v41_token_streams(payload, path)
+        path.write_text(json.dumps(payload))
+    if marker == "kvwarm_real_kv":
+        assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
+    else:
+        with pytest.raises(ValueError, match="requires real_kv"):
+            aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+@pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
+def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path, mode):
+    from collector.fpm_forward.native_artifact import _validate_execution_provenance
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = SimpleNamespace(execution_identity=identity)
+    payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
+    with pytest.raises(ValueError, match="verified eager"):
+        _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
+
+
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "DeepseekV3ForCausalLM", None])
+def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_worker_type="aggregated", fpm_cudagraph_mode="NONE", fpm_prefill_cudagraph_policy="runtime")
+    )
+    assert options.resolve_model_execution(architecture).enforce_eager is False
+
+
+@pytest.mark.parametrize(
+    "graph_args",
+    [
+        {"fpm_cudagraph_mode": "FULL"},
+        {"fpm_cudagraph_capture_sizes": [1, 2]},
+        {"fpm_max_cudagraph_capture_size": 8},
+        {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},
+    ],
+)
+def test_v41_auto_eager_rejects_capture_requests(graph_args):
+    args = {"fpm_worker_type": "aggregated", "fpm_prefill_cudagraph_policy": "runtime", **graph_args}
+    options = FPMCollectionOptions.from_args(_args(**args))
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        options.resolve_model_execution("DeepseekV41ForCausalLM")
+
+
+@pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
+def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
+    from collector.fpm_forward import planner
+
+    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
+    with pytest.raises(ValueError, match="eager"):
+        build_collection_plan(
+            backend="vllm",
+            model_path="nvidia/GLM-5.2-NVFP4",
+            system="b200_sxm",
+            selected_ops={"dsa_context_module", "dsa_generation_module"},
+            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=eager)),
+        )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])
+def test_v41_real_token_stream_validation_rejects_broken_witness(tmp_path, corruption):
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    _write_v41_token_streams(payload, path)
+    _validate_token_streams(payload, path)
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    if corruption == "missing":
+        del payload["input_provenance"]["token_stream_manifest"]
+    elif corruption == "tampered":
+        path.with_name(manifest["file"]).write_text("changed")
+    elif corruption == "fake":
+        payload["results"][0]["real_kv_witness"]["allocated_fake_tokens"] = 1
+    elif corruption == "seed":
+        payload["results"][0]["real_kv_witness"]["completed_seed_tokens"] -= 1
+    elif corruption == "path":
+        manifest["file"] = "../outside.token-streams.jsonl"
+    else:
+        manifest["records"] += 1
+    with pytest.raises(ValueError, match="V4.1"):
+        _validate_token_streams(payload, path)
+
+
+@pytest.mark.parametrize(
+    "corruption", [None, "role", "missing_result", "missing_expected", "measured_warmup", "legacy"]
+)
+def test_v41_eager_warmup_histories_are_preserved_but_not_measured(tmp_path, corruption):
+    from copy import deepcopy
+
+    from collector.fpm_forward.native_artifact import _validate_token_streams
+
+    _plan, _cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    path = next((cell_dir / "raw").glob("*/benchmark*.json"))
+    payload = json.loads(path.read_text())
+    payload["input_provenance"] = {}
+    warmup = deepcopy(payload["results"][0])
+    warmup_id = len(payload["results"]) + 1
+    warmup["point"].update(benchmark_id=warmup_id, sample_reasons=["eager_warmup"])
+    payload["results"].append(warmup)
+    _write_v41_token_streams(payload, path)
+    payload["warmup_results"] = [payload["results"].pop()]
+    manifest = payload["input_provenance"]["token_stream_manifest"]
+    manifest.update(schema_version=2, warmup_benchmark_ids=[warmup_id])
+    sidecar = path.with_name(manifest["file"])
+    all_rows = payload["results"] + payload["warmup_results"]
+    encoded = []
+    for line, row in zip(sidecar.read_bytes().splitlines(), all_rows, strict=True):
+        stream = json.loads(line)
+        stream["sampling_role"] = "warmup" if stream["benchmark_id"] == warmup_id else "measurement"
+        if corruption == "role" and stream["benchmark_id"] == warmup_id:
+            stream["sampling_role"] = "measurement"
+        changed = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
+        encoded.append(changed)
+        row["real_kv_witness"]["token_stream_sha256"] = hashlib.sha256(changed).hexdigest()
+    raw = b"\n".join(encoded) + b"\n"
+    sidecar.write_bytes(raw)
+    manifest["sha256"] = hashlib.sha256(raw).hexdigest()
+    if corruption == "missing_result":
+        payload["warmup_results"] = []
+    elif corruption == "missing_expected":
+        manifest["warmup_benchmark_ids"] = []
+    elif corruption == "measured_warmup":
+        payload["results"].append(payload["warmup_results"].pop())
+    elif corruption == "legacy":
+        manifest["schema_version"] = 1
+    if corruption is None:
+        _validate_token_streams(payload, path)
+        assert len(payload["results"]) + 1 == manifest["records"]
+    else:
+        with pytest.raises(ValueError, match="V4.1"):
+            _validate_token_streams(payload, path)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("smoke", [False, True])
+def test_v41_native_grid_bounds_reach_both_runtime_phases(phase, smoke):
+    from collector.fpm_forward.runner import _cell_generator_overrides
+
+    plan = _args_plan()
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options = FPMCollectionOptions.from_args(
+        _args(
+            fpm_max_prefill_isl=64,
+            fpm_max_prefill_batch_size=1,
+            fpm_max_decode_batch_size=1,
+            fpm_max_model_len=258,
+            fpm_warmup_iterations=0,
+        )
+    )
+    generated = _cell_generator_overrides(plan, _args_cell(phase, "pure_tp"), {}, smoke=smoke)
+    args = generated["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--max-num-batched-tokens") + 1] == "64"
+    assert args[args.index("--max-num-seqs") + 1] == "1"
+    assert '--engram-config={"cpu_offload":false}' in args
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "results_missing",
+        "results_null",
+        "row_null",
+        "point_missing",
+        "point_null",
+        "groups_missing",
+        "provenance_missing",
+    ],
+)
+def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, corruption):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        _write_v41_token_streams(payload, path)
+        if corruption == "results_missing":
+            del payload["results"]
+        elif corruption == "results_null":
+            payload["results"] = None
+        elif corruption == "row_null":
+            payload["results"][0] = None
+        elif corruption == "point_missing":
+            del payload["results"][0]["point"]
+        elif corruption == "point_null":
+            payload["results"][0]["point"] = None
+        elif corruption == "groups_missing":
+            del payload["iteration_groups"]
+        else:
+            del payload["input_provenance"]
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="native"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_custom_profile_label_is_published_with_observed_runtime_provenance(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.fpm_profile = True
+    plan.deployment_profile = lambda _cell: SimpleNamespace(backend_version="my-vllm-patch-3")
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "my-vllm-patch-3"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_explicit_label_without_profile_uses_native_precision_not_database_version(monkeypatch):
+    from collector.fpm_forward import capabilities
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an explicit FPM data label must not resolve op-level database versions")
+
+    monkeypatch.setattr(capabilities, "get_latest_database_version", forbidden)
+    monkeypatch.setattr(capabilities, "get_database", forbidden)
+    args = _args()
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system="b200_sxm",
+        selected_ops={"dsa_context_module", "dsa_generation_module"},
+        options=FPMCollectionOptions.from_args(args),
+        collector_config={"aic_database_version": "private-vllm-build", "runtime_backend_version": "0.28.0"},
+    )
+    assert plan.fpm_profile is None
+    assert plan.backend_version == "private-vllm-build"
+    assert plan.capability.aic_database_version == "private-vllm-build"
+    assert plan.runtime_backend_version == "0.28.0"
+
+
+def test_explicit_label_without_profile_survives_native_publication(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "private-vllm-build"
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "private-vllm-build"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+
+
+def test_dynamo_versions_remain_per_pod_provenance_without_registration_gate(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    for index, path in enumerate(sorted((cell_dir / "raw").glob("*/collector-provenance.json"))):
+        provenance = json.loads(path.read_text())
+        provenance["dynamo_version"] = f"declared-build-{index}"
+        provenance["runtime"]["dynamo_version"] = f"observed-build-{index}"
+        path.write_text(json.dumps(provenance))
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_aggregation_rejects_observed_backend_drift_even_with_custom_label(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "my-vllm-patch-3"
+    plan.runtime_backend_version = "0.28.0"
+    with pytest.raises(ValueError, match="observed backend version differs"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_preserves_runtime_provenance_when_legacy_row_sorts_first(tmp_path):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    row = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]
+    old = {**row, "cell_id": "a-legacy"}
+    root = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, [old], systems_root=root)
+    # Model a sealed schema-v7 publication predating the additive runtime field.
+    table = pq.read_table(parquet).drop(["runtime_backend_version"])
+    pq.write_table(table, parquet)
+    committed = json.loads(metadata.read_text())
+    committed["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    metadata.write_text(json.dumps(committed))
+    incoming = {**row, "cell_id": "z-new", "runtime_backend_version": "0.28.0+observed"}
+
+    _, _, skipped = write_formal_database(plan, [incoming], systems_root=root)
+
+    assert skipped == ()
+    published = pq.read_table(parquet).to_pylist()
+    assert [(item["cell_id"], item["runtime_backend_version"]) for item in published] == [
+        ("a-legacy", None),
+        ("z-new", "0.28.0+observed"),
+    ]
+    write_formal_database(plan, [incoming], systems_root=root)
+    assert pq.read_table(parquet).to_pylist() == published

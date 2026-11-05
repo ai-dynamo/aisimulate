@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/py_ops.rs
 
 //! The Rust op structs exported as Python classes (the deprecation-cleanup
 //! PR's pyo3 op unification, #1357 ladder item 4).
@@ -69,7 +71,7 @@ fn py_enum_member<'py>(
     enum_name: &str,
     token: &str,
 ) -> PyResult<Bound<'py, PyAny>> {
-    py.import("aiconfigurator_core.sdk.common")?
+    py.import("aisimulate_core.sdk.common")?
         .getattr(enum_name)?
         .get_item(token)
 }
@@ -163,7 +165,19 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         // FpmForward has no family class: FPMForwardOp stays a Python class
         // (callable slot + pinned signature) whose spec adapter converts to a
         // BASE-wrapped engine op for list assembly.
-        Op::FpmForward(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
+        Op::FpmForward(_)
+        | Op::Dsv41Attention(_)
+        | Op::Dsv41Mhc(_)
+        | Op::Dsv41Engram(_)
+        | Op::Dsv41Stage(_)
+        | Op::Glm53Attention(_)
+        | Op::Glm53Mhc(_)
+        | Op::Glm53Router(_)
+        | Op::Glm53Ffn(_)
+        | Op::Glm53Primitive(_)
+        | Op::MeasuredComposite(_)
+        | Op::Dsv41Linear(_)
+        | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
         other => Err(PyTypeError::new_err(format!(
             "no Python class wrapper for engine op variant {:?}",
@@ -177,11 +191,7 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
 // ---------------------------------------------------------------------------
 
 /// Base class of every engine-backed op: owns the typed [`Op`] value.
-#[pyclass(
-    subclass,
-    name = "Operation",
-    module = "aiconfigurator_core._aiconfigurator_core"
-)]
+#[pyclass(subclass, name = "Operation", module = "aisimulate_core._native")]
 pub struct PyOperation {
     pub(crate) inner: Op,
 }
@@ -316,6 +326,15 @@ impl PyOperation {
         self.inner.set_name(value);
     }
 
+    /// Repetition scaling for sequential draft forwards.
+    #[setter(_scale_factor)]
+    fn set_scale_factor(&mut self, value: f64) -> PyResult<()> {
+        // Match the getter contract; composites and FPM have no scalar field.
+        self.scale_factor()?;
+        self.inner.set_scale_factor(value);
+        Ok(())
+    }
+
     #[getter(_scale_factor)]
     fn scale_factor(&self) -> PyResult<f64> {
         let json =
@@ -352,7 +371,7 @@ impl PyOperation {
 // ---------------------------------------------------------------------------
 
 /// GEMM: dense matmul `M=x, N=n, K=k`.
-#[pyclass(extends = PyOperation, subclass, name = "GEMM", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "GEMM", module = "aisimulate_core._native")]
 pub struct PyGemm;
 
 #[pymethods]
@@ -438,6 +457,14 @@ impl PyGemm {
         Ok(slf.as_super().gemm()?.scale_num_tokens)
     }
 
+    /// Width-channel mutator (speculation.materialize): the materializer
+    /// multiplies token-linear ops' divisor by the verify width in place.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().gemm_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
     #[getter(_low_precision_input)]
     fn low_precision_input(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().gemm()?.low_precision_input)
@@ -467,7 +494,7 @@ impl PyGemm {
 /// Embedding lookup. `empirical_bw_scaling_factor` is accepted for calling-
 /// shape compatibility and dropped (its math retired with the Python query
 /// stack); the engine types the quant as bfloat16 (memory-only op).
-#[pyclass(extends = PyOperation, subclass, name = "Embedding", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "Embedding", module = "aisimulate_core._native")]
 pub struct PyEmbedding;
 
 #[pymethods]
@@ -544,7 +571,7 @@ impl PyEmbedding {
 /// `bytes_per_token = 2 * (dim_in + dim_out)` (bf16 in + out), exactly the
 /// retired `_to_opspec` derivation; `empirical_bw_scaling_factor` is
 /// accepted and dropped.
-#[pyclass(extends = PyOperation, subclass, name = "ElementWise", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "ElementWise", module = "aisimulate_core._native")]
 pub struct PyElementWise;
 
 #[pymethods]
@@ -606,6 +633,13 @@ impl PyElementWise {
         Ok(slf.as_super().elementwise()?.scale_num_tokens)
     }
 
+    /// Width-channel mutator (speculation.materialize) — see the GEMM twin.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().elementwise_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
     #[getter(_seq_split)]
     fn seq_split(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().elementwise()?.seq_split)
@@ -623,7 +657,7 @@ impl PyElementWise {
 // ---------------------------------------------------------------------------
 
 /// TP custom all-reduce (`quant` pinned to half, the Python parity value).
-#[pyclass(extends = PyOperation, subclass, name = "CustomAllReduce", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "CustomAllReduce", module = "aisimulate_core._native")]
 pub struct PyCustomAllReduce;
 
 #[pymethods]
@@ -691,7 +725,7 @@ impl PyCustomAllReduce {
 
 /// NCCL collective (`nccl_op` = all_gather / all_reduce / ...;
 /// `num_elements_per_token` may be fractional — KV bytes / comm bytes).
-#[pyclass(extends = PyOperation, subclass, name = "NCCL", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "NCCL", module = "aisimulate_core._native")]
 pub struct PyNCCL;
 
 #[pymethods]
@@ -784,7 +818,7 @@ impl PyNCCL {
 }
 
 /// Pipeline-parallel P2P transfer.
-#[pyclass(extends = PyOperation, subclass, name = "P2P", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "P2P", module = "aisimulate_core._native")]
 pub struct PyP2P;
 
 #[pymethods]
@@ -856,7 +890,7 @@ impl PyP2P {
 /// DeepSeek-V4 mHC (multi-head compression) module. `architecture` is a new
 /// REQUIRED keyword: the retired serializer injected it from
 /// `model.architecture` at compile time; construction owns it now.
-#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MHCModule", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MHCModule", module = "aisimulate_core._native")]
 pub struct PyDeepSeekV4MHCModule;
 
 #[pymethods]
@@ -974,7 +1008,7 @@ impl PyDeepSeekV4MHCModule {
 // ---------------------------------------------------------------------------
 
 /// Prefill GQA/MHA attention (FMHA).
-#[pyclass(extends = PyOperation, subclass, name = "ContextAttention", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextAttention", module = "aisimulate_core._native")]
 pub struct PyContextAttention;
 
 #[pymethods]
@@ -988,7 +1022,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1003,7 +1037,13 @@ impl PyContextAttention {
         cp_size: u32,
         lane_order: Option<Vec<String>>,
         apply_rope: bool,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
             scale_factor,
@@ -1017,6 +1057,7 @@ impl PyContextAttention {
             cp_size,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
             apply_rope,
+            dcp_size,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1041,12 +1082,32 @@ impl PyContextAttention {
             o.apply_rope,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().context_attention()?.n)
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextAttentionOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1124,7 +1185,7 @@ impl PyContextAttention {
 }
 
 /// Decode GQA/MHA attention.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationAttention", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationAttention", module = "aisimulate_core._native")]
 pub struct PyGenerationAttention;
 
 #[pymethods]
@@ -1138,7 +1199,7 @@ impl PyGenerationAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1150,7 +1211,15 @@ impl PyGenerationAttention {
         head_size: u32,
         use_qk_norm: bool,
         lane_order: Option<Vec<String>>,
+        scale_num_tokens: u32,
+        verify_query_tokens: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1161,6 +1230,9 @@ impl PyGenerationAttention {
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
             use_qk_norm,
+            scale_num_tokens,
+            verify_query_tokens,
+            dcp_size,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1185,12 +1257,32 @@ impl PyGenerationAttention {
         // positional fields stay independent of the resolved lane list.
         let kwargs = PyDict::new(py);
         kwargs.set_item("lane_order", o.lane_order.clone())?;
+        kwargs.set_item("scale_num_tokens", o.scale_num_tokens)?;
+        kwargs.set_item("verify_query_tokens", o.verify_query_tokens)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_attention()?.n)
+    }
+
+    /// Decode context parallelism (see `GenerationAttentionOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1233,10 +1325,36 @@ impl PyGenerationAttention {
         slf.as_super().generation_attention_mut()?.lane_order = value;
         Ok(())
     }
+    /// Speculative width channel (speculation.materialize): batch divisor
+    /// for sequence-basis pricing. See `GenerationAttentionOp` field docs.
+    #[getter(_scale_num_tokens)]
+    fn scale_num_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.scale_num_tokens)
+    }
+
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().generation_attention_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
+    /// Real per-request query width behind the fold (roofline-guard input).
+    #[getter(_verify_query_tokens)]
+    fn verify_query_tokens(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.verify_query_tokens)
+    }
+
+    #[setter(_verify_query_tokens)]
+    fn set_verify_query_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super()
+            .generation_attention_mut()?
+            .verify_query_tokens = value;
+        Ok(())
+    }
 }
 
 /// Vision-encoder bidirectional attention.
-#[pyclass(extends = PyOperation, subclass, name = "EncoderAttention", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "EncoderAttention", module = "aisimulate_core._native")]
 pub struct PyEncoderAttention;
 
 #[pymethods]
@@ -1332,7 +1450,7 @@ impl PyEncoderAttention {
 // ---------------------------------------------------------------------------
 
 /// Prefill MLA (DeepSeek-style latent attention).
-#[pyclass(extends = PyOperation, subclass, name = "ContextMLA", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextMLA", module = "aisimulate_core._native")]
 pub struct PyContextMLA;
 
 #[pymethods]
@@ -1346,7 +1464,8 @@ impl PyContextMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1, dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -1354,7 +1473,13 @@ impl PyContextMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         cp_size: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextMla(ContextMlaOp {
             name,
             scale_factor,
@@ -1362,8 +1487,27 @@ impl PyContextMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             cp_size,
+            dcp_size,
         });
         Ok((PyContextMLA, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextMlaOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(
@@ -1380,7 +1524,9 @@ impl PyContextMLA {
             o.cp_size,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
@@ -1422,7 +1568,7 @@ impl PyContextMLA {
 }
 
 /// Decode MLA.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationMLA", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationMLA", module = "aisimulate_core._native")]
 pub struct PyGenerationMLA;
 
 #[pymethods]
@@ -1436,18 +1582,25 @@ impl PyGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, dcp_size=1))]
     fn new(
         name: String,
         scale_factor: f64,
         num_heads: u32,
         kv_cache_dtype: &Bound<'_, PyAny>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationMla(GenerationMlaOp {
             name,
             scale_factor,
             num_heads,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
+            dcp_size,
         });
         Ok((PyGenerationMLA, PyOperation { inner }))
     }
@@ -1464,12 +1617,31 @@ impl PyGenerationMLA {
             enum_token(&o.kv_cache_dtype),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
     fn num_heads(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_mla()?.num_heads)
+    }
+
+    /// Decode context parallelism (see `GenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kv_cache_dtype)]
@@ -1485,7 +1657,7 @@ impl PyGenerationMLA {
 /// Fused MLA module (one class, two engine variants by phase). Setting
 /// `_is_context` swaps the variant — the retired Python class stored the
 /// phase as an instance flag and the serializer picked the wire tag.
-#[pyclass(extends = PyOperation, subclass, name = "MLAModule", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MLAModule", module = "aisimulate_core._native")]
 pub struct PyMLAModule;
 
 #[pymethods]
@@ -1499,7 +1671,7 @@ impl PyMLAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "module";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None))]
+    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1510,7 +1682,11 @@ impl PyMLAModule {
         fmha_quant_mode: &Bound<'_, PyAny>,
         gemm_quant_mode: &Bound<'_, PyAny>,
         native_num_heads: Option<u32>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
         let module = MlaModuleOp {
             name,
             scale_factor,
@@ -1519,6 +1695,7 @@ impl PyMLAModule {
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             gemm_quant_mode: gemm_quant(gemm_quant_mode)?,
             native_num_heads,
+            dcp_size,
         };
         let inner = if is_context {
             Op::MlaModuleContext(module)
@@ -1546,12 +1723,28 @@ impl PyMLAModule {
             .into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("native_num_heads", o.native_num_heads)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_is_context)]
     fn is_context(slf: PyRef<'_, Self>) -> bool {
         matches!(slf.as_super().op(), Op::MlaModuleContext(_))
+    }
+
+    /// Decode context parallelism (generation variant; see `MlaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().mla_module()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
+        slf.as_super().mla_module_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[setter(_is_context)]
@@ -1608,7 +1801,7 @@ impl PyMLAModule {
 }
 
 /// MLA pre/post BMM.
-#[pyclass(extends = PyOperation, subclass, name = "MLABmm", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MLABmm", module = "aisimulate_core._native")]
 pub struct PyMLABmm;
 
 #[pymethods]
@@ -1681,7 +1874,7 @@ impl PyMLABmm {
 // ---------------------------------------------------------------------------
 
 /// Fused MoE FFN.
-#[pyclass(extends = PyOperation, subclass, name = "MoE", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MoE", module = "aisimulate_core._native")]
 pub struct PyMoE;
 
 #[pymethods]
@@ -1695,7 +1888,7 @@ impl PyMoE {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, enable_eplb=false, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, moe_kernel_source=None, enable_eplb=false, seq_split=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1712,6 +1905,7 @@ impl PyMoE {
         is_context: bool,
         is_gated: bool,
         moe_backend: Option<String>,
+        moe_kernel_source: Option<String>,
         enable_eplb: bool,
         seq_split: u32,
     ) -> PyResult<(Self, PyOperation)> {
@@ -1739,6 +1933,7 @@ impl PyMoE {
             workload_distribution,
             is_gated,
             moe_backend,
+            moe_kernel_source,
             enable_eplb,
             is_context,
         });
@@ -1768,7 +1963,9 @@ impl PyMoE {
         kwargs.set_item("is_context", o.is_context)?;
         kwargs.set_item("is_gated", o.is_gated)?;
         kwargs.set_item("moe_backend", o.moe_backend.clone())?;
+        kwargs.set_item("moe_kernel_source", o.moe_kernel_source.clone())?;
         kwargs.set_item("enable_eplb", o.enable_eplb)?;
+
         Ok((args, kwargs))
     }
 
@@ -1836,6 +2033,11 @@ impl PyMoE {
         Ok(slf.as_super().moe()?.moe_backend.clone())
     }
 
+    #[getter(_moe_kernel_source)]
+    fn moe_kernel_source(slf: PyRef<'_, Self>) -> PyResult<Option<String>> {
+        Ok(slf.as_super().moe()?.moe_kernel_source.clone())
+    }
+
     #[getter(_enable_eplb)]
     fn enable_eplb(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().moe()?.enable_eplb)
@@ -1848,7 +2050,7 @@ impl PyMoE {
 /// `moe_backend="deepep_moe"` maps to the RetiredDeepEp tombstone flavor —
 /// construction stays legal (Python builders still emit it), spec assembly
 /// and evaluation refuse it, mirroring the retired conversion error.
-#[pyclass(extends = PyOperation, subclass, name = "MoEDispatch", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEDispatch", module = "aisimulate_core._native")]
 pub struct PyMoEDispatch;
 
 impl PyOperation {
@@ -2060,6 +2262,13 @@ impl PyMoEDispatch {
         Ok(slf.as_super().moe_dispatch()?.scale_num_tokens)
     }
 
+    /// Width-channel mutator (speculation.materialize) — see the GEMM twin.
+    #[setter(_scale_num_tokens)]
+    fn set_scale_num_tokens(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        slf.as_super().moe_dispatch_mut()?.scale_num_tokens = value;
+        Ok(())
+    }
+
     #[getter(_attn_ar_modeled)]
     fn attn_ar_modeled(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().moe_dispatch()?.attn_ar_modeled)
@@ -2091,7 +2300,7 @@ impl PyMoEDispatch {
 /// Unified large-EP all-to-all comm phase. Backend/phase feasibility
 /// validation stays Python-side (the shell's `__init__` consults the
 /// `MOE_A2A_BACKENDS` registry — single source in `operations/moe_comm.py`).
-#[pyclass(extends = PyOperation, subclass, name = "MoEAllToAll", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEAllToAll", module = "aisimulate_core._native")]
 pub struct PyMoEAllToAll;
 
 impl PyOperation {
@@ -2237,7 +2446,7 @@ impl PyMoEAllToAll {
 /// Unified large-EP expert compute. `num_slots=None` collapses to
 /// `num_experts` at construction (the retired ctor's resolution); phase
 /// validation stays Python-side in the shell.
-#[pyclass(extends = PyOperation, subclass, name = "MoEExpertCompute", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "MoEExpertCompute", module = "aisimulate_core._native")]
 pub struct PyMoEExpertCompute;
 
 impl PyOperation {
@@ -2395,7 +2604,7 @@ impl PyMoEExpertCompute {
 /// SGLang DeepSeek-V4 MegaMoE routed module (one class, both phases via
 /// `is_context`). `workload_distribution` normalizes `uniform -> balanced`
 /// at construction, the retired ctor's rule.
-#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MegaMoEModule", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "DeepSeekV4MegaMoEModule", module = "aisimulate_core._native")]
 pub struct PyDeepSeekV4MegaMoEModule;
 
 impl PyOperation {
@@ -2585,7 +2794,7 @@ inner_accessor!(kda, kda_mut, Kda, crate::operators::KdaOp, "KDAKernel");
 
 /// Single Mamba2 kernel (conv1d or SSM). `seq_split` is accepted for
 /// calling-shape compatibility but gated: the family never opted into CP.
-#[pyclass(extends = PyOperation, subclass, name = "Mamba2Kernel", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "Mamba2Kernel", module = "aisimulate_core._native")]
 pub struct PyMamba2Kernel;
 
 #[pymethods]
@@ -2707,7 +2916,7 @@ impl PyMamba2Kernel {
 }
 
 /// Single Gated DeltaNet kernel (Qwen3.5 linear attention).
-#[pyclass(extends = PyOperation, subclass, name = "GDNKernel", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "GDNKernel", module = "aisimulate_core._native")]
 pub struct PyGDNKernel;
 
 #[pymethods]
@@ -2833,7 +3042,7 @@ impl PyGDNKernel {
 /// `draft_tokens`. A distinct engine variant, NOT a Python subclass of
 /// GDNKernel any more (the classes are construction handles; the kernels'
 /// tables are separate).
-#[pyclass(extends = PyOperation, subclass, name = "KDAKernel", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "KDAKernel", module = "aisimulate_core._native")]
 pub struct PyKDAKernel;
 
 #[pymethods]
@@ -2977,7 +3186,7 @@ inner_accessor!(
 /// WideEP prefill MLA. The op takes `tp_size`; the engine table axis is the
 /// per-rank head count `128 // tp_size` (DeepSeek's 128 total heads), the
 /// retired serializer's derivation, now applied at construction.
-#[pyclass(extends = PyOperation, subclass, name = "WideEPContextMLA", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "WideEPContextMLA", module = "aisimulate_core._native")]
 pub struct PyWideEPContextMLA;
 
 #[pymethods]
@@ -3081,7 +3290,7 @@ impl PyWideEPContextMLA {
 }
 
 /// WideEP decode MLA.
-#[pyclass(extends = PyOperation, subclass, name = "WideEPGenerationMLA", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "WideEPGenerationMLA", module = "aisimulate_core._native")]
 pub struct PyWideEPGenerationMLA;
 
 #[pymethods]
@@ -3095,7 +3304,8 @@ impl PyWideEPGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer"))]
+    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer", dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -3103,11 +3313,17 @@ impl PyWideEPGenerationMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         attn_backend: &str,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
         if tp_size == 0 || 128 % tp_size != 0 {
             return Err(PyValueError::new_err(format!(
                 "WideEPGenerationMLA tp_size must divide 128, got {tp_size}"
             )));
+        }
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
         }
         let inner = Op::WideEpGenerationMla(crate::operators::WideEpGenerationMlaOp {
             name,
@@ -3116,6 +3332,7 @@ impl PyWideEPGenerationMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             attn_backend: attn_backend.to_string(),
+            dcp_size,
         });
         Ok((PyWideEPGenerationMLA, PyOperation { inner }))
     }
@@ -3134,12 +3351,31 @@ impl PyWideEPGenerationMLA {
             o.attn_backend.clone(),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_tp_size)]
     fn tp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(128 / slf.as_super().wideep_generation_mla()?.num_heads.max(1))
+    }
+
+    /// Decode context parallelism (see `WideEpGenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().wideep_generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().wideep_generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kvcache_quant_mode)]
@@ -3185,7 +3421,7 @@ impl PyOperation {
 macro_rules! msa_class {
     ($cls:ident, $py_name:literal, $variant:ident, $is_context:literal) => {
         #[doc = concat!("MiniMax MSA ", $py_name, " module.")]
-        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aiconfigurator_core._aiconfigurator_core")]
+        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisimulate_core._native")]
         pub struct $cls;
 
         #[pymethods]
@@ -3458,7 +3694,7 @@ fn dsa_projection_dict<'py>(
 }
 
 /// GLM-5 / DeepSeek-V3.2 sparse-attention context module.
-#[pyclass(extends = PyOperation, subclass, name = "ContextDSAModule", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "ContextDSAModule", module = "aisimulate_core._native")]
 pub struct PyContextDSAModule;
 
 #[pymethods]
@@ -3472,7 +3708,7 @@ impl PyContextDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3486,7 +3722,13 @@ impl PyContextDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaContext(crate::operators::DsaModuleOp {
@@ -3504,8 +3746,27 @@ impl PyContextDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `DsaModuleOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(
@@ -3532,6 +3793,7 @@ impl PyContextDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
@@ -3605,7 +3867,7 @@ impl PyContextDSAModule {
 
 /// GLM-5 / DeepSeek-V3.2 sparse-attention generation module. The retired
 /// class had no separate FMHA mode; the wire carries bfloat16 for it.
-#[pyclass(extends = PyOperation, subclass, name = "GenerationDSAModule", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "GenerationDSAModule", module = "aisimulate_core._native")]
 pub struct PyGenerationDSAModule;
 
 #[pymethods]
@@ -3619,7 +3881,7 @@ impl PyGenerationDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3631,7 +3893,13 @@ impl PyGenerationDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaGeneration(crate::operators::DsaModuleOp {
@@ -3649,6 +3917,7 @@ impl PyGenerationDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size,
         });
         Ok((PyGenerationDSAModule, PyOperation { inner }))
     }
@@ -3675,7 +3944,25 @@ impl PyGenerationDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
+    }
+
+    /// Decode context parallelism (see `DsaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_num_heads)]
@@ -3745,7 +4032,7 @@ impl PyOperation {
 macro_rules! dsv4_class {
     ($cls:ident, $py_name:literal, $variant:ident, $is_context:literal) => {
         #[doc = concat!("DeepSeek-V4 ", $py_name, ". `attn_kind` derives from `compress_ratio` (4 -> Csa, else Hca), the retired serializer's rule; `architecture` is a new REQUIRED keyword (the serializer injected `model.architecture` at compile time).")]
-        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aiconfigurator_core._aiconfigurator_core")]
+        #[pyclass(extends = PyOperation, subclass, name = $py_name, module = "aisimulate_core._native")]
         pub struct $cls;
 
         #[pymethods]
@@ -4039,7 +4326,7 @@ fn wrap_ops<'py>(py: Python<'py>, ops: &[Op]) -> PyResult<Vec<Py<PyAny>>> {
 }
 
 /// Two op groups whose latency overlaps (max); weights sum.
-#[pyclass(extends = PyOperation, subclass, name = "OverlapOp", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "OverlapOp", module = "aisimulate_core._native")]
 pub struct PyOverlapOp;
 
 #[pymethods]
@@ -4097,7 +4384,7 @@ impl PyOverlapOp {
 }
 
 /// Primary op with a fallback chain on perf-data misses.
-#[pyclass(extends = PyOperation, subclass, name = "FallbackOp", module = "aiconfigurator_core._aiconfigurator_core")]
+#[pyclass(extends = PyOperation, subclass, name = "FallbackOp", module = "aisimulate_core._native")]
 pub struct PyFallbackOp;
 
 #[pymethods]
@@ -4226,6 +4513,10 @@ pub(crate) fn reject_retired_ops(ops: &[Op]) -> Result<(), String> {
                 reject_retired_ops(&o.fallback)?;
             }
             Op::FpmForward(o) => reject_retired_ops(&o.sol_ops)?,
+            Op::Dsv41Stage(o) => reject_retired_ops(&o.children)?,
+            Op::Glm53Ffn(o) => reject_retired_ops(&o.children)?,
+            Op::Glm53Primitive(o) => reject_retired_ops(&o.children)?,
+            Op::TokenScale(o) => reject_retired_ops(std::slice::from_ref(&o.op))?,
             _ => {}
         }
     }

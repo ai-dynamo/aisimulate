@@ -6,7 +6,7 @@
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk.picking import pick_optimization_type
+from aisimulate.sdk.picking import pick_optimization_type
 
 
 def _make_agg_df(rows: list[dict]) -> pd.DataFrame:

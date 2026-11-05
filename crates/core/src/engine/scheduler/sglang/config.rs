@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use crate::engine::FrontendConfig;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::common::protocols::{KvTransferTimingMode, MockEngineArgs, WorkerType};
 
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4096;
+const DEFAULT_VLM_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 const DEFAULT_INIT_NEW_TOKEN_RATIO: f64 = 0.7;
 const DEFAULT_MIN_NEW_TOKEN_RATIO_FACTOR: f64 = 0.14;
 const DEFAULT_NEW_TOKEN_RATIO_DECAY_STEPS: f64 = 600.0;
@@ -28,6 +30,7 @@ pub(super) struct SglangConfig {
     pub(super) max_prefill_tokens: usize,
     pub(super) max_running_requests: usize,
     pub(super) chunked_prefill_size: usize,
+    pub(super) prefill_decode_interval: usize,
     pub(super) clip_max_new_tokens: usize,
     pub(super) init_new_token_ratio: f64,
     pub(super) min_new_token_ratio: f64,
@@ -38,11 +41,18 @@ pub(super) struct SglangConfig {
     pub(super) worker_type: WorkerType,
     pub(super) block_size: usize,
     pub(super) total_kv_tokens: usize,
+    pub(super) max_model_len: Option<usize>,
     pub(super) enable_prefix_caching: bool,
     pub(super) kv_transfer_bytes_per_token: Option<usize>,
     pub(super) kv_transfer_bandwidth: Option<f64>,
     pub(super) kv_transfer_timing_mode: KvTransferTimingMode,
     pub(super) speculative_max_tokens: Option<usize>,
+    /// Vision embedding cache capacity in bytes.
+    pub(super) vlm_cache_bytes: u64,
+    /// Whether a pass is one iteration of the overlap scheduler loop.
+    pub(super) host_loop: bool,
+    /// Frontend worker pools ahead of the scheduler inbox.
+    pub(super) frontend: Option<FrontendConfig>,
 }
 
 impl SglangConfig {
@@ -77,6 +87,7 @@ impl SglangConfig {
 
         Self {
             schedule_policy,
+            prefill_decode_interval: args.prefill_decode_interval,
             max_running_requests: args.max_num_seqs.unwrap_or(usize::MAX),
             max_prefill_tokens: sglang
                 .and_then(|s| s.max_prefill_tokens)
@@ -96,11 +107,17 @@ impl SglangConfig {
             worker_type: args.worker_type,
             block_size: args.block_size,
             total_kv_tokens: args.num_gpu_blocks * args.block_size,
+            max_model_len: args.max_model_len,
             enable_prefix_caching: args.enable_prefix_caching,
             kv_transfer_bytes_per_token: args.kv_transfer_bytes_per_token,
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,
             speculative_max_tokens: args.aic_nextn.map(|nextn| nextn + 1),
+            vlm_cache_bytes: sglang
+                .and_then(|s| s.vlm_cache_bytes)
+                .unwrap_or(DEFAULT_VLM_CACHE_BYTES),
+            host_loop: sglang.is_some_and(|s| s.host_loop),
+            frontend: sglang.and_then(|s| s.frontend.clone()),
         }
     }
 

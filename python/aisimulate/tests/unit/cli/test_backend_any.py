@@ -7,8 +7,8 @@ Unit tests for --backend auto functionality.
 
 import pytest
 
-from aiconfigurator.cli.main import build_default_tasks
-from aiconfigurator.sdk.common import BackendName
+from aisimulate.legacy_cli.main import build_default_tasks
+from aisimulate.sdk.common import BackendName
 
 pytestmark = pytest.mark.unit
 

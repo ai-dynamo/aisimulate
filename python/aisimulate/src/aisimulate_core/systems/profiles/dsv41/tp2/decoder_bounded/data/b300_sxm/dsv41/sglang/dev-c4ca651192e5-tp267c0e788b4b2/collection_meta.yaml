@@ -1,0 +1,13 @@
+schema_version: 1
+runtime:
+  framework: sglang
+  image: lmsysorg/sglang
+  image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+  version: 0.0.0.dev0
+tables:
+  dsv41_module_perf:
+    status: complete
+    rows: 1029
+    data_sha256: f388060ea5ca384e6d8c8603c49ac942d35297554267975923e57a26cf30ac55
+    provenance_admission_sha256: 871c80f41485fb3707ca3dab48235cd89300fdaf3de333c49410e5ceb11111d6
+    measurement_kind: native_gpu_measurement

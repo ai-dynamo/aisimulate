@@ -2,7 +2,7 @@
 description: >
   Safe practices for adding/modifying generator backend Jinja templates.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Template Authoring Reference
@@ -21,12 +21,12 @@ covers safe practices for adding and modifying Jinja2 templates.
 
 | File | Purpose |
 |---|---|
-| `src/aiconfigurator/generator/config/backend_templates/<backend>/` | Jinja2 templates |
-| `src/aiconfigurator/generator/config/backend_config_mapping.yaml` | Param name mapping |
-| `src/aiconfigurator/generator/config/deployment_config.yaml` | Input schema + defaults |
-| `src/aiconfigurator/generator/config/backend_version_matrix.yaml` | Version compatibility |
-| `src/aiconfigurator/generator/rendering/engine.py` | Template rendering + context building |
-| `src/aiconfigurator/generator/rule_plugin/*.rule` | Rule DSL files |
+| `src/aisimulate/generator/config/backend_templates/<backend>/` | Jinja2 templates |
+| `src/aisimulate/generator/config/backend_config_mapping.yaml` | Param name mapping |
+| `src/aisimulate/generator/config/deployment_config.yaml` | Input schema + defaults |
+| `src/aisimulate/generator/config/backend_version_matrix.yaml` | Version compatibility |
+| `src/aisimulate/generator/rendering/engine.py` | Template rendering + context building |
+| `src/aisimulate/generator/rule_plugin/*.rule` | Rule DSL files |
 | `tools/generator_validator/` | Post-generation validation |
 
 ## Template Types by Backend

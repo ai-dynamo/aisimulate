@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Analytical fixed-image E+aggregated prediction, not event-level encoder replay.
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 448, width: 448, count: 1}
+  load: {type: concurrency, concurrency: 8}
+  stop: {requests: 16}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  mode: aggregated
+  workers:
+    encoder: {tensor: 1, replicas: 1, batch_size: 2}
+    aggregated:
+      parallelism: {tensor: 1, replicas: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 8}

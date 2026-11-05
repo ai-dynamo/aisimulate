@@ -15,10 +15,10 @@ Covers:
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.models import get_model
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.models import get_model
 
 pytestmark = pytest.mark.unit
 
@@ -455,7 +455,7 @@ class TestInferenceSummaryEncoderFields:
 
     @pytest.fixture
     def summary(self):
-        from aiconfigurator.sdk.inference_summary import InferenceSummary
+        from aisimulate.sdk.inference_summary import InferenceSummary
 
         rc = RuntimeConfig(batch_size=1, isl=512, osl=128)
         return InferenceSummary(rc)
@@ -625,7 +625,7 @@ class TestEncoderMemoryInSummary:
         path was removed; these tests are about the encoder MEMORY plumbing,
         so the step values are fixed dummies.
         """
-        from aiconfigurator.sdk.backends import base_backend as base_backend_module
+        from aisimulate.sdk.backends import base_backend as base_backend_module
 
         monkeypatch.setattr(base_backend_module, "should_use_rust_engine_step", lambda *args, **kwargs: True)
         monkeypatch.setattr(
@@ -646,7 +646,7 @@ class TestEncoderMemoryInSummary:
         """Text-only model: encoder_memory should be empty dict."""
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-32B", model_config, "trtllm")
         database = SimpleNamespace(
@@ -670,8 +670,8 @@ class TestEncoderMemoryInSummary:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from aiconfigurator.sdk.backends import base_backend as base_backend_module
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends import base_backend as base_backend_module
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-VL-32B-Instruct", model_config, "trtllm")
         database = SimpleNamespace(
@@ -703,7 +703,7 @@ class TestEncoderMemoryInSummary:
         """VL model with num_images>0: encoder_memory must contain weights/activations/kvcache."""
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model = get_model("Qwen/Qwen3-VL-32B-Instruct", model_config, "trtllm")
         database = SimpleNamespace(
@@ -741,7 +741,7 @@ class TestEncoderMemoryInSummary:
     def test_qwen35_image_estimate_executes_nonzero_encoder_work(self, model_name, monkeypatch):
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model_config = config.ModelConfig(moe_tp_size=1) if "A3B" in model_name else config.ModelConfig()
         model = get_model(model_name, model_config, "trtllm")
@@ -804,7 +804,7 @@ class TestEncoderMemoryInSummary:
     ):
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
+        from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
 
         model_config = config.ModelConfig(moe_tp_size=1, moe_ep_size=1) if "A3B" in model_name else config.ModelConfig()
         model = get_model(model_name, model_config, "trtllm")
@@ -882,7 +882,7 @@ class TestSmartResizeTokenResolution:
     non-aligned inputs)."""
 
     def test_non_aligned_dims_round_to_nearest_factor(self):
-        from aiconfigurator.sdk.backends.base_backend import BaseBackend
+        from aisimulate.sdk.backends.base_backend import BaseBackend
 
         enc_cfg = common.VisionEncoderConfig(
             depth=27,
@@ -960,3 +960,126 @@ class TestSmartResizeTokenResolution:
         rc = RuntimeConfig(image_height=448, num_images_per_request=0)
 
         assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (0, 0, 0)
+
+
+class TestCanonicalVisionTiming:
+    """The canonical estimator compiles the tower under the requested layout and prices it."""
+
+    @staticmethod
+    def _estimator(tp: int, encoder_parallel: str):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        return RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="Qwen/Qwen3-VL-8B-Instruct",
+                system="h200_sxm",
+                backend="sglang",
+                backend_version="0.5.14",
+                worker_type="aggregated",
+                tp=tp,
+                encoder_parallel=encoder_parallel,
+            )
+        )
+
+    def test_tp_shards_the_tower_while_dp_gathers_its_output(self):
+        shape = [{"sequences": 1, "patch_tokens": 784, "transformer_tokens": 784, "output_tokens": 196, "images": 4}]
+        tp_ops = self._estimator(2, "tp").vision_operations(shape)
+        dp_ops = self._estimator(2, "dp").vision_operations(shape)
+        tp_names = {name for name, *_ in tp_ops}
+        dp_names = {name for name, *_ in dp_ops}
+        # SGLang's default splits the ViT over the attention TP group: every rank
+        # encodes every image and no exit all-gather exists. Encoder DP replicates
+        # the tower, shares the images, and gathers the embeddings.
+        assert "encoder_dp_all_gather" not in tp_names
+        assert "encoder_dp_all_gather" in dp_names
+        assert sum(latency for _, latency, *_ in tp_ops) > 0.0
+        assert self._estimator(2, "tp").diagnostics()["provenance"]["config"]["encoder_parallel"] == "tp"
+
+    def test_language_only_models_compile_no_tower(self):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        with pytest.raises(Exception, match="no vision encoder"):
+            RustForwardPassPerfModel.best_available(
+                ForwardPassPerfModelConfig(
+                    model="Qwen/Qwen3-8B",
+                    system="h200_sxm",
+                    backend="sglang",
+                    backend_version="0.5.14",
+                    worker_type="aggregated",
+                    encoder_parallel="tp",
+                )
+            )
+
+
+def test_encoder_tp_shards_the_resident_tower_weights():
+    from aisimulate_core.sdk.config import ModelConfig
+
+    def weights(enable_encoder_dp: bool) -> float:
+        model = get_model(
+            "Qwen/Qwen3-VL-8B-Instruct", ModelConfig(tp_size=2, enable_encoder_dp=enable_encoder_dp), "sglang"
+        )
+        return sum(op.get_weights() for op in model.encoder_ops)
+
+    assert weights(enable_encoder_dp=False) < weights(enable_encoder_dp=True)
+
+
+def test_image_geometry_follows_the_processor_pixel_budget():
+    from aisimulate_core.sdk.backends.base_backend import ImageGeometry, image_geometry
+
+    # 1024x1024 -> 64x64 patches of 16px, merged 2x2 into 1024 visual tokens; each patch
+    # carries 3 x 2 x 16 x 16 fp32 values and each token 4 bf16 embeddings of 4096.
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 1024, 1024) == ImageGeometry(
+        sequences=1,
+        patch_tokens=4096,
+        transformer_tokens=4096,
+        output_tokens=1024,
+        visual_tokens=1024,
+        feature_bytes=4096 * 6144,
+        embedding_bytes=1024 * 4 * 4096 * 2,
+    )
+    # smart_resize scales a 32x32 image up to the 65536-pixel floor (256x256 -> 64
+    # tokens) and an 8192x8192 image down to the 16777216-pixel ceiling (4096x4096).
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 32, 32).output_tokens == 64
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 8192, 8192).output_tokens == 16384
+    # A served processor with another budget (`--mm-process-config`) is followed instead.
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 8192, 8192, max_pixels=1003520).output_tokens == 961
+    with pytest.raises(ValueError, match="no vision encoder"):
+        image_geometry("Qwen/Qwen3-8B", 1024, 1024)
+
+
+def test_image_geometry_keeps_llama4_tiles_as_separate_sequences():
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    # 16 local 336px tiles plus the global tile; each tile is its own attention
+    # sequence of 576 patches (+CLS), and the prompt adds tile-structure tokens.
+    geometry = image_geometry("meta-llama/Llama-4-Scout-17B-16E-Instruct", 1024, 1024)
+    assert (geometry.sequences, geometry.patch_tokens, geometry.transformer_tokens) == (17, 576, 577)
+    assert geometry.output_tokens == 144
+    assert geometry.visual_tokens == 2467
+
+
+def test_image_geometry_rejects_families_the_replay_does_not_lay_out():
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    # Gemma 4 sizes images from its soft-token budget and Kimi from its own patch
+    # limits: neither is a Qwen processor whose pixel budget could be supplied.
+    for model in ("google/gemma-4-26B-A4B", "moonshotai/Kimi-K3"):
+        with pytest.raises(ValueError, match="vision family is not supported by native VL replay"):
+            image_geometry(model, 1024, 1024)
+
+
+def test_video_frames_keep_the_stride_geometry_while_images_follow_the_pixel_budget():
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path, get_vision_encoder_config_from_model_info
+
+    enc_cfg = get_vision_encoder_config_from_model_info(get_model_config_from_model_path("Qwen/Qwen3-VL-8B-Instruct"))
+    # A 224x224 image is scaled up to the 65536-pixel floor (256x256 -> 64 tokens); a
+    # 224x224 video frame keeps its 7x7 merged grid, as the clip budget is not modeled.
+    image = BaseBackend._encoder_workload_per_visual(RuntimeConfig(image_height=224, image_width=224), enc_cfg)
+    video = BaseBackend._encoder_workload_per_visual(
+        RuntimeConfig(
+            num_images_per_request=0, num_videos_per_request=1, video_frames=8, video_height=224, video_width=224
+        ),
+        enc_cfg,
+    )
+    assert image.output_tokens_per_image == 64
+    assert video.output_tokens_per_sequence == 49

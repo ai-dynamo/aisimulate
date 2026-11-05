@@ -1,0 +1,673 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Request-boundary snapshots, not physical engine checkpoints.
+//! The behavioral reference is AIPerf's trajectory_source.py at
+//! https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b.
+//! Sampling and token allocation below are AISimulate-owned algorithms.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use anyhow::{Context, Result, bail};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rustc_hash::FxHashMap;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use super::{
+    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticNode,
+    SYNTHETIC_OUTPUT_SEED, ValidatedAgenticGraph, planned_output_token_ids,
+};
+use crate::replay::AgenticRuntimeIdentity;
+
+pub const AGENTIC_SNAPSHOT_SCHEMA_V1: &str = "aisimulate.agentic.snapshot.v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgenticSnapshotSelection {
+    pub source_play_id: String,
+    /// Loaded graph clock: per-play-relative for Weka, source clock for Mooncake.
+    pub t_star_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgenticSnapshotOptions {
+    pub seed: u64,
+    /// Exact, externally sampled cuts in lane order. Unset preserves v1 draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_selections: Option<Vec<AgenticSnapshotSelection>>,
+    /// Next draw from the shared sequential corpus sampler, including skipped draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_cursor: Option<u64>,
+}
+
+impl AgenticSnapshotOptions {
+    pub fn seeded(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::default()
+        }
+    }
+}
+
+/// Recorded provenance and the independent benchmark request boundary.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticSnapshotRequest {
+    pub source_request_id: String,
+    pub identity: AgenticRuntimeIdentity,
+    pub recorded_start_ms: f64,
+    pub recorded_end_ms: Option<f64>,
+    pub historical: bool,
+    /// Source-clock delay; execution divides this by the configured speedup.
+    pub remaining_delay_ms: f64,
+    pub pending_dependencies: Vec<String>,
+}
+
+/// A description only: physical primer execution belongs to phase orchestration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgenticPrimer {
+    pub source_request_id: String,
+    pub request_id: String,
+    pub conversation_id: String,
+    pub input_length: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticSnapshotEvidence {
+    pub schema: &'static str,
+    pub graph: AgenticGraphIdentity,
+    pub seed: u64,
+    pub lane_id: usize,
+    pub play_ordinal: u64,
+    pub source_play_id: String,
+    pub play_id: String,
+    pub cache_id: String,
+    pub t_star_ms: f64,
+    pub recorded_start_ms: f64,
+    pub recorded_last_start_ms: f64,
+    pub requests: Vec<AgenticSnapshotRequest>,
+    pub primers: Vec<AgenticPrimer>,
+}
+
+/// Immutable corpus compilation retained by all views of a replay instance.
+/// Token ranges are functions of lane/ordinal, never runtime completion order.
+#[derive(Debug)]
+pub struct AgenticReplayContext {
+    /// The source graph, except that each node's `hash_ids` holds play-local
+    /// ranks (first-seen order within its play) instead of graph-wide IDs, and
+    /// `hash_values` is empty.
+    pub(super) graph: ValidatedAgenticGraph,
+    graph_identity: AgenticGraphIdentity,
+    pub(super) lanes: usize,
+    seed: u64,
+    initial_corpus_cursor: u64,
+    index_by_id: FxHashMap<String, usize>,
+    node_to_play: Vec<usize>,
+    topological_rank: Vec<usize>,
+    recorded_intervals: Vec<(f64, Option<f64>)>,
+    pub(super) outputs: Vec<Vec<u32>>,
+    token_stride: u64,
+    request_stride: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgenticPlaySnapshot {
+    pub(super) context: Arc<AgenticReplayContext>,
+    pub(super) source_play_index: usize,
+    pub(super) slot: u64,
+    pub(super) evidence: AgenticSnapshotEvidence,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedAgenticSnapshots {
+    pub(super) context: Arc<AgenticReplayContext>,
+    pub(super) plays: Vec<AgenticPlaySnapshot>,
+    evidence: Vec<AgenticSnapshotEvidence>,
+}
+
+enum PlayCut {
+    Sampled,
+    Absolute(f64),
+    FromStart,
+}
+
+impl ValidatedAgenticGraph {
+    pub fn prepare_snapshots(
+        &self,
+        lanes: usize,
+        options: AgenticSnapshotOptions,
+    ) -> Result<PreparedAgenticSnapshots> {
+        self.clone().into_prepared_snapshots(lanes, options)
+    }
+
+    /// [`Self::prepare_snapshots`] for a caller that no longer needs the graph:
+    /// the replay context reuses it instead of holding a second copy.
+    pub fn into_prepared_snapshots(
+        mut self,
+        lanes: usize,
+        options: AgenticSnapshotOptions,
+    ) -> Result<PreparedAgenticSnapshots> {
+        if lanes == 0 || self.plays.is_empty() {
+            bail!("agentic snapshots require positive lanes and a nonempty corpus");
+        }
+        match (&options.initial_selections, options.corpus_cursor) {
+            (Some(selections), Some(cursor)) => {
+                if selections.len() != lanes {
+                    bail!("initial_selections must contain exactly one selection per lane");
+                }
+                if cursor < lanes as u64 {
+                    bail!("corpus_cursor cannot precede the initial lane draws");
+                }
+            }
+            (None, None) => {}
+            _ => bail!("initial_selections and corpus_cursor must be specified together"),
+        }
+        let index_by_id = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.request_id.clone(), i))
+            .collect::<FxHashMap<_, _>>();
+        let mut remaining = self
+            .nodes
+            .iter()
+            .map(|n| n.dependencies.len())
+            .collect::<Vec<_>>();
+        let mut dependents = vec![Vec::new(); self.nodes.len()];
+        for (target, node) in self.nodes.iter().enumerate() {
+            for edge in &node.dependencies {
+                dependents[index_by_id[&edge.request_id]].push(target);
+            }
+        }
+        let mut ready = remaining
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &n)| (n == 0).then_some(i))
+            .collect::<BTreeSet<_>>();
+        let mut topological_rank = vec![0; self.nodes.len()];
+        let mut ordinal = 0;
+        while let Some(source) = ready.pop_first() {
+            topological_rank[source] = ordinal;
+            ordinal += 1;
+            for &target in &dependents[source] {
+                remaining[target] -= 1;
+                if remaining[target] == 0 {
+                    ready.insert(target);
+                }
+            }
+        }
+        if ordinal != self.nodes.len() {
+            bail!("snapshot source graph contains a dependency cycle");
+        }
+        // Replace graph-wide hash IDs with play-local ranks in place; token
+        // identities are derived from these ranks and the play's slot.
+        let mut token_stride = 1_u64;
+        let mut node_to_play = vec![0; self.nodes.len()];
+        for (play_index, play) in self.plays.iter().enumerate() {
+            let mut interner = FxHashMap::default();
+            for &index in &play.nodes {
+                node_to_play[index] = play_index;
+                for hash in &mut self.nodes[index].hash_ids {
+                    let next = u32::try_from(interner.len()).context(
+                        "source play contains more unique hash IDs than u32 can represent",
+                    )?;
+                    *hash = *interner.entry(*hash).or_insert(next);
+                }
+            }
+            token_stride = token_stride.max(interner.len() as u64);
+        }
+        self.hash_values = Arc::default();
+        let recorded_intervals = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let (start, end) = node.recorded_interval_ms.unwrap_or_else(|| {
+                    (
+                        node.not_before_ms,
+                        node.recorded_api_time_ms.map(|d| node.not_before_ms + d),
+                    )
+                });
+                if !start.is_finite()
+                    || start < 0.0
+                    || end.is_some_and(|end| !end.is_finite() || end < start)
+                {
+                    bail!("recorded API interval overflow or invalid interval");
+                }
+                Ok((start, end))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Preserve the complete corpus's existing output RNG consumption.
+        let mut rng = StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
+        let outputs = self
+            .nodes
+            .iter_mut()
+            .map(|node| {
+                planned_output_token_ids(
+                    node.output_token_ids.take(),
+                    node.max_output_tokens,
+                    &mut rng,
+                )
+            })
+            .collect();
+        let context = Arc::new(AgenticReplayContext {
+            graph_identity: self.identity(),
+            request_stride: self.nodes.len() as u128 + 1,
+            graph: self,
+            lanes,
+            seed: options.seed,
+            initial_corpus_cursor: options.corpus_cursor.unwrap_or(lanes as u64),
+            outputs,
+            index_by_id,
+            node_to_play,
+            topological_rank,
+            recorded_intervals,
+            token_stride,
+        });
+        let plays = if let Some(selections) = options.initial_selections {
+            let play_by_id = context
+                .graph
+                .plays
+                .iter()
+                .enumerate()
+                .map(|(index, play)| (play.play_id.as_str(), index))
+                .collect::<FxHashMap<_, _>>();
+            selections
+                .into_iter()
+                .enumerate()
+                .map(|(lane, selection)| {
+                    let source = *play_by_id
+                        .get(selection.source_play_id.as_str())
+                        .with_context(|| {
+                            format!("unknown snapshot source play {}", selection.source_play_id)
+                        })?;
+                    context.prepare_play_with_cut(
+                        lane,
+                        0,
+                        PlayCut::Absolute(selection.t_star_ms),
+                        Some(source),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            (0..lanes)
+                .map(|lane| context.prepare_play(lane, 0, None))
+                .collect::<Result<Vec<_>>>()?
+        };
+        PreparedAgenticSnapshots::from_plays(plays)
+    }
+}
+
+impl AgenticReplayContext {
+    pub fn graph_identity(&self) -> AgenticGraphIdentity {
+        self.graph_identity.clone()
+    }
+
+    /// Token identities for source node `index` in the play instance `slot`.
+    /// The caller passes the slot of a prepared play, whose range check bounds
+    /// `(slot + 1) * token_stride` by 2^32; every rank is below the stride.
+    pub(super) fn token_ids(&self, slot: u64, index: usize) -> Vec<u32> {
+        debug_assert!(
+            slot.checked_add(1)
+                .and_then(|next| next.checked_mul(self.token_stride))
+                .is_some_and(|end| end <= 1 << 32)
+        );
+        let base = (slot * self.token_stride) as u32;
+        self.graph.nodes[index]
+            .hash_ids
+            .iter()
+            .map(|&rank| base + rank)
+            .collect()
+    }
+    pub fn lane_count(&self) -> usize {
+        self.lanes
+    }
+
+    pub fn initial_corpus_cursor(&self) -> u64 {
+        self.initial_corpus_cursor
+    }
+
+    pub(super) fn recorded_start_ms(&self, index: usize) -> f64 {
+        self.recorded_intervals[index].0
+    }
+
+    /// Prepare a deterministic corpus-cycle instance. `None` samples an initial
+    /// cut; `Some(cut_ms)` uses an absolute recorded timestamp, so `Some(0.0)`
+    /// starts a play only when its recorded clock begins at zero. Use
+    /// [`Self::prepare_play_from_start`] for an origin-independent full play.
+    /// Ordinals must advance on lane reuse, including while old server work exists.
+    pub fn prepare_play(
+        self: &Arc<Self>,
+        lane_id: usize,
+        play_ordinal: u64,
+        cut_ms: Option<f64>,
+    ) -> Result<AgenticPlaySnapshot> {
+        self.prepare_play_with_cut(
+            lane_id,
+            play_ordinal,
+            cut_ms.map_or(PlayCut::Sampled, PlayCut::Absolute),
+            None,
+        )
+    }
+
+    /// Prepare every request in the selected source play, starting at its
+    /// earliest recorded request timestamp regardless of the clock origin.
+    pub fn prepare_play_from_start(
+        self: &Arc<Self>,
+        lane_id: usize,
+        play_ordinal: u64,
+    ) -> Result<AgenticPlaySnapshot> {
+        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart, None)
+    }
+
+    /// Select a corpus source independently of the lane incarnation used for
+    /// request/cache identity. The caller owns the shared sequential cursor.
+    pub fn prepare_source_play_from_start(
+        self: &Arc<Self>,
+        source_play_index: usize,
+        lane_id: usize,
+        play_ordinal: u64,
+    ) -> Result<AgenticPlaySnapshot> {
+        if source_play_index >= self.graph.plays.len() {
+            bail!("source play index is outside the corpus");
+        }
+        self.prepare_play_with_cut(
+            lane_id,
+            play_ordinal,
+            PlayCut::FromStart,
+            Some(source_play_index),
+        )
+    }
+
+    pub fn source_play_count(&self) -> usize {
+        self.graph.plays.len()
+    }
+
+    fn prepare_play_with_cut(
+        self: &Arc<Self>,
+        lane_id: usize,
+        play_ordinal: u64,
+        cut: PlayCut,
+        source_play_index: Option<usize>,
+    ) -> Result<AgenticPlaySnapshot> {
+        if lane_id >= self.lanes {
+            bail!("snapshot lane is outside the configured lane count");
+        }
+        let slot = play_ordinal
+            .checked_mul(u64::try_from(self.lanes)?)
+            .and_then(|x| x.checked_add(lane_id as u64))
+            .context("play ordinal overflow")?;
+        let range_end = slot
+            .checked_add(1)
+            .and_then(|s| s.checked_mul(self.token_stride))
+            .context("play token range overflow")?;
+        if range_end > u64::from(u32::MAX) + 1 {
+            bail!("play token identity range exceeds u32 capacity; identities cannot be recycled");
+        }
+        let source_play_index =
+            source_play_index.unwrap_or((slot % self.graph.plays.len() as u64) as usize);
+        let play = &self.graph.plays[source_play_index];
+        let first = play
+            .nodes
+            .iter()
+            .map(|&i| self.recorded_intervals[i].0)
+            .min_by(f64::total_cmp)
+            .context("source play has no requests")?;
+        let last = play
+            .nodes
+            .iter()
+            .map(|&i| self.recorded_intervals[i].0)
+            .max_by(f64::total_cmp)
+            .expect("nonempty play");
+        // Versioned, platform-independent uniform draw: the upper 53 bits of a
+        // domain-separated digest map exactly onto the binary64 unit interval.
+        let key = serde_json::to_vec(&(
+            AGENTIC_SNAPSHOT_SCHEMA_V1,
+            self.seed,
+            self.graph.graph_digest(),
+            &play.play_id,
+            lane_id,
+            play_ordinal,
+        ))?;
+        let digest = blake3::hash(&key);
+        let bits = u64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap());
+        let unit = (bits >> 11) as f64 / ((1_u64 << 53) as f64);
+        let t_star_ms = match cut {
+            PlayCut::Sampled => first + (0.25 + 0.5 * unit) * (last - first),
+            PlayCut::Absolute(cut_ms) => cut_ms,
+            PlayCut::FromStart => first,
+        };
+        if !t_star_ms.is_finite() || t_star_ms < first || t_star_ms > last {
+            bail!("snapshot cut must lie within recorded request-start bounds [{first}, {last}]");
+        }
+        let play_id = format!(
+            "agentic-v1:{}:{}:{lane_id}:{play_ordinal}",
+            self.graph.graph_digest(),
+            self.seed
+        );
+        let cache_id = format!("{play_id}:cache");
+        let mut snapshot = AgenticPlaySnapshot {
+            context: Arc::clone(self),
+            source_play_index,
+            slot,
+            evidence: AgenticSnapshotEvidence {
+                schema: AGENTIC_SNAPSHOT_SCHEMA_V1,
+                graph: self.graph_identity.clone(),
+                seed: self.seed,
+                lane_id,
+                play_ordinal,
+                source_play_id: play.play_id.clone(),
+                play_id,
+                cache_id,
+                t_star_ms,
+                recorded_start_ms: first,
+                recorded_last_start_ms: last,
+                requests: Vec::new(),
+                primers: Vec::new(),
+            },
+        };
+        let index_by_id = play
+            .nodes
+            .iter()
+            .map(|&i| (self.graph.nodes[i].request_id.as_str(), i))
+            .collect::<FxHashMap<_, _>>();
+        let mut live_conversations = BTreeSet::new();
+        let mut predecessor = BTreeMap::<&str, usize>::new();
+        for &index in &play.nodes {
+            let node = &self.graph.nodes[index];
+            let (recorded_start, recorded_end) = self.recorded_intervals[index];
+            let historical = recorded_start < t_star_ms;
+            if historical
+                && node.dependencies.iter().any(|edge| {
+                    self.recorded_intervals[index_by_id[edge.request_id.as_str()]].0 >= t_star_ms
+                })
+            {
+                bail!(
+                    "snapshot boundary crosses a historical request's unresolved dependency: {}",
+                    node.request_id
+                );
+            }
+            if historical {
+                let current = predecessor.entry(&node.session_id).or_insert(index);
+                if recorded_start
+                    .total_cmp(&self.recorded_intervals[*current].0)
+                    .then_with(|| {
+                        self.topological_rank[index].cmp(&self.topological_rank[*current])
+                    })
+                    .is_gt()
+                {
+                    *current = index;
+                }
+            } else {
+                live_conversations.insert(node.session_id.as_str());
+            }
+            // Recorded starts classify history, but do not add execution gates.
+            // Retain authored gates; live dependencies still release relative
+            // to actual dispatch/completion, while historical edges become timers.
+            let mut delay = (node.not_before_ms - t_star_ms).max(0.0);
+            let mut pending = Vec::new();
+            if !historical {
+                for edge in &node.dependencies {
+                    let (start, end) =
+                        self.recorded_intervals[index_by_id[edge.request_id.as_str()]];
+                    if start < t_star_ms {
+                        let trigger = match edge.trigger {
+                            AgenticDependencyTrigger::Dispatch => start,
+                            AgenticDependencyTrigger::Completion => end.unwrap_or(start),
+                        };
+                        let due = trigger + edge.delay_ms;
+                        if !due.is_finite() {
+                            bail!(
+                                "snapshot dependency deadline overflow for {}",
+                                node.request_id
+                            );
+                        }
+                        delay = delay.max(due - t_star_ms);
+                    } else {
+                        pending.push(snapshot.instance_request_id(&edge.request_id));
+                    }
+                }
+            }
+            snapshot.evidence.requests.push(AgenticSnapshotRequest {
+                source_request_id: node.request_id.clone(),
+                identity: snapshot.identity_at(index),
+                recorded_start_ms: recorded_start,
+                recorded_end_ms: recorded_end,
+                historical,
+                remaining_delay_ms: if historical { 0.0 } else { delay },
+                pending_dependencies: pending,
+            });
+        }
+        for conversation in live_conversations {
+            if let Some(&index) = predecessor.get(conversation) {
+                let node = &self.graph.nodes[index];
+                snapshot.evidence.primers.push(AgenticPrimer {
+                    source_request_id: node.request_id.clone(),
+                    request_id: snapshot.instance_request_id(&node.request_id),
+                    conversation_id: snapshot.instance_conversation_id(&node.session_id),
+                    input_length: node.input_length,
+                });
+            }
+        }
+        Ok(snapshot)
+    }
+}
+
+impl AgenticPlaySnapshot {
+    pub fn evidence(&self) -> &AgenticSnapshotEvidence {
+        &self.evidence
+    }
+    pub fn context(&self) -> &Arc<AgenticReplayContext> {
+        &self.context
+    }
+    pub(super) fn instance_request_id(&self, source: &str) -> String {
+        format!("{}:request:{source}", self.evidence.play_id)
+    }
+    fn instance_conversation_id(&self, source: &str) -> String {
+        format!("{}:conversation:{source}", self.evidence.play_id)
+    }
+    pub(super) fn source_index(&self, request_id: &str) -> Result<usize> {
+        self.context
+            .index_by_id
+            .get(request_id)
+            .copied()
+            .filter(|&i| self.context.node_to_play[i] == self.source_play_index)
+            .with_context(|| format!("unknown source request {request_id} in snapshot play"))
+    }
+    pub fn identity(&self, source_request_id: &str) -> Result<AgenticRuntimeIdentity> {
+        Ok(self.identity_at(self.source_index(source_request_id)?))
+    }
+    pub(super) fn identity_at(&self, index: usize) -> AgenticRuntimeIdentity {
+        let graph = &self.context.graph;
+        let play = &graph.plays[self.source_play_index];
+        let node = &graph.nodes[index];
+        let parent = node
+            .dependencies
+            .iter()
+            .filter(|e| e.relation == AgenticDependencyRelation::Spawn)
+            .min_by_key(|e| self.context.index_by_id.get(&e.request_id));
+        AgenticRuntimeIdentity {
+            request_id: self.instance_request_id(&node.request_id),
+            play_id: self.evidence.play_id.clone(),
+            conversation_id: self.instance_conversation_id(&node.session_id),
+            lane_id: Some(format!("lane:{}", self.evidence.lane_id)),
+            root_id: (play.root_nodes.len() == 1)
+                .then(|| self.instance_request_id(&graph.nodes[play.root_nodes[0]].request_id)),
+            parent_id: parent.map(|e| self.instance_request_id(&e.request_id)),
+            cache_id: Some(self.evidence.cache_id.clone()),
+            lineage: graph.conversation_lineage[index].as_ref().map(|lineage| {
+                crate::replay::AgenticConversationLineage {
+                    schema: lineage.schema.clone(),
+                    root_conversation_id: self
+                        .instance_conversation_id(&lineage.root_conversation_id),
+                    parent_conversation_id: lineage
+                        .parent_conversation_id
+                        .as_ref()
+                        .map(|parent| self.instance_conversation_id(parent)),
+                }
+            }),
+        }
+    }
+    pub(super) fn token_ids(&self, index: usize) -> Vec<u32> {
+        self.context.token_ids(self.slot, index)
+    }
+    pub(super) fn request_uuid(&self, index: usize) -> Result<Uuid> {
+        let ordinal = u128::from(self.slot)
+            .checked_mul(self.context.request_stride)
+            .and_then(|v| v.checked_add(index as u128 + 1))
+            .context("request UUID overflow")?;
+        Ok(Uuid::from_u128(ordinal))
+    }
+    pub fn materialize_prefix(&self, source_request_id: &str, length: usize) -> Result<Vec<u32>> {
+        let index = self.source_index(source_request_id)?;
+        let node: &AgenticNode = &self.context.graph.nodes[index];
+        if length > node.input_length {
+            bail!("prefix length exceeds original input length");
+        }
+        let ids = self.token_ids(index);
+        super::trace::validate_synthesizable_prompt(
+            node.input_length,
+            &ids,
+            self.context.graph.block_size,
+        )?;
+        Ok(ids
+            .into_iter()
+            .flat_map(|id| std::iter::repeat_n(id, self.context.graph.block_size))
+            .take(length)
+            .collect())
+    }
+}
+
+impl PreparedAgenticSnapshots {
+    pub fn context(&self) -> &Arc<AgenticReplayContext> {
+        &self.context
+    }
+    pub fn snapshots(&self) -> &[AgenticSnapshotEvidence] {
+        &self.evidence
+    }
+    pub fn from_plays(plays: Vec<AgenticPlaySnapshot>) -> Result<Self> {
+        let context = Arc::clone(
+            &plays
+                .first()
+                .context("snapshot cohort must not be empty")?
+                .context,
+        );
+        let mut lanes = BTreeSet::new();
+        for play in &plays {
+            if !Arc::ptr_eq(&context, &play.context) {
+                bail!("snapshot views must retain the same replay context");
+            }
+            if !lanes.insert(play.evidence.lane_id) {
+                bail!("snapshot cohort contains a duplicate lane");
+            }
+        }
+        let evidence = plays.iter().map(|p| p.evidence.clone()).collect();
+        Ok(Self {
+            context,
+            plays,
+            evidence,
+        })
+    }
+}

@@ -3,9 +3,9 @@
 
 import pytest
 
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.config import ModelConfig
-from aiconfigurator_core.sdk.models.helpers import resolve_nvfp4_for_system
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.config import ModelConfig
+from aisimulate_core.sdk.models.helpers import resolve_nvfp4_for_system
 
 pytestmark = pytest.mark.unit
 

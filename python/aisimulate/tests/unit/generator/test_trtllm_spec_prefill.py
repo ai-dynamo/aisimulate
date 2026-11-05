@@ -16,7 +16,7 @@ import copy
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
+from aisimulate.generator.api import generate_backend_artifacts
 
 pytestmark = pytest.mark.unit
 

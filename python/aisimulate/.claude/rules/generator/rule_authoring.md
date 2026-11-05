@@ -2,7 +2,7 @@
 description: >
   Authoring generator rule-plugin (.rule DSL) files.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Rule Plugin Authoring Reference
@@ -21,10 +21,10 @@ This reference covers safe practices for writing and modifying rules.
 
 | File | Purpose |
 |---|---|
-| `src/aiconfigurator/generator/rule_plugin/*.rule` | Production rules per backend |
-| `src/aiconfigurator/generator/rule_plugin/benchmark/*.rule` | Benchmark rules per backend |
-| `src/aiconfigurator/generator/rendering/rule_engine.py` | Rule DSL evaluation engine |
-| `src/aiconfigurator/generator/config/backend_config_mapping.yaml` | Parameter backend support |
+| `src/aisimulate/generator/rule_plugin/*.rule` | Production rules per backend |
+| `src/aisimulate/generator/rule_plugin/benchmark/*.rule` | Benchmark rules per backend |
+| `src/aisimulate/generator/rendering/rule_engine.py` | Rule DSL evaluation engine |
+| `src/aisimulate/generator/config/backend_config_mapping.yaml` | Parameter backend support |
 
 ## DSL Reference
 

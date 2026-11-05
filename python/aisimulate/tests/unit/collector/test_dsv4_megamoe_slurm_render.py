@@ -4,7 +4,6 @@
 from argparse import Namespace
 
 import pytest
-
 from collector.sglang.dsv4_megamoe.render_slurm_job import render
 
 pytestmark = pytest.mark.unit

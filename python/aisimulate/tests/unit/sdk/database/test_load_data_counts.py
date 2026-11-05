@@ -12,8 +12,8 @@ extend this file as more ops migrate.
 
 from __future__ import annotations
 
-from aiconfigurator.sdk.operations.base import Operation
-from aiconfigurator.sdk.operations.gemm import GEMM
+from aisimulate.sdk.operations.base import Operation
+from aisimulate.sdk.operations.gemm import GEMM
 
 
 def test_perf_database_init_opens_no_csvs(tmp_path, monkeypatch):
@@ -27,8 +27,8 @@ def test_perf_database_init_opens_no_csvs(tmp_path, monkeypatch):
     code can be fully lazy."""
     import yaml
 
-    from aiconfigurator.sdk.operations.base import Operation
-    from aiconfigurator.sdk.perf_database import PerfDatabase
+    from aisimulate.sdk.operations.base import Operation
+    from aisimulate.sdk.perf_database import PerfDatabase
 
     # Patch yaml + every loader so ``__init__`` doesn't try to read real CSVs
     # (it shouldn't try anyway — that's what this test asserts).
@@ -81,8 +81,8 @@ def test_clear_all_op_caches_resets_counter_and_class_cache():
     util-grid cache this test also seeded retired with the estimation math
     in #1357 PR-5; ``clear_grid_cache`` survives as a compat no-op inside
     ``clear_all_op_caches``.)"""
-    from aiconfigurator.sdk.operations.base import Operation as _OpBase
-    from aiconfigurator.sdk.operations.base import _all_operation_subclasses, clear_all_op_caches
+    from aisimulate.sdk.operations.base import Operation as _OpBase
+    from aisimulate.sdk.operations.base import _all_operation_subclasses, clear_all_op_caches
 
     # Snapshot every class-level dict cache on every Operation subclass so
     # ``clear_all_op_caches()`` doesn't permanently evict the

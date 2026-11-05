@@ -24,13 +24,13 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator_core.sdk.operations import MoEAllToAll
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.operations import MoEAllToAll
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 DEEPEP_NORMAL_PATH = resolve_op_data_path(
     str(SYSTEMS_DATA_ROOT / "h200_sxm"), "sglang", "0.5.6.post2", "wideep_deepep_normal_perf.parquet"
@@ -161,7 +161,7 @@ def test_get_weights_is_zero():
 
 
 def test_stage1_fields_survive_json_and_pickle_round_trips():
-    import aiconfigurator_core
+    import aisimulate_core
 
     op = _make_op(
         comm_backend="deepep_ll",
@@ -175,7 +175,7 @@ def test_stage1_fields_survive_json_and_pickle_round_trips():
     assert fields["workload_distribution"] == "power_law_1.01"
     assert fields["enable_eplb"] is True
 
-    from_json = aiconfigurator_core.op_from_spec_json(json.dumps(wire))
+    from_json = aisimulate_core.op_from_spec_json(json.dumps(wire))
     from_pickle = pickle.loads(pickle.dumps(op))
     for restored in (from_json, from_pickle):
         assert restored._spec_json() == op._spec_json()
@@ -196,7 +196,7 @@ def test_shipped_legacy_comm_sources_resolve_in_comm_family_dir():
     """moe_a2a lives in the comm family: on shipped data its legacy sources
     resolve under ``<system>/comm/...`` and the comm hard-exclusion in
     ``_build_op_sources`` admits the primary only (no reuse channels)."""
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.perf_database import get_database
 
     comm_dir_fragment = f"{os.sep}comm{os.sep}"
     assert comm_dir_fragment in DEEPEP_NORMAL_PATH
@@ -227,9 +227,9 @@ def test_attention_tp_default_noop_on_shipped_l1_case():
     ``attention_tp_size`` the op must be byte-identical to the direct
     ``query_moe_a2a`` lookup and reproduce the legacy DeepEP-normal query
     (dispatch + combine) at the L1 tolerance."""
-    from aiconfigurator_core.sdk import engine
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk import engine
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import get_database
 
     db = get_database("h200_sxm", "sglang", "0.5.6.post2", allow_unlisted_version=True)
     assert db is not None

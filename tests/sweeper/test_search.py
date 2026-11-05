@@ -3,6 +3,8 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from concurrent.futures import Future
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -10,13 +12,18 @@ import pytest
 import aisimulate.sweeper.search as search_mod
 from aisimulate.sweeper.config import OptimizationGoal, SLATarget, SmartSearchConfig
 from aisimulate.sweeper.kv_load import KVLoadResolution
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import (
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+)
 from aisimulate.sweeper.replay import (
     BackendDeploymentSpec,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
 )
+from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import BranchSpace
@@ -151,15 +158,11 @@ def _stub(monkeypatch, branch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
-    return ReplicaParallelConfig(
-        ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas
-    )
+    return ReplicaParallelConfig(ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=tp), replicas=replicas)
 
 
 def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
@@ -176,13 +179,85 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
 
     assert [candidate.score for candidate in candidates] == [768.0, 512.0, 256.0]
     assert all(candidate.used_gpus == 8 for candidate in candidates)
-    assert all(
-        candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates
-    )
+    assert all(candidate.config["backend_version"] == "1.3.0rc10" for candidate in candidates)
     assert candidates[0].metrics["gpu_hours"] == 1.0
     assert factory.worker_ids == [0]
     assert all(isinstance(spec, ReplaySpec) for spec in factory.runner.specs)
     assert factory.runner.closed
+
+
+@pytest.mark.parametrize(
+    ("small_report", "reason", "failed"),
+    [
+        ({"goodput_request_throughput_rps": 4.99}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": 0.0}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": -1.0}, "runner_contract", True),
+        ({"mean_e2e_latency_ms": 101.0}, "sla_constraint", False),
+        ({"num_e2e_latency_samples": 0.0}, "sla_constraint", False),
+        ({"goodput_request_throughput_rps": None}, "runner_contract", True),
+    ],
+)
+def test_min_gpus_gates_before_optimizer_feedback_and_top_n(monkeypatch, small_report, reason, failed):
+    shapes = tuple(_pc(tp=gpus, replicas=1) for gpus in (4, 1, 2))
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=shapes,
+        supported_backends={shape: frozenset({"trtllm"}) for shape in shapes},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    _stub(monkeypatch, branch)
+    observations = []
+
+    class Sampler(_FakeSampler):
+        def __init__(self, branch, study_id, objectives=None, **kwargs):
+            super().__init__(branch, study_id, objectives)
+
+        def suggest(self, count):
+            return [
+                Suggestion(selection=_selection(256 * (i + 1)), parallel_config=shape, handle=None)
+                for i, shape in enumerate(shapes[:count])
+            ]
+
+        def observe(self, suggestion, metrics):
+            observations.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            observations.append(("infeasible", reason))
+
+    class Runner(_FakeRunner):
+        def run(self, spec):
+            seqs = spec.backend_deployment.agg_engine_args["max_num_seqs"]
+            metrics = {
+                "completed_requests": 10.0,
+                "num_e2e_latency_samples": 10.0,
+                "mean_e2e_latency_ms": 50.0,
+                "goodput_request_throughput_rps": 5.0,
+                "goodput_output_throughput_tok_s": 1000.0 if seqs == 256 else 100.0,
+            }
+            if seqs == 512:
+                metrics.update(small_report)
+            return ReplayReport(metrics={key: value for key, value in metrics.items() if value is not None})
+
+    config = SmartSearchConfig(
+        search_space=_config().search_space,
+        workload={"isl": 1024, "osl": 128, "request_rate": 10, "num_request_ratio": 2},
+        sweep={"max_trials": 3, "parallel_evals": 1, "candidates_per_round": 3, "max_eval_seconds": None},
+        goal={"target": "min_gpus", "sla": {"e2e_ms": 100}, "min_goodput_rps": 5},
+    )
+    result = Sweeper(runner_factory=_FakeRunnerFactory(Runner()), sampler_factory=Sampler, show_progress=False).run(
+        config,
+        top_n=1,
+    )
+    assert [candidate.used_gpus for candidate in result.selected_candidates] == [2]
+    assert [entry["objective"] for entry in observations if isinstance(entry, dict)] == [-4.0, -2.0]
+    rejected = [candidate for candidate in result.candidates if candidate.reason_category is not None]
+    assert len(rejected) == 1
+    assert rejected[0].reason_category.value == reason
+    assert rejected[0].used_gpus == 1
+    assert result.counts.failed == int(failed)
+    assert result.counts.infeasible == int(not failed)
+    assert result.counts.feasible == 2
+    assert result.selected_candidates[0].metrics["goodput_request_throughput_rps"] == 5
 
 
 def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
@@ -209,13 +284,102 @@ def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     )
 
     assert candidates
-    assert all(
-        candidate.config["backend_version"] == "0.18.0" for candidate in candidates
+    assert all(candidate.config["backend_version"] == "0.18.0" for candidate in candidates)
+    assert all(spec.backend_deployment.backend_version == "0.18.0" for spec in factory.runner.specs)
+
+
+def test_heterogeneous_disagg_materializes_role_hardware_and_provenance(monkeypatch):
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = DisaggParallelConfig(prefill=role, decode=role)
+    branch = BranchSpace(
+        deployment_mode="disagg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"vllm"})},
+        knob_choices={
+            "backend": ["vllm"],
+            "prefill_max_num_batched_tokens": [8192],
+            "prefill_max_num_seqs": [1],
+            "decode_max_num_batched_tokens": [8192],
+            "decode_max_num_seqs": [256],
+        },
     )
-    assert all(
-        spec.backend_deployment.backend_version == "0.18.0"
-        for spec in factory.runner.specs
+    monkeypatch.setattr(
+        search_mod,
+        "enumerate_branches",
+        lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
+    version_calls = []
+
+    def resolve_version(hardware, backend, *, systems_paths=None):
+        version_calls.append((hardware, backend))
+        return "0.24.0"
+
+    monkeypatch.setattr(search_mod, "resolve_backend_version", resolve_version)
+
+    class Sampler:
+        def __init__(self, branch, study_id, objectives=None):
+            del study_id, objectives
+            self.branch = branch
+
+        def suggest(self, count):
+            selection = {
+                "deployment_mode": "disagg",
+                **{name: values[0] for name, values in self.branch.knob_choices.items()},
+            }
+            return [Suggestion(selection=selection, parallel_config=parallel, handle=selection) for _ in range(count)]
+
+        def observe(self, suggestion, metrics):
+            del suggestion, metrics
+
+        def observe_infeasible(self, suggestion, reason):
+            pytest.fail(f"unexpected infeasible candidate: {suggestion}, {reason}")
+
+    class Runner:
+        def __init__(self):
+            self.specs = []
+
+        def run(self, spec):
+            self.specs.append(spec)
+            return ReplayReport(metrics={"output_throughput_tok_s": 1.0})
+
+        def close(self):
+            pass
+
+    config = SmartSearchConfig(
+        search_space={
+            "model_name": "example/model",
+            "hardware_sku": "h200_sxm",
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "backend": ["vllm"],
+            "deployment_mode": ["disagg"],
+            "gpu_budget": 2,
+            "prefill_max_num_batched_tokens": [8192],
+            "prefill_max_num_seqs": [1],
+            "decode_max_num_batched_tokens": [8192],
+            "decode_max_num_seqs": [256],
+        },
+        workload={"trace_path": TRACE},
+        sweep={"max_rounds": 1, "candidates_per_round": 1, "parallel_evals": 1},
+        goal={"target": "throughput"},
+    )
+    runner = Runner()
+
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner=runner),
+        sampler_factory=Sampler,
+        show_progress=False,
+    ).run(config, top_n=None)
+    (candidate,) = result.selected_candidates
+
+    assert version_calls == [("h200_sxm", "vllm"), ("gb200", "vllm")]
+    assert candidate.config["prefill_hardware_sku"] == "h200_sxm"
+    assert candidate.config["decode_hardware_sku"] == "gb200"
+    deployment = runner.specs[0].backend_deployment
+    assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
+    assert deployment.decode_engine_args["aic_system"] == "gb200"
+    assert result.candidates[0].provenance.topology["prefill_hardware_sku"] == "h200_sxm"
+    assert result.candidates[0].provenance.topology["decode_hardware_sku"] == "gb200"
 
 
 def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
@@ -266,8 +430,113 @@ def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     assert wave_sizes == [2, 1]
     assert len(pools) == 1
     assert pools[0].shutdown_called
-    assert pools[0].shutdown_waits == [True]
-    assert pools[0].shutdown_wait is True
+    assert pools[0].shutdown_waits == [False]
+    assert pools[0].shutdown_wait is False
+
+
+def test_parallel_results_are_recorded_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    submitted = []
+    sampler_seen = {}
+
+    class FakeProcessPool:
+        def __init__(self, *, initializer, initargs, **kwargs):
+            self._processes = {}
+            initializer(*initargs)
+
+        def submit(self, function, *args):
+            future = Future()
+            future.set_result(function(*args))
+            submitted.append(future)
+            return future
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
+    def last_submitted_first(pending, *, timeout, return_when):
+        latest = max(pending, key=submitted.index)
+        return {latest}, set(pending) - {latest}
+
+    def factory(branch, study_id, objectives=None):
+        sampler_seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return sampler_seen["sampler"]
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+    monkeypatch.setattr(search_mod, "wait", last_submitted_first)
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(), sampler_factory=factory, show_progress=False).run(
+        _config(parallel_evals=3, max_eval_seconds=10), top_n=None
+    )
+
+    assert [(record.candidate_id, record.score) for record in result.candidates] == [
+        ("candidate-000001", 256.0),
+        ("candidate-000002", 512.0),
+        ("candidate-000003", 768.0),
+    ]
+    assert sampler_seen["sampler"].scored == [{"objective": 256.0}, {"objective": 512.0}, {"objective": 768.0}]
+
+
+def test_suggestion_order_releases_each_result_once_earlier_ones_finish():
+    todo = [(object(), None) for _ in range(4)]
+    events = []
+
+    def finish(order):
+        for index in order:
+            events.append(("finished", index))
+            yield todo[index][0], index
+
+    for _, index in search_mod._in_suggestion_order(todo, finish([1, 3, 0, 2])):
+        events.append(("recorded", index))
+
+    assert events == [
+        ("finished", 1),
+        ("finished", 3),
+        ("finished", 0),
+        ("recorded", 0),
+        ("recorded", 1),
+        ("finished", 2),
+        ("recorded", 2),
+        ("recorded", 3),
+    ]
+    with pytest.raises(RuntimeError, match="did not report every suggestion"):
+        list(search_mod._in_suggestion_order(todo, finish([1, 0])))
+
+
+def test_resource_aware_candidates_are_checkpointed_then_reported_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    events = []
+
+    class ResourceFactory(_FakeRunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def last_spec_first(specs, *, factory, **kwargs):
+        runner = factory.create(0)
+        for index in reversed(range(len(specs))):
+            yield index, search_mod._run_replay_detailed(specs[index], runner)
+
+    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", last_spec_first)
+    monkeypatch.setattr(
+        "aisimulate.supervision.checkpoint", lambda event, value: events.append((event, value["score"]))
+    )
+
+    Sweeper(runner_factory=ResourceFactory(), sampler_factory=_FakeSampler, show_progress=False).run(
+        _config(parallel_evals=3),
+        top_n=None,
+        on_candidate=lambda record: events.append(("on_candidate", record.score)),
+    )
+
+    # The evidence for each candidate is written before any adapter code runs.
+    assert events == [
+        ("candidate_completed", 256.0),
+        ("on_candidate", 256.0),
+        ("candidate_completed", 512.0),
+        ("on_candidate", 512.0),
+        ("candidate_completed", 768.0),
+        ("on_candidate", 768.0),
+    ]
 
 
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
@@ -301,9 +570,7 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
         return sampler
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(), set(pending))
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(), set(pending)))
 
     candidates = _run_sweep(
         _config(parallel_evals=2, max_eval_seconds=0.01),
@@ -315,12 +582,9 @@ def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     assert candidates == []
     assert len(pools) > 1
     assert all(pool.shutdown_called for pool in pools)
-    assert all(False in pool.shutdown_waits for pool in pools[:-1])
-    assert pools[-1].shutdown_waits == [True]
-    assert all(
-        result[0] == "infeasible" and "exceed runtime" in result[1]
-        for result in sampler_seen["sampler"].scored
-    )
+    assert all(True in pool.shutdown_waits for pool in pools[:-1])
+    assert pools[-1].shutdown_waits == [False]
+    assert all(result[0] == "infeasible" and "exceed runtime" in result[1] for result in sampler_seen["sampler"].scored)
 
 
 def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
@@ -348,9 +612,7 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
             self.shutdown_waits.append(wait)
 
     monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
-    monkeypatch.setattr(
-        search_mod, "wait", lambda pending, **kwargs: (set(pending), set())
-    )
+    monkeypatch.setattr(search_mod, "wait", lambda pending, **kwargs: (set(pending), set()))
 
     with pytest.raises(RuntimeError, match="guard a script entrypoint"):
         _run_sweep(
@@ -361,7 +623,141 @@ def test_broken_worker_pool_is_friendly_and_always_cleaned_up(monkeypatch):
         )
 
     assert pools[0].shutdown_called
-    assert pools[0].shutdown_waits == [False]
+    assert pools[0].shutdown_waits == [True]
+
+
+class _CleanupProbeRunner(_FakeRunner):
+    """Exercise real worker lifecycles without allocating a simulation workload."""
+
+    def __init__(self, directory, mode):
+        super().__init__()
+        self.directory = directory
+        self.mode = mode
+
+    def _mark(self, event):
+        import os
+
+        Path(self.directory, f"{os.getpid()}.{event}").touch()
+
+    def run(self, spec):
+        if self.mode == "timeout":
+            import signal
+            import time
+
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            self._mark("running")
+            time.sleep(30)
+        return super().run(spec)
+
+    def close(self):
+        if self.mode == "hung_finalizer":
+            import signal
+            import time
+
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            self._mark("closing")
+            time.sleep(30)
+        self._mark("closed")
+
+
+def _reap_test_pools(pools, workers):
+    """Keep the regression safe even when testing the old leaking implementation."""
+    import psutil
+
+    for worker in workers:
+        try:
+            psutil.Process(worker.pid).kill()
+        except psutil.NoSuchProcess:
+            pass
+    for pool in pools:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_direct_sweeper_reaps_term_resistant_workers_before_replacement(monkeypatch, tmp_path):
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+
+    import psutil
+
+    from aisimulate import supervision
+
+    _stub(monkeypatch, _branch(_pc()))
+    monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
+    pools, workers = [], []
+
+    def make_pool(**kwargs):
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers), "replacement overlaps old workers"
+        pool = ProcessPoolExecutor(**kwargs)
+        pools.append(pool)
+        return pool
+
+    def timeout_when_running(pending, **kwargs):
+        workers.extend(pools[-1]._processes.values())
+        deadline = time.monotonic() + 15
+        while len(list(tmp_path.glob("*.running"))) < 2:
+            assert time.monotonic() < deadline, "workers did not reach the controlled timeout"
+            time.sleep(0.01)
+        return set(), set(pending)
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", make_pool)
+    monkeypatch.setattr(search_mod, "wait", timeout_when_running)
+    try:
+        result = Sweeper(
+            runner_factory=_FakeRunnerFactory(_CleanupProbeRunner(str(tmp_path), "timeout")),
+            sampler_factory=lambda branch, study_id, objectives=None, **kwargs: _FakeSampler(
+                branch, study_id, objectives
+            ),
+            show_progress=False,
+        ).run(_config(parallel_evals=2, candidates_per_round=2, max_eval_seconds=10, max_trials=2))
+        assert result.counts.timed_out == 2
+        assert not result.selected_candidates
+        assert len(pools) == 2
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers)
+    finally:
+        _reap_test_pools(pools, workers)
+
+
+@pytest.mark.parametrize("mode", ["normal", "hung_finalizer"])
+def test_direct_sweeper_bounds_shutdown_and_preserves_completed_results(monkeypatch, tmp_path, mode):
+    from concurrent.futures import ProcessPoolExecutor
+
+    import psutil
+
+    from aisimulate import supervision
+
+    _stub(monkeypatch, _branch(_pc()))
+    monkeypatch.setattr(supervision, "_GRACE_SECONDS", 0.5)
+    pools, workers = [], []
+    real_wait = search_mod.wait
+
+    def make_pool(**kwargs):
+        pool = ProcessPoolExecutor(**kwargs)
+        pools.append(pool)
+        return pool
+
+    def capture_workers(pending, **kwargs):
+        workers.extend(worker for worker in pools[-1]._processes.values() if worker not in workers)
+        return real_wait(pending, **kwargs)
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", make_pool)
+    monkeypatch.setattr(search_mod, "wait", capture_workers)
+    try:
+        candidates = _run_sweep(
+            _config(parallel_evals=2, candidates_per_round=2),
+            runner_factory=_FakeRunnerFactory(_CleanupProbeRunner(str(tmp_path), mode)),
+            sampler_factory=_FakeSampler,
+            show_progress=False,
+        )
+        assert [candidate.score for candidate in candidates] == [512.0, 256.0]
+        assert len(workers) == 2
+        assert all(not psutil.pid_exists(worker.pid) for worker in workers)
+        if mode == "hung_finalizer":
+            assert list(tmp_path.glob("*.closing"))
+            assert not list(tmp_path.glob("*.closed")), "shutdown waited for the hung finalizer"
+        else:
+            assert len(list(tmp_path.glob("*.closed"))) == 2
+    finally:
+        _reap_test_pools(pools, workers)
 
 
 def test_over_budget_candidates_are_observed_infeasible(monkeypatch):
@@ -553,9 +949,7 @@ def test_strict_aggregate_sla_gates_before_sampler_observation_and_ranking(
 
     assert [candidate.score for candidate in candidates] == [512.0, 256.0]
     assert any(
-        isinstance(item, tuple)
-        and item[0] == "infeasible"
-        and "strict aggregate SLA violation" in item[1]
+        isinstance(item, tuple) and item[0] == "infeasible" and "strict aggregate SLA violation" in item[1]
         for item in sampler_seen["sampler"].scored
     )
 
@@ -602,9 +996,7 @@ def test_strict_aggregate_sla_rejects_reports_without_latency_samples(monkeypatc
 
     assert candidates == []
     assert any(
-        isinstance(item, tuple)
-        and item[0] == "infeasible"
-        and "no qualifying samples" in item[1]
+        isinstance(item, tuple) and item[0] == "infeasible" and "no qualifying samples" in item[1]
         for item in sampler_seen["sampler"].scored
     )
 
@@ -794,8 +1186,7 @@ def test_cache_identity_preserves_distinct_json_scalar_types():
     )
 
     keys = {
-        search_mod._suggestion_cache_key(suggestion, ("same-context",))
-        for suggestion in (boolean, integer, floating)
+        search_mod._suggestion_cache_key(suggestion, ("same-context",)) for suggestion in (boolean, integer, floating)
     }
     assert len(keys) == 3
 
@@ -814,9 +1205,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
-    monkeypatch.setattr(
-        search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10"
-    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):
@@ -830,9 +1219,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
 
     def factory(branch, study_id, objectives=None):
         seen.append(branch.deployment_mode)
-        sampler_type = (
-            RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
-        )
+        sampler_type = RepeatingSampler if branch.deployment_mode == "agg" else EmptySampler
         return sampler_type(branch, study_id, objectives)
 
     _run_sweep(
@@ -952,7 +1339,206 @@ def test_pareto_sweep_preserves_kv_load_and_returns_front(monkeypatch):
         ("throughput_per_gpu", True),
         ("throughput_per_user", True),
     ]
-    assert all(
-        set(metrics) == {"throughput_per_gpu", "throughput_per_user"}
-        for metrics in seen["sampler"].observed
+    assert all(set(metrics) == {"throughput_per_gpu", "throughput_per_user"} for metrics in seen["sampler"].observed)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_orchestration(monkeypatch):
+    # These tests use synthetic models/runners. Native construction is exercised
+    # by the estimator contract tests and CLI round trips.
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
     )
+    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+
+    config = _config()
+    config.search_space.agg_num_gpu_blocks = 128
+    identity = {
+        "model": "model",
+        "system": "system",
+        "backend": "trtllm",
+        "backend_version": "resolved-version",
+        "database_mode": "SILICON",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp_size": 1,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "systems_paths": ["root"],
+        "enable_eplb": False,
+        "moe_backend": None,
+        "wideep_num_slots": None,
+    }
+    resolved = ForwardPassEstimatorSpec(config=identity)
+
+    def resolve(self, sample):
+        if fail:
+            raise ForwardPassEstimatorResolutionError("fixture resolution failed")
+        return {"agg": resolved}
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", resolve)
+
+    def artifact(sample, spec):
+        assert sample["forward_pass_estimators"]["agg"]["config"] == identity
+        assert spec.backend_deployment.forward_pass_estimators["agg"].config == identity
+        return {"resolved": identity}
+
+    prepared, error = search_mod._materialize_one(
+        _selection(256),
+        _pc(),
+        config=config,
+        goal=config.goal,
+        providers={},
+        provider_plans={},
+        runner_factory=_FakeRunnerFactory(),
+        prediction_config_factory=artifact,
+    )
+    if fail:
+        assert prepared is None
+        assert error.outcome == "failed"
+        assert "fixture resolution failed" in error.reason
+    else:
+        assert error is None
+        assert prepared.sample["backend_version"] == "resolved-version"
+        assert prepared.prediction_config == {"resolved": identity}
+        payload = prepared.replay_spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        assert payload == {
+            k: v for k, v in identity.items() if k not in {"enable_eplb", "moe_backend", "wideep_num_slots"}
+        }
+
+
+def test_on_candidate_fires_once_per_feasible_outcome_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())  # 8 GPUs
+    _stub(monkeypatch, branch)
+    factory = _FakeRunnerFactory()
+    seen: list[CandidateRecord] = []
+
+    result = Sweeper(
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(), top_n=None, on_candidate=seen.append)
+
+    assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
+    # Suggestion order (increasing max_num_seqs), not the best-first ranked order.
+    assert [record.score for record in seen] == [256.0, 512.0, 768.0]
+
+    # on_candidate must receive a detached copy: mutating it must not reach the
+    # ledger record returned in the SweepResult. A shallow copy (or handing out
+    # the ledger record itself) would let this mutation leak through.
+    mutated = seen[0]
+    original_config = deepcopy(mutated.config)
+    mutated.config["max_num_seqs"] = "mutated-by-callback"
+
+    ledger_record = next(r for r in result.candidates if r.candidate_id == mutated.candidate_id)
+    assert ledger_record.config == original_config
+    assert ledger_record.config is not mutated.config
+
+
+def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
+    branch = _branch(_pc(tp=16, replicas=4))  # 64 GPUs, exceeds a 32 GPU budget
+    _stub(monkeypatch, branch)
+    seen: list[CandidateRecord] = []
+
+    Sweeper(
+        runner_factory=_FakeRunnerFactory(),
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(gpu_budget=32), top_n=None, on_candidate=seen.append)
+
+    assert len(seen) == 33
+    assert all(record.status == CandidateStatus.INFEASIBLE for record in seen)
+    assert all("over gpu_budget" in (record.reason or "") for record in seen)
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys, transient):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def controlled_score(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if transient and runner.calls > 1:
+            return result
+        return replace(
+            result,
+            candidate=None,
+            observe_metrics=None,
+            outcome="resource_limited" if transient else "infeasible",
+            reason="test host admission" if transient else "test fixed SLA violation",
+            reason_category=ReasonCategory.RESOURCE_LIMIT if transient else ReasonCategory.SLA_CONSTRAINT,
+        )
+
+    monkeypatch.setattr(search_mod, "_score_prepared", controlled_score)
+    sampler_seen = []
+
+    def factory(branch, study_id, objectives=None, **kwargs):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen.append(sampler)
+        return sampler
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(runner), sampler_factory=factory, show_progress=True).run(
+        _config(max_rounds=4, max_trials=4, candidates_per_round=1, max_eval_seconds=None),
+        top_n=None,
+    )
+    assert len(sampler_seen[0].scored) == 4
+    assert runner.calls == (2 if transient else 1)
+    assert result.counts.cache_hits == (2 if transient else 3)
+    assert result.counts.resource_limited == (1 if transient else 0)
+    assert result.counts.infeasible == (0 if transient else 1)
+    assert len(result.selected_candidates) == (1 if transient else 0)
+    captured = capsys.readouterr()
+    assert "4/4" in captured.err
+    assert "Search coverage: 4/4 suggestions" in captured.out
+
+
+def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branch(_pc())
+    branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])
+    _stub(monkeypatch, branch)
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def refuse_first(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if runner.calls == 1:
+            return replace(
+                result,
+                candidate=None,
+                observe_metrics=None,
+                outcome="resource_limited",
+                reason="temporary host pressure",
+                reason_category=ReasonCategory.RESOURCE_LIMIT,
+            )
+        return result
+
+    monkeypatch.setattr(search_mod, "_score_prepared", refuse_first)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(
+        _config(max_rounds=3, max_trials=3, candidates_per_round=1, max_eval_seconds=None, algorithm="random"),
+    )
+    assert runner.calls == 2
+    assert result.counts.resource_limited == result.counts.feasible == 1
+    assert result.counts.cache_hits == 0
+    assert len(result.selected_candidates) == 1

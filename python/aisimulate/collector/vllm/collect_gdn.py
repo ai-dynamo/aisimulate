@@ -10,30 +10,29 @@ recurrent kernel. Both phases use the production packed-QKV convolution width.
 Input/output projection GEMMs remain covered by the GEMM collector.
 """
 
-# Verified 2026-08-21 against vLLM v0.24.0 and v0.27.1 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1782 Task V1.
+# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones).
 # Compatible unchanged: ChunkGatedDeltaRule.__init__ / _resolve_gdn_prefill_backend
 # (byte-identical body, incl. the flashinfer/cutedsl/triton selection logic;
 # the only diff is 0.24.0's extra nvidia-cutlass-dsl-libs-cu13 disk-hash gate
 # on the SM100+ flashinfer branch, an upstream-packaging workaround vLLM
-# itself removed by 0.27.1 -- qwen_gdn_linear_attn.py:91-211 @0.24.0 vs
-# :85-133 @0.27.1 -- this changes only which value `.gdn_prefill_backend` may
+# itself removed by 0.27.1 -- qwen_gdn_linear_attn.py:91-211 vs
+# 85-133 -- this changes only which value `.gdn_prefill_backend` may
 # resolve to in a given environment, never this collector's code, and the
 # collector already reads that value dynamically for kernel_source);
 # .gdn_prefill_backend attribute; causal_conv1d_fn / causal_conv1d_update
 # (byte-identical signatures, path unmoved at mamba/ops/causal_conv1d.py;
 # 0.27.1 adds one new trailing optional `out=None` kwarg this collector does
 # not pass); compute_causal_conv1d_metadata (byte-identical body,
-# v1/attention/backends/utils.py:810-856 @0.24.0 -> :838-884 @0.27.1);
+# v1/attention/backends/utils.py:810-856 -> :838-884);
 # GDNAttentionMetadata (byte-identical dataclass, all 10 fields this
 # collector passes unchanged, v1/attention/backends/gdn_attn.py:42-79 both
 # versions); fused_recurrent_gated_delta_rule_packed_decode (byte-identical
 # signature and body, incl. the grid=(NV, B*HV) CUDA grid-y launch at the
 # same line, fused_recurrent.py:449 both versions);
 # VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE (unchanged, default True,
-# envs.py:115 @0.24.0 -> :124 @0.27.1); the Qwen3.5 mamba_ssm_dtype=float32
+# envs.py:115 -> :124); the Qwen3.5 mamba_ssm_dtype=float32
 # recurrent-state pin (unchanged, model_executor/models/config.py:608-625
-# @0.24.0 -> :804-821 @0.27.1). ONE incompatible import path found and fixed
+# -> :804-821). ONE incompatible import path found and fixed
 # below: vLLM 0.27.1 relocated the whole `vllm.model_executor.layers.fla`
 # package to the new top-level `vllm.third_party.flash_linear_attention`
 # package (qwen_gdn_linear_attn.py's own imports switched the same way at
@@ -56,7 +55,11 @@ Input/output projection GEMMs remain covered by the GEMM collector.
 # This is an accepted, narrow gap: the framework_manifest digest-pinned gate
 # is the true version enforcement upstream and only ever supplies exactly
 # 0.24.0 or 0.27.1 in a sanctioned run, so the leak is unreachable there.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"
+# B200 0.25.0 runtime qualification against installed dd10e03f9 (job
+# 1968047). Existing framework construction/dispatch is unchanged. Invalid
+# model/quant shapes continue to raise and remain recorded failures; this is
+# API compatibility, not a claim that every Cartesian shape is supported.
+__compat__ = "vllm==0.30.0"
 
 import gc
 import os
@@ -73,60 +76,19 @@ except ImportError:
     from vllm.model_executor.layers.fla.ops import (
         fused_recurrent_gated_delta_rule_packed_decode,
     )
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import ChunkGatedDeltaRule
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
 from vllm.v1.attention.backends.utils import compute_causal_conv1d_metadata
 from vllm.version import __version__ as vllm_version
 
-from collector.case_generator import get_common_gdn_test_cases
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-
 aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 
 
 def get_gdn_test_cases():
-    """
-    Generate test cases for GDN kernel benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_gdn_test_cases():
-        if common_case.phase == "context":
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("gdn", "vllm", get_sm_version())
 
 
 def run_gdn_context_benchmark(
@@ -231,7 +193,7 @@ def run_gdn_context_benchmark(
             # Serving stores conv state in the SD layout and hands the
             # stride-aware conv kernels a transposed (dim, width-1) view
             # (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
-            # :1311-1314 @0.24.0); match its strides.
+            # 1311-1314); match its strides.
             conv_state = torch.zeros(
                 batch_size + 1,
                 d_conv - 1,
@@ -331,8 +293,8 @@ def run_gdn_context_benchmark(
                 )
             )
             # FP32 recurrent state matches serving: Qwen3.5 checkpoints pin
-            # mamba_ssm_dtype=float32 (vllm/model_executor/models/config.py:603-628
-            # @0.24.0). Qwen3.5-only contract; revisit if other GDN models join.
+            # mamba_ssm_dtype=float32 (vllm/model_executor/models/config.py:603-628).
+            # Qwen3.5-only contract; revisit if other GDN models join.
             gdn_state = torch.zeros(
                 batch_size,
                 num_v_heads,
@@ -346,12 +308,12 @@ def run_gdn_context_benchmark(
             # deterministic illegal memory access inside vLLM's chunked
             # gated-delta-rule prefill kernel (chunk.py:61 ->
             # chunk_delta_h.py:347 -> index.py:34 prepare_chunk_offsets
-            # @0.24.0, same relative call chain and byte-identical
+            # same relative call chain and byte-identical
             # prepare_chunk_offsets body at chunk.py:61 ->
-            # chunk_delta_h.py:349 -> index.py:34 @0.27.1 -- relocated from
+            # chunk_delta_h.py:349 -> index.py:34 -- relocated from
             # vllm.model_executor.layers.fla.ops to
             # vllm.third_party.flash_linear_attention.ops at 0.27.1,
-            # re-verified present at both versions, AIC-1782 Task V1) at its
+            # re-verified present at both versions) at its
             # largest num_tokens sub-points (~1M total tokens;
             # smaller sub-points record normally) — reproduced in isolation
             # on a clean RTX PRO 6000 Blackwell GPU at 0.24.0; all 8 Qwen3.5
@@ -365,7 +327,11 @@ def run_gdn_context_benchmark(
             # in this environment) -- the cited kernel chain is confirmed
             # present and source-unchanged, so the claim is not dangling, but
             # the bug reproduction itself is unconfirmed at this version.
-            # Re-verify on the next vLLM bump or the first 0.27.1 GPU run.
+            # 27.1 GPU run.
+            # RE-VERIFIED on hardware at 0.30.0, SM89 (L40, clean GPU, container per op):
+            # a 40-case --shuffle sample of the gdn op failed 21 tasks, 17 of them CUDA faults
+            # (9 illegal memory access + 8 SIGABRT) in this same chunked prefill at the large-token
+            # sub-points, 3 the grid-y limit below, 1 capacity OOM — the family is unchanged from 0.24.0.
             def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
                 chunk_gdn(
                     q=_q,
@@ -508,8 +474,8 @@ def run_gdn_generation_benchmark(
         # vLLM's packed recurrent kernel launches grid-y as
         # batch_size * num_v_heads (`grid = (NV, B * HV)`,
         # fused_recurrent.py:449 at BOTH pinned versions -- under
-        # vllm/model_executor/layers/fla/ops/ @0.24.0 and under
-        # vllm/third_party/flash_linear_attention/ops/ @0.27.1);
+        # vllm/model_executor/layers/fla/ops/ and under
+        # vllm/third_party/flash_linear_attention/ops/);
         # CUDA limits grid-y to 65,535. Keep the valid convolution measurement
         # above, then surface the unsupported recurrent point to Collector V2
         # instead of silently dropping it.
@@ -528,7 +494,7 @@ def run_gdn_generation_benchmark(
         # fused_recurrent_gated_delta_rule_packed_decode with
         # scale=head_k_dim**-0.5 and use_qk_l2norm_in_kernel=True
         # (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:1286,
-        # :1684 @0.24.0), gated by VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
+        # 1684), gated by VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
         # which defaults to True (vllm/envs.py:115).
         a = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
         b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)

@@ -1,0 +1,6 @@
+{
+  "filename": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/provenance/gb200-tp4-decoder_bounded-source.tar.gz",
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "bbcba43605bc0d7683c38efa14a9454d2ce83e48",
+  "sha256": "f1d625037975135d1f731f8baffd1589fe7a956e0bba2455039bcddafd9b928a"
+}

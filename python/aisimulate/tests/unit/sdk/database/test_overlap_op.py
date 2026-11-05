@@ -16,7 +16,7 @@ is tested here.
 
 import pytest
 
-from aiconfigurator.sdk.operations import OverlapOp
+from aisimulate.sdk.operations import OverlapOp
 
 pytestmark = pytest.mark.unit
 
@@ -28,8 +28,8 @@ class TestOverlapOp:
         """Groups are captured by the Rust constructor; the getters re-wrap
         children as Rust base classes with the same names and wire state
         (Mock children are refused — composites require engine-backed ops)."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.operations import GEMM
+        from aisimulate.sdk import common
+        from aisimulate.sdk.operations import GEMM
 
         op_a = GEMM("a", 1.0, 10, 5, common.GEMMQuantMode.bfloat16)
         op_b = GEMM("b", 1.0, 5, 5, common.GEMMQuantMode.bfloat16)
@@ -49,8 +49,8 @@ class TestOverlapOp:
 
         Weights route through the engine (PR-6), so the children must be
         real spec-expressible ops: bf16 GEMM weighs n*k*2 bytes."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.operations import GEMM
+        from aisimulate.sdk import common
+        from aisimulate.sdk.operations import GEMM
 
         op_a1 = GEMM("a1", 1.0, 10, 5, common.GEMMQuantMode.bfloat16)  # 100 B
         op_a2 = GEMM("a2", 1.0, 20, 5, common.GEMMQuantMode.bfloat16)  # 200 B

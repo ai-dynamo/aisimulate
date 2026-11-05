@@ -64,9 +64,7 @@ def test_engine_stack_is_builtin() -> None:
 def test_optional_stack_is_loaded_lazily() -> None:
     entry = _EntryPoint("dynamo", "example:create", _RunnerFactory)
 
-    assert isinstance(
-        resolve_runner_factory("dynamo", entry_points=[entry]), _RunnerFactory
-    )
+    assert isinstance(resolve_runner_factory("dynamo", entry_points=[entry]), _RunnerFactory)
 
 
 def test_missing_and_duplicate_stacks_fail_explicitly() -> None:

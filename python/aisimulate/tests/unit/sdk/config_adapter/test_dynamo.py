@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     WorkloadPointOverride,

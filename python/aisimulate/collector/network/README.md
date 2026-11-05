@@ -15,4 +15,4 @@ The standalone scripts keep their staging output names (`nccl_perf.txt`,
 `oneccl_perf.txt`, `custom_allreduce_perf.txt`, and
 `trtllm_alltoall_perf.txt`). Collector finalization converts accepted output
 to parquet under
-`aic-core/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`src/aisimulate_core/systems/data/<system>/comm/<backend>/<version>/`.

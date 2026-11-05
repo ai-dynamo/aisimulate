@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import config
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk import config
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 
@@ -30,8 +30,8 @@ _WORKLOAD = dict(
 
 
 def test_encoder_only_model_satisfies_engine_spec_contract():
-    from aiconfigurator_core.sdk.engine import build_engine_spec_json
-    from aiconfigurator_core.sdk.models.vit_ops import EncoderOnlyModel
+    from aisimulate_core.sdk.engine import build_engine_spec_json
+    from aisimulate_core.sdk.models.vit_ops import EncoderOnlyModel
 
     model = EncoderOnlyModel(
         encoder_ops=[],

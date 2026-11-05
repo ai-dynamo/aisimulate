@@ -69,8 +69,8 @@ adjacent ones only. Never attribute a residual across more than one rung.
 - Kernel-diff the collector's timed region against an engine trace: same
   kernel families and algos? Extra eager glue ops are a harness bug (see the
   fused-ops fix); missing ops are an accounting gap.
-- Collector data is only as true as its op dispatch: verify against
-  framework source (file:line@version), per `.claude/rules/collector/`.
+- Collector data is only as true as its op dispatch: verify it against the
+  pinned framework's source (file and symbol), per `.claude/rules/collector/`.
 
 ## Model/checkpoint facts are per-checkpoint, not per-family
 

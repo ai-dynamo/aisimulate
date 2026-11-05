@@ -31,8 +31,8 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator.sdk.common import MoEQuantMode
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk.common import MoEQuantMode
+from aisimulate.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -95,7 +95,7 @@ def _write_parquet(systems_root: Path, rel: str, rows: list[dict], *, types: dic
 
 
 def _fetch(db: PerfDatabase, attribute: str):
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     return fetch_table_view(db, attribute)
 

@@ -9,13 +9,13 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.sdk.config_adapter import (
     AdaptationDiagnostic,
     AdaptationOutcome,
     EstimateRequestV1,
     to_cli_estimate_kwargs,
 )
-from aiconfigurator.sdk.config_adapter.schema import (
+from aisimulate.sdk.config_adapter.schema import (
     AggregatedTopologyV1,
     BackendSettingsV1,
     ModelSettingsV1,

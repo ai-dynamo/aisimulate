@@ -9,13 +9,13 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 _APPLICATION_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_APPLICATION_ROOT / "src"))
+# Import the installed package and its compiled runtime. Prepending src here
+# shadows a correctly installed wheel with a source-only aisimulate package.
 sys.path.insert(0, str(_APPLICATION_ROOT))
 
 from tools.support_matrix.fpe_support_matrix import (
@@ -27,9 +27,8 @@ from tools.support_matrix.fpe_support_matrix import (
 
 
 def _source_sha() -> str:
-    github_sha = os.environ.get("GITHUB_SHA")
-    if github_sha:
-        return github_sha
+    # A manually requested SHA may differ from the workflow event's GITHUB_SHA.
+    # Record the checkout that supplied the generator and discovery code.
     repository_root = _APPLICATION_ROOT.parents[1]
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -42,13 +41,23 @@ def _source_sha() -> str:
 
 
 def _source_version() -> str:
-    try:
-        return importlib.metadata.version("aisimulate")
-    except importlib.metadata.PackageNotFoundError:
-        import tomllib
+    installed = {}
+    for name in ("aisim", "aisimulate"):
+        try:
+            installed[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    if len(installed) > 1:
+        raise RuntimeError(
+            "aisim and aisimulate are both installed; use an environment containing only the selected wheel"
+        )
+    if installed:
+        return next(iter(installed.values()))
+    # Source-only runs have a manifest; isolated historical-wheel harnesses do not.
+    import tomllib
 
-        with (_APPLICATION_ROOT / "pyproject.toml").open("rb") as handle:
-            return str(tomllib.load(handle)["project"]["version"])
+    with (_APPLICATION_ROOT / "pyproject.toml").open("rb") as handle:
+        return str(tomllib.load(handle)["project"]["version"])
 
 
 def _optional_set(values: list[str] | None) -> set[str] | None:
@@ -104,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    logging.getLogger("aiconfigurator_core").setLevel(args.sdk_log_level)
+    logging.getLogger("aisimulate_core").setLevel(args.sdk_log_level)
     workload = ProbeWorkload(
         isl=args.isl,
         osl=args.osl,

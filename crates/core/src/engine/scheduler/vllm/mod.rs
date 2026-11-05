@@ -7,7 +7,9 @@
 //! admission and preemption differences live in `policy`.
 
 mod core;
+mod g3_offload;
 mod host_offload;
+mod kvcr;
 mod policy;
 mod request;
 
@@ -18,3 +20,6 @@ pub(crate) use core::RequestStatus;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod grouped_tests;

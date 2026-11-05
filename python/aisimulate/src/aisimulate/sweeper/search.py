@@ -28,7 +28,7 @@ import math
 import multiprocessing as mp
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -41,9 +41,14 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..power import POWER_FIELDS, normalize_power_summary
+from ..resources import ResourceLimitError
+from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_afd_measurements
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
+from .epd import add_encoder_choices, apply_encoder_overlay, language_replay_key, resolve_encoder_catalog
+from .forward_pass_estimator import ForwardPassEstimatorResolver
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -57,9 +62,11 @@ from .provider import (
     SearchSpaceFragment,
     SweepConfigProvider,
     SweepContext,
+    validate_router_prefill_hardware,
 )
 from .replay import (
     REPLAY_SPEC_API_VERSION,
+    ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
     Runner,
@@ -81,11 +88,22 @@ from .result import (
     retain_candidate_records,
 )
 from .sample import unroll_sample
-from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate
+from .sampler import BranchSampler, InvalidSuggestionError, Suggestion, make_branch_sampler
+from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
+
+# These outcomes follow from fixed candidate/workload constraints. Do not cache
+# timeouts, host admission failures, arbitrary adapter exceptions or runtime errors.
+_CACHEABLE_FAILURES = frozenset(
+    {
+        ReasonCategory.GPU_BUDGET,
+        ReasonCategory.KV_CAPACITY,
+        ReasonCategory.SLA_CONSTRAINT,
+        ReasonCategory.LOAD_CONSTRAINT,
+    }
+)
 
 
 # Result of evaluating one suggestion (no Vizier here). ``observe_metrics`` is
@@ -94,17 +112,18 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _EvalResult:
     candidate: Candidate | None
-    observe_metrics: dict[str, float] | None
+    observe_metrics: dict[str, float | None] | None
     outcome: str
     reason: str
     reason_category: ReasonCategory | None
     runner_metadata: dict[str, Any]
-    report_metrics: dict[str, float] | None = None
+    report_metrics: dict[str, float | None] | None = None
+    config_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class _ReplayEvaluation:
-    metrics: dict[str, float] | None
+    metrics: dict[str, float | None] | None
     metadata: dict[str, Any]
     outcome: str
     reason: str
@@ -116,6 +135,8 @@ class _PreparedCandidate:
     sample: dict[str, Any]
     replay_spec: ReplaySpec
     prediction_config: dict[str, Any] | None = None
+    # With a deferred encoder overlay: the language replay this pool shares.
+    language_key: str | None = None
 
 
 @dataclass
@@ -130,7 +151,7 @@ class _BranchSearchState:
 def _branch_sampler_seed(seed: int, deployment_mode: str) -> int:
     """Derive a stable seed from branch identity, independent of active-branch order."""
 
-    offsets = {"agg": 0, "disagg": 1}
+    offsets = {"agg": 0, "disagg": 1, "afd": 2, "afd+pd": 3}
     try:
         return seed + offsets[deployment_mode]
     except KeyError as exc:  # SearchSpace validation currently makes this unreachable.
@@ -517,11 +538,27 @@ def _suggestion_cache_key(suggestion: Suggestion, context: Any) -> Any:
     return (context, _freeze(suggestion.selection), _freeze(suggestion.parallel_config))
 
 
-def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig) -> dict[str, Any]:
+def _with_encoder_snapshot(sample, selection, encoder_catalog):
+    """Retain selected encoder evidence, without inventing an unresolved language shape."""
+    sample = deepcopy(sample)
+    key = selection.get("encoder_candidate")
+    sample["encoder_candidate"] = deepcopy(key)
+    sample["deployment_artifact_generation_supported"] = False
+    sample["prediction_config_supported"] = False
+    encoder = (encoder_catalog or {}).get(key) if isinstance(key, str) else None
+    if encoder is not None:
+        sample["encoder"] = asdict(encoder)
+        language_gpus = sample.get("language_gpus", sample.get("used_gpus"))
+        sample["language_gpus"] = language_gpus
+        sample["used_gpus"] = language_gpus + encoder.total_gpus if type(language_gpus) is int else None
+    return sample
+
+
+def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig, *, encoder_catalog=None) -> dict[str, Any]:
     """Best-effort JSON snapshot for a candidate rejected before replay."""
 
     try:
-        return unroll_sample(
+        sample = unroll_sample(
             search_space=config.search_space,
             selection=suggestion.selection,
             parallel_config=suggestion.parallel_config,
@@ -532,10 +569,13 @@ def _suggestion_snapshot(suggestion: Suggestion, config: SmartSearchConfig) -> d
             parallel_payload: Any = asdict(parallel_config)
         else:
             parallel_payload = repr(parallel_config)
-        return {
+        sample = {
             **deepcopy(suggestion.selection),
             "parallel_config": parallel_payload,
         }
+    if config.search_space.encoder is not None:
+        sample = _with_encoder_snapshot(sample, suggestion.selection, encoder_catalog)
+    return sample
 
 
 def _materialize_one(
@@ -547,22 +587,88 @@ def _materialize_one(
     providers: Mapping[str, SweepConfigProvider],
     provider_plans: Mapping[str, AdapterSearchPlan],
     runner_factory: RunnerFactory,
+    afd_performance_model: AFDPerformanceModel | None = None,
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
+    encoder_catalog: Mapping[str, Any] | None = None,
+    estimator_resolver: ForwardPassEstimatorResolver | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
+    epd_snapshot = None
     try:
         sample = unroll_sample(
             search_space=config.search_space,
             selection=selection,
             parallel_config=parallel_config,
         )
-        backend_version = config.search_space.backend_version or resolve_backend_version(
-            config.search_space.hardware_sku, selection["backend"]
+        encoder = None
+        if config.search_space.encoder is not None:
+            sample = _with_encoder_snapshot(sample, selection, encoder_catalog)
+            epd_snapshot = deepcopy(sample)
+            if "encoder" not in sample:
+                raise ValueError("unknown encoder_candidate")
+            encoder = encoder_catalog[selection["encoder_candidate"]]
+            if encoder.backend != sample["backend"] or encoder.model != sample["model_name"]:
+                raise ValueError("encoder candidate does not match language model/backend")
+            if sample["used_gpus"] > config.search_space.gpu_budget:
+                return None, _EvalResult(
+                    candidate=None,
+                    observe_metrics=None,
+                    outcome="infeasible",
+                    reason="language plus encoder pool exceeds gpu_budget",
+                    reason_category=ReasonCategory.GPU_BUDGET,
+                    runner_metadata={},
+                    config_snapshot=epd_snapshot,
+                )
+        estimator_resolver = estimator_resolver or ForwardPassEstimatorResolver(config.search_space)
+        forward_pass_estimators = estimator_resolver.resolve_candidate(sample)
+        # A role whose regression or learned model does not know the version
+        # leaves it to another role, or to the candidate's own resolution.
+        known_versions = [
+            spec.backend_version for spec in forward_pass_estimators.values() if spec.backend_version != "unknown"
+        ]
+        backend_version = (
+            next(iter(known_versions), None)
+            if forward_pass_estimators
+            else config.search_space.requested_backend_version(selection["backend"])
         )
+        if backend_version is None and forward_pass_estimators:
+            backend_version = config.search_space.requested_backend_version(selection["backend"])
+        if backend_version is None:
+            if sample["deployment_mode"] == "disagg":
+                role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
+                if len(set(role_hardware.values())) == 1:
+                    backend_version = resolve_backend_version(
+                        role_hardware["prefill"],
+                        selection["backend"],
+                        systems_paths=config.search_space.systems_paths_for("prefill"),
+                    )
+                else:
+                    role_versions = {
+                        role: resolve_backend_version(
+                            hardware,
+                            selection["backend"],
+                            systems_paths=config.search_space.systems_paths_for(role),
+                        )
+                        for role, hardware in role_hardware.items()
+                    }
+                    if len(set(role_versions.values())) != 1:
+                        raise ValueError(
+                            "heterogeneous P/D hardware requires one common backend_version; "
+                            f"latest versions for backend={selection['backend']!r} are {role_versions}. "
+                            "Set search_space.backend_version to a version supported by both SKUs."
+                        )
+                    backend_version = role_versions["prefill"]
+            else:
+                backend_version = resolve_backend_version(
+                    config.search_space.hardware_sku,
+                    selection["backend"],
+                    systems_paths=config.search_space.systems_paths_for("agg"),
+                )
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["forward_pass_estimators"] = {role: asdict(value) for role, value in forward_pass_estimators.items()}
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -595,14 +701,29 @@ def _materialize_one(
             sample["kv_load_ratio"] = resolution.ratio
             sample["kv_load_concurrency_capacity"] = resolution.concurrency_capacity
             load_role = "decode" if sample["deployment_mode"] == "disagg" else "agg"
-            sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_tokens:
+                sample["kv_load_capacity_tokens"] = resolution.role_capacity_tokens[load_role]
+            if load_role in resolution.role_capacity_bytes:
+                sample["kv_load_capacity_bytes"] = resolution.role_capacity_bytes[load_role]
+                sample["kv_load_request_cache_bytes"] = resolution.role_request_cache_bytes[load_role]
             for role, tokens in resolution.role_capacity_tokens.items():
                 sample[f"{role}_kv_capacity_tokens"] = tokens
         if concurrency is not None:
             # Preserve the concrete load on every candidate, including a fixed absolute
             # concurrency and one derived from kv_load_ratio.
             sample["concurrency"] = concurrency
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version)
+        if encoder is not None:
+            epd_snapshot = deepcopy(sample)
+        backend_deployment = build_backend_deployment(
+            sample, backend_version=backend_version, encoder=encoder, forward_pass_estimators=forward_pass_estimators
+        )
+        if sample["deployment_mode"] in {"afd", "afd+pd"}:
+            backend_deployment = attach_afd_measurements(
+                backend_deployment,
+                sample=sample,
+                workload=workload_payload,
+                performance_model=afd_performance_model or AICAFDPerformanceModel(),
+            )
         adapter_specs: dict[str, AdapterReplaySpec] = {}
         for name, provider in providers.items():
             candidate_context = CandidateContext(
@@ -616,6 +737,8 @@ def _materialize_one(
                 candidate_context,
             )
             _validate_provider_replay_spec(name, adapter_spec)
+            if sample["deployment_mode"] == "disagg":
+                validate_router_prefill_hardware(adapter_spec, sample["prefill_hardware_sku"])
             # Frozen dataclasses do not freeze nested JSON containers. Snapshot
             # the return value so an adapter can safely reuse an output buffer
             # without mutating candidates already prepared in this round.
@@ -636,6 +759,18 @@ def _materialize_one(
             if prediction_config_factory is not None
             else None
         )
+        if encoder is not None and prediction_config_factory is not None:
+            from ..config.epd import validate_epd_prediction_mapping
+
+            validate_epd_prediction_mapping(prediction_config, replay_spec)
+            sample["prediction_config_supported"] = True
+        elif prediction_config_factory is not None and any(
+            sample.get(f"{role}_vision") is not None or sample.get(f"{role}_host_loop") for role in ("agg", "prefill")
+        ):
+            from ..config.vl import validate_vl_prediction_mapping
+
+            validate_vl_prediction_mapping(prediction_config, replay_spec)
+            sample["prediction_config_supported"] = True
     except InfeasibleKVCapacity as exc:
         return None, _EvalResult(
             candidate=None,
@@ -644,6 +779,7 @@ def _materialize_one(
             reason=f"candidate KV capacity infeasible: {exc}",
             reason_category=ReasonCategory.KV_CAPACITY,
             runner_metadata={},
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     except InfeasibleCandidate as exc:
         return None, _EvalResult(
@@ -653,6 +789,7 @@ def _materialize_one(
             reason=f"candidate adapter selection infeasible: {exc}",
             reason_category=ReasonCategory.ADAPTER_CONSTRAINT,
             runner_metadata={},
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     except Exception as exc:
         logger.exception("Sweeper candidate build failed")
@@ -663,6 +800,7 @@ def _materialize_one(
             reason=f"candidate build failed: {type(exc).__name__}: {exc}",
             reason_category=ReasonCategory.CANDIDATE_MATERIALIZATION,
             runner_metadata={},
+            config_snapshot=deepcopy(sample) if epd_snapshot is not None else None,
         )
     return _PreparedCandidate(
         sample=sample,
@@ -671,21 +809,63 @@ def _materialize_one(
     ), None
 
 
-def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
+def _run_replay_detailed(
+    spec: ReplaySpec, runner: Runner, output_requirements: ReplayOutputRequirements | None = None
+) -> _ReplayEvaluation:
     """Run one replay while retaining validated runner provenance metadata."""
 
     try:
-        try:
-            report = runner.run(spec)
-        except Exception as exc:
-            logger.exception("Sweeper candidate replay failed")
-            return _ReplayEvaluation(
-                metrics=None,
-                metadata={},
-                outcome="failed",
-                reason=f"replay failed: {type(exc).__name__}: {exc}",
-                reason_category=ReasonCategory.REPLAY_RUNTIME,
-            )
+        report = (
+            runner.run(spec)
+            if output_requirements is None
+            else runner.run(spec, output_requirements=output_requirements)
+        )
+    except ResourceLimitError:
+        raise
+    except Exception as exc:
+        return _failed_replay(exc)
+    return _evaluate_report(report)
+
+
+def _overlay_language_replay(language: _ReplayEvaluation, spec: ReplaySpec) -> _ReplayEvaluation:
+    """Evaluate one pool's overlay of a deferred language replay, as the runner would have applied it."""
+
+    if language.outcome != "replayed":
+        return language
+    if language.metadata.get("metric_semantics") == "analytical_epd_overlay":
+        return _ReplayEvaluation(
+            metrics=None,
+            metadata={},
+            outcome="failed",
+            reason=(
+                "runner contract violation: defer_encoder_overlay was requested "
+                "but the report already carries the encoder overlay"
+            ),
+            reason_category=ReasonCategory.RUNNER_CONTRACT,
+        )
+    try:
+        # The overlay reads only the language metrics and rebuilds the metadata.
+        overlaid = apply_encoder_overlay(ReplayReport(metrics=language.metrics), spec)
+    except Exception as exc:
+        return _failed_replay(exc)
+    return _evaluate_report(overlaid)
+
+
+def _failed_replay(exc: Exception) -> _ReplayEvaluation:
+    logger.exception("Sweeper candidate replay failed")
+    return _ReplayEvaluation(
+        metrics=None,
+        metadata={},
+        outcome="failed",
+        reason=f"replay failed: {type(exc).__name__}: {exc}",
+        reason_category=ReasonCategory.REPLAY_RUNTIME,
+    )
+
+
+def _evaluate_report(report: Any) -> _ReplayEvaluation:
+    """Validate a runner report while retaining its provenance metadata."""
+
+    try:
         if not isinstance(report, ReplayReport):
             return _ReplayEvaluation(
                 metrics=None,
@@ -710,7 +890,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 reason="replay failed: TypeError: runner report metadata must be a dictionary",
                 reason_category=ReasonCategory.RUNNER_CONTRACT,
             )
-        metrics: dict[str, float] = {}
+        metrics: dict[str, float | None] = {}
         for name, value in report.metrics.items():
             if type(name) is not str:
                 return _ReplayEvaluation(
@@ -720,6 +900,9 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                     reason=(f"replay failed: TypeError: runner metric names must be strings, got {name!r}"),
                     reason_category=ReasonCategory.INVALID_METRICS,
                 )
+            if value is None and name in POWER_FIELDS:
+                metrics[name] = None
+                continue
             if isinstance(value, bool) or not isinstance(value, Real):
                 return _ReplayEvaluation(
                     metrics=None,
@@ -739,6 +922,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 )
             metrics[name] = normalized
         try:
+            metrics.update(normalize_power_summary(metrics))
             validate_json_value(report.metadata, path="runner report metadata")
         except (TypeError, ValueError) as exc:
             return _ReplayEvaluation(
@@ -755,6 +939,8 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
             reason="",
             reason_category=None,
         )
+    except ResourceLimitError:
+        raise
     except Exception as exc:  # fail closed if contract normalization itself regresses
         logger.exception("Sweeper candidate replay failed")
         return _ReplayEvaluation(
@@ -802,6 +988,17 @@ def _score_prepared(
             reason_category=ReasonCategory.RUNNER_CONTRACT,
             runner_metadata=replay_result.metadata,
         )
+    phases = replay_result.metadata.get("agentic_phases")
+    if isinstance(phases, Mapping) and phases.get("phase") == "aborted":
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed",
+            reason=f"agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}",
+            reason_category=ReasonCategory.REPLAY_RUNTIME,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     effective_targets = set(goal.resolved_pareto_objectives) if goal.is_pareto else {goal.target}
     if (
         effective_targets.intersection({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
@@ -836,7 +1033,7 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
-    if goal.strict_sla:
+    if goal.requires_aggregate_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
         violations = aggregate_sla_violations(report, goal.sla)
         if violations:
@@ -849,6 +1046,19 @@ def _score_prepared(
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
+    load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
+    if load_violations:
+        measured_goodput = report.get("goodput_request_throughput_rps")
+        invalid_metric = measured_goodput is None or measured_goodput < 0
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed" if invalid_metric else "infeasible",
+            reason=f"minimum goodput constraint: {'; '.join(load_violations)}",
+            reason_category=ReasonCategory.RUNNER_CONTRACT if invalid_metric else ReasonCategory.LOAD_CONSTRAINT,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     # A completed replay with no qualifying latency samples is a modeled
     # infeasible outcome, not a runner failure. This preserves the intent of the
     # former worst-rank sentinel without putting non-finite scores in SweepResult.
@@ -928,6 +1138,8 @@ _WORKER_CTX: dict[str, Any] = {}
 
 def _init_worker(
     runner_factory: RunnerFactory,
+    *,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> None:
     identity = getattr(mp.current_process(), "_identity", ())
     worker_id = int(identity[0]) if identity else 0
@@ -936,11 +1148,32 @@ def _init_worker(
     # shutdown.  Unlike a plain atexit handler, this matches the ProcessPool
     # worker lifecycle and lets a runtime release worker-local resources.
     Finalize(None, runner.close, exitpriority=0)
-    _WORKER_CTX.update(runner=runner)
+    _WORKER_CTX.update(runner=runner, output_requirements=output_requirements)
 
 
 def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
-    return _run_replay_detailed(spec, _WORKER_CTX["runner"])
+    return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
+
+
+def _in_suggestion_order(
+    todo: list[tuple[Suggestion, _PreparedCandidate]],
+    results: Iterable[tuple[Suggestion, _EvalResult]],
+) -> Iterator[tuple[Suggestion, _EvalResult]]:
+    """Yield a batch's ``(suggestion, result)`` pairs in ``todo`` order, each as soon as
+    every earlier suggestion has finished, so candidate ids, the ledger and optimizer
+    feedback do not depend on which worker finished first. A finished result therefore
+    reaches the ledger and the execution checkpoint only after its earlier siblings.
+    """
+    position = {id(suggestion): index for index, (suggestion, _) in enumerate(todo)}
+    finished: dict[int, tuple[Suggestion, _EvalResult]] = {}
+    next_position = 0
+    for suggestion, result in results:
+        finished[position[id(suggestion)]] = (suggestion, result)
+        while next_position in finished:
+            yield finished.pop(next_position)
+            next_position += 1
+    if next_position != len(todo):
+        raise RuntimeError("Sweeper runner contract violation: a batch did not report every suggestion")
 
 
 class Sweeper:
@@ -959,12 +1192,16 @@ class Sweeper:
         sampler_factory: Callable[..., BranchSampler] = make_branch_sampler,
         show_progress: bool = True,
         prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
+        afd_performance_model: AFDPerformanceModel | None = None,
+        output_requirements: ReplayOutputRequirements | None = None,
     ) -> None:
         self._runner_factory = runner_factory
+        self._output_requirements = output_requirements
         self._providers = dict(providers or {})
         self._sampler_factory = sampler_factory
         self._show_progress = show_progress
         self._prediction_config_factory = prediction_config_factory
+        self._afd_performance_model = afd_performance_model or AICAFDPerformanceModel()
 
     def run(
         self,
@@ -973,6 +1210,7 @@ class Sweeper:
         top_n: int | None = 5,
         candidate_retention: CandidateRetention | str = CandidateRetention.ALL,
         on_round: Callable[[int, list[Candidate]], None] | None = None,
+        on_candidate: Callable[[CandidateRecord], None] | None = None,
     ) -> SweepResult:
         """Run the sweep and return the canonical schema-versioned result.
 
@@ -986,19 +1224,54 @@ class Sweeper:
         unsupported, timed-out, and failed candidate. ``"feasible"`` retains only
         feasible rows and ``"views"`` retains only the scalar top-N or Pareto front;
         run-wide counts always describe the complete run.
+
+        ``on_candidate``, when provided, is invoked once per recorded candidate
+        outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
+        failed) with a deep copy of the ``CandidateRecord`` appended to the run's
+        candidate ledger, in recording order: each batch's pre-replay rejections,
+        then its replays in suggestion order. The copy is detached: mutating it
+        has no effect on the ledger used to build ``SweepResult``. It complements
+        ``on_round``, which only reports the cumulative feasible-candidate list at
+        round boundaries.
         """
         if top_n is not None and top_n < 1:
             raise ValueError(f"top_n must be positive or None, got {top_n}")
         retention = CandidateRetention(candidate_retention)
         runner_factory = self._runner_factory
+        from functools import partial
+
         providers = self._providers
         sampler_factory = self._sampler_factory
         show_progress = self._show_progress
         prediction_config_factory = self._prediction_config_factory
+        afd_performance_model = self._afd_performance_model
 
+        estimator_resolver = ForwardPassEstimatorResolver(config.search_space)
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
+        encoder_catalog = None
+        output_requirements = self._output_requirements
+        language_replays: dict[str, _ReplayEvaluation] | None = None
+        if config.search_space.encoder is not None:
+            mode = config.search_space.encoder.mode
+            supported = capabilities.supports_native_epd if mode == "native" else capabilities.supports_analytical_epd
+            if not supported:
+                raise ValueError(f"runner does not support {mode} EPD")
+            encoder_catalog = resolve_encoder_catalog(config)
+            # Analytical EPD candidates that differ only in their encoder pool share one
+            # language replay, and the coordinator applies each pool's overlay. Memory
+            # diagnostics are attached after the runner's overlay, so they keep it there.
+            if (
+                mode == "analytical"
+                and capabilities.supports_deferred_encoder_overlay
+                and not (output_requirements is not None and output_requirements.capture_memory_diagnostics)
+            ):
+                language_replays = {}
+                output_requirements = replace(
+                    output_requirements or ReplayOutputRequirements(), defer_encoder_overlay=True
+                )
+        worker_initializer = partial(_init_worker, output_requirements=output_requirements)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
         # search before adapters perform any potentially expensive preparation.
@@ -1007,6 +1280,8 @@ class Sweeper:
             max_seq_len=config.search_space.context_length,
             runner_capabilities=capabilities,
         )
+        if encoder_catalog is not None:
+            branches = add_encoder_choices(branches, encoder_catalog)
         resolved_providers, provider_plans = _prepare_providers(config, injected=providers, show_progress=show_progress)
         for name, plan in provider_plans.items():
             unsupported = [hook for hook in plan.potential_runtime_hooks if not capabilities.supports_hook(hook)]
@@ -1026,7 +1301,7 @@ class Sweeper:
             )
         # Legacy runs target successful unique evaluations; unified-CLI runs use
         # an exact global suggestion budget, including failures and cache hits.
-        total = sweep.max_trials if sweep.max_trials is not None else len(branches) * sweep.max_rounds * per_round
+        total = sweep.max_trials
         branch_budgets: list[int | None]
         if sweep.max_trials is None:
             branch_budgets = [None] * len(branches)
@@ -1035,8 +1310,10 @@ class Sweeper:
             branch_budgets = [base + (1 if index < remainder else 0) for index in range(len(branches))]
         candidates: list[Candidate] = []
         tally = {
+            "resource_limited": 0,
             "feasible": 0,
             "infeasible": 0,
+            "timed_out": 0,
             "failed": 0,
             "unsupported": 0,
             "cache_hit": 0,
@@ -1062,15 +1339,19 @@ class Sweeper:
                 "provider_plans": provider_plans,
             }
         )
-        replay_cache: dict[Any, tuple[Candidate | None, dict[str, float]]] = {}
+        replay_cache: dict[Any, tuple[dict[str, float | None] | None, str]] = {}
+        suggest_seconds = 0.0
 
         def _best() -> float | None:
             return max((c.score for c in candidates), default=None)
 
         # Parallel across worker processes when parallel_evals > 1. Spawn keeps
         # runner runtimes isolated and lets each worker reuse one runner instance.
-        use_pool = (sweep.parallel_evals > 1 and per_round > 1) or (
-            sweep.max_trials is not None and sweep.max_eval_seconds is not None
+        resource_aware = callable(getattr(runner_factory, "admit_wave", None))
+        use_pool = (
+            resource_aware
+            or (sweep.parallel_evals > 1 and per_round > 1)
+            or (sweep.max_trials is not None and sweep.max_eval_seconds is not None)
         )
         max_eval_seconds = sweep.max_eval_seconds
         worker_count = min(sweep.parallel_evals, per_round)
@@ -1080,23 +1361,20 @@ class Sweeper:
             return ProcessPoolExecutor(
                 max_workers=worker_count,
                 mp_context=mp.get_context("spawn"),
-                initializer=_init_worker,
+                initializer=worker_initializer,
                 initargs=(runner_factory,),
             )
 
         # One-element box so a runtime timeout can kill the hung pool and swap in a fresh one
         # (the closures below read/replace pool_box[0]).
-        pool_box: list[Any] = [_new_pool() if use_pool else None]
+        pool_box: list[Any] = [_new_pool() if use_pool and not resource_aware else None]
 
         def _terminate_pool(pool: ProcessPoolExecutor | None) -> None:
             if pool is None:
                 return
-            for process in list((getattr(pool, "_processes", None) or {}).values()):
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-            pool.shutdown(wait=False, cancel_futures=True)
+            from ..supervision import terminate_pool
+
+            terminate_pool(pool)
 
         def _replace_pool() -> None:
             _terminate_pool(pool_box[0])
@@ -1115,11 +1393,12 @@ class Sweeper:
                     sequential_runner.close()
                 raise
             else:
-                # A completed sweep shuts workers down normally so their Runner
-                # finalizers execute.  Only the timeout-recovery path above sends a
-                # terminate signal, where cleanup is necessarily best-effort.
+                # Allow Runner finalizers to finish, then stop workers that exceed
+                # the grace period instead of hanging the calling process.
                 if pool_box[0] is not None:
-                    pool_box[0].shutdown(wait=True, cancel_futures=True)
+                    from ..supervision import close_pool
+
+                    close_pool(pool_box[0])
                 pool_box[0] = None
                 if sequential_runner is not None:
                     sequential_runner.close()
@@ -1131,7 +1410,46 @@ class Sweeper:
                 '"__main__":`, or set sweep.parallel_evals=1 to evaluate sequentially.'
             )
 
+        def _finish(prepared: _PreparedCandidate, result: _ReplayEvaluation) -> _EvalResult:
+            if language_replays is not None and prepared.language_key is not None:
+                # A deferred language replay: keep it for the pools that share it, then overlay this one.
+                if result.outcome == "replayed":
+                    language_replays[prepared.language_key] = result
+                result = _overlay_language_replay(result, prepared.replay_spec)
+            return _score_prepared(prepared, result, config=config, goal=goal)
+
         def _eval_batch(todo: list[tuple[Suggestion, _PreparedCandidate]]):
+            """Like ``_replay_batch``, but with a deferred encoder overlay the pools that
+            share a language deployment share one replay per batch: each pool overlays its
+            report, or records its failure, as soon as that replay finishes.
+            """
+            if language_replays is None:
+                yield from _replay_batch(todo)
+                return
+            groups: dict[str, list[tuple[Suggestion, _PreparedCandidate]]] = {}
+            for suggestion, prepared in todo:
+                key = language_replay_key(prepared.replay_spec)
+                groups.setdefault(key, []).append((suggestion, replace(prepared, language_key=key)))
+            replays: list[tuple[Suggestion, _PreparedCandidate]] = []
+            siblings: dict[int, list[tuple[Suggestion, _PreparedCandidate]]] = {}
+            for key, members in groups.items():
+                if key in language_replays:
+                    for suggestion, prepared in members:
+                        yield suggestion, _finish(prepared, language_replays[key])
+                    continue
+                replays.append(members[0])
+                siblings[id(members[0][0])] = members[1:]
+            for suggestion, evaluation in _replay_batch(replays):
+                yield suggestion, evaluation
+                for sibling, prepared in siblings[id(suggestion)]:
+                    language = language_replays.get(prepared.language_key)
+                    if language is not None:
+                        yield sibling, _finish(prepared, language)
+                    else:
+                        # A failed, timed-out or refused language replay fails every pool alike.
+                        yield sibling, replace(evaluation, runner_metadata=deepcopy(evaluation.runner_metadata))
+
+        def _replay_batch(todo: list[tuple[Suggestion, _PreparedCandidate]]):
             """Yield ``(suggestion, _EvalResult)`` for each supported suggestion — across worker
             processes when a pool is set, else sequentially in-process. On the pool path it
             evaluates waves no larger than the worker count so queued work never consumes a
@@ -1139,16 +1457,43 @@ class Sweeper:
             infeasible ("exceed runtime") and the wave's workers are force-killed (a shared
             pool can't cancel a running task), then a fresh pool handles later waves.
             """
+            if resource_aware:
+                from ..resource_scheduler import InterruptedEvaluation, evaluate_waves
+
+                for index, result in evaluate_waves(
+                    [prepared.replay_spec for _, prepared in todo],
+                    factory=runner_factory,
+                    initializer=worker_initializer,
+                    evaluate=_worker_eval,
+                    workers=worker_count,
+                    timeout=max_eval_seconds,
+                ):
+                    suggestion, prepared = todo[index]
+                    if isinstance(result, InterruptedEvaluation):
+                        evaluation = _EvalResult(
+                            candidate=None,
+                            observe_metrics=None,
+                            outcome="resource_limited" if result.resource_limited else "infeasible",
+                            reason=result.reason,
+                            reason_category=(
+                                ReasonCategory.RESOURCE_LIMIT
+                                if result.resource_limited
+                                else ReasonCategory.RUNTIME_TIMEOUT
+                            ),
+                            runner_metadata=result.metadata,
+                        )
+                    else:
+                        evaluation = _finish(prepared, result)
+                    yield suggestion, evaluation
+                return
+
             if pool_box[0] is None:
                 assert sequential_runner is not None
                 for suggestion, prepared in todo:
                     yield (
                         suggestion,
-                        _score_prepared(
-                            prepared,
-                            _run_replay_detailed(prepared.replay_spec, sequential_runner),
-                            config=config,
-                            goal=goal,
+                        _finish(
+                            prepared, _run_replay_detailed(prepared.replay_spec, sequential_runner, output_requirements)
                         ),
                     )
                 return
@@ -1180,20 +1525,14 @@ class Sweeper:
                     for future in done:
                         try:
                             replay_result = future.result()
+                        except ResourceLimitError:
+                            raise
                         except BrokenProcessPool as exc:
                             raise _pool_error("collecting a candidate result") from exc
                         except Exception as exc:
                             raise _pool_error(f"collecting a candidate result ({type(exc).__name__}: {exc})") from exc
                         suggestion, prepared = futures[future]
-                        yield (
-                            suggestion,
-                            _score_prepared(
-                                prepared,
-                                replay_result,
-                                config=config,
-                                goal=goal,
-                            ),
-                        )
+                        yield suggestion, _finish(prepared, replay_result)
 
                 if pending:
                     seconds = max_eval_seconds or 0.0
@@ -1214,8 +1553,12 @@ class Sweeper:
 
         with (
             _pool_lifecycle(),
-            tqdm(total=total, desc="sweeper", unit="eval", disable=not show_progress) as bar,
+            tqdm(total=total, desc="sweeper", unit="trial", disable=not show_progress) as bar,
         ):
+
+            def _cache_hits(count: int) -> None:
+                tally["cache_hit"] += count
+                bar.update(count)
 
             def _record(
                 outcome: str,
@@ -1226,15 +1569,17 @@ class Sweeper:
                 reason: str = "",
                 reason_category: ReasonCategory | None = None,
                 runner_metadata: dict[str, Any] | None = None,
-                provenance_metrics: dict[str, float] | None = None,
+                provenance_metrics: dict[str, float | None] | None = None,
                 replay_spec: ReplaySpec | None = None,
             ) -> None:
-                tally[outcome] += 1
+                tally["timed_out" if reason_category is ReasonCategory.RUNTIME_TIMEOUT else outcome] += 1
+                bar.update(1)
                 if candidate is not None:
                     candidates.append(candidate)
-                    bar.update(1)
                 if outcome == "feasible":
                     status = CandidateStatus.FEASIBLE
+                elif outcome == "resource_limited":
+                    status = CandidateStatus.RESOURCE_LIMITED
                 elif outcome == "unsupported":
                     status = CandidateStatus.UNSUPPORTED
                 elif reason_category is ReasonCategory.RUNTIME_TIMEOUT:
@@ -1244,11 +1589,12 @@ class Sweeper:
                 else:
                     status = CandidateStatus.FAILED
                 snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
-                record_metrics = deepcopy(
+                reported_metrics = (
                     provenance_metrics
                     if provenance_metrics is not None
-                    else (candidate.metrics if candidate is not None else {})
+                    else (candidate.metrics if candidate is not None else None)
                 )
+                record_metrics = deepcopy(reported_metrics) if reported_metrics is not None else {}
                 record = CandidateRecord(
                     candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
                     status=status,
@@ -1271,11 +1617,19 @@ class Sweeper:
                     provenance=make_candidate_provenance(
                         snapshot,
                         replay_spec=replay_spec,
-                        metrics=record_metrics,
+                        metrics=reported_metrics,
                         runner_metadata=runner_metadata,
                     ),
                 )
                 candidate_records.append(record)
+                if resource_aware:
+                    from ..supervision import checkpoint
+
+                    checkpoint("candidate_completed", record.model_dump(mode="json"))
+                if on_candidate is not None:
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
@@ -1287,6 +1641,8 @@ class Sweeper:
 
             branch_states: list[_BranchSearchState] = []
             for branch_index, branch in enumerate(branches):
+                if goal.target is OptimizationTarget.MIN_GPUS:
+                    branch = replace(branch, prefer_smallest=True)
                 sampler_kwargs: dict[str, Any] = {
                     "study_id": f"sweeper_{branch.deployment_mode}_{run_nonce}",
                     "objectives": sampler_objectives,
@@ -1307,7 +1663,7 @@ class Sweeper:
             round_no = 0
 
             def _run_branch_round(state: _BranchSearchState) -> None:
-                nonlocal round_no
+                nonlocal round_no, suggest_seconds
 
                 branch = state.branch
                 sampler = state.sampler
@@ -1329,7 +1685,14 @@ class Sweeper:
                         ask_count = min(ask_count, state.budget - state.attempts)
                     if ask_count <= 0:
                         break
-                    suggestions = sampler.suggest(ask_count)  # ask stays on the main process
+                    bar.set_description(f"Sweeper {branch.deployment_mode}: suggesting")
+                    bar.refresh()
+                    started = time.monotonic()
+                    try:
+                        suggestions = sampler.suggest(ask_count)  # ask stays on the main process
+                    finally:
+                        suggest_seconds += time.monotonic() - started
+                    bar.set_description(f"Sweeper {branch.deployment_mode}: evaluating")
                     if not suggestions:
                         break
                     trial_attempts += len(suggestions)
@@ -1349,12 +1712,30 @@ class Sweeper:
                             _record(
                                 "infeasible",
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=_suggestion_snapshot(
+                                    suggestion, config, encoder_catalog=encoder_catalog
+                                ),
                                 reason=reason,
                                 reason_category=ReasonCategory.PARALLEL_PROJECTION,
                             )
                             continue
                         backend = suggestion.selection["backend"]
+                        if suggestion.parallel_config.total_gpus > config.search_space.gpu_budget:
+                            reason = (
+                                f"candidate uses {suggestion.parallel_config.total_gpus} GPUs, "
+                                f"over gpu_budget={config.search_space.gpu_budget}"
+                            )
+                            sampler.observe_infeasible(suggestion, reason)
+                            _record(
+                                "infeasible",
+                                None,
+                                candidate_config=_suggestion_snapshot(
+                                    suggestion, config, encoder_catalog=encoder_catalog
+                                ),
+                                reason=reason,
+                                reason_category=ReasonCategory.GPU_BUDGET,
+                            )
+                            continue
                         if backend not in branch.supported_backends.get(suggestion.parallel_config, frozenset()):
                             reason = f"backend {backend!r} does not support this parallel config"
                             sampler.observe_infeasible(
@@ -1364,7 +1745,9 @@ class Sweeper:
                             _record(
                                 "unsupported",
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=_suggestion_snapshot(
+                                    suggestion, config, encoder_catalog=encoder_catalog
+                                ),
                                 reason=reason,
                                 reason_category=ReasonCategory.BACKEND_TOPOLOGY,
                             )
@@ -1373,9 +1756,12 @@ class Sweeper:
                         key = _suggestion_cache_key(suggestion, cache_context)
                         cached = replay_cache.get(key)
                         if cached is not None:
-                            _, cached_metrics = cached
-                            sampler.observe(suggestion, cached_metrics)
-                            tally["cache_hit"] += 1
+                            cached_metrics, cached_reason = cached
+                            if cached_metrics is None:
+                                sampler.observe_infeasible(suggestion, cached_reason)
+                            else:
+                                sampler.observe(suggestion, cached_metrics)
+                            _cache_hits(1)
                             continue
                         if key in primary_by_key:
                             duplicates_by_key.setdefault(key, []).append(suggestion)
@@ -1388,12 +1774,15 @@ class Sweeper:
                         prepared, build_result = _materialize_one(
                             suggestion.selection,
                             suggestion.parallel_config,
+                            estimator_resolver=estimator_resolver,
                             config=config,
                             goal=goal,
                             providers=resolved_providers,
                             provider_plans=provider_plans,
                             runner_factory=runner_factory,
+                            afd_performance_model=afd_performance_model,
                             prediction_config_factory=prediction_config_factory,
+                            encoder_catalog=encoder_catalog,
                         )
                         if build_result is not None:
                             candidate = build_result.candidate
@@ -1407,34 +1796,47 @@ class Sweeper:
                                 sampler.observe_infeasible(duplicate, reason)
                             if outcome == "failed":
                                 failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+                            if build_result.reason_category in _CACHEABLE_FAILURES:
+                                replay_cache[key] = (None, reason)
                             _record(
                                 outcome,
                                 None,
-                                candidate_config=_suggestion_snapshot(suggestion, config),
+                                candidate_config=build_result.config_snapshot
+                                or _suggestion_snapshot(suggestion, config, encoder_catalog=encoder_catalog),
                                 reason=reason,
                                 reason_category=build_result.reason_category,
                                 runner_metadata=build_result.runner_metadata,
                             )
-                            tally["cache_hit"] += len(duplicates)
+                            _cache_hits(len(duplicates))
                             continue
                         assert prepared is not None
                         todo.append((suggestion, prepared))
                         prepared_by_key[key] = prepared
 
-                    for suggestion, evaluation in _eval_batch(todo):
+                    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
                         candidate = evaluation.candidate
                         observe_metrics = evaluation.observe_metrics
                         outcome = evaluation.outcome
                         reason = evaluation.reason
                         key = _suggestion_cache_key(suggestion, cache_context)
                         duplicates = duplicates_by_key.get(key, [])
-                        if outcome in ("failed", "infeasible"):
+                        if outcome in ("failed", "infeasible", "resource_limited"):
+                            if evaluation.reason_category in {
+                                ReasonCategory.RESOURCE_LIMIT,
+                                ReasonCategory.RUNTIME_TIMEOUT,
+                            }:
+                                retry = getattr(sampler, "retry", None)
+                                if retry is not None:
+                                    retry(suggestion)
+                            if outcome == "resource_limited":
+                                # A terminal host refusal consumes its trial without a fabricated score.
+                                unique_this_round += 1
                             preserve_ranked_observation = (
                                 evaluation.reason_category is ReasonCategory.NO_SAMPLES and observe_metrics is not None
                             )
                             if preserve_ranked_observation:
                                 sampler.observe(suggestion, observe_metrics)
-                                replay_cache[key] = (None, dict(observe_metrics))
+                                replay_cache[key] = (dict(observe_metrics), "")
                                 for duplicate in duplicates:
                                     sampler.observe(duplicate, observe_metrics)
                                 # A no-sample result still completed one unique
@@ -1442,6 +1844,8 @@ class Sweeper:
                                 unique_this_round += 1
                             else:
                                 sampler.observe_infeasible(suggestion, reason)
+                                if evaluation.reason_category in _CACHEABLE_FAILURES:
+                                    replay_cache[key] = (None, reason)
                                 for duplicate in duplicates:
                                     sampler.observe_infeasible(duplicate, reason)
                             if outcome == "failed":
@@ -1458,7 +1862,7 @@ class Sweeper:
                                 provenance_metrics=evaluation.report_metrics,
                                 replay_spec=prepared.replay_spec,
                             )
-                            tally["cache_hit"] += len(duplicates)
+                            _cache_hits(len(duplicates))
                             continue
 
                         if candidate is None or observe_metrics is None:
@@ -1467,10 +1871,10 @@ class Sweeper:
                                 "must include both a candidate and observation metrics"
                             )
                         sampler.observe(suggestion, observe_metrics)
-                        replay_cache[key] = (candidate, dict(observe_metrics))
+                        replay_cache[key] = (dict(observe_metrics), "")
                         for duplicate in duplicates:
                             sampler.observe(duplicate, observe_metrics)
-                            tally["cache_hit"] += 1
+                            _cache_hits(1)
                         _record(
                             outcome,
                             candidate,
@@ -1483,46 +1887,77 @@ class Sweeper:
                 round_no += 1
                 if on_round is not None:
                     on_round(round_no, list(candidates))
-                if unique_this_round < round_target:
+                exhausted = getattr(sampler, "exhausted", False)
+                if unique_this_round < round_target or exhausted:
                     state.stalled = True
+                    if exhausted and state.budget is not None:
+                        unused = state.budget - state.attempts
+                        state.budget = state.attempts
+                        available = [
+                            other
+                            for other in branch_states
+                            if other is not state
+                            and not other.stalled
+                            and not getattr(other.sampler, "exhausted", False)
+                        ]
+                        if available:
+                            share, remainder = divmod(unused, len(available))
+                            for index, other in enumerate(available):
+                                assert other.budget is not None
+                                other.budget += share + (index < remainder)
                     if show_progress:
-                        tqdm.write(
-                            f"Sweeper {branch.deployment_mode} stopped early: projection stalled after "
-                            f"{trial_attempts} Vizier trial(s), with {unique_this_round}/{round_target} "
-                            "new replay configuration(s) in the round"
-                        )
+                        if exhausted:
+                            tqdm.write(f"Sweeper {branch.deployment_mode}: finite search space exhausted")
+                        elif state.budget is None or state.attempts < state.budget:
+                            tqdm.write(
+                                f"Sweeper {branch.deployment_mode} stopped early: no new feasible configuration "
+                                f"after {trial_attempts} trial(s) in the round"
+                            )
 
-            if sweep.max_trials is None:
-                # Preserve the legacy SDK's branch-major round ordering.
-                for state in branch_states:
-                    for _ in range(sweep.max_rounds):
-                        if state.stalled:
-                            break
-                        _run_branch_round(state)
-            else:
-                # Unified CLI: give each active branch one batch per cycle. This
-                # prevents either study from consuming its full allocation before
-                # the other receives suggestions while retaining parallel fan-out.
-                for _ in range(sweep.max_rounds):
-                    progressed = False
+            try:
+                if sweep.max_trials is None:
+                    # Preserve the legacy SDK's branch-major round ordering.
                     for state in branch_states:
-                        if state.stalled or (state.budget is not None and state.attempts >= state.budget):
-                            continue
-                        _run_branch_round(state)
-                        progressed = True
-                    if not progressed:
-                        break
+                        for _ in range(sweep.max_rounds):
+                            if state.stalled:
+                                break
+                            _run_branch_round(state)
+                else:
+                    # Unified CLI: give each active branch one batch per cycle. This
+                    # prevents either study from consuming its full allocation before
+                    # the other receives suggestions while retaining parallel fan-out.
+                    for _ in range(sweep.max_rounds):
+                        progressed = False
+                        for state in branch_states:
+                            if state.stalled or (state.budget is not None and state.attempts >= state.budget):
+                                continue
+                            _run_branch_round(state)
+                            progressed = True
+                        if not progressed:
+                            break
+            except InvalidSuggestionError as exc:
+                from ..supervision import checkpoint
+
+                message = (
+                    f"Sweeper {state.branch.deployment_mode} stopped early: {exc}. "
+                    f"Returning the best results from {len(candidates)} completed feasible candidate(s); "
+                    "search is incomplete."
+                )
+                logger.warning(message)
+                checkpoint("optimizer_stopped", {"reason": message})
 
         # Strict filtering precedes scalar ranking or Pareto dominance.
         selected_candidates = analyze_candidates(candidates, goal)
         if not goal.is_pareto and top_n is not None:
             selected_candidates = selected_candidates[:top_n]
         if show_progress:
-            replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"]
+            replay_attempts = tally["feasible"] + tally["infeasible"] + tally["failed"] + tally["timed_out"]
             summary = (
                 f"Sweeper done: {tally['feasible']}/{replay_attempts} replay attempt(s) feasible, "
                 f"{tally['infeasible']} gated, {tally['unsupported']} backend-unsupported, "
-                f"{tally['failed']} replay-failed, {tally['cache_hit']} cache hit(s)"
+                f"{tally['timed_out']} timed out, "
+                f"{tally['failed']} replay-failed, {tally['resource_limited']} resource-limited, "
+                f"{tally['cache_hit']} cache hit(s)"
             )
             if not candidates:
                 summary += " — NO feasible candidate (check backends / SLA / gpu_budget / replay errors)"
@@ -1531,6 +1966,13 @@ class Sweeper:
             else:
                 summary += f"; best {goal.target.value}={_best():.4g}"
             tqdm.write(summary)
+            budget = f"/{sweep.max_trials}" if sweep.max_trials is not None else ""
+            tqdm.write(
+                f"Search coverage: {sum(state.attempts for state in branch_states)}{budget} suggestions "
+                f"(cache hits included); optimizer suggestion time {suggest_seconds:.2f}s"
+            )
+            if tally["timed_out"] and max_eval_seconds is not None:
+                tqdm.write(f"Candidate timeout: {max_eval_seconds:g}s")
             if failure_reasons:
                 displayed = []
                 for reason, count in list(failure_reasons.items())[:3]:
@@ -1558,6 +2000,7 @@ class Sweeper:
             unsupported=status_counts[CandidateStatus.UNSUPPORTED],
             timed_out=status_counts[CandidateStatus.TIMED_OUT],
             failed=status_counts[CandidateStatus.FAILED],
+            resource_limited=status_counts[CandidateStatus.RESOURCE_LIMITED],
             cache_hits=tally["cache_hit"],
         )
         return SweepResult(

@@ -15,20 +15,64 @@ import json
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
-from .config import FPMCollectionOptions
+from aisimulate.fpm_cache_layout import cache_layout_markers
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, execution_identity
+from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
+
+from .capabilities import (
+    GENERIC_RUNTIME_TEMPLATE_ID,
+    ModelCapabilityProfile,
+    ResolvedDTypeProfile,
+    resolve_model_capability,
+)
+from .config import (
+    FPM_MAX_PREFILL_ISL,
+    PARALLEL_AXES,
+    VLLM_AUTO_FIT_MAX_MODEL_LEN,
+    FPMCollectionOptions,
+    semantic_generator_overrides,
+    with_kv_warmup_defaults,
+)
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
+from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
 
 logger = logging.getLogger(__name__)
 
-_INSTALLED_DISTRIBUTION = "aisimulate"
-_INSTALLED_PAYLOAD_ROOTS = frozenset(("aiconfigurator", "aisimulate", "collector"))
+
+def _runtime_memory_policy(
+    profile: FpmModelProfile | None, backend_version: str | None, runtime_observation: dict[str, Any] | None = None
+) -> dict[str, object] | None:
+    if runtime_observation is not None:
+        return {
+            "source": "runtime_instrumentation",
+            "observation": "enabled",
+            "selected_vllm_version": backend_version,
+            "bundle_sha256": runtime_observation["bundle_sha256"],
+            "async_scheduling": False,
+        }
+    if profile is None or not any(
+        deployment.resources.memory_source == "pending" for deployment in profile.deployments
+    ):
+        return None
+    available = backend_version == MEMORY_OBSERVER_VERSION
+    return {
+        "source": "vllm_initialization",
+        "supported_vllm_version": MEMORY_OBSERVER_VERSION,
+        "selected_vllm_version": backend_version,
+        "observation": "enabled" if available else "unavailable_for_runtime",
+        "evidence_schema_version": 1,
+        "async_scheduling": False if available else None,
+    }
+
+
+_INSTALLED_DISTRIBUTION = "aisim"
+_INSTALLED_PAYLOAD_ROOTS = frozenset(("aisimulate_core", "aisimulate", "collector"))
 _INSTALLED_PLANNER_PATH = PurePosixPath("collector/fpm_forward/planner.py")
 _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
     (
@@ -36,6 +80,9 @@ _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
         PurePosixPath("collector/fpm_forward/runner.py"),
         PurePosixPath("collector/fpm_forward/runtime/fpm_exec.sh"),
         PurePosixPath("collector/fpm_forward/runtime/preflight.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_observer.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_worker.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_scheduler.py"),
     )
 )
 
@@ -67,8 +114,11 @@ def _is_installer_console_script(path: PurePosixPath) -> bool:
     return parent_count > 0 and target in {
         ("bin", "aiconfigurator"),
         ("bin", "aisimulate"),
+        ("bin", "aisim"),
         ("Scripts", "aiconfigurator.exe"),
         ("Scripts", "aiconfigurator-script.py"),
+        ("Scripts", "aisim.exe"),
+        ("Scripts", "aisim-script.py"),
         ("Scripts", "aisimulate.exe"),
         ("Scripts", "aisimulate-script.py"),
     }
@@ -397,6 +447,8 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    if options.enforce_eager:
+        expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
         extra_cli_args += ["--kernel-config", json.dumps({"moe_backend": moe})]
         expected_markers["config.engine_args.kernel_config.moe_backend"] = moe
@@ -444,10 +496,14 @@ class FPMCell:
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     fmha_resolution: str | None = None
+    execution_identity: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY
+    input_text_sha256: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
+            "input_text_sha256": self.input_text_sha256,
             "workload_kind": self.workload_kind,
             "point_source": "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
@@ -481,11 +537,63 @@ class FPMCollectionPlan:
     backend_policies: tuple[BackendPolicy, ...]
     cells: tuple[FPMCell, ...]
     sha256: str
+    _fpm_profile_json: str | None = field(default=None, repr=False)
+    _runtime_observation_json: str | None = field(default=None, repr=False)
+    runtime_backend_version: str | None = None
+    backend_version: str | None = None
+    _legacy_runtime_memory_policy_json: str | None = field(default=None, repr=False)
+
+    @property
+    def runtime_instrumentation(self):
+        if self._runtime_observation_json is None:
+            return None
+        from .runtime_instrumentation import load_instrumentation
+
+        reference = json.loads(self._runtime_observation_json)
+        bundle = load_instrumentation(reference["manifest"], expected_version=self.runtime_backend_version)
+        if bundle.sha256 != reference["bundle_sha256"]:
+            raise ValueError("formal collection instrumentation changed after planning")
+        return bundle
+
+    @property
+    def runtime_launch(self) -> dict[str, Any] | None:
+        return json.loads(self._runtime_observation_json)["launch"] if self._runtime_observation_json else None
+
+    @property
+    def runtime_configuration(self) -> str | None:
+        return json.loads(self._runtime_observation_json)["configuration"] if self._runtime_observation_json else None
+
+    @property
+    def fpm_profile(self) -> FpmModelProfile | None:
+        """Return detached profile metadata from the frozen collection input."""
+        return load_fpm_profile(self._fpm_profile_json) if self._fpm_profile_json is not None else None
+
+    def deployment_profile(self, cell: FPMCell) -> FpmDeploymentProfile | None:
+        profile = self.fpm_profile
+        if profile is None:
+            return None
+        return profile.select(
+            model=self.model_path,
+            system=self.system,
+            backend=self.backend,
+            backend_version=self.capability.aic_database_version,
+            tp_size=cell.topology.tp,
+            pp_size=cell.topology.pp,
+            attention_dp_size=cell.topology.dp,
+            moe_tp_size=cell.topology.moe_tp,
+            moe_ep_size=cell.topology.moe_ep,
+            cp_size=cell.topology.cp,
+            worker_type=self.options.worker_type or "aggregated",
+        )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        prefill_sampling = self.options.prefill_sampling.to_dict()
+        explicit_points = (
+            json.loads(self.options.benchmark_points_json) if self.options.benchmark_points_json is not None else None
+        )
+        payload = {
             "schema_name": "aic_fpm_collection_plan",
-            "schema_version": 10,
+            "schema_version": 11,
             "backend": self.backend,
             "model_path": self.model_path,
             "system": self.system,
@@ -497,6 +605,8 @@ class FPMCollectionPlan:
             "point_generation": {
                 "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
                 "method": "native_self_benchmark",
+                "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
+                "manifest_sha256": self.options.benchmark_points_sha256,
                 "coordinates": [
                     "batch_size",
                     "total_prefill_tokens",
@@ -505,8 +615,12 @@ class FPMCollectionPlan:
                 "partition_policy": "balanced_v1",
                 "point_admission": "dynamo_live_scheduler",
                 "precondition": "vllm_engine_initialized",
-                "prefill_sampling": self.options.prefill_sampling.to_dict(),
-                "planned_point_count": None,
+                "prefill_sampling": prefill_sampling,
+                "planned_point_count": (
+                    sum(len(explicit_points.get(phase, [])) for phase in ("prefill", "decode"))
+                    if explicit_points is not None
+                    else None
+                ),
             },
             "topologies": [
                 {
@@ -529,12 +643,27 @@ class FPMCollectionPlan:
                 ),
                 "backend_policies": len(self.backend_policies),
                 "cells": len(self.cells),
-                "prefill_cudagraph_capture_sizes": len(self.options.prefill_sampling.cudagraph_capture_sizes),
-                "prefill_new_token_axis_points": len(self.options.prefill_sampling.new_token_axis_points),
+                "prefill_cudagraph_capture_sizes": prefill_sampling["cudagraph_capture_size_count"],
+                "prefill_new_token_axis_points": prefill_sampling["new_token_axis_point_count"],
                 "points": "runtime-determined",
             },
             "sha256": self.sha256,
         }
+        if self._fpm_profile_json is not None:
+            payload["fpm_profile"] = json.loads(self._fpm_profile_json)
+        runtime_observation = json.loads(self._runtime_observation_json) if self._runtime_observation_json else None
+        memory_policy = _runtime_memory_policy(self.fpm_profile, self.runtime_backend_version, runtime_observation)
+        if self._legacy_runtime_memory_policy_json is not None:
+            memory_policy = json.loads(self._legacy_runtime_memory_policy_json)
+        if memory_policy is not None:
+            payload["runtime_memory_policy"] = memory_policy
+        if runtime_observation is not None:
+            payload["runtime_observation"] = runtime_observation
+        if self.runtime_backend_version is not None:
+            payload["runtime_backend_version"] = self.runtime_backend_version
+        if self.backend_version is not None:
+            payload["backend_version"] = self.backend_version
+        return payload
 
 
 def _cell_id(
@@ -547,6 +676,8 @@ def _cell_id(
     weight_quantization: str,
     kv_cache_dtype: str,
     policy: BackendPolicy,
+    execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
+    input_text_sha256: str = "",
 ) -> str:
     payload = {
         "backend": backend,
@@ -557,9 +688,30 @@ def _cell_id(
         "weight_quantization": weight_quantization,
         "kv_cache_dtype": kv_cache_dtype,
         **backend_identity_columns(policy),
+        **dict(zip(EXECUTION_COLUMNS, execution, strict=True)),
+        "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
     return f"fpm-{_canonical_hash(payload)[:16]}"
+
+
+def _require_real_prefix_seeding(
+    capability: ModelCapabilityProfile, generator_overrides: dict[str, Any] | None
+) -> None:
+    """Cached prefill of a cache layout config.json cannot describe is measured only after real prefix seeding.
+
+    The formal table labels prefill n/a, so nothing else separates a fake prefix. Decode keeps the existing
+    classification, which already labels points without real KV state.
+    """
+
+    reasons = ", ".join(cache_layout_markers(capability.model_config.effective_payload, capability.architecture))
+    for item in with_kv_warmup_defaults(generator_overrides or {})["K8sConfig"]["extra_env"]:
+        name, value = item["name"], item.get("value")
+        if name == "DYN_BENCH_PREFILL_REAL_SEED" and value.lower() in {"off", "0", "false"}:
+            raise ValueError(
+                f"{name}={value} is not allowed for this cache layout ({reasons}). "
+                "Its cached prefill needs real prefix seeding. Remove the override."
+            )
 
 
 def build_collection_plan(
@@ -572,13 +724,57 @@ def build_collection_plan(
     model_architecture: str | None = None,
     has_model_cases: bool = True,
     model_config_path: str | None = None,
+    fpm_profile: FpmModelProfile | dict[str, Any] | None = None,
     collector_config: dict[str, Any] | None = None,
     generator_overrides: dict[str, Any] | None = None,
+    runtime_instrumentation=None,
+    runtime_launch: dict[str, Any] | None = None,
+    runtime_configuration: str = "collection",
 ) -> FPMCollectionPlan:
     if backend != "vllm":
         raise ValueError("FPM Generator V1 currently supports only backend=vllm")
-    collector_config = collector_config or {}
-    generator_config_sha256 = _canonical_hash(generator_overrides or {})
+    collector_config = dict(collector_config or {})
+    runtime_backend_version = collector_config.get("runtime_backend_version")
+    if runtime_backend_version is None and runtime_launch is not None:
+        runtime_backend_version = runtime_launch.get("identity", {}).get("runtime_framework_version")
+    if runtime_backend_version is not None and (
+        not isinstance(runtime_backend_version, str)
+        or not runtime_backend_version.strip()
+        or runtime_backend_version != runtime_backend_version.strip()
+    ):
+        raise ValueError("runtime_backend_version must be a nonempty observed package version")
+    profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
+    if profile is not None:
+        if profile.model != model_path:
+            raise ValueError(
+                f"FPM profile model identity mismatch: requested {model_path!r}, profile={profile.model!r}"
+            )
+        versions = {
+            deployment.backend_version
+            for deployment in profile.deployments
+            if deployment.system == system and deployment.backend == backend
+        }
+        if "aic_database_version" not in collector_config:
+            if len(versions) != 1:
+                raise ValueError(
+                    "FPM collection profile must identify one runtime version for the target "
+                    f"{system}/{backend}; found {sorted(versions)}"
+                )
+            collector_config["aic_database_version"] = next(iter(versions))
+    backend_version = collector_config.get("aic_database_version")
+    if "aic_database_version" in collector_config and (
+        not isinstance(backend_version, str)
+        or not backend_version
+        or backend_version in {".", ".."}
+        or any(c.isspace() for c in backend_version)
+        or any(c in backend_version for c in ("/", "\\", "\x00"))
+    ):
+        raise ValueError(
+            "FPM collection requires a resolved, path-safe backend_version; detect the target runtime first"
+        )
+    # Freeze resolved warm-up defaults as well as explicit deployment inputs;
+    # changing the default must not resume a campaign under its old plan hash.
+    generator_config_sha256 = _canonical_hash(semantic_generator_overrides(generator_overrides or {}))
     capability = resolve_model_capability(
         backend=backend,
         model_path=model_path,
@@ -592,6 +788,28 @@ def build_collection_plan(
         database_version=(
             str(collector_config["aic_database_version"]) if "aic_database_version" in collector_config else None
         ),
+        checkpoint_native_dtypes=profile is not None or backend_version is not None,
+    )
+    if capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID:
+        _require_real_prefix_seeding(capability, generator_overrides)
+    options = options.resolve_model_execution(capability.architecture)
+    execution = execution_identity(
+        capability.model_config.payload,
+        decoder_replay=options.decoder_replay,
+        backend=backend,
+        # The rendered V4.1 collection contract requests text-only HBM Engram.
+        # The producer must independently attest these actual runtime facts.
+        engram_cpu_offload=False,
+        input_modality="text",
+    )
+    if execution[0] and not options.enforce_eager:
+        raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
+    if options.enforce_eager and not execution[0]:
+        raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
+    input_text_sha256 = (
+        hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
+        if execution[0]
+        else ""
     )
     candidate_topologies = enumerate_fpm_topologies(
         backend=backend,
@@ -599,6 +817,60 @@ def build_collection_plan(
         options=options,
         allow_pure_tp=capability.allow_pure_tp,
     )
+    policies = _backend_policies(options, collector_config, backend=backend)
+    if profile is not None:
+        deployments = _validate_profile_identities(
+            profile,
+            capability,
+            candidate_topologies,
+            policies,
+            model_path,
+            system,
+            backend,
+            worker_type=options.worker_type,
+        )
+        if options.vllm_max_model_len > profile.context_length:
+            raise ValueError(
+                f"--fpm-max-model-len={options.vllm_max_model_len} exceeds "
+                f"FPM profile context_length={profile.context_length}"
+            )
+        max_prefill_isl = options.max_prefill_isl
+        if max_prefill_isl is None:
+            max_prefill_isl = options.max_num_batched_tokens
+            if max_prefill_isl is None:
+                token_limits = {deployment.resources.max_num_tokens for deployment in deployments}
+                if options.worker_type == "aggregated":
+                    if len(token_limits) != 1:
+                        raise ValueError(
+                            "aggregated deployments have different token limits; "
+                            "set an explicit shared --fpm-max-num-batched-tokens"
+                        )
+                    max_prefill_isl = next(iter(token_limits))
+                else:
+                    max_prefill_isl = min(FPM_MAX_PREFILL_ISL, *token_limits)
+        options = replace(
+            options,
+            vllm_max_model_len=(
+                profile.context_length
+                if options.vllm_max_model_len == VLLM_AUTO_FIT_MAX_MODEL_LEN
+                else options.vllm_max_model_len
+            ),
+            max_prefill_isl=max_prefill_isl,
+        )
+        # Validate the shared decode envelope as well as narrower prefill
+        # controls before memory admission can queue or drop any deployment.
+        for deployment in deployments:
+            resources = deployment.resources
+            options.validate_scheduler_limits(
+                profile_max_num_tokens=resources.max_num_tokens, profile_max_batch_size=resources.max_batch_size
+            )
+            resources.validate_envelope(
+                max_num_tokens=options.max_num_batched_tokens or max_prefill_isl,
+                max_batch_size=max(
+                    options.max_decode_batch_size or options.max_num_seqs or resources.max_batch_size,
+                    options.max_prefill_batch_size or options.max_num_seqs or resources.max_batch_size,
+                ),
+            )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
@@ -606,8 +878,11 @@ def build_collection_plan(
         capability=capability,
         topologies=candidate_topologies,
         max_new_tokens=options.prefill_sampling.max_total_prefill_tokens,
+        fpm_profile=profile,
+        max_batch_size=options.prefill_sampling.max_batch_size,
+        gpu_memory_utilization=options.gpu_memory_utilization,
+        worker_type=options.worker_type,
     )
-    policies = _backend_policies(options, collector_config, backend=backend)
     weight_quantization = capability.dtype.gemm_quant_mode
     runnable_dtype_pairs = {
         (decision.topology, estimate.kv_cache_dtype)
@@ -646,7 +921,11 @@ def build_collection_plan(
                 weight_quantization=weight_quantization,
                 kv_cache_dtype=kv_cache_dtype,
                 policy=policy,
+                execution=execution,
+                input_text_sha256=input_text_sha256,
             ),
+            execution_identity=execution,
+            input_text_sha256=input_text_sha256,
             workload_kind=phase,
             topology=topology,
             weight_quantization=weight_quantization,
@@ -659,7 +938,7 @@ def build_collection_plan(
             comm_quant_mode=capability.dtype.comm_quant_mode,
             fmha_resolution=capability.dtype.fmha_resolution_by_kv_dtype[kv_cache_dtype],
         )
-        for phase in ("prefill", "decode")
+        for phase in options.workload_kinds
         for topology in topologies
         for kv_cache_dtype in capability.dtype.kv_cache_dtypes
         if (topology, kv_cache_dtype) in runnable_dtype_pairs
@@ -681,6 +960,55 @@ def build_collection_plan(
         "policies": [policy.to_dict() for policy in policies],
         "cells": [cell.to_dict() for cell in cells],
     }
+    profile_json = None
+    if profile is not None:
+        canonical["fpm_profile"] = profile.model_dump(mode="json")
+        profile_json = json.dumps(canonical["fpm_profile"], sort_keys=True, separators=(",", ":"))
+    runtime_observation_json = None
+    if runtime_instrumentation is not None:
+        from .runtime_instrumentation import load_instrumentation
+        from .runtime_probe import normalize_probe_launch, validate_collection_probe_launch
+
+        if runtime_launch is None:
+            raise ValueError("formal runtime instrumentation requires the accepted probe launch facts")
+        bundle = (
+            load_instrumentation(runtime_instrumentation, expected_version=runtime_backend_version)
+            if isinstance(runtime_instrumentation, (str, Path))
+            else runtime_instrumentation
+        )
+        if runtime_backend_version is not None and bundle.manifest["runtime"]["version"] != runtime_backend_version:
+            raise ValueError("instrumentation runtime version differs from the observed backend version")
+        launch = normalize_probe_launch(runtime_launch)
+        if runtime_backend_version is None:
+            runtime_backend_version = bundle.manifest["runtime"]["version"]
+        validate_collection_probe_launch(
+            launch,
+            bundle,
+            model_path=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            cells=cells,
+            options=options,
+            profile=profile,
+            generator_overrides=generator_overrides or {},
+        )
+        canonical["runtime_observation"] = {
+            "manifest": str(bundle.manifest_path),
+            "bundle_sha256": bundle.sha256,
+            "launch": launch,
+            "configuration": runtime_configuration,
+        }
+        runtime_observation_json = json.dumps(canonical["runtime_observation"], sort_keys=True)
+    elif runtime_launch is not None:
+        raise ValueError("accepted probe launch facts require runtime instrumentation for formal collection")
+    memory_policy = _runtime_memory_policy(profile, runtime_backend_version, canonical.get("runtime_observation"))
+    if memory_policy is not None:
+        canonical["runtime_memory_policy"] = memory_policy
+    if runtime_backend_version is not None:
+        canonical["runtime_backend_version"] = runtime_backend_version
+    if backend_version is not None:
+        canonical["backend_version"] = backend_version
     return FPMCollectionPlan(
         backend=backend,
         model_path=model_path,
@@ -695,4 +1023,86 @@ def build_collection_plan(
         backend_policies=policies,
         cells=cells,
         sha256=_canonical_hash(canonical),
+        _fpm_profile_json=profile_json,
+        _runtime_observation_json=runtime_observation_json,
+        runtime_backend_version=runtime_backend_version,
+        backend_version=backend_version,
     )
+
+
+def _validate_profile_identities(
+    profile: FpmModelProfile,
+    capability: ModelCapabilityProfile,
+    topologies: tuple[ParallelTopology, ...],
+    policies: tuple[BackendPolicy, ...],
+    model_path: str,
+    system: str,
+    backend: str,
+    *,
+    worker_type: str | None = None,
+) -> tuple[FpmDeploymentProfile, ...]:
+    """Require a resource declaration for every requested cell, before admission."""
+    if profile.architecture != capability.architecture:
+        raise ValueError(
+            "FPM collection profile architecture mismatch: "
+            f"checkpoint={capability.architecture!r}, profile={profile.architecture!r}"
+        )
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        "kv_cache_dtype",
+        *PARALLEL_AXES,
+        "moe_backend",
+        "attention_backend",
+        "enable_wideep",
+        "enable_eplb",
+    )
+    deployments = []
+    for topology in topologies:
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            tp_size=topology.tp,
+            pp_size=topology.pp,
+            attention_dp_size=topology.dp,
+            moe_tp_size=topology.moe_tp,
+            moe_ep_size=topology.moe_ep,
+            cp_size=topology.cp,
+            worker_type=worker_type or "aggregated",
+        )
+        if deployment.execution_profile is not None:
+            raise ValueError(
+                "FPM collection does not support speculative execution_profile for the selected deployment "
+                f"{system}/{backend}/{deployment.backend_version}, topology={deployment.parallel_tuple}, "
+                f"worker_type={worker_type or 'aggregated'}; refusing to collect an autoregressive workload "
+                "for a speculative profile"
+            )
+        deployments.append(deployment)
+        for kv_dtype in capability.dtype.kv_cache_dtypes:
+            for policy in policies:
+                resolved = [
+                    capability.dtype.gemm_quant_mode,
+                    capability.dtype.moe_quant_mode,
+                    capability.dtype.fmha_by_kv_dtype[kv_dtype],
+                    capability.dtype.comm_quant_mode,
+                    kv_dtype,
+                    *(str(getattr(topology, axis)) for axis in PARALLEL_AXES),
+                    *(str(value) for value in backend_identity_columns(policy).values()),
+                ]
+                if deployment.match_identity() != resolved:
+                    conflicts = "; ".join(
+                        f"{name}: resolved={actual!r}, profile={expected!r}"
+                        for name, actual, expected in zip(
+                            identity_fields, resolved, deployment.match_identity(), strict=True
+                        )
+                        if actual != expected
+                    )
+                    raise ValueError(
+                        f"FPM collection profile identity mismatch: {conflicts}; supply a profile matching "
+                        "the collection configuration. The profile does not override serving dispatch."
+                    )
+    return tuple(deployments)

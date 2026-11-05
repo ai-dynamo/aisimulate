@@ -10,7 +10,7 @@ retired migration baseline's codec. Two of the drift modes were SILENT (an
 attribute missing from ``VIEW_KEY_LAYERS`` only fails on machines that have
 that family's data; a basename typo in a Rust arm makes the view answer None
 with no error). The engine exports the registry
-(``aiconfigurator_core.table_view_attributes()``, same single-source pattern
+(``aisimulate_core.table_view_attributes()``, same single-source pattern
 as ``gemm_quant_util_levels``); these tests pin every other site to it:
 
 * ``VIEW_KEY_LAYERS`` covers exactly the exported attributes;
@@ -25,15 +25,15 @@ from __future__ import annotations
 
 import pytest
 
-import aiconfigurator_core
-from aiconfigurator_core.sdk.common import PerfDataFilename
-from aiconfigurator_core.sdk.engine_table_view import VIEW_KEY_LAYERS
+import aisimulate_core
+from aisimulate_core.sdk.common import PerfDataFilename
+from aisimulate_core.sdk.engine_table_view import VIEW_KEY_LAYERS
 
 pytestmark = pytest.mark.unit
 
 
 def _exported() -> dict[str, list[str]]:
-    return dict(aiconfigurator_core.table_view_attributes())
+    return dict(aisimulate_core.table_view_attributes())
 
 
 def test_view_key_layers_match_the_engine_registry() -> None:
@@ -60,8 +60,8 @@ def test_every_registry_attribute_dispatches_on_a_pinned_database() -> None:
     """Fetch each exported attribute against the h200 pin: a registry entry
     the Rust dispatch does not accept raises "unknown table-view attribute"
     here in every CI run — not None on some machine without the data."""
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import get_database
 
     database = get_database("h200_sxm", "trtllm", "1.3.0rc20")
     assert database is not None

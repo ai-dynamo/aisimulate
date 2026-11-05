@@ -5,7 +5,7 @@
 
 Covers:
   * the per-(attn_kind, mode) module loaders (test-only parsers)
-  * the sparse-kernel CSV loader (paged_mqa_logits / hca_attn)
+  * the sparse-kernel CSV loader (paged_mqa_logits)
   * ``_lookup_sparse_kernel`` (exact + engine resolve + tp fallback)
 """
 
@@ -113,29 +113,20 @@ def _write_csv(path, header: str, rows: list[str]) -> str:
 
 def test_dsv4_test_cases_active_under_no_filter(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    from collector.case_generator import (
-        get_dsv4_csa_context_test_cases,
-        get_dsv4_paged_mqa_logits_test_cases,
-    )
+    from collector.op_plans import plan
 
-    assert len(get_dsv4_csa_context_test_cases()) > 0
-    assert len(get_dsv4_paged_mqa_logits_test_cases()) > 0
+    assert len(plan("dsv4_csa_context_module", "sglang", 100).cases) > 0
+    assert len(plan("dsv4_paged_mqa_logits_module", "sglang", 100).cases) > 0
 
 
 def test_dsv4_test_cases_skipped_under_other_model(monkeypatch):
     """Filter to a non-V4 model → V4 ops emit zero cases (collector skips)."""
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    from collector.case_generator import (
-        get_dsv4_csa_context_test_cases,
-        get_dsv4_csa_generation_test_cases,
-        get_dsv4_hca_attn_test_cases,
-        get_dsv4_paged_mqa_logits_test_cases,
-    )
+    from collector.op_plans import plan
 
-    assert get_dsv4_csa_context_test_cases() == []
-    assert get_dsv4_csa_generation_test_cases() == []
-    assert get_dsv4_paged_mqa_logits_test_cases() == []
-    assert get_dsv4_hca_attn_test_cases() == []
+    assert plan("dsv4_csa_context_module", "sglang", 100).cases == []
+    assert plan("dsv4_csa_generation_module", "sglang", 100).cases == []
+    assert plan("dsv4_paged_mqa_logits_module", "sglang", 100).cases == []
 
 
 @pytest.mark.parametrize(
@@ -147,14 +138,14 @@ def test_dsv4_test_cases_skipped_under_other_model(monkeypatch):
 )
 def test_dsv4_test_cases_active_under_v4_filter(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    from collector.case_generator import get_dsv4_csa_context_test_cases
+    from collector.op_plans import plan
 
-    cases = get_dsv4_csa_context_test_cases()
+    cases = plan("dsv4_csa_context_module", "sglang", 100).cases
     assert len(cases) > 0
     # all cases use the caller-provided DeepSeek-V4 model path
-    assert {c[6] for c in cases} == {model_path}
+    assert {c.model_path for c in cases} == {model_path}
     # all cases for this op are CSA
-    assert {c[7] for c in cases} == {"csa"}
+    assert {c.attn_kind for c in cases} == {"csa"}
 
 
 @pytest.mark.parametrize(
@@ -164,22 +155,16 @@ def test_dsv4_test_cases_active_under_v4_filter(monkeypatch, model_path):
         "sgl-project/DeepSeek-V4-Pro-FP8",
     ],
 )
-def test_dsv4_sparse_test_cases_emit_one_kernel_case_per_model(monkeypatch, model_path):
-    """SCHEME A: sparse-kernel cases are ``[model_path, kernel]`` (one per model);
-    TP is no longer a case axis — the worker fixes tp=1 internally because the
-    kernel is TP-invariant."""
+def test_dsv4_sparse_rows_time_one_tp_per_model(monkeypatch, model_path):
+    """SGLang times the paged MQA logits kernel in one row per (model, TP, batch); TP 1
+    only, because the kernel is TP-invariant."""
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    from collector.case_generator import (
-        get_dsv4_hca_attn_test_cases,
-        get_dsv4_paged_mqa_logits_test_cases,
-    )
+    from collector.op_plans import plan_cases
 
-    paged = get_dsv4_paged_mqa_logits_test_cases()
-    hca = get_dsv4_hca_attn_test_cases()
+    paged = plan_cases("dsv4_paged_mqa_logits_module", "sglang", 100)
     assert {c[1] for c in paged} == {"paged_mqa_logits"}
-    assert {c[1] for c in hca} == {"hca_attn"}
     assert {c[0] for c in paged} == {model_path}
-    assert {c[0] for c in hca} == {model_path}
+    assert {c[3] for c in paged} == {1}
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -216,9 +201,9 @@ def test_shipped_dsv4_module_tables_are_rank_local():
     here before it ships.  Uses parquet column reads only — the whole scan is
     a few dozen small files."""
     pq = pytest.importorskip("pyarrow.parquet")
-    import aiconfigurator_core
+    import aisimulate_core
 
-    data_root = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
+    data_root = Path(aisimulate_core.__file__).parent / "systems" / "data"
     module_files = sorted(
         p
         for p in data_root.glob("*/sparse_attention/*/*/dsv4_*_module_perf.parquet")

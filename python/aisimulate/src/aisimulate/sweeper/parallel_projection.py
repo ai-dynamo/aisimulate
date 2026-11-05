@@ -14,10 +14,11 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from .afd_parallel import AFDParallelConfig
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
-from .search_space import BranchSpace
+from .search_space import BranchSpace, _parallel_leaf_values, matches_parallel_domains
 
-ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig
+ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
 
 
 class InfeasibleParallelSelection(ValueError):
@@ -83,6 +84,8 @@ class ParallelProjection:
 def _all_shapes(config: ParallelConfig) -> tuple[ParallelShape, ...]:
     if isinstance(config, ReplicaParallelConfig):
         return (config.shape,)
+    if isinstance(config, AFDParallelConfig):
+        return (config.companion.shape,) if config.companion is not None else ()
     return (config.prefill.shape, config.decode.shape)
 
 
@@ -91,6 +94,10 @@ def _parallel_role(config: ParallelConfig, role: str) -> ReplicaParallelConfig:
         if role != "agg":
             raise ValueError(f"aggregated parallel config has no {role!r} role")
         return config
+    if isinstance(config, AFDParallelConfig):
+        if config.companion is None or config.companion_role != role:
+            raise ValueError(f"AFD parallel config has no {role!r} companion")
+        return config.companion
     return config.prefill if role == "prefill" else config.decode
 
 
@@ -111,6 +118,17 @@ def _config_key(config: ParallelConfig) -> tuple[int, ...]:
 
     if isinstance(config, ReplicaParallelConfig):
         return role_key(config)
+    if isinstance(config, AFDParallelConfig):
+        topology = config.topology
+        topology_key = (
+            topology.n_a_nodes,
+            topology.n_f_nodes,
+            topology.tp_a,
+            topology.a_batch_size,
+            topology.f_moe_ep_size,
+            topology.num_microbatches,
+        )
+        return topology_key + (() if config.companion is None else role_key(config.companion))
     return (*role_key(config.prefill), *role_key(config.decode))
 
 
@@ -139,8 +157,21 @@ class ParallelConfigProjector:
             shape.moe_tp > 1 or shape.moe_ep > 1 for config in branch.parallel_configs for shape in _all_shapes(config)
         )
         self._features = {config: self._encode(config) for config in branch.parallel_configs}
+        self._indices = {config: index for index, config in enumerate(branch.parallel_configs)}
         self.parameters = self._build_parameters()
         self.constants = {parameter.name: parameter.default for parameter in self.parameters if parameter.is_constant}
+
+    def for_config(self, config: ParallelConfig) -> ParallelProjection:
+        """Describe a directly sampled legal topology without snapping it."""
+        values = dict(self._features[config])
+        if self._flat:
+            values[PARALLEL_CONFIG_CHOICE] = float(self._indices[config])
+        elif self._independent:
+            values.update(_parallel_leaf_values(config))
+        for role, choices in self.branch.parallel_custom_choices.items():
+            values[f"{role}_{PARALLEL_CONFIG_CHOICE}"] = float(choices.index(_parallel_role(config, role)))
+        features = {parameter.name: values[parameter.name] for parameter in self.parameters}
+        return ParallelProjection(config, features, dict(features), distance=0.0, mode_projected=False)
 
     def _role_features(self, prefix: str, role: ReplicaParallelConfig) -> dict[str, float | str]:
         features: dict[str, float | str] = {
@@ -153,6 +184,8 @@ class ParallelConfigProjector:
 
     def _encode(self, config: ParallelConfig) -> dict[str, float | str]:
         features: dict[str, float | str] = {USED_GPU_RATIO: config.total_gpus / self.gpu_budget}
+        if isinstance(config, AFDParallelConfig):
+            return features
         if isinstance(config, ReplicaParallelConfig):
             features.update(self._role_features("agg", config))
             return features
@@ -334,6 +367,10 @@ class ParallelConfigProjector:
         if self._flat:
             index = round(float(requested[PARALLEL_CONFIG_CHOICE]))
             selected = self.branch.parallel_configs[index]
+            if backend not in self.branch.supported_backends.get(selected, frozenset()):
+                raise InfeasibleParallelSelection(
+                    f"backend {backend!r} does not support AFD parallel config choice {index}"
+                )
             return ParallelProjection(
                 config=selected,
                 requested_features=requested,
@@ -363,11 +400,37 @@ class ParallelConfigProjector:
                     decode=role("decode_"),
                 )
             )
+            candidates = [
+                config
+                for config in self.branch.parallel_configs
+                if backend in self.branch.supported_backends.get(config, frozenset())
+                and matches_parallel_domains(
+                    config, self.branch.parallel_independent_choices, self.branch.parallel_independent_log_ranges
+                )
+            ]
+            if not candidates:
+                raise InfeasibleParallelSelection(f"no feasible independent parallelism for backend {backend!r}")
+            requested_values = _parallel_leaf_values(selected)
+
+            def distance(config):
+                values = _parallel_leaf_values(config)
+                total = 0.0
+                for parameter in self.parameters:
+                    lower = parameter.minimum if parameter.kind == "integer" else min(parameter.values)
+                    upper = parameter.maximum if parameter.kind == "integer" else max(parameter.values)
+                    actual, target = values[parameter.name], requested_values[parameter.name]
+                    if parameter.log_scale:
+                        lower, upper, actual, target = map(math.log, (lower, upper, actual, target))
+                    if upper != lower:
+                        total += ((actual - target) / (upper - lower)) ** 2
+                return total
+
+            selected = min(candidates, key=lambda config: (distance(config), _config_key(config)))
             return ParallelProjection(
                 config=selected,
                 requested_features=requested,
-                actual_features=dict(requested),
-                distance=0.0,
+                actual_features={name: _parallel_leaf_values(selected)[name] for name in requested},
+                distance=distance(selected),
                 mode_projected=False,
             )
         candidates = [

@@ -7,15 +7,18 @@ Unit tests for SDK utility functions.
 Tests HuggingFace config parsing and model config retrieval.
 """
 
+import io
+import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.models import Gemma4MixModel, HybridMoEModel
-from aiconfigurator.sdk.utils import (
+from aisimulate.sdk import common, config, utils
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.models import Gemma4MixModel, HybridMoEModel
+from aisimulate.sdk.utils import (
     _parse_hf_config_json,
     enumerate_parallel_config,
     enumerate_ttft_tpot_constraints,
@@ -23,6 +26,54 @@ from aiconfigurator.sdk.utils import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "revision,path_revision",
+    [(None, "main"), ("a" * 40, "a" * 40), ("release/v1", "release%2Fv1")],
+)
+def test_download_hf_config_json_revision(monkeypatch, revision, path_revision):
+    requests = []
+    metadata = {"architectures": ["UnregisteredDecoderForCausalLM"]}
+
+    def fetch(request, *, timeout):
+        requests.append(request.full_url)
+        assert timeout == 30
+        return io.BytesIO(json.dumps(metadata).encode())
+
+    monkeypatch.setattr(utils, "_get_hf_auth_headers", lambda: {})
+    monkeypatch.setattr(utils.urllib.request, "urlopen", fetch)
+    kwargs = {} if revision is None else {"revision": revision}
+    assert utils._download_hf_json("test/model", "config.json", **kwargs) == metadata
+    assert requests == [f"https://huggingface.co/test/model/raw/{path_revision}/config.json"]
+
+
+@pytest.mark.parametrize("use_tilde", [False, True])
+@pytest.mark.parametrize("setting", ["HF_HOME", "HF_TOKEN_PATH", "XDG_CACHE_HOME"])
+def test_hf_metadata_uses_configured_token_location(monkeypatch, tmp_path, setting, use_tilde):
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HOME", "HF_TOKEN_PATH", "HF_HUB_DISABLE_IMPLICIT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    token = tmp_path / "huggingface" / "token"
+    token.parent.mkdir()
+    token.write_text("test-token\n")
+    location = {"HF_HOME": token.parent, "HF_TOKEN_PATH": token, "XDG_CACHE_HOME": tmp_path}[setting]
+    if use_tilde:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        location = "~/" + str(location.relative_to(tmp_path))
+    monkeypatch.setenv(setting, str(location))
+    assert utils._get_hf_auth_headers() == {"Authorization": "Bearer test-token"}
+
+
+def test_hf_metadata_can_disable_implicit_credentials(monkeypatch, tmp_path):
+    token = tmp_path / "token"
+    token.write_text("cached-token")
+    monkeypatch.setenv("HF_TOKEN_PATH", str(token))
+    monkeypatch.setenv("HF_TOKEN", "environment-token")
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "true")
+    assert utils._get_hf_auth_headers() == {}
+    assert token.read_text() == "cached-token"
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN")
+    assert utils._get_hf_auth_headers() == {"Authorization": "Bearer environment-token"}
 
 
 class TestParseHFConfig:
@@ -190,7 +241,9 @@ class TestParseHFConfig:
         assert "E" not in extra_params.hybrid_override_pattern  # No MoE layers
         assert extra_params.moe_shared_expert_intermediate_size == 0
 
-    def test_parse_nemotronh_layers_block_type_config(self):
+    @pytest.mark.parametrize("architecture", ["NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"])
+    @pytest.mark.parametrize("attention_names", [("mamba", "attention"), ("linear_attention", "full_attention")])
+    def test_parse_nemotronh_layers_block_type_config(self, architecture, attention_names, tmp_path):
         """Test parsing NemotronH configs that use explicit layer block names."""
         config = {
             "architectures": ["NemotronHForCausalLM"],
@@ -204,7 +257,7 @@ class TestParseHFConfig:
             "n_routed_experts": 512,
             "moe_intermediate_size": 5120,
             "head_dim": 128,
-            "layers_block_type": ["mamba", "moe", "mamba", "attention", "mlp"],
+            "layers_block_type": [attention_names[0], "moe", attention_names[0], attention_names[1], "mlp"],
             "mamba_num_heads": 256,
             "mamba_head_dim": 64,
             "ssm_state_size": 128,
@@ -214,9 +267,11 @@ class TestParseHFConfig:
             "moe_shared_expert_intermediate_size": 10240,
         }
 
+        if architecture == "NemotronH_Omni_Reasoning_V3":
+            config = {"architectures": [architecture], "llm_config": config}
         result = _parse_hf_config_json(config)
 
-        assert result["architecture"] == "NemotronHForCausalLM"
+        assert result["architecture"] == architecture
         assert result["layers"] == 5
         assert result["hidden_size"] == 8192
         assert result["topk"] == 22
@@ -226,6 +281,13 @@ class TestParseHFConfig:
         assert extra_params.hybrid_override_pattern == "MEM*-"
         assert extra_params.mamba_num_heads == 256
         assert extra_params.moe_shared_expert_intermediate_size == 10240
+
+        from aisimulate.sdk import models
+        from aisimulate.sdk.config import ModelConfig
+
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        model = models.get_model(str(tmp_path), ModelConfig(tp_size=1, moe_tp_size=1), "vllm")
+        assert isinstance(model, models.NemotronHModel)
 
     def test_parse_qwen35_dense_config(self):
         """Test parsing Qwen3.5-27B (dense hybrid) config → Qwen35Config."""
@@ -555,8 +617,9 @@ class TestParseHFConfig:
         assert cfg is not None
         # step=1: all layers MoE
         assert all(m == 1 for m in cfg.moe_layer_freq)
-        # alternating local(0)/global(1): even=0, odd=1
-        assert cfg.attn_layer_pattern == tuple(i % 2 for i in range(48))
+        # empty no_rope_layers: every 4th layer has no RoPE and attends globally (1), the rest are chunked (0)
+        assert cfg.attn_layer_pattern == tuple(int((i + 1) % 4 == 0) for i in range(48))
+        assert sum(cfg.attn_layer_pattern) == 12
         assert cfg.sliding_window_size == 8192
         assert cfg.dense_inter_size == 16384
         assert cfg.vision_config is not None
@@ -649,7 +712,8 @@ class TestParseHFConfig:
         assert result["layers"] == 10
         cfg = result["extra_params"]
         assert cfg is not None
-        assert cfg.attn_layer_pattern == tuple(hybrid_pattern)
+        # hybrid_layer_pattern marks sliding-window layers with 1; attn_layer_pattern marks global layers
+        assert cfg.attn_layer_pattern == tuple(1 - v for v in hybrid_pattern)
         assert cfg.moe_layer_freq == tuple(moe_freq)
         assert cfg.swa_num_kv_heads == 8
         assert cfg.swa_head_dim == 192
@@ -700,6 +764,72 @@ class TestParseHFConfig:
         }
         with pytest.raises(ValueError, match="positive integer"):
             _parse_hf_config_json(hf_config)
+
+    @staticmethod
+    def _llama4_text_only_config(**text_overrides):
+        text_config = {
+            "num_hidden_layers": 8,
+            "hidden_size": 1024,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "head_dim": 128,
+            "intermediate_size": 2048,
+            "vocab_size": 10000,
+            "max_position_embeddings": 4096,
+            "num_experts_per_tok": 1,
+            "num_local_experts": 4,
+            "interleave_moe_layer_step": 1,
+            "attention_chunk_size": 512,
+        }
+        text_config.update(text_overrides)
+        return {
+            "architectures": ["Llama4ForConditionalGeneration"],
+            "model_type": "llama4",
+            "image_processor_config": {
+                "add_global_tile": True,
+                "max_patches": 16,
+                "resize_to_max_canvas": False,
+            },
+            "vision_config": {
+                "hidden_size": 1408,
+                "num_hidden_layers": 34,
+                "num_attention_heads": 16,
+                "num_channels": 3,
+                "intermediate_size": 5632,
+                "image_size": 336,
+                "patch_size": 14,
+                "pixel_shuffle_ratio": 0.5,
+                "projector_input_dim": 4096,
+                "projector_output_dim": 4096,
+                "vision_output_dim": 4096,
+            },
+            "text_config": text_config,
+        }
+
+    def test_llama4_global_layers_follow_no_rope_layers(self):
+        """Layers without RoPE (no_rope_layers 0) attend globally; an explicit list and an interval both count."""
+        explicit = [1, 0, 1, 1, 1, 1, 1, 0]
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=explicit))
+        assert result["extra_params"].attn_layer_pattern == (0, 1, 0, 0, 0, 0, 0, 1)
+
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=2))
+        assert result["extra_params"].attn_layer_pattern == (0, 1, 0, 1, 0, 1, 0, 1)
+
+    def test_llama4_pattern_inputs_are_validated(self):
+        """A non-positive interval or a non-list no_rope_layers raises instead of producing a wrong pattern."""
+        for interval in (0, -1, None, "4"):
+            with pytest.raises(ValueError, match="no_rope_layer_interval"):
+                _parse_hf_config_json(self._llama4_text_only_config(no_rope_layer_interval=interval))
+        with pytest.raises(TypeError, match="no_rope_layers"):
+            _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=0))
+        # An empty list means the interval rule, as in transformers.
+        result = _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=[]))
+        assert result["extra_params"].attn_layer_pattern == (0, 0, 0, 1, 0, 0, 0, 1)
+
+    def test_llama4_no_rope_layers_length_mismatch_raises(self):
+        """A no_rope_layers list that does not cover every layer raises ValueError."""
+        with pytest.raises(ValueError, match="no_rope_layers"):
+            _parse_hf_config_json(self._llama4_text_only_config(no_rope_layers=[1, 0, 1]))
 
     @staticmethod
     def _gemma4_text_config(layer_types):
@@ -1160,9 +1290,9 @@ class TestHybridMoEModelBuilder:
         )
 
     def test_mimov2flash_model_builds_all_three_layer_types(self):
-        """MiMo-V2-Flash config produces context/generation ops for global_moe, swa_moe, swa_dense."""
+        """MiMo-V2-Flash config produces context/generation ops for global_dense, global_moe, swa_moe."""
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=(0, 1, 1, 1, 1, 0, 1, 1, 1, 1),
+            attn_layer_pattern=(1, 0, 0, 0, 0, 1, 0, 0, 0, 0),
             moe_layer_freq=(0, 1, 1, 1, 1, 1, 1, 1, 1, 1),
             swa_num_kv_heads=8,
             swa_head_dim=192,
@@ -1193,15 +1323,16 @@ class TestHybridMoEModelBuilder:
         assert len(model.context_ops) > 0
         assert len(model.generation_ops) > 0
         op_names = [op._name for op in model.context_ops]
-        assert any("global" in n for n in op_names), "Missing global attention ops"
+        assert any("global" in n and "moe" in n for n in op_names), "Missing global_moe ops"
         assert any("swa" in n and "moe" in n for n in op_names), "Missing swa_moe ops"
-        assert any("swa" in n and "dense" in n for n in op_names), "Missing swa_dense ops"
+        assert any("global" in n and "dense" in n for n in op_names), "Missing global_dense ops"
+        assert not any("swa" in n and "dense" in n for n in op_names), "MiMo-V2-Flash has no swa_dense layer"
 
     def test_llama4_scout_model_builds_global_and_swa_moe(self):
         """Llama 4 Scout (step=1, all MoE) produces global_moe + swa_moe ops."""
         layers = 8
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            attn_layer_pattern=tuple(int((i + 1) % 4 == 0) for i in range(layers)),
             moe_layer_freq=tuple(1 for _ in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,
@@ -1238,7 +1369,7 @@ class TestHybridMoEModelBuilder:
         layers = 8
         step = 2
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            attn_layer_pattern=tuple(int((i + 1) % 4 == 0) for i in range(layers)),
             moe_layer_freq=tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,
@@ -1272,8 +1403,8 @@ class TestHybridMoEModelBuilder:
 class TestGetModelConfigFromHFID:
     """Test getting model config from HuggingFace ID."""
 
-    @patch("aiconfigurator.sdk.utils._download_hf_json")
-    @patch("aiconfigurator.sdk.utils._download_hf_config")
+    @patch("aisimulate.sdk.utils._download_hf_json")
+    @patch("aisimulate.sdk.utils._download_hf_config")
     def test_successful_download(self, mock_download, mock_download_quant):
         """Test successful download from HuggingFace."""
         mock_config = {
@@ -1303,7 +1434,7 @@ class TestSafeMkdir:
 
     def test_safe_mkdir_exists(self):
         """Test that safe_mkdir function exists and is importable."""
-        from aiconfigurator.sdk.utils import safe_mkdir
+        from aisimulate.sdk.utils import safe_mkdir
 
         assert callable(safe_mkdir)
 
@@ -1330,6 +1461,88 @@ class TestEnumerateTTFTTPOTConstraints:
         assert derived_pair[1] == pytest.approx((1000 - 950) / (50 - 1))
 
 
+class TestKVCacheQuantInference:
+    @pytest.mark.parametrize("source", ["quantization_config", "hf_quant_config"])
+    @pytest.mark.parametrize("kv_algo", ["none", " NONE "])
+    @pytest.mark.parametrize(
+        "weight_algo,gemm,moe",
+        [("NVFP4", "nvfp4", "nvfp4"), ("FP8", "fp8_static", "fp8"), (None, None, None)],
+    )
+    def test_explicit_none_is_distinct_from_missing_metadata(self, source, kv_algo, weight_algo, gemm, moe):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        quant = {"quant_algo": weight_algo, "kv_cache_quant_algo": kv_algo}
+        raw = {source: {"quantization": quant} if source == "hf_quant_config" else quant}
+        _attach_inferred_quant_fields(raw)
+        modes = _infer_quant_modes_from_raw_config(raw)
+
+        assert raw["kv_cache_quant_algo"] == "none"
+        assert quant["kv_cache_quant_algo"] == kv_algo
+        assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.bfloat16
+        assert modes["fmha_quant_mode"] == common.FMHAQuantMode.bfloat16
+        assert modes.get("gemm_quant_mode") == (common.GEMMQuantMode[gemm] if gemm else None)
+        assert modes.get("moe_quant_mode") == (common.MoEQuantMode[moe] if moe else None)
+
+    @pytest.mark.parametrize("weight_algo", [None, "NVFP4"])
+    @pytest.mark.parametrize(
+        "kv_fields,normalized_kv",
+        [
+            ({}, None),
+            ({"kv_cache_quant_algo": None}, None),
+            ({"kv_cache_quant_algo": "FP8"}, "fp8"),
+            ({"kv_cache_quant_algo": "E4M3"}, "fp8"),
+            ({"kv_cache_quant_algo": "bfloat16"}, "bfloat16"),
+            ({"kv_cache_quant_algo": "FP16"}, "bfloat16"),
+        ],
+    )
+    def test_legacy_defaults_and_supported_algorithms_are_unchanged(self, weight_algo, kv_fields, normalized_kv):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        raw = _attach_inferred_quant_fields({"quantization_config": {"quant_algo": weight_algo, **kv_fields}})
+        modes = _infer_quant_modes_from_raw_config(raw)
+
+        assert raw.get("kv_cache_quant_algo") == normalized_kv
+        if weight_algo:
+            assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.fp8
+            assert modes["fmha_quant_mode"] == common.FMHAQuantMode.fp8
+        else:
+            assert modes.get("kvcache_quant_mode") == (
+                common.KVCacheQuantMode[normalized_kv] if normalized_kv else None
+            )
+            assert "fmha_quant_mode" not in modes
+
+    @pytest.mark.parametrize("kv_algo", ["not-an-algorithm", "null", ["none"], {"algorithm": "none"}, True])
+    @pytest.mark.parametrize("source", ["quantization_config", "hf_quant_config"])
+    def test_unknown_or_malformed_kv_algorithms_still_fail(self, kv_algo, source):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        quant = {"quant_algo": "NVFP4", "kv_cache_quant_algo": kv_algo}
+        raw = _attach_inferred_quant_fields({source: {"quantization": quant} if source == "hf_quant_config" else quant})
+        with pytest.raises(ValueError, match="Unsupported kv cache algorithm"):
+            _infer_quant_modes_from_raw_config(raw)
+
+    @pytest.mark.parametrize("architecture", ["DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"])
+    @pytest.mark.parametrize("weight_algo", [None, "NVFP4"])
+    @pytest.mark.parametrize("kv_algo", [None, "none", "FP8", "bfloat16"])
+    def test_deepseek_native_cache_requirement_is_preserved(self, architecture, weight_algo, kv_algo):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        raw = _attach_inferred_quant_fields(
+            {"quantization_config": {"quant_algo": weight_algo, "kv_cache_quant_algo": kv_algo}}
+        )
+        modes = _infer_quant_modes_from_raw_config(raw, architecture)
+
+        assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.fp8
+        if weight_algo:
+            assert modes["fmha_quant_mode"] == common.FMHAQuantMode.fp8
+        else:
+            assert "fmha_quant_mode" not in modes
+
+
 class TestParseCompressedTensorsQuant:
     """Tests for parse_compressed_tensors_quant and its _categorize_ignore_pattern helper."""
 
@@ -1351,36 +1564,36 @@ class TestParseCompressedTensorsQuant:
     # --- input guards ---
 
     def test_none_input(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant(None) == (None, frozenset())
 
     def test_non_dict_input(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant("not-a-dict") == (None, frozenset())
 
     def test_empty_config_groups(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant({"config_groups": {}}) == (None, frozenset())
 
     # --- base_algo detection ---
 
     def test_int4_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(4, "int"))
         assert algo == "int4_wo"
 
     def test_int8_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(8, "int"))
         assert algo == "int8_wo"
 
     def test_fp8_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(8, "float"))
         assert algo == "fp8"
@@ -1394,7 +1607,7 @@ class TestParseCompressedTensorsQuant:
     )
     def test_block_fp8_base_algo(self, strategy, block_structure):
         """Either compressed-tensors block signal selects block-scaled FP8."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         cfg = self._make_quant_config(8, "float")
         cfg["config_groups"]["group_0"]["weights"].update(
@@ -1409,19 +1622,19 @@ class TestParseCompressedTensorsQuant:
     # --- ignored_categories detection ---
 
     def test_no_ignore_empty_set(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=[]))
         assert ignored == frozenset()
 
     def test_attention_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["re:.*self_attn.*"]))
         assert "attention" in ignored
 
     def test_routing_experts_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(
             self._make_quant_config(4, "int", ignore=["re:.*mlp\\.experts\\..*"])
@@ -1430,14 +1643,14 @@ class TestParseCompressedTensorsQuant:
 
     def test_shared_experts_pattern_detected_not_routing(self):
         """re:.*shared_experts.* must categorize as shared_experts, NOT routing_experts."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["re:.*shared_experts.*"]))
         assert "shared_experts" in ignored
         assert "routing_experts" not in ignored
 
     def test_dense_mlp_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(
             self._make_quant_config(4, "int", ignore=["re:.*mlp\\.(gate|up|gate_up|down)_proj.*"])
@@ -1445,7 +1658,7 @@ class TestParseCompressedTensorsQuant:
         assert "dense_mlp" in ignored
 
     def test_lm_head_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["lm_head"]))
         assert "lm_head" in ignored
@@ -1455,7 +1668,7 @@ class TestParseCompressedTensorsQuant:
     def test_kimi_k25_actual_config(self):
         """Kimi K2.5: attention + shared_experts + dense_mlp + lm_head all ignored.
         Only routing experts are quantized → those four categories in ignored set."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         cfg = self._make_quant_config(
             4,
@@ -1476,8 +1689,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_kimi_k25_maps_to_correct_sdk_modes(self):
         """Kimi K2.5 compressed-tensors config → gemm=bfloat16, moe=int4_wo."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {
             "quant_algo": "compressed-tensors",
@@ -1498,8 +1711,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_all_layers_quantized_maps_both_modes(self):
         """No ignore list → both gemm and moe overrides are set."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {
             "quant_algo": "compressed-tensors",
@@ -1511,8 +1724,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_redhat_dsv4_maps_block_fp8_attention_and_fp4_experts(self):
         """The real RedHatAI DSV4 quant layout maps attention and experts independently."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         fp8_weights = {
             "num_bits": 8,
@@ -1550,9 +1763,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_config_groups_map_sdk_modes(self):
         """ModelOpt MIXED_PRECISION config groups map FP8 dense layers and NVFP4 routed experts."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1598,9 +1811,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_hf_quant_layers_map_sdk_modes(self):
         """Standalone hf_quant_config.json MIXED_PRECISION metadata no longer raises unsupported quant_algo."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1633,9 +1846,9 @@ class TestParseCompressedTensorsQuant:
         q/k/v/o + MSA index projections + dense MLP + shared expert = MXFP8,
         routed experts w1/w2/w3 = NVFP4 group_size 16, kv_cache_quant_algo null.
         """
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         prefix = "language_model.model.layers"
         raw_config = _attach_inferred_quant_fields(
@@ -1672,9 +1885,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_mxfp8_config_group_not_misread_as_per_tensor_fp8(self):
         """A config_groups MXFP8 entry (8-bit float, group_size 32) maps to fp8_block, not fp8_static."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1696,9 +1909,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_mxfp8_wins_over_per_tensor_fp8_for_gemms(self):
         """A checkpoint mixing MXFP8 and per-tensor FP8 dense layers keeps the block-scaled lane."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1721,8 +1934,8 @@ class TestParseCompressedTensorsQuant:
         assert overrides["moe_quant_mode"] == common.MoEQuantMode.fp8_block
 
     def test_expert_dtype_fp4_is_deepseek_v4_specific(self):
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {"expert_dtype": "fp4"}
 
@@ -2036,3 +2249,30 @@ class TestQwen3VLVisionEncoderParsing:
         cfg = {**_QWEN3VL_HF_CONFIG, "vision_config": vision_cfg}
         result = _parse_hf_config_json(cfg)
         assert result["extra_params"].deepstack_visual_indexes == (8, 17, 26)
+
+
+def test_qwen3_vl_pixel_budget_follows_the_checkpoint_processor(tmp_path, caplog):
+    checkpoint = tmp_path / "with-processor"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (checkpoint / "preprocessor_config.json").write_text(
+        json.dumps({"size": {"shortest_edge": 3136, "longest_edge": 1003520}})
+    )
+    enc_cfg = get_model_config_from_model_path(str(checkpoint))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == (3136, 1003520)
+
+    invalid = tmp_path / "invalid-processor"
+    invalid.mkdir()
+    (invalid / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (invalid / "preprocessor_config.json").write_text("[]")
+    with pytest.raises(ValueError, match="Qwen3-VL preprocessor_config.json must be an object"):
+        get_model_config_from_model_path(str(invalid))
+
+    # A checkpoint without the file keeps the pinned Qwen3-VL budget instead of failing.
+    bare = tmp_path / "without-processor"
+    bare.mkdir()
+    (bare / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    with caplog.at_level(logging.WARNING):
+        enc_cfg = get_model_config_from_model_path(str(bare))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == utils.QWEN3_VL_PIXEL_BOUNDS
+    assert "no pixel budget" in caplog.text

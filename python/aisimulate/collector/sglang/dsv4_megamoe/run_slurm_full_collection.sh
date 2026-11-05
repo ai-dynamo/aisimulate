@@ -249,7 +249,7 @@ if [[ "${COPY_VALIDATED}" == "1" ]]; then
   fi
   COLLECTOR_HASH="$(
     PYTHONPATH="${LOCAL_REPO}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
-      'import sys; from pathlib import Path; from collector import provenance; root = Path(sys.argv[1]); closures = provenance.load_closures(root / "collector/hash_closures.yaml"); print(provenance.collector_hash("collector.sglang.collect_dsv4_megamoe", root, closures))' \
+      'import sys; from pathlib import Path; from collector import provenance; print(provenance.collector_hash(Path(sys.argv[1])))' \
       "${LOCAL_REPO}"
   )"
 fi
@@ -329,7 +329,7 @@ python3 "${SCRIPT_DIR}/validate_perf.py" validate \
 
 if [[ "${COPY_VALIDATED}" == "1" ]]; then
   target_system="$(printf '%s' "${SYSTEM_NAME}" | tr '[:upper:]' '[:lower:]')"
-  target_dir="${LOCAL_REPO}/aic-core/src/aiconfigurator_core/systems/data/${target_system}/moe/sglang/${TARGET_SGLANG_VERSION}"
+  target_dir="${LOCAL_REPO}/src/aisimulate_core/systems/data/${target_system}/moe/sglang/${TARGET_SGLANG_VERSION}"
   PYTHONPATH="${LOCAL_REPO}${PYTHONPATH:+:${PYTHONPATH}}" \
     python3 "${SCRIPT_DIR}/finalize_validated.py" \
       --staging-csv "${LOCAL_RESULT_DIR}/merged/${PERF_FILE}" \

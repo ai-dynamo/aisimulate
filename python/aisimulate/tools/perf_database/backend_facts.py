@@ -384,7 +384,7 @@ def main() -> None:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("aic-core/src/aiconfigurator_core/systems/data"),
+        default=Path("src/aisimulate_core/systems/data"),
     )
     parser.add_argument("--registry", type=Path, default=Path("collector/op_backend_facts.yaml"))
     parser.add_argument("--backend-map", type=Path, default=Path("collector/kernel_source_backends.yaml"))

@@ -20,9 +20,9 @@ import warnings
 
 import pytest
 
-from aiconfigurator.sdk import task_v2
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
-from aiconfigurator.sdk.task_v2 import Task, _warn_large_ep_flag
+from aisimulate.sdk import task_v2
+from aisimulate.sdk.perf_database import PerfDataNotAvailableError
+from aisimulate.sdk.task_v2 import Task, _warn_large_ep_flag
 
 pytestmark = pytest.mark.unit
 

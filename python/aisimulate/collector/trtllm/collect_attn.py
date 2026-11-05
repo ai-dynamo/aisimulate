@@ -1,32 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# The retired sm_exceptions "Blackwell rejects GQA ratio >= 32 unless
-# divisible by 32" claim (PR #1302) is fully REFUTED on 1.3.0rc20: v3a
-# out-of-plan probes (h/kv = 48/1, 40/1, 96/2; hd=128; ctx+gen) pass 6/6
-# through framework dispatch on SM100 (B200, 2026-07-18), SM103 (B300,
-# 2026-07-19) and SM120 (RTX PRO 6000, 2026-07-19). FIXME(kernel-limit)
-# deleted per its lifecycle; never move this back into YAML
-# (see .claude/rules/collector/layer_permissions.md).
-
 """TensorRT-LLM dense attention collector.
 
 Constructs a single TRT-LLM torch-flow attention layer and synthetic metadata to
 benchmark context and generation attention. This file owns TRT-LLM cache manager
-setup, quantization flags, SM/version-specific skips, and perf-row formatting.
+setup, quantization flags and perf-row formatting; the cases come from the
+shared attention plan (collector/op_plans.py).
 """
 
 import os
 
 import tensorrt_llm
 import torch
-from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
-from tensorrt_llm._torch.attention_backend.interface import (
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
+from collector.registry_types import PerfFile
+from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
+from tensorrt_llm._torch.attention.backends.interface import (
     AttentionRuntimeFeatures,
     PositionalEmbeddingParams,
     RopeParams,
 )
-from tensorrt_llm._torch.attention_backend.utils import create_attention
+from tensorrt_llm._torch.attention.backends.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.functional import PositionEmbeddingType
@@ -34,53 +30,29 @@ from tensorrt_llm.llmapi import KvCacheConfig
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
 
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from collector.registry_types import PerfFile
-
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 
-def _skip_trtllm_sm120_fp8_context_fmha(
-    batch_size: int,
-    input_len: int,
-    num_heads: int,
-    num_key_value_heads: int,
-    head_dim: int,
-) -> bool:
-    # rc20-scoped (this collector pins trtllm>=1.3.0rc20; a future rc reopens
-    # every region by construction). Hardware-verified on RTX PRO 6000
-    # 2026-07-25: boundary probes (below-threshold shapes pass, at/above
-    # abort) plus the full attention_context sweep's 29 recorded IMAs
-    # (all hd256 + fp8 context FMHA, faulting in
-    # fmha_v2_flash_attention_e4m3_fp32_64_32_S_qkv_256_sm120.cu:222).
-    # Regions are the observed clusters verbatim, no extrapolation:
-    # - MHA hd128 h=kv=96 >=65536 tok family (SIGABRT; 32768 OK);
-    # - hd256 MHA: h96 >=32768 tok (b1/s16384 passes), h64 >=49152,
-    #   h48 >=65536;
-    # - hd256 GQA: h96/kv1,4 >=98304; h96/kv8 >=81920 (65536 passes);
-    #   h64/kv1,2,4,8 >=131072; h48/kv8 >=131072 (98304 passes).
-    if not (tensorrt_llm.__version__.startswith("1.3.0rc20") and get_sm_version() >= 120):
-        return False
+def _deployment_tokens_per_block() -> int:
+    """KV page the deployment actually serves with, not a collector constant.
 
-    num_tokens = batch_size * input_len
-    if num_heads == num_key_value_heads == 96 and head_dim == 128 and num_tokens >= 65536:
-        return True
-    if head_dim != 256:
-        return False
-    return (
-        (num_heads == num_key_value_heads == 96 and num_tokens >= 32768)
-        or (num_heads == num_key_value_heads == 64 and num_tokens >= 49152)
-        or (num_heads == num_key_value_heads == 48 and num_tokens >= 65536)
-        or (num_heads == 96 and num_key_value_heads in (1, 4) and num_tokens >= 98304)
-        or (num_heads == 96 and num_key_value_heads == 8 and num_tokens >= 81920)
-        or (num_heads == 64 and num_key_value_heads in (1, 2, 4, 8) and num_tokens >= 131072)
-        or (num_heads == 48 and num_key_value_heads == 8 and num_tokens >= 131072)
-    )
+    The generator renders every trtllm engine with ``kv_cache_config.tokens_per_block: 32``
+    (TRT-LLM's own KvCacheConfig default); the collector used to pin 64 here, which on
+    Blackwell selects a different FMHA cubin family — the sm100 kernel names carry the page
+    (fmhaSm100a…PagedKvCausalP64… vs serving's …P32…), so the sm100 attention gates
+    DIVERGED on nothing but the page while the sm90 names hide it (B200,
+    opharness finding sm100_sglang_trtllm_gate_verdicts_2026_10_04). Ask the framework
+    for its default; ``AIS_TRTLLM_TOKENS_PER_BLOCK`` is the A/B hook.
+    """
+    override = os.environ.get("AIS_TRTLLM_TOKENS_PER_BLOCK")
+    if override:
+        return int(override)
+    try:
+        from tensorrt_llm.llmapi import KvCacheConfig
+
+        return int(KvCacheConfig().tokens_per_block)
+    except Exception:  # older builds without the pydantic config
+        return 32
 
 
 def run_attention_torch(
@@ -99,44 +71,23 @@ def run_attention_torch(
     device="cuda:0",
 ):
     device = torch.device(device)
-    torch.set_default_device(device)
+    # No torch.set_default_device(device): serving never sets a default device, and
+    # every tensor this collector creates names its device.
     torch.cuda.set_device(device)
 
-    if attn_backend_name not in {"TRTLLM", "FLASHINFER"}:
+    # TRT-LLM serves every collected dense-attention model on its default TRTLLM
+    # backend (TorchLlmArgs.attn_backend, llmapi/llm_args.py).
+    if attn_backend_name != "TRTLLM":
         raise ValueError(f"Unsupported TRT-LLM dense attention backend: {attn_backend_name}")
-    is_flashinfer = attn_backend_name == "FLASHINFER"
-    # FIXME(kernel-limit): the FLASHINFER path pins the trtllm-gen FMHA sub-backend
-    # below (attn.flashinfer_backend = "trtllm-gen"), mirroring the sole FLASHINFER-
-    # routed model, Gemma4, which forces it unconditionally on every SM
-    # (models/modeling_gemma4.py:263-270@1.3.0rc20). trtllm-gen's FMHA runner
-    # hard-restricts to Blackwell — TllmGenFmhaRunner asserts
-    # ``mSM == kSM_100 || mSM == kSM_103`` ("Unsupported architecture",
-    # flashinfer/data/include/flashinfer/trtllm/fmha/fmhaRunner.cuh:37@1.3.0rc20) —
-    # and fa2 lacks the head_dim-256 SWA / head_dim-512 cubins, so there is NO dense
-    # attention kernel for Gemma4 on Hopper/SM90 (or any non-Blackwell) in rc20;
-    # serving hits the identical assertion. Fail closed with a cited, classified skip
-    # instead of paying model construction + a CUDA-level abort per case. Re-verify the
-    # supported-arch set against fmhaRunner.cuh on the next framework version bump.
-    if is_flashinfer and get_sm_version() not in (100, 103):
-        raise ValueError(
-            f"FlashInfer trtllm-gen FMHA is Blackwell-only (SM100/103); Gemma4 dense "
-            f"attention has no kernel on SM{get_sm_version()} "
-            f"(fmhaRunner.cuh:37 + modeling_gemma4.py:270 @1.3.0rc20)"
-        )
-    if is_flashinfer and use_fp8_context_fmha:
-        # Mirror of the sglang collector's compute-dtype labeling rule:
-        # TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path,
-        # including under the serving-pinned trtllm-gen sub-backend set below.
-        # trtllm-gen's only fp8 handling is the fp8 KV cache: it casts Q to the
-        # KV dtype to reuse the QkvE4m3OBfloat16 cubins but the FMHA output is
-        # still BF16 (attention_backend/flashinfer.py:1789-1791@1.3.0rc20). The
-        # collector's fp8-context-FMHA case (quant_algo=FP8 + out_scale) is a
-        # TRTLLM-backend contract flashinfer does not consume, so an fp8-labeled
-        # flashinfer row would record BF16 compute under an fp8 label. Fail closed.
-        raise ValueError("TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path")
-
     # if XQA JIT is enabled, the context phase will also trigger XQA prepare which causes the error
     # with specifc q/kv head and seq setting.
+    # NOTE (verified at 1.3.0rc23): this env no longer exists in the
+    # binaries (only TRTLLM_FORCE_XQA / TRTLLM_XQA_BLOCKS_PER_SEQUENCE do).
+    # XQA vs MMHA for decode is the op's own heuristic ("JIT XQA is not
+    # used: maybe no performance gain" at short KV; XQA selected at long KV) —
+    # the collector follows it per (batch, kv_len) cell exactly as serving
+    # does, which path_diff confirmed at kv 4095 (XQA) vs kv 1 (MMHA). Kept
+    # for older builds that still read it.
     if is_context_phase:
         os.environ["TRTLLM_ENABLE_XQA_JIT"] = "0"
     else:
@@ -145,7 +96,7 @@ def run_attention_torch(
     layer_idx = 0
     world_size = 1
     tp_size = 1
-    tokens_per_block = 64
+    tokens_per_block = _deployment_tokens_per_block()
     warming_up = 10
     test_ite = 6
     output_len = 1
@@ -156,7 +107,7 @@ def run_attention_torch(
         quant_algo = None
 
     # out_scale mirrors serving's Attention._use_quantize_output()
-    # (_torch/modules/attention.py:648-670,758-761@1.3.0rc20): an fp8-quantized
+    # (_torch/modules/attention.py:648-670,758-761): an fp8-quantized
     # model supplies o_proj.inv_input_scale; a model with no weight/activation
     # quant (``not has_any_quant(exclude_kv_cache=True)``) supplies None, fp8 KV
     # cache or not. Passing a scale is not inert: the backend allocates fp8
@@ -191,15 +142,9 @@ def run_attention_torch(
     else:
         kv_cache_dtype = tensorrt_llm.bindings.DataType.BF16
 
-    # Serving hands pos_embd_params to create_attention only when the backend
-    # fuses RoPE (modules/attention.py:601-610@1.3.0rc20). FlashInferAttention
-    # does not (support_fused_rope=False, attention_backend/interface.py:976-977),
-    # so serving applies RoPE outside the backend and a flashinfer attention
-    # row excludes RoPE — mirrored here.
-    if is_flashinfer:
-        pos_embd_params = None
-    else:
-        pos_embd_params = PositionalEmbeddingParams(type=PositionEmbeddingType.rope_gpt_neox, rope=RopeParams(dim=128))
+    # Serving hands pos_embd_params to create_attention when the backend fuses
+    # RoPE (modules/attention.py), which the TRTLLM backend does.
+    pos_embd_params = PositionalEmbeddingParams(type=PositionEmbeddingType.rope_gpt_neox, rope=RopeParams(dim=128))
 
     quant_config = QuantConfig(
         quant_algo=quant_algo,  # fp8 fmha
@@ -213,14 +158,10 @@ def run_attention_torch(
         exclude_modules=None,
     )
 
-    # FIXME(kernel-limit): head_dim > 256 hits "Head size N is not supported by MMHA"
-    # (std::terminate in AttentionOp::initialize); head_dim == 192 on SM >= 90 hits
-    # "Unsupported HeadDim for BMM2-N 192" in TllmGenFmha (SM89 is unaffected).
-    # Observed on 1.3.0rc15 (SM100/B200 and SM90/H200). Both are hard aborts before
-    # Python can catch them. Source anchors: grep "is not supported by MMHA" in
-    # tensorrt_llm/cpp/tensorrt_llm/kernels/; grep "Unsupported HeadDim for BMM2-N"
-    # in tensorrt_llm/cpp/tensorrt_llm/kernels/tllmGenKernels/.
-    # Re-verify on each TRT-LLM version bump; delete if the kernel gains support.
+    # A head size the kernels lack aborts inside AttentionOp::initialize before
+    # Python can catch it ("Head size N is not supported by MMHA" was seen above
+    # head_dim 256); the worker restart records it. Gemma 4's head_dim 512 rows
+    # run here, as serving runs them.
     attn = create_attention(
         backend_name=attn_backend_name,
         layer_idx=layer_idx,
@@ -231,32 +172,12 @@ def run_attention_torch(
         quant_config=quant_config,
         is_mla_enable=False,
     )
-    # get_attention_backend silently falls back to TrtllmAttention when the
-    # requested backend is unavailable (attention_backend/utils.py:52-53
-    # @1.3.0rc20, e.g. flashinfer not importable). Serving tolerates that with
-    # a warning; a collector must not — the row would be labeled with a
-    # backend that never ran. Verify the constructed class.
-    expected_attn_cls = {"TRTLLM": "TrtllmAttention", "FLASHINFER": "FlashInferAttention"}[attn_backend_name]
-    if type(attn).__name__ != expected_attn_cls:
+    # A row must time the backend it is labeled with: verify the constructed class.
+    if type(attn).__name__ != "TrtllmAttention":
         raise RuntimeError(
             f"create_attention resolved {type(attn).__name__} for backend {attn_backend_name} "
-            f"(expected {expected_attn_cls}); refusing the silent fallback"
+            "(expected TrtllmAttention)"
         )
-
-    if is_flashinfer:
-        # create_attention only selects the backend CLASS; it does not thread
-        # the flashinfer *sub-backend*, so FlashInferAttention defaults it to
-        # "fa2" (attention_backend/flashinfer.py:1372@1.3.0rc20). Serving does
-        # not run fa2 for any FLASHINFER-routed model: the sole such model,
-        # Gemma4, pins ``self.attn.flashinfer_backend = "trtllm-gen"`` for ALL
-        # layers (models/modeling_gemma4.py:263-270@1.3.0rc20) because trtllm-gen
-        # carries the pre-compiled cubins for both the head_dim-256 SWA and
-        # head_dim-512 global geometries. Without this pin the collector would
-        # benchmark fa2 — a kernel serving never invokes — yielding silently
-        # wrong rows (e.g. hd256 SWA "passing" on fa2 while serving's trtllm-gen
-        # rejects the architecture). Mirror serving's pin exactly; the attribute
-        # flows into every metadata.plan() call (flashinfer.py:1848,1874).
-        attn.flashinfer_backend = "trtllm-gen"
 
     total_num_tokens = (input_len + output_len) * batch_size
 
@@ -277,7 +198,7 @@ def run_attention_torch(
     )
 
     # Serving allocates dense-attention KV cache as CacheType.SELF
-    # (pyexecutor/_util.py:1539@1.3.0rc20); SELFKONLY is reserved for MLA
+    # (pyexecutor/_util.py:1539); SELFKONLY is reserved for MLA
     # (_util.py:1636). Regular GQA/MHA has separate K and V tensors, so both
     # TRTLLM and FlashInfer paths must benchmark the full serving layout.
     kv_cache_type = tensorrt_llm.bindings.internal.batch_manager.CacheType.SELF
@@ -339,28 +260,19 @@ def run_attention_torch(
         request_ids=request_ids,
         # Serving populates prompt_lens with the current-chunk length for
         # context requests and request.py_prompt_len for generation requests
-        # (pyexecutor/model_engine.py:3015,3180,3227,3277,3353,3760@1.3.0rc20);
+        # (pyexecutor/model_engine.py:3015,3180,3227,3277,3353,3760);
         # the field is part of the shared AttentionMetadata contract
-        # (attention_backend/interface.py:134-138@1.3.0rc20) that every
+        # (attention_backend/interface.py:134-138) that every
         # backend inherits — FlashInferAttentionMetadata does not consume it
         # directly. With chunked_prefill=False the current chunk IS the full
         # prompt, so input_seq_lens matches both phases here.
         prompt_lens=input_seq_lens,
         all_rank_num_tokens=None,
     )
-    if is_flashinfer:
-        # Serving builds metadata from the selected backend's Metadata class
-        # with backend-agnostic kwargs (pyexecutor/model_engine.py:1784,
-        # 1818-1830@1.3.0rc20); ``workspace`` is a TrtllmAttentionMetadata-only
-        # field, flashinfer manages its own workspace_buffer.
-        from tensorrt_llm._torch.attention_backend.flashinfer import FlashInferAttentionMetadata
-
-        attn_metadata = FlashInferAttentionMetadata(**metadata_kwargs)
-    else:
-        attn_metadata = TrtllmAttentionMetadata(
-            **metadata_kwargs,
-            workspace=torch.tensor([], device=device, dtype=torch.int8),
-        )
+    attn_metadata = TrtllmAttentionMetadata(
+        **metadata_kwargs,
+        workspace=torch.tensor([], device=device, dtype=torch.int8),
+    )
 
     attn_metadata.prepare()
 
@@ -369,30 +281,30 @@ def run_attention_torch(
     else:
         num_tokens = batch_size
 
-    sinks = torch.randn(num_heads, dtype=torch.float32) if head_dim == 64 else None
-    q = torch.randn([num_tokens, num_heads * head_dim]).bfloat16().to(torch.device(device))
-    k = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
-    v = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
-    if is_flashinfer:
-        # Serving splits Q/K/V for backends without fused-QKV support
-        # (modules/attention.py:619,641-646@1.3.0rc20; FlashInferAttention
-        # support_fused_qkv=False, attention_backend/interface.py:980-981).
-        # Sinks and out_scale are TRTLLM-backend contracts
-        # (modules/attention.py:949; fp8 FMHA is refused above), and sink
-        # profiles never route here (head_dim == 64 has no flashinfer pin).
-        if sinks is not None:
-            raise ValueError("attention sinks are a TRTLLM-backend contract (modules/attention.py:949)")
-        forward_args = (q, k, v)
-        forward_kwargs = {
-            "attention_window_size": attention_window_size if attention_window_size > 0 else None,
-        }
-    else:
-        forward_args = (torch.concat([q, k, v], dim=-1), None, None)
-        forward_kwargs = {
-            "attention_window_size": attention_window_size if attention_window_size > 0 else None,
-            "attention_sinks": sinks,
-            "out_scale": out_scale,
-        }
+    sinks = torch.randn(num_heads, dtype=torch.float32, device=device) if head_dim == 64 else None
+    q = torch.randn([num_tokens, num_heads * head_dim], dtype=torch.bfloat16, device=device)
+    k = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
+    v = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
+    forward_args = (torch.concat([q, k, v], dim=-1), None, None)
+    forward_kwargs = {
+        "attention_window_size": attention_window_size if attention_window_size > 0 else None,
+        "attention_sinks": sinks,
+        "out_scale": out_scale,
+    }
+    # FIXME(kernel-limit): H20 campaign (1.3.0rc29, TRTLLM backend,
+    # attention/backends/fmha/fallback.py:122): the context FMHA faults with
+    # cudaErrorIllegalAddress exactly when the LAST sequence's packed Q/O byte
+    # offset (batch-1) * input_len * num_heads * head_dim * 2 >= 2**31 —
+    # verified cell-by-cell on the (96,*,256), (64,*,256) and (96,8,128) grids
+    # (b16 s3072 h96 d256 crashes, b8 s6144 passes at the same token count),
+    # i.e. a 32-bit per-sequence offset inside the kernel. Serving reaches such
+    # batches only with max_num_tokens >= ~44k tokens per context forward.
+    # Unverified against the kernel source; cases above the boundary keep
+    # failing into the classified log until the claim is confirmed (or a bump
+    # fixes it). Generation has a second family: fp8 KV with GQA ratio 24 or
+    # 32 (96/4 at d64/128/256; 32/1, 64/2, 128/4 at d256) fails with
+    # cudaErrorLaunchFailure / IMA at every batch and KV length while the same
+    # shapes pass with a bf16 KV cache.
     attn.forward(*forward_args, attn_metadata, **forward_kwargs)
 
     # Use benchmark_with_power context manager
@@ -447,172 +359,19 @@ def run_attention_torch(
         version=tensorrt_llm.__version__,
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
-        kernel_source="torch_flow_flashinfer" if is_flashinfer else "torch_flow",
+        kernel_source="torch_flow",
         perf_filename=perf_filename,
         power_stats=results["power_stats"],
     )
     kv_cache_manager.shutdown()
 
 
-def _int_list(values):
-    return [int(value) for value in values]
-
-
 def get_context_attention_test_cases():
-    has_fp8 = get_sm_version() > 86
-    test_cases = []
-
-    for shape_sweep in get_attention_context_shape_sweeps("trtllm"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        max_tokens_self_attention = int(shape_sweep["max_tokens_self_attention"])
-        max_tokens_grouped_query_attention = int(shape_sweep["max_tokens_grouped_query_attention"])
-        max_batch_size_self_attention = int(shape_sweep["max_batch_size_self_attention"])
-        max_kv_elements = int(shape_sweep["max_kv_elements"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="context", backend="trtllm"):
-            n = head_config.num_heads
-            num_kv_heads = head_config.num_kv_heads
-            h = head_config.head_dim
-            attention_window_size = head_config.window_size
-            attn_backend = head_config.kernel_source or "TRTLLM"
-            if num_kv_heads != n and (num_kv_heads >= n or n % num_kv_heads != 0):
-                continue
-
-            for s in sorted(sequence_lengths, reverse=True):
-                for b in sorted(batch_sizes, reverse=True):
-                    if num_kv_heads == n:
-                        if b * s > max_tokens_self_attention or b > max_batch_size_self_attention:
-                            continue
-                    else:
-                        if b * s > max_tokens_grouped_query_attention:
-                            continue
-                    if b * s * num_kv_heads * h * 2 >= max_kv_elements:
-                        continue
-                    # The XQA-prepare precheck below is a TRTLLM-kernel init
-                    # constraint; flashinfer-routed configs never run it.
-                    if get_sm_version() >= 100 and attn_backend == "TRTLLM":
-                        # though it's a precheck of gen kernels during the attention op init,
-                        # this cannot be skipped for now
-                        # TLLM_CHECK_WITH_INFO((params.m_num_heads_q_per_kv < max_num_heads_q_per_kv_in_cta || params.m_num_heads_q_per_kv % max_num_heads_q_per_kv_in_cta == 0), # noqa: E501
-                        m_num_heads_q_per_kv = n // num_kv_heads
-                        max_num_heads_q_per_kv_in_cta = 32
-                        if (
-                            m_num_heads_q_per_kv >= max_num_heads_q_per_kv_in_cta
-                            and m_num_heads_q_per_kv % max_num_heads_q_per_kv_in_cta != 0
-                        ):
-                            continue
-
-                    skip_fp8_context_fmha = _skip_trtllm_sm120_fp8_context_fmha(
-                        b,
-                        s,
-                        n,
-                        num_kv_heads,
-                        h,
-                    )
-                    # FIXME(kernel-limit): two SM89 IMA families reproduce on
-                    # rc20 and fail classified here by owner decision (SM89
-                    # handoff — no rc20 skip): long-context GQA
-                    # (cudaErrorIllegalAddress, e.g. h96/kv8/hd256 and
-                    # h48/kv4/hd256 at 131072 tokens, L40S gate100 2026-07-21;
-                    # also seen on SM90/H20 2026-07-24) and fp8-context-MHA
-                    # (h=kv=96/hd256 >=32768 tokens, L40S probe 2026-07-24).
-                    # The rc15-scoped skip helpers that encoded these regions
-                    # were deleted when this collector pinned trtllm>=1.3.0rc20.
-                    for precision_case in shape_sweep["precision_cases"]:
-                        use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
-                        use_fp8_context_fmha = bool(precision_case["fp8_context_fmha"])
-                        if not has_fp8 and use_fp8_kv_cache:
-                            continue
-                        if skip_fp8_context_fmha and use_fp8_context_fmha:
-                            continue
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                num_kv_heads,
-                                h,
-                                attention_window_size,
-                                use_fp8_kv_cache,
-                                use_fp8_context_fmha,
-                                True,
-                                attn_backend,
-                            ]
-                        )
-
-    return test_cases
-
-
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+    return plan_cases("attention_context", "trtllm", get_sm_version())
 
 
 def get_generation_attention_test_cases():
-    has_fp8 = get_sm_version() > 86
-    test_cases = []
-
-    for shape_sweep in get_attention_generation_shape_sweeps("trtllm"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="generation", backend="trtllm"):
-            n = head_config.num_heads
-            n_kv = head_config.num_kv_heads
-            h = head_config.head_dim
-            attention_window_size = head_config.window_size
-            attn_backend = head_config.kernel_source or "TRTLLM"
-            max_tokens_key = "max_mha_tokens_per_step" if n == n_kv else "max_xqa_tokens_per_step"
-            b_s_dict = _generation_target_sequence_lengths(
-                batch_sizes,
-                sequence_lengths,
-                n,
-                int(shape_sweep[max_tokens_key]),
-                shape_sweep,
-            )
-            # The XQA precheck is a TRTLLM-kernel init constraint; flashinfer-
-            # routed configs never run it.
-            if n_kv != n and get_sm_version() >= 100 and attn_backend == "TRTLLM":
-                # TLLM_CHECK_WITH_INFO((params.m_num_heads_q_per_kv < max_num_heads_q_per_kv_in_cta || params.m_num_heads_q_per_kv % max_num_heads_q_per_kv_in_cta == 0), # noqa: E501
-                m_num_heads_q_per_kv = n // n_kv
-                max_num_heads_q_per_kv_in_cta = 32
-                if (
-                    m_num_heads_q_per_kv >= max_num_heads_q_per_kv_in_cta
-                    and m_num_heads_q_per_kv % max_num_heads_q_per_kv_in_cta != 0
-                ):
-                    continue
-            for b, s_list_limited in b_s_dict.items():
-                target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
-                for s in target_s_list:
-                    for precision_case in shape_sweep["precision_cases"]:
-                        use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
-                        if not has_fp8 and use_fp8_kv_cache:
-                            continue
-                        test_cases.append(
-                            [b, s, n, n_kv, h, attention_window_size, use_fp8_kv_cache, False, False, attn_backend]
-                        )
-    return test_cases
+    return plan_cases("attention_generation", "trtllm", get_sm_version())
 
 
 if __name__ == "__main__":

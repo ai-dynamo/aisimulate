@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard the MNNVL dtype gate in the all-reduce collectors (issue #1416).
+"""Guard the MNNVL dtype gate in the all-reduce collectors.
 
 TRT-LLM `AllReduce(mapping, dtype)` only builds the MNNVL path when dtype is
 passed at construction; dtype=None silently falls back to the heuristic path.
@@ -22,9 +22,8 @@ _COLLECTOR = REPO_ROOT / "collector" / "network" / "collect_all_reduce.py"
 _SLURM_WORKER = REPO_ROOT / "collector" / "network" / "slurm" / "collect_allreduce.py"
 _GB300_TRTLLM_DATA = (
     REPO_ROOT
-    / "aic-core"
     / "src"
-    / "aiconfigurator_core"
+    / "aisimulate_core"
     / "systems"
     / "data"
     / "gb300"

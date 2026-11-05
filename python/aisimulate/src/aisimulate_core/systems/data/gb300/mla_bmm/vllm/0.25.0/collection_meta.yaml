@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: local
+runtime:
+  framework: vllm
+  version: 0.25.0
+  image: vllm/vllm-openai
+  image_digest: sha256:2f726db9babd627fb59addaed2038577fc767108680901271b069d91759d1286
+tables:
+  mla_bmm_perf:
+    rows: 636
+    status: complete
+    collections:
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87
+      case_plan_hash: sha256:3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5
+      collected_at: '2026-09-17'
+      rows: 300
+      status: complete
+    - collector_ref: cbaf51b64fa460e5ec6146bde407a4c64958212d
+      collector_hash: sha256:4c2fd32c623c9841221e74bf76389706de4171beb0c22793246b0ce7ea79af87
+      case_plan_hash: sha256:faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53
+      collected_at: '2026-09-17'
+      rows: 336
+      status: complete

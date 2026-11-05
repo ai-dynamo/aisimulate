@@ -3,7 +3,7 @@
 
 //! Element-wise (memory-bandwidth-bound) operators.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.elementwise`. Activation functions,
+//! Mirrors `aisimulate.sdk.operations.elementwise`. Activation functions,
 //! norms, residual adds, and other ops whose latency is bounded by memory
 //! bandwidth, not compute. There is no perf-DB table for these — Python
 //! uses the same `query_mem_op` empirical formula for all of them, scaled

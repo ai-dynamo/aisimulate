@@ -33,9 +33,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk import common
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.perf_database import (
     _STRICT_VALIDATED_REQUESTS,
     PerfDatabase,
     _new_database_dict,
@@ -205,6 +205,14 @@ def test_strict_raises_on_uncovered_table(systems_root: Path) -> None:
 
     with pytest.raises(ValueError, match="generation_attention_perf"):
         _get_db(systems_root, strict_provenance=True)
+
+
+def test_unknown_profile_requires_table_coverage(tmp_path: Path) -> None:
+    from aisimulate_core.sdk.perf_database import _check_strict_provenance_coverage
+
+    (tmp_path / "another.profile.json").write_text("{}")
+    with pytest.raises(ValueError, match="another.profile"):
+        _check_strict_provenance_coverage(str(tmp_path), strict=True)
 
 
 def test_non_strict_warns_on_uncovered_table(systems_root: Path, caplog: pytest.LogCaptureFixture) -> None:

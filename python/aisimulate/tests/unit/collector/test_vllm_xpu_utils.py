@@ -223,3 +223,28 @@ def test_gemm_collector_frees_memory_per_case():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "empty_cache"
     ]
     assert empty_cache_calls, "run_gemm's finally must call empty_cache() to purge the allocator between cases"
+
+
+def test_xpu_attention_refuses_a_kv_pool_the_device_cannot_hold():
+    source = (VLLM_COLLECTOR_ROOT / "collect_attn_xpu.py").read_text()
+    tree = ast.parse(source)
+    nodes = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name == "_kv_pool_does_not_fit")
+        or (isinstance(node, ast.Assign) and node.targets[0].id.startswith("_KV_"))
+    ]
+    namespace: dict = {}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "collect_attn_xpu.py", "exec"), namespace)
+    does_not_fit = namespace["_kv_pool_does_not_fit"]
+
+    # 8 KV heads x hd128 needs a 2 GiB bf16 pool: it fits 24 GB, 64 KV heads (16 GiB) do not.
+    assert does_not_fit(8, 128, 24 * 10**9) is None
+    reason = does_not_fit(64, 128, 24 * 10**9)
+    assert reason.startswith("FIXME(kernel-limit): does not fit: the KV pool needs 16.0 GiB")
+    assert does_not_fit(64, 128, 64 * 10**9) is None
+    # The getters queue every case; the runner refuses before it allocates.
+    assert "_kv_pool_does_not_fit" not in ast.get_source_segment(
+        source,
+        next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_context_attention_test_cases"),
+    )

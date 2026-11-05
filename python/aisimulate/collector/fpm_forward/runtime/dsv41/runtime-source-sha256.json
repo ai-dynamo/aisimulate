@@ -1,0 +1,20 @@
+{
+  "vllm/v1/request.py": "da610d5203e72d2d524adc5fb39df11502a23520f2f31d9a44cf13d343f9c25d",
+  "vllm/v1/core/sched/output.py": "41cf5780a013a0c731a0409836ad635d1c84a6aad706ad4e68e189d4a6eaf525",
+  "vllm/v1/core/sched/async_scheduler.py": "e586a0ef3c6778be56a93e7f9bb712d4de9de6e7d7fe7e3e1d51dae83ecfc508",
+  "vllm/v1/core/sched/scheduler.py": "e5e1c18b1d7a6ea73adbb4921f64a35b00a96abe673691bf6a7f57281a524519",
+  "vllm/v1/core/kv_cache_manager.py": "44a097c5fafaab70b952434b90f57ddacb224e208f19ecc719fcb441af39290e",
+  "vllm/v1/core/single_type_kv_cache_manager.py": "128b98a0511f67d32f44767aa1658776a8246374b9eb8461d397e683ff3d984d",
+  "vllm/models/deepseek_v4_1/nvidia/model.py": "530ed24c8fd2e9daeb5c3d340ef52246618786f19eace8ec217c8d3bdf271110",
+  "vllm/models/deepseek_v4_1/common/engram.py": "41c5bdf25cf8337088247be768e3d43fa41e6358397800f8b602ebf1ede69480",
+  "vllm/config/engram.py": "99f8c132d2c7928b0d2b41615611fc5b92819fc038f8414a7ea6649bf3527712",
+  "vllm/models/deepseek_v4_1/nvidia/model_state.py": "a2475c04990a17532e93618a58e5bb06a20215b3538ef140d01fe72a1fe9e3ab",
+  "dynamo/vllm/instrumented_scheduler.py": "765586f5891908f074c7dccae3a35edf4fb2629688f2bfdae11ab0de732ae298",
+  "dynamo/common/forward_pass_metrics.py": "523dfc4e7ccbc5a37dbcf03b331a41b628227ad8a5d9c64fda8abc96dd31b188",
+  "dynamo/vllm/benchmark_points.py": "b8be74e3bd375a332331d437220fb85e8d569c343bf8bf5e0f568a21a99f3875",
+  "dynamo/vllm/gc_policy.py": "4221e5a20718525559ad4c9e9bee34928ee22dcf2cfdf8036936be2a360153a4",
+  "vllm/distributed/parallel_state.py": "33be0ba9795544029ade187c56331c1b21c32bbda5d5cd86761edd14fa8a8259",
+  "vllm/distributed/__init__.py": "97f28c30b32662af8cab163939e4ee423037f11630752e13b55cbc25a7d0ab71",
+  "vllm/config/parallel.py": "b58a49f026a9a748d87c005aea0169d0ed23a24697dd0af438d8c4118112fc46",
+  "vllm/transformers_utils/configs/deepseek_v41.py": "e0c7583efa9baa95302398daa61604e0f656ecf9f1b072c5715e5ed5a5c54599"
+}

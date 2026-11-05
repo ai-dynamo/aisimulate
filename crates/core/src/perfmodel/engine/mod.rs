@@ -9,6 +9,8 @@
 //! static-inference composition. PyO3 bindings over `Engine` live in
 //! [`crate::py`].
 
+pub mod diagnostics;
+mod readiness;
 pub mod runtime;
 pub mod spec;
 

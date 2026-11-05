@@ -10,8 +10,7 @@ changed it, exactly like a code change.
 Axes:
   - shape: fixed prefill (static_ctx) and decode (static_gen) points
   - parallelism: per model family (dense vs MoE)
-  - quant: model default plus explicit overrides (nvfp4 only on systems whose
-    data can contain it)
+  - quant: the checkpoint's own quantization only (see QUANT_VARIANTS)
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_ROOT = REPO_ROOT / "src" / "aiconfigurator" / "systems" / "data"
-MODEL_CONFIG_DIR = REPO_ROOT / "src" / "aiconfigurator" / "model_configs"
+DATA_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
+MODEL_CONFIG_DIR = REPO_ROOT / "src" / "aisimulate_core" / "model_configs"
 
 # Non-engine data dirs living next to backend dirs in the data tree.
 NON_ENGINE_BACKENDS = {"nccl", "oneccl"}
@@ -35,14 +34,14 @@ METADATA_FILES = {"SHARED_LAYER_REUSE.txt", "INCOMPLETE.txt", "reuse.yaml", "col
 def _dir_is_incomplete(path: str) -> bool:
     """Yaml-first partial-dir check (collection_meta.yaml status:partial), with
     INCOMPLETE.txt as the legacy fallback. Duplicated (not imported) from
-    aiconfigurator_core.sdk.perf_database._version_dir_state, the source of
+    aisimulate_core.sdk.perf_database._version_dir_state, the source of
     truth for this semantic — kept local so this tool doesn't take an aic-core
     dependency for one predicate. Malformed collection_meta.yaml raises
     ValueError naming the file, matching that canonical loader's fail-loudly
     behavior (unlike operations/base.py's deliberately lenient hot-path
     duplicate of this same predicate). See the CONTRACT NOTE on
     _version_dir_is_partial in
-    aic-core/src/aiconfigurator_core/sdk/operations/base.py
+    src/aisimulate_core/sdk/operations/base.py
     for the intentional resolver-lenient/admission-strict split and
     the full list of copies."""
     meta_path = os.path.join(path, "collection_meta.yaml")
@@ -105,15 +104,16 @@ MOE_PARALLEL: list[tuple[int, int, int, int | None, int | None]] = [
 
 # --------------------------------------------------------------------------
 # Quant axis: label -> (gemm_quant_mode, moe_quant_mode) overrides.
-# "default" keeps the model config's own quantization.
+# "default" keeps the model config's own quantization, and it is the only
+# variant. Forcing one GEMM/MoE mode onto every bundled model pairs already
+# quantized checkpoints with formats they do not ship (per-tensor FP8 or NVFP4
+# projections on a block-FP8 GLM checkpoint), and each such row then demands
+# perf data no deployment uses. Bundled FP8 and NVFP4 checkpoints cover those
+# precisions as they are actually served.
 # --------------------------------------------------------------------------
 QUANT_VARIANTS: list[tuple[str, str | None, str | None]] = [
     ("default", None, None),
-    ("fp8", "fp8", "fp8"),
 ]
-# Only meaningful where NVFP4 silicon can exist (sm100+ family systems).
-NVFP4_SYSTEMS = {"b200_sxm", "b300_sxm", "gb200", "gb300"}
-NVFP4_VARIANT: tuple[str, str | None, str | None] = ("nvfp4", "nvfp4", "nvfp4")
 
 
 @dataclass(frozen=True)
@@ -125,13 +125,6 @@ class Combo:
     @property
     def relpath(self) -> str:
         return os.path.join(self.system, self.backend, f"{self.version}.csv")
-
-
-def quant_variants_for(system: str) -> list[tuple[str, str | None, str | None]]:
-    variants = list(QUANT_VARIANTS)
-    if system in NVFP4_SYSTEMS:
-        variants.append(NVFP4_VARIANT)
-    return variants
 
 
 def bundled_models() -> list[str]:
@@ -147,7 +140,7 @@ def bundled_models() -> list[str]:
 
 def _version_sort_key(version: str) -> tuple:
     """PEP 440 ordering where possible; unparseable names sort last, lexically."""
-    from aiconfigurator.sdk.common import parse_support_matrix_version
+    from aisimulate.sdk.common import parse_support_matrix_version
 
     parsed = parse_support_matrix_version(version)
     return (1, version) if parsed is None else (0, parsed)
@@ -206,7 +199,7 @@ def enumerate_combos(
     (system, backend) — the PR profile. "all" keeps every data-carrying
     version — the scheduled/full profile.
     """
-    from aiconfigurator.sdk.perf_database import get_latest_database_version
+    from aisimulate.sdk.perf_database import get_latest_database_version
 
     combos: list[Combo] = []
     for system in sorted(os.listdir(DATA_ROOT)):

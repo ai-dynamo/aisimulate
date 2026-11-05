@@ -24,7 +24,10 @@ pub mod perfmodel;
 mod python;
 pub mod replay;
 
-pub use engine::{EngineConfig as ReplayEngineConfig, TimingModel, TimingModelConfig};
+pub use engine::{
+    EngineConfig as ReplayEngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+};
 pub use replay::{ReplayReport, ReplaySpec, Replayer};
 
 // Preserve the former published AIC crate-root surface. Replay's conflicting
@@ -32,17 +35,49 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
-    AicError, BackendKind, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
-    ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, FPM_VERSION, ForwardPassMetrics,
-    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
-    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassWorkerType, KvCacheEstimate,
-    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
-    QueuedRequestMetrics, ScheduledRequestMetrics, SpeculativeConfig,
+    AicError, BackendKind, CorrectionConfig, CorrectionMode, DataType, DatabaseMode,
+    ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, EncoderImageShape, EncoderParallel,
+    EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION, ForwardPassFallbackPolicy,
+    ForwardPassMetrics, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassPerfOptions, ForwardPassPerfProvenance,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics,
+    ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted,
+    KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction,
+    LEARNED_SCHEMA_VERSION, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
+    SpeculativeConfig,
 };
+pub use perfmodel::{
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
+    LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
+    RegressionFeatureAxis, RegressionFeatureSet, RegressionFitConfig, RegressionFitKind,
+    RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
+    SplineSearchConfig, UnrecordedFpmQuantMode,
+};
+pub use perfmodel::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
+pub use perfmodel::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
+pub use perfmodel::{
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
+    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+};
+pub use perfmodel::{FpmSeedTargetNormalization, FpmSeedTargetRow};
 
 #[cfg(feature = "python")]
-pub use perfmodel::{AicEngine, AicEngineBuilder, estimate_kv_cache};
+pub use perfmodel::{
+    AicEngine,
+    // Low-level Rust embedder API for compiled step-latency handles. This is
+    // deliberately not registered on the Python module and is not an
+    // alternative ForwardPassPerfModel construction boundary.
+    AicEngineBuilder,
+    estimate_kv_cache,
+};
 
 // The imported perf-model sources historically used additional crate-root
 // module paths. Keep these module aliases crate-private so the mirror subtree
@@ -57,3 +92,8 @@ pub(crate) use perfmodel::{
 #[cfg(feature = "python")]
 #[allow(unused_imports)]
 pub(crate) use perfmodel::{py, py_ops};
+
+pub use perfmodel::{
+    DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
+};

@@ -12,9 +12,9 @@ Tests that verify:
 
 import pytest
 
-from aiconfigurator.sdk import common, models
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
+from aisimulate.sdk import common, models
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -38,7 +38,7 @@ class TestMTPScaling:
 
         Formula: (nextn + num_layers) / num_layers
         """
-        from aiconfigurator.sdk.models import mtp_scale_factor
+        from aisimulate.sdk.models import mtp_scale_factor
 
         assert mtp_scale_factor(0, 64) == 1.0
         assert mtp_scale_factor(2, 64) == pytest.approx((2 + 64) / 64)

@@ -1,0 +1,807 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import copy
+import logging
+import math
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotext
+
+from aisimulate.logging_utils import use_plain_cli_output
+from aisimulate.sdk import config
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.common import ColumnsAgg
+from aisimulate.sdk.errors import NoFeasibleConfigError
+from aisimulate.sdk.inference_session import (
+    DisaggInferenceSession,
+    InferenceSession,
+)
+from aisimulate.sdk.models import (
+    get_model,
+    resolve_sglang_mla_compute,
+)
+from aisimulate.sdk.perf_database import PerfDatabase
+from aisimulate.sdk.utils import enumerate_ttft_tpot_constraints, strip_unicode_to_ascii
+
+logger = logging.getLogger(__name__)
+
+
+def agg_pareto(
+    model_path: str,
+    runtime_config: config.RuntimeConfig,
+    database: PerfDatabase,
+    backend_name: str,
+    model_config: config.ModelConfig,
+    parallel_config_list: list[list[int]],
+    enable_chunked_prefill: bool = False,
+    free_gpu_memory_fraction: float | None = None,
+    max_seq_len: int | None = None,
+) -> pd.DataFrame:
+    """
+    Find Pareto front for agg.
+    We will first enumerate all the parallel configurations and then find the Pareto front for
+    each parallel configuration.
+
+    Args:
+        model_path: name of the model
+        runtime_config: runtime config. tpot is a list of tpot values to search over or a single
+            tpot value
+        database: database
+        backend_name: name of the backend
+        model_config: model config
+        parallel_config_list: list of parallel configurations
+        enable_chunked_prefill: whether the inference framework will have chunked prefill enabled.
+            Affects the context tokens sweep granularity. Default is False.
+
+    Returns:
+        results_df: dataframe of the results
+    """
+
+    # agg is agg server, the loop over parallel is outside here.
+    results_df = pd.DataFrame(columns=ColumnsAgg)
+    exceptions = []
+    all_configs_oom = True
+    all_kv_cache_oom = True
+    for parallel_config in parallel_config_list:
+        tp_size, pp_size, dp_size, moe_tp_size, moe_ep_size, cp_size = parallel_config
+        logger.debug(
+            f"Getting candidate workers with parallel config: tp={tp_size}, pp={pp_size}, "
+            f"dp={dp_size}, moe_tp={moe_tp_size}, moe_ep={moe_ep_size}, cp={cp_size}"
+        )
+
+        try:
+            overwritten_model_config = copy.deepcopy(model_config)
+            overwritten_model_config.pp_size = pp_size
+            overwritten_model_config.tp_size = tp_size
+            overwritten_model_config.moe_tp_size = moe_tp_size
+            overwritten_model_config.moe_ep_size = moe_ep_size
+            overwritten_model_config.attention_dp_size = dp_size
+            overwritten_model_config.cp_size = cp_size
+            resolve_sglang_mla_compute(
+                overwritten_model_config,
+                model_path,
+                backend_name,
+                getattr(database, "version", None),
+                getattr(database, "system_spec", {}),
+            )
+            model = get_model(
+                model_path=model_path,
+                model_config=overwritten_model_config,
+                backend_name=backend_name,
+            )
+            backend = get_backend(
+                backend_name,
+                getattr(database, "system", None),
+                system_spec=getattr(database, "system_spec", None),
+            )
+            sess = InferenceSession(model=model, database=database, backend=backend)
+
+            runtime_configs_to_evaluate: list[config.RuntimeConfig] = []
+            if runtime_config.request_latency is not None and runtime_config.request_latency > 0:
+                ttft_tpot_constraints = enumerate_ttft_tpot_constraints(
+                    runtime_config.osl, runtime_config.request_latency, runtime_config.ttft
+                )
+                if not ttft_tpot_constraints:
+                    logger.debug(
+                        "No ttft/tpot constraints derived for request_latency=%s", runtime_config.request_latency
+                    )
+                    continue
+                logger.debug(
+                    "Enumerated %d ttft/tpot constraint pairs for request_latency=%sms",
+                    len(ttft_tpot_constraints),
+                    runtime_config.request_latency,
+                )
+                for ttft_constraint, tpot_constraint in ttft_tpot_constraints:
+                    overwritten_runtime_config = copy.deepcopy(runtime_config)
+                    overwritten_runtime_config.ttft = ttft_constraint
+                    overwritten_runtime_config.tpot = tpot_constraint
+                    runtime_configs_to_evaluate.append(overwritten_runtime_config)
+            else:
+                tpot_list = runtime_config.tpot if isinstance(runtime_config.tpot, list) else [runtime_config.tpot]
+                for tpot in tpot_list:
+                    overwritten_runtime_config = copy.deepcopy(runtime_config)
+                    overwritten_runtime_config.tpot = tpot
+                    runtime_configs_to_evaluate.append(overwritten_runtime_config)
+
+            if not runtime_configs_to_evaluate:
+                continue
+
+            for overwritten_runtime_config in runtime_configs_to_evaluate:
+                summary = sess.find_best_agg_result_under_constraints(
+                    runtime_config=overwritten_runtime_config,
+                    top_k=10,
+                    max_batch_size=512,
+                    ctx_stride=512,
+                    enable_chunked_prefill=enable_chunked_prefill,
+                    free_gpu_memory_fraction=free_gpu_memory_fraction,
+                    max_seq_len=max_seq_len,
+                )
+                if not summary.check_oom():
+                    all_configs_oom = False
+                if not summary.check_kv_cache_oom():
+                    all_kv_cache_oom = False
+                result_df = summary.get_summary_df()
+                if len(result_df) == 0:
+                    logger.debug(
+                        "No result found for constraints ttft=%s, tpot=%s, request_latency=%s in agg pareto.",
+                        overwritten_runtime_config.ttft,
+                        overwritten_runtime_config.tpot,
+                        overwritten_runtime_config.request_latency,
+                    )
+                    continue
+                if len(results_df) == 0:
+                    results_df = result_df
+                else:
+                    results_df = pd.concat([results_df, result_df], axis=0, ignore_index=True)
+        except Exception as e:
+            logger.info(
+                "Error getting candidate workers with parallel config: tp=%s, pp=%s, dp=%s, "
+                "moe_tp=%s, moe_ep=%s, skip this combination",
+                tp_size,
+                pp_size,
+                dp_size,
+                moe_tp_size,
+                moe_ep_size,
+            )
+            exceptions.append(e)
+            continue
+
+    if not results_df.empty:
+        # Dedupe on numeric/identifier columns only; _per_ops_source holds dicts
+        # which are unhashable and would break drop_duplicates with default subset.
+        dedupe_cols = [c for c in results_df.columns if c != "_per_ops_source"]
+        results_df = results_df.drop_duplicates(subset=dedupe_cols, ignore_index=True)
+        results_df = results_df.sort_values(by="tokens/s/gpu", ascending=False).reset_index(drop=True)
+    else:
+        if exceptions:
+            raise RuntimeError(
+                f"No results found for any parallel configuration. Showing last exception: {exceptions[-1]}"
+            ) from exceptions[-1]
+        if all_configs_oom:
+            raise RuntimeError(
+                "No results found: the model does not fit in GPU memory for any parallel "
+                "configuration. Try increasing --total-gpus, using a quantized model, or "
+                "using a system with more VRAM per GPU."
+            )
+        if all_kv_cache_oom:
+            raise RuntimeError(
+                "No results found: the requested batch size exceeds KV cache capacity for all "
+                "parallel configurations. Try reducing --batch-size, increasing "
+                "--free-gpu-memory-fraction, or using a system with more VRAM per GPU."
+            )
+        raise NoFeasibleConfigError(
+            "No results found for any parallel configuration. No configuration satisfied the "
+            "TTFT/TPOT or request-latency constraints. Try relaxing --ttft, --tpot, or "
+            "--request_latency (e.g., higher ttft/tpot or higher request_latency)."
+        )
+
+    return results_df
+
+
+def disagg_pareto(
+    model_path: str,
+    runtime_config: config.RuntimeConfig,
+    prefill_database: PerfDatabase,
+    prefill_backend_name: str,
+    prefill_model_config: config.ModelConfig,
+    prefill_parallel_config_list: list[list[int]],
+    prefill_latency_correction_scale: float,
+    decode_database: PerfDatabase,
+    decode_backend_name: str,
+    decode_model_config: config.ModelConfig,
+    decode_parallel_config_list: list[list[int]],
+    decode_latency_correction_scale: float,
+    **kwargs,
+) -> pd.DataFrame:
+    """
+    Find Pareto front for Disaggregated Inference.
+    This is a proxy function calls into
+    DisaggInferenceSession.find_best    _disagg_result_under_constraints.
+
+    Args:
+        model_path: name of the model
+        runtime_config: runtime config
+        prefill_database: prefill database
+        prefill_backend_name: prefill backend name
+        prefill_model_config: prefill model config
+        prefill_parallel_config_list: prefill parallel config list
+        prefill_latency_correction_scale: prefill latency correction scale
+        decode_database: decode database
+        decode_backend_name: decode backend name
+        decode_model_config: decode model config
+        decode_parallel_config_list: decode parallel config list
+        decode_latency_correction_scale: decode latency correction scale
+        **kwargs: other arguments
+        prefill_max_num_tokens: max number of tokens for prefill worker, in kwargs
+        decode_max_num_tokens: max number of tokens for decode worker, in kwargs
+        num_gpu_list: list of number of gpus in a disagg replica composed of xPyD, in kwargs
+        max_num_gpu: max number of gpus in a disagg replica composed of xPyD, in kwargs
+        prefill_num_worker_list: list of number of prefill workers in a disagg replica composed of
+            xPyD, x_list, in kwargs
+        prefill_max_num_worker: max number of prefill workers in a disagg replica composed of xPyD,
+            x_max, in kwargs
+        decode_num_worker_list: list of number of decode workers in a disagg replica composed of
+            xPyD, y_list, in kwargs
+        decode_max_num_worker: max number of decode workers in a disagg replica composed of xPyD,
+            y_max, in kwargs
+
+    Returns:
+        results_df: dataframe of the results
+    """
+
+    def get_working_list(working_list, max_constraint):
+        """
+        Get working list based on max constraint. a helper function
+        """
+        if working_list is not None:
+            if max_constraint is not None:
+                working_list = [i for i in working_list if i <= max_constraint]
+                logger.debug(f"{working_list} constrained by max_constraint: {max_constraint}")
+            else:
+                logger.debug(f"{working_list}")
+        else:
+            if max_constraint is not None:
+                working_list = list(range(1, max_constraint + 1))
+                logger.debug(f"{working_list} constrained by max_constraint: {max_constraint}")
+            else:
+                logger.debug(f"no constraint on {working_list}")
+        return working_list
+
+    prefill_backend = get_backend(prefill_backend_name)
+    decode_backend = get_backend(decode_backend_name)
+
+    encoder_database = kwargs.get("encoder_database")
+    encoder_backend_name = kwargs.get("encoder_backend_name")
+    encoder_backend = get_backend(encoder_backend_name) if encoder_backend_name else None
+
+    disagg_sess = DisaggInferenceSession(
+        prefill_database,
+        prefill_backend,
+        decode_database,
+        decode_backend,
+        encoder_database=encoder_database,
+        encoder_backend=encoder_backend,
+    )
+    disagg_sess.set_latency_correction_scales(prefill_latency_correction_scale, decode_latency_correction_scale)
+
+    # None means we use internally tuned default values for rate-matching degradation factors.
+    rate_matching_prefill = kwargs.pop("rate_matching_prefill_degradation_factor", None)
+    rate_matching_decode = kwargs.pop("rate_matching_decode_degradation_factor", None)
+    if rate_matching_prefill is not None or rate_matching_decode is not None:
+        kw = {}
+        if rate_matching_prefill is not None:
+            kw["prefill_degradation_factor"] = rate_matching_prefill
+        if rate_matching_decode is not None:
+            kw["decode_degradation_factor"] = rate_matching_decode
+        disagg_sess.set_rate_matching_degradation_factors(**kw)
+
+    prefill_max_num_tokens = kwargs.get("prefill_max_num_tokens", 16384)
+    decode_max_num_tokens = kwargs.get("decode_max_num_tokens", 512)
+    logger.debug(f"prefill_max_num_tokens: {prefill_max_num_tokens}, decode_max_num_tokens: {decode_max_num_tokens}")
+
+    # num gpu constraint for the whole system
+    num_gpu_list = kwargs.get("num_gpu_list")
+    max_num_gpu = kwargs.get("max_num_gpu")
+    logger.debug(f"num_gpu_list: {num_gpu_list}, max_num_gpu: {max_num_gpu}")
+    num_gpu_list = get_working_list(num_gpu_list, max_num_gpu)
+
+    # prefill worker constraint
+    prefill_num_worker_list = kwargs.get("prefill_num_worker_list")
+    prefill_max_num_worker = kwargs.get("prefill_max_num_worker")
+    logger.debug(
+        f"prefill_num_worker_list: {prefill_num_worker_list}, prefill_max_num_worker: {prefill_max_num_worker}"
+    )
+    prefill_num_worker_list = get_working_list(prefill_num_worker_list, prefill_max_num_worker)
+
+    # decode worker constraint
+    decode_num_worker_list = kwargs.get("decode_num_worker_list")
+    decode_max_num_worker = kwargs.get("decode_max_num_worker")
+    logger.debug(f"decode_num_worker_list: {decode_num_worker_list}, decode_max_num_worker: {decode_max_num_worker}")
+    decode_num_worker_list = get_working_list(decode_num_worker_list, decode_max_num_worker)
+
+    max_prefill_gpus = kwargs.get("max_prefill_gpus")
+    max_decode_gpus = kwargs.get("max_decode_gpus")
+    require_same_tp = kwargs.get("require_same_tp", False)
+    autoscale = kwargs.get("autoscale", False)
+    target_tpot = kwargs.get("target_tpot")
+
+    summary = disagg_sess.find_best_disagg_result_under_constraints(
+        model_path=model_path,
+        runtime_config=runtime_config,
+        prefill_model_config=prefill_model_config,
+        prefill_parallel_config_list=prefill_parallel_config_list,
+        prefill_max_num_tokens=prefill_max_num_tokens,
+        prefill_num_worker_list=prefill_num_worker_list,
+        decode_model_config=decode_model_config,
+        decode_parallel_config_list=decode_parallel_config_list,
+        decode_max_num_tokens=decode_max_num_tokens,
+        decode_num_worker_list=decode_num_worker_list,
+        num_gpu_list=num_gpu_list,
+        max_prefill_gpus=max_prefill_gpus,
+        max_decode_gpus=max_decode_gpus,
+        require_same_tp=require_same_tp,
+        autoscale=autoscale,
+        target_tpot=target_tpot,
+    )
+
+    return summary.get_summary_df()
+
+
+def get_pareto_front(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    *,
+    maximize_x: bool = True,
+    maximize_y: bool = True,
+) -> pd.DataFrame:
+    """
+    Get Pareto front from raw data points.
+
+    Args:
+        df: Source dataframe.
+        x_col: Column name for x axis.
+        y_col: Column name for y axis.
+        maximize_x: Treat larger values on x axis as better if True, else minimize.
+        maximize_y: Treat larger values on y axis as better if True, else minimize.
+    """
+    if df is None:
+        return pd.DataFrame()
+    if df.empty:
+        return df.iloc[0:0].copy()
+    if x_col not in df.columns or y_col not in df.columns:
+        return pd.DataFrame(columns=[x_col, y_col])
+
+    working = df[[x_col, y_col]].replace([np.inf, -np.inf], np.nan)
+    valid_mask = working.notna().all(axis=1)
+    if not valid_mask.any():
+        return df.iloc[0:0].copy()
+
+    df = df.loc[valid_mask].sort_values(by=x_col)
+
+    def is_pareto(costs: np.ndarray) -> np.ndarray:
+        is_better = np.ones(costs.shape[0], dtype=bool)
+        for i, c in enumerate(costs):
+            if is_better[i]:
+                # Keep any point with a lower cost
+                is_better[is_better] = np.any(costs[is_better] > c, axis=1)  # Remove dominated points
+                is_better[i] = True  # And keep self
+        return is_better
+
+    working = df[[x_col, y_col]].copy()
+    if not maximize_x:
+        working[x_col] = -working[x_col]
+    if not maximize_y:
+        working[y_col] = -working[y_col]
+
+    # Convert DataFrame columns to numpy array
+    costs = working[[x_col, y_col]].values
+    is_pareto_front = is_pareto(costs)
+
+    # Plot Pareto front
+    pareto_front = df[is_pareto_front]
+    return pareto_front.sort_values(by=x_col).reset_index(drop=True)
+
+
+def draw_pareto(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    ax: plt.Axes,
+    color: str,
+    label: str,
+    *,
+    maximize_x: bool = True,
+    maximize_y: bool = True,
+) -> None:
+    """
+    Draw Pareto front to plot.
+    """
+    df = df.sort_values(by=x_col)
+
+    # Plot Pareto front
+    pareto_front = get_pareto_front(df, x_col, y_col, maximize_x=maximize_x, maximize_y=maximize_y)
+    ax.plot(pareto_front[x_col], pareto_front[y_col], color=color, label=label)
+    ax.scatter(pareto_front[x_col], pareto_front[y_col], color=color)
+
+    # Add labels and title
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.legend()
+
+
+def draw_pareto_to_string(
+    title: str,
+    series: list[dict],
+    *,
+    highlight: dict | None = None,
+    x_label: str = "tokens/s/user",
+    y_label: str = "tokens/s/gpu_cluster",
+) -> str:
+    """Render one or more Pareto series as ASCII plot text.
+
+    Args:
+        title: Plot title prefix.
+        series: List of dictionaries describing the series to plot. Expected keys:
+            - "df": pandas DataFrame containing the Pareto frontier.
+            - "label": Series label (default: "series-{index}").
+            - "color": plotext color (RGB tuple or name).
+            - "marker": plotext marker (default: "dot").
+        highlight: Optional dictionary describing a highlighted point set. Accepts
+            keys "df", "label", "color", "marker" similar to ``series``.
+    """
+
+    plotext.plot_size(80, 30)
+    plotext.theme("clear")
+
+    palette = [
+        (144, 238, 144),  # light green
+        (200, 200, 200),  # gray
+        (135, 206, 235),  # sky blue
+        (255, 182, 193),  # light pink
+        (255, 160, 122),  # light salmon
+        (221, 160, 221),  # plum
+    ]
+    markers = ["dot", "fdot", "hdot", "ldot", "sdot", "xdot"]
+
+    y_max = 0.0
+    x_max = 0.0
+    x_min = math.inf
+
+    for idx, entry in enumerate(series):
+        df = entry.get("df")
+        if df is None or df.empty:
+            continue
+        color = entry.get("color") or palette[idx % len(palette)]
+        marker = entry.get("marker") or markers[idx % len(markers)]
+        label = entry.get("label") or f"series-{idx + 1}"
+        plotext.plot(
+            df[x_label],
+            df[y_label],
+            label=label,
+            color=color,
+            marker=marker,
+        )
+        y_max = max(df[y_label].max(), y_max)
+        x_max = max(df[x_label].max(), x_max)
+        x_min = min(df[x_label].min(), x_min)
+
+    if highlight is not None:
+        highlight_df = highlight.get("df")
+        if highlight_df is not None and not highlight_df.empty:
+            color = highlight.get("color") or (255, 215, 0)  # gold
+            marker = highlight.get("marker") or "xdot"
+            label = highlight.get("label") or "Best"
+            plotext.plot(
+                highlight_df[x_label],
+                highlight_df[y_label],
+                label=label,
+                color=color,
+                marker=marker,
+            )
+            y_max = max(highlight_df[y_label].max(), y_max)
+            x_max = max(highlight_df[x_label].max(), x_max)
+            x_min = min(highlight_df[x_label].min(), x_min)
+
+    plotext.title(f"{title}: {y_label} vs {x_label}")
+    plotext.xlabel(x_label)
+    plotext.ylabel(y_label)
+    plotext.grid(False)
+
+    if y_max > 0.0 and x_max > 0.0:
+        y_max = ((y_max * 1.2) + 49) // 50 * 50
+        x_limit = ((x_max * 1.1) + 19) // 20 * 20
+        cap = 300.0
+        has_points_within_cap = x_min <= cap
+        effective_x_max = min(x_limit, cap) if has_points_within_cap else x_limit
+        plotext.ylim(0.0, y_max)
+        plotext.xlim(0.0, effective_x_max)
+
+    try:
+        buf = plotext.build()
+        # Strip ANSI escapes and Unicode box-drawing / block characters
+        # so piped output (e.g. `| cat -v`) is readable pure ASCII.
+        if use_plain_cli_output():
+            buf = strip_unicode_to_ascii(buf)
+    except Exception:
+        logger.exception("failed to build plotext")
+        buf = ""
+    plotext.clear_data()
+    return buf
+
+
+def _get_best_configs_under_constraint(
+    total_gpus: int,
+    pareto_df: pd.DataFrame,
+    target_value: float,
+    constraint_col: str,
+    top_n: int = 1,
+    group_by: str | None = None,
+    *,
+    secondary_sort_col: str | None = None,
+    secondary_sort_ascending: bool = False,
+) -> pd.DataFrame:
+    """Generic helper to rank configs under a scalar constraint."""
+    if pareto_df is None or pareto_df.empty:
+        return pd.DataFrame()
+
+    if target_value is None:
+        logger.info("No target value provided for constraint column '%s'.", constraint_col)
+        return pd.DataFrame()
+
+    if constraint_col not in pareto_df.columns or "tokens/s/gpu" not in pareto_df.columns:
+        logger.warning(
+            "Pareto DataFrame for constraint evaluation is missing '%s' or 'tokens/s/gpu' columns.",
+            constraint_col,
+        )
+        return pd.DataFrame()
+
+    candidate_configs = pareto_df[pareto_df[constraint_col] <= target_value].copy()
+
+    if top_n < 1:
+        logger.error("top_n is less than 1")
+        return pd.DataFrame()
+
+    if candidate_configs.empty:
+        # No config meets the constraint strictly -- fall back to closest matches.
+        logger.info(
+            "No config found with %s <= %s. Returning top-%d closest configs.",
+            constraint_col,
+            target_value,
+            top_n,
+        )
+        candidate_configs = pareto_df.copy()
+        candidate_configs["_sla_exceeded"] = True
+    else:
+        candidate_configs["_sla_exceeded"] = False
+
+    # compute achieved cluster-scale tokens/s/gpu
+    candidate_configs["tokens/s/gpu_cluster"] = (
+        candidate_configs["tokens/s/gpu"]
+        * (total_gpus // candidate_configs["num_total_gpus"])
+        * candidate_configs["num_total_gpus"]
+        / total_gpus
+    )
+    candidate_configs.replace([np.inf, -np.inf], np.nan, inplace=True)
+    finite_value_cols = [constraint_col, "tokens/s/gpu_cluster"]
+    invalid_value_mask = candidate_configs[finite_value_cols].isna().any(axis=1)
+    if invalid_value_mask.any():
+        logger.info(
+            "Dropping %d Pareto configs with non-finite %s or tokens/s/gpu_cluster values.",
+            int(invalid_value_mask.sum()),
+            constraint_col,
+        )
+        candidate_configs = candidate_configs.loc[~invalid_value_mask].copy()
+
+    if candidate_configs.empty:
+        return pd.DataFrame()
+
+    if group_by is not None and group_by in candidate_configs.columns:
+        top_indexes = candidate_configs.groupby(group_by)["tokens/s/gpu_cluster"].idxmax().dropna()
+        if top_indexes.empty:
+            return pd.DataFrame()
+        candidate_configs = candidate_configs.loc[top_indexes]
+
+    if candidate_configs["_sla_exceeded"].all():
+        # All configs exceed the SLA -- sort by closest to target
+        sort_columns = [constraint_col]
+        sort_ascending = [True]
+    else:
+        sort_columns = ["tokens/s/gpu_cluster"]
+        sort_ascending = [False]
+        if secondary_sort_col and secondary_sort_col in candidate_configs.columns:
+            sort_columns.append(secondary_sort_col)
+            sort_ascending.append(secondary_sort_ascending)
+
+    candidate_configs = (
+        candidate_configs.sort_values(by=sort_columns, ascending=sort_ascending).head(top_n).reset_index(drop=True)
+    )
+    candidate_configs.drop(columns=["_sla_exceeded"], inplace=True)
+    return candidate_configs
+
+
+def get_best_configs_under_tpot_constraint(
+    total_gpus: int,
+    pareto_df: pd.DataFrame,
+    target_tpot: float,
+    top_n: int = 1,
+    group_by: str | None = None,
+) -> pd.DataFrame:
+    """TPOT specific convenience wrapper."""
+    return _get_best_configs_under_constraint(
+        total_gpus=total_gpus,
+        pareto_df=pareto_df,
+        target_value=target_tpot,
+        constraint_col="tpot",
+        top_n=top_n,
+        group_by=group_by,
+        secondary_sort_col="tokens/s/user",
+        secondary_sort_ascending=False,
+    )
+
+
+def get_best_configs_under_request_latency_constraint(
+    total_gpus: int,
+    pareto_df: pd.DataFrame,
+    target_request_latency: float,
+    top_n: int = 1,
+    group_by: str | None = None,
+) -> pd.DataFrame:
+    """Request-latency specific wrapper."""
+    return _get_best_configs_under_constraint(
+        total_gpus=total_gpus,
+        pareto_df=pareto_df,
+        target_value=target_request_latency,
+        constraint_col="request_latency",
+        top_n=top_n,
+        group_by=group_by,
+        secondary_sort_col="request_latency",
+        secondary_sort_ascending=True,
+    )
+
+
+def get_best_configs_for_target_load(
+    pareto_df: pd.DataFrame,
+    constraint_col: str,
+    constraint_value: float,
+    target_request_rate: float | None = None,
+    target_concurrency: float | None = None,
+    top_n: int = 5,
+    max_total_gpus: int | None = None,
+    group_by: str | None = None,
+) -> pd.DataFrame:
+    """Find configs that serve a target load with minimum GPUs under SLA.
+
+    Exactly one of ``target_request_rate`` or ``target_concurrency`` must be
+    provided.  For each candidate config the number of replicas needed to
+    meet the load target is computed from the per-replica ``seq/s`` or
+    ``concurrency`` column, then ``total_gpus_needed`` is derived.  Results
+    are ranked by ``total_gpus_needed`` ascending (fewer GPUs is better).
+
+    Args:
+        pareto_df: DataFrame from the sweep (agg or disagg).
+        constraint_col: SLA column to filter on (``"tpot"`` or
+            ``"request_latency"``).
+        constraint_value: Maximum allowed value for *constraint_col*.
+        target_request_rate: Target system request rate in req/s.
+        target_concurrency: Target number of concurrent requests.
+        top_n: Number of top configurations to return.
+        max_total_gpus: Optional upper bound on total GPUs.
+        group_by: Optional column to group-by before ranking (takes best
+            per group, same semantics as
+            :func:`_get_best_configs_under_constraint`).
+
+    Returns:
+        DataFrame of top-N configs with added columns
+        ``replicas_needed``, ``total_gpus_needed`` and
+        ``tokens/s/gpu_cluster``.
+    """
+    if pareto_df is None or pareto_df.empty:
+        return pd.DataFrame()
+
+    has_rate = target_request_rate is not None
+    has_conc = target_concurrency is not None
+    if has_rate == has_conc:
+        raise ValueError("Exactly one of target_request_rate or target_concurrency must be provided.")
+
+    if constraint_col not in pareto_df.columns:
+        logger.warning("Pareto DataFrame is missing constraint column '%s'.", constraint_col)
+        return pd.DataFrame()
+
+    # 1. Filter by SLA constraint (fall back to closest if none meet it)
+    candidates = pareto_df[pareto_df[constraint_col] <= constraint_value].copy()
+    if candidates.empty:
+        logger.info(
+            "No config found with %s <= %s for load-match. Returning top-%d closest configs.",
+            constraint_col,
+            constraint_value,
+            top_n,
+        )
+        candidates = pareto_df.copy()
+        candidates["_sla_exceeded"] = True
+    else:
+        candidates["_sla_exceeded"] = False
+
+    # 2. Compute replicas needed per-row
+    if has_rate:
+        load_col = "seq/s"
+        if load_col not in candidates.columns:
+            logger.warning("Pareto DataFrame is missing '%s' column for load-match.", load_col)
+            return pd.DataFrame()
+        candidates["replicas_needed"] = np.ceil(target_request_rate / candidates[load_col]).astype(int)
+    else:
+        load_col = "concurrency"
+        if load_col not in candidates.columns:
+            logger.warning("Pareto DataFrame is missing '%s' column for load-match.", load_col)
+            return pd.DataFrame()
+        candidates["replicas_needed"] = np.ceil(target_concurrency / candidates[load_col]).astype(int)
+
+    candidates["replicas_needed"] = candidates["replicas_needed"].clip(lower=1)
+
+    # 3. Total GPUs needed
+    candidates["total_gpus_needed"] = candidates["replicas_needed"] * candidates["num_total_gpus"]
+
+    # 4. tokens/s/gpu_cluster = per-replica efficiency (no cluster-wide scaling)
+    candidates["tokens/s/gpu_cluster"] = candidates["tokens/s/gpu"]
+
+    # 5. GPU ceiling: prefer configs that fit; if none do, warn and cap to max_total_gpus
+    gpu_capped = False
+    if max_total_gpus is not None and not candidates["_sla_exceeded"].all():
+        fits = candidates[candidates["total_gpus_needed"] <= max_total_gpus]
+        if fits.empty:
+            logger.warning(
+                "Target load requires more GPUs than available (%d). "
+                "Returning best config scaled to use all %d GPUs. "
+                "The target load may NOT be fully served.",
+                max_total_gpus,
+                max_total_gpus,
+            )
+            # Cap replicas to what fits in the GPU budget and keep going.
+            # Switch to maximizing throughput since all configs exceed budget.
+            # Save uncapped replicas to compute load_served_pct.
+            uncapped_replicas = candidates["replicas_needed"].copy()
+            candidates["replicas_needed"] = (max_total_gpus // candidates["num_total_gpus"]).clip(lower=1).astype(int)
+            candidates["total_gpus_needed"] = candidates["replicas_needed"] * candidates["num_total_gpus"]
+            # Percentage of target load that the capped deployment can serve
+            candidates["load_served_pct"] = ((candidates["replicas_needed"] / uncapped_replicas) * 100).round(1)
+            # Recompute cluster throughput with capped replicas
+            candidates["tokens/s/gpu_cluster"] = (
+                candidates["tokens/s/gpu"]
+                * candidates["replicas_needed"]
+                * candidates["num_total_gpus"]
+                / max_total_gpus
+            )
+            gpu_capped = True
+        else:
+            candidates = fits
+
+    # 6. Group-by (take best per group)
+    if group_by is not None and group_by in candidates.columns:
+        if candidates["_sla_exceeded"].all():
+            top_indexes = candidates.groupby(group_by)[constraint_col].idxmin()
+        elif gpu_capped:
+            top_indexes = candidates.groupby(group_by)["tokens/s/gpu_cluster"].idxmax()
+        else:
+            top_indexes = candidates.groupby(group_by)["total_gpus_needed"].idxmin()
+        candidates = candidates.loc[top_indexes]
+
+    # 7. Rank
+    if candidates["_sla_exceeded"].all():
+        # Sort by closest to SLA target
+        sort_cols = [constraint_col]
+        sort_asc = [True]
+    elif gpu_capped:
+        # GPU budget exceeded: maximize throughput with available GPUs
+        sort_cols = ["tokens/s/gpu_cluster"]
+        sort_asc = [False]
+    else:
+        # Normal load-match: fewest GPUs first, tiebreak by higher tokens/s/gpu
+        sort_cols = ["total_gpus_needed", "tokens/s/gpu"]
+        sort_asc = [True, False]
+
+    candidates = candidates.sort_values(by=sort_cols, ascending=sort_asc).head(top_n).reset_index(drop=True)
+    candidates.drop(columns=["_sla_exceeded"], inplace=True, errors="ignore")
+    return candidates

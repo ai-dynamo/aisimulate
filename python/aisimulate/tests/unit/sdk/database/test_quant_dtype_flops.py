@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 import typing
 
-from aiconfigurator.sdk import common
+from aisimulate.sdk import common
 
 
 class TestShippedDataImpliesYamlKey:
@@ -58,7 +58,7 @@ class TestShippedDataImpliesYamlKey:
         import pyarrow.parquet as pq
         import yaml
 
-        from aiconfigurator.sdk import perf_database
+        from aisimulate.sdk import perf_database
 
         label_dtype: dict[str, str | None] = dict(self._EXTRA_LABELS)
         for enum in (common.GEMMQuantMode, common.MoEQuantMode, common.FMHAQuantMode):

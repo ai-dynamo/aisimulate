@@ -11,6 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from .config.common import CONFIG_ADAPTER_ENTRY_POINT_GROUP
 from .sweeper.provider import API_VERSION as SWEEP_PROVIDER_API_VERSION
 from .sweeper.provider import (
     AdapterReplaySpec,
@@ -21,7 +22,6 @@ from .sweeper.provider import (
 )
 
 CONFIG_ADAPTER_API_VERSION = 3
-CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"
 
 
 @dataclass(frozen=True)

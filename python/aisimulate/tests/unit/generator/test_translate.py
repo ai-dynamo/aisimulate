@@ -5,7 +5,7 @@
 
 import pytest
 
-from aiconfigurator.generator.rendering.translate import yaml_to_dynamic_flags
+from aisimulate.generator.rendering.translate import yaml_to_dynamic_flags
 
 
 @pytest.mark.unit

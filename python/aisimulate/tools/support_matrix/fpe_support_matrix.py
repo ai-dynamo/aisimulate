@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import os
+import re
 import resource
 import sys
 import time
@@ -127,6 +128,7 @@ class EngineProbePlan:
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0
+    attention_backend: str | None = None
     unrepresentable_reasons: tuple[str, ...] = ()
     planning_status: str = ""
     planning_error_type: str = ""
@@ -160,6 +162,7 @@ class EngineProbePlan:
             "kvcache_quant_mode": self.kvcache_quant_mode,
             "fmha_quant_mode": self.fmha_quant_mode,
             "comm_quant_mode": self.comm_quant_mode,
+            "attention_backend": self.attention_backend,
         }
         kwargs.update({name: value for name, value in optional.items() if value is not None})
         return kwargs
@@ -179,6 +182,7 @@ class EngineProbePlan:
             self.fmha_quant_mode,
             self.comm_quant_mode,
             self.nextn,
+            self.attention_backend,
             self.unrepresentable_reasons,
             self.planning_status,
             self.planning_error_type,
@@ -217,6 +221,7 @@ class FPEProbeResult:
     reproducer: str
     source_version: str
     source_sha: str
+    attention_backend: str | None = None
 
     def sort_key(self) -> tuple[Any, ...]:
         return (
@@ -269,8 +274,6 @@ def _unrepresentable_reasons(model_config: Any, topology: ParallelTopology) -> t
         reasons.append("public EngineHandle.compile does not expose enable_eplb")
     if getattr(model_config, "moe_backend", None):
         reasons.append("public EngineHandle.compile does not expose moe_backend")
-    if getattr(model_config, "attention_backend", "flashinfer") != "flashinfer":
-        reasons.append("public EngineHandle.compile does not expose a non-default attention_backend")
     if getattr(model_config, "language_only", False):
         reasons.append("public EngineHandle.compile does not expose language_only")
     if not getattr(model_config, "enable_encoder_dp", True):
@@ -310,6 +313,11 @@ def _make_plan(
         fmha_quant_mode=_enum_token(getattr(model_config, "fmha_quant_mode", None)),
         comm_quant_mode=_enum_token(getattr(model_config, "comm_quant_mode", None)),
         nextn=int(getattr(model_config, "nextn", 0) or 0),
+        attention_backend=(
+            str(model_config.attention_backend)
+            if getattr(model_config, "attention_backend", None) is not None
+            else None
+        ),
         unrepresentable_reasons=_unrepresentable_reasons(model_config, topology),
     )
 
@@ -390,15 +398,31 @@ def build_probe_plans(
                             choices = choices[:max_topologies_per_role]
                         for choice in choices:
                             topology = ParallelTopology.from_choice(choice)
-                            mode_seeds.append(
-                                _make_plan(
+                            try:
+                                plan = _make_plan(
                                     task=task,
                                     role=role,
                                     topology=topology,
                                     architecture=architecture,
                                     forward_model=forward_model,
                                 )
-                            )
+                            except Exception as error:
+                                # One rejected choice must not erase valid earlier
+                                # choices or stop discovery of later topologies.
+                                plan = EngineProbePlan(
+                                    model=model,
+                                    architecture=architecture,
+                                    system=system,
+                                    backend=backend,
+                                    backend_version=version,
+                                    forward_model=forward_model,
+                                    topology=topology,
+                                    roles=(role,),
+                                    planning_status=classify_failure(error, stage="build"),
+                                    planning_error_type=type(error).__name__,
+                                    planning_error_message=_error_message(error),
+                                )
+                            mode_seeds.append(plan)
                 except Exception as error:
                     mode_seeds = [
                         EngineProbePlan(
@@ -477,6 +501,69 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
 def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
+    # A known runtime-version limitation is not an unexpected engine failure.
+    # Keep the complete diagnostic and build stage narrow: query errors and
+    # changed native diagnostics must still block qualification.
+    hopper_kv_rejection = (
+        r"invalid engine config: GLM-5\.3-Flash on GPU [\w.-]+ \(SM9\d\) "
+        r"cannot use FP8 sparse-MLA KV with (vllm|sglang): the "
+        r"requested backend_version=\S+ requires \1 >= (0\.32\.0|0\.5\.22)\. "
+        r"Select a supported runtime \(SGLang requires TileLang DSA prefill and decode\), "
+        r'or pass kvcache_quant_mode="bfloat16"\.'
+    )
+    if stage == "build":
+        for item in chain:
+            if not isinstance(item, ValueError):
+                continue
+            match = re.fullmatch(hopper_kv_rejection, str(item).strip())
+            if match and match.groups() in {("vllm", "0.32.0"), ("sglang", "0.5.22")}:
+                return STATUS_FRAMEWORK_INCOMPATIBLE
+    # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
+    # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
+    # unrelated or query-time failures must retain their blocking category.
+    sdk_rejections = (
+        (
+            ValueError,
+            r"Cross-node EP requires pure expert parallelism \(moe_tp_size=1\); "
+            r"got moe_tp_size=\d+, moe_ep_size=\d+\.",
+        ),
+        (AssertionError, r"num_heads \d+ should be divisible by tp_size \d+"),
+        (AssertionError, r"dense Gemma 4 variants require moe_ep_size=1, got \d+"),
+        (
+            ValueError,
+            r"Invalid quantized MoE configuration: \(moe_intermediate_size=\d+ / moe_tp_size=\d+\) "
+            r"% weight_block_size=\d+ != 0\.",
+        ),
+        (
+            NotImplementedError,
+            r"DeepSeek-V4\.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
+            r"DP Engram collectives and PP cache ownership need separate contracts",
+        ),
+        (
+            ValueError,
+            r"DeepSeek-V4\.1 EP must divide experts; TP must divide index heads and output groups",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+            r"data-parallel attention is not supported",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
+        ),
+        (NotImplementedError, r"GLM-5\.3-Flash currently supports vLLM and SGLang"),
+    )
+    if stage == "build" and any(
+        isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
+        for item in chain
+        for error_type, pattern in sdk_rejections
+    ):
+        return STATUS_SDK_UNREPRESENTABLE
     names = " ".join(type(item).__name__ for item in chain).lower()
     messages = " ".join(str(item) for item in chain).lower()
     evidence = f"{names} {messages}"
@@ -573,6 +660,7 @@ def _result(
         reproducer=_reproducer(plan, call),
         source_version=source_version,
         source_sha=source_sha,
+        attention_backend=plan.attention_backend,
     )
 
 
@@ -799,6 +887,7 @@ def write_outputs(
         "schema_version": SCHEMA_VERSION,
         "source_version": source_version,
         "source_sha": source_sha,
+        "wheel_sha256": os.environ.get("FPE_WHEEL_SHA256"),
         "plan_count": metrics.plan_count,
         "workload": asdict(workload),
     }

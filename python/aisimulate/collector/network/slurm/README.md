@@ -37,7 +37,7 @@ python3 cvt_log_to_perf_txt.py
 
 # 2. Custom allreduce collection
 
-Single-node scripts cover TP=2/4. On GB200/GB300 (4 GPUs per node) serving-relevant TP sizes span nodes; use the multi-node scripts so the TRT-LLM MNNVL path is exercised (issue #1416). `collect_allreduce.py` must construct `AllReduce(..., dtype=...)` — without dtype the collector silently measures the fallback kernel.
+Single-node scripts cover TP=2/4. On GB200/GB300 (4 GPUs per node) serving-relevant TP sizes span nodes; use the multi-node scripts so the TRT-LLM MNNVL path is exercised. `collect_allreduce.py` must construct `AllReduce(..., dtype=...)` — without dtype the collector silently measures the fallback kernel.
 
 The TP2/TP4/TP8/TP16 launchers are reviewed templates and have not been exercised as-is on a Slurm cluster; the published GB300 rows were collected through `torchrun`/`mpirun`. Before use, replace the rc20 image and repository-mount placeholders, and verify the site supports `--gpus-per-task=1 --gpu-bind=single:1`; every launcher binds one visible CUDA device per task, as required by the worker.
 
@@ -137,8 +137,8 @@ size, but the SDK consumes ONE `moe_a2a_perf.parquet` per
 `(system, backend, version)` directory in the family tree:
 
 ```
-aic-core/src/aiconfigurator_core/systems/data/<system>/comm/sglang/<version>/moe_a2a_perf.parquet
-aic-core/src/aiconfigurator_core/systems/data/<system>/comm/sglang/<version>/collection_meta.yaml
+src/aisimulate_core/systems/data/<system>/comm/sglang/<version>/moe_a2a_perf.parquet
+src/aisimulate_core/systems/data/<system>/comm/sglang/<version>/collection_meta.yaml
 ```
 
 (`moe_a2a_perf` maps to the `comm` family in

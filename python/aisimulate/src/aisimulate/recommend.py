@@ -5,24 +5,60 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
+import logging
 import math
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .aic import resolve_model_context_length
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
+from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.engine import resolve_block_size
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
+from .resources import GuardedRunnerFactory, discover_host, resolve_budget
+from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
-from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
+from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
+
+# Estimators fitted to forward-pass telemetry, which read no performance data.
+_FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
+# Engine fields whose omission differs from an explicit default: a role timed
+# by a state snapshot takes an omitted one from the snapshot, while an explicit
+# one must agree with it. An omitted `backend` likewise yields to the snapshot.
+EXPLICIT_ENGINE_CONTROLS = (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+
+
+def recommendation_payload(config: CoreRecommendationConfig) -> tuple[dict, list[str]]:
+    """The configuration a supervised worker rebuilds, and the engine fields the caller left unset.
+
+    Validating the payload marks every field it holds set, while
+    ``recommendation_to_sweeper`` tells an omitted engine control or backend
+    from an explicit one by the fields set. Every value travels, including
+    edits to objects created by default, and the names restore the omissions.
+    """
+    unset = sorted({*EXPLICIT_ENGINE_CONTROLS, "backend"} - config.engine.model_fields_set)
+    return config.model_dump(mode="json"), unset
+
+
+def recommendation_from_payload(raw: dict, unset: list[str]) -> CoreRecommendationConfig:
+    """Rebuild the configuration :func:`recommendation_payload` sent, with the same fields set."""
+    config = CoreRecommendationConfig.model_validate(raw)
+    config.engine.__pydantic_fields_set__.difference_update(unset)
+    return config
 
 
 def run_recommendation(
@@ -32,13 +68,79 @@ def run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
+    from .supervision import in_supervised_process, supervised_recommendation
+
+    kwargs = dict(
+        adapter_configs=adapter_configs,
+        stack=stack,
+        runner_factory=runner_factory,
+        providers=providers,
+        output_configs=output_configs,
+        afd_performance_model=afd_performance_model,
+        show_progress=show_progress,
+        output_requirements=output_requirements,
+    )
+    if not in_supervised_process():
+        return supervised_recommendation(config, kwargs)
+    return _run_recommendation(config, **kwargs)
+
+
+def _run_recommendation(
+    config: CoreRecommendationConfig,
+    *,
+    adapter_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    stack: str,
+    runner_factory: RunnerFactory,
+    providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
+    afd_performance_model: AFDPerformanceModel | None = None,
+    show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
+) -> SweepResult:
+    from .supervision import checkpoint
+
+    checkpoint("requested_config", config.model_dump(mode="json"))
+    budget = resolve_budget(config.execution.resources, discover_host())
+    from .runner import EngineReplayRunnerFactory
     from .sweeper.search import Sweeper
 
+    if isinstance(runner_factory, EngineReplayRunnerFactory):
+        # Every candidate replays the same traffic, so each sweep worker keeps
+        # the trace graphs it loads instead of rebuilding them per candidate.
+        runner_factory = dataclasses.replace(runner_factory, trace_graph_cache=True)
+    runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
+    if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("encoder pools require --stack engine without adapters")
+    if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
+        raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    if config.traffic is None:
+        workload = smart.workload
+        logging.getLogger(__name__).warning(
+            "No traffic configured; using synthetic traffic: input_tokens=%s, output_tokens=%s, "
+            "concurrency=%s, requests=%s. Set traffic explicitly for your workload.",
+            workload.isl,
+            workload.osl,
+            workload.concurrency,
+            int(workload.concurrency * workload.num_request_ratio),
+        )
+    if config.engine.context_length == "max":
+        logging.getLogger(__name__).warning(
+            "engine.context_length is 'max'; using the %s of %s tokens. Parallel shapes whose "
+            "KV cache cannot hold one sequence of that length are excluded from the search. Set "
+            "engine.context_length to your longest request to admit them.",
+            "model maximum" if config.engine.fpm_profile is None else "FPM profile context length",
+            smart.search_space.context_length,
+        )
+    smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
         workload=smart.workload.model_dump(mode="json"),
@@ -63,13 +165,38 @@ def run_recommendation(
     adapter_sections = {name: provider.section for name, provider in (providers or {}).items()}
     sweeper = Sweeper(
         runner_factory=runner_factory,
+        output_requirements=output_requirements,
         providers=compiled_providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
             config, sample, spec, adapter_sections=adapter_sections
         ),
+        afd_performance_model=afd_performance_model,
     )
-    return sweeper.run(smart, top_n=None)
+    output_callbacks = resolve_output_callbacks(
+        output_configs or {},
+        injected=output_adapters,
+        context=RecommendationOutputContext(workload=smart.workload),
+    )
+    try:
+        result = sweeper.run(
+            smart,
+            top_n=None,
+            on_candidate=output_callbacks.on_candidate,
+            on_round=output_callbacks.on_round,
+        )
+        if output_callbacks.on_complete is not None:
+            output_callbacks.on_complete()
+    except Exception as exc:
+        if output_callbacks.on_failure is not None:
+            try:
+                output_callbacks.on_failure(exc)
+            except Exception as callback_exc:
+                exc.add_note(
+                    f"output adapter failure handling also failed: {type(callback_exc).__name__}: {callback_exc}"
+                )
+        raise
+    return result
 
 
 def recommendation_to_sweeper(
@@ -82,6 +209,11 @@ def recommendation_to_sweeper(
     optimization = config.optimization
     mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
     modes = [_legacy_mode(str(value)) for value in mode_values]
+    afd = engine.get("afd")
+    if modes == ["afd"]:
+        if not isinstance(afd, dict):
+            raise ValueError("engine.mode='afd' requires engine.afd")
+        modes = ["afd+pd" if afd["combined_with_pd"] else "afd"]
     backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
     model = engine.get("model")
     if not isinstance(model, str) or not model:
@@ -106,9 +238,107 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (resolve_model_context_length(model) if context == "max" else context),
+        "context_length": (
+            config.engine.fpm_profile.context_length
+            if context == "max" and config.engine.fpm_profile is not None
+            else resolve_model_context_length(model)
+            if context == "max"
+            else context
+        ),
     }
-    search_space.update(_role_search_space(workers, modes))
+    if engine.get("fpm_profile") is not None:
+        search_space["fpm_profile"] = engine["fpm_profile"]
+    for name in (
+        "database_mode",
+        "transfer_policy",
+        "systems_paths",
+        "estimation_mode",
+        "fallback_policy",
+        "estimator_config",
+    ):
+        if name in engine:
+            search_space[name] = deepcopy(engine[name])
+    # Only controls the caller set: a role timed by a state snapshot takes an
+    # omitted control from the snapshot, while an explicit default such as
+    # enable_eplb=false must agree with it. The Sweeper has the same defaults.
+    search_space.update(
+        {
+            name: deepcopy(engine[name])
+            for name in EXPLICIT_ENGINE_CONTROLS
+            if name in engine and name in config.engine.model_fields_set
+        }
+    )
+    if engine.get("nextn"):
+        search_space["aic_nextn"] = engine["nextn"]
+    search_space["role_estimator_controls"] = {
+        ("agg" if role == "aggregated" else role): {
+            name: deepcopy(raw.get("timing", {})[name])
+            for name in (
+                "estimation_mode",
+                "fallback_policy",
+                "estimator_config",
+                "systems_paths",
+                "database_mode",
+                "transfer_policy",
+            )
+            if name in raw.get("timing", {})
+        }
+        for role, raw in workers.items()
+        if role in {"aggregated", "prefill", "decode"}
+        and not set(modes) & {"afd", "afd+pd"}
+        and workers.get("encoder") is None
+    }
+    active_roles = ({"agg"} if "agg" in modes else set()) | ({"prefill", "decode"} if "disagg" in modes else set())
+    if "backend" not in config.engine.model_fields_set and any(
+        role in active_roles and state_snapshot_reference(controls) is not None
+        for role, controls in search_space["role_estimator_controls"].items()
+    ):
+        # A role timed by a state snapshot takes the backend from the snapshot,
+        # not from the default backend domain.
+        del search_space["backend"]
+    if engine.get("speculation") is not None:
+        search_space["speculation"] = deepcopy(engine["speculation"])
+    for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("context_length") is not None:
+            search_space[f"{role}_context_length"] = workers[role]["context_length"]
+        if workers.get(role, {}).get("hardware") is not None:
+            search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
+    if isinstance(afd, dict):
+        search_space.update(_afd_search_space(afd))
+        if modes == ["afd+pd"]:
+            companion_role = "decode" if afd["phase"] == "prefill" else "prefill"
+            workers.setdefault(companion_role, {})
+            kind, value = _parallel_entries(companion_role, workers[companion_role])
+            if kind == "flat":
+                search_space["afd_companion_parallel_configs"] = [_legacy_parallel(entry) for entry in value]
+            elif kind == "independent":
+                raise ValueError(
+                    f"engine.workers.{companion_role}.parallelism supports preset=default or a concrete "
+                    "preset list for AFD recommendations"
+                )
+    search_space.update(
+        _role_search_space(
+            workers,
+            modes,
+            afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
+        )
+    )
+    search_space.update(_native_vl_search_space(config, workers))
+    if engine.get("workers", {}).get("encoder") is not None:
+        encoder = workers["encoder"]
+        search_space["encoder"] = {
+            "hardware_sku": encoder.get("hardware"),
+            "backend_version": encoder.get("backend_version"),
+            "tp": _choices(encoder["tensor"], default=[1]),
+            "workers": _choices(encoder["replicas"], default=[1]),
+            "batch_size": _choices(encoder["batch_size"], default=[1]),
+            "latency_correction": encoder["latency_correction"],
+            "rate_degradation": encoder["rate_degradation"],
+            "mode": encoder.get("mode", "analytical"),
+            "host_profile": encoder.get("host_profile"),
+            "frontend": encoder.get("frontend"),
+            "transfer_bandwidth_gb_per_second": (encoder.get("transfer") or {}).get("bandwidth_gb_per_second"),
+        }
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
         search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
@@ -205,7 +435,36 @@ def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
 
-def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, Any]:
+def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "afd_phase": afd["phase"],
+        "afd_batch_size_candidates": [int(value) for value in _choices(afd["a_batch_size"], default=[])],
+        "afd_microbatch_candidates": [int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4])],
+        "afd_pipeline_model_candidates": [
+            str(value)
+            for value in _choices(
+                afd.get("pipeline_model"),
+                default=["optimistic", "conservative"],
+            )
+        ],
+        "afd_comm_overhead_factor": afd.get("comm_overhead_factor", 1.0),
+        "afd_boundary_on_attn": afd.get("boundary_on_attn", True),
+        "afd_max_af_ratio": afd.get("max_af_ratio", 4.0),
+        "afd_max_candidates": afd.get("max_candidates", 10_000),
+    }
+    if afd.get("tp_a") is not None:
+        result["afd_tp_a_candidates"] = [int(value) for value in _choices(afd["tp_a"], default=[])]
+    if afd.get("f_moe_ep_size") is not None:
+        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[])
+    return result
+
+
+def _role_search_space(
+    workers: dict[str, Any],
+    modes: list[str],
+    *,
+    afd_phase: str | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "engine_float_ranges": {},
         "engine_log_ranges": [],
@@ -214,8 +473,16 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
-        ("prefill", "prefill", "disagg" in modes),
-        ("decode", "decode", "disagg" in modes),
+        (
+            "prefill",
+            "prefill",
+            "disagg" in modes or ("afd+pd" in modes and afd_phase == "decode"),
+        ),
+        (
+            "decode",
+            "decode",
+            "disagg" in modes or ("afd+pd" in modes and afd_phase == "prefill"),
+        ),
     )
     for public_role, legacy_role, required in specifications:
         raw = workers.get(public_role)
@@ -286,7 +553,11 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
-        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
+        if timing.get("estimation_mode") is not None:
+            result[f"{legacy_role}_forward_model"] = (
+                "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
+            )
+        result[f"{legacy_role}_fpm_parquet_path"] = timing.get("fpm_parquet_path")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -297,6 +568,83 @@ def _role_search_space(workers: dict[str, Any], modes: list[str]) -> dict[str, A
         result.pop("engine_log_discrete")
     if not result["engine_integer_log_ranges"]:
         result.pop("engine_integer_log_ranges")
+    return result
+
+
+def _tensor_domain(raw_worker: dict[str, Any]) -> list[int]:
+    """Tensor widths a worker's search covers; a log range contributes its bounds."""
+    tensors, log_range = _integer_domain((raw_worker.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
+    return sorted(set(tensors) | set(log_range or ()))
+
+
+def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
+    """Pinned host, frontend and vision settings shared by every host-aware candidate.
+
+    Frontend stages are measured data, not search dimensions. A host cost table
+    is resolved here once per feature transport the tensor-parallel candidates
+    need, so candidates score rows that matched the workload shape and never a
+    file that may change later; only the vision tower needs an image workload.
+    The aggregated or the prefill worker hosts the loop, keyed by its legacy role.
+    A native encoder pool leaves the loop on the language worker and takes the tower.
+    """
+    encoder = config.engine.workers.encoder
+    if encoder is not None and encoder.mode == "analytical":
+        return {}
+    result: dict[str, Any] = {}
+    for public_role, role in (("aggregated", "agg"), ("prefill", "prefill")):
+        worker = getattr(config.engine.workers, public_role)
+        raw = workers.get(public_role) if isinstance(workers, dict) else None
+        if worker is None or not isinstance(raw, dict):
+            continue
+        source = config.traffic.source if config.traffic is not None else None
+        images = getattr(source, "images", None)
+        if images is not None and encoder is None:
+            from .config.engine import VisionPredictionConfig
+
+            result[f"{role}_vision"] = (worker.vision or VisionPredictionConfig()).model_dump(mode="json")
+        if worker.host_loop:
+            result[f"{role}_host_loop"] = True
+        if worker.frontend is not None:
+            measured = worker.frontend.measured_for
+            if measured is not None:
+                # Explicit stages carry their measurement like a table row; every searched
+                # width must still be the one they were measured for.
+                if images is None:
+                    raise ValueError(
+                        f"frontend stages were measured for {measured.describe()}; this workload has no images"
+                    )
+                from .config.engine import FrontendMeasurementConfig
+
+                for tensor in _tensor_domain(raw):
+                    needed = FrontendMeasurementConfig.for_workload(
+                        config.engine.model, measured.frontend, images.model_dump(mode="json"), tensor
+                    )
+                    if needed != measured:
+                        raise ValueError(
+                            f"frontend stages were measured for {measured.describe()}; this search needs "
+                            f"{needed.describe()}"
+                        )
+            result[f"{role}_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
+        if worker.host_profile is None:
+            continue
+        if images is None:
+            raise ValueError("host_profile requires an image workload")
+        from .config.engine import feature_transport
+        from .vl.table import resolve_frontend
+
+        # The transport only depends on whether a candidate runs on one rank, so the
+        # domain's members decide which rows exist.
+        by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in _tensor_domain(raw)}
+        by_transport: dict[str, Any] = {}
+        for transport, tensor in sorted(by_tensor.items()):
+            frontend, digest = resolve_frontend(
+                worker.host_profile,
+                model=config.engine.model,
+                images=images.model_dump(mode="json"),
+                tensor=tensor,
+            )
+            by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
+        result[f"{role}_frontend_by_transport"] = by_transport
     return result
 
 
@@ -339,9 +687,24 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
     return "independent", {"choices": choices, "log_ranges": log_ranges}
 
 
+_CONTEXT_PARALLEL_KEYS = ("prefill_context", "decode_context")
+
+
 def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} entries must be mappings")
+    # Context parallelism is a predict-only knob: preset entries are full
+    # ParallelismPredictionConfig dumps, so they may carry the two keys unset
+    # (None) or at 1. The sweeper does not enumerate CP/DCP yet, so anything
+    # else is rejected explicitly instead of being silently dropped.
+    value = dict(value)
+    for key in _CONTEXT_PARALLEL_KEYS:
+        leaf = value.pop(key, None)
+        if leaf not in (None, 1):
+            raise ValueError(
+                f"{path}.{key}={leaf!r} is not supported by recommend; context parallelism "
+                "is a predict-only knob (use `aisimulate predict` with a fixed parallelism)"
+            )
     missing = set(_PARALLEL_KEYS) - set(value)
     unknown = set(value) - set(_PARALLEL_KEYS)
     if missing or unknown:
@@ -484,6 +847,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
         )
         if source.get("nested_timestamp_basis") is not None:
             result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
+        if source.get("client") is not None:
+            result["weka_client"] = source["client"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,
@@ -500,11 +865,25 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             )
             if load.get("agentic_lanes") is not None:
                 result["agentic_lanes"] = load["agentic_lanes"]
+            if load.get("agentic_snapshot") is not None:
+                result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
+            if load.get("agentic_warmup"):
+                result["agentic_warmup"] = True
+            if load.get("agentic_warmup_policy", "repeated_prefixes") != "repeated_prefixes":
+                result["agentic_warmup_policy"] = load["agentic_warmup_policy"]
+            if load.get("agentic_profile") is not None:
+                result["agentic_profile"] = deepcopy(load["agentic_profile"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
-        result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        result.update(
+            isl=source.get("input_tokens", 1024),
+            osl=source.get("output_tokens", 128),
+            cached_prefix_tokens=source.get("cached_prefix_tokens", 0),
+        )
+        if source.get("images") is not None:
+            result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
         ratio = stop.get("requests_per_load_unit") if isinstance(stop, dict) else None
     elif source_type == "synthetic-session":
@@ -597,6 +976,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.min_goodput_rps is not None:
+        payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
@@ -612,7 +993,13 @@ def _candidate_prediction(
 ) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
     engine: dict[str, Any] = {
-        "mode": "aggregated" if deployment.deployment_mode == "agg" else "disaggregated",
+        "mode": (
+            "aggregated"
+            if deployment.deployment_mode == "agg"
+            else "afd"
+            if deployment.deployment_mode in {"afd", "afd+pd"}
+            else "disaggregated"
+        ),
         "model": sample["model_name"],
         "hardware": sample["hardware_sku"],
         "backend": sample["backend"],
@@ -620,17 +1007,63 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    if sample.get("systems_paths") is not None:
+        engine["systems_paths"] = sample["systems_paths"]
+    if sample.get("fpm_profile") is not None:
+        engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
+    for name in EXPLICIT_ENGINE_CONTROLS:
+        if sample.get(name) is not None:
+            engine[name] = sample[name]
+    if sample.get("aic_nextn"):
+        engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
-    roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
+    if deployment.forward_pass_estimators:
+        for name in (
+            "database_mode",
+            "transfer_policy",
+            "systems_paths",
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+        ):
+            if name in raw_engine:
+                engine[name] = deepcopy(raw_engine[name])
+    if sample.get("speculation") is not None:
+        engine["speculation"] = deepcopy(sample["speculation"])
+    if deployment.encoder is not None:
+        from .config.epd import encoder_prediction_fields
+
+        engine["workers"]["encoder"] = encoder_prediction_fields(deployment.encoder)
+    if deployment.deployment_mode in {"afd", "afd+pd"}:
+        raw_afd = sample.get("afd")
+        if not isinstance(raw_afd, dict):
+            raise InfeasibleCandidate("AFD candidate omitted its concrete topology")
+        engine["afd"] = {
+            name: raw_afd[name]
+            for name in (
+                "phase",
+                "combined_with_pd",
+                "n_a_nodes",
+                "n_f_nodes",
+                "tp_a",
+                "a_batch_size",
+                "f_moe_ep_size",
+                "num_microbatches",
+                "pipeline_model",
+                "comm_overhead_factor",
+                "boundary_on_attn",
+            )
+        }
+        roles = (str(sample["afd_companion_role"]),) if deployment.deployment_mode == "afd+pd" else ()
+    else:
+        roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"
         public_role = "aggregated" if role == "agg" else role
         raw_worker = (
             raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
-        block_size = sample[f"{role}_block_size"]
-        if block_size is None:
-            block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
+        block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:
             memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9
@@ -645,6 +1078,46 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
+            if sample.get(f"{role}_fpm_parquet_path") is not None:
+                timing["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
+        estimator = deployment.forward_pass_estimators.get(role)
+        if estimator is not None:
+            resolved = estimator.config
+            timing = {
+                "type": "default",
+                "estimation_mode": resolved["estimation_mode"],
+                "fallback_policy": "deny",
+                "estimator_config": deepcopy(resolved["estimator_config"]),
+            }
+            # Per-role roots can differ; preserve them next to the role's timing.
+            # A packed snapshot's own root moves with the snapshot, which the
+            # timing already names. A regression or learned model reads no
+            # performance data, so its prediction names no root to relocate.
+            if (
+                resolved["systems_paths"]
+                and resolved["estimation_mode"] not in _FITTED_MODES
+                and packed_systems_root(resolved["estimator_config"]) is None
+            ):
+                timing["systems_paths"] = list(resolved["systems_paths"])
+            timing["database_mode"] = resolved["database_mode"]
+            policy = resolved["transfer_policy"]
+            timing["transfer_policy"] = list(policy) if policy is not None else None
+            timing.update(
+                {
+                    field: resolved[field]
+                    for field in (
+                        "gemm_quant_mode",
+                        "moe_quant_mode",
+                        "fmha_quant_mode",
+                        "kvcache_quant_mode",
+                        "comm_quant_mode",
+                        "attention_backend",
+                    )
+                    # A fact the snapshot does not know stays in its identity;
+                    # predict would read an unknown KV dtype for byte estimates.
+                    if resolved.get(field) not in (None, UNKNOWN_IDENTITY)
+                }
+            )
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -662,7 +1135,7 @@ def _candidate_prediction(
             kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
         if sample.get(f"{role}_native_host_offload") is not None:
             kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
-        engine["workers"][public_role] = {
+        worker_config = {
             "parallelism": {
                 "replicas": sample[f"{prefix}replicas"],
                 "tensor": sample[f"{prefix}tp"],
@@ -670,6 +1143,11 @@ def _candidate_prediction(
                 "attention_data": sample[f"{prefix}attention_dp"],
                 "moe_tensor": sample[f"{prefix}moe_tp"],
                 "moe_expert": sample[f"{prefix}moe_ep"],
+                **(
+                    {"decode_context": estimator.config["dcp"]}
+                    if estimator is not None and estimator.config.get("dcp") is not None
+                    else {}
+                ),
             },
             "scheduler": {
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],
@@ -681,6 +1159,25 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if role != "agg" and sample.get(f"{role}_context_length") is not None:
+            worker_config["context_length"] = sample[f"{role}_context_length"]
+        engine["workers"][public_role] = worker_config
+        if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
+            engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
+        if role in ("agg", "prefill"):
+            from .sweeper.deploy import sample_frontend
+
+            rendered = engine["workers"][public_role]
+            # The stages are written out as the candidate ran them, with the workload
+            # they were measured for: a saved candidate must not depend on a table
+            # file that can change or disappear after scoring.
+            frontend = sample_frontend(sample, role)
+            if frontend is not None:
+                rendered["frontend"] = deepcopy(frontend)
+            elif sample.get(f"{role}_host_loop"):
+                rendered["host_loop"] = True
+            if sample.get(f"{role}_vision") is not None:
+                rendered["vision"] = deepcopy(sample[f"{role}_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
@@ -700,11 +1197,17 @@ def _candidate_prediction(
                 "traffic": traffic,
                 "engine": engine,
                 "evaluation": source.evaluation.model_dump(mode="python", exclude_none=True),
+                "execution": source.execution.model_dump(mode="python", exclude_none=True),
             }
         )
     except ValueError as exc:
         raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
+    # Recommendation has no decoder_replay setting. Leaving it unset lets
+    # predict take each snapshot role's saved value; a written default would
+    # read back as an explicit false.
+    if "decoder_replay" not in prediction.engine.model_fields_set:
+        public["engine"].pop("decoder_replay", None)
     public.update(concrete_adapters)
     return public
 

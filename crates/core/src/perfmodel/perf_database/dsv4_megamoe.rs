@@ -41,7 +41,7 @@
 //! `PerformanceResult(latency, energy=energy)`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use super::axis_curve::LeafAxisCurve;
@@ -104,6 +104,11 @@ impl Dsv4MegaMoeTable {
             primary_path,
             module: OnceLock::new(),
         }
+    }
+
+    /// The single source selected for both readiness and lazy table loading.
+    pub(crate) fn primary_path(&self) -> &Path {
+        &self.primary_path
     }
 
     /// Query the measured MegaMoE routed-module value (latency ms +

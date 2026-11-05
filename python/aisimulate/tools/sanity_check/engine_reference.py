@@ -37,19 +37,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from aiconfigurator_core.sdk import common
-from aiconfigurator_core.sdk.common import DatabaseMode
-from aiconfigurator_core.sdk.engine import EngineHandle, build_ops_json
-from aiconfigurator_core.sdk.operations.attention import ContextAttention, GenerationAttention
-from aiconfigurator_core.sdk.operations.communication import NCCL, CustomAllReduce
-from aiconfigurator_core.sdk.operations.dsa import (
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.common import DatabaseMode
+from aisimulate_core.sdk.engine import EngineHandle, build_ops_json
+from aisimulate_core.sdk.operations.attention import ContextAttention, GenerationAttention
+from aisimulate_core.sdk.operations.communication import NCCL, CustomAllReduce
+from aisimulate_core.sdk.operations.dsa import (
     DEFAULT_DSA_ARCHITECTURE,
     ContextDSAModule,
     GenerationDSAModule,
 )
-from aiconfigurator_core.sdk.operations.gemm import GEMM
-from aiconfigurator_core.sdk.operations.mla import ContextMLA, GenerationMLA
-from aiconfigurator_core.sdk.operations.moe import MoE
+from aisimulate_core.sdk.operations.gemm import GEMM
+from aisimulate_core.sdk.operations.mla import ContextMLA, GenerationMLA
+from aisimulate_core.sdk.operations.moe import MoE
 
 # Ad-hoc probe shapes must fit the FFI's u32 token count. Comm charts sweep
 # message sizes up to 2**32 elements, so the element count is factored into

@@ -1,0 +1,2285 @@
+{
+  "schema_version": "single-node-runtime-cache/1",
+  "artifacts": [
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 1,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/1/logs",
+        "logs_archive_sha256": "378c7efde73a064574899dd2b4d03d3705a0d15a8d4da938a033a74ee376a5c8",
+        "job_log_member": "11_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b300 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "af79a2a8e742fced5f6d7bc3e6f8517a677f199dc779ee4ca853795561001212"
+      },
+      "server": {
+        "id": 7845290396,
+        "path": "7845290396.zip",
+        "sha256": "51daab30f53181aaf402506222f42b01f8bdbbad4964f06046856e2ffa3c88c3",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7845289965,
+        "path": "7845289965.zip",
+        "sha256": "9aaa90fecc742e31db2e5f8072ddc5465746aedf7ee6cb755a399acac28e5149",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc1_b300-nv_09.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 1,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/1/logs",
+        "logs_archive_sha256": "378c7efde73a064574899dd2b4d03d3705a0d15a8d4da938a033a74ee376a5c8",
+        "job_log_member": "18_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b300 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "4545666253d221566aaccc2ae649050a3cacbbbf791f16622cc049e88a6b7a05"
+      },
+      "server": {
+        "id": 7845102023,
+        "path": "7845102023.zip",
+        "sha256": "f91224b3538c4b9c48556d884d19062f4bd3460a616f4a13616574bd9c320560",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7845101603,
+        "path": "7845101603.zip",
+        "sha256": "8c82c0df42b8f9a642aeb498cfa9ad374429043723dc43fd1a880a6a1220e6e8",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc1_b300-nv_02.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 1,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/1/logs",
+        "logs_archive_sha256": "378c7efde73a064574899dd2b4d03d3705a0d15a8d4da938a033a74ee376a5c8",
+        "job_log_member": "17_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b300 sglang  tp=4 ep=1 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "d2f96084905e5eb6cfa3d3dfd85aa41350c323ca55dfe9b891b08420f3867408"
+      },
+      "server": {
+        "id": 7845321784,
+        "path": "7845321784.zip",
+        "sha256": "845b68cfe2815d39e1964c97f46e67f880e5f7fcd881367e18ae62c66494ce54",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7845321374,
+        "path": "7845321374.zip",
+        "sha256": "8479b87c06ff6b92b6d897b4235d43c61e4c91e8f364b662843284120107bdc2",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp4-ep1-dpafalse_disagg-false_spec-none_conc32_b300-nv_17.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 1,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/1/logs",
+        "logs_archive_sha256": "378c7efde73a064574899dd2b4d03d3705a0d15a8d4da938a033a74ee376a5c8",
+        "job_log_member": "12_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b300 sglang  tp=4 ep=1 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "7488b1133750507cae9821edc3ca8c48ed35d1d428a2eef1b185987f54c06df4"
+      },
+      "server": {
+        "id": 7845414409,
+        "path": "7845414409.zip",
+        "sha256": "19697546f87e429f9b534d80311c4c2d5bcc4f9748d7cdafab349380a282655b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7845414014,
+        "path": "7845414014.zip",
+        "sha256": "56a3f78adf2d67aacb31543a193f04329a49a7dd0c333b0d0bd6a8e6337f1850",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp4-ep1-dpafalse_disagg-false_spec-none_conc32_b300-nv_02.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 4,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-4.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/4/logs",
+        "logs_archive_sha256": "4cdc0ea2ba234d08230437f5f988d770452ecd6ea238327007b8aa50943c1d15",
+        "job_log_member": "9_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b300 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-2048.txt",
+        "job_log_sha256": "6eae804c64658617a835d27a9c7acf6dd8e0e700c5a82fd59dab5d412410bc4f"
+      },
+      "server": {
+        "id": 7913289869,
+        "path": "7913289869.zip",
+        "sha256": "d3c2315832c242dd4e3bdfb67636698e31a2afd3bff5bdd50cade535016c143c",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7913289417,
+        "path": "7913289417.zip",
+        "sha256": "7498f61abaf7a91012bdc8a3eaf41c3971d053ba1b0af2083cc38ab17a04f474",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc2048_b300-nv_14.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 4,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-4.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/4/logs",
+        "logs_archive_sha256": "4cdc0ea2ba234d08230437f5f988d770452ecd6ea238327007b8aa50943c1d15",
+        "job_log_member": "12_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b300 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-4096.txt",
+        "job_log_sha256": "8b1d712dfed7631a3c2a7e99aae5c0f13818062e800acc9cc23e0f03e81f51de"
+      },
+      "server": {
+        "id": 7913664688,
+        "path": "7913664688.zip",
+        "sha256": "44784d813c676322f0cdfd00bcb9dde55f8b10718030b0907c3743e826bc350a",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7913664099,
+        "path": "7913664099.zip",
+        "sha256": "6b1ef66f198a157101cf9c4f368967d756f7520848528dcb9c2d53b656646606",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc4096_b300-nv_03.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 4,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-4.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/4/logs",
+        "logs_archive_sha256": "4cdc0ea2ba234d08230437f5f988d770452ecd6ea238327007b8aa50943c1d15",
+        "job_log_member": "11_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b300 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-8192.txt",
+        "job_log_sha256": "6e02affe08e41a4dd78b68645e52a1162fe2f3c324ceef50429948390823eb5c"
+      },
+      "server": {
+        "id": 7911917274,
+        "path": "7911917274.zip",
+        "sha256": "256e5df0faf9233e9374382e4c00d3287a68a18ea032ed0c401f95583ea98829",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7911916875,
+        "path": "7911916875.zip",
+        "sha256": "814cbce71ccbd625fab3e6224fb6676dd572ac4db31f385b4c73f623b65c2faa",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc8192_b300-nv_03.json"
+      }
+    },
+    {
+      "github_run_id": "28078823761",
+      "run_attempt": 4,
+      "source_git_sha": "324150fd2de0125ed6de21d610d279f6606f81b4",
+      "logs_path": "logs-28078823761-4.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28078823761/attempts/4/logs",
+        "logs_archive_sha256": "4cdc0ea2ba234d08230437f5f988d770452ecd6ea238327007b8aa50943c1d15",
+        "job_log_member": "7_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260624-b2c8f7a2, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b300 sglang  tp=4 ep=1 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "69689912577a73f18b16bc4368d7648384a38ac09db53f240d613118bb1694fc"
+      },
+      "server": {
+        "id": 7913185199,
+        "path": "7913185199.zip",
+        "sha256": "347981dc9451333d05647a4eeabf5d0136513b1ada05a600d77067025192e000",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7913184862,
+        "path": "7913184862.zip",
+        "sha256": "36e203eb5fd62cbaea2e1c9a244995ac92cc8fa53e549db574f67a8a47039304",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp4-ep1-dpatrue_disagg-false_spec-none_conc512_b300-nv_08.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "21_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "2bca1009fa60bcff9e3944d7bc8c3132416f16d3a77b57d560928d89c1dafb07"
+      },
+      "server": {
+        "id": 7895118663,
+        "path": "7895118663.zip",
+        "sha256": "b78fe0b5451485ac51ca303e327415190d66d09ccb499918eba059df9376c5a4",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895118483,
+        "path": "7895118483.zip",
+        "sha256": "573dcbf1df43315f3c8bdb6196dfea9c1aa2d89552a0c411de5c98999715413c",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc4_b300-nv_09.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "20_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "31d1dbf9500ed31d4475cb2ed63fe66bd6fd006b4d68968e80c463a47889b839"
+      },
+      "server": {
+        "id": 7895147231,
+        "path": "7895147231.zip",
+        "sha256": "00988023e0f37ad7032d5cfdccb57b46047acdb2c0a55c1fc28e8e8f03a2eccf",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895147027,
+        "path": "7895147027.zip",
+        "sha256": "376cdd76c625f77346ff91128a5ea6157b5298237b901b073f068892b1984bef",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc8_b300-nv_17.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "60_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "e2f46344b543d55a459b40f6cd8e0fd4a20c45160ce00516148b154a56d16dfe"
+      },
+      "server": {
+        "id": 7894089129,
+        "path": "7894089129.zip",
+        "sha256": "912865d564aae6fe57675a9426df39a5ba2fb84a1d4fd6f4986556aede3703a5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894088951,
+        "path": "7894088951.zip",
+        "sha256": "93ee91624c561163b130fae76254d4274726ce922b71e45f11171c1f567b0473",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc128_b300-nv_11.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "68_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "6bd4c922b6c766ceb60c2ef375b613a65cd5af59018626c1da1883297512e25f"
+      },
+      "server": {
+        "id": 7893822304,
+        "path": "7893822304.zip",
+        "sha256": "975dc7ed49e7588572c69160e97078bee730c020411b202b49560f228c416d5b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7893822128,
+        "path": "7893822128.zip",
+        "sha256": "8981521759a14a0d6f31a3e249ab6b4f90db11b97aa3d8661ac2b2717c71cfaa",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc4_b300-nv_01.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "26_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "716e03a124a5247d2a4e4cd440598def7c7224a4be8916a98d06b393471dd990"
+      },
+      "server": {
+        "id": 7895096108,
+        "path": "7895096108.zip",
+        "sha256": "8ef73576e10556f479791fcfc1301ff89d6a10c13749df4a6ed01cb8ed9f8aca",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895095898,
+        "path": "7895095898.zip",
+        "sha256": "63721a4ccb732eb6739e78b28d0d8958bec2135a1c4a500d0db9325d051c27ea",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc128_b300-nv_03.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "52_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "78f07a47b61bbd1f0734cd12461c3e1385ff07ce2137f027925487989e65b35c"
+      },
+      "server": {
+        "id": 7894249604,
+        "path": "7894249604.zip",
+        "sha256": "2efdca6c25c48b486bca29e996c096646944bd3d2e75dfc459097e3fce5d1204",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894249374,
+        "path": "7894249374.zip",
+        "sha256": "e88129c3a4bd07c1f2e9d98a8b92816673f7db127062eafe0447b6bd88ac7113",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc16_b300-nv_17.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "24_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "9ca22d67beaee87b121e7dc51a48d488835ceb5a25d5bc57929a43aa6f3dc6e8"
+      },
+      "server": {
+        "id": 7895114889,
+        "path": "7895114889.zip",
+        "sha256": "e3599fe4a2dfba4e374b228f55d4b6bc2b2ad7af25022f1d79ed133e7af69775",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895114705,
+        "path": "7895114705.zip",
+        "sha256": "8df18cb376723118783ce30bf634cb09bd1d303502afda9434c6a6f3b1c57b74",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc2_b300-nv_02.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "11_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "cad4b25a81c75de613157e624f3714c32334a2165d506bd6dda45fcdf2d601ec"
+      },
+      "server": {
+        "id": 7895225549,
+        "path": "7895225549.zip",
+        "sha256": "0b085101342f1bc9ff86c5437ccfb98802a3600dc53228b34517efcba4f9843c",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895225320,
+        "path": "7895225320.zip",
+        "sha256": "eaf61c53c88fa368cd2b26ded9b4c1ed619dc3c442790f85d113cbe4cf61686a",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc32_b300-nv_03.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "55_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "d06c10407ae916e3bcdfaad990928c57c039afbd96e8992c3490cd0904c68e84"
+      },
+      "server": {
+        "id": 7894506029,
+        "path": "7894506029.zip",
+        "sha256": "3de22f7d48c211d7650e5a55975f42795f8fe6e69f5e2462cfe19c5321b71203",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894505813,
+        "path": "7894505813.zip",
+        "sha256": "0b7e05090eb62fefa63fc7ce90879c1ae7e0242f9986d940fa49684dea7d5162",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc1_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "71_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "84b8e3be2f3f6d55df644233f10553525c72c2138026b67fb6db5e12276f675b"
+      },
+      "server": {
+        "id": 7893819202,
+        "path": "7893819202.zip",
+        "sha256": "78d62125f265f5989dd4dfbcfe5cb1bddc3ec88250f0156a5b83eb454c47f447",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7893818944,
+        "path": "7893818944.zip",
+        "sha256": "62834ef4939d7c4b064f2c77afc07ffff07c0e7e39b3d724fefa62d44cd8fd72",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc64_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "62_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "f905940d5183243c3061d78be6a0bf5d86a3d507c89ae845efa65c29edae2342"
+      },
+      "server": {
+        "id": 7894216217,
+        "path": "7894216217.zip",
+        "sha256": "41f2120ddf5829b6e4cd3fada30c19d8ec3933e14a860e12df004927fd48cfe8",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894216043,
+        "path": "7894216043.zip",
+        "sha256": "259e770d535af3b739f4455300044583b9c2ff81f1097db4386967bcd7b9237b",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc256_b300-nv_16.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "9_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "5150e1d4cac89e9c15cce2a3377a18588a1f8a7d06bcff03a3e9a67eb07a80de"
+      },
+      "server": {
+        "id": 7895244821,
+        "path": "7895244821.zip",
+        "sha256": "99dfdf4b1622cdbf3970d23ae38c20292bb370e6d2c9ba2aa4e93305901e3a08",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895244617,
+        "path": "7895244617.zip",
+        "sha256": "135802319b470b260f06afe205c3dbf32b673dd6350b88edcf4d58ae052c75a2",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc1_b300-nv_10.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "51_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "163add8fb5eff7bbc1a8a86776fee294b4f2a5045b56df5f32e5bd1c028d08ab"
+      },
+      "server": {
+        "id": 7894561675,
+        "path": "7894561675.zip",
+        "sha256": "2571ecb4f7294fa46d36679d9d328c29146ec39d3bed2fccf50fa77bf7ef1aba",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894561454,
+        "path": "7894561454.zip",
+        "sha256": "8d829f897e3e6ee31f18a839ffd73f45150c324593eaa919983e26afa2c27746",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc32_b300-nv_01.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "23_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "add54388a50c0577bc5b4eaa1d343f2a75551e3f32a59a1b5eff4654b04344d7"
+      },
+      "server": {
+        "id": 7895119716,
+        "path": "7895119716.zip",
+        "sha256": "594b265ce2fd248967b5edc48abe4e1da760ea6c0df3528963d357879d5f96a0",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895119538,
+        "path": "7895119538.zip",
+        "sha256": "c1871be4a10b9ded5cd109c43153b52d361706302c4067be036945da8781004b",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc16_b300-nv_12.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "56_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "afbb620ef60bf18e08001cffb62eaa53bb4f97124a97fd8ab8b17dd180226dd9"
+      },
+      "server": {
+        "id": 7894410727,
+        "path": "7894410727.zip",
+        "sha256": "78d08875f395e7d132677ece31797edc483e719affa6b02aca4dbed86436e56c",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894410571,
+        "path": "7894410571.zip",
+        "sha256": "dd081f04a4dc8896ae8f11bc3d7e49f726e1a0a7f32cc2c25d71b9d966862a4f",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc8_b300-nv_11.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "65_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "93e1fd83b3797738436996c425d4e090ae4b02b252545d6b7e50e7787949cdf9"
+      },
+      "server": {
+        "id": 7894064702,
+        "path": "7894064702.zip",
+        "sha256": "842cbf8a04ef21b6169753bbf46c8d900911f4306d97d3b6e8635336f9bb6a4b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894064504,
+        "path": "7894064504.zip",
+        "sha256": "ea9dbf8c493c2527ae521a1d7d50acf686432baa7992ad0792a2d46363456304",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc2_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "22_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "a8fb520c1ffca26b5b5e1e1191b364b078d346ffd1f5ce3c120b7bd738dc05e1"
+      },
+      "server": {
+        "id": 7895163320,
+        "path": "7895163320.zip",
+        "sha256": "8b01024f9777241c2d29fce17f6edfef0c4ac0c8144c10a83b42be5efd1217b5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895163116,
+        "path": "7895163116.zip",
+        "sha256": "a2590b55042dd93c17f6cce82c9cfe4d17ab83ad0c3a3cbc496536d1e8f868a3",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc256_b300-nv_14.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "69_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "10dd272ad891a4b87b6d17399698801c48843a2a0fcf843deecdd8c09343ca28"
+      },
+      "server": {
+        "id": 7894105943,
+        "path": "7894105943.zip",
+        "sha256": "b532eb0af80539226cceb50b28e2c1ce397dff5ca13eda2d79dd6ef1d7a5a921",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894105758,
+        "path": "7894105758.zip",
+        "sha256": "512bedcec0802134c8c788227074e6ab91e3b480b913dcd956f6485280f9cc8d",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc512_b300-nv_08.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "42_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "a0848206ab4808f7bd6153f3ef990e8442d2fe861d562ca710ad11b7c16cda2a"
+      },
+      "server": {
+        "id": 7894661584,
+        "path": "7894661584.zip",
+        "sha256": "5b2fd8e416b58ef31e86acc5c3e3932e99d8300cc4e9624223bbec104536abe9",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894661358,
+        "path": "7894661358.zip",
+        "sha256": "edb7b6be830ea83cb2092724942d3f9a595e6f63a66b1411a183e3cdd26ff356",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc64_b300-nv_05.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "30_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "7f9523e9567f0b933fca758c1b895ebe77c63c26898779aba0228771c628c9b9"
+      },
+      "server": {
+        "id": 7895044745,
+        "path": "7895044745.zip",
+        "sha256": "ed00a9a9f66deb7cc858cf678e135254d4bc82360ad39d3ef11e833b2ad889a7",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895044536,
+        "path": "7895044536.zip",
+        "sha256": "4f80b7f63a7bdf9e5357485ace6c3d0bb9c44a5e6dc33dfc700ef61fbb89c25d",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc512_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 2,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/2/logs",
+        "logs_archive_sha256": "91b7871f9debed664333ca1da217e0b658b37cde5274ed472692c3a6e7d6726a",
+        "job_log_member": "15_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=4 ep=4 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "3054938e2f8070af5572df3948784db4943936ff4ae10797186300d6e376b280"
+      },
+      "server": {
+        "id": 7895654376,
+        "path": "7895654376.zip",
+        "sha256": "b609e26e447ae1d1ea44e32cf6a5249888a331d01ce883d8d2eee5a90c77da55",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895654197,
+        "path": "7895654197.zip",
+        "sha256": "a2e4e2923b6260744c48077661d72b48b3cd808fc5abacb42966b92dd77335ab",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp4-ep4-dpatrue_disagg-false_spec-none_conc128_b300-nv_03.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "14_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=4 ep=4 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "cbf56b18cfd26c79541fc61efa1eff1fce36ebcd41e25307939833d92888aacb"
+      },
+      "server": {
+        "id": 7895257621,
+        "path": "7895257621.zip",
+        "sha256": "c69826d13b347c00df36658f413d6370a2f973065bbe3383f41eacfaf5dc9c60",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895257400,
+        "path": "7895257400.zip",
+        "sha256": "532ed62c18d7e36bba683f733b7ce9635964dd376965a62b77f10e2f11d44eb2",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpatrue_disagg-false_spec-none_conc256_b300-nv_07.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "33_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=4 ep=4 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "1fabc2adecbae8a1f02f53b02fbf71dbf6b9e800c3476bcc8483a5f53cfe6330"
+      },
+      "server": {
+        "id": 7895042658,
+        "path": "7895042658.zip",
+        "sha256": "7a09346cd268975d1356fc5f0e13fe042791b3fa0db32b56e5488dd5d6cd247b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895042473,
+        "path": "7895042473.zip",
+        "sha256": "e37f8e8d0543ed24974149c3bc543664eb84f3c32324c8810c2200007790509a",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpatrue_disagg-false_spec-none_conc512_b300-nv_16.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "18_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=4 ep=4 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "aae5c3800d2fed8c8db7b9ac649cdd9b9ffd167c3a6790335d601daa525b362b"
+      },
+      "server": {
+        "id": 7895199609,
+        "path": "7895199609.zip",
+        "sha256": "65848cc7a7033d8a0a313dfcc49349288f2ebae6600adacce94320de209412f2",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895199394,
+        "path": "7895199394.zip",
+        "sha256": "2cc7c540592f18ef526b643fc6805f31b2c3e193b8a527b81234aad539cb440f",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpatrue_disagg-false_spec-none_conc128_b300-nv_16.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "50_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=4 ep=4 dpa=true  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "32e4c84f41727e33430c6d5e1f5a0110b35e349403ee397f2d6930b783935ea6"
+      },
+      "server": {
+        "id": 7894232438,
+        "path": "7894232438.zip",
+        "sha256": "06f1b6451edfc76ed922c1c56fc0b585534b70d70031b72152f81803afcff252",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894232244,
+        "path": "7894232244.zip",
+        "sha256": "977b1f42e18bee44fbdcf347c7cfc6f9f3d51a533f274f1180207bdf08332160",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp4-ep4-dpatrue_disagg-false_spec-none_conc64_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "37_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "b8f1d1a54b77ca45fd21377464f0cc680d39a8daaa5d988621d4775474498f98"
+      },
+      "server": {
+        "id": 7894887360,
+        "path": "7894887360.zip",
+        "sha256": "54f7cfa46bedba86143e2872695b043849c69eea4ad94b5d93411a36277bb46e",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894887125,
+        "path": "7894887125.zip",
+        "sha256": "fc51ab2dcd5e7ac09c2423b10656456d6a8bcc0672450e1e0341a99f11e09734",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b300-nv_04.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "40_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "71890fa4c490b3dfe9626899f854b33f7d982f76bfe737865e94d8883af34ae4"
+      },
+      "server": {
+        "id": 7894877664,
+        "path": "7894877664.zip",
+        "sha256": "41eabdab466e0a5317283997cef6b04022df13ee023d4182d709f5ad57907111",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7894877476,
+        "path": "7894877476.zip",
+        "sha256": "3b91871873a7507f821bf46b181b64797462908714f79b0a73448a0e37087115",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc128_b300-nv_05.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "19_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-1024.txt",
+        "job_log_sha256": "6c524152699cbeadf024d5de4a371cea5a1c6dc46a2bf1771b924f304125df34"
+      },
+      "server": {
+        "id": 7895266426,
+        "path": "7895266426.zip",
+        "sha256": "286a3af7615af7918e7f19b6d9355fc0fa9f808132bd6e330d9bd575d94e505e",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895266221,
+        "path": "7895266221.zip",
+        "sha256": "df4708781a790bd9b2b04ba229b69afb1bf8b640074d7b18bc28b5f53be15731",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc1024_b300-nv_15.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "31_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "289e7c235eed71156bb6b98d04fc3bf9c9259348ce23dd424053aacdc8b649c5"
+      },
+      "server": {
+        "id": 7895049417,
+        "path": "7895049417.zip",
+        "sha256": "b7f02d1cb96900c97efdad6ee7f73cc08d1cb28066092bf2c6daad248a9ca8ca",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895049207,
+        "path": "7895049207.zip",
+        "sha256": "607eabc4db14ca12a23f2919296397e891e23aa7d2e11660d9d0114cafe7072f",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc512_b300-nv_13.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "70_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b300 vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "0fb4276b86aa4fe5e7b64a95b660fa6e73c99e3aeb240abcd1f87263ce6b3623"
+      },
+      "server": {
+        "id": 7893983094,
+        "path": "7893983094.zip",
+        "sha256": "43988c9ab1adfe99b2e596e712ec62d29174c4404617b842658309a7c64cabcf",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7893982908,
+        "path": "7893982908.zip",
+        "sha256": "5dbe78532314aa89c46c26dfadd339317c553398b1b1f59e74f3579f7118268b",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b300-nv_04.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "16_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=2 ep=2 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "121dbe3a9af448f0f76ee42d4995041f08267ba889a41e93de76a3032d0c3bf9"
+      },
+      "server": {
+        "id": 7895194210,
+        "path": "7895194210.zip",
+        "sha256": "a2532e32c89ea7722e4115099791110677461c31363f8907c02c535f66382a7a",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895193995,
+        "path": "7895193995.zip",
+        "sha256": "dc4ae2b3ef2684d8e5a131b1fc7e35e3bf201c1e6f7b4c75c652c147b4c2e154",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp2-ep2-dpafalse_disagg-false_spec-none_conc64_b300-nv_13.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "8_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=2 ep=2 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "fc11f9a165639c29c78b96ddba426bf4ab1ed2bd3933803c9d38ed1a82d9ee24"
+      },
+      "server": {
+        "id": 7895343101,
+        "path": "7895343101.zip",
+        "sha256": "6e9a72007973a18702f672181552234b8a42f4e1d1a08cd59ad416e38a834e9b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895342910,
+        "path": "7895342910.zip",
+        "sha256": "5bbda813734bc5133eb5012635105d23e306d818523782be70f7c154104f6bc4",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp2-ep2-dpafalse_disagg-false_spec-none_conc128_b300-nv_06.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "12_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=2 ep=2 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "a1482b533f7923e079bc3fbf2c4aa9b98189942ba3a470ee899c2d0b819daa4b"
+      },
+      "server": {
+        "id": 7895185016,
+        "path": "7895185016.zip",
+        "sha256": "b6b451e3130e6547812583a311fcb0fa6f35d2544366c200a6b3016460d3c0c1",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895184795,
+        "path": "7895184795.zip",
+        "sha256": "a9d74425b93af52a9a2ea9de7e4327cd3b31a8ecea03d82f6a77393a2cf8a75a",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp2-ep2-dpafalse_disagg-false_spec-none_conc32_b300-nv_05.json"
+      }
+    },
+    {
+      "github_run_id": "28196140241",
+      "run_attempt": 1,
+      "source_git_sha": "bea5c539fe2d8ce031d5f7fd0b91f7b64e6d4cf9",
+      "logs_path": "logs-28196140241-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28196140241/attempts/1/logs",
+        "logs_archive_sha256": "f66b83135da22efbd73b9da917728570ee923c2bd20ade30add69922bc45cb71",
+        "job_log_member": "29_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b300 vllm  tp=2 ep=2 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "e6c5c924fe541215a399116a6a5a49e3015d87238efe0b68931be6ae065ef1a5"
+      },
+      "server": {
+        "id": 7895001783,
+        "path": "7895001783.zip",
+        "sha256": "56a2033d311689d4bbdef8df2c936493767567fbedc4c52c874b6c4d7797886b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7895001584,
+        "path": "7895001584.zip",
+        "sha256": "6f145261d3873490a897298a38334c2b11bc89298fa0ec57e1a76d8e20339978",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp2-ep2-dpafalse_disagg-false_spec-none_conc16_b300-nv_15.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "9_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "88b9fccc03e6cf89916ac0c0cc89221b9458d3759f2f44c56cb4206adf572258"
+      },
+      "server": {
+        "id": 7970337722,
+        "path": "7970337722.zip",
+        "sha256": "6d860e6bbf7291db2ea2c17978eae19288b02a0aa48dc1b5657f56e3f6c2d449",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970337236,
+        "path": "7970337236.zip",
+        "sha256": "49c541c3da92dd43cd1c75364554c9fc1666ce344f8a3aa442f090aae8806b1e",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc8_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "21_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "af2d64eca98d27c183923ab7dd68ae60af7eee14c7df1d562b11d3a3c2465496"
+      },
+      "server": {
+        "id": 7969526490,
+        "path": "7969526490.zip",
+        "sha256": "88a90cfc307a82b1110da3657487d152fd961531ddaf4bef098646f3ebb36cce",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969525973,
+        "path": "7969525973.zip",
+        "sha256": "0f9b5f63ccdb4813a0e7c9ee1217d4c3818fe9a665df16d2f0c037eda2b1c038",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc16_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "30_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "48e5db3bcadb26c0e1a178a111a9523b57c83875a6233c1ca65493d1274f7eb6"
+      },
+      "server": {
+        "id": 7970052162,
+        "path": "7970052162.zip",
+        "sha256": "b813695c07e70f7d489bc1627779765eaadabebf7ca7e3e02ac83a12290305e7",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970051601,
+        "path": "7970051601.zip",
+        "sha256": "736d82e8aed4d621cb5fb2a27910af93a23cc23eaf7f7cc8d413aa14c7e1ed80",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc8_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "25_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "b4a92e32ec4fddd8190e560517b4f0005b9e706c90cd1a102dc325bdd2f4415e"
+      },
+      "server": {
+        "id": 7970049051,
+        "path": "7970049051.zip",
+        "sha256": "e6b1412901300cda4fe9fbf4df716ee1e3ca7d3bfb7ad4f426a749062b19f0a3",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970048555,
+        "path": "7970048555.zip",
+        "sha256": "5ae052301315a60ab86dc552fd1f276b2169c34cb84e76b875b8a17fcbc60445",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc4_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "7_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "366ff221ae3f9395baf39fc6770e15ee1c4cadb75a3311170e74de038390ecfe"
+      },
+      "server": {
+        "id": 7970468797,
+        "path": "7970468797.zip",
+        "sha256": "b43a515ff5de06a1e346119455b53b103bb0aee979806358fc2e3c014dc1ed83",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970468299,
+        "path": "7970468299.zip",
+        "sha256": "b41501101dc5b49c3d62adde7e1e4f084a6a36f11d399b74b0a8811d8213aadf",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc16_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "26_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "2c44c6504753ab482babc12ea56e067803133f6ca2be0b0ebb6f0d4dd61bbdae"
+      },
+      "server": {
+        "id": 7970269024,
+        "path": "7970269024.zip",
+        "sha256": "70bf33d27d0d85f6b935953b1b7336a0d0d67ddeb868afde6e720fe5202f69ca",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970268518,
+        "path": "7970268518.zip",
+        "sha256": "d758793fd7d3f659a149b9a6a1977af92b5ea954c4a0fb05ffb21f15510fa58f",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc32_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "24_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "ca26ff1f0c53688140d83118e3f161e2ccf1a29650c64e77b71701736100c5b7"
+      },
+      "server": {
+        "id": 7970045775,
+        "path": "7970045775.zip",
+        "sha256": "2fea084f66a8d2c377d3a9d94f03fee783ac9ba162d483bd4a45f2c4c409a652",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970045252,
+        "path": "7970045252.zip",
+        "sha256": "a7ae48d942824065cee67ba837113ab76ff4879f97d61cd4bdc67aa3aa9f850d",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc4_b200-dgxc_05.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "17_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "9b284bf50a653dee56e50ccd44c60c0c8ff8f923a48941f627f8fb9af4cc8d22"
+      },
+      "server": {
+        "id": 7971514720,
+        "path": "7971514720.zip",
+        "sha256": "fe1f735a23e221bcbc1a7b73812e1194834b91d12cdd2be5ffe431880f8b4703",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7971514231,
+        "path": "7971514231.zip",
+        "sha256": "4cf4aa5ccdce3a7e6ecfc34295d2f99c9aedc2d4427e35f38b3d147385fd682d",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc32_b200-dgxc_05.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 2,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/2/logs",
+        "logs_archive_sha256": "bcdb59eb81ffa4a755a3f1fe3d9483d3f580e0fa488ac09a2599977a27a42b04",
+        "job_log_member": "10_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "60e686fc4cc3157a5b1680a5e0843a912732ab30648e31e7bf5422d634383c2f"
+      },
+      "server": {
+        "id": 7997442897,
+        "path": "7997442897.zip",
+        "sha256": "be3551547b5b8f5401aec5d8680791d9bf17b46f4787b7b4b4aff3231d57cee4",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7997442260,
+        "path": "7997442260.zip",
+        "sha256": "527c06cebca471f0132b62d63300c5e87bfbe3487a0f958ec67702a83ffea333",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc2_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "18_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "4e3b6bc7bdce216382326092b6da4fc12d6a4b9d9563b1b0c5496a6b3728f9b5"
+      },
+      "server": {
+        "id": 7969707879,
+        "path": "7969707879.zip",
+        "sha256": "089e28f9ef6907b3dc5d27f92d47d3d1289d1494b4b8be14012699987fa9819b",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969707387,
+        "path": "7969707387.zip",
+        "sha256": "f1275688c0f2ba9ed98c02647270773bc9265dacb87ea92a80d908db925e138e",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc2_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "23_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "b5ae32ea18182f3d25d94485b1db8db9c219253d1fe734d9061572076beff2f4"
+      },
+      "server": {
+        "id": 7970049089,
+        "path": "7970049089.zip",
+        "sha256": "3dc3924c2aa556f073c735822aee8e7713a14a48a918ebb269483d32f6d31695",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970048592,
+        "path": "7970048592.zip",
+        "sha256": "37809ed4226b3851cd23d06b0a9bedd527ccc41c82a7d09326509db34f4b7a76",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc1_b200-dgxc_06.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "36_canary _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-Pro, dsv4, ... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=1 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "1c25afd1ecf044e0a1e8aceed52ee3b3ccf4a44fd0c4fe34d15c006aa9627fd1"
+      },
+      "server": {
+        "id": 7967660568,
+        "path": "7967660568.zip",
+        "sha256": "94afe0295401517ac569bc0b57b471e9b65847692d9d4a305b368aea0b558061",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7967659929,
+        "path": "7967659929.zip",
+        "sha256": "fb9892a662d90afc75744b75b11e2963c2a5a306e1be8acb3b27e377dfa40928",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep1-dpafalse_disagg-false_spec-none_conc1_b200-dgxc_01.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "10_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "e9f48263672e07018ed991daddb88ae4f74fb732c0e22ac7464c604faed3e807"
+      },
+      "server": {
+        "id": 7970337094,
+        "path": "7970337094.zip",
+        "sha256": "a50950ada75b90df179322663c082ddf51213c961f5e2d785efaa36ca5a71741",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970336536,
+        "path": "7970336536.zip",
+        "sha256": "2cf9a1322b8e118d7b5f70ad8b65e40aa0c5866b4c382c07264ba5b31cf5c18c",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc512_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "15_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "e7f4a9580d6885df927874df3481136eb9a0a98a4fc548d7e6595aedded61756"
+      },
+      "server": {
+        "id": 7970003309,
+        "path": "7970003309.zip",
+        "sha256": "877152a2a57ade3b14c07365a141f91e45cdba2f366eb33021b7a990f7fb8b9d",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970002633,
+        "path": "7970002633.zip",
+        "sha256": "7f3ab97435cde13f1bc92af73269882fbfcbdc628c4d05f5b90ac49f0c555ee9",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 2,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/2/logs",
+        "logs_archive_sha256": "bcdb59eb81ffa4a755a3f1fe3d9483d3f580e0fa488ac09a2599977a27a42b04",
+        "job_log_member": "14_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "4f086cce93ebfa6b0d3e75efa51c751f4625555c6f8be7bfdcd697ce9722f821"
+      },
+      "server": {
+        "id": 7995577190,
+        "path": "7995577190.zip",
+        "sha256": "6275ca75cd87fa44a57f51f1cc1f61b66541bde043a2e59e084824412ec084cc",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7995576334,
+        "path": "7995576334.zip",
+        "sha256": "7aab56dc5cfcaef6aee3357c4b45594ab28a1cccdfbbd9d3f49a6861841ef881",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "8_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "3a0028a5175ed7a2f68911d02388e412f1371bbb2967e14660e8a1c6961325cb"
+      },
+      "server": {
+        "id": 7970492271,
+        "path": "7970492271.zip",
+        "sha256": "91506f4b72b37df1f862e8bb900f78dc17c7ad4a17b5197c2ffb925d31aafdb5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970491715,
+        "path": "7970491715.zip",
+        "sha256": "e90802d86048da7ab78e3bd2128b6ce80697762f15a4b170aa1776cb7947dfff",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc128_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "19_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-1024.txt",
+        "job_log_sha256": "0b49bd3cc069fe5ae9955b733536ba10787fdaa5c4657c497aea0b4f10a7701e"
+      },
+      "server": {
+        "id": 7969288354,
+        "path": "7969288354.zip",
+        "sha256": "f5fe1f4f47c2f85c5e4e58f912bed20ac6483b40a7e5d02ae52dce37492e9ed3",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969287763,
+        "path": "7969287763.zip",
+        "sha256": "b5170a15b3c69fcf5206aee648b5bef23caaf52073782b8affadd5f77ae44cac",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc1024_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "16_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "7b8154b4aa4051a1110c4d962407c1a06a8a373409f1677cb1f1b578ee0d4c6f"
+      },
+      "server": {
+        "id": 7970125457,
+        "path": "7970125457.zip",
+        "sha256": "3c4bfab8bf39fe981ae62f0ea98008d2d6043e7606f5f8d124b09f6582081171",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7970124792,
+        "path": "7970124792.zip",
+        "sha256": "1f17ff8dc940955fd9e1b3d9fadbbe5910ef0bf0b2542391a4d47b97a3113d7f",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc512_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "22_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "f77b37dcfc2902fd8e509b8a2cff3cd440197d71544eca638805f609c40496a7"
+      },
+      "server": {
+        "id": 7969525180,
+        "path": "7969525180.zip",
+        "sha256": "32b721b22a56b79c5e26073e0b2cce1d86cb0e6c744188b3b5d54f996c381eb9",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969524588,
+        "path": "7969524588.zip",
+        "sha256": "ddce610ac8154e72bf525dfc103764809b9c42353f6d5a46c2b4c0dada49c727",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc128_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "13_single-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_1k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "2c71676d205bee05fc24e551a137891d732f7fab2abe20b31283a0badf7567ee"
+      },
+      "server": {
+        "id": 7969992227,
+        "path": "7969992227.zip",
+        "sha256": "ef667447a4583ac58af2143bc5b0c2dd65a8f5898a31460860c19f0b178452f4",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969991686,
+        "path": "7969991686.zip",
+        "sha256": "0c20b4cb3549379c9d61e73d32c0e3cfc7bf22b3da28937d966d14c92a166f96",
+        "member": "agg_dsv4_1k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc64_b200-dgxc_01.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "20_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "905e05ca8e11d435275984c01ff5b19148283a2c4552aed5e84c145144949c0b"
+      },
+      "server": {
+        "id": 7969743475,
+        "path": "7969743475.zip",
+        "sha256": "10d4ba1ee1e2bbba37776c4b273141afc9293cf2e054029e6dd4ae114d9d6818",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969742999,
+        "path": "7969742999.zip",
+        "sha256": "261f5c95aee800d443cb172328eafa5cc29bef8ffc7c24ce8f39e7ef8ad3eed3",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc64_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28403258484",
+      "run_attempt": 1,
+      "source_git_sha": "99fee26ee1d975b719f663ca272b18a8d5221983",
+      "logs_path": "logs-28403258484-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28403258484/attempts/1/logs",
+        "logs_archive_sha256": "4fecbcd2ec802ad54e082564b960bc4ee033464af1dbd4dc10d0866af626f269",
+        "job_log_member": "27_single-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260628-da802ddc, deepseek-ai_DeepSeek-V4-P... _ dsv4_8k1k fp4 b200-dsv4 sglang  tp=8 ep=8 dpa=true  disagg-false spec-none conc-1024.txt",
+        "job_log_sha256": "135c81ce498018c786f941d3c36e8a7aa4c390175899875db8db0dc8471ce443"
+      },
+      "server": {
+        "id": 7969323153,
+        "path": "7969323153.zip",
+        "sha256": "c27c6581091bd7d8dae19db1d001d5e1a7358092b96ca2e7a7b006c8267da37c",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7969322520,
+        "path": "7969322520.zip",
+        "sha256": "9af6a4d783c8a708d105e670986ca8b0c521a570299cb39bd2a6c78a6be37d68",
+        "member": "agg_dsv4_8k1k_fp4_sglang_tp8-ep8-dpatrue_disagg-false_spec-none_conc1024_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "45_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "eb34be7b9c46d17eed6edb58db3d9c40491904ec7eb5092811c3cd5824b48ab7"
+      },
+      "server": {
+        "id": 7897228993,
+        "path": "7897228993.zip",
+        "sha256": "9e757c0a90ad1d224e2664097b79333ce8f3a92e4e3a2dda7754bc415c6e80ea",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897228503,
+        "path": "7897228503.zip",
+        "sha256": "595e517f2f74c926f2115f1b8d48a446479ffb2f6691114e5ab444b9516ee644",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc128_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "50_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "fc32ffcb0f763b395449e5230725864d0103089954b8878e87bbbbf36c3b29e9"
+      },
+      "server": {
+        "id": 7897071602,
+        "path": "7897071602.zip",
+        "sha256": "ac04ba4e95dda3c26d60b0b93cee03cdc75973ee2a7c2fa02e0ce6cdb120b271",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897071151,
+        "path": "7897071151.zip",
+        "sha256": "f954a81a85f30682bb6611dc395b1ccebbef5224cc40e82748dcbd361b265cc8",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc512_b200-dgxc_06.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "68_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "bdde8639a391ba96d41abecd51e1b9aec8e6020208550a93c6c0f1e7bfdb77ab"
+      },
+      "server": {
+        "id": 7896484420,
+        "path": "7896484420.zip",
+        "sha256": "e49b7db176425f471a3c6ae58e52411ce8cf63fd7c0fb08425497faa46489cdf",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896483942,
+        "path": "7896483942.zip",
+        "sha256": "692b14a75da0c2dc617202be72f1fbd405ac39e5cfe86eb7286bd4442ade6830",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc256_b200-dgxc_05.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "13_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "cf56fb7299d681729dfa290570c6f97581f3d2715b362a327213caacce9be9b8"
+      },
+      "server": {
+        "id": 7906250989,
+        "path": "7906250989.zip",
+        "sha256": "953864fdd765682f9ed3dbc8f64b99e41ff02970c9ace5797946a7d0191fbc49",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7906250106,
+        "path": "7906250106.zip",
+        "sha256": "f13e64a593da0ce2c4f785557b02b4d70350679e275111155ef1703d9c22c6b3",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc128_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "27_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "99a6f1f14d79a093a4b87392e0a605ea80f85a9698eeaf79511e778baeb8b53a"
+      },
+      "server": {
+        "id": 7897659490,
+        "path": "7897659490.zip",
+        "sha256": "da10e3132254a7e9c1541ffa93d2879c54cd0b7d96a8aada259c2b3b934e6f56",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897659022,
+        "path": "7897659022.zip",
+        "sha256": "fc51ca5cf43e67d329a205d0ee70a910c0167d11a30986609a7807ee6bc1ffa8",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc64_b200-dgxc_01.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "58_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "b25e1046c2be8bedc483ec801518e686f920f9387f9c657fa5dc1a44db348df6"
+      },
+      "server": {
+        "id": 7896769058,
+        "path": "7896769058.zip",
+        "sha256": "5fee00b8ebc247a671476cc623dfbefe4ab07f3e9633e9080632fff8fd4f85d1",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896768664,
+        "path": "7896768664.zip",
+        "sha256": "eaefd121547094fb1a32d1154d3f8f5339ba29dfe5c5543f61058b8776a7b0c9",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc64_b200-dgxc_05.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "41_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=4 ep=4 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "b6ce81840150e7f6639d97262f0c168e7dcffbfbad2386355887e363c945cc84"
+      },
+      "server": {
+        "id": 7897327645,
+        "path": "7897327645.zip",
+        "sha256": "df8ebcd9cb0b5b873c893f7606e2f0bd4999d06040e4d2116c63f26708a88451",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897327248,
+        "path": "7897327248.zip",
+        "sha256": "7293781659b17c094d8cde6bdffe92587f41d3cdd8eabac0c53992dfa8205e4b",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp4-ep4-dpafalse_disagg-false_spec-none_conc256_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "44_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "cbcf704826fb6aa8310a8cf80418965a0d148671bc0276ef0a5b896ffeab153e"
+      },
+      "server": {
+        "id": 7897167029,
+        "path": "7897167029.zip",
+        "sha256": "665ebd6a5abe68d4348d8f9e1a737ceb04a7c72b3abd9c8660157af2c025cd21",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897166518,
+        "path": "7897166518.zip",
+        "sha256": "72de76e108c41851746dd45f560874dc031285f112fe71fc3e07f216d09ed21b",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b200-dgxc_03.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "18_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "b747dd35ad821c4ee3a1b99b8204e4312acc63b9a0b242f191feb8d81b91e1d3"
+      },
+      "server": {
+        "id": 7901510073,
+        "path": "7901510073.zip",
+        "sha256": "635b55e9b2d717451fb223dc6b9f920f10a26f306199f342f8884cda557aa220",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7901509268,
+        "path": "7901509268.zip",
+        "sha256": "58b772ddebec7812c621e983a50a971179865bb285ee9c7c58037d6f3a7599dd",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc128_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 2,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/2/logs",
+        "logs_archive_sha256": "1c1e9776a73d036c0f0ac208b2457a4200618fcb00a7c808c2807556bd14634a",
+        "job_log_member": "23_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "cc1f1b452aaaacb847399e2cd208c85aef287ef73100ab193039b3f2772c3f92"
+      },
+      "server": {
+        "id": 7912717126,
+        "path": "7912717126.zip",
+        "sha256": "a0be7df0299427f1f1a7835833dbaf73c36fe9fb7c12d69f4df0adb0f6a8c72c",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7912716251,
+        "path": "7912716251.zip",
+        "sha256": "27881743cc0a3b24e9ebf843d4a9a709b0cd603758d5e133ce0d5adc958172a8",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc256_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "49_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "117abd1c0193aafac76969e5887c6c0e3925430db1431bbe99eb514eca3ddf81"
+      },
+      "server": {
+        "id": 7897130111,
+        "path": "7897130111.zip",
+        "sha256": "10ed2bdb12c01c690ab2fd7067a5316e27417cee9552c4a46ffe5d0ea7e6c073",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897129570,
+        "path": "7897129570.zip",
+        "sha256": "9845585cbf5249bb09a5e8f0a6dfa7b73ceecd73973b21d7eeb1c835c08308af",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc512_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "21_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=true  disagg-false spec-none conc-1024.txt",
+        "job_log_sha256": "4b8ea537ff48634e97df34002028ccdf5e98abe45fcad85cecacc0ceffe6d852"
+      },
+      "server": {
+        "id": 7900805163,
+        "path": "7900805163.zip",
+        "sha256": "450d153133e884601315b124d5c3ba4bcc26fad812d36132e5c018b3f9b5bf49",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7900804261,
+        "path": "7900804261.zip",
+        "sha256": "ea1a7d575cb1a2391ff60749068a30d06b024a7a83cdf5af79b83691745dcfd4",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpatrue_disagg-false_spec-none_conc1024_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "42_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-512.txt",
+        "job_log_sha256": "22ca420e1fd991909c08b9763a390365f09a4dd333b4e0d70547269cecb429a1"
+      },
+      "server": {
+        "id": 7897273598,
+        "path": "7897273598.zip",
+        "sha256": "1a310a273829ade03175328d952f40751c171f980551763d5667ec9791538972",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897273157,
+        "path": "7897273157.zip",
+        "sha256": "c5ecc2a724f3cb376507252689b6b20311fda19adea6bd14b517eab177df98cd",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc512_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "46_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "b1388a73e1985c1ff6260338bc6e534689d50fb592b7c2771db71d53007de909"
+      },
+      "server": {
+        "id": 7897056552,
+        "path": "7897056552.zip",
+        "sha256": "4a0e7ea1c89a99c56799a54c3bd06cd49d695ab95b7f36716b289f3e3bea2383",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897056086,
+        "path": "7897056086.zip",
+        "sha256": "fc6e18b883d14682b524e2bfe5291316dd0c633232f4357d29ed4f87c6633d44",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc32_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "24_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "d8af636561977753341bf5c944f11790a6b12a94b161bf0bbae5e1267986eabd"
+      },
+      "server": {
+        "id": 7897784338,
+        "path": "7897784338.zip",
+        "sha256": "db33c471b9c8679a681c90e3098af3764c95762b9844de3b15c6181b847573f5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897783823,
+        "path": "7897783823.zip",
+        "sha256": "2d04611b0285435f11dc96e28546864b987535283c73dd389ac0e25999d479af",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc16_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "9_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "ad7aa57b0e85785804a70964ada61038632c491826d71b0477ef9a51153b97f3"
+      },
+      "server": {
+        "id": 7906986821,
+        "path": "7906986821.zip",
+        "sha256": "4f3def63069ce538f3606b34ae04cee798e7403d9d8002563780c299a91f3544",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7906985819,
+        "path": "7906985819.zip",
+        "sha256": "77502b3cb0d3b9adfcbe7c28d0f6a88e2b465feac2d9de3ff203a680563abdc3",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc128_b200-dgxc_06.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "52_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "cdece609fdef64a0aca0851d42e87d09d68eeffba771e2eeb219bbe8ed8a6687"
+      },
+      "server": {
+        "id": 7896889254,
+        "path": "7896889254.zip",
+        "sha256": "99d1c2300eb6e97b06e0857d805d7ea1e2f3464ff346aba3531ed6d82782bc5d",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896888771,
+        "path": "7896888771.zip",
+        "sha256": "210d99a82bbe8881349f12457f7a728849a67462cffc1aa33f4cdafbcd846d8e",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc4_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "15_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "5588c56e0cf6087d64e66fed114bda53f574742df9c3da57efd72c771610aaad"
+      },
+      "server": {
+        "id": 7904596212,
+        "path": "7904596212.zip",
+        "sha256": "2a96901377264bc04879a029902d4ed9969e89a6156a669dea33c5924001a8a0",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7904595503,
+        "path": "7904595503.zip",
+        "sha256": "59bfbc665988478277f87d2219f6101ef9f2adf4503e8d37b8e748faf1d8b192",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc2_b200-dgxc_07.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "14_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "c7b442d545cf72570c27a868928460ae773997a7e65be780914aee6a1e9bec23"
+      },
+      "server": {
+        "id": 7905490261,
+        "path": "7905490261.zip",
+        "sha256": "732c88a10c1648ce2aa9e6c77a024a04df79f1cccc60be87566dfa9563e2e4ac",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7905489277,
+        "path": "7905489277.zip",
+        "sha256": "7cb6d5ec17397383ce846531b79ef713f8f47243ddf0a0b98d1bff868ed2ee22",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc256_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "64_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-256.txt",
+        "job_log_sha256": "567817befa15a71b9e492ada65d3f181dafb8b50c9f8676d676ffa35af01bdfe"
+      },
+      "server": {
+        "id": 7896646786,
+        "path": "7896646786.zip",
+        "sha256": "383fc28643b98a2b815a86333f068c7c8ba14b1cefb74d91d50beba838499ca1",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896646373,
+        "path": "7896646373.zip",
+        "sha256": "39499766d7fddc6ba6bd4798cd51ccaf38b05598dd4ce33b04af574ea614b147",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc256_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "62_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "82dd344b5abd89e3f8d8a0a3797ed214124670eacda8528eebd28db2462bface"
+      },
+      "server": {
+        "id": 7896693257,
+        "path": "7896693257.zip",
+        "sha256": "9f9e254ac7d5d1c3795e18fbf4f142a352a94e715a55c18be4f15b2b94e8e6e2",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896692815,
+        "path": "7896692815.zip",
+        "sha256": "feb941201ea7268668e442a16ed0cd9a3529354cacc846bdf28181defb7ff8cc",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc8_b200-dgxc_06.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "22_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "6c0652f7d7f4be499141aa25ac70fbd030613f0a00d217f9ae7d5709372a1bd3"
+      },
+      "server": {
+        "id": 7898107595,
+        "path": "7898107595.zip",
+        "sha256": "8cf3502493ffb3952d4ffaa7609b4856a6bc62b4896d324c2cb8c01fa47892e8",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7898107057,
+        "path": "7898107057.zip",
+        "sha256": "d0766c21c44351e5d83e9079e31838bd577ddf3523371fb937323531446b6781",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc64_b200-dgxc_05.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "12_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-32.txt",
+        "job_log_sha256": "fc4a1c9f58a5af1415da222edc581eb28cfdc1f64b03c05c80207e390e5f6928"
+      },
+      "server": {
+        "id": 7906545485,
+        "path": "7906545485.zip",
+        "sha256": "a1a16e62b200669b516ee19c7d14cf55aa05d56b2216ad0c1e4dbc9176af0ca5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7906544531,
+        "path": "7906544531.zip",
+        "sha256": "65f81edfa2449d6f102d8f99bc72601ece5156c203b141b96088185bc5cedb4d",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc32_b200-dgxc_03.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "67_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-2.txt",
+        "job_log_sha256": "e57821d3ca0aa176c52d4b8cdf574d99d6fa10168f3c7f062761e2a145670cea"
+      },
+      "server": {
+        "id": 7896566786,
+        "path": "7896566786.zip",
+        "sha256": "bd236c245e2d1c602aa4c394a742ff0e05b9b02883f236cf024392188798af4d",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896566339,
+        "path": "7896566339.zip",
+        "sha256": "c51044afd406d31a6e7a7d70bfaebba841d3c5ac4b39386724ec1bf50e6670f2",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc2_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "56_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "2788da9f3c4f833552810b7474888fb141b7ae4b5de90cdf4b462ce6962c5413"
+      },
+      "server": {
+        "id": 7896835817,
+        "path": "7896835817.zip",
+        "sha256": "f3ceba3e3383eb36eb0e0e57595b6c12393f8156ade05d7e79a34e8f54fbe8b4",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896835370,
+        "path": "7896835370.zip",
+        "sha256": "72d51fe4325f7210259700609319202e2e67e4647654240bbf9d303ded544992",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc1_b200-dgxc_08.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "61_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-128.txt",
+        "job_log_sha256": "36a3bea47a6ead9195636c54a858b09787bd04f5b15f3674ad8007c467155ad7"
+      },
+      "server": {
+        "id": 7896726413,
+        "path": "7896726413.zip",
+        "sha256": "dfe705fb563d6b4c840a4caad3bd5e892c9f1c67466b56886de00b83d73b2030",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896726017,
+        "path": "7896726017.zip",
+        "sha256": "a23eba30a24f4f24cc31c1d64d09749f9642f3a4fe661de20798852a554fee6c",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc128_b200-dgxc_04.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "32_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-8.txt",
+        "job_log_sha256": "d3318609aea55cbd52d5e8ca3798b477a167ed60f33ed4f5d011fbf2d5edc4f4"
+      },
+      "server": {
+        "id": 7897479957,
+        "path": "7897479957.zip",
+        "sha256": "683de3a4cae6caa7554883be8d104c2fc8ba1d08712b03e259607603261976af",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897479457,
+        "path": "7897479457.zip",
+        "sha256": "56efa4fb6835049787b1b91abb1803e62ec6346897e0e1ca13fc2e407ffdc36d",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc8_b200-dgxc_09.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "40_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-64.txt",
+        "job_log_sha256": "dba96668be5f990bba98dee89972e3a0006300f6bf90ce316fde451caf3fdcae"
+      },
+      "server": {
+        "id": 7897291510,
+        "path": "7897291510.zip",
+        "sha256": "1a672f67094c8b86c246d5cb57d24ef5976a04047ae621f58c300cab94446666",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897290997,
+        "path": "7897290997.zip",
+        "sha256": "b86b8b55311a64b60ce0a695a00c76859626beda89e0d427a8bc948ef5afe8f4",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc64_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "35_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-1.txt",
+        "job_log_sha256": "4312cf94f50f00bb3251219889185ffff7c8fe3a624482db5186671c013dc165"
+      },
+      "server": {
+        "id": 7897371114,
+        "path": "7897371114.zip",
+        "sha256": "e0f4f1eae46d7c6e67bee91f0b8a78746a6a40e85954cda71769e08a798e80a5",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897370579,
+        "path": "7897370579.zip",
+        "sha256": "4ddf396e5be720f133292a2e98b5ad144cd443d7690900a9a717ca9dde426bb6",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc1_b200-dgxc_00.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "65_single-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_1k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-16.txt",
+        "job_log_sha256": "2ba163d879f44d6e2ffe3925f22477d76eb9f38fcdbc688a70ed69b99ba97616"
+      },
+      "server": {
+        "id": 7896604906,
+        "path": "7896604906.zip",
+        "sha256": "255366d1136b9164ed647a2e8d030deeb0b0b132af0a3cbcdd76d6563015dbdb",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7896604499,
+        "path": "7896604499.zip",
+        "sha256": "8e8237debd9d9af08fc849390a41d60614e5423c86931b6938d2072fecfd9922",
+        "member": "agg_minimaxm3_1k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc16_b200-dgxc_02.json"
+      }
+    },
+    {
+      "github_run_id": "28197744776",
+      "run_attempt": 1,
+      "source_git_sha": "1fa712e5009dfcce01972b172849c2db19fca0c7",
+      "logs_path": "logs-28197744776-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28197744776/attempts/1/logs",
+        "logs_archive_sha256": "66b3685bd0d4b2162fcbaa176eaed98cd902fac11de5550d6a531ff368fc53df",
+        "job_log_member": "30_single-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M... _ minimaxm3_8k1k fp4 b200-dgxc vllm  tp=8 ep=8 dpa=false  disagg-false spec-none conc-4.txt",
+        "job_log_sha256": "c4446c71cb58dfaacd4048c6089e3e6a0749ad69cfaad6a497201fad1e3d2346"
+      },
+      "server": {
+        "id": 7897495818,
+        "path": "7897495818.zip",
+        "sha256": "71bc05a75e30d34f069fa308979768826cec1fe66cb65079e7c3f8b1eefb7d43",
+        "member": "server.log"
+      },
+      "benchmark": {
+        "id": 7897495383,
+        "path": "7897495383.zip",
+        "sha256": "d8812e1e0aab8dd93bc6f1249315c079fc669f213308994964c8686d66b5ecc3",
+        "member": "agg_minimaxm3_8k1k_fp4_vllm_tp8-ep8-dpafalse_disagg-false_spec-none_conc4_b200-dgxc_01.json"
+      }
+    }
+  ]
+}

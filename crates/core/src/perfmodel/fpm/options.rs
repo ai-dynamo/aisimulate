@@ -9,6 +9,24 @@ use crate::AicError;
 
 use super::samples::integer_sqrt;
 
+/// Online correction policy. Automatic selection uses hybrid calibration
+/// for learned forests and preserves the fixed grid for native estimates.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionMode {
+    #[default]
+    Auto,
+    Fixed,
+    DynamicLocal,
+    Hybrid,
+}
+
+impl CorrectionMode {
+    pub(crate) fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 pub(crate) const DEFAULT_MAX_OBSERVATIONS: usize = 64;
 pub(crate) const DEFAULT_MIN_OBSERVATIONS: usize = 5;
 pub(crate) const DEFAULT_MIN_FASTER_CORRECTION_FACTOR: f64 = 0.5;
@@ -26,18 +44,27 @@ pub(crate) const DEFAULT_REGRESSION_FFN_TOKEN_WEIGHT: f64 = 1.0;
 /// The defaults retain a bounded sliding sample set, wait for enough
 /// observations before predicting from learned data, and bound native
 /// correction factors to `[0.5, 2.0]`. Native correction retains observations
-/// per inferred workload kind; regression retains one set for its fixed worker
-/// type.
+/// per inferred workload kind; regression retains one set per logical store
+/// (one for dedicated roles, four for Aggregated).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ForwardPassPerfOptions {
-    /// Maximum retained observations across all buckets. The cap applies per
-    /// inferred workload kind for Native and once per role-bound Regression
-    /// model.
+    /// `auto` selects hybrid correction for learned forests and fixed correction
+    /// for native estimates. Hybrid uses fixed correction inside its configured
+    /// limits and dynamic local correction outside them.
+    #[serde(default, skip_serializing_if = "CorrectionMode::is_auto")]
+    pub correction_mode: CorrectionMode,
+    /// Maximum retained observations across the feature-space buckets in each
+    /// logical store. The cap applies per inferred workload kind for Native
+    /// and per workload store for Regression. At the default of 64, Aggregated
+    /// regression can retain up to 256 observations across its four stores.
+    /// Hybrid gives each of its fixed and dynamic policies this full budget,
+    /// retaining at most twice this many slots per inferred workload kind.
     #[serde(default = "default_max_observations")]
     pub max_observations: usize,
     /// Minimum retained observations required before a regression fit or
     /// native correction is used. Native applies it per inferred workload
-    /// kind; Regression applies it to its single store.
+    /// kind; Regression applies it independently to each logical store.
     #[serde(default = "default_min_observations")]
     pub min_observations: usize,
     /// Optional absolute lower bound on native correction factors for
@@ -61,6 +88,10 @@ pub struct ForwardPassPerfOptions {
     /// Target bucket count for workload-specific sample retirement and correction lookup.
     #[serde(default = "default_bucket_count")]
     pub bucket_count: usize,
+    #[serde(default)]
+    pub bucket_shape: Option<[usize; 2]>,
+    #[serde(default = "default_regression_ridge_scale")]
+    pub regression_ridge_scale: f64,
     /// Upper bound for the `sum_prefill_tokens` correction axis.
     ///
     /// Used by prefill and mixed/agg workload kinds. The lower bound is always `0`.
@@ -110,7 +141,7 @@ pub struct ForwardPassPerfOptions {
 /// through the options JSON as these exact strings so Native construction can
 /// continue to ignore regression-only weights while Regression construction
 /// still reports its existing field-specific validation error.
-mod regression_weight_serde {
+pub(crate) mod regression_weight_serde {
     use std::fmt;
 
     use serde::{
@@ -122,7 +153,7 @@ mod regression_weight_serde {
     const POSITIVE_INFINITY: &str = "Infinity";
     const NEGATIVE_INFINITY: &str = "-Infinity";
 
-    pub(super) fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -137,7 +168,7 @@ mod regression_weight_serde {
         }
     }
 
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -203,11 +234,14 @@ mod regression_weight_serde {
 impl Default for ForwardPassPerfOptions {
     fn default() -> Self {
         Self {
+            correction_mode: CorrectionMode::Auto,
             max_observations: DEFAULT_MAX_OBSERVATIONS,
             min_observations: DEFAULT_MIN_OBSERVATIONS,
             min_faster_correction_factor: default_min_faster_correction_factor(),
             max_slower_correction_factor: default_max_slower_correction_factor(),
             bucket_count: DEFAULT_BUCKET_COUNT,
+            bucket_shape: None,
+            regression_ridge_scale: 1e-9,
             max_num_tokens: DEFAULT_MAX_NUM_TOKENS,
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             max_kv_tokens: DEFAULT_MAX_KV_TOKENS,
@@ -260,8 +294,20 @@ pub(crate) fn validate_options(options: &ForwardPassPerfOptions) -> Result<(), A
             "min_observations must be <= max_observations",
         ));
     }
+    if let Some(shape) = options.bucket_shape {
+        if shape.contains(&0)
+            || shape[0]
+                .checked_mul(shape[1])
+                .is_none_or(|count| count > isize::MAX as usize)
+        {
+            return Err(invalid_perf_options(
+                "bins_per_axis must be positive and have a representable product",
+            ));
+        }
+        return Ok(());
+    }
     let sqrt = integer_sqrt(options.bucket_count);
-    if sqrt * sqrt != options.bucket_count {
+    if options.bucket_count > isize::MAX as usize || sqrt * sqrt != options.bucket_count {
         return Err(invalid_perf_options(
             "bucket_count must be a perfect square",
         ));
@@ -273,6 +319,11 @@ pub(crate) fn validate_regression_options(
     options: &ForwardPassPerfOptions,
 ) -> Result<(), AicError> {
     validate_options(options)?;
+    if !options.regression_ridge_scale.is_finite() || options.regression_ridge_scale < 0.0 {
+        return Err(invalid_perf_options(
+            "singular_ridge_scale must be finite and nonnegative",
+        ));
+    }
     for (name, value) in [
         (
             "regression_attention_kv_weight",
@@ -464,5 +515,37 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+fn default_regression_ridge_scale() -> f64 {
+    1e-9
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    #[test]
+    fn sampling_grid_requires_signed_representable_cell_count() {
+        for shape in [
+            [isize::MAX as usize + 1, 1],
+            [1, isize::MAX as usize + 1],
+            [usize::MAX, 2],
+        ] {
+            let options = ForwardPassPerfOptions {
+                bucket_shape: Some(shape),
+                ..Default::default()
+            };
+            assert!(matches!(
+                validate_options(&options),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+        let options = ForwardPassPerfOptions {
+            bucket_shape: Some([isize::MAX as usize, 1]),
+            ..Default::default()
+        };
+        validate_options(&options).unwrap();
     }
 }

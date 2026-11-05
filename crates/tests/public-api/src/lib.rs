@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/tests/public-api/src/lib.rs
 
 //! Compile-time contract tests from an external crate's point of view.
 
 use std::path::Path;
 
-use aiconfigurator_core::{
-    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EngineConfig,
-    ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassWorkerType, KvCacheEstimateRequest,
+use aisimulate_core::{
+    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
+    EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
+    FpmQueryCoverage, FpmSeedTargetNormalization, FpmSeedTargetRow, KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -41,40 +45,142 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
 
 /// Compile the forward-pass model's public constructor and telemetry type.
 pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::from_regression(ForwardPassWorkerType::Aggregated, regression_options())
+    let mut config = ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Aggregated,
+    );
+    config.estimation_mode = EstimationMode::FpmRegression;
+    config.estimator_config = regression_options();
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Per-store diagnostics remain accessible without changing the summary type.
+pub fn regression_stores(
+    model: &ForwardPassPerfModel,
+) -> Vec<ForwardPassRegressionStoreDiagnostics> {
+    model.regression_store_diagnostics()
 }
 
 /// Construct and expose every public regression-weight option from an external crate.
-pub fn regression_options() -> ForwardPassPerfOptions {
-    ForwardPassPerfOptions {
-        regression_attention_kv_weight: 2.0,
-        regression_prefill_attention_pair_weight: 3.0,
-        regression_ffn_token_weight: 4.0,
-        ..ForwardPassPerfOptions::default()
-    }
+pub fn regression_options() -> EstimatorConfig {
+    let mut config = EstimatorConfig::default();
+    config.features.attention_kv_weight = 2.0;
+    config.features.prefill_attention_pair_weight = 3.0;
+    config.features.ffn_token_weight = 4.0;
+    config
 }
 
-/// Compile the fallback-capable constructor with its required worker type.
-/// This is not called because native construction embeds Python.
-pub fn best_available_model(config: EngineConfig) -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::best_available(
-        config,
-        ForwardPassWorkerType::Decode,
-        ForwardPassPerfOptions::default(),
-    )
+/// Independent profile and interpolation method use the one construction API.
+pub fn profile_model(
+    mut config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
+    ForwardPassPerfModel::best_available(config)
 }
 
-/// Compile the explicit-systems-root constructor from an external crate.
+/// Coverage is owned by the model returned by the one construction API.
+pub fn fpm_coverage(model: &ForwardPassPerfModel) -> Result<Option<FpmQueryCoverage>, AicError> {
+    model.fpm_query_coverage()
+}
+
+/// Preparation reports and their rows must be nameable by external Rust callers.
+pub fn fpm_seed_targets(
+    model: &ForwardPassPerfModel,
+) -> Result<FpmSeedTargetNormalization, AicError> {
+    model.fpm_seed_target_normalization()
+}
+
+pub fn fpm_seed_rows(report: &FpmSeedTargetNormalization) -> &[FpmSeedTargetRow] {
+    &report.rows
+}
+
+pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency(1, 128, 0)
+}
+
+pub fn covered_prefill_total(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency_total(1, 128, 0)
+}
+
+pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_decode_latency_total(1, 128)
+}
+
+pub fn best_available_model(
+    config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    ForwardPassPerfModel::best_available(config)
+}
+
 pub fn best_available_model_with_roots(
-    config: EngineConfig,
+    mut config: ForwardPassPerfModelConfig,
     systems_root: impl AsRef<Path>,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::best_available_with_roots(
-        config,
-        ForwardPassWorkerType::Prefill,
-        ForwardPassPerfOptions::default(),
-        systems_root,
-    )
+    config.systems_paths = vec![systems_root.as_ref().to_path_buf()];
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Learned forests use the same typed constructor as every other estimator.
+pub fn online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{
+        FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
+    };
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned = FpmLearnedConfig {
+        adaptation: LearnedAdaptation::Online,
+        checkpoint_path: Some(checkpoint.to_owned()),
+        update_mode: LearnedUpdateMode::Structural,
+        recent_window: 64,
+        update_every: 1,
+        history_weight: Some(0.1),
+        history_weight_ramp_observations: 32,
+        history_bin_grouping: true,
+        derivative_refresh: LearnedDerivativeRefresh::Lazy,
+        ..Default::default()
+    };
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Combined selection remains a mode of the canonical learned estimator.
+pub fn calibrated_online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{LearnedAdaptation, SelectorConfig};
+    config.estimation_mode = EstimationMode::FpmLearned;
+    let learned = &mut config.estimator_config.fpm_learned;
+    learned.adaptation = LearnedAdaptation::CausalSelector;
+    learned.recent_window = 8;
+    learned.history_weight = Some(0.25);
+    learned.history_weight_ramp_observations = 8;
+    learned.update_every = 4;
+    learned.checkpoint_path = Some(checkpoint.to_owned());
+    config.estimator_config.correction.enabled = true;
+    config.estimator_config.selector = SelectorConfig {
+        alpha: 0.4,
+        warmup: 5,
+        margin: 0.05,
+        persistence: 1,
+    };
+    let model = ForwardPassPerfModel::best_available(config)?;
+    let _scopes = model.learned_selector_diagnostics();
+    Ok(model)
+}
+
+pub fn online_forest_checkpoint(
+    model: &mut ForwardPassPerfModel,
+    path: &Path,
+) -> Result<String, AicError> {
+    model.flush_updates()?;
+    let _diagnostics = model.learned_online_diagnostics();
+    model.save_online_checkpoint(path)?;
+    model.export_learned_artifact()
 }
 
 /// Keep the KV request type in the external-consumer contract without
@@ -86,8 +192,10 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aiconfigurator_core::{
-        ForwardPassMetrics, ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+    use aisimulate_core::{
+        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
+        ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, TimingEvidenceSource,
+        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
     };
 
     #[test]
@@ -119,9 +227,110 @@ mod tests {
         //     continuation) — a positional bincode op-layout change.
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 17);
+        // v18: speculative attention width fields and FpmForward verify_width.
+        // v19: Dsv41AttentionOp gained kv_cache_layout.
+        // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
+        // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
+        // v23: ParallelMapping gained optional recorded DCP identity.
+        // v24: FpmForwardOp carries typed DCP separately from matching strings.
+        // v25: SOL/direct interpolation selector combined with typed DCP.
+        // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
+        // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
+    }
+
+    struct LatencyOnlyProvider;
+
+    impl aisimulate_core::TimingModel for LatencyOnlyProvider {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(2.0)
+        }
+    }
+
+    #[test]
+    fn external_latency_only_provider_needs_no_energy_implementation() {
+        use aisimulate_core::TimingModel;
+        assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
+        assert_eq!(
+            LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn phase_only_provider_keeps_per_rank_group_pricing() {
+        use aisimulate_core::TimingModel;
+        use aisimulate_core::engine::{IterationMs, RankWork};
+        let ranks = [RankWork::idle(0), RankWork::idle(1)];
+        let iteration: Option<IterationMs> = LatencyOnlyProvider
+            .predict_iteration_ms(&ranks)
+            .unwrap();
+        assert_eq!(iteration, None);
+    }
+
+    #[test]
+    fn timing_evidence_types_are_public() {
+        let operation =
+            TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)
+                .unwrap();
+        let phase = TimingPhaseEvidence::from_operations(vec![operation]);
+        let summary = TimingEvidenceSummary {
+            prefill: phase,
+            decode: TimingPhaseEvidence::default(),
+        };
+        assert_eq!(summary.prefill.energy_wms, Some(900.0));
+    }
+
+    #[test]
+    fn rank_operation_evidence_is_an_additive_field() {
+        // Rank evidence serialized before the field existed still loads, and
+        // whole-model FPM ranks keep their serialized schema.
+        let rank: aisimulate_core::FpmRankEstimate = serde_json::from_value(serde_json::json!({
+            "rank": 0, "latency_ms": 1.0, "prefill_ms": 1.0, "decode_ms": null,
+            "decode_baseline_ms": null, "marginal_decode_ms": null, "queries": [],
+        }))
+        .unwrap();
+        assert!(rank.operations.is_empty());
+        assert!(serde_json::to_value(&rank)
+            .unwrap()
+            .get("operations")
+            .is_none());
+        let _ = aisimulate_core::FpmRankEstimate {
+            operations: Vec::new(),
+            ..rank
+        };
+    }
+
+    #[test]
+    fn power_statistics_require_validated_public_construction() {
+        use aisimulate_core::replay::TracePowerStats;
+
+        let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
+        assert_eq!(available.power_w(), Some(500.0));
+        assert_eq!(available.coverage(), 0.9);
+        let withheld = TracePowerStats::new(None, 0.42).unwrap();
+        assert_eq!(withheld.power_w(), None);
+        assert_eq!(withheld.coverage(), 0.42);
+        assert!(TracePowerStats::new(None, 1.0).is_ok());
+
+        for (watts, coverage) in [
+            (Some(500.0), 0.9_f64.next_down()),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            assert!(TracePowerStats::new(watts, coverage).is_err());
+        }
     }
 
     #[test]
@@ -130,8 +339,348 @@ mod tests {
     }
 
     #[test]
+    fn speculative_identity_round_trips_through_public_configuration() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/target",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::OpLevel;
+        config.database_mode = DatabaseMode::Sol;
+        let draft_config = serde_json::json!({
+            "architectures": ["LlamaForCausalLM"],
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+        });
+        config.speculation = Some(ForwardPassSpeculationConfig {
+            kind: "draft_model".into(),
+            params: [("num_speculative_tokens".into(), 8.into())]
+                .into_iter()
+                .collect(),
+            draft_model_path: Some("test/draft".into()),
+            draft_config: Some(draft_config.as_object().unwrap().clone()),
+        });
+
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            encoded["speculation"],
+            serde_json::json!({
+                "kind": "draft_model",
+                "params": {"num_speculative_tokens": 8},
+                "draft_model_path": "test/draft",
+                "draft_config": draft_config,
+            })
+        );
+        let restored: ForwardPassPerfModelConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn legacy_ngram_json_and_nextn_keep_their_public_contract() {
+        let ngram = serde_json::json!({
+            "kind": "ngram", "params": {"num_speculative_tokens": 2},
+        });
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(ngram.clone()).unwrap();
+        assert_eq!(speculation.kind, "ngram");
+        assert_eq!(speculation.draft_model_path, None);
+        assert_eq!(speculation.draft_config, None);
+        assert_eq!(serde_json::to_value(speculation).unwrap(), ngram);
+
+        let config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "test/target", "system": "test-system", "backend": "vllm",
+            "worker_type": "decode", "nextn": 2,
+        }))
+        .unwrap();
+        assert_eq!(config.nextn, 2);
+        assert_eq!(config.speculation, None);
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    fn parse_public_config_paths(
+        json: &str,
+        yaml: &str,
+    ) -> [(&'static str, Result<ForwardPassPerfModelConfig, String>); 6] {
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        [
+            (
+                "JSON generic",
+                serde_json::from_str(json).map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON associated",
+                Config::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON trait",
+                <Config as Deserialize>::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML generic",
+                serde_yaml::from_str(yaml).map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML associated",
+                Config::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML trait",
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn learned_defaults_and_overrides_agree_across_public_deserializers() {
+        use aisimulate_core::LearnedAdaptation;
+
+        for adaptation in [None, Some("online"), Some("causal_selector")] {
+            for overrides in [false, true] {
+                let selector = adaptation == Some("causal_selector");
+                let mut input = serde_json::json!({
+                    "model": "offline/model", "system": "offline_system", "backend": "vllm",
+                    "worker_type": "decode", "estimation_mode": "fpm_learned",
+                    "estimator_config": {"fpm_learned": {"checkpoint_path": "/seed"}},
+                });
+                let estimator = &mut input["estimator_config"];
+                if let Some(adaptation) = adaptation {
+                    estimator["fpm_learned"]["adaptation"] = adaptation.into();
+                }
+                if overrides {
+                    for (key, value) in [
+                        ("recent_window", serde_json::json!(17)),
+                        ("history_weight", serde_json::json!(0.3)),
+                        ("history_weight_ramp_observations", serde_json::json!(7)),
+                        ("update_every", serde_json::json!(2)),
+                    ] {
+                        estimator["fpm_learned"][key] = value;
+                    }
+                    // Parsing preserves explicit controls; model validation separately
+                    // rejects correction settings incompatible with the selected mode.
+                    estimator["correction"] = serde_json::json!({"enabled": !selector});
+                }
+                let parsed = parse_public_config_paths(
+                    &input.to_string(),
+                    &serde_yaml::to_string(&input).unwrap(),
+                );
+                let expected = parsed[0].1.as_ref().unwrap();
+                for (path, result) in &parsed {
+                    assert_eq!(result.as_ref().unwrap(), expected, "{path}: {input}");
+                }
+                let learned = &expected.estimator_config.fpm_learned;
+                assert_eq!(
+                    learned.adaptation,
+                    if selector {
+                        LearnedAdaptation::CausalSelector
+                    } else {
+                        LearnedAdaptation::Online
+                    }
+                );
+                assert_eq!(
+                    (
+                        learned.recent_window,
+                        learned.history_weight,
+                        learned.history_weight_ramp_observations,
+                        learned.update_every
+                    ),
+                    if overrides {
+                        (17, Some(0.3), 7, 2)
+                    } else if selector {
+                        (8, Some(0.25), 8, 4)
+                    } else {
+                        (64, Some(0.1), 32, 1)
+                    },
+                );
+                assert_eq!(
+                    expected.estimator_config.correction.enabled,
+                    selector != overrides
+                );
+                for (path, restored) in parse_public_config_paths(
+                    &serde_json::to_string(expected).unwrap(),
+                    &serde_yaml::to_string(expected).unwrap(),
+                ) {
+                    assert_eq!(&restored.unwrap(), expected, "round trip: {path}");
+                }
+                if !overrides {
+                    input["estimator_config"]["fpm_learned"]["history_weight"] =
+                        serde_json::Value::Null;
+                    for (path, result) in parse_public_config_paths(
+                        &input.to_string(),
+                        &serde_yaml::to_string(&input).unwrap(),
+                    ) {
+                        let learned = result.expect(path).estimator_config.fpm_learned;
+                        assert_eq!(
+                            (
+                                learned.history_weight,
+                                learned.history_weight_ramp_observations
+                            ),
+                            (None, 0)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_deserializers_reject_duplicate_and_unknown_fields() {
+        // Use raw text: converting through Value first would erase duplicates.
+        for (json_fields, yaml_fields, error_kind) in [
+            (r#""tp": 1, "tp": 8"#, "tp: 1\ntp: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "estimation_mode": "fpm_regression""#,
+                "estimation_mode: op_level\nestimation_mode: fpm_regression",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {}, "estimator_config": {}"#,
+                "estimator_config: {}\nestimator_config: {}",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"correction": {"enabled": true, "enabled": false}}"#,
+                "estimator_config:\n  correction:\n    enabled: true\n    enabled: false",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_window": 8, "recent_window": 64}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_window: 8\n    recent_window: 64",
+                "duplicate",
+            ),
+            (r#""tp": 1, "tp_size": 8"#, "tp: 1\ntp_size: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "forward_model": "fpm_regression""#,
+                "estimation_mode: op_level\nforward_model: fpm_regression",
+                "duplicate",
+            ),
+            (r#""typo": 1"#, "typo: 1", "unknown field"),
+            (
+                r#""estimator_config": {"correction": {"enable": false}}"#,
+                "estimator_config:\n  correction:\n    enable: false",
+                "unknown field",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_widow": 8}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_widow: 8",
+                "unknown field",
+            ),
+        ] {
+            let json = format!(
+                r#"{{"model":"offline/model","system":"offline_system",
+                "backend":"vllm","worker_type":"decode",{json_fields}}}"#
+            );
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{yaml_fields}\n");
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(error.contains(error_kind), "{path}: {error}");
+            }
+        }
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        for fields in [
+            "fpm_profile: !Unsupported {}",
+            "fpm_profile: {1: invalid}",
+            "estimator_config: {fpm_learned: {history_weight: .nan}}",
+            "estimator_config: {fpm_learned: {history_weight: .inf}}",
+        ] {
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{fields}\n");
+            for result in [
+                serde_yaml::from_str::<Config>(&yaml),
+                Config::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+            ] {
+                assert!(result.is_err(), "accepted malformed YAML: {yaml}");
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_requires_strings_for_numeric_looking_identity() {
+        let json = r#"{"model":"123","backend_version":"0.10","system":"offline_system","backend":"vllm","worker_type":"decode"}"#;
+        let yaml = "model: \"123\"\nbackend_version: \"0.10\"\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n";
+        for (path, result) in parse_public_config_paths(json, yaml) {
+            let config = result.expect(path);
+            assert_eq!(config.model, "123", "{path}");
+            assert_eq!(config.backend_version.as_deref(), Some("0.10"), "{path}");
+        }
+        for (field, literal) in [("model", "123"), ("backend_version", "0.10")] {
+            let json = json.replace(&format!("\"{literal}\""), literal);
+            let yaml = yaml.replace(&format!("\"{literal}\""), literal);
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(
+                    error.contains(field) && error.contains("string"),
+                    "{path}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_aliases_keep_contextual_defaults() {
+        let input = serde_json::json!({
+            "model": "offline/model", "system": "offline_system", "backend": "vllm",
+            "worker_type": "decode", "forward_model": "fpm_learned",
+            "tp_size": 2, "pp_size": 3, "attention_dp_size": 4,
+            "estimator_config": {"fpm_learned": {"adaptation": "causal_selector"}},
+        });
+        for (path, result) in
+            parse_public_config_paths(&input.to_string(), &serde_yaml::to_string(&input).unwrap())
+        {
+            let config = result.expect(path);
+            assert_eq!((config.tp, config.pp, config.attention_dp), (2, 3, 4));
+            assert_eq!(config.estimation_mode, EstimationMode::FpmLearned);
+            assert_eq!(config.estimator_config.fpm_learned.recent_window, 8);
+            assert!(config.estimator_config.correction.enabled);
+        }
+    }
+
+    #[test]
+    fn speculative_schema_defaults_params_and_excludes_acceptance() {
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap();
+        assert!(speculation.params.is_empty());
+        assert!(
+            serde_json::from_value::<ForwardPassSpeculationConfig>(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 2}, "accepted_tokens": 1.5,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn regression_constructor_is_environment_independent() {
-        let _model = regression_model().expect("construct regression model");
+        let model = regression_model().expect("construct regression model");
+        assert_eq!(
+            model
+                .provenance()
+                .unwrap()
+                .config
+                .estimator_config
+                .fpm_regression
+                .fit
+                .rebuild_interval,
+            None
+        );
+        let stores = regression_stores(&model);
+        assert_eq!(stores.len(), 4);
+        assert_eq!(
+            stores[0].workload_kind,
+            ForwardPassRegressionWorkloadKind::PureDecode
+        );
+        assert!(
+            stores
+                .iter()
+                .all(|store| !store.ready && store.retained_observations == 0)
+        );
         let _roles = [
             ForwardPassWorkerType::Prefill,
             ForwardPassWorkerType::Decode,
@@ -142,8 +691,690 @@ mod tests {
     #[test]
     fn regression_weight_fields_are_public() {
         let options = regression_options();
-        assert_eq!(options.regression_attention_kv_weight, 2.0);
-        assert_eq!(options.regression_prefill_attention_pair_weight, 3.0);
-        assert_eq!(options.regression_ffn_token_weight, 4.0);
+        assert_eq!(options.features.attention_kv_weight, 2.0);
+        assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
+        assert_eq!(options.features.ffn_token_weight, 4.0);
     }
+
+    #[test]
+    fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
+        use aisimulate_core::RegressionFitConfig;
+
+        assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
+        for interval in [Some(1), Some(17), Some(4096), None] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit = RegressionFitConfig {
+                rebuild_interval: interval,
+                ..RegressionFitConfig::default()
+            };
+            use aisimulate_core::{
+                LinearFitConfig, RegressionFeatureAxis, RegressionSamplingConfig,
+                RegressionUpdatePolicy,
+            };
+            config.estimator_config.fpm_regression.sampling = RegressionSamplingConfig {
+                axes: vec![RegressionFeatureAxis::Count],
+                bins_per_axis: vec![8],
+                max_observations: 64,
+            };
+            config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+                feature_axes: vec![
+                    RegressionFeatureAxis::Attention,
+                    RegressionFeatureAxis::Moe,
+                    RegressionFeatureAxis::Count,
+                ],
+                non_negative: false,
+                update_policy: RegressionUpdatePolicy::ErrorThreshold {
+                    relative_tolerance: 0.05,
+                    absolute_tolerance_ms: 0.1,
+                    window: 8,
+                    trigger: 2,
+                    cooldown: 4,
+                    startup_observations: 10,
+                },
+                feature_set: None,
+            });
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved
+                    .estimator_config
+                    .fpm_regression
+                    .fit
+                    .rebuild_interval,
+                interval
+            );
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
+            assert!(!reloaded.regression_store_diagnostics()[0].ready);
+        }
+    }
+
+    #[test]
+    fn regression_fpm5_feature_set_is_public_and_fits_multi_rank_iterations() {
+        use aisimulate_core::{LinearFitConfig, RegressionFeatureSet, ScheduledRequestMetrics};
+
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::FpmRegression;
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_set: Some(RegressionFeatureSet::Fpm5),
+            ..LinearFitConfig::default()
+        });
+        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+        let resolved = model.provenance().unwrap().config.clone();
+        let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+        assert_eq!(&reloaded.provenance().unwrap().config, &resolved);
+
+        let rank = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Two attention-DP ranks; latency follows the heavier rank's KV reads
+        // plus the total batch size.
+        let latency = |a: (u32, u32), b: (u32, u32)| {
+            2.0 + 1e-3 * f64::from(a.1.max(b.1)) + 0.05 * f64::from(a.0 + b.0)
+        };
+        let iteration = |i: u32| {
+            let a = (i % 7 + 1, (i % 11 + 1) * 400);
+            let b = (i % 5 + 1, (i % 13 + 2) * 350);
+            let wall = latency(a, b);
+            vec![rank(a.0, a.1, wall), rank(b.0, b.1, wall)]
+        };
+        let observations: Vec<_> = (0..60).map(iteration).collect();
+        model.tune_with_fpms(&observations).unwrap();
+        assert!(model.regression_store_diagnostics()[0].ready);
+        let (a, b) = ((4, 3_000), (2, 5_200));
+        let estimate = model
+            .estimate_forward_pass_time_ms(&[rank(a.0, a.1, 0.0), rank(b.0, b.1, 0.0)])
+            .unwrap()
+            .unwrap();
+        assert!((estimate - latency(a, b)).abs() < 1e-6 * latency(a, b));
+    }
+
+    #[test]
+    fn zero_regression_rebuild_interval_is_invalid_before_fallback() {
+        use aisimulate_core::ForwardPassFallbackPolicy;
+
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Decode,
+            );
+            config.estimation_mode = mode;
+            config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+            config.estimator_config.fpm_regression.fit.rebuild_interval = Some(0);
+            let error = ForwardPassPerfModel::best_available(config)
+                .err()
+                .expect("zero interval must fail");
+            assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+            assert!(
+                error
+                    .to_string()
+                    .contains("estimator_config.fpm_regression.fit.rebuild_interval")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_regression_options_keep_rust_owned_fit_defaults() {
+        use aisimulate_core::ForwardPassPerfOptions;
+
+        let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
+        assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
+        assert_eq!(migrated.fpm_regression.sampling.max_observations, 64);
+        assert_eq!(migrated.fpm_regression.sampling.bins_per_axis, [4, 4]);
+    }
+
+    #[test]
+    fn spline_types_defaults_and_custom_policies_survive_canonical_reload() {
+        use aisimulate_core::{
+            ForwardPassSplineDiagnostics, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+
+        const PERIODIC: SplineSearchConfig = SplineSearchConfig::periodic(17);
+        const ADAPTIVE: SplineSearchConfig = SplineSearchConfig::adaptive(9, 3, 0.125, 0.25, 11);
+
+        for spline in [
+            None,
+            Some(SplineFitConfig {
+                knots_per_axis: 3,
+                search: PERIODIC,
+            }),
+            Some(SplineFitConfig {
+                knots_per_axis: 2,
+                search: ADAPTIVE,
+            }),
+        ] {
+            let mut config = ForwardPassPerfModelConfig::new(
+                "test/model",
+                "test-system",
+                BackendKind::Vllm,
+                ForwardPassWorkerType::Aggregated,
+            );
+            config.estimation_mode = EstimationMode::FpmRegression;
+            config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+            config.estimator_config.fpm_regression.fit.spline = spline.clone();
+            let model = ForwardPassPerfModel::best_available(config).unwrap();
+            let resolved = &model.provenance().unwrap().config;
+            assert_eq!(
+                resolved.estimator_config.fpm_regression.fit.spline,
+                Some(spline.unwrap_or_default())
+            );
+            let search = &resolved
+                .estimator_config
+                .fpm_regression
+                .fit
+                .spline
+                .as_ref()
+                .unwrap()
+                .search;
+            // External callers allow both future policies and extra controls.
+            match search {
+                SplineSearchConfig::Periodic { step, .. } => assert_eq!(*step, 17),
+                SplineSearchConfig::Adaptive {
+                    window,
+                    trigger,
+                    tolerance,
+                    absolute_tolerance_ms,
+                    cooldown,
+                    ..
+                } => {
+                    let controls = (
+                        *window,
+                        *trigger,
+                        *tolerance,
+                        *absolute_tolerance_ms,
+                        *cooldown,
+                    );
+                    assert!([(16, 8, 0.05, 1.0, 64), (9, 3, 0.125, 0.25, 11)].contains(&controls));
+                }
+                _ => panic!("unexpected policy in this fixture"),
+            }
+            let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+            assert_eq!(&reloaded.provenance().unwrap().config, resolved);
+            let stores = reloaded.regression_store_diagnostics();
+            assert_eq!(stores.len(), 4);
+            for store in stores {
+                assert!(!store.ready);
+                assert_eq!(store.retained_observations, 0);
+                let diagnostics = store.spline.expect("selected spline store diagnostics");
+                let ForwardPassSplineDiagnostics {
+                    initialized, ready, ..
+                } = diagnostics;
+                assert!(!initialized && !ready);
+                assert_eq!(diagnostics.accepted_observations, 0);
+                assert_eq!(diagnostics.knot_searches, 0);
+                assert_eq!(diagnostics.last_search_observation, None);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_spline_controls_fail_before_auto_or_allowed_fallback() {
+        use aisimulate_core::{
+            ForwardPassFallbackPolicy, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
+        };
+        for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            for (search, path) in [
+                (SplineSearchConfig::periodic(0), "step"),
+                (SplineSearchConfig::adaptive(0, 1, 0.05, 1.0, 64), "window"),
+                (
+                    SplineSearchConfig::adaptive(16, 17, 0.05, 1.0, 64),
+                    "trigger",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, f64::NAN, 1.0, 64),
+                    "tolerance",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, -1.0, 64),
+                    "absolute_tolerance_ms",
+                ),
+                (
+                    SplineSearchConfig::adaptive(16, 8, 0.05, 1.0, 0),
+                    "cooldown",
+                ),
+            ] {
+                let mut config = ForwardPassPerfModelConfig::new(
+                    "test/model",
+                    "test-system",
+                    BackendKind::Vllm,
+                    ForwardPassWorkerType::Decode,
+                );
+                config.estimation_mode = mode;
+                config.fallback_policy = ForwardPassFallbackPolicy::Allow;
+                config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+                config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+                    search,
+                    ..SplineFitConfig::default()
+                });
+                let error = ForwardPassPerfModel::best_available(config).err().unwrap();
+                assert!(matches!(error, AicError::InvalidEngineConfig(_)));
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("fit.spline.search.{path}"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn agentic_snapshot_preparation_and_execution_are_public() {
+        use aisimulate_core::replay::loadgen::{
+            AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticGraphBuilder,
+            AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSnapshotOptions,
+            AgenticSourceProvenance, PreparedAgenticSnapshots, WorkloadDriver,
+        };
+
+        let mut builder = AgenticGraphBuilder::new(AgenticMooncakeHeader {
+            schema: AGENTIC_MOONCAKE_SCHEMA.into(),
+            version: AGENTIC_MOONCAKE_VERSION,
+            block_size: 64,
+            hash_id_scope: AgenticHashIdScope::Local,
+            source: AgenticSourceProvenance {
+                format: "public-api-fixture".into(),
+                digest: "authored-snapshot".into(),
+            },
+        })
+        .unwrap();
+        for (request_id, start) in [("before", 1_000.0), ("after", 1_100.0)] {
+            builder
+                .push(AgenticMooncakeRow {
+                    request_id: request_id.into(),
+                    play_id: "play".into(),
+                    session_id: "session".into(),
+                    model: "fixture-model".into(),
+                    input_length: Some(128),
+                    output_length: Some(1),
+                    hash_ids: Some(vec![90, 10]),
+                    not_before_ms: start,
+                    recorded_api_time_ms: Some(10.0),
+                    ..AgenticMooncakeRow::default()
+                })
+                .unwrap();
+        }
+        let graph = builder.finish().unwrap();
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
+            .unwrap();
+        assert_eq!(prepared.snapshots().len(), 1);
+        let evidence = &prepared.snapshots()[0];
+        assert_eq!(evidence.seed, 42);
+        assert!((1_025.0..1_075.0).contains(&evidence.t_star_ms));
+        let context = prepared.context();
+        assert!(context.prepare_play(0, 0, Some(0.0)).is_err());
+        let first = context.prepare_play_from_start(0, 0).unwrap();
+        let recycled = context.prepare_play_from_start(0, 1).unwrap();
+        assert_eq!(first.evidence().t_star_ms, 1_000.0);
+        assert!(
+            first
+                .evidence()
+                .requests
+                .iter()
+                .all(|request| !request.historical)
+        );
+        assert_ne!(first.evidence().cache_id, recycled.evidence().cache_id);
+        assert_ne!(
+            first.materialize_prefix("before", 128).unwrap(),
+            recycled.materialize_prefix("before", 128).unwrap()
+        );
+        assert_eq!(
+            first.materialize_prefix("before", 65).unwrap(),
+            first.materialize_prefix("after", 128).unwrap()[..65]
+        );
+        let warmup = WorkloadDriver::new_agentic_warmup(prepared.clone(), 32, true, 2.0).unwrap();
+        let phases = warmup.agentic_phase_evidence().unwrap();
+        assert!(warmup.is_agentic_preparing());
+        assert_eq!(phases.lanes[0].primers_expected, 1);
+        assert_eq!(phases.lanes[0].warmup_expected, 10);
+        assert_eq!(phases.requests[0].source_request_id, "before");
+        assert!(
+            phases
+                .requests
+                .iter()
+                .all(|request| request.max_output_tokens == 1)
+        );
+        assert_eq!(phases.profile_start_ms, None);
+        // An external caller can run the same prepared context through the
+        // public offline P/D executor without private runtime constructors.
+        use aisimulate_core::replay::{
+            ReplayEngineConfig, ReplayEngineFactory, ReplayRuntimeInput, ReplaySpec,
+            ReplayTopology, Replayer, WorkerPoolSpec,
+        };
+        let expected = prepared.snapshots()[0]
+            .requests
+            .iter()
+            .find(|request| request.source_request_id == "after")
+            .unwrap()
+            .identity
+            .clone();
+        let driver = WorkloadDriver::new_agentic_warmup(
+            prepared,
+            ReplayEngineConfig::default().rank.block_size,
+            true,
+            2.0,
+        )
+        .unwrap();
+        let spec = ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                decode: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                handoff_latency_ms: 1.0,
+            },
+            engine: Default::default(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: None,
+            record_per_request: true,
+            sla: Default::default(),
+            encoder: None,
+            requests: Vec::new(),
+        };
+        let report = Replayer::new(
+            spec,
+            ReplayEngineFactory::with_timing_model(std::sync::Arc::new(LatencyOnlyProvider)),
+        )
+        .unwrap()
+        .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+        .run()
+        .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.per_request[0].agentic.as_ref(), Some(&expected));
+        let phases = report.agentic_phases.unwrap();
+        assert_eq!(phases.lanes[0].warmup_completed, 10);
+        assert!(phases.profile_start_ms.is_some());
+        let mut driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
+            32,
+            true,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(driver.total_turns(), 2);
+        assert_eq!(driver.next_ready_time_ms(), Some(0.0));
+        driver
+            .enable_agentic_profile(aisimulate_core::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 1.0,
+                response_grace_seconds: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.agentic_profile_report().is_some());
+    }
+
+    #[test]
+    fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
+        use aisimulate_core::engine::EngineLaunchConfig;
+        use aisimulate_core::{
+            ForwardPassReadinessReport, ScheduledRequestMetrics, StateSnapshotConfig,
+            StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+            STATE_SNAPSHOT_LAYOUT_VERSION,
+        };
+        let fpm = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut model = regression_model().unwrap();
+        let observations: Vec<Vec<ForwardPassMetrics>> = (1..40u32)
+            .map(|i| vec![fpm(i % 13 + 1, i * 977, 2.0 + 0.003 * f64::from(i * 977))])
+            .collect();
+        model.tune_with_fpms(&observations).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("snapshot");
+        let pinned = model
+            .save_state_snapshot(&directory, &StateSnapshotOptions::default())
+            .unwrap();
+        let snapshot: &StateSnapshotConfig =
+            pinned.estimator_config.state_snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.on_tune, StateSnapshotTuning::Reject);
+        let mut restored = ForwardPassPerfModel::best_available(pinned.clone()).unwrap();
+        let query = [fpm(9, 40_000, 0.0)];
+        assert_eq!(
+            restored
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        assert!(restored.tune_with_fpms(&observations).is_err());
+        let report: ForwardPassReadinessReport = restored.readiness_report();
+        assert_eq!(report, model.readiness_report());
+        // A copy restores from its own directory once the original is gone.
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&moved).unwrap();
+        for name in ["manifest.json", "config.json", "state.bin"] {
+            std::fs::copy(directory.join(name), moved.join(name)).unwrap();
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+        let mut config: aisimulate_core::ForwardPassPerfModelConfig =
+            serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
+        config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
+        let relocated = ForwardPassPerfModel::best_available(config).unwrap();
+        assert_eq!(
+            relocated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
+        assert_eq!(summary.kind, StateSnapshotKind::Regression);
+        assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
+        assert_eq!(summary.topology, model.deployment_topology());
+        let mismatches = EngineLaunchConfig::timing_config_mismatches(
+            serde_json::json!({"dp_size": 2}),
+            &pinned,
+        )
+        .unwrap();
+        assert_eq!(
+            mismatches,
+            ["dp_size conflicts with canonical attention_dp"]
+        );
+    }
+
+    #[test]
+    fn unknown_identity_and_deployment_limits_are_public() {
+        use aisimulate_core::{
+            DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassPerfModelConfig,
+            UNKNOWN_IDENTITY, UNKNOWN_SIZE,
+        };
+        let mut config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "dynamo-planner/model", "system": UNKNOWN_IDENTITY, "backend": "vllm",
+            "worker_type": "decode", "tp": "unknown", "estimation_mode": "fpm_regression",
+            "deployment_limits": {"num_gpus": 4, "max_kv_tokens": 65536}
+        }))
+        .unwrap();
+        assert_eq!(config.tp, UNKNOWN_SIZE);
+        assert_eq!(config.unknown_identity_facts(), ["system", "tp"]);
+        let limits: DeploymentLimits = config.deployment_limits.unwrap();
+        assert_eq!(limits.num_gpus, DeploymentLimit::Known(4));
+        assert_eq!(limits.max_num_seqs.known(), None);
+        // Limits may be added: downstream code sets fields on the default.
+        let mut built = DeploymentLimits::default();
+        built.num_gpus = DeploymentLimit::Known(4);
+        built.max_kv_tokens = DeploymentLimit::Known(65536);
+        assert_eq!(built, limits);
+        let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+        let topology = serde_json::to_value(model.deployment_topology().unwrap()).unwrap();
+        assert_eq!(topology["tp"], UNKNOWN_IDENTITY);
+        config.estimation_mode = EstimationMode::OpLevel;
+        assert!(ForwardPassPerfModel::best_available(config).is_err());
+    }
+}
+
+/// Exhaustive downstream literals for the coordinated 0.13 report migration.
+/// Cold callers explicitly leave both newly introduced phase fields absent.
+/// Keeping this in an external crate catches public-field source changes.
+pub fn rebuild_replay_report_literals(
+    report: aisimulate_core::ReplayReport,
+    record: aisimulate_core::replay::PerRequestRecord,
+) -> (
+    aisimulate_core::ReplayReport,
+    aisimulate_core::replay::PerRequestRecord,
+) {
+    use aisimulate_core::{ReplayReport, replay::PerRequestRecord};
+    (
+        ReplayReport {
+            telemetry: report.telemetry,
+            kv_eviction_policy: report.kv_eviction_policy,
+            kv_eviction_assumption: report.kv_eviction_assumption,
+            committed_prefill_tokens: report.committed_prefill_tokens,
+            g3_offload: report.g3_offload,
+            kvcr: report.kvcr,
+            g2_domains: report.g2_domains,
+            request_counts: report.request_counts,
+            throughput: report.throughput,
+            prefix_cache_reused_ratio: report.prefix_cache_reused_ratio,
+            first_admission_prefix_cache_reused_ratio: report
+                .first_admission_prefix_cache_reused_ratio,
+            latency: report.latency,
+            trajectories: report.trajectories,
+            agentic_graph: report.agentic_graph,
+            agentic_snapshots: report.agentic_snapshots,
+            agentic_phases: None,
+            agentic_profile: report.agentic_profile,
+            agentic_lifecycle: report.agentic_lifecycle,
+            agentic_play_outcomes: report.agentic_play_outcomes,
+            goodput: report.goodput,
+            power: report.power,
+            power_diagnostics: report.power_diagnostics,
+            per_request: report.per_request,
+            runtime_evidence: report.runtime_evidence,
+        },
+        PerRequestRecord {
+            request_id: record.request_id,
+            play_id: record.play_id,
+            session_id: record.session_id,
+            turn_index: record.turn_index,
+            metadata: record.metadata,
+            agentic: record.agentic,
+            agentic_phase: None,
+            uuid: record.uuid,
+            arrival_time_ms: record.arrival_time_ms,
+            dispatched_at_ms: record.dispatched_at_ms,
+            tokenized_ms: record.tokenized_ms,
+            first_admit_ms: record.first_admit_ms,
+            terminal_time_ms: record.terminal_time_ms,
+            first_token_ms: record.first_token_ms,
+            last_token_ms: record.last_token_ms,
+            ttft_ms: record.ttft_ms,
+            ttst_ms: record.ttst_ms,
+            e2e_latency_ms: record.e2e_latency_ms,
+            itl_ms: record.itl_ms,
+            input_length: record.input_length,
+            requested_output_length: record.requested_output_length,
+            output_length: record.output_length,
+            reused_input_tokens: record.reused_input_tokens,
+            first_admission_reused_input_tokens: record.first_admission_reused_input_tokens,
+            first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
+            first_admission_host_reused_input_tokens: record
+                .first_admission_host_reused_input_tokens,
+            prefill_worker_idx: record.prefill_worker_idx,
+            decode_worker_idx: record.decode_worker_idx,
+            prefill_admit_ms: record.prefill_admit_ms,
+            encoder_ready_ms: None,
+            frontend_ready_ms: None,
+            scheduler_received_ms: None,
+            selected_ms: None,
+            prefill_complete_ms: None,
+            source_held_ms: record.source_held_ms,
+            destination_reserved_ms: record.destination_reserved_ms,
+            destination_activated_ms: record.destination_activated_ms,
+            decode_admit_ms: record.decode_admit_ms,
+            source_released_ms: record.source_released_ms,
+            decode_reused_input_tokens: record.decode_reused_input_tokens,
+            prefill_route_overlap_tokens: record.prefill_route_overlap_tokens,
+            decode_route_overlap_tokens: record.decode_route_overlap_tokens,
+            routing_history: record.routing_history,
+            admission_history: record.admission_history,
+            admission_count: record.admission_count,
+            readmission_count: record.readmission_count,
+            pressure_record_ordinals: record.pressure_record_ordinals,
+            terminal_status: record.terminal_status,
+        },
+    )
+}
+
+/// Detailed phase evidence is reachable through the canonical model.
+pub fn operation_diagnostics(
+    model: &ForwardPassPerfModel,
+) -> Result<
+    Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
+    AicError,
+> {
+    model.static_phase_diagnostics(1, 128, 0, true)
+}
+
+/// The canonical detailed estimate carries each operation-graph rank's
+/// operation evidence, in the same type as the static phase diagnostics.
+pub fn rank_operation_evidence(
+    model: &ForwardPassPerfModel,
+    metrics_by_rank: &[aisimulate_core::ForwardPassMetrics],
+) -> Result<
+    Vec<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>>,
+    AicError,
+> {
+    let estimate: aisimulate_core::ForwardPassEstimate =
+        model.estimate_forward_pass_detailed(metrics_by_rank)?;
+    Ok(estimate
+        .ranks
+        .into_iter()
+        .map(|rank: aisimulate_core::FpmRankEstimate| rank.operations)
+        .collect())
+}
+
+/// Join engines built by separate factories to one cluster-shared G2 pool.
+pub fn shared_g2_factories(
+    config: aisimulate_core::engine::EngineConfig,
+    workers: usize,
+) -> anyhow::Result<(
+    aisimulate_core::engine::SharedG2Pool,
+    Vec<aisimulate_core::engine::EngineFactory>,
+)> {
+    let pool = aisimulate_core::engine::SharedG2Pool::new();
+    let factories = (0..workers)
+        .map(|_| {
+            aisimulate_core::engine::EngineFactory::new(config.clone())
+                .map(|factory| factory.with_shared_g2_pool(&pool, 1))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let _: Option<(usize, usize, usize)> = pool.occupancy();
+    Ok((pool, factories))
 }

@@ -17,7 +17,6 @@ from datetime import date
 from pathlib import Path
 
 import yaml
-
 from collector import provenance
 from collector.helper import convert_perf_csv_to_parquet
 

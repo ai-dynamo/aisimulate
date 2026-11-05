@@ -2,7 +2,7 @@
 description: >
   Which generator artifacts render via Jinja vs typed builders, where defaults live, render-path divergence.
 paths:
-  - "src/aiconfigurator/generator/**"
+  - "src/aisimulate/generator/**"
 ---
 
 # Render-Path Policy Reference

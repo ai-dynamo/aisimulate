@@ -79,9 +79,7 @@ def test_injected_adapter_has_precedence_without_loading_installed_provider():
     installed = _EntryPoint("example", "installed:create", _factory("example"))
     injected = _Provider("example")
 
-    resolved = resolve_providers(
-        ["example"], injected={"example": injected}, entry_points=[installed, installed]
-    )
+    resolved = resolve_providers(["example"], injected={"example": injected}, entry_points=[installed, installed])
 
     assert resolved == {"example": injected}
     assert installed.loads == 0
@@ -99,9 +97,7 @@ def test_repeated_config_name_is_resolved_once():
 def test_missing_provider_lists_available_names_without_loading_them():
     available = _EntryPoint("available", "available:create", _factory("available"))
 
-    with pytest.raises(
-        ProviderNotFoundError, match="missing.*available providers: available"
-    ):
+    with pytest.raises(ProviderNotFoundError, match="missing.*available providers: available"):
         resolve_providers(["missing"], entry_points=[available])
 
     assert available.loads == 0
@@ -118,13 +114,9 @@ def test_duplicate_installed_adapter_is_rejected_before_loading():
 
 
 def test_provider_import_failure_is_distinct():
-    entry_point = _EntryPoint(
-        "example", "broken:create", ImportError("optional dependency missing")
-    )
+    entry_point = _EntryPoint("example", "broken:create", ImportError("optional dependency missing"))
 
-    with pytest.raises(
-        ProviderLoadError, match="failed to load.*optional dependency missing"
-    ):
+    with pytest.raises(ProviderLoadError, match="failed to load.*optional dependency missing"):
         resolve_providers(["example"], entry_points=[entry_point])
 
 

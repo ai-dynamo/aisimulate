@@ -13,7 +13,7 @@ tested here — is the provenance pipeline the engine reports back through.
 
 import pytest
 
-from aiconfigurator.sdk.operations.util_empirical import (
+from aisimulate.sdk.operations.util_empirical import (
     PROVENANCE_ORDER,
     capture_provenance,
     clear_grid_cache,

@@ -3,8 +3,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataNotAvailableError
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import LoadedOpData, PerfDataNotAvailableError
 
 pytestmark = pytest.mark.unit
 

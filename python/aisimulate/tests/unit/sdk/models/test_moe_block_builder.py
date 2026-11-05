@@ -23,11 +23,11 @@ import re
 
 import pytest
 
-import aiconfigurator.sdk.operations as ops
-from aiconfigurator.sdk import common, config, models
-from aiconfigurator.sdk.models.blocks import MoEBlockShape, build_moe_block_ops, register_moe_block
-from aiconfigurator.sdk.models.blocks import moe as moe_blocks
-from aiconfigurator.sdk.models.helpers import _get_model_info
+import aisimulate.sdk.operations as ops
+from aisimulate.sdk import common, config, models
+from aisimulate.sdk.models.blocks import MoEBlockShape, build_moe_block_ops, register_moe_block
+from aisimulate.sdk.models.blocks import moe as moe_blocks
+from aisimulate.sdk.models.helpers import _get_model_info
 
 pytestmark = pytest.mark.unit
 

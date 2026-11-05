@@ -267,7 +267,7 @@ bash collector/sglang/dsv4_megamoe/run_slurm_full_collection.sh
 job.  If a submitted Slurm run fails while `WAIT=1`, the runner writes
 `cancel_jobs.sh` and cancels the submitted jobs unless `KEEP_JOBS=1`.
 Set `COPY_VALIDATED=1` to finalize the merged staging file as parquet under
-`aic-core/src/aiconfigurator_core/systems/data/${SYSTEM_NAME,,}/moe/sglang/${TARGET_SGLANG_VERSION}`;
+`src/aisimulate_core/systems/data/${SYSTEM_NAME,,}/moe/sglang/${TARGET_SGLANG_VERSION}`;
 publication always requires the collected SGLang version to exactly match the
 destination version. The publisher also writes or refreshes the table's full
 `collection_meta.yaml` entry while preserving other fully attested entries.

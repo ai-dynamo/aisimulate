@@ -5,12 +5,12 @@
 
 Benchmarks SGLang/sgl-kernel matrix multiplication paths for shared GEMM case
 specs, including BF16, FP8, FP8 block/DeepGEMM, and FP4-capable kernels where
-available. The module owns SGLang-specific kernel selection, quantization
-helpers, SM filters, and perf logging.
+available. The case plan is shared with the other backends
+(``op_plans.OP_PLANS["gemm"]``); this module owns SGLang-specific kernel
+selection, quantization helpers, and perf logging.
 """
 
-# Verified 2026-08-17 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for Task 4c/AIC-1762. Checked:
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones). Checked:
 # sgl_kernel.fp8_scaled_mm/sgl_per_token_quant_fp8 (byte-identical call shape,
 # moved wheel-internal path only); flashinfer fp4_quantize/mm_fp4 (sglang's
 # own call sites into flashinfer unchanged across its flashinfer_python pin
@@ -28,7 +28,7 @@ helpers, SM filters, and perf logging.
 # (holding sglang_per_token_group_quant_fp8) was relocated wholesale to
 # sglang.kernels.ops.quantization.fp8_kernel at 0.5.17 as part of a
 # kernel-reorg (no compat shim at the old path) -- fixed with the
-# version-conditional import below. CORRECTION (code review, 2026-08-18):
+# version-conditional import below. CORRECTION (code review):
 # the SIGNATURE is unchanged (drops only an unused `enable_v2` kwarg), but
 # the INTERNALLY DISPATCHED KERNEL for this collector's exact call is NOT --
 # see the dated comment at the import site below for the precise, cited
@@ -37,37 +37,52 @@ helpers, SM filters, and perf logging.
 # per layer_permissions.md); the caveat is for data consumers: fp8_block
 # gemm rows collected at 0.5.14 and at 0.5.17 are NOT cross-version
 # comparable, because they time different kernels for the identical
-# (m, n, k) inputs. 0.5.15/0.5.16 stay excluded: never verified, and
-# version_resolver's __compat__ grammar (AND-of-comparators only, no OR) has
-# no way to express a true two-point set either -- this bounded range with
-# the two untested base releases carved out via != is the closest
-# expressible approximation, NOT an exact {0.5.14, 0.5.17} gate (CORRECTED
-# 2026-08-18, code review): `_check_compat`'s `!=` only excludes the literal
-# point version, so 0.5.15.post1/0.5.15rc1/0.5.16.post2-style variants of
-# the excluded releases still satisfy this specifier (see
-# tests/unit/collector/test_version_resolver.py's TestExactVersionSet for
-# the honest, probed semantics). This is an accepted, narrow gap: the
-# framework_manifest digest-pinned gate is the true version enforcement
-# upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
-# run, so the leak is unreachable there.
-__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
+# (m, n, k) inputs.
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file; earlier code is `git log -- <this file>` away.
+# The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
+# retired with the 0.5.20 lane; it is git history (main at c540ff90a).
+# Where this table times a different path than SGLang serving (the direction of
+# each error is unknown):
+# - bf16 on SM100/103: serving resolves the auto bf16 GEMM backend to CuTe DSL.
+#   That backend sends the 68 shapes in _BF16_SPLITK_TUNED_TACTICS (m <= 32) to
+#   FlashInfer split-K or direct, and runs the TGV kernel where
+#   use_cutedsl_bf16_gemm(m, n, k) picks it (small m, 2048 <= k <= 6144,
+#   n >= 1024). The table times F.linear for every shape, which matches serving
+#   everywhere else (srt/layers/quantization/unquant.py; SGLANG_ENABLE_BF16_SPLITK_GEMM
+#   defaults on in srt/environ.py; kernels/ops/gemm/cutedsl_bf16_gemm.py).
+#   Retire it by timing bf16 GEMMs through the backend serving selects.
+# - nvfp4 on SM100/103: serving quantizes activations with FlashInfer's cute-dsl
+#   backend (srt/layers/quantization/fp4_utils.py); the table uses the default
+#   cuda backend. The mm_fp4 GEMM itself matches serving. Retire it by quantizing
+#   activations with the backend serving selects.
+# - fp8_block on SM90 and SM100/103: serving runs DeepGEMM only when the weight
+#   has N % 64 == 0 and K % 128 == 0, and falls back to Triton otherwise, for
+#   example at the GLM-5.3-Flash widths 288, 3336, 6416, 12576 and 19360
+#   (deepgemm_w8a8_block_fp8_linear_with_fallback in
+#   srt/layers/quantization/fp8_utils.py). The table times DeepGEMM for every
+#   shape. Retire it by timing fp8_block through dispatch_w8a8_block_fp8_linear, as
+#   serving does; that also lets SM89/120 run fp8_block (drop its entry in
+#   collector/skips.py).
+__compat__ = "sglang==0.5.21"
 
 import os
-import random
 
 # SGLang reads this flag while importing ``deep_gemm_wrapper.compile_utils``.
 # Set it before any SGLang imports so a task compiles only its requested M.
 os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 
-import pkg_resources
+# setuptools/pkg_resources is absent from recent framework images.
+from importlib.metadata import version as _dist_version
+
 import torch
 import torch.nn.functional as F
+from collector.op_plans import plan_cases
 from sgl_kernel import (
     fp8_scaled_mm,
     sgl_per_token_quant_fp8,
 )
-
-from collector.case_generator import get_gemm_case_specs
 
 try:
     from flashinfer import fp4_quantize as flashinfer_fp4_quantize
@@ -84,14 +99,14 @@ from sglang.srt.layers.deep_gemm_wrapper import (
 
 # sglang 0.5.17 relocated this module from srt/layers/quantization/ to the new
 # top-level sglang.kernels.ops package; sglang_per_token_group_quant_fp8's own
-# SIGNATURE is otherwise unchanged (verified 2026-08-17, both v0.5.14 and
+# SIGNATURE is otherwise unchanged (verified at both the v0.5.14 and
 # v0.5.17 tags: x, group_size, eps=1e-10, column_major_scales=False,
 # scale_tma_aligned=False, scale_ue8m0=False, fuse_silu_and_mul=False,
 # masked_m=None -- 0.5.17 additionally drops an unused enable_v2 kwarg this
 # collector never passes). Try the new (>=0.5.17) location first since sglang
 # fp8.py itself now imports from there.
 #
-# CORRECTED 2026-08-18 (code review): the signature match above does NOT mean
+# CORRECTION: the signature match above does NOT mean
 # the invoked KERNEL is unchanged -- for this collector's exact call
 # (group_size=128, column_major_scales=True, scale_tma_aligned=True,
 # scale_ue8m0=DEEPGEMM_SCALE_UE8M0), the two pinned versions dispatch
@@ -124,59 +139,12 @@ try:
     from sglang.kernels.ops.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
 except ImportError:
     from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
-from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
-
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
 
 
 def get_gemm_test_cases():
-    test_cases = []
-
-    sm_version = get_sm_version()
-    if sm_version < 89:
-        gemm_list = ["bfloat16"]
-    elif sm_version < 90:
-        # SM89 (L40S) and earlier don't have TMA - skip fp8_block
-        gemm_list = ["bfloat16", "fp8"]
-    elif sm_version < 100:
-        # Hopper supports fp8_block
-        # fp8_block (DeepGEMM) requires SM90+ for TMA support
-        gemm_list = ["fp8_block", "bfloat16", "fp8"]
-    elif sm_version < 110:
-        # SM100/SM103 (B100/B200 datacenter Blackwell): fp8_block + nvfp4
-        gemm_list = ["fp8_block", "bfloat16", "fp8", "nvfp4"]
-    else:
-        # SM120+ (RTX PRO 6000 Blackwell workstation): no DeepGEMM recipe for fp8_block
-        gemm_list = ["bfloat16", "fp8", "nvfp4"]
-
-    requested_gemm_types = os.environ.get("AIC_COLLECT_GEMM_TYPES")
-    if requested_gemm_types:
-        requested = {item.strip() for item in requested_gemm_types.split(",") if item.strip()}
-        gemm_list = [gemm_type for gemm_type in gemm_list if gemm_type in requested]
-
-    for gemm_common_testcase in get_gemm_case_specs():
-        x = gemm_common_testcase.x
-        n = gemm_common_testcase.n
-        k = gemm_common_testcase.k
-        for gemm_type in gemm_list:
-            # FIXME(kernel-limit, 2026-07-05): inherited pre-#1302 claim that
-            # DeepGEMM fp8_block (128x128 block scales) and the FlashInfer
-            # NVFP4 layout cannot represent n<128 or k<128. Removing it adds
-            # 6,216 (n,k,x) specs per affected mode on BOTH platforms (SM90
-            # fp8_block included), so it is a shared coverage-contract change
-            # that must not ride along a Blackwell fix; re-verify against
-            # framework source on the next version bump and either convert to
-            # a probe-and-raise or delete.
-            if (gemm_type == "nvfp4" or gemm_type == "fp8_block") and (n < 128 or k < 128):
-                continue
-
-            test_cases.append([gemm_type, x, n, k])
-
-    # Try to optimize number of JIT precompile cache hits by shuffling test cases.
-    random.seed(42)
-    random.shuffle(test_cases)
-
-    return test_cases
+    return plan_cases("gemm", "sglang", get_sm_version())
 
 
 def cdiv(a: int, b: int) -> int:
@@ -219,7 +187,7 @@ def _prepare_fp8_block_weights(N, K, device, ue8m0):  # noqa: N803
     SGLang serving performs in
     ``Fp8LinearMethod.process_weights_after_loading_block_quant``
     (sglang/srt/layers/quantization/fp8.py:538-563, pinned v0.5.14 clone;
-    re-verified 2026-08-17 at v0.5.17: same method now at fp8.py:648, which
+    re-verified at v0.5.17: same method now at fp8.py:648, which
     calls the extracted helper ``requant_block_scale_ue8m0_for_deepgemm``
     (fp8_utils.py:1538-1568) -- it still delegates to
     ``requant_weight_ue8m0_inplace`` unchanged, so the semantics this
@@ -272,7 +240,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
             # The 0.5.14 FlashInfer path consumes the modelopt 128x4
             # block-scale layout without synthetic padding; misaligned weights
             # cannot be quantized into that layout. The current shared sweep
-            # contains no such shape (B200 audit 2026-07-05: 0/483 unique
+            # contains no such shape (B200 audit 0/483 unique
             # (n,k) misaligned), so this guard exists to classify rather than
             # silently drop any future misaligned case.
             raise ValueError(
@@ -284,7 +252,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
         # source 49e384ce): "auto" resolves to flashinfer_cutedsl (mm_fp4
         # backend "cute-dsl") when is_sm100_supported() (major 10 -> SM100 and
         # SM103), marlin on SM80-89, and flashinfer_cutlass (mm_fp4 backend
-        # "cutlass") otherwise, which is the SM120 path. Re-verified 2026-08-17
+        # "cutlass") otherwise, which is the SM120 path. Re-verified
         # against the v0.5.14 and v0.5.17 tags directly: byte-identical body,
         # now at fp4_utils.py:149-163 (v0.5.14 tag) / fp4_utils.py:145-159
         # (v0.5.17) -- this dispatch mapping is unchanged.
@@ -453,7 +421,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
                 {"gemm_dtype": gemm_type, "m": M, "n": N, "k": K, "latency": results["latency_ms"] / len(op_list)}
             ],
             framework="SGLang",
-            version=pkg_resources.get_distribution("sglang").version,
+            version=_dist_version("sglang"),
             device_name=torch.cuda.get_device_name(device),
             op_name="gemm",
             kernel_source=kernel_source,

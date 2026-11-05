@@ -5,9 +5,9 @@
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations import WideEPContextMLA, WideEPGenerationMLA
-from aiconfigurator.sdk.perf_database import get_database_view
+from aisimulate.sdk import common
+from aisimulate.sdk.operations import WideEPContextMLA, WideEPGenerationMLA
+from aisimulate.sdk.perf_database import get_database_view
 
 pytestmark = pytest.mark.unit
 

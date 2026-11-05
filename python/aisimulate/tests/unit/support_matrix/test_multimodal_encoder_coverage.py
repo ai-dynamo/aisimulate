@@ -3,8 +3,6 @@
 
 import pandas as pd
 import pytest
-
-from aiconfigurator.sdk import common
 from tools.support_matrix import support_matrix as support_matrix_module
 from tools.support_matrix.compare_support_matrix import check_csv_sanity, read_csv
 from tools.support_matrix.support_matrix import (
@@ -19,6 +17,8 @@ from tools.support_matrix.support_matrix import (
     _get_encoder_coverage,
     _image_workload_csv_values,
 )
+
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.unit
 

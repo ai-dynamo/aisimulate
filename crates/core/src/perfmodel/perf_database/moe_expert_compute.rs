@@ -762,6 +762,7 @@ mod tests {
         SystemSpec {
             data_dir: PathBuf::from("data/synthetic"),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 1e9,
                 mem_bw_empirical_scaling_factor: 1.0,
                 mem_empirical_constant_latency: 0.0,
@@ -2119,7 +2120,7 @@ mod tests {
             serde_json::from_str(include_str!("testdata/moe_expert_compute_oracle.json"))
                 .expect("oracle fixture must parse");
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems");
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
         let samples = oracle["samples"].as_array().expect("samples array");
         let mut tables: BTreeMap<String, MoeExpertComputeTable> = BTreeMap::new();
         let mut max_rel = 0.0_f64;

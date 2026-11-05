@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-
 from collector.wideep.sglang import collect_moe_a2a as a2a
 
 pytestmark = pytest.mark.unit
@@ -525,8 +524,8 @@ def test_sidecar_carries_the_design_5_table_fields(tmp_path):
 
 
 def test_sidecar_status_stays_complete_when_cases_failed(tmp_path):
-    # Recorded per-case failures are DATA, not a demotion (owner decision
-    # 2026-08-08, failure_handling.md / design doc §5): derive_table_status
+    # Recorded per-case failures are DATA, not a demotion (owner decision,
+    # failure_handling.md / design doc §5): derive_table_status
     # demotes only on a ModuleCollectionFailure, and a module-level death
     # never reaches this writer (dying runs do not finalize a sidecar).
     from collector import provenance
@@ -553,25 +552,6 @@ def test_sidecar_refuses_an_empty_case_plan(tmp_path):
             parquet_path=parquet_path,
             failure_count=0,
         )
-
-
-def test_collector_hash_resolves_through_the_real_closures():
-    from collector import provenance
-
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    entry = closures[a2a.MODULE_NAME]
-    assert "collector/cases/base_ops/moe_a2a.yaml" in entry
-    assert "__model_cases__" in entry
-    assert provenance.collector_hash(a2a.MODULE_NAME, REPO_ROOT, closures).startswith("sha256:")
-
-
-def test_module_is_registered_as_a_standalone_provenance_producer():
-    from collector import provenance
-
-    assert a2a.MODULE_NAME in provenance.STANDALONE_COLLECTOR_MODULES
-    assert a2a.MODULE_NAME in provenance.enumerate_provenance_modules()
-    # Standalone, NOT an OpEntry: collect.py's executor is single-host.
-    assert a2a.MODULE_NAME not in provenance.enumerate_registry_modules()
 
 
 def test_runtime_meta_rejects_a_version_that_is_not_the_manifest_pin():

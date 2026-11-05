@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/op.rs
 
 //! `Op` enum: unified typed dispatch for every operator family.
 //!
@@ -14,15 +16,17 @@
 //! DSA, DSV4) get one variant per phase so a single `query` method handles
 //! dispatch.
 
+use crate::operators::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};
 use serde::{Deserialize, Serialize};
 
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
-    ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp,
-    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
-    MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
-    PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
+    EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
+    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
+    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
+    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
@@ -125,12 +129,12 @@ pub enum Op {
     /// `WideEPDeepSeekModel` variant.
     WideEpGenerationMla(WideEpGenerationMlaOp),
     /// Two op groups that execute in parallel on different CUDA streams.
-    /// Mirrors Python `aiconfigurator.sdk.operations.overlap.OverlapOp`:
+    /// Mirrors Python `aisimulate.sdk.operations.overlap.OverlapOp`:
     /// `latency = max(sum(group_a), sum(group_b))`.
     Overlap(OverlapOp),
     /// Try a primary op; on perf-DB miss, fall back to summing a list of
     /// granular ops. Mirrors Python
-    /// `aiconfigurator.sdk.operations.overlap.FallbackOp`: supports the
+    /// `aisimulate.sdk.operations.overlap.FallbackOp`: supports the
     /// transitional state where some systems have module-level profiling
     /// data and others still ship per-kernel granular data.
     Fallback(FallbackOp),
@@ -171,6 +175,58 @@ pub enum Op {
     /// the op's `inference_phase` field selects the slice.
     /// Measured-SILICON-only; see `operators/moe_expert_compute.rs`.
     MoeExpertCompute(MoeExpertComputeOp),
+    /// Draft query width relative to the target verification width. The
+    /// ratio changes query dimensions before lookup, never the result.
+    /// Appended as part of the speculative-decoding schema-18 migration.
+    TokenScale(TokenScaleOp),
+    Dsv41Attention(Dsv41AttentionOp),
+    Dsv41Mhc(Dsv41MhcOp),
+    Dsv41Engram(Dsv41EngramOp),
+    Dsv41Stage(Dsv41StageOp),
+    Dsv41Linear(Dsv41LinearOp),
+    // Append-only: GLM-5.3-Flash composites follow the DeepSeek V4.1 variants.
+    Glm53Attention(Glm53AttentionOp),
+    Glm53Mhc(Glm53MhcOp),
+    Glm53Router(Glm53RouterOp),
+    Glm53Ffn(Glm53FfnOp),
+    Glm53Primitive(Glm53PrimitiveOp),
+    MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TokenScaleOp {
+    pub op: Box<Op>,
+    #[serde(deserialize_with = "positive_token_width")]
+    pub numerator: u32,
+    #[serde(deserialize_with = "positive_token_width")]
+    pub denominator: u32,
+}
+
+fn positive_token_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let width = u32::deserialize(d)?;
+    if width == 0 {
+        return Err(serde::de::Error::custom(
+            "draft token widths must be positive",
+        ));
+    }
+    Ok(width)
+}
+
+impl TokenScaleOp {
+    pub fn scale_tokens(&self, value: u32) -> Result<u32, AicError> {
+        if self.numerator == 0 || self.denominator == 0 {
+            return Err(AicError::InvalidEngineConfig(
+                "draft token widths must be positive".into(),
+            ));
+        }
+        // Widen before multiplication so intermediate u32 overflow cannot
+        // corrupt an otherwise representable query. Integer division keeps
+        // the established floor convention on non-aligned ad-hoc queries.
+        let scaled = u64::from(value) * u64::from(self.numerator) / u64::from(self.denominator);
+        u32::try_from(scaled).map_err(|_| {
+            AicError::InvalidEngineConfig("draft query token count exceeds u32".into())
+        })
+    }
 }
 
 /// Inline-defined here (rather than a sibling module under `operators/`)
@@ -224,6 +280,18 @@ impl Op {
     /// family multiplies its own scale_factor inside its `weight_bytes`.
     pub fn weight_bytes(&self) -> f64 {
         match self {
+            Op::Dsv41Attention(o) => o.weight_bytes(),
+            Op::Dsv41Mhc(o) => o.weight_bytes(),
+            Op::Dsv41Engram(o) => o.weight_bytes(),
+            Op::Dsv41Stage(o) => o.weight_bytes(),
+            Op::Dsv41Linear(o) => o.weight_bytes(),
+            Op::Glm53Attention(o) => o.weight_bytes(),
+            Op::Glm53Mhc(o) => o.weight_bytes(),
+            Op::Glm53Router(o) => o.weight_bytes(),
+            Op::Glm53Ffn(o) => o.weight_bytes(),
+            Op::MeasuredComposite(o) => o.weight_bytes,
+            Op::Glm53Primitive(o) => o.weight_bytes(),
+            Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
             Op::Moe(o) => o.weight_bytes(),
@@ -278,6 +346,18 @@ impl Op {
     /// debugging.
     pub fn name(&self) -> &str {
         match self {
+            Op::Dsv41Attention(o) => &o.name,
+            Op::Dsv41Mhc(o) => &o.name,
+            Op::Dsv41Engram(o) => &o.name,
+            Op::Dsv41Stage(o) => &o.name,
+            Op::Dsv41Linear(o) => &o.name,
+            Op::Glm53Attention(o) => &o.name,
+            Op::Glm53Mhc(o) => &o.name,
+            Op::Glm53Router(o) => &o.name,
+            Op::Glm53Ffn(o) => &o.name,
+            Op::MeasuredComposite(o) => &o.name,
+            Op::Glm53Primitive(o) => &o.name,
+            Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
             Op::Elementwise(o) => &o.name,
@@ -321,6 +401,18 @@ impl Op {
     /// returns them). Every variant carries `name`.
     pub fn set_name(&mut self, name: String) {
         match self {
+            Op::Dsv41Attention(o) => o.name = name,
+            Op::Dsv41Mhc(o) => o.name = name,
+            Op::Dsv41Engram(o) => o.name = name,
+            Op::Dsv41Stage(o) => o.name = name,
+            Op::Dsv41Linear(o) => o.name = name,
+            Op::Glm53Attention(o) => o.name = name,
+            Op::Glm53Mhc(o) => o.name = name,
+            Op::Glm53Router(o) => o.name = name,
+            Op::Glm53Ffn(o) => o.name = name,
+            Op::MeasuredComposite(o) => o.name = name,
+            Op::Glm53Primitive(o) => o.name = name,
+            Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
             Op::Elementwise(o) => o.name = name,
@@ -359,12 +451,68 @@ impl Op {
         }
     }
 
+    /// Uniform repetition-count mutator for draft forwards.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        match self {
+            Op::TokenScale(o) => o.op.set_scale_factor(scale_factor),
+            Op::MeasuredComposite(o) => o.scale_factor = scale_factor,
+            Op::Gemm(o) => o.scale_factor = scale_factor,
+            Op::Embedding(o) => o.scale_factor = scale_factor,
+            Op::Elementwise(o) => o.scale_factor = scale_factor,
+            Op::ContextAttention(o) => o.scale_factor = scale_factor,
+            Op::GenerationAttention(o) => o.scale_factor = scale_factor,
+            Op::EncoderAttention(o) => o.scale_factor = scale_factor,
+            Op::ContextMla(o) => o.scale_factor = scale_factor,
+            Op::GenerationMla(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleContext(o) => o.scale_factor = scale_factor,
+            Op::MlaModuleGeneration(o) => o.scale_factor = scale_factor,
+            Op::MlaBmm(o) => o.scale_factor = scale_factor,
+            Op::Moe(o) => o.scale_factor = scale_factor,
+            Op::MoeDispatch(o) => o.scale_factor = scale_factor,
+            Op::CustomAllReduce(o) => o.scale_factor = scale_factor,
+            Op::Nccl(o) => o.scale_factor = scale_factor,
+            Op::P2P(o) => o.scale_factor = scale_factor,
+            Op::Vision(o) => o.scale_factor = scale_factor,
+            Op::DsaContext(o) => o.scale_factor = scale_factor,
+            Op::DsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::MsaContext(o) => o.scale_factor = scale_factor,
+            Op::MsaGeneration(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Context(o) => o.scale_factor = scale_factor,
+            Op::Dsv4Generation(o) => o.scale_factor = scale_factor,
+            Op::Mhc(o) => o.scale_factor = scale_factor,
+            Op::Mamba2(o) => o.scale_factor = scale_factor,
+            Op::Gdn(o) => o.scale_factor = scale_factor,
+            Op::WideEpContextMla(o) => o.scale_factor = scale_factor,
+            Op::WideEpGenerationMla(o) => o.scale_factor = scale_factor,
+            Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
+            Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
+            Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
+            // V4.1 operators encode individual stages, without a repetition field.
+            // The Python setter rejects these families before reaching this mutator.
+            Op::Dsv41Attention(_)
+            | Op::Dsv41Mhc(_)
+            | Op::Dsv41Engram(_)
+            | Op::Dsv41Stage(_)
+            | Op::Dsv41Linear(_)
+            | Op::Glm53Attention(_)
+            | Op::Glm53Mhc(_)
+            | Op::Glm53Router(_)
+            | Op::Glm53Ffn(_)
+            | Op::Glm53Primitive(_) => {}
+            Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
+            Op::Kda(o) => o.scale_factor = scale_factor,
+            Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
+            Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
+        }
+    }
+
     /// CP sequence-shard factor for the token-major families that carry one;
     /// 1 for every other variant (their constructors' CP audit gate refuses
     /// `seq_split > 1`, so 1 is exact, not a guess). Backs the Python-side
     /// `Operation._seq_split` default read.
     pub fn seq_split(&self) -> u32 {
         match self {
+            Op::TokenScale(o) => o.op.seq_split(),
             Op::Gemm(o) => o.seq_split,
             Op::Embedding(o) => o.seq_split,
             Op::Elementwise(o) => o.seq_split,
@@ -384,21 +532,36 @@ impl Op {
     /// they're treated as non-attention in the mix-step composition
     /// (matching Python's intent: the module already represents the full
     /// fused attention+projection work and shouldn't be re-decomposed).
+    ///
+    /// GLM-5.3-Flash attention ops carry per-layer names (`attention_N`), so
+    /// they are classified by their explicit phase instead (see
+    /// [`Self::is_glm53_attention`]).
     pub fn is_context_attention(&self) -> bool {
-        self.name() == "context_attention"
+        self.is_glm53_attention(true) || self.name() == "context_attention"
     }
 
     /// True if this op's name matches Python's mix-step filter for the
-    /// generation-attention bucket (`"generation_attention"`).
+    /// generation-attention bucket (`"generation_attention"`), or it is a
+    /// generation-phase GLM-5.3-Flash attention op.
     pub fn is_generation_attention(&self) -> bool {
-        self.name() == "generation_attention"
+        self.is_glm53_attention(false) || self.name() == "generation_attention"
+    }
+
+    /// GLM-5.3-Flash per-layer attention of the given phase. Mixed steps must
+    /// query it at its own prefill or decode shape rather than in the shared
+    /// token-major pass.
+    fn is_glm53_attention(&self, context: bool) -> bool {
+        matches!(self, Op::Glm53Attention(o) if o.is_context == context)
     }
 
     /// Identifies the logits projection GEMM by name. Python special-cases
     /// `logits_gemm` in `_run_context_phase` to use `x=batch_size` instead
     /// of `x=batch_size * effective_isl`.
     pub fn is_logits_gemm(&self) -> bool {
-        matches!(self, Op::Gemm(_)) && self.name().contains("logits_gemm")
+        match self {
+            Op::TokenScale(o) => o.op.is_logits_gemm(),
+            _ => matches!(self, Op::Gemm(_)) && self.name().contains("logits_gemm"),
+        }
     }
 
     /// Query this op with the given runtime. Returns the scaled latency
@@ -409,6 +572,25 @@ impl Op {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         match self {
+            Op::Dsv41Attention(op) => op.query(db, ctx),
+            Op::Dsv41Mhc(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
+            Op::Dsv41Stage(op) => op.query(db, ctx),
+            Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Attention(op) => op.query(db, ctx),
+            Op::Glm53Mhc(op) => op.query(db, ctx),
+            Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Ffn(op) => op.query(db, ctx),
+            Op::MeasuredComposite(op) => op.query(db, ctx),
+            Op::Glm53Primitive(op) => op.query(db, ctx),
+            Op::TokenScale(op) => {
+                let scaled = RuntimeContext {
+                    batch_size: op.scale_tokens(ctx.batch_size)?,
+                    num_tokens: op.scale_tokens(ctx.num_tokens)?,
+                    ..*ctx
+                };
+                op.op.query(db, &scaled)
+            }
             Op::Gemm(op) => op.query(db, ctx.num_tokens, None),
             Op::Embedding(op) => op.query(db, ctx.num_tokens),
             Op::Elementwise(op) => op.query(db, ctx.num_tokens),
@@ -509,7 +691,7 @@ impl Op {
                     // Primary result passes through verbatim — its energy
                     // rides along (Python returns `self._primary.query(...)`).
                     Ok(r) => Ok(r),
-                    Err(AicError::PerfDatabase(_)) | Err(AicError::Io { .. }) => {
+                    Err(error) if error.is_missing_perf_data() => {
                         // Fallback chain: Python sums PerformanceResults
                         // from a zero/empirical seed (`total =
                         // PerformanceResult(0.0, energy=0.0,
@@ -556,7 +738,7 @@ impl Op {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::enums::GemmQuantMode;
+    use crate::common::enums::{DatabaseMode, GemmQuantMode};
     use crate::operators::gemm::GemmOp;
     use crate::perf_database::PerfDatabase;
     use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
@@ -600,6 +782,70 @@ mod tests {
 
     fn empty_overlap(name: &str) -> Op {
         Op::Overlap(OverlapOp::new(name, vec![], vec![]))
+    }
+
+    #[test]
+    fn draft_token_scale_preserves_nonlinear_query_and_recursive_metadata() {
+        let (_tmp, db) = one_row_gemm_db();
+        for (numerator, denominator) in [(1, 4), (5, 6), (8, 6)] {
+            for leaf in [
+                silicon_leaf(),
+                Op::Overlap(OverlapOp::new("group", vec![silicon_leaf()], vec![])),
+            ] {
+                let mut wrapped = Op::TokenScale(TokenScaleOp {
+                    op: Box::new(leaf.clone()),
+                    numerator,
+                    denominator,
+                });
+                let query = RuntimeContext {
+                    batch_size: 32 * denominator,
+                    num_tokens: 32 * denominator,
+                    ..ctx()
+                };
+                let expected_query = RuntimeContext {
+                    batch_size: 32 * numerator,
+                    num_tokens: 32 * numerator,
+                    ..ctx()
+                };
+                let actual = wrapped.query(&db, &query).unwrap();
+                let expected = leaf.query(&db, &expected_query).unwrap();
+                assert_eq!(actual.latency_ms, expected.latency_ms);
+                assert_eq!(actual.energy_wms, expected.energy_wms);
+                assert_eq!(actual.source, expected.source);
+                assert_eq!(wrapped.weight_bytes(), leaf.weight_bytes());
+                wrapped.set_name("draft_renamed".into());
+                assert_eq!(wrapped.name(), "draft_renamed");
+                let bytes = bincode::serialize(&wrapped).unwrap();
+                assert_eq!(bincode::deserialize::<Op>(&bytes).unwrap(), wrapped);
+            }
+        }
+    }
+
+    #[test]
+    fn draft_token_scale_rejects_zero_and_overflow() {
+        for (numerator, denominator) in [(0, 4), (1, 0)] {
+            let wrapped = Op::TokenScale(TokenScaleOp {
+                op: Box::new(silicon_leaf()),
+                numerator,
+                denominator,
+            });
+            let json = serde_json::to_string(&wrapped).unwrap();
+            assert!(
+                serde_json::from_str::<Op>(&json)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("positive")
+            );
+            let bytes = bincode::serialize(&wrapped).unwrap();
+            assert!(bincode::deserialize::<Op>(&bytes).is_err());
+        }
+        let wrapped = TokenScaleOp {
+            op: Box::new(silicon_leaf()),
+            numerator: u32::MAX,
+            denominator: 1,
+        };
+        assert!(wrapped.scale_tokens(2).is_err());
+        assert_eq!(wrapped.scale_tokens(1).unwrap(), u32::MAX);
     }
 
     // Zero-valued composite provenance oracle (review #1552 round 4): the
@@ -678,5 +924,59 @@ mod tests {
         let r = op.query(&db, &ctx()).expect("query");
         assert!((r.latency_ms - 1.0).abs() < 1e-12);
         assert_eq!(r.source, Source::Silicon);
+    }
+
+    #[test]
+    fn fallback_uses_chain_for_gemm_interpolation_coverage_miss() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            // The only collected (n, k) site is (1024, 1024). This
+            // otherwise valid bf16 query is beyond its two-octave radius.
+            let primary = Op::Gemm(GemmOp::new(
+                "outside_collected_sites",
+                16384,
+                16384,
+                GemmQuantMode::Bfloat16,
+            ));
+            assert!(matches!(
+                primary.query(&db.silicon_view(), &ctx()),
+                Err(AicError::InterpolationCoverage(_))
+            ));
+            let op = Op::Fallback(FallbackOp::new(
+                "coverage_fallback",
+                primary,
+                vec![silicon_leaf(), silicon_leaf()],
+            ));
+            let result = op.query(&db, &ctx()).expect("usable fallback chain");
+            // Two exact measured rows, each 1 ms at 100 W, sum to
+            // 2 ms and 200 W*ms; no empirical primary estimate is used.
+            assert_eq!(result.latency_ms, 2.0, "{mode:?}");
+            assert_eq!(result.energy_wms, 200.0, "{mode:?}");
+            assert_eq!(result.source, Source::Silicon, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn fallback_preserves_invalid_primary_configuration() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            let primary = Op::TokenScale(TokenScaleOp {
+                op: Box::new(silicon_leaf()),
+                numerator: 0,
+                denominator: 1,
+            });
+            let op = Op::Fallback(FallbackOp::new(
+                "invalid_primary",
+                primary,
+                vec![silicon_leaf()],
+            ));
+            assert!(matches!(
+                op.query(&db, &ctx()),
+                Err(AicError::InvalidEngineConfig(message))
+                    if message == "draft token widths must be positive"
+            ));
+        }
     }
 }

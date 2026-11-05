@@ -4,9 +4,10 @@
 """Plan and coverage certification for the DeepEP low-latency collector."""
 
 import csv
+import json
 
 import pytest
-
+from collector import op_plans
 from collector.wideep.sglang import collect_deepep_ll
 from collector.wideep.sglang.collect_deepep_ll import _validate_expert_partition, _verify_token_coverage
 
@@ -82,14 +83,19 @@ def test_header_only_output_is_rejected(tmp_path):
         _verify_token_coverage(path, _TOKENS, _CASES)
 
 
-def test_public_plan_does_not_filter_framework_kernel_limits(monkeypatch):
-    shapes = [
-        (8192, 512, 22),  # above the known DeepEP 1.2.1 low-latency top-k cap
-        (4100, 128, 8),  # outside the known hidden specializations/divisibility
-        (2048, 128, 8),
-        (2048, 128, 8),  # duplicate config must still be deduplicated
-    ]
-    monkeypatch.setattr(collect_deepep_ll, "_iter_moe_configs", lambda: iter(shapes))
+def test_public_plan_does_not_filter_framework_kernel_limits(monkeypatch, tmp_path):
+    configs = {
+        # above the known DeepEP 1.2.1 low-latency top-k cap
+        "a": {"hidden_size": 8192, "n_routed_experts": 512, "num_experts_per_tok": 22},
+        "b": {"hidden_size": 4100, "num_experts": 128, "moe_topk": 8},  # outside the known hidden sizes
+        "c": {"text_config": {"hidden_size": 2048, "num_local_experts": 128, "num_experts_per_tok": 8}},
+        "d": {"hidden_size": 2048, "num_local_experts": 128, "num_experts_per_tok": 8},  # duplicate shape
+        "e": {"hidden_size": 4096},  # dense model
+    }
+    for name, config in configs.items():
+        (tmp_path / f"{name}_config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(op_plans, "_AIC_MODEL_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(collect_deepep_ll, "get_sm_version", lambda: 90)
 
     assert collect_deepep_ll.get_deepep_ll_test_cases() == [
         {"hidden_size": 2048, "num_experts": 128, "topk": 8},

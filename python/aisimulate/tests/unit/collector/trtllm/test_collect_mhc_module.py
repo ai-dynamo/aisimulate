@@ -7,7 +7,6 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-
 from collector.case_generator import get_common_mhc_test_cases
 from collector.model_cases import build_collection_case_plan
 from collector.registry_types import PerfFile
@@ -27,6 +26,8 @@ def _load_module_with_torch_stub(monkeypatch):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The getter plans for the device's SM; mHC has no SM-dependent region.
+    monkeypatch.setattr(module, "get_sm_version", lambda: 100)
     return module
 
 
@@ -56,8 +57,9 @@ def test_mhc_case_population_dedups_model_aliases(monkeypatch):
     ids = [case["id"] for case in cases]
     assert len(ids) == len(set(ids)), "duplicate case ids"
 
-    # Physical dedup: 4 model paths collapse to 2 geometries x 2 phases; the
-    # full sweep is (phase, hidden, hc_mult) x num_tokens.
+    # Physical dedup: the 4 DeepSeek-V4 model paths collapse to 2 geometries x
+    # 2 sites (skips.py leaves GLM-5.3-Flash out of TRT-LLM); the full
+    # sweep is (site, hidden, hc_mult) x num_tokens.
     keys = {(case["params"][0], case["params"][2], case["params"][3]) for case in cases}
     assert keys == {
         ("pre", 4096, 4),

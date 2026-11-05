@@ -11,6 +11,7 @@ pub fn prefill_handoff_transfer_timing(
     num_input_tokens: usize,
     kv_transfer_bandwidth: Option<f64>,
     kv_bytes_per_token: Option<usize>,
+    state_bytes: usize,
     mode: KvTransferTimingMode,
 ) -> HandoffTransferTiming {
     HandoffTransferTiming {
@@ -20,6 +21,7 @@ pub fn prefill_handoff_transfer_timing(
         },
         full_prompt_tokens: num_input_tokens,
         kv_bytes_per_token,
+        state_bytes,
         bandwidth_gb_s: kv_transfer_bandwidth,
     }
 }

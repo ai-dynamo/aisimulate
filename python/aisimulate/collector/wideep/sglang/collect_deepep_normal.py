@@ -7,7 +7,7 @@ Runs the DeepEP normal-mode (a.k.a. high-throughput / prefill EP) dispatch and
 combine micro-benchmark once across all visible GPUs of a single node (full
 node: 4 on GB200, 8 on B200/H200). It sweeps the MoE
 ``(hidden_size, num_experts, topk)`` shapes used by the MoE models under
-``src/aiconfigurator/model_configs`` against a token list and an SM-count list,
+``src/aisimulate_core/model_configs`` against a token list and an SM-count list,
 and writes ``wideep_deepep_normal_perf.txt`` rows (``node_num=1``) that match
 the schema consumed by ``operations.moe.load_wideep_deepep_normal_data``.
 
@@ -27,7 +27,6 @@ then finalizes the produced CSV as parquet.
 """
 
 import inspect
-import json
 import os
 import socket
 import sys
@@ -35,11 +34,12 @@ import traceback
 from pathlib import Path
 from types import SimpleNamespace
 
+from collector.helper import get_sm_version
+from collector.op_plans import plan_cases
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))  # collector/
-REPO_ROOT = os.path.dirname(COLLECTOR_ROOT)
 DEEPEP_DIR = os.path.join(THIS_DIR, "deepep")
-MODEL_CONFIGS_DIR = os.path.join(REPO_ROOT, "src", "aiconfigurator", "model_configs")
 
 # Pinned to the WideEP SGLang runtime (collector/framework_manifest.yaml -> 0.5.10).
 # DeepEP normal has been collected on >= 0.5.0 runtimes, so allow the family.
@@ -192,56 +192,8 @@ def _verify_axis_coverage(output_path, sms_list, tokens, cases):
     return len(expected_shapes)
 
 
-def _iter_moe_configs():
-    """Yield (hidden_size, num_experts, topk) from every MoE model config.
-
-    Handles the field-name variants across DeepSeek / Qwen / Llama / MiniMax /
-    GPT-OSS, including VL models that nest the language config under
-    ``text_config``.
-    """
-    if not os.path.isdir(MODEL_CONFIGS_DIR):
-        return
-    for filename in sorted(os.listdir(MODEL_CONFIGS_DIR)):
-        if not filename.endswith("_config.json"):
-            continue
-        try:
-            with open(os.path.join(MODEL_CONFIGS_DIR, filename)) as f:
-                cfg = json.load(f)
-        except (OSError, ValueError):
-            continue
-        text_cfg = cfg.get("text_config") or {}
-        num_experts = (
-            cfg.get("n_routed_experts")
-            or cfg.get("num_experts")
-            or cfg.get("num_local_experts")
-            or text_cfg.get("n_routed_experts")
-            or text_cfg.get("num_experts")
-            or text_cfg.get("num_local_experts")
-        )
-        topk = (
-            cfg.get("num_experts_per_tok")
-            or cfg.get("moe_topk")
-            or cfg.get("num_experts_per_token")
-            or cfg.get("topk")
-            or text_cfg.get("num_experts_per_tok")
-        )
-        hidden = cfg.get("hidden_size") or text_cfg.get("hidden_size")
-        if num_experts and topk and hidden:
-            yield int(hidden), int(num_experts), int(topk)
-
-
 def get_deepep_normal_test_cases():
-    """Return unique structural ``(hidden_size, num_experts, topk)`` MoE combos.
-
-    Tokens and SM counts are swept internally by the benchmark, so each case is
-    one structural shape. The public plan intentionally includes every discovered
-    MoE shape; framework kernel limits are observed and recorded at runtime.
-    """
-    combos = set(_iter_moe_configs())
-    return [
-        {"hidden_size": hidden, "num_experts": num_experts, "topk": topk}
-        for hidden, num_experts, topk in sorted(combos)
-    ]
+    return plan_cases("deepep_normal", "sglang", get_sm_version())
 
 
 def _validate_expert_partition(hidden: int, num_experts: int, num_topk: int, num_ranks: int) -> None:

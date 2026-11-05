@@ -10,7 +10,7 @@ own, and the all-or-nothing shape of applying a price.
 
 import pytest
 
-from aiconfigurator_core.sdk.work_delta import (
+from aisimulate_core.sdk.work_delta import (
     CellFit,
     CoefficientField,
     Measurement,

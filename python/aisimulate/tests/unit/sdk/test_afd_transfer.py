@@ -23,18 +23,18 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations import (
+from aisimulate.sdk import common
+from aisimulate.sdk.operations import (
     AFDCombine,
     AFDFAllGather,
     AFDFReduceScatter,
     AFDTransfer,
     _afd_send_prob,
 )
-from aiconfigurator.sdk.performance_result import PerformanceResult
-from aiconfigurator_core.sdk.operations import afd_transfer as afd_transfer_module
-from aiconfigurator_core.sdk.operations.communication import NCCL, P2P
-from aiconfigurator_core.sdk.operations.elementwise import ElementWise
+from aisimulate.sdk.performance_result import PerformanceResult
+from aisimulate_core.sdk.operations import afd_transfer as afd_transfer_module
+from aisimulate_core.sdk.operations.communication import NCCL, P2P
+from aisimulate_core.sdk.operations.elementwise import ElementWise
 
 pytestmark = pytest.mark.unit
 

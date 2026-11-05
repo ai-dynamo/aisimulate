@@ -18,6 +18,12 @@ from aisimulate.sweeper.sample import unroll_sample
 BACKEND_VERSION = "1.3.0rc10"
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_deployment_preserves_context_limit_for_all_backends(backend):
+    deployment = _agg_deployment(space=_space(context_length=4096), selection=_agg_selection(backend=backend))
+    assert deployment.agg_engine_args["max_model_len"] == 4096
+
+
 def _space(**overrides) -> SearchSpace:
     values = {"model_name": "example/model", "hardware_sku": "example_sku"}
     values.update(overrides)
@@ -35,9 +41,7 @@ def _agg_selection(**overrides) -> dict:
     return values
 
 
-AGG_MOE = ReplicaParallelConfig(
-    ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-)
+AGG_MOE = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
 
 
 def _agg_deployment(*, space=None, selection=None, parallel_config=AGG_MOE):
@@ -47,6 +51,12 @@ def _agg_deployment(*, space=None, selection=None, parallel_config=AGG_MOE):
         parallel_config=parallel_config,
     )
     return build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+
+def test_zero_speculation_keeps_the_non_speculative_runtime():
+    deployment = _agg_deployment(space=_space(aic_nextn=0))
+    assert "aic_nextn" not in deployment.agg_engine_args
+    assert "aic_nextn_accepted" not in deployment.agg_engine_args
 
 
 def test_agg_backend_deployment_preserves_engine_payload():
@@ -102,9 +112,7 @@ def test_disagg_backend_deployment_preserves_both_roles():
         decode_max_num_batched_tokens=8192,
         decode_max_num_seqs=1024,
     )
-    sample = unroll_sample(
-        search_space=_space(), selection=selection, parallel_config=parallel
-    )
+    sample = unroll_sample(search_space=_space(), selection=selection, parallel_config=parallel)
 
     deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
@@ -122,10 +130,40 @@ def test_disagg_backend_deployment_preserves_both_roles():
     assert deployment.decode_engine_args["engine_type"] == "sglang"
 
 
-def test_dense_shape_omits_moe_sizes():
-    dense = ReplicaParallelConfig(
-        ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
+def test_disagg_backend_deployment_uses_role_hardware():
+    parallel = DisaggParallelConfig(
+        prefill=ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), 1),
+        decode=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 2),
     )
+    selection = _agg_selection(
+        deployment_mode="disagg",
+        backend="vllm",
+        prefill_max_num_batched_tokens=8192,
+        prefill_max_num_seqs=4,
+        decode_max_num_batched_tokens=8192,
+        decode_max_num_seqs=256,
+    )
+    sample = unroll_sample(
+        search_space=_space(
+            prefill_hardware_sku="h200_sxm",
+            decode_hardware_sku="gb200",
+        ),
+        selection=selection,
+        parallel_config=parallel,
+    )
+
+    deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+
+    assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
+    assert deployment.decode_engine_args["aic_system"] == "gb200"
+    assert deployment.performance_model_metadata["prefill"]["config"]["system"] == "h200_sxm"
+    assert deployment.performance_model_metadata["decode"]["config"]["system"] == "gb200"
+    assert deployment.parallel_config["prefill_hardware_sku"] == "h200_sxm"
+    assert deployment.parallel_config["decode_hardware_sku"] == "gb200"
+
+
+def test_dense_shape_omits_moe_sizes():
+    dense = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     engine = _agg_deployment(
         space=_space(model_name="example/dense"),
         parallel_config=dense,
@@ -170,12 +208,11 @@ def test_memory_fraction_uses_the_backend_native_field(backend, memory_field):
 
 
 def test_optional_backend_runtime_values_are_forwarded():
-    engine = _agg_deployment(
-        space=_space(startup_time=45.0, aic_nextn=2)
-    ).agg_engine_args
+    engine = _agg_deployment(space=_space(startup_time=45.0, aic_nextn=2, nextn_accepted=1.5)).agg_engine_args
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+    assert engine["aic_nextn_accepted"] == 1.5
 
 
 def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
@@ -184,9 +221,7 @@ def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
         "d2h_bandwidth_gbps": 7.0,
         "h2d_bandwidth_gbps": 38.0,
     }
-    dense = ReplicaParallelConfig(
-        ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1
-    )
+    dense = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
 
     engine = _agg_deployment(
         space=_space(
@@ -232,6 +267,104 @@ def test_disagg_auto_transfer_geometry_uses_prefill_source_shape(monkeypatch):
 
     assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
     assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
+
+
+def _role_geometry_profile(roles):
+    return {
+        "schema_version": 1,
+        "model": "example/role-geometry",
+        "model_revision": "synthetic-v1",
+        "architecture": "SyntheticDecoder",
+        "context_length": 4096,
+        "num_experts": 0,
+        "provenance": "Synthetic role geometry; not measured.",
+        "deployments": [
+            {
+                "system": "h200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.25.1",
+                "tp": 1,
+                "dp": 1,
+                "moe_tp": 1,
+                "moe_ep": 1,
+                "gemm_quant_mode": "bfloat16",
+                "moe_quant_mode": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "comm_quant_mode": "half",
+                "kv_cache_dtype": "bfloat16",
+                **({"worker_type": role} if role is not None else {}),
+                "resources": {
+                    "weights_bytes": 1024,
+                    "activations_bytes": 128,
+                    "runtime_overhead_bytes": 128,
+                    "comm_overhead_bytes": 0,
+                    "kv_bytes_per_token": {None: 512, "prefill": 512, "decode": 1024, "aggregated": 2048}[role],
+                    "cache_layout": "linear",
+                    "max_num_tokens": 8192,
+                    "max_batch_size": 256,
+                    "provenance": "Synthetic role geometry; not measured.",
+                },
+            }
+            for role in roles
+        ],
+    }
+
+
+@pytest.mark.parametrize("roles", [(None,), ("prefill", "decode"), ("prefill", "decode", "aggregated")])
+@pytest.mark.parametrize("feature", ["transfer", "host_offload"])
+def test_disagg_auto_geometry_selects_matching_profile_role(roles, feature):
+    profile = _role_geometry_profile(roles)
+    host_offload = {"num_host_blocks": 4096, "d2h_bandwidth_gbps": 7.0, "h2d_bandwidth_gbps": 38.0}
+    settings = (
+        {"kv_transfer_bytes_per_token": "auto", "kv_transfer_bandwidth": 400.0}
+        if feature == "transfer"
+        else {
+            "prefill_native_host_offload": host_offload,
+            "decode_native_host_offload": host_offload,
+            "prefill_kv_bytes_per_token": "auto",
+            "decode_kv_bytes_per_token": "auto",
+        }
+    )
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1)
+    sample = unroll_sample(
+        search_space=_space(model_name=profile["model"], hardware_sku="h200_sxm", fpm_profile=profile, **settings),
+        selection=_agg_selection(
+            deployment_mode="disagg",
+            backend="vllm",
+            prefill_max_num_batched_tokens=8192,
+            prefill_max_num_seqs=1,
+            decode_max_num_batched_tokens=8192,
+            decode_max_num_seqs=256,
+        ),
+        parallel_config=DisaggParallelConfig(prefill=parallel, decode=parallel),
+    )
+
+    deployment = build_backend_deployment(sample, backend_version="0.25.1")
+
+    field = "kv_transfer_bytes_per_token" if feature == "transfer" else "kv_cache_bytes_per_token"
+    assert deployment.prefill_engine_args[field] == 512
+    assert deployment.decode_engine_args[field] == (512 if feature == "transfer" or roles == (None,) else 1024)
+
+
+@pytest.mark.parametrize("roles,expected", [((None,), 512), (("prefill", "decode", "aggregated"), 2048)])
+def test_agg_auto_host_offload_geometry_selects_aggregated_profile_role(roles, expected):
+    profile = _role_geometry_profile(roles)
+    sample = unroll_sample(
+        search_space=_space(
+            model_name=profile["model"],
+            hardware_sku="h200_sxm",
+            fpm_profile=profile,
+            agg_native_host_offload={"num_host_blocks": 4096, "d2h_bandwidth_gbps": 7.0, "h2d_bandwidth_gbps": 38.0},
+            agg_kv_bytes_per_token="auto",
+        ),
+        selection=_agg_selection(backend="vllm"),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), 1),
+    )
+
+    deployment = build_backend_deployment(sample, backend_version="0.25.1")
+
+    assert deployment.agg_engine_args["worker_type"] == "aggregated"
+    assert deployment.agg_engine_args["kv_cache_bytes_per_token"] == expected
 
 
 def test_serialized_search_space_transfer_geometry_enables_pd_transfer():
@@ -362,9 +495,7 @@ def test_fixed_timing_drops_the_forward_model_field(monkeypatch):
     )
     deployment = _agg_deployment(
         space=_space(agg_forward_model="fpm"),
-        selection=_agg_selection(
-            agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
-        ),
+        selection=_agg_selection(agg_timing_model={"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}),
     )
 
     assert "aic_forward_model" not in deployment.agg_engine_args

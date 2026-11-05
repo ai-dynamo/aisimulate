@@ -9,6 +9,7 @@ import csv
 import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -97,12 +98,16 @@ def _record(
         candidate_id=candidate_id,
         status=status,
         config={"deployment_mode": "agg", "backend": "trtllm", "used_gpus": 8},
-        prediction_config=(
-            {"engine": {"model": "example/model"}} if feasible else None
-        ),
+        prediction_config=({"engine": {"model": "example/model"}} if feasible else None),
         used_gpus=8,
         score=100.0 if feasible else None,
-        metrics={"output_throughput_tok_s": 100.0} if feasible else {},
+        metrics={
+            "output_throughput_tok_s": 100.0,
+            "power_w": 487.5,
+            "power_coverage": 0.95,
+        }
+        if feasible
+        else {},
         reason_category=reason_category,
         reason=None if feasible else f"example {status.value}",
         provenance=_provenance(),
@@ -166,10 +171,34 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert decoded["schema_version"] == RESULT_SCHEMA_VERSION
     assert decoded["provenance"]["search_strategy"] == "exhaustive"
     assert SweepResult.from_json(payload) == result
-    assert (
-        SweepResult.model_json_schema()["properties"]["schema_version"]["const"]
-        == "1.0"
-    )
+    assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.1"
+
+
+@pytest.mark.parametrize("selection", ["scalar", "pareto", "empty"])
+def test_documented_sdk_example_prints_selected_ids(monkeypatch, capsys, selection):
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "docs/sweeper/sdk.md").read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+    payload = _complete_result().model_dump(mode="python")
+    second = _record("candidate-000006", CandidateStatus.FEASIBLE).model_dump(mode="python")
+    second["score"] = second["metrics"]["output_throughput_tok_s"] = 200.0
+    payload["candidates"].append(second)
+    payload["counts"]["feasible"] += 1
+    payload["counts"]["evaluated"] += 1
+    selected = [] if selection == "empty" else ["candidate-000006", "candidate-000001"]
+    payload["views"] = {
+        "top_n": selected if selection == "scalar" else [],
+        "pareto_front": selected if selection == "pareto" else [],
+    }
+    result = SweepResult.model_validate(payload)
+    monkeypatch.chdir(root)
+    # Exercise the documented result consumer with real, nonempty result types;
+    # the expensive search itself is outside this example-contract check.
+    monkeypatch.setattr(Sweeper, "run", lambda self, config: result)
+
+    exec(compile(script, "docs/sweeper/sdk.md", "exec"), {"__name__": "__main__"})
+
+    expected = [] if selection == "empty" else ["candidate-000006 200.0 8", "candidate-000001 100.0 8"]
+    assert capsys.readouterr().out.splitlines() == expected
 
 
 def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
@@ -182,15 +211,13 @@ def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
     assert updated.selected_candidate_ids == ["candidate-000001"]
     assert updated.selected_candidates[0].prediction_config == concrete
     assert updated.candidates[0].prediction_config == concrete
-    assert result.selected_candidates[0].prediction_config == {
-        "engine": {"model": "example/model"}
-    }
+    assert result.selected_candidates[0].prediction_config == {"engine": {"model": "example/model"}}
 
 
 def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
     payload = json.loads(_complete_result().to_json())
     payload["schema_version"] = "2.0"
-    with pytest.raises(ValidationError, match="Input should be '1.0'"):
+    with pytest.raises(ValidationError, match="Input should be '1.1'"):
         SweepResult.model_validate(payload)
 
     payload = json.loads(_complete_result().to_json())
@@ -207,20 +234,31 @@ def test_result_rejects_unknown_schema_version_and_inconsistent_counts():
 
 def test_flat_csv_is_one_row_per_candidate_with_canonical_json_cells():
     result = _complete_result()
+    result.candidates[0].provenance = make_candidate_provenance(
+        result.candidates[0].config,
+        metrics=result.candidates[0].metrics,
+        runner_metadata={
+            "operations": [
+                {
+                    "operation": "attention",
+                    "source": "silicon",
+                    "version": "v1",
+                }
+            ]
+        },
+    )
 
     rows = list(csv.DictReader(io.StringIO(result.to_csv())))
 
     assert len(rows) == 5
-    assert rows[0]["schema_version"] == "1.0"
+    assert rows[0]["schema_version"] == "1.1"
     assert rows[0]["is_top_n"] == "True"
     assert json.loads(rows[0]["config_json"])["backend"] == "trtllm"
-    assert (
-        json.loads(rows[0]["prediction_config_json"])["engine"]["model"]
-        == "example/model"
-    )
-    assert (
-        json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
-    )
+    assert json.loads(rows[0]["prediction_config_json"])["engine"]["model"] == "example/model"
+    assert json.loads(rows[0]["provenance_json"])["operations"][0]["source"] == "silicon"
+    assert rows[0]["power_w"] == "487.5"
+    assert rows[0]["power_coverage"] == "0.95"
+    assert rows[0]["power_source"] == "runner_reported"
     assert rows[3]["reason_category"] == "runtime_timeout"
 
 
@@ -273,6 +311,70 @@ def test_candidate_provenance_uses_the_materialized_replay_spec():
             },
         }
     ]
+
+
+def test_candidate_provenance_preserves_withheld_power_evidence():
+    candidate = {
+        "deployment_mode": "agg",
+        "backend": "trtllm",
+        "backend_version": "1.0",
+        "model_name": "example/model",
+        "hardware_sku": "h200_sxm",
+    }
+    provenance = make_candidate_provenance(
+        candidate,
+        metrics={"power_coverage": 0.42},
+        runner_metadata={
+            "power": {
+                "source": "modeled",
+                "scope": "active_forward_pass_per_gpu",
+                "power_w_unit": "W",
+                "coverage_gate": 0.9,
+                "publication_status": "withheld",
+            }
+        },
+    )
+
+    assert provenance.power["source"] == "modeled"
+    assert provenance.power["publication_status"] == "withheld"
+    assert provenance.power["power_coverage"] == 0.42
+    assert provenance.power["power_w"] is None
+
+
+def test_candidate_provenance_does_not_invent_runner_power_semantics():
+    provenance = make_candidate_provenance(
+        {"model_name": "example/model", "hardware_sku": "h200_sxm"},
+        metrics={"power_w": 321.0, "power_coverage": 1.0},
+        runner_metadata={},
+    )
+
+    assert provenance.power == {
+        "power_w": 321.0,
+        "power_coverage": 1.0,
+        "source": "runner_reported",
+        "scope": "unspecified",
+        "publication_status": "reported",
+    }
+
+
+def test_candidate_provenance_preserves_role_hardware_without_replay_spec():
+    provenance = make_candidate_provenance(
+        {
+            "deployment_mode": "disagg",
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "prefill_tp": 1,
+            "decode_tp": 2,
+        }
+    )
+
+    assert provenance.topology == {
+        "deployment_mode": "disagg",
+        "prefill_hardware_sku": "h200_sxm",
+        "decode_hardware_sku": "gb200",
+        "prefill_tp": 1,
+        "decode_tp": 2,
+    }
 
 
 class _Sampler:
@@ -463,9 +565,7 @@ def _with_trial_budget(
 
 
 def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
@@ -480,7 +580,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -506,10 +606,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     assert result.selected_candidates[0].score == 512.0
     assert result.candidates[0].provenance.performance_data[0]["source"] == "parquet"
     assert result.candidates[0].provenance.performance_data[1]["role"] == "aggregated"
-    assert (
-        result.candidates[0].provenance.performance_data[1]["config"]["model_path"]
-        == "example/model"
-    )
+    assert result.candidates[0].provenance.performance_data[1]["config"]["model_path"] == "example/model"
     assert result.candidates[0].provenance.power["mean_power_w"] == 400.0
 
     views_only = Sweeper(
@@ -527,9 +624,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
 
 
 def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
@@ -544,7 +639,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
     config_data = _config().model_dump(mode="python")
     config_data["goal"] = {
@@ -564,25 +659,19 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     assert result.counts.feasible == 0
     assert result.selected_candidates == []
     assert result.candidates[0].metrics["mean_ttft_ms"] == 20.0
-    assert {record.reason_category for record in result.candidates} == {
-        ReasonCategory.SLA_CONSTRAINT
-    }
+    assert {record.reason_category for record in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
 
 
 def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     result = Sweeper(
         runner_factory=_FailingRunnerFactory(),
@@ -600,19 +689,15 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
     monkeypatch,
     include_sample_count,
 ):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
         supported_backends={parallel_config: frozenset({"trtllm"})},
         knob_choices={"backend": ["trtllm"]},
     )
-    monkeypatch.setattr(
-        search_module, "enumerate_branches", lambda *args, **kwargs: [branch]
-    )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     seen = {}
 
@@ -649,16 +734,12 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
     assert result.counts.failed == 0
     assert result.counts.cache_hits == 0
     assert result.candidates[0].reason_category is ReasonCategory.NO_SAMPLES
-    assert (
-        "num_e2e_latency_samples" in result.candidates[0].metrics
-    ) is include_sample_count
+    assert ("num_e2e_latency_samples" in result.candidates[0].metrics) is include_sample_count
     assert seen["sampler"].observed == [{"objective": float("-inf")}]
 
 
 def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monkeypatch):
-    parallel_config = ReplicaParallelConfig(
-        ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2
-    )
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
         deployment_mode="agg",
         parallel_configs=(parallel_config,),
@@ -673,7 +754,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -697,4 +778,69 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     ]
     assert result.candidates[0].reason_category is ReasonCategory.BACKEND_TOPOLOGY
     assert result.candidates[1].reason_category is ReasonCategory.REPLAY_RUNTIME
+    for record in json.loads(result.to_json())["candidates"]:
+        assert record["metrics"] == {}
+        assert record["provenance"]["power"] == {}
     assert result.selected_candidates == []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_result_orchestration(monkeypatch):
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+def test_resource_limited_records_roundtrip_without_claiming_evaluation():
+    payload = _complete_result().model_dump(mode="json")
+    payload["candidates"].append(
+        _record(
+            "candidate-000006", CandidateStatus.RESOURCE_LIMITED, reason_category=ReasonCategory.RESOURCE_LIMIT
+        ).model_dump(mode="json")
+    )
+    payload["counts"]["resource_limited"] = 1
+    result = SweepResult.model_validate(payload)
+    assert result.counts.evaluated == 4
+    assert len(result.candidates) == 6
+    assert SweepResult.from_json(result.to_json()) == result
+    assert result.candidates[-1].metrics == {}
+
+
+def test_previous_result_version_remains_readable():
+    payload = _complete_result().model_dump(mode="json")
+    payload["schema_version"] = "1.0"
+    payload["counts"].pop("resource_limited")
+    upgraded = SweepResult.model_validate(payload)
+    assert upgraded.counts.resource_limited == 0
+    assert upgraded.schema_version == "1.1"
+
+
+def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(monkeypatch):
+    from aisimulate.resource_scheduler import InterruptedEvaluation
+
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *a, **kw: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a, systems_paths=None: "1.0")
+
+    class ResourceFactory(_RunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def partial(specs, **kwargs):
+        yield 0, search_module._run_replay_detailed(specs[0], _Runner())
+        yield 1, InterruptedEvaluation("too large", True, {"required_bytes": 10**12})
+
+    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", partial)
+    result = Sweeper(runner_factory=ResourceFactory(), sampler_factory=_Sampler, show_progress=False).run(_config())
+    assert result.counts.feasible == 1
+    assert result.counts.resource_limited == 1
+    assert result.counts.evaluated == 1
+    assert len(result.selected_candidates) == 1
+    assert result.candidates[1].status is CandidateStatus.RESOURCE_LIMITED
+    assert result.candidates[1].metrics == {}

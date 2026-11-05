@@ -4,7 +4,7 @@
 """Enumerate legal per-worker parallel shapes and the replica counts that fit a GPU budget.
 
 The per-worker shape enumeration mirrors
-``aiconfigurator.sdk.utils.enumerate_parallel_config`` + ``filter_real_silicon_configs``
+``aisimulate.sdk.utils.enumerate_parallel_config`` + ``filter_real_silicon_configs``
 (real-silicon profile): ``pp`` is pinned to 1; the MoE width constraint
 ``dp*tp == moe_tp*moe_ep`` holds; for MoE only the pure TEP / DEP / MoE-TP patterns are
 kept, plus their shared width-one identity shape (MoE-TP — moe_ep==1 under tensor- or
@@ -116,6 +116,7 @@ def enumerate_worker_shapes(
     enable_wideep: bool = False,
     moe_backend: str | None = None,
     allow_moe_pure_tp: bool = True,
+    allow_hybrid: bool = False,
 ) -> list[ParallelShape]:
     """Legal per-worker shapes at exactly ``gpus_per_worker`` GPUs (``pp`` = 1).
 
@@ -128,6 +129,8 @@ def enumerate_worker_shapes(
     Dense models scan plain TP and are unaffected. Backend EP-only filters still apply.
     """
     g = gpus_per_worker
+    if isinstance(g, bool) or not isinstance(g, int) or g <= 0:
+        return []
     if not is_moe:
         # dense: plain TP, no attention-dp, no experts.
         return [ParallelShape(tp=g, dp=1, moe_tp=1, moe_ep=1)]
@@ -175,7 +178,7 @@ def enumerate_worker_shapes(
                     # shape. It is the degenerate form of every pure strategy and
                     # must remain available for MoE models that fit on one GPU.
                     is_single_gpu = tp == dp == moe_tp == moe_ep == 1
-                    if not (is_single_gpu or is_tep or is_dep or is_moe_tp):
+                    if not allow_hybrid and not (is_single_gpu or is_tep or is_dep or is_moe_tp):
                         continue
                     shapes.append(ParallelShape(tp=tp, dp=dp, moe_tp=moe_tp, moe_ep=moe_ep))
     return shapes

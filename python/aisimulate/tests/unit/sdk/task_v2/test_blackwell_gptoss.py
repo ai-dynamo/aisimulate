@@ -14,8 +14,8 @@ system.  (Port of the legacy V1 ``TaskConfigFactory`` gpt-oss-blackwell promotio
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.sdk import common
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
 

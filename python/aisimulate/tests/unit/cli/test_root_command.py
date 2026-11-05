@@ -3,7 +3,7 @@
 
 import pytest
 
-from aiconfigurator.main import main
+from aisimulate.legacy_cli.entrypoint import main
 
 pytestmark = pytest.mark.unit
 

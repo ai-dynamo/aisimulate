@@ -3,7 +3,7 @@
 
 """The manifest scan must derive a reproducible latency metric for every perf table.
 
-Two properties are covered:
+Three properties are covered:
 
 * Latency composition — the DeepEP dispatch/combine tables have no single
   `latency` column: the SDK sums component columns at load time
@@ -13,11 +13,15 @@ Two properties are covered:
   recognised latency column.
 * Merge order — `record_row` is last-write-wins per (shape, framework), so the
   merge must walk files in a fixed order or identical runs disagree.
+* Shape identity — automatic-selection eligibility is metadata, not a shape
+  dimension, and opt-in measurements remain available for manifest analysis.
 """
 
 import sys
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools" / "perf_database"))
@@ -159,6 +163,49 @@ def test_scan_one_file_records_composed_latency(tmp_path):
     assert len(result.records) == 1
     *_, latency = result.records[0]
     assert latency == pytest.approx(33.0)
+
+
+def test_scan_eligibility_metadata_preserves_shape_identity(tmp_path):
+    """Absent, default, and opt-in eligibility describe the same physical shape."""
+    shape = {
+        "moe_dtype": "fp8_block",
+        "num_tokens": 128,
+        "hidden_size": 7168,
+        "inter_size": 2048,
+        "topk": 8,
+        "num_experts": 256,
+        "moe_tp_size": 32,
+        "moe_ep_size": 1,
+        "distribution": "uniform",
+    }
+    source = "sglang_flashinfer_trtllm_moe"
+    for version, eligible in (("0.1", None), ("0.2", True), ("0.3", False)):
+        version_dir = tmp_path / "b200_sxm" / "moe" / "sglang" / version
+        version_dir.mkdir(parents=True)
+        row = {
+            "framework": "sglang",
+            "version": version,
+            "device": "b200_sxm",
+            "op_name": "moe",
+            "kernel_source": source,
+            **shape,
+            "latency": 0.25,
+        }
+        if eligible is not None:
+            row["default_eligible"] = eligible
+        pq.write_table(pa.Table.from_pylist([row]), version_dir / "moe_perf.parquet")
+
+    groups = scan(tmp_path)
+
+    assert set(groups) == {("b200_sxm", "moe_perf.parquet", source)}
+    (group,) = groups.values()
+    assert group.latency_by_shape_fw_version == {
+        tuple(shape.items()): {("sglang", version): 0.25 for version in ("0.1", "0.2", "0.3")}
+    }
+    summary = group.summary()
+    assert summary["total_raw_rows"] == 3
+    assert summary["total_shape_keys"] == 1
+    assert summary["within_framework_dedup_rows"] == 2
 
 
 def test_merge_order_is_file_order_not_completion_order(tmp_path):

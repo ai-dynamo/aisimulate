@@ -15,8 +15,8 @@ shared layer included) in SILICON mode.
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.perf_database import get_database
+from aisimulate.sdk import common
+from aisimulate.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
@@ -34,8 +34,8 @@ pytestmark = pytest.mark.unit
     ],
 )
 def test_generation_mla_module_fp8_kv_exact_values(system, b, s, num_heads, gemm, expected_ms):
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op
-    from aiconfigurator_core.sdk.operations.mla import MLAModule
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.operations.mla import MLAModule
 
     db = get_database(system, "trtllm", "1.3.0rc20")
     db.set_default_database_mode(common.DatabaseMode.SILICON)

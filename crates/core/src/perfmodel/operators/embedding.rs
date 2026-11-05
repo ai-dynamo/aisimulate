@@ -3,7 +3,7 @@
 
 //! Token embedding operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.embedding`. Embedding latency is
+//! Mirrors `aisimulate.sdk.operations.embedding`. Embedding latency is
 //! a memory-bound per-token lookup: latency = `num_tokens * hidden *
 //! dtype_memory / mem_bw` (only the rows that get touched are read, not
 //! the whole table). The weight footprint is `vocab * hidden *

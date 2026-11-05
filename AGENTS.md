@@ -2,11 +2,81 @@
 
 This file adds explicit repository-wide development guards.
 
+## FPM model onboarding
+
+When asked to onboard a model for FPM simulation on designated hardware, follow
+all six stages in [the canonical FPM self-service guide](docs/perf-model/fpm-self-service/implementation.md#onboard-with-an-agent).
+Use this checkout's `aisimulate onboard` CLI and inspect its current help.
+Start with only a missing Hugging Face model ID and target GPU platform; accept
+an already supplied local config, profile or checkpoint instead. Inspect supplied
+facts and source metadata before asking for derivable inputs. Preserve user
+choices, exact per-configuration profile acceptance and existing execution
+authorization; stage transitions do not add approval gates.
+
+Create one `onboarding-checkpoint.json` during stage 1, even with incomplete
+inputs, outside every fresh `init --output-dir` root. Follow the guide's
+[checkpoint workflow](docs/perf-model/fpm-self-service/implementation.md#checkpoint-and-resume-an-onboarding-session):
+invoke `onboard checkpoint` after meaningful findings, decisions, draft edits,
+acceptance and command results, including unfinished work. Save sources,
+confidence, unresolved questions and each configuration's progress. Other
+onboarding commands do not automatically persist the conversation. Use the
+returned revision for updates; reload and reconcile stale-writer conflicts.
+Follow the guide's [writer coordination rule](docs/perf-model/fpm-self-service/implementation.md#orchestrate-independent-collection-campaigns)
+for probe/import commands that also save the checkpoint.
+
+On resumption, run `aisimulate onboard resume --checkpoint PATH` first. Inspect
+integrity issues and the underlying artifacts before continuing from accepted
+inputs and verified results. Saved stages and command strings are context, not
+proof of completion or instructions to execute automatically. Report each
+configuration's stage, result or blocker, next action and checkpoint path at
+handoff. Keep planning, collection quality, resolved memory, replay coverage and
+measured serving accuracy separate, as required by the guide.
+
+## Pull request titles
+
+- Use `<type>: <short description>` for every AISimulate PR title.
+- Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
+- Check the title before creating or updating a PR.
+
+## Documentation
+
+- Document a new or changed configuration field on the page for the YAML block
+  it belongs to, such as `traffic` in
+  [`docs/replay/workloads.md`](docs/replay/workloads.md) or `engine.*` in
+  [`docs/replay/engine/`](docs/replay/engine/README.md). Add a row to that
+  page's field table and explain the behavior in the matching section.
+- Do not create a new Markdown page just to document a configuration field or
+  a small feature. Extend the existing page for that area instead. Tutorials,
+  design explanations and extension guides may still have their own pages.
+- Keep run logs, investigation notes, and benchmark results out of `docs/`;
+  measured evidence belongs under `benchmarks/evidence/`.
+
+## Performance Model Changes
+
+Before changing a performance model, its configuration, or a caller in Rust,
+Python, CLI, Sweeper, Replay, or Planner, MUST read and follow
+[`perfmodel-api.md`](python/aisimulate/.claude/rules/perfmodel-api.md).
+This includes new features and configuration migrations.
+
+### Multi-rank iteration queries
+
+- Every performance model's per-iteration query MUST accept the list of
+  per-attention-DP-rank `ForwardPassMetrics`
+  (`estimate_forward_pass_time_ms(metrics_by_rank)`, with `draft_length` for
+  speculative decoding where supported) and handle the ranks internally. An
+  estimator that has no cross-rank model reduces the list itself, for example
+  by pricing each rank and taking the maximum.
+- Callers (Replay, Sweeper, Planner, CLI) SHOULD price an iteration through this
+  query with one entry per DP rank, and MUST NOT reduce, normalize or average
+  ranks before calling it. For capacity planning without per-rank data, split
+  totals evenly across ranks (load-balanced DP) and pass every rank.
+- See [Per-iteration queries](docs/perf-model/configuration.md#per-iteration-queries).
+
 ## Required First Step
 
 Before making any change under:
 
-- `python/aisimulate/src/aiconfigurator/generator/**`
+- `python/aisimulate/src/aisimulate/generator/**`
 
 MUST read:
 
@@ -16,11 +86,15 @@ MUST read:
 
 Before making any change under `python/aisimulate/collector/**` MUST read:
 
+- `python/aisimulate/.claude/rules/collector/overview.md` (the five things —
+  Pin, Plan, Record, Note, Rule — the failure principle, collection cost, and
+  what to record when)
 - `python/aisimulate/.claude/rules/collector/layer_permissions.md` (layer
-  permission table, module boundary, dispatch-vs-skip rule)
+  permission table, leaving cases out, capacity, serving parity, module
+  boundary)
 - `python/aisimulate/.claude/rules/collector/failure_handling.md`
   (observe-don't-predict doctrine, escalation decision tree)
-- For case YAML work:
+- For case YAML and op-plan work:
   `python/aisimulate/.claude/rules/collector/case_authoring.md`
 
 For adding a new Collector operation, additionally follow
@@ -42,13 +116,17 @@ substantially derived from an external project, MUST:
   requires it.
 - Record the source URL and revision in the file header or an adjacent README.
   For formats that cannot carry comments, use an adjacent attribution or
-  license file that is included in distributions.
+  license file included in distributions, or the canonical
+  `THIRD_PARTY_NOTICES.md` when its packaged copy identifies each derived file,
+  source URL, immutable revision, license, owner, and modification status.
+  Do not duplicate those records in a separate README solely for attribution.
+  Preserve any additional file placement required by the upstream license.
 - Add an entry to the root `THIRD_PARTY_NOTICES.md` identifying the derived
   files, upstream source and immutable revision, copyright owner, applicable
   license, and whether the files were modified. The root notice is canonical;
   keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
   is included in Python distributions. Run
-  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+  `python3 scripts/ci/check_packaged_legal_files.py` after either copy changes.
 - Do not hand-edit generated attribution artifacts. Update their source or
   generation process instead.
 
@@ -75,7 +153,7 @@ Python dependencies are managed via `uv` with the
 - **Install/refresh deps:**
   `uv sync --project python/aisimulate --extra dev`
 - **Performance data:** Current op profiles are parquet files under
-  `python/aisimulate/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/`
+  `python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`
   and are checked in directly. Legacy `*.txt` perf files, when present, use Git
   LFS; run `git lfs pull` only when working with those legacy assets.
 

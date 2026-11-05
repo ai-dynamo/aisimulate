@@ -13,14 +13,14 @@ actually-allocatable KV was selected as top1).
 
 import pytest
 
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.backends.vllm_backend import (
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.backends.vllm_backend import (
     VLLM_DEFAULT_GPU_MEMORY_UTILIZATION,
     VLLMBackend,
 )
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.memory import kv_cache_budget_bytes
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.memory import kv_cache_budget_bytes
 
 pytestmark = pytest.mark.unit
 
@@ -78,7 +78,7 @@ def test_base_backend_static_check_defaults_off():
 
 def test_sglang_backend_derives_capacity_tiered_fraction():
     """SGLang's mem_fraction_static follows the framework's capacity-tiered derivation."""
-    from aiconfigurator.sdk.backends.sglang_backend import (
+    from aisimulate.sdk.backends.sglang_backend import (
         SGLANG_FALLBACK_MEM_FRACTION_STATIC,
         SGLANGBackend,
         derive_sglang_mem_fraction_static,
@@ -159,7 +159,7 @@ def test_vllm_agg_resolver_carries_version_aware_fraction():
 def test_sglang_agg_resolver_honors_explicit_fraction():
     """SGLang agg keeps its 0.88 fallback when unset but must honor an
     explicit user fraction (it was previously discarded the same way)."""
-    from aiconfigurator.sdk.backends.sglang_backend import (
+    from aisimulate.sdk.backends.sglang_backend import (
         SGLANG_FALLBACK_MEM_FRACTION_STATIC,
         SGLANGBackend,
     )

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  moe_perf:
+    # GLM-5.3-Flash routed experts 288/top-8/4096/2048 with the case YAML's sglang_moe_backends for SM100 (observed serving dispatch).
+    # gb200 (SM100, ocics001), 4 GPUs/node, stock image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 (no overlay) run via pyxis; launcher audits/glm53flash-multigpu/tools/ops/launcher; collector source 97efc7406b6025e94565dfcec63d7b7dd84000ad; Slurm job(s) 7925145, 7925146.
+    # data_sha256: a5777da10924ccc14a9f31dac7eaab1dc5d70573ee9c0ff9b59898e56e6629cc
+    rows: 5346
+    status: complete
+    collections:
+    - collector_ref: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      collector_hash: sha256:78cc1fa00c392eb6de55e585398034106e659141be7664cd3a363bcd7696aa16
+      case_plan_hash: sha256:2c46bce7b92e1086a069171ccb9f44c207851f19d1d8593a99b495cab5e55b80
+      collected_at: '2026-10-13'
+      rows: 2673
+      status: complete
+    - collector_ref: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      collector_hash: sha256:78cc1fa00c392eb6de55e585398034106e659141be7664cd3a363bcd7696aa16
+      case_plan_hash: sha256:e344917001a667986bb17c56debabdcef2e031f769731cffa9a7a865015bdecb
+      collected_at: '2026-10-13'
+      rows: 2673
+      status: complete

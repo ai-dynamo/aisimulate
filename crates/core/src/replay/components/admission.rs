@@ -8,8 +8,13 @@ use anyhow::{Result, bail};
 use uuid::Uuid;
 
 use super::ReplayMode;
+use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
-use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver};
+use crate::replay::loadgen::{
+    AgenticOutputFeedback, AgenticPhaseEvidence, AgenticPreparationTransition,
+    AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests, ReplayRequestHashes,
+    ReplayRequestPayload, WorkloadDriver,
+};
 use crate::replay::protocol::DirectRequest;
 
 #[doc(hidden)]
@@ -74,7 +79,37 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
 #[allow(clippy::large_enum_variant)] // Boxing the workload adds measurable replay hot-path cost.
 enum AdmissionSource {
     Requests(VecDeque<DirectRequest>),
-    Workload(WorkloadDriver),
+    GeneratedRequests(GeneratedRequests),
+    Workload {
+        driver: WorkloadDriver,
+        pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback,
+    },
+}
+
+/// Runtime feedback collected beside the workload driver until the current
+/// logical timestamp is flushed as one deterministic batch.
+#[derive(Default)]
+struct PendingAgenticRuntimeFeedback {
+    output_tokens: Vec<AgenticOutputFeedback>,
+    causal_terminals: Vec<AgenticTerminalFeedback>,
+    quiescent_requests: Vec<Uuid>,
+}
+
+impl PendingAgenticRuntimeFeedback {
+    fn is_empty(&self) -> bool {
+        self.output_tokens.is_empty()
+            && self.causal_terminals.is_empty()
+            && self.quiescent_requests.is_empty()
+    }
+
+    fn take(&mut self, at_ms: f64) -> AgenticRuntimeFeedback {
+        AgenticRuntimeFeedback {
+            at_ms,
+            output_tokens: std::mem::take(&mut self.output_tokens),
+            causal_terminals: std::mem::take(&mut self.causal_terminals),
+            quiescent_requests: std::mem::take(&mut self.quiescent_requests),
+        }
+    }
 }
 
 pub(crate) struct AdmissionQueue<Metadata = NoReplayMetadata> {
@@ -92,9 +127,20 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
     }
 
+    pub(crate) fn new_generated_requests(source: GeneratedRequests, max_in_flight: usize) -> Self {
+        Self {
+            source: AdmissionSource::GeneratedRequests(source),
+            mode: ReplayMode::Concurrency { max_in_flight },
+            metadata: PhantomData,
+        }
+    }
+
     pub(crate) fn new_workload(driver: WorkloadDriver, mode: ReplayMode) -> Self {
         Self {
-            source: AdmissionSource::Workload(driver),
+            source: AdmissionSource::Workload {
+                driver,
+                pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback::default(),
+            },
             mode,
             metadata: PhantomData,
         }
@@ -106,6 +152,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
 
     pub(crate) fn next_ready_time_ms(&mut self) -> Option<f64> {
         match (&self.mode, &mut self.source) {
+            // Deliberately lenient: this peek cannot distinguish an empty queue from a
+            // malformed front request, but every caller drains before it peeks, and the
+            // drain rejects a missing or non-finite arrival time first.
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => pending
                 .front()
                 .and_then(|request| request.arrival_timestamp_ms)
@@ -118,13 +167,16 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 // the same request, and `is_drained` reports false while it is
                 // still queued, so withholding the deadline cannot hide it.
                 .filter(|arrival_ms| arrival_ms.is_finite()),
-            (ReplayMode::Trace, AdmissionSource::Workload(driver)) => driver.next_ready_time_ms(),
-            // Concurrency: the driver owns the session cap and gates admission, so defer to
-            // it directly (no in-flight clamp needed here).
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
+            (ReplayMode::Trace, AdmissionSource::Workload { driver, .. }) => {
                 driver.next_ready_time_ms()
             }
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_)) => None,
+            // Concurrency: the driver owns the session cap and gates admission, so defer to
+            // it directly (no in-flight clamp needed here).
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
+                driver.next_ready_time_ms()
+            }
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_))
+            | (_, AdmissionSource::GeneratedRequests(_)) => None,
         }
     }
 
@@ -152,52 +204,42 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     ) -> Result<Vec<T>> {
         match (&self.mode, &mut self.source) {
             (ReplayMode::Trace, AdmissionSource::Requests(pending)) => {
-                let mut ready = Vec::new();
-                loop {
-                    let Some(front) = pending.front() else {
-                        break;
+                // Validate the due prefix before removing requests or invoking `map`.
+                // An error must leave every request queued and produce no admission
+                // side effects, including for valid requests before the malformed one.
+                let mut due_count = 0;
+                for (queue_index, front) in pending.iter().enumerate() {
+                    // This queue drains strictly from the front, so a request whose arrival
+                    // time never compares ready blocks itself and everything behind it
+                    // forever. Reject that malformed input instead of silently wedging, and
+                    // keep it distinct from the "authored, but not due yet" case below.
+                    let arrival_time_ms = match front.arrival_timestamp_ms {
+                        Some(arrival_time_ms) if arrival_time_ms.is_finite() => arrival_time_ms,
+                        malformed => anyhow::bail!(
+                            "trace replay request {} has an unusable arrival timestamp ({}); \
+                             it is at queue index {queue_index} with 0 admitted at {now_ms}ms, and \
+                             trace-sourced requests must carry a finite authored arrival time",
+                            front.request_id().map_or_else(
+                                || "<unidentified>".to_string(),
+                                |uuid| uuid.to_string()
+                            ),
+                            malformed
+                                .map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        ),
                     };
-                    // A missing arrival_timestamp_ms is malformed trace data,
-                    // not "not ready yet" -- both filter's None and a
-                    // legitimate future timestamp end up as no-match here,
-                    // and treating the two identically means a queue with a
-                    // timestamp-less request at its front never makes
-                    // progress again: this loop and next_ready_time_ms both
-                    // report nothing to wait for, so nothing ever re-checks
-                    // it. Fail closed instead of wedging the whole queue.
-                    let Some(arrival_time_ms) = front.arrival_timestamp_ms else {
-                        bail!(
-                            "offline trace replay request {:?} is missing arrival_timestamp_ms",
-                            front.uuid
-                        );
-                    };
-                    // Checked before the readiness comparison so both
-                    // non-finite shapes are caught on whichever drain first
-                    // sees this request at the front. NaN fails every
-                    // comparison, so `NaN > now_ms` is false and the request
-                    // is admitted immediately carrying a NaN arrival that
-                    // poisons its derived latencies -- `request_latencies`
-                    // computes `(first_token_ms - arrival).max(0.0)`, and
-                    // `f64::max` returns the non-NaN operand, so TTFT is
-                    // silently reported as 0.0 instead of erroring. `+inf`
-                    // takes the other branch and is never ready, while
-                    // `next_ready_time_ms` keeps advertising it as a pending
-                    // deadline. Same class as the ready-time guard in
-                    // `WorkloadDriver`, which this admission source bypasses.
-                    if !arrival_time_ms.is_finite() {
-                        bail!(
-                            "offline trace replay request {:?} has a non-finite arrival_timestamp_ms {arrival_time_ms}",
-                            front.uuid
-                        );
-                    }
                     if arrival_time_ms > now_ms {
                         break;
                     }
-                    // Cannot fail: `pending.front()` above returned `Some` and
-                    // nothing between there and here touches the queue.
-                    let Some(request) = pending.pop_front() else {
-                        bail!("offline trace replay lost the front request while admitting it");
-                    };
+                    due_count += 1;
+                }
+                let mut ready = Vec::with_capacity(due_count);
+                for _ in 0..due_count {
+                    let request = pending
+                        .pop_front()
+                        .expect("front request must exist when arrival is ready");
+                    let arrival_time_ms = request
+                        .arrival_timestamp_ms
+                        .expect("due prefix has validated arrival timestamps");
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()
@@ -218,7 +260,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 }
                 Ok(ready)
             }
-            (ReplayMode::Trace, AdmissionSource::Workload(driver)) => Ok(driver
+            (ReplayMode::Trace, AdmissionSource::Workload { driver, .. }) => Ok(driver
                 .pop_ready_compact(now_ms, usize::MAX)
                 .into_iter()
                 .map(|ready| {
@@ -245,35 +287,28 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 })
                 .collect()),
             (ReplayMode::Concurrency { max_in_flight }, AdmissionSource::Requests(pending)) => {
-                let mut ready = Vec::new();
-                let mut simulated_in_flight = cluster_in_flight;
-                while simulated_in_flight < *max_in_flight {
-                    let Some(mut request) = pending.pop_front() else {
-                        break;
-                    };
-                    request.arrival_timestamp_ms = Some(now_ms);
-                    let (session_id, turn_index) = request
-                        .replay_context
-                        .as_ref()
-                        .map(|context| (context.session_id.clone(), context.turn_index))
-                        .unwrap_or_default();
-                    ready.push(map(ReplayReadyArrival {
-                        request: ReplayRequestPayload::materialized(request),
-                        arrival_time_ms: now_ms,
-                        scheduled_ready_at_ms: now_ms,
-                        authored_request_id: None,
-                        play_id: None,
-                        dispatched_at_ms: now_ms,
-                        metadata: Metadata::from_hashes(None),
-                        replay_hashes: None,
-                        session_id,
-                        turn_index,
-                    }));
-                    simulated_in_flight += 1;
-                }
-                Ok(ready)
+                Self::drain_concurrency_requests(
+                    now_ms,
+                    cluster_in_flight,
+                    *max_in_flight,
+                    || Ok(pending.pop_front()),
+                    map,
+                )
             }
-            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload(driver)) => {
+            (
+                ReplayMode::Concurrency { max_in_flight },
+                AdmissionSource::GeneratedRequests(source),
+            ) => Self::drain_concurrency_requests(
+                now_ms,
+                cluster_in_flight,
+                *max_in_flight,
+                || source.pop_front(),
+                map,
+            ),
+            (ReplayMode::Trace, AdmissionSource::GeneratedRequests(_)) => {
+                anyhow::bail!("generated requests require concurrency admission")
+            }
+            (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
                 // The driver owns the session cap and only ever holds active sessions'
                 // turns in its heap, so drain everything ready in heap (i.e. limit=usize MAX).
                 Ok(driver
@@ -306,13 +341,49 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
     }
 
+    fn drain_concurrency_requests<T>(
+        now_ms: f64,
+        cluster_in_flight: usize,
+        max_in_flight: usize,
+        mut next_request: impl FnMut() -> Result<Option<DirectRequest>>,
+        mut map: impl FnMut(ReplayReadyArrival<Metadata>) -> T,
+    ) -> Result<Vec<T>> {
+        let mut ready = Vec::new();
+        let mut simulated_in_flight = cluster_in_flight;
+        while simulated_in_flight < max_in_flight {
+            let Some(mut request) = next_request()? else {
+                break;
+            };
+            request.arrival_timestamp_ms = Some(now_ms);
+            let (session_id, turn_index) = request
+                .replay_context
+                .as_ref()
+                .map(|context| (context.session_id.clone(), context.turn_index))
+                .unwrap_or_default();
+            ready.push(map(ReplayReadyArrival {
+                request: ReplayRequestPayload::materialized(request),
+                arrival_time_ms: now_ms,
+                scheduled_ready_at_ms: now_ms,
+                authored_request_id: None,
+                play_id: None,
+                dispatched_at_ms: now_ms,
+                metadata: Metadata::from_hashes(None),
+                replay_hashes: None,
+                session_id,
+                turn_index,
+            }));
+            simulated_in_flight += 1;
+        }
+        Ok(ready)
+    }
+
     pub(crate) fn on_request_terminal(
         &mut self,
         uuid: Uuid,
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_terminal(uuid, now_ms, status)
@@ -324,49 +395,262 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_causal_terminal(uuid, now_ms, status)
     }
 
     pub(crate) fn on_request_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_quiescent(uuid, now_ms)
     }
 
     pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
-        let AdmissionSource::Workload(driver) = &mut self.source else {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_output_token(uuid, token_id)
     }
 
+    fn is_agentic(&self) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic())
+    }
+
+    pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+        if !self.is_agentic() {
+            return CoreAdmissionSource::on_output_token(self, uuid, token_id);
+        }
+        let AdmissionSource::Workload {
+            driver,
+            pending_agentic_runtime_feedback,
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        if !driver.observes_output_token(uuid) {
+            return Ok(());
+        }
+        if let Some(existing) = pending_agentic_runtime_feedback
+            .output_tokens
+            .iter_mut()
+            .find(|feedback| feedback.request_uuid == uuid)
+        {
+            existing.token_ids.push(token_id);
+        } else {
+            pending_agentic_runtime_feedback
+                .output_tokens
+                .push(AgenticOutputFeedback {
+                    request_uuid: uuid,
+                    token_ids: vec![token_id],
+                });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn defer_causal_terminal(
+        &mut self,
+        uuid: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()> {
+        if !self.is_agentic() {
+            return self.on_request_causal_terminal(uuid, now_ms, status);
+        }
+        let AdmissionSource::Workload {
+            pending_agentic_runtime_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_runtime_feedback
+            .causal_terminals
+            .push(AgenticTerminalFeedback {
+                request_uuid: uuid,
+                status,
+            });
+        Ok(())
+    }
+
+    pub(crate) fn defer_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
+        if !self.is_agentic() {
+            return self.on_request_quiescent(uuid, now_ms);
+        }
+        let AdmissionSource::Workload {
+            pending_agentic_runtime_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_runtime_feedback
+            .quiescent_requests
+            .push(uuid);
+        Ok(())
+    }
+
+    pub(crate) fn defer_terminal(
+        &mut self,
+        uuid: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()> {
+        if !self.is_agentic() {
+            return CoreAdmissionSource::on_terminal(self, uuid, now_ms, status);
+        }
+        let AdmissionSource::Workload {
+            pending_agentic_runtime_feedback,
+            ..
+        } = &mut self.source
+        else {
+            unreachable!("only an agentic workload can buffer agentic feedback");
+        };
+        pending_agentic_runtime_feedback
+            .causal_terminals
+            .push(AgenticTerminalFeedback {
+                request_uuid: uuid,
+                status,
+            });
+        pending_agentic_runtime_feedback
+            .quiescent_requests
+            .push(uuid);
+        Ok(())
+    }
+
+    pub(crate) fn flush_agentic_runtime_feedback(&mut self, now_ms: f64) -> Result<bool> {
+        let AdmissionSource::Workload {
+            driver,
+            pending_agentic_runtime_feedback,
+        } = &mut self.source
+        else {
+            return Ok(false);
+        };
+        if pending_agentic_runtime_feedback.is_empty() {
+            return Ok(false);
+        }
+        driver.apply_agentic_runtime_feedback(pending_agentic_runtime_feedback.take(now_ms))?;
+        Ok(true)
+    }
+
+    pub(crate) fn is_agentic_preparing(&self) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic_preparing())
+    }
+
+    pub(crate) fn knows_preparation_request(&self, uuid: Uuid) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.knows_preparation_request(uuid))
+    }
+
+    pub(crate) fn agentic_phase_evidence(&self) -> Option<AgenticPhaseEvidence> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_phase_evidence()
+    }
+
+    pub(crate) fn advance_agentic_profile(&mut self, now_ms: f64) -> Result<bool> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(false);
+        };
+        driver.advance_agentic_profile(now_ms)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_agentic_profile(
+        &mut self,
+        options: crate::replay::loadgen::AgenticProfileOptions,
+    ) -> Result<()> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            anyhow::bail!("agentic profile requires a workload driver");
+        };
+        driver.enable_agentic_profile(options)
+    }
+
+    pub(crate) fn agentic_profile_deadlines(&self) -> Option<(f64, f64, f64)> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_deadlines()
+    }
+
+    pub(crate) fn agentic_profile_pending_request_ids(&self) -> Vec<Uuid> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return Vec::new();
+        };
+        driver.agentic_profile_pending_request_ids()
+    }
+
+    pub(crate) fn agentic_profile_client_complete(&self, now_ms: f64) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. }
+            if driver.agentic_profile_client_complete(now_ms))
+    }
+
+    pub(crate) fn agentic_profile_report(
+        &self,
+    ) -> Option<crate::replay::loadgen::AgenticProfileReport> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_report()
+    }
+
+    /// Preserve actual first-admission reuse before the runtime discards the
+    /// preparation measurement epoch. The runtime separately requires native
+    /// engine quiescence before opening the saved profile suffix.
+    pub(crate) fn finish_agentic_preparation(
+        &mut self,
+        now_ms: f64,
+        collector: &crate::replay::TraceCollector,
+        telemetry: Option<&crate::replay::telemetry::ReplayTelemetryCaptureSink>,
+        reset_measurements: impl FnOnce() -> Result<()>,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(None);
+        };
+        if !driver.is_agentic_preparing() {
+            return Ok(None);
+        }
+        for uuid in driver.preparation_request_ids() {
+            if let Some((at_ms, reused_tokens)) = collector.request_admission(uuid) {
+                driver.record_preparation_admission(uuid, at_ms, reused_tokens)?;
+            }
+        }
+        driver.finish_agentic_preparation_with_observer(now_ms, reset_measurements, |driver| {
+            if let Some(sink) = telemetry
+                && let Some(transcript) = driver.agentic_lifecycle_transcript()
+            {
+                sink.record_preparation_lifecycle(transcript);
+            }
+        })
+    }
+
     pub(crate) fn is_drained(&self) -> bool {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.is_empty(),
-            AdmissionSource::Workload(driver) => driver.is_drained(),
+            AdmissionSource::GeneratedRequests(source) => source.remaining() == 0,
+            AdmissionSource::Workload { driver, .. } => driver.is_drained(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn is_workload(&self) -> bool {
-        matches!(self.source, AdmissionSource::Workload(_))
+        matches!(self.source, AdmissionSource::Workload { .. })
     }
 
     pub(crate) fn total_requests(&self) -> usize {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.len(),
-            AdmissionSource::Workload(driver) => driver.total_turns(),
+            AdmissionSource::GeneratedRequests(source) => source.remaining(),
+            AdmissionSource::Workload { driver, .. } => driver.total_turns(),
         }
     }
 
     pub(crate) fn agentic_trajectory_snapshot(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticTrajectorySnapshot> {
-        let AdmissionSource::Workload(driver) = &self.source else {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
             return None;
         };
         driver.agentic_trajectory_snapshot()
@@ -375,10 +659,37 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     pub(crate) fn agentic_graph_identity(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticGraphIdentity> {
-        let AdmissionSource::Workload(driver) = &self.source else {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
             return None;
         };
         driver.agentic_graph_identity()
+    }
+
+    pub(crate) fn agentic_snapshot_evidence(
+        &self,
+    ) -> Option<Vec<crate::replay::loadgen::AgenticSnapshotEvidence>> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_snapshot_evidence().map(<[_]>::to_vec)
+    }
+
+    pub(crate) fn agentic_lifecycle_transcript(
+        &self,
+    ) -> Option<crate::replay::loadgen::AgenticLifecycleTranscript> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_lifecycle_transcript()
+    }
+
+    pub(crate) fn agentic_play_outcomes(
+        &self,
+    ) -> Option<Vec<crate::replay::loadgen::AgenticPlayOutcome>> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_play_outcomes()
     }
 }
 
@@ -426,55 +737,299 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
 }
 
 #[cfg(test)]
-mod tests {
+mod trace_tests {
     use super::*;
 
-    /// A request without an arrival timestamp at the front of a Trace queue
-    /// must fail the drain outright, not silently wedge it: filtering it out
-    /// as "not ready yet" (the pre-fix shape) reports nothing to admit and
-    /// nothing to wait for, so nothing ever re-checks it and every request
-    /// behind it in the queue is dropped for the rest of the run.
-    #[test]
-    fn drain_fails_closed_on_a_front_request_missing_its_arrival_timestamp() {
-        let malformed = DirectRequest {
-            arrival_timestamp_ms: None,
+    fn trace_request(uuid: u128, arrival_timestamp_ms: Option<f64>) -> DirectRequest {
+        DirectRequest {
+            tokens: vec![1, 2, 3],
+            uuid: Some(Uuid::from_u128(uuid)),
+            max_output_tokens: 4,
+            arrival_timestamp_ms,
             ..Default::default()
-        };
-        let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
-            VecDeque::from([malformed]),
-            ReplayMode::Trace,
-        );
-
-        let error = match queue.drain_ready_compact(0.0, 0, false) {
-            Ok(_) => panic!("a missing arrival_timestamp_ms must fail closed, not silently wedge"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("arrival_timestamp_ms"), "{error}");
-    }
-
-    /// NaN is admitted immediately (`NaN > now_ms` is false) and then reads
-    /// as a 0.0 TTFT downstream; `+inf` is never ready but is still
-    /// advertised as a pending deadline. Both must fail the drain, the same
-    /// way `WorkloadDriver` rejects a non-finite ready time.
-    #[test]
-    fn drain_fails_closed_on_a_non_finite_arrival_timestamp() {
-        for arrival in [f64::NAN, f64::INFINITY] {
-            let malformed = DirectRequest {
-                arrival_timestamp_ms: Some(arrival),
-                ..Default::default()
-            };
-            let mut queue = AdmissionQueue::<NoReplayMetadata>::new_requests(
-                VecDeque::from([malformed]),
-                ReplayMode::Trace,
-            );
-
-            let error = match queue.drain_ready_compact(0.0, 0, false) {
-                Ok(_) => panic!("a non-finite arrival_timestamp_ms must fail closed: {arrival}"),
-                Err(error) => error.to_string(),
-            };
-            assert!(error.contains("non-finite"), "{error}");
         }
     }
+
+    #[test]
+    fn trace_requests_missing_arrival_timestamp_fail_instead_of_wedging_the_queue() {
+        let pending = VecDeque::from(vec![trace_request(1, None), trace_request(2, Some(0.0))]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+        // `ReplayReadyArrival` is not `Debug`, so match rather than `expect_err`.
+        let Err(error) = admission.drain_ready_compact(10.0, 0, false) else {
+            panic!("a trace request without an arrival timestamp must fail closed");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("arrival timestamp"),
+            "error must name the missing field: {message}"
+        );
+        assert!(
+            message.contains(&Uuid::from_u128(1).to_string()),
+            "error must identify the offending request: {message}"
+        );
+    }
+
+    /// A non-finite arrival time compares false against both `<= now_ms` and
+    /// `> now_ms`, so it can neither become ready nor be recognized as pending.
+    /// It must be rejected rather than admitted with unusable timing.
+    #[test]
+    fn trace_requests_with_non_finite_arrival_timestamps_fail_closed() {
+        for arrival_timestamp_ms in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let pending = VecDeque::from(vec![trace_request(1, Some(arrival_timestamp_ms))]);
+            let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+            let Err(error) = admission.drain_ready_compact(10.0, 0, false) else {
+                panic!("{arrival_timestamp_ms} must fail closed");
+            };
+            assert!(
+                error.to_string().contains("arrival timestamp"),
+                "error must name the offending field: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_validation_preserves_the_queue_and_reports_full_context() {
+        for malformed in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ] {
+            for due_count in [0, 2] {
+                let mut pending: VecDeque<_> = (0..due_count)
+                    .map(|index| trace_request(index + 1, Some(0.0)))
+                    .collect();
+                pending.push_back(trace_request(99, malformed));
+                pending.push_back(trace_request(100, Some(20.0)));
+                let expected_ids: Vec<_> = pending.iter().map(|request| request.uuid).collect();
+                let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+                // Repeated errors must leave the queue and mapper untouched.
+                for _ in 0..2 {
+                    let mut mapped = 0;
+                    let result = admission.drain_ready_compact_with(10.0, 0, false, |_| {
+                        mapped += 1;
+                    });
+                    let message = result
+                        .expect_err("malformed trace input must fail")
+                        .to_string();
+                    assert_eq!(
+                        mapped, 0,
+                        "validation must precede all admission side effects"
+                    );
+                    let AdmissionSource::Requests(pending) = &admission.source else {
+                        unreachable!();
+                    };
+                    assert_eq!(
+                        pending
+                            .iter()
+                            .map(|request| request.uuid)
+                            .collect::<Vec<_>>(),
+                        expected_ids
+                    );
+                    for expected in [
+                        "arrival timestamp".to_string(),
+                        malformed.map_or_else(|| "missing".to_string(), |value| value.to_string()),
+                        Uuid::from_u128(99).to_string(),
+                        format!("queue index {due_count}"),
+                        "0 admitted at 10ms".to_string(),
+                    ] {
+                        assert!(
+                            message.contains(&expected),
+                            "missing {expected:?}: {message}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trace_validation_stops_at_the_first_future_request() {
+        let pending = VecDeque::from(vec![
+            trace_request(1, Some(0.0)),
+            trace_request(2, Some(5.0)),
+            trace_request(3, None),
+        ]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+        let ready = admission.drain_ready_compact(0.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].request.metadata().uuid, Some(Uuid::from_u128(1)));
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+        assert!(admission.drain_ready_compact(5.0, 0, false).is_err());
+        assert_eq!(admission.total_requests(), 2);
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+    }
+
+    #[test]
+    fn trace_requests_not_yet_due_stay_queued_without_error() {
+        let pending = VecDeque::from(vec![
+            trace_request(1, Some(5.0)),
+            trace_request(2, Some(9.0)),
+        ]);
+        let mut admission = AdmissionQueue::<()>::new_requests(pending, ReplayMode::Trace);
+
+        assert!(
+            admission
+                .drain_ready_compact(1.0, 0, false)
+                .unwrap()
+                .is_empty(),
+            "nothing is due yet"
+        );
+        assert_eq!(admission.total_requests(), 2);
+        assert_eq!(admission.next_ready_time_ms(), Some(5.0));
+
+        let ready = admission.drain_ready_compact(5.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].arrival_time_ms, 5.0);
+        assert_eq!(admission.total_requests(), 1);
+
+        let ready = admission.drain_ready_compact(100.0, 0, false).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].arrival_time_ms, 9.0);
+        assert!(admission.is_drained());
+    }
+}
+
+#[cfg(test)]
+mod generated_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn generated_requests_only_fill_vacant_slots_and_keep_original_indices() {
+        let indices = Arc::new(Mutex::new(Vec::new()));
+        let observed = indices.clone();
+        let source = GeneratedRequests::new(1_000_000, move |index| {
+            observed.lock().unwrap().push(index);
+            Ok(DirectRequest {
+                tokens: vec![index as u32],
+                uuid: Some(Uuid::from_u128(index as u128 + 10)),
+                max_output_tokens: 3,
+                arrival_timestamp_ms: Some(999.0),
+                priority: 7,
+                ..Default::default()
+            })
+        });
+        let mut admission = AdmissionQueue::<()>::new_generated_requests(source, 2);
+        assert!(indices.lock().unwrap().is_empty());
+        assert_eq!(admission.total_requests(), 1_000_000);
+        assert_eq!(admission.next_ready_time_ms(), None);
+        assert!(indices.lock().unwrap().is_empty());
+
+        let first = admission.drain_ready_compact(5.0, 0, false).unwrap();
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].request.metadata().arrival_timestamp_ms, Some(5.0));
+        assert_eq!(first[0].request.metadata().priority, 7);
+        assert_eq!(first[0].request.metadata().uuid, Some(Uuid::from_u128(10)));
+        assert!(
+            admission
+                .drain_ready_compact(6.0, 2, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
+
+        // Completion/cancellation of either live request leaves exactly one slot.
+        let next = admission.drain_ready_compact(9.0, 1, false).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1, 2]);
+        assert_eq!(next[0].request.metadata().uuid, Some(Uuid::from_u128(12)));
+        assert_eq!(next[0].request.metadata().arrival_timestamp_ms, Some(9.0));
+        assert_eq!(admission.total_requests(), 999_997);
+        assert!(!admission.is_drained());
+        drop(admission);
+        assert_eq!(
+            Arc::strong_count(&indices),
+            1,
+            "dropping replay releases its source"
+        );
+    }
+
+    #[test]
+    fn generated_source_stops_at_end_and_propagates_generation_errors() {
+        let mut admission = AdmissionQueue::<()>::new_generated_requests(
+            GeneratedRequests::new(1, |_| Ok(DirectRequest::default())),
+            4,
+        );
+        assert_eq!(
+            admission.drain_ready_compact(0.0, 0, false).unwrap().len(),
+            1
+        );
+        assert!(admission.is_drained());
+        assert!(
+            admission
+                .drain_ready_compact(1.0, 0, false)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut failing = AdmissionQueue::<()>::new_generated_requests(
+            GeneratedRequests::new(1, |_| anyhow::bail!("source failed")),
+            1,
+        );
+        let error = failing.drain_ready_compact(0.0, 0, false).err().unwrap();
+        assert_eq!(error.to_string(), "source failed");
+    }
+}
+
+#[cfg(test)]
+mod agentic_feedback_tests {
+    use super::*;
+    use crate::replay::loadgen::{
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticHashIdScope,
+        AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
+    };
+
+    #[test]
+    fn full_prompt_agentic_output_tokens_are_not_buffered() {
+        let trace = AgenticTrace::from_agentic_mooncake_rows(
+            AgenticMooncakeHeader {
+                schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+                version: AGENTIC_MOONCAKE_VERSION,
+                block_size: 4,
+                hash_id_scope: AgenticHashIdScope::Local,
+                source: AgenticSourceProvenance {
+                    format: "test".to_string(),
+                    digest: "fixture".to_string(),
+                },
+            },
+            vec![AgenticMooncakeRow {
+                request_id: "root".to_string(),
+                play_id: "play".to_string(),
+                session_id: "play".to_string(),
+                model: "model".to_string(),
+                input_length: Some(4),
+                output_length: Some(2),
+                hash_ids: Some(vec![1]),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 4).unwrap();
+        let uuid = driver.pop_ready(0.0, usize::MAX)[0].request_uuid;
+        let mut admission = AdmissionQueue::<()>::new_workload(driver, ReplayMode::Trace);
+
+        admission.defer_output_token(uuid, 7).unwrap();
+        assert!(
+            !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
+            "full-prompt output progress has no consumer and must not be batched"
+        );
+        assert!(!admission.is_drained());
+        admission
+            .defer_terminal(uuid, 1.0, ReplayTerminalStatus::Completed)
+            .unwrap();
+        assert!(admission.flush_agentic_runtime_feedback(1.0).unwrap());
+        assert!(admission.is_drained());
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
 
     /// The drain guard above landed without its peek-side counterpart, which the
     /// drain's own comment already described: `next_ready_time_ms` returned the

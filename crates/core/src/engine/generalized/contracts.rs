@@ -3,7 +3,9 @@
 
 use std::num::NonZeroU32;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+
+use crate::engine::{IterationMs, RankWork};
 
 /// Stable identity of one logical mock engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -166,6 +168,10 @@ pub enum SameTimestampRetry {
     NotApplicable,
     /// Internal scheduler state changed and another pass may expose work.
     Retry,
+    /// A finite scheduler countdown advanced, with this many blocked rounds
+    /// left after the pass. Drivers can validate strict decrease instead of
+    /// imposing the generic convergence retry limit on a configured interval.
+    Countdown { remaining: usize },
     /// The rank's internal state no longer changes at this timestamp.
     Exhausted,
 }
@@ -185,6 +191,17 @@ pub struct RankPass<S, P> {
     pub start_effects: S,
     /// Rank-private state needed to finish the pass.
     pub pending: P,
+}
+
+/// The scheduling half of a rank's pass, returned by
+/// [`RankEngine::schedule_pass`].
+#[derive(Debug)]
+pub enum ScheduledPass<S, P> {
+    /// The rank priced its own pass.
+    Priced(RankPass<S, P>),
+    /// The rank committed this work and retains the pass until
+    /// [`RankEngine::resolve_pass`] supplies its duration.
+    Unpriced(RankWork),
 }
 
 /// Pass-start effects from one rank.
@@ -296,11 +313,63 @@ pub trait RankEngine: Sized {
     /// default is a no-op for rank engines without group-step scheduling.
     fn prepare_group_pass(&mut self, _wave_step: u64, _dp_size: NonZeroU32) {}
 
+    /// Whether this rank scheduled an EXTEND/prefill in the prepared pass.
+    /// Reset the observation in `prepare_group_pass`, including for idle ranks.
+    /// Only backends that consume synchronized prefill feedback need report it.
+    fn prefill_in_pass(&self) -> bool {
+        false
+    }
+
+    /// Whether this rank had a model forward, even with zero modeled duration.
+    /// Backends consuming group idle feedback override this for decode work too.
+    fn model_work_in_pass(&self) -> bool {
+        self.prefill_in_pass()
+    }
+
+    /// Receive the group-wide prefill observation after all ranks have selected
+    /// their work. Called once on every rank, including non-executing siblings,
+    /// so the observation affects the next round without rank-order dependence.
+    /// `any_rank_ran_model` distinguishes an entirely idle group from a local
+    /// idle rank participating in a peer's forward, independent of modeled time.
+    fn finish_group_pass(&mut self, _any_rank_prefilled: bool, _any_rank_ran_model: bool) {}
+
     /// Eagerly commit one non-preemptive pass.
     fn execute_pass(
         &mut self,
         now_ms: f64,
     ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>>;
+
+    /// Commit one non-preemptive pass's scheduling. A rank that lets its
+    /// group price the pass returns its model work and retains the pass until
+    /// [`Self::resolve_pass`]; the default prices it with
+    /// [`Self::execute_pass`].
+    fn schedule_pass(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<ScheduledPass<Self::PassStartEffects, Self::PendingPass>> {
+        self.execute_pass(now_ms).map(ScheduledPass::Priced)
+    }
+
+    /// Work this rank contributes to a group pass it does not execute.
+    /// `None`, the default, keeps every rank of that pass on its own pricing.
+    fn idle_pass_work(&self) -> Option<RankWork> {
+        None
+    }
+
+    /// Price one group pass at once from every rank's work in DP-rank order.
+    /// Called on one rank; `None`, the default, keeps per-rank pricing.
+    fn price_group_pass(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        Ok(None)
+    }
+
+    /// Finish the pass retained by an unpriced [`Self::schedule_pass`]:
+    /// `iteration` is the group's shared price, or `None` for the rank's own.
+    fn resolve_pass(
+        &mut self,
+        _iteration: Option<&IterationMs>,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        bail!("rank engine has no unpriced pass to resolve")
+    }
 
     /// Release the effects of a previously committed pass.
     fn complete_pass(

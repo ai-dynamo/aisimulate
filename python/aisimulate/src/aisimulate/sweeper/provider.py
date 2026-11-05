@@ -160,3 +160,25 @@ def validate_provider(provider: Any, *, requested_name: str) -> SweepConfigProvi
     if missing:
         raise TypeError(f"provider {requested_name!r} does not implement required callable(s): {', '.join(missing)}")
     return provider
+
+
+def validate_router_prefill_hardware(spec: AdapterReplaySpec, expected: str) -> None:
+    """Reject legacy Router AIC hooks that ignore the resolved prefill SKU.
+
+    Inspect the materialized hook so corrected providers and non-AIC policies
+    remain usable without importing Dynamo or interpreting its search schema.
+    """
+    for hook in spec.runtime_hooks:
+        if hook.provider != "dynamo.router" or hook.kind != "placement_policy":
+            continue
+        router_config = hook.config.get("router_config")
+        if not isinstance(router_config, dict) or router_config.get("router_prefill_load_model") != "aic":
+            continue
+        perf_config = hook.config.get("aic_perf_config")
+        actual = perf_config.get("aic_system") if isinstance(perf_config, dict) else None
+        if actual != expected:
+            raise InfeasibleCandidate(
+                f"Router AIC prefill system {actual!r} does not match effective prefill_hardware_sku={expected!r}; "
+                "use a Dynamo Router provider that consumes the effective prefill SKU, "
+                "or select a non-AIC prefill load model"
+            )

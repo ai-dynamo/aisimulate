@@ -67,9 +67,7 @@ def test_materializes_canonical_inline_requests_without_trace_io():
 @pytest.mark.parametrize("field", ["dp_rank", "prefill_dp_rank"])
 @pytest.mark.parametrize("value", [-1, True, 1.5, 2**32])
 def test_inline_requests_reject_invalid_dp_ranks(field, value):
-    with pytest.raises(
-        ValueError, match=rf"{field} must be an unsigned 32-bit integer"
-    ):
+    with pytest.raises(ValueError, match=rf"{field} must be an unsigned 32-bit integer"):
         materialize_configured_traffic(
             {
                 "requests": [

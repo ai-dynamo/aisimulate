@@ -26,6 +26,7 @@ impl RequestKvState {
         planned_output_ids: Option<Vec<u32>>,
     ) -> Self {
         let (sequence, identities) = RequestSequence::new(
+            owner,
             tokens,
             max_output_tokens,
             output_capacity_hint,

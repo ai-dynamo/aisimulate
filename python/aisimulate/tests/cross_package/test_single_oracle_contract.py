@@ -35,7 +35,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 OPERATIONS_DIR = (
-    Path(__file__).resolve().parents[4] / "python" / "aisimulate" / "src" / "aiconfigurator_core" / "sdk" / "operations"
+    Path(__file__).resolve().parents[4] / "python" / "aisimulate" / "src" / "aisimulate_core" / "sdk" / "operations"
 )
 PERF_DATABASE_PATH = OPERATIONS_DIR.parent / "perf_database.py"
 
@@ -311,7 +311,7 @@ OPERATIONS_DEF_INVENTORY = {
 
 
 def test_perf_interp_is_gone():
-    assert importlib.util.find_spec("aiconfigurator_core.sdk.perf_interp") is None, (
+    assert importlib.util.find_spec("aisimulate_core.sdk.perf_interp") is None, (
         "sdk.perf_interp was retired in PR-5 of #1357: per-op interpolation lives in the "
         "compiled engine (aiconfigurator-core/src/perf_database + operators). Do not reintroduce "
         "a Python interpolation layer."
@@ -319,7 +319,7 @@ def test_perf_interp_is_gone():
 
 
 def test_util_empirical_is_provenance_only():
-    module = importlib.import_module("aiconfigurator_core.sdk.operations.util_empirical")
+    module = importlib.import_module("aisimulate_core.sdk.operations.util_empirical")
     public = {
         name
         for name in vars(module)
@@ -400,17 +400,17 @@ def test_math_def_scanner_catches_offenders():
 
 
 def test_operation_query_overrides_are_whitelisted():
-    operations = importlib.import_module("aiconfigurator_core.sdk.operations")
+    operations = importlib.import_module("aisimulate_core.sdk.operations")
     for info in pkgutil.iter_modules(operations.__path__):
-        importlib.import_module(f"aiconfigurator_core.sdk.operations.{info.name}")
-    from aiconfigurator_core.sdk.operations.base import Operation, _all_operation_subclasses
+        importlib.import_module(f"aisimulate_core.sdk.operations.{info.name}")
+    from aisimulate_core.sdk.operations.base import Operation, _all_operation_subclasses
 
     offenders = {
         cls.__name__
         for cls in _all_operation_subclasses(Operation)
         # Only classes DEFINED in the operations package are the contract
         # surface — test suites legitimately define local Operation stubs.
-        if cls.__module__.startswith("aiconfigurator_core.sdk.operations")
+        if cls.__module__.startswith("aisimulate_core.sdk.operations")
         and "query" in cls.__dict__
         and cls.__name__ not in QUERY_OVERRIDE_WHITELIST
     }
@@ -425,7 +425,7 @@ def test_perf_database_has_no_per_call_query_surface():
     deprecation-cleanup PR: PerfDatabase exposes NO per-call query surface.
     New per-op access goes through EngineHandle.evaluate_ops_json /
     evaluate_ops_sol_json, the per-phase surface, or whole runs."""
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
+    from aisimulate_core.sdk.perf_database import PerfDatabase
 
     live = {name for name in dir(PerfDatabase) if name.startswith("query_")}
     assert not live, (

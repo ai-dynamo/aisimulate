@@ -2,9 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::engine::common::hashing::{
-    BlockHash, SequenceHash, XXH3_SEED, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    BlockHash, SequenceHash, XXH3_SEED, block_hashes, compute_block_hash_for_tokens,
+    compute_next_sequence_hash,
 };
 use rand::random;
+use uuid::Uuid;
+use xxhash_rust::xxh3::xxh3_64;
+
+/// Synthetic token for output position `output_ordinal` of a request that has
+/// no planned token there.
+///
+/// The token depends only on the request ID and position, so replaying a
+/// request under the same ID reproduces its output tokens and KV block hashes,
+/// while distinct requests receive independent streams. Hashing a fixed
+/// little-endian encoding keeps values stable across platforms and toolchains.
+pub(crate) fn synthetic_output_token(request_id: Uuid, output_ordinal: usize) -> u32 {
+    let mut bytes = [0; 24];
+    bytes[..16].copy_from_slice(request_id.as_bytes());
+    bytes[16..].copy_from_slice(&(output_ordinal as u64).to_le_bytes());
+    xxh3_64(&bytes) as u32
+}
 
 #[derive(Debug)]
 struct FlatTokens {
@@ -103,6 +120,7 @@ impl BlockIdentity {
 /// positional lineage, or allocation bookkeeping.
 #[derive(Debug)]
 pub(crate) struct RequestSequence {
+    request_id: Uuid,
     tokens: FlatTokens,
     block_size: usize,
     max_output_tokens: usize,
@@ -117,6 +135,7 @@ pub(crate) struct RequestSequence {
 impl RequestSequence {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        request_id: Uuid,
         tokens: Vec<u32>,
         max_output_tokens: usize,
         output_capacity_hint: usize,
@@ -137,28 +156,30 @@ impl RequestSequence {
         let retain_local_hashes = retain_local_hashes && enable_prefix_caching;
 
         let mut identities = Vec::with_capacity(completion_blocks);
-        let mut parent_hash = None;
-        for block in tokens.chunks_exact(block_size) {
-            let (sequence_hash, local_hash) = if enable_prefix_caching {
-                let local_hash = compute_block_hash_for_tokens(block, XXH3_SEED);
+        if enable_prefix_caching {
+            let mut parent_hash = None;
+            for local_hash in block_hashes(&tokens, block_size) {
                 let sequence_hash = parent_hash
                     .map(|parent| compute_next_sequence_hash(parent, local_hash))
                     .unwrap_or(local_hash);
-                (sequence_hash, retain_local_hashes.then_some(local_hash))
-            } else {
-                (random::<u64>(), None)
-            };
-            identities.push(BlockIdentity {
-                sequence_hash: Some(sequence_hash),
-                local_hash,
-            });
-            parent_hash = Some(sequence_hash);
+                identities.push(BlockIdentity {
+                    sequence_hash: Some(sequence_hash),
+                    local_hash: retain_local_hashes.then_some(local_hash),
+                });
+                parent_hash = Some(sequence_hash);
+            }
+        } else {
+            identities.extend((0..num_input_tokens / block_size).map(|_| BlockIdentity {
+                sequence_hash: Some(random::<u64>()),
+                local_hash: None,
+            }));
         }
         if !tokens.len().is_multiple_of(block_size) {
             identities.push(BlockIdentity::partial());
         }
 
         let sequence = Self {
+            request_id,
             tokens: FlatTokens::new(tokens, output_capacity_hint, block_size, emit_token_ids),
             block_size,
             max_output_tokens,
@@ -203,6 +224,7 @@ impl RequestSequence {
 
     /// Append the next planned or synthetic token.
     ///
+    /// Positions without a planned token derive one from the request ID.
     /// Returns the token and whether this append opened a new partial block.
     pub(crate) fn generate_token(&mut self) -> (u32, bool) {
         assert!(
@@ -213,7 +235,7 @@ impl RequestSequence {
             .planned_output_ids
             .as_ref()
             .and_then(|ids| ids.get(self.generated_tokens).copied())
-            .unwrap_or_else(random::<u32>);
+            .unwrap_or_else(|| synthetic_output_token(self.request_id, self.generated_tokens));
         let opened_partial = self.len().is_multiple_of(self.block_size);
         self.tokens.push(token);
         self.generated_tokens += 1;
@@ -310,6 +332,7 @@ impl RequestSequence {
     pub(crate) fn debug_assert_finalized_range(
         &self,
         identity_count: usize,
+        computed_tokens: usize,
         finalized: impl IntoIterator<Item = BlockIdentity>,
         final_identity: Option<BlockIdentity>,
     ) {
@@ -320,10 +343,17 @@ impl RequestSequence {
                 .all(|identity| identity.sequence_hash.is_some()),
             "finalized native blocks must have sequence hashes"
         );
+        // Prompt blocks are resolved at creation. A generated token that fills
+        // the final block leaves it unresolved until the block is computed, and
+        // the chunked recompute of a preempted request finalizes earlier blocks
+        // first.
         let aligned = self.len().is_multiple_of(self.block_size);
+        let uncomputed_output = self.generated_tokens > 0 && computed_tokens < self.len();
         debug_assert!(
-            final_identity.is_none_or(|identity| identity.sequence_hash.is_some() || !aligned),
-            "only an unaligned final native block may be partial"
+            final_identity.is_none_or(|identity| {
+                identity.sequence_hash.is_some() || !aligned || uncomputed_output
+            }),
+            "only an unaligned or uncomputed output final native block may be partial"
         );
         self.debug_assert_storage_invariants();
     }
@@ -347,6 +377,18 @@ impl RequestSequence {
 mod tests {
     use super::*;
 
+    #[test]
+    fn synthetic_output_tokens_match_independent_xxh3_values() {
+        // xxh3_64(request UUID bytes ‖ ordinal as u64 LE) truncated to u32, computed
+        // with an independent XXH3 implementation (Python `xxhash`). Pinning the
+        // values keeps them stable across processes, toolchains, and platforms.
+        let tokens: Vec<u32> = (0..4)
+            .map(|ordinal| synthetic_output_token(Uuid::from_u128(1), ordinal))
+            .collect();
+        assert_eq!(tokens, [2515880452, 3600266899, 2716793611, 2249174135]);
+        assert_eq!(synthetic_output_token(Uuid::from_u128(2), 0), 1927195132);
+    }
+
     fn sequence(
         tokens: Vec<u32>,
         max_output_tokens: usize,
@@ -355,6 +397,7 @@ mod tests {
         planned_output_ids: Option<Vec<u32>>,
     ) -> (RequestSequence, Vec<BlockIdentity>) {
         RequestSequence::new(
+            Uuid::nil(),
             tokens,
             max_output_tokens,
             max_output_tokens,
@@ -391,6 +434,33 @@ mod tests {
             "the first token in the next block needs a new lease entry"
         );
         assert_eq!(sequence.current_known_blocks(), 2);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_aligned_final_block_stays_partial_only_while_its_output_is_uncomputed() {
+        let rejects = |sequence: &RequestSequence, computed: usize| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sequence.debug_assert_finalized_range(
+                    1,
+                    computed,
+                    [],
+                    Some(BlockIdentity::partial()),
+                )
+            }))
+            .is_err()
+        };
+        // Three prompt tokens plus one output token fill block 0.
+        let (mut output, _) = sequence(vec![0, 1, 2], 2, false, false, None);
+        output.generate_token();
+        assert!(
+            !rejects(&output, 3),
+            "a chunked recompute may stop before it"
+        );
+        assert!(rejects(&output, 4), "a computed full block must be hashed");
+        // Prompt blocks are hashed at creation, computed or not.
+        let (prompt, _) = sequence(vec![0, 1, 2, 3], 1, false, false, None);
+        assert!(rejects(&prompt, 2));
     }
 
     #[test]
@@ -452,8 +522,17 @@ mod tests {
 
     #[test]
     fn completion_footprint_is_bounded_by_requested_output() {
-        let (sequence, identities) =
-            RequestSequence::new(vec![0, 1, 2, 3, 4], 100, 3, 4, false, false, false, None);
+        let (sequence, identities) = RequestSequence::new(
+            Uuid::nil(),
+            vec![0, 1, 2, 3, 4],
+            100,
+            3,
+            4,
+            false,
+            false,
+            false,
+            None,
+        );
         assert_eq!(sequence.current_known_blocks(), 2);
         assert_eq!(sequence.to_completion_blocks(), 27);
         assert_eq!(

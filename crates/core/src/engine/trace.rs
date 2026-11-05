@@ -31,7 +31,9 @@ pub fn g1_parent_chain_events(block_size: usize) -> Vec<KvEvent> {
     let prompt_len = computed_after - 2;
     let prompt_len_u32 =
         u32::try_from(prompt_len).expect("ordering regression prompt length must fit in u32");
+    let owner = Uuid::from_u128(1);
     let (mut sequence, identities) = RequestSequence::new(
+        owner,
         (0..prompt_len_u32).collect(),
         2,
         2,
@@ -41,7 +43,6 @@ pub fn g1_parent_chain_events(block_size: usize) -> Vec<KvEvent> {
         false,
         Some(vec![prompt_len_u32, prompt_len_u32 + 1]),
     );
-    let owner = Uuid::from_u128(1);
     let mut lease = BlockRequestLease::new(owner, identities);
     let (events, sink) = capture_kv_event_sink();
     let mut manager =
@@ -76,7 +77,9 @@ pub struct TraceSnapshot {
     #[cfg(test)]
     pub arrival_ms: Option<f64>,
     pub first_admit_ms: Option<f64>,
+    #[cfg(test)]
     pub first_token_ms: Option<f64>,
+    #[cfg(test)]
     pub last_token_ms: Option<f64>,
 }
 
@@ -105,6 +108,7 @@ impl TraceCollector {
             .get_or_insert(now_ms);
     }
 
+    #[cfg(test)]
     pub fn on_token(&mut self, request_id: Uuid, now_ms: f64) {
         let snapshot = self.snapshots.entry(request_id).or_default();
         snapshot.first_token_ms.get_or_insert(now_ms);

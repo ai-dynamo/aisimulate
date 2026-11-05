@@ -9,15 +9,11 @@ name: Collector Data Check
 # tools/perf_database/check_collector_data.py, which fails the job on any
 # provenance/reuse/placement/identity violation.
 # tools/perf_database/backend_facts.py --check also runs fail-closed (AIC-1675): registry drift fails the PR.
-#
-# The changed-operation manifest (tools/perf_database/changed_ops.py) also
-# runs and is uploaded as an artifact -- informational per §8. Gating merges
-# on the evidence it implies is AIC-1214/PR 4 scope, not this workflow.
 
 on:
   pull_request:
     paths:
-      - "aic-core/src/aiconfigurator_core/systems/data/**"
+      - "src/aisimulate_core/systems/data/**"
       - "collector/**"
       - "tools/perf_database/**"
   workflow_dispatch:
@@ -29,16 +25,12 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    env:
-      # github.base_ref is only set for pull_request events; workflow_dispatch
-      # (manual runs, e.g. against main) falls back to the default branch.
-      BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.repository.default_branch }}
     steps:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
-          # No `lfs: true`: the check and changed-ops steps only ever read
+          # No `lfs: true`: the check step only ever reads
           # parquet filenames/stems and the YAML sidecars beside them, never
           # parquet content, so LFS smudging is unneeded weight -- and would
           # fail checkout for fork PRs that can't authenticate to LFS.
@@ -47,14 +39,6 @@ jobs:
           # plain git (no LFS) -- an LFS-pointer parquet would crash the read
           # and fail the job (still fail-closed).
           persist-credentials: false
-
-      - name: Fetch base ref
-        # fetch-depth: 0 above fetches full history of the checked-out ref
-        # only; the base branch's own remote-tracking ref (origin/<base>) is
-        # not guaranteed to exist yet in PR context (same gap
-        # perf-parquet-diff.yml works around), so changed_ops.py's
-        # `origin/${BASE_REF}` needs it fetched explicitly.
-        run: git fetch --no-tags origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
@@ -74,30 +58,6 @@ jobs:
         # collector/op_backend_facts.yaml (or mislabels kernel_source)
         # fails here instead of silently drifting the registry.
         run: uv run python tools/perf_database/backend_facts.py --check
-
-      - name: Compute changed-operation manifest (informational, §8)
-        id: changed_ops
-        run: |
-          set +e
-          uv run python tools/perf_database/changed_ops.py --base "origin/${BASE_REF}" --out changed-ops.yaml
-          rc=$?
-          set -e
-          if [ "${rc}" -eq 3 ]; then
-            echo "::notice::changed_ops: base revision predates Collector V3 provenance metadata; manifest skipped (neutral, not a failure)"
-            echo "produced=false" >> "${GITHUB_OUTPUT}"
-          elif [ "${rc}" -ne 0 ]; then
-            exit "${rc}"
-          else
-            echo "produced=true" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Upload changed-operation manifest artifact
-        if: steps.changed_ops.outputs.produced == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: changed-ops
-          path: changed-ops.yaml
-          retention-days: 30
 
   # Informational (never blocks the PR): full-tree perf-data sanity sweep
   # (~4 min) — flags suspicious measurements for human double-checking.

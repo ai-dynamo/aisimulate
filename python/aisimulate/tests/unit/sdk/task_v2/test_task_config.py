@@ -8,14 +8,73 @@ against the legacy CLI; these tests focus on construction, defaulting,
 prefix discipline, and the build_* helpers.
 """
 
-import pytest
+import json
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.task_v2 import Task
+import pytest
+import yaml
+
+from aisimulate.sdk import common
+from aisimulate.sdk.attention_lanes import ATTENTION_BACKEND_CHOICES
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
+@pytest.mark.parametrize("wide_ep", [False, True])
+def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatch, explicit, wide_ep):
+    # FP8 table availability must not change the audited FA3 execution dtype.
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    task = Task(
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.14",
+        attention_backend="fa3",
+        fmha_quant_mode=explicit,
+    )
+    expected = explicit or common.FMHAQuantMode.bfloat16
+    assert task.fmha_quant_mode == common.FMHAQuantMode.fp8
+    mc = task.build_model_config(role="agg")
+    assert mc.fmha_quant_mode == expected
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    assert restored.build_model_config(role="agg").fmha_quant_mode == expected
+    if wide_ep:
+        mc.moe_comm_backend = {"context": "deepep_ht", "generation": "deepep_ll"}
+        mc.moe_tp_size = 1
+        mc.moe_ep_size = mc.attention_dp_size = 32
+    model = get_model(task.model_path, mc, "sglang")
+    specs = [json.loads(op._spec_json()) for op in model.context_ops]
+    if wide_ep:
+        attention = next(spec["WideEpContextMla"] for spec in specs if "WideEpContextMla" in spec)
+    else:
+        block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
+        attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == expected.name
+
+
+@pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
+def test_disagg_yaml_preserves_attention_precision(monkeypatch, explicit):
+    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
+    role_values = {
+        f"{role}_{key}": value
+        for role in ("prefill", "decode")
+        for key, value in {
+            "model_path": "deepseek-ai/DeepSeek-V3",
+            "system_name": "h200_sxm",
+            "backend_name": "sglang",
+            "backend_version": "0.5.14",
+            "fmha_quant_mode": explicit,
+        }.items()
+    }
+    task = Task(serving_mode="disagg", attention_backend="fa3", **role_values)
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    for role in ("prefill", "decode"):
+        assert (
+            restored.build_model_config(role=role).fmha_quant_mode == task.build_model_config(role=role).fmha_quant_mode
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -38,13 +97,6 @@ def test_enable_epd_pins_encoder_dp_off():
     # only outside EPD.
     assert Task().enable_encoder_dp is True
     assert Task(enable_epd=True).enable_encoder_dp is False
-
-
-def test_enable_epd_rejects_afd_serving_mode():
-    # sweep_afd carries no EPD parameters; accepting the combination would
-    # silently run a plain AFD sweep with every encoder knob dropped.
-    with pytest.raises(ValueError, match="serving_mode 'agg' or 'disagg'"):
-        Task(serving_mode="afd", enable_epd=True)
 
 
 def test_run_single_epd_arg_validation():
@@ -317,6 +369,98 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
     assert mc.wideep_num_slots == 288
 
 
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_task_rejects_invalid_moe_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        Task(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_task_round_trip_preserves_exact_moe_kernel_source(source):
+    task = Task(moe_kernel_source=source)
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+
+    assert task.moe_kernel_source == source
+    assert restored.moe_kernel_source == source
+    assert restored.build_model_config(role="agg").moe_kernel_source == source
+
+
+def test_moe_kernel_source_reaches_qwen38_compute_ops_and_compiled_spec():
+    """A V2 Task pins only Qwen3.8's compute MoE lane, including the native spec."""
+    from aisimulate.sdk import models
+    from aisimulate.sdk.engine import build_engine_spec_json
+    from aisimulate.sdk.operations.moe import MoE, MoEDispatch
+    from aisimulate.sdk.perf_database import get_database
+
+    lane = "sglang_flashinfer_trtllm_moe"
+    task = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+        moe_kernel_source=lane,
+    )
+    model_config = task.build_model_config(role="agg", parallel=(8, 1, 1, 1, 8, 1))
+    assert model_config.moe_kernel_source == lane
+
+    model = models.get_model(task.model_path, model_config, task.backend_name)
+
+    def all_ops(ops):
+        pending = list(ops)
+        while pending:
+            op = pending.pop()
+            yield op
+            for group in ("_group_a", "_group_b", "_fallback"):
+                pending.extend(getattr(op, group, ()) or ())
+
+    ops = list(all_ops([*model.context_ops, *model.generation_ops]))
+    compute_ops = [op for op in ops if isinstance(op, MoE)]
+    dispatch_ops = [op for op in ops if isinstance(op, MoEDispatch)]
+    assert compute_ops
+    assert all(op._moe_kernel_source == lane for op in compute_ops)
+    assert all(not hasattr(op, "_moe_kernel_source") for op in dispatch_ops)
+
+    database = get_database("b200_sxm", "sglang", "0.5.17")
+    spec = json.loads(
+        build_engine_spec_json(
+            model,
+            model_path=task.model_path,
+            system=task.system_name,
+            backend=task.backend_name,
+            backend_version=task.backend_version,
+            kv_block_size=None,
+            systems_path=None,
+            nextn=task.nextn,
+            database=database,
+        )
+    )
+
+    def all_moe_specs(value):
+        if isinstance(value, list):
+            for item in value:
+                yield from all_moe_specs(item)
+        elif isinstance(value, dict):
+            if "Moe" in value:
+                yield value["Moe"]
+            for item in value.values():
+                yield from all_moe_specs(item)
+
+    moe_specs = list(all_moe_specs([spec["context_ops"], spec["generation_ops"]]))
+    assert spec["engine"]["moe_kernel_source"] == lane
+    assert moe_specs
+    assert all(moe["moe_kernel_source"] == lane for moe in moe_specs)
+
+    default_config = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+    ).build_model_config(role="agg")
+    assert default_config.moe_kernel_source is None
+
+
 def test_invalid_attention_backend_rejected():
     with pytest.raises(ValueError, match="attention_backend"):
         Task(
@@ -430,49 +574,6 @@ def test_video_fields_preserve_existing_task_positional_constructor_contract():
     assert task.video_frames == 0
     assert task.num_videos_per_request == 0
     assert task.num_video_tokens == 0
-
-
-def test_afd_rejects_visual_encoder_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_height=448,
-        video_width=448,
-        video_frames=8,
-        num_videos_per_request=1,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_partial_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_frames=8,
-        num_videos_per_request=0,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_token_only_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        num_video_tokens=196,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
 
 
 def test_build_model_config_agg_uses_resolved_quant():
@@ -589,7 +690,7 @@ def test_deepseek_prefill_downgrades_decode_keeps_fp8_fmha(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -620,7 +721,7 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -658,25 +759,6 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
     assert not any("falling back to bfloat16 FMHA" in r.message for r in caplog.records)
 
 
-def test_fmha_data_fallback_afd_uses_the_aggregate_role(caplog):
-    import logging
-
-    from aiconfigurator.sdk import common
-
-    with caplog.at_level(logging.WARNING):
-        task = Task(
-            serving_mode="afd",
-            model_path="Qwen/Qwen3-32B-FP8-Static-PerTensor",
-            system_name="a100_sxm",
-            backend_name="sglang",
-            total_gpus=16,
-            kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
-        )
-    assert task.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    fallback_msgs = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
-    assert len(fallback_msgs) == 1 and fallback_msgs[0].startswith("agg ")
-
-
 def test_fmha_data_fallback_skips_generation_only_decode(caplog):
     """A generic-attention decode role never reads fmha data (generation tables
     key on kv dtype; validate checks fmha only for context roles), so the
@@ -685,7 +767,7 @@ def test_fmha_data_fallback_skips_generation_only_decode(caplog):
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -712,7 +794,7 @@ def test_fmha_data_fallback_without_bf16_slice_left_untouched(monkeypatch, caplo
     reports the gap instead."""
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda self, role, ctx_op=None: ["fp8_block"])
     with caplog.at_level(logging.WARNING):
@@ -732,7 +814,7 @@ def test_deepseek_v32_v4_context_fmha_downgrade_is_data_driven():
     the data fallback, not a hand-written model rule.  Decode keeps the fp8
     label (no generation table keys on fmha).
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     for mp in ("deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-V4-Pro"):
         t = Task(
@@ -757,8 +839,8 @@ def test_get_model_preserves_task_resolved_fmha():
     user-set identically (both arrive set), and no current-slot vllm data
     resolves fp8 fmha for DSA models since the 0.19/0.22 retirement, so an
     inference-based vehicle would bind this test to a data coordinate."""
-    from aiconfigurator.sdk import common
-    from aiconfigurator.sdk.models import get_model
+    from aisimulate.sdk import common
+    from aisimulate.sdk.models import get_model
 
     t = Task(
         serving_mode="agg",
@@ -783,13 +865,13 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     via the shared layer (gb200: vllm module data), which the large-EP path can
     never hit.  Regression for the deepseek_wideep_trtllm.yaml e2e failure.
 
-    Large EP is coverage-driven now (nvfp4 is the MoE quant the gb200 EP tables
-    carry), and the task's ladders mix both regimes, so bfloat16 is picked as
-    the mode that serves the granular AND the module table.
+    TRT-LLM's MLA context runs FP8 FMHA on an FP8 KV cache, and both the granular
+    and the module tables label those rows fp8, so fp8 serves both and is kept
+    without a fallback.
     """
     import logging
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     with caplog.at_level(logging.WARNING):
         t = Task(
@@ -800,8 +882,63 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
             gemm_quant_mode=common.GEMMQuantMode.nvfp4,
             moe_quant_mode=common.MoEQuantMode.nvfp4,
         )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert t.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    assert not any("context_mla_granular" in r.message for r in caplog.records)
+
+
+def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_fp8(monkeypatch, caplog):
+    """The negative case of the test above, through the real table selection: the granular
+    context_mla table carries only a bfloat16 fmha slice under the fp8 KV cache while the module
+    table keeps its fp8 slice. The inferred fp8 falls back to bfloat16, and the warning names the
+    granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
+    import logging
+
+    from aisimulate.sdk import common
+    from aisimulate.sdk.perf_database import get_database
+
+    class GranularWithoutFp8:
+        """The real gb200 TRT-LLM database with its granular context_mla table cut down to bfloat16 fmha."""
+
+        def __init__(self, database):
+            self._database = database
+
+        def __getattr__(self, name):
+            return getattr(self._database, name)
+
+        @property
+        def _context_mla_data(self):
+            real = self._database._context_mla_data
+            bf16 = next(k for k in real if getattr(k, "name", str(k)) == "bfloat16")
+            kv_bf16 = next(k for k in real[bf16] if getattr(k, "name", str(k)) == "bfloat16")
+            return {bf16: {common.KVCacheQuantMode.fp8: real[bf16][kv_bf16]}}
+
+    database = GranularWithoutFp8(get_database("gb200", "trtllm", "1.3.0rc29"))
+    monkeypatch.setattr(Task, "_try_load_role_database", lambda self, role: database)
+    with caplog.at_level(logging.WARNING):
+        t = Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="gb200",
+            backend_name="trtllm",
+            backend_version="1.3.0rc29",
+            gemm_quant_mode=common.GEMMQuantMode.nvfp4,
+            moe_quant_mode=common.MoEQuantMode.nvfp4,
+        )
+    assert t._context_fmha_supported_modes("agg", "context_mla_granular") == ["bfloat16"]
+    assert t._context_fmha_supported_modes("agg", "context_mla") == ["bfloat16", "fp8"]
     assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("context_mla_granular" in r.message for r in caplog.records)
+    fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
+    assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]
+    # The estimate path re-runs the TRT-LLM resolver on the built ModelConfig (inference_session):
+    # a bfloat16 the data fallback chose must survive it, or the fp8 lookup it would cause misses.
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    mc = t.build_model_config(role="agg")
+    assert mc._fmha_quant_mode_from_data is True
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("gb200"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_nextn_never_auto_enabled(caplog):
@@ -812,7 +949,7 @@ def test_nextn_never_auto_enabled(caplog):
     def mk(mp):
         return Task(serving_mode="agg", model_path=mp, system_name="h200_sxm", backend_name="trtllm").nextn
 
-    with caplog.at_level(logging.INFO, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.INFO, logger="aisimulate.sdk.task_v2"):
         assert mk("deepseek-ai/DeepSeek-V3") == 0  # HF declares 1 -- still off by default
         assert mk("moonshotai/Kimi-K2.5") == 0
         assert mk("Qwen/Qwen3.5-27B") == 0
@@ -919,7 +1056,7 @@ def test_nextn_explicit_override_warns(caplog):
     """An explicit nextn diverging from the checkpoint warns (MTP module reuse)."""
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.sdk.task_v2"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.sdk.task_v2"):
         t = Task(
             serving_mode="agg",
             model_path="deepseek-ai/DeepSeek-V3",
@@ -961,7 +1098,7 @@ def test_dsv4_native_sglang_moe_remap():
     the native FP4-expert checkpoints are rejected outright. megamoe, non-sglang
     backends, and the sgl-project FP8 requant artifacts are exempt.
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     def moe(be, mp="deepseek-ai/DeepSeek-V4-Pro", system="b200_sxm", **kw):
         return Task(
@@ -1256,7 +1393,7 @@ def test_run_validates_by_default():
     DeepSeek task whose tuples are ALL large-EP has only the wideep_context_mla
     table to serve fmha, and that table carries fp8_block only -> validate
     raises (a task that also has fused tuples falls back to them instead)."""
-    from aiconfigurator.sdk.errors import UnsupportedWideepConfigError
+    from aisimulate.sdk.errors import UnsupportedWideepConfigError
 
     t = Task(
         serving_mode="agg",
@@ -1298,7 +1435,7 @@ def test_enable_wideep_normalizes_moe_backend():
 def test_large_ep_replica_size_is_bounded():
     """Large-EP num_gpu_list (replica sizes) must be range(1, max_gpu_per_replica+1), not
     unbounded -- v2 sweep gates replica size by this list, mirroring v1 get_working_list."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     t = Task(
         serving_mode="disagg",
@@ -1319,17 +1456,52 @@ def test_large_ep_replica_size_is_bounded():
     assert max(kw["num_gpu_list"]) <= t.total_gpus
 
 
-def test_explicit_fmha_fp8_not_downgraded():
-    """V3/Kimi context fmha fp8->bf16 downgrade fires only on HF-inferred fp8 (matches v1's
-    `not explicit_fmha_mode` guard). An explicit fp8 is kept, so validate can fail fast
-    (instead of silently modelling bf16)."""
-    from aiconfigurator.sdk import common
+def test_explicit_fmha_precision_with_trtllm_fp8_profiles():
+    """Audited rc20 FP8 profiles retain inferred and explicit FP8. On an FP8 KV cache
+    TRT-LLM runs MLA attention in FP8, so an explicit bfloat16 resolves to FP8; on a
+    bfloat16 KV cache it stays bfloat16."""
+    from aisimulate.sdk import common
 
-    base = dict(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm", backend_name="trtllm")
-    assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.bfloat16  # HF-inferred -> downgraded
-    assert (
-        Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
-    )  # explicit -> kept
+    base = dict(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="1.3.0rc20",
+    )
+    assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.bfloat16).fmha_quant_mode == common.FMHAQuantMode.fp8
+    bf16_kv = Task(
+        **base,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+    )
+    assert bf16_kv.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+
+def test_fpm_task_keeps_its_explicit_fmha_identity_on_trtllm():
+    """A whole-model FPM identity is caller-owned: the TRT-LLM FP8 promotion that applies to
+    op-level tasks leaves an explicit bfloat16 alone, through build_model_config and the
+    estimate path's resolver, so the Task selects the collected bfloat16 cell."""
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        backend_version="1.3.0rc20",
+        forward_model="fpm",
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+    )
+    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    mc = t.build_model_config(role="agg")
+    assert mc.forward_model == "fpm" and mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("h200_sxm"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
@@ -1341,7 +1513,7 @@ def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
         calls.append((args, kwargs))
         return database
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database_view)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database_view)
     t = Task(
         serving_mode="agg",
         model_path="deepseek-ai/DeepSeek-V3",
@@ -1375,8 +1547,8 @@ def test_no_orphan_fields():
     import pathlib
     import re
 
-    import aiconfigurator.sdk.sweep as sweep_mod
-    import aiconfigurator.sdk.task_v2 as tv2_mod
+    import aisimulate.sdk.sweep as sweep_mod
+    import aisimulate.sdk.task_v2 as tv2_mod
 
     srcs = pathlib.Path(tv2_mod.__file__).read_text() + pathlib.Path(sweep_mod.__file__).read_text()
     orphans = []
@@ -1475,7 +1647,7 @@ def test_sweep_kwargs_mode_mismatch_raises():
 
 def test_run_dispatches_to_sweep_agg(monkeypatch):
     """run() loads DB internally and dispatches to sweep_agg for agg mode."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1487,7 +1659,7 @@ def test_run_dispatches_to_sweep_agg(monkeypatch):
         captured["agg_kwargs"] = kwargs
         return "agg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_agg", fake_sweep_agg)
 
     t = Task(
@@ -1506,7 +1678,7 @@ def test_run_dispatches_to_sweep_agg(monkeypatch):
 
 def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
     """run() loads two databases (prefill + decode) for disagg and dispatches."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1518,7 +1690,7 @@ def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
         captured["disagg_kwargs"] = kwargs
         return "disagg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
     t = Task(
@@ -1538,7 +1710,7 @@ def test_run_dispatches_to_sweep_disagg_with_two_dbs(monkeypatch):
 
 
 def test_run_passes_autoscale_flag(monkeypatch):
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1549,7 +1721,7 @@ def test_run_passes_autoscale_flag(monkeypatch):
         captured["autoscale"] = kwargs.get("autoscale")
         return "result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
     t = Task(
@@ -1571,7 +1743,7 @@ def test_run_rejects_autoscale_in_agg_mode():
 
 def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
     """Task.predictor is plumbed into sweep_agg's predictor kwarg."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1582,10 +1754,10 @@ def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
         captured["predictor"] = kwargs.get("predictor")
         return "agg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_agg", fake_sweep_agg)
 
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     custom = AnalyticPredictor()  # any Predictor-compatible object
     t = Task(
@@ -1600,7 +1772,7 @@ def test_run_forwards_predictor_field_to_sweep_agg(monkeypatch):
 
 def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
     """Task.predictor is plumbed into sweep_disagg's predictor kwarg."""
-    from aiconfigurator.sdk import sweep
+    from aisimulate.sdk import sweep
 
     captured: dict = {}
 
@@ -1611,10 +1783,10 @@ def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
         captured["predictor"] = kwargs.get("predictor")
         return "disagg-result"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr(sweep, "sweep_disagg", fake_sweep_disagg)
 
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     custom = AnalyticPredictor()
     t = Task(
@@ -1631,7 +1803,7 @@ def test_run_forwards_predictor_field_to_sweep_disagg(monkeypatch):
 
 def test_to_dict_skips_predictor_strategy_field():
     """Strategy fields (Python objects) shouldn't appear in to_dict / YAML output."""
-    from aiconfigurator.sdk.predictor import AnalyticPredictor
+    from aisimulate.sdk.predictor import AnalyticPredictor
 
     t = Task(
         serving_mode="agg",
@@ -1673,16 +1845,20 @@ def _build_fake_summary(
 
 def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     """run_single_agg builds ModelConfig with given dims and calls predict_agg_worker once."""
-    from aiconfigurator.sdk import predict
+    from types import SimpleNamespace
+
+    from aisimulate.sdk import predict
 
     captured: dict = {}
+    loaded_spec = {"gpu": {"sm_version": 90}}
 
     def fake_get_database(*a, **kw):
-        return "db"
+        return SimpleNamespace(system_spec=loaded_spec)
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
+        captured["system_spec"] = system_spec
         return MagicMock(name=f"backend-{name}")
 
     def fake_get_model(model_path, model_config, backend_name):
@@ -1698,9 +1874,9 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
             moe_comm_fallbacks=(MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
         )
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
 
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
@@ -1715,6 +1891,8 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     assert mc.tp_size == 4 and mc.pp_size == 1 and mc.moe_tp_size == 1 and mc.moe_ep_size == 1
     # ctx_tokens defaults to isl
     assert captured["predict_kwargs"]["ctx_tokens"] == t.isl
+    # Backend classification uses the loaded spec (custom-root systems).
+    assert captured["system_spec"] is loaded_spec
 
 
 def test_run_single_agg_rejects_disagg_task():
@@ -1731,12 +1909,12 @@ def test_run_single_agg_rejects_disagg_task():
 
 def test_run_single_agg_raises_on_oom(monkeypatch):
     """OOM in single-point eval should surface as a clear RuntimeError."""
-    from aiconfigurator.sdk import predict
+    from aisimulate.sdk import predict
 
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -1749,9 +1927,9 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     def fake_predict_agg_worker(**kwargs):
         return _build_fake_summary(oom=True)
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
 
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
@@ -1762,14 +1940,14 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
 def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     """run_single_disagg calls predict_disagg_worker twice (prefill + decode)
     then rate-matches the pair into one ColumnsDisagg row."""
-    from aiconfigurator.sdk import predict
+    from aisimulate.sdk import predict
 
     call_roles: list[str] = []
 
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -1821,9 +1999,9 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
         call_roles.append(kwargs["role"])
         return _phase_summary(kwargs["role"])
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
-    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
-    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", fake_get_model)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_database_view", fake_get_database)
+    monkeypatch.setattr("aisimulate.sdk.backends.factory.get_backend", fake_get_backend)
+    monkeypatch.setattr("aisimulate.sdk.models.get_model", fake_get_model)
     monkeypatch.setattr(predict, "predict_disagg_worker", fake_predict_disagg_worker)
 
     t = Task(
@@ -1957,6 +2135,26 @@ def test_validate_disagg_fp8_static_is_data_driven_per_role():
     )
     with pytest.raises(ValueError, match="Unsupported gemm quant mode 'fp8_static'"):
         t.validate()
+
+
+@pytest.mark.parametrize("mode", ["afd", "bogus", None])
+def test_construction_rejects_unsupported_serving_mode_before_model_resolution(monkeypatch, mode):
+    def unexpected_model_resolution(_self):
+        pytest.fail("unsupported serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match=f"Invalid serving_mode: {mode!r}") as caught:
+        Task(serving_mode=mode, model_path="Qwen/Qwen3-32B", system_name="h200_sxm")
+    assert ("aisimulate recommend" in str(caught.value)) is (mode == "afd")
+
+
+def test_from_yaml_rejects_null_serving_mode_before_model_resolution(monkeypatch):
+    def unexpected_model_resolution(_self):
+        pytest.fail("null serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match="Invalid serving_mode: None"):
+        Task.from_yaml({"serving_mode": None, "model_path": "Qwen/Qwen3-32B", "system_name": "h200_sxm"})
 
 
 def test_validate_invalid_serving_mode_raises():
@@ -2098,7 +2296,7 @@ def test_validate_gemm_quant_transfer_reachable_in_hybrid():
     # transfer ladder is consulted — mirroring the query-entry behavior, so
     # impossible sweep configurations fail early instead of on the first
     # HYBRID query.
-    from aiconfigurator.sdk.errors import MissingSystemFlopsError
+    from aisimulate.sdk.errors import MissingSystemFlopsError
 
     for mode, policy in (("SILICON", None), ("HYBRID", None), ("HYBRID", "xprofile")):
         with pytest.raises(MissingSystemFlopsError, match="fp4_tc_flops"):
@@ -2146,8 +2344,8 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
     the overhead tables have no transfer ladder, so HYBRID must NOT admit it via
     profile transfer on combos without quantize data — validate keeps failing
     fast instead of the sweep dying late in query_compute_scale."""
-    # Vehicle: b60/vllm 0.20.0 (frozen-baseline current slot) ships fp8 GEMM
-    # data but no quantize family. vllm/b200 stopped qualifying when 0.24
+    # Vehicle: b60/vllm 0.28.0 (current slot) ships fp8 GEMM data but no
+    # quantize family at any version. vllm/b200 stopped qualifying when 0.24
     # collected computescale, and sglang is no vehicle at all — its fp8_static
     # is native (no overhead-table subtraction), so it lists the mode as
     # supported without quantize data.
@@ -2156,7 +2354,7 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
         model_path="Qwen/Qwen3-32B",
         system_name="b60",
         backend_name="vllm",
-        backend_version="0.20.0",
+        backend_version="0.28.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.fp8_static
@@ -2169,7 +2367,7 @@ def test_validate_gemm_xprofile_requires_listed_level_profile(monkeypatch):
     from the GEMM util-LEVEL table (the runtime ladder would fall back to a
     default level, but the gate enforces the enum-line + level-line
     add-a-quant recipe — the one intentional way it is stricter)."""
-    from aiconfigurator.sdk.operations import gemm as gemm_ops
+    from aisimulate.sdk.operations import gemm as gemm_ops
 
     # int4_wo: resolvable dtype (bf16 pipeline) so the strict-FLOPS check at
     # the top of the gate passes and the level-table refusal is what fires
@@ -2341,10 +2539,10 @@ def test_nvfp4_preserved_on_blackwell():
 def test_engine_step_backend_is_validated_at_task_construction():
     """Every programmatic entry point funnels through Task construction, so
     the retired "python" token (and any typo) fails closed HERE — including
-    paths like the AFD session that never reach the step routing gate."""
+    paths that never reach the step routing gate."""
     import pytest
 
-    from aiconfigurator.sdk.task_v2 import Task
+    from aisimulate.sdk.task_v2 import Task
 
     def _task(**kwargs):
         return Task(
@@ -2367,3 +2565,113 @@ def test_engine_step_backend_is_validated_at_task_construction():
     assert _task(engine_step_backend="rust").engine_step_backend == "rust"
     assert _task(engine_step_backend="RUST").engine_step_backend == "rust"
     assert _task(engine_step_backend=None).engine_step_backend is None
+
+
+# ---------------------------------------------------------------------------
+# Context parallelism: prefill CP candidates vs the per-role decode-CP scalar
+# ---------------------------------------------------------------------------
+
+
+def _disagg_task(**overrides) -> Task:
+    # sglang: the only backend whose prefill CP is modeled (enumerate_parallel_config
+    # rejects cp>1 elsewhere), so the CP candidates below are actually enumerated.
+    kwargs = {
+        "serving_mode": "disagg",
+        "prefill_model_path": "deepseek-ai/DeepSeek-V3",
+        "prefill_system_name": "h200_sxm",
+        "prefill_backend_name": "sglang",
+        "decode_model_path": "deepseek-ai/DeepSeek-V3",
+        "decode_system_name": "h200_sxm",
+        "decode_backend_name": "sglang",
+        "total_gpus": 32,
+    }
+    kwargs.update(overrides)
+    return Task(**kwargs)
+
+
+def test_decode_prefill_cp_candidates_are_enumerated_not_rejected():
+    """The old ``decode CP must be 1`` gate is gone: a decode worker's prefill-CP
+    list is priced as given (the optimizer, not a gate, decides it is useless)."""
+    t = _disagg_task(decode_cp_candidates=[1, 2])
+    tuples = list(t.iter_parallel("decode"))
+    assert tuples
+    assert all(len(tup) == 6 for tup in tuples)
+
+
+def test_decode_prefill_cp_defaults_to_one():
+    assert _disagg_task().decode_cp_candidates == [1]
+
+
+def test_role_dcp_size_reaches_model_config():
+    # ModelConfig requires dcp_size to divide tp_size, so pin the decode TP.
+    t = _disagg_task(decode_dcp_size=8, decode_tp_candidates=[8])
+    assert t.build_model_config(role="decode").dcp_size == 8
+    # Not requested stays None (priced as 1; keeps the unrecorded FPM identity).
+    assert t.build_model_config(role="prefill").dcp_size is None
+
+
+def test_malformed_role_dcp_size_is_rejected_not_defaulted():
+    t = _disagg_task(decode_dcp_size=0)
+    with pytest.raises(ValueError, match="dcp_size must be positive"):
+        t.build_model_config(role="decode")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ({"prefill_dcp_size": 4}, "PCP\\+DCP layout"),
+        ({"prefill_dcp_size": 2, "prefill_cp_candidates": [1, 2]}, "PCP\\+DCP layout"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode; DCP sizes divide one another.
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [2], "decode_dcp_size": 8},
+            "replicated-PCP",
+        ),
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [4], "prefill_dcp_size": 4, "decode_dcp_size": 6},
+            "divide one another",
+        ),
+    ],
+)
+def test_disagg_prefill_context_parallel_layout_rules(overrides, needle):
+    # Task validates its parallel space on construction, so the rule fires there.
+    with pytest.raises(ValueError, match=needle):
+        list(_disagg_task(**overrides).iter_parallel("prefill"))
+
+
+def test_disagg_allows_prefill_cp_and_decode_dcp_on_different_workers():
+    """SGLang re-lays the KV out per decode DCP rank on the prefill side: no pairing rule."""
+    t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8, decode_tp_candidates=[8])
+    assert list(t.iter_parallel("prefill"))
+    assert list(t.iter_parallel("decode"))
+    assert t.build_model_config(role="decode").dcp_size == 8
+
+
+def test_agg_rejects_prefill_cp_candidates_combined_with_dcp():
+    # Task construction already enumerates the agg search space (fmha data
+    # fallback), so the topology rule fires at construction time.
+    with pytest.raises(ValueError, match="at most one of prefill CP and decode CP"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            backend_name="sglang",
+            total_gpus=8,
+            dcp_size=8,
+            agg_cp_candidates=[1, 2],
+        )
+
+
+def test_agg_dcp_with_pinned_prefill_cp_enumerates_and_reaches_model_config():
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        total_gpus=8,
+        dcp_size=8,
+        agg_cp_candidates=[1],
+        agg_tp_candidates=[8],
+    )
+    assert list(t.iter_parallel("agg"))
+    assert t.build_model_config(role="agg").dcp_size == 8

@@ -1,0 +1,355 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "c968a615d3c00cbf71b41515012925118d577e0e",
+  "profiles": {
+    "b300_sxm-tp2-decoder_bounded": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-tp267c0e788b4b2",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b300_sxm",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/fpm_forward_perf.parquet",
+          "sha256": "04cfeb721554f382430c531ba4148332489021dbad8bb580642eb81f02f60ad1"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/fpm_forward_perf.metadata.json",
+          "sha256": "7f9e50258c8a5affd825b0c7a6f806d386c1464f975ccdf1ff30c964433a7f36"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/systems.decoder_bounded.yaml",
+          "target": "b300_sxm.yaml",
+          "sha256": "b29f24bd50d2c94fe1487f9e52bb5974ae46cbec5ce3aca6d0b8713bf4c87617"
+        }
+      ]
+    },
+    "b300_sxm-tp2-full": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-tp267c0e788b4b2",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b300_sxm",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/fpm_forward_perf.full.parquet",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/fpm_forward_perf.parquet",
+          "sha256": "a1380ae8182fb4f0be3244e3c4fadd3e2f33ce78d3237031936480bc70fa6f3b"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/fpm_forward_perf.full.metadata.json",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/fpm_forward_perf.metadata.json",
+          "sha256": "72c8a15cde7c540c3b76233dc330b1ed41ca136058b92242c4eaf217e87687a3"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/pure-tp2/fpm/provenance/systems.full.yaml",
+          "target": "b300_sxm.yaml",
+          "sha256": "b29f24bd50d2c94fe1487f9e52bb5974ae46cbec5ce3aca6d0b8713bf4c87617"
+        }
+      ]
+    },
+    "b300_sxm-tp4-decoder_bounded": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b300_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5/fpm_forward_perf.parquet",
+          "sha256": "1524b2202775693754e9e58090f229ca6de4fa3a2a0142e00080cc6a06f4324e"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5/fpm_forward_perf.metadata.json",
+          "sha256": "7af0ffec3c742162309ab4755482b0666067bfd53deb267f66bcdd641daa798a"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/systems.decoder_bounded.yaml",
+          "target": "b300_sxm.yaml",
+          "sha256": "b29f24bd50d2c94fe1487f9e52bb5974ae46cbec5ce3aca6d0b8713bf4c87617"
+        }
+      ]
+    },
+    "b300_sxm-tp4-full": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b300_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/fpm_forward_perf.full.parquet",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5/fpm_forward_perf.parquet",
+          "sha256": "573d51b338e56ca2502a8ebeac993848fe1ace595d2e5c8891539e863340e926"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/fpm_forward_perf.full.metadata.json",
+          "target": "data/b300_sxm/sglang/dev-c4ca651192e5/fpm_forward_perf.metadata.json",
+          "sha256": "ad05b836aaf026b4f1339a1363d8768f461d872b54fed0f98f793584b0c2b383"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b300-sxm/sglang/dev-c4ca651192e5/pure-tp4/fpm/provenance/systems.full.yaml",
+          "target": "b300_sxm.yaml",
+          "sha256": "b29f24bd50d2c94fe1487f9e52bb5974ae46cbec5ce3aca6d0b8713bf4c87617"
+        }
+      ]
+    },
+    "gb300-tp2-decoder_bounded": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-800cc9adea5b",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "target": "data/gb300/sglang/dev-800cc9adea5b/fpm_forward_perf.parquet",
+          "sha256": "50f209adffd6ffcabe95791e72966bade01f02e4f6201e0144d6390dd1fca73e"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "target": "data/gb300/sglang/dev-800cc9adea5b/fpm_forward_perf.metadata.json",
+          "sha256": "782a60f2f76dcc46058f65c7c532164ca561978680505090d8eaa36d40e7a0dd"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/systems.decoder_bounded.yaml",
+          "target": "gb300.yaml",
+          "sha256": "debb08f6a731df02194a94be3a3f0aa60444cc2de0731120ee74d44eadb0ef38"
+        }
+      ]
+    },
+    "gb300-tp2-full": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-800cc9adea5b",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/fpm_forward_perf.full.parquet",
+          "target": "data/gb300/sglang/dev-800cc9adea5b/fpm_forward_perf.parquet",
+          "sha256": "972900036ad285306b691aae0e05064a594c21747a3115f9fc16a8549614ed86"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/fpm_forward_perf.full.metadata.json",
+          "target": "data/gb300/sglang/dev-800cc9adea5b/fpm_forward_perf.metadata.json",
+          "sha256": "db6b7dd49b69220ff1213925de56db87cd96c54d9a914c712bfb18ebb712297a"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/LICENSE",
+          "target": "provenance/LICENSE",
+          "sha256": "e7c584183cb18a44cd56f453e642164d388c4dcefb49aa6dbd0b03ea40a62878"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/THIRD_PARTY_NOTICES.md",
+          "target": "provenance/THIRD_PARTY_NOTICES.md",
+          "sha256": "bc9e17ef5809278d5cd5ac97ec24f4d18d1fa057db393b40d21356be2f3b634f"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/dev-800cc9adea5b/pure-tp2/fpm/provenance/systems.full.yaml",
+          "target": "gb300.yaml",
+          "sha256": "debb08f6a731df02194a94be3a3f0aa60444cc2de0731120ee74d44eadb0ef38"
+        }
+      ]
+    }
+  }
+}

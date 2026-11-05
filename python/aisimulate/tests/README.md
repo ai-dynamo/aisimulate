@@ -73,7 +73,7 @@ python3 -m pytest -m "unit or build"
 The compiled Rust engine is the only engine-step executor (the Python step
 path was removed after the golden fixtures froze its reference values —
 see `aic-core/rust/aiconfigurator-core/parity_tests/README.md`). The
-maturin-built `aiconfigurator_core` extension must be importable; build it
+maturin-built `aisimulate_core` extension must be importable; build it
 the same way the CI job does:
 
 ```bash

@@ -3,11 +3,13 @@
 
 """Repository-specific routing contract for AISimulate's generated CODEOWNERS."""
 
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -28,9 +30,7 @@ def _owners(path: str) -> set[str]:
     return set(resolve_owners(rules, path))
 
 
-def _run_readiness_script(
-    script: str, tmp_path: Path, env: dict[str, str]
-) -> subprocess.CompletedProcess[str]:
+def _run_readiness_script(script: str, tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     summary = tmp_path / "summary.md"
     return subprocess.run(
         ["bash", "-c", script],
@@ -50,9 +50,7 @@ def _run_readiness_script(
 
 def test_subsystem_teams_retain_maintainer_coownership() -> None:
     rules = parse_codeowners((ROOT / "CODEOWNERS").read_text())
-    tracked = subprocess.check_output(
-        ["git", "-C", str(ROOT), "ls-files"], text=True
-    ).splitlines()
+    tracked = subprocess.check_output(["git", "-C", str(ROOT), "ls-files"], text=True).splitlines()
     violations = []
     for path in tracked:
         owners = set(resolve_owners(rules, path))
@@ -71,11 +69,11 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator_core/sdk/engine.py") == {
+    assert _owners("python/aisimulate/src/aisimulate_core/sdk/engine.py") == {
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator/generator/__init__.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/generator/__init__.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -87,10 +85,14 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
+    assert _owners("docs/perf-model/api/python.md") == {FPE, MAINTAINERS}
+    assert _owners("docs/replay/features.md") == {REPLAY, MAINTAINERS}
+    assert _owners("docs/adapters/runner-abi.md") == {REPLAY, SWEEPER, FPE, MAINTAINERS}
+    assert _owners("docs/ci/accuracy.md") == {INFRA, FPE, MAINTAINERS}
+    assert _owners("benchmarks/evidence/collector/pr244/manifest.json") == {FPE, REPLAY, INFRA, MAINTAINERS}
 
     # Unified application Replay, Sweeper, and Mocker surface.
-    assert _owners("python/aisimulate/src/aisimulate/aic.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/capacity.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -144,7 +146,7 @@ def test_representative_routing_contract() -> None:
     assert _owners(".github/workflows/ci.yml") == {INFRA}
     assert _owners(".github/workflows/fast-ci.yml") == {INFRA}
     assert _owners(".gitattributes") == {INFRA, MAINTAINERS}
-    assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
+    assert _owners("scripts/release/build_release_artifacts.py") == {INFRA, MAINTAINERS}
     assert _owners("tests/test_source_compliance.py") == {INFRA}
     assert _owners("python/aisimulate/.github/workflows/build-test.yml") == {
         INFRA,
@@ -205,7 +207,9 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     for inexpensive_gate in (
         "Check source and packaged legal files",
         "Check CODEOWNERS policy and generated artifacts",
+        "Check active workflow contracts",
         "ruff check",
+        "ruff format --check",
         "python -m compileall",
         "cargo fmt --all -- --check",
     ):
@@ -218,16 +222,41 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "Application Tests",
         "Release Artifact Contract",
         "Application Wheel",
+        "Platform Wheels",
+        "Collector Data",
+        "Prediction Regression",
+        "Engine Golden Regression",
     ):
         assert expensive_gate in full
         assert expensive_gate not in fast
 
-    assert "uses: ./.github/workflows/fast-ci.yml" in full
-    assert "needs: fast-ci" in full
-    assert 'EXPECTED_SHA: ${{ inputs.expected_sha }}' in full
-    assert 'RUN_SHA: ${{ github.sha }}' in full
-    assert 'expected_sha: ${{ github.sha }}' in full
+    assert "uses: ./.github/workflows/fast-ci.yml" not in full
+    assert "workflow_call" not in fast_config["on"]
+    assert fast_config["on"]["push"]["branches"] == full_config["on"]["push"]["branches"]
+    prerequisite = full_config["jobs"]["fast-ci"]
+    assert prerequisite["name"] == "Require Fast CI"
+    assert prerequisite["needs"] == "verify-target"
+    assert prerequisite["permissions"] == {"contents": "read", "actions": "read"}
+    assert "uses" not in prerequisite
+    prerequisite_steps = [
+        step for step in prerequisite["steps"] if step.get("run") == "python scripts/ci/require_fast_ci.py"
+    ]
+    assert len(prerequisite_steps) == 1
+    assert prerequisite_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"
+    for job_id, job in full_config["jobs"].items():
+        if job_id not in {"verify-target", "select-full-ci", "fast-ci", "stage-application-wheel"}:
+            assert "fast-ci" in job["needs"], job_id
+    assert "uses: ./.github/workflows/validate-platform-wheels.yml" in full
+    assert "uses: ./.github/workflows/collector-check.yml" in full
+    assert "uses: ./.github/workflows/prediction-regression-gate.yml" in full
+    assert "name: Select Full CI Scope" in full
+    assert "needs: [fast-ci, select-full-ci]" in full
+    assert "EXPECTED_SHA: ${{ inputs.expected_sha }}" in full
+    assert "RUN_SHA: ${{ github.sha }}" in full
+    assert "expected_sha: ${{ github.sha }}" in full
     assert "needs: verify-target" in full
+    assert "name: Fast CI Success" in fast
+    assert "name: Full CI Success" in full
     assert "manual Full CI requires a nonempty expected_sha" in full
     assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
@@ -244,9 +273,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "synchronize",
         "reopened",
         "ready_for_review",
-        "labeled",
-        "unlabeled",
     }
+    # Fast checks must run for draft and unlabeled PRs as well as trusted pushes.
+    for job_id in ("policy", "python-static", "rust-format"):
+        assert "if" not in fast_config["jobs"][job_id]
 
     fast_readiness = fast_config["jobs"]["readiness"]
     assert fast_readiness["name"] == "Fast CI Success"
@@ -257,15 +287,11 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "rust-format",
     }
     assert fast_readiness["env"] == {
-        "IS_DRAFT": "${{ github.event.pull_request.draft || false }}",
-        "HAS_REVIEW_READY": "${{ github.event_name != 'pull_request' || "
-        "contains(github.event.pull_request.labels.*.name, 'review-ready') }}",
         "POLICY_RESULT": "${{ needs.policy.result }}",
         "PYTHON_STATIC_RESULT": "${{ needs.python-static.result }}",
         "RUST_FORMAT_RESULT": "${{ needs.rust-format.result }}",
     }
     fast_readiness_script = fast_readiness["steps"][0]["run"]
-    assert "must have the review-ready label" in fast_readiness_script
     for result in (
         "${POLICY_RESULT}",
         "${PYTHON_STATIC_RESULT}",
@@ -276,14 +302,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_config["permissions"]["pull-requests"] == "read"
     verify_target = full_config["jobs"]["verify-target"]
     verify_copy_steps = [
-        step
-        for step in verify_target["steps"]
-        if step.get("name") == "Verify trusted PR copy matches originating head"
+        step for step in verify_target["steps"] if step.get("name") == "Verify trusted PR copy matches originating head"
     ]
     assert len(verify_copy_steps) == 1
-    assert verify_copy_steps[0]["if"] == (
-        "startsWith(github.ref, 'refs/heads/pull-request/')"
-    )
+    assert verify_copy_steps[0]["if"] == ("startsWith(github.ref, 'refs/heads/pull-request/')")
     assert "repos/${REPOSITORY}/pulls/${pr_number}" in verify_copy_steps[0]["run"]
     assert '"${pr_head}" != "${RUN_SHA}"' in verify_copy_steps[0]["run"]
 
@@ -292,41 +314,42 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert full_readiness["if"] == "${{ always() }}"
     assert set(full_readiness["needs"]) == {
         "verify-target",
+        "select-full-ci",
+        "application-test-wheel",
         "fast-ci",
+        "platform-wheels",
+        "collector-data",
+        "prediction-regression",
         "cargo-deny",
         "rust",
+        "rust-feature-modes",
         "public-api-rust",
         "application-tests",
+        "python-compatibility",
+        "engine-golden-regression",
         "release-artifact-contract",
+        "readme-commands",
         "application-wheel",
-        "stage-application-wheel",
+        "python-compliance",
     }
-    assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness"}
+    assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness", "stage-application-wheel"}
     full_readiness_script = full_readiness["steps"][0]["run"]
-    assert "${VERIFY_TARGET_RESULT}" in full_readiness_script
-    assert "${APPLICATION_WHEEL_RESULT}" in full_readiness_script
-    assert "${STAGE_APPLICATION_WHEEL_RESULT}" in full_readiness_script
-    assert '"${STAGE_APPLICATION_WHEEL_RESULT}" "skipped"' in full_readiness_script
+    full_readiness_env = full_readiness["steps"][0]["env"]
+    assert full_readiness_env["NEEDS_JSON"] == "${{ toJSON(needs) }}"
+    assert '"success" if selected == "true" else "skipped"' in full_readiness_script
+    assert full_readiness_env["PLAN_JSON"] == "${{ toJSON(needs.select-full-ci.outputs) }}"
+    assert "stage-application-wheel" not in full_readiness["needs"]
+    assert 'payload["result"]' in full_readiness_script
 
-    staging_if = full_config["jobs"]["stage-application-wheel"]["if"]
-    staging_required = full_readiness["env"]["STAGING_REQUIRED"]
-    normalize = lambda text: " ".join(text.split())
-    assert normalize(staging_if) == normalize(
-        staging_required.removeprefix("${{").removesuffix("}}")
-    )
+    assert set(full_config["jobs"]["stage-application-wheel"]["needs"]) == {"readiness", "application-wheel"}
 
     application_wheel = full_config["jobs"]["application-wheel"]
-    assert "if" not in application_wheel
-    verify_steps = [
-        step
-        for step in application_wheel["steps"]
-        if step.get("name") == "Verify exact staged wheel"
-    ]
+    assert "select-full-ci" in application_wheel["needs"]
+    assert "needs.select-full-ci.outputs.application_wheel == 'true'" in application_wheel["if"]
+    verify_steps = [step for step in application_wheel["steps"] if step.get("name") == "Verify exact staged wheel"]
     assert len(verify_steps) == 1
     verify_step = verify_steps[0]
-    assert verify_step["run"] == (
-        "python python/aisimulate/tools/verify_release_wheels.py dist"
-    )
+    assert verify_step["run"] == ("python python/aisimulate/tools/verify_release_wheels.py dist")
     assert "if" not in verify_step
     assert "continue-on-error" not in verify_step
     assert full_config["jobs"]["stage-application-wheel"]["if"] == (
@@ -336,15 +359,15 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     )
 
 
-def test_fast_ci_readiness_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("event", ["pull_request", "push", "workflow_dispatch"])
+def test_fast_ci_readiness_fails_closed(tmp_path: Path, event: str) -> None:
     config = yaml.load(
         (ROOT / ".github/workflows/fast-ci.yml").read_text(),
         Loader=yaml.BaseLoader,
     )
     script = config["jobs"]["readiness"]["steps"][0]["run"]
     passing = {
-        "IS_DRAFT": "false",
-        "HAS_REVIEW_READY": "true",
+        "GITHUB_EVENT_NAME": event,
         "POLICY_RESULT": "success",
         "PYTHON_STATIC_RESULT": "success",
         "RUST_FORMAT_RESULT": "success",
@@ -352,14 +375,11 @@ def test_fast_ci_readiness_fails_closed(tmp_path: Path) -> None:
 
     assert _run_readiness_script(script, tmp_path, passing).returncode == 0
 
-    missing_label = {**passing, "HAS_REVIEW_READY": "false"}
-    assert _run_readiness_script(script, tmp_path, missing_label).returncode != 0
-
-    skipped_job = {**passing, "PYTHON_STATIC_RESULT": "skipped"}
-    assert _run_readiness_script(script, tmp_path, skipped_job).returncode != 0
-
-    draft = {**passing, "IS_DRAFT": "true", "HAS_REVIEW_READY": "false"}
-    assert _run_readiness_script(script, tmp_path, draft).returncode == 0
+    for job_result in ("POLICY_RESULT", "PYTHON_STATIC_RESULT", "RUST_FORMAT_RESULT"):
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            failing = {**passing, job_result: outcome}
+            result = _run_readiness_script(script, tmp_path, failing)
+            assert result.returncode != 0, (event, job_result, outcome)
 
 
 def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
@@ -367,41 +387,30 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
         (ROOT / ".github/workflows/ci.yml").read_text(),
         Loader=yaml.BaseLoader,
     )
-    script = config["jobs"]["readiness"]["steps"][0]["run"]
+    readiness = config["jobs"]["readiness"]
+    script = readiness["steps"][0]["run"]
+    passing_results = {name: {"result": "success"} for name in readiness["needs"]}
     passing_pr = {
-        "VERIFY_TARGET_RESULT": "success",
-        "FAST_CI_RESULT": "success",
-        "CARGO_DENY_RESULT": "success",
-        "RUST_RESULT": "success",
-        "PUBLIC_API_RUST_RESULT": "success",
-        "APPLICATION_TESTS_RESULT": "success",
-        "RELEASE_ARTIFACT_RESULT": "success",
-        "APPLICATION_WHEEL_RESULT": "success",
-        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
-        "STAGING_REQUIRED": "false",
+        "NEEDS_JSON": json.dumps(passing_results),
+        "PLAN_JSON": json.dumps(dict.fromkeys(config["jobs"]["select-full-ci"]["outputs"], "true")),
     }
 
     assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
 
-    canceled_job = {**passing_pr, "RUST_RESULT": "cancelled"}
+    canceled_results = {**passing_results, "rust": {"result": "cancelled"}}
+    canceled_job = {**passing_pr, "NEEDS_JSON": json.dumps(canceled_results)}
     assert _run_readiness_script(script, tmp_path, canceled_job).returncode != 0
 
-    missing_job = {**passing_pr, "APPLICATION_TESTS_RESULT": ""}
+    failed_results = {**passing_results, "rust": {"result": "failure"}}
+    failed_job = {**passing_pr, "NEEDS_JSON": json.dumps(failed_results)}
+    assert _run_readiness_script(script, tmp_path, failed_job).returncode != 0
+
+    missing_results = {
+        **passing_results,
+        "application-tests": {"result": ""},
+    }
+    missing_job = {**passing_pr, "NEEDS_JSON": json.dumps(missing_results)}
     assert _run_readiness_script(script, tmp_path, missing_job).returncode != 0
-
-    passing_release = {
-        **passing_pr,
-        "STAGING_REQUIRED": "true",
-        "STAGE_APPLICATION_WHEEL_RESULT": "success",
-    }
-    assert _run_readiness_script(script, tmp_path, passing_release).returncode == 0
-
-    skipped_release_staging = {
-        **passing_release,
-        "STAGE_APPLICATION_WHEEL_RESULT": "skipped",
-    }
-    result = _run_readiness_script(script, tmp_path, skipped_release_staging)
-    assert result.returncode != 0
 
 
 def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
@@ -431,10 +440,7 @@ def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
         "GITHUB_EVENT_NAME": "push",
         "EXPECTED_SHA": "",
     }
-    assert (
-        _run_readiness_script(manual_script, tmp_path, push_without_input).returncode
-        == 0
-    )
+    assert _run_readiness_script(manual_script, tmp_path, push_without_input).returncode == 0
 
 
 def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
@@ -451,20 +457,24 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "exit_code=${FAKE_GH_EXIT:-0}\n"
-        "if [[ ${exit_code} != 0 ]]; then exit \"${exit_code}\"; fi\n"
-        "printf '%s\\n' \"${FAKE_PR_HEAD:-}\"\n"
+        'if [[ ${exit_code} != 0 ]]; then exit "${exit_code}"; fi\n'
+        'printf \'%s\\t%s\\n\' "${FAKE_PR_HEAD:-}" "${FAKE_PR_BASE:-}"\n'
     )
     fake_gh.chmod(0o755)
-    target_sha = "0123456789abcdef"
+    target_sha = "a" * 40
+    base_sha = "b" * 40
     matching = {
         "GITHUB_REF": "refs/heads/pull-request/135",
         "REPOSITORY": "ai-dynamo/aisimulate",
         "RUN_SHA": target_sha,
         "FAKE_PR_HEAD": target_sha,
+        "FAKE_PR_BASE": base_sha,
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
 
     assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
+    assert (tmp_path / "output.txt").read_text() == f"base={base_sha}\n"
 
     mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
     assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0
@@ -476,12 +486,12 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     assert _run_readiness_script(copy_script, tmp_path, api_failure).returncode != 0
 
 
-def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
+def test_coderabbit_reviews_non_draft_prs_without_opt_in() -> None:
     policy = yaml.safe_load((ROOT / ".coderabbit.yaml").read_text())
     auto_review = policy["reviews"]["auto_review"]
 
-    assert auto_review["enabled"] is False
-    assert auto_review["labels"] == ["review-ready", "!wip", "!do-not-review"]
+    assert auto_review["enabled"] is True
+    assert auto_review["labels"] == ["!wip", "!do-not-review"]
     assert auto_review["drafts"] is False
     assert auto_review["base_branches"] == ["release/.*"]
     assert auto_review["ignore_title_keywords"] == [

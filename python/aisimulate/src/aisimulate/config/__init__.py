@@ -4,14 +4,26 @@
 """Typed CLI configuration owned by AISimulate core."""
 
 from .cli import CorePredictionConfig, CoreRecommendationConfig
-from .engine import EnginePredictionConfig, EngineRecommendationConfig
-from .traffic import TrafficPredictionConfig, TrafficRecommendationConfig
+from .common import ExecutionConfig, ResourceConfig
+from .engine import (
+    AFDSearchRecommendationConfig,
+    AFDTopologyPredictionConfig,
+    EnginePredictionConfig,
+    EngineRecommendationConfig,
+)
+from .traffic import AgenticProfileOptions, AgenticSnapshotOptions, TrafficPredictionConfig, TrafficRecommendationConfig
 
 __all__ = [
+    "AFDSearchRecommendationConfig",
+    "AFDTopologyPredictionConfig",
+    "AgenticProfileOptions",
+    "AgenticSnapshotOptions",
     "CorePredictionConfig",
     "CoreRecommendationConfig",
     "EnginePredictionConfig",
     "EngineRecommendationConfig",
+    "ExecutionConfig",
+    "ResourceConfig",
     "TrafficPredictionConfig",
     "TrafficRecommendationConfig",
 ]

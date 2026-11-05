@@ -7,7 +7,7 @@ description: Use when running long AIC/aiconfigurator GPU perf auto-collection f
 
 ## Start with the project playbook
 
-Read [`docs/perf_database/collector-upgrade-playbook.md`](../../../docs/perf_database/collector-upgrade-playbook.md)
+Read [`docs/perf-model/collector/upgrade.md`](../../../../../docs/perf-model/collector/upgrade.md)
 before changing collector code: it is the canonical upgrade/bring-up
 workflow. This skill is the run pipeline; the repository-owned policy in
 `.claude/rules/collector/` is authoritative over anything restated here.
@@ -29,7 +29,7 @@ Assume the user wants the complete bring-up unless they explicitly ask for a smo
 - The unit of work is one draft PR per `(system, backend, backend_version)`. Use that PR as the checkpoint, not a private local branch.
 - Make small sign-off commits as progress checkpoints after each `collect_xx.py`/op-family collection finishes. If a single collection runs longer than about one hour, checkpoint safe collector fixes, current perf outputs, and the failure/status summary before continuing.
 - If multiple frameworks are requested, finish and checkpoint one framework/version PR first, then create a new draft PR for the next framework/version.
-- Do not synthesize missing rows. Unsupported runtime/kernel paths should be filtered or documented, not filled with fake numbers.
+- Do not synthesize missing rows. An unsupported runtime or kernel path gets a `collector/skips.py` entry or fails and is recorded; it is never filled with fake numbers.
 - If the PR body says customer support is ready, verify the default AIC workflow can actually choose a valid configuration for at least the expected representative model/backend/system path.
 
 ## Required Inputs
@@ -155,10 +155,10 @@ Update the draft PR body whenever scope changes or a meaningful checkpoint lands
 
 If the system is new or incomplete:
 
-1. Add `aic-core/src/aiconfigurator_core/systems/<system>.yaml`.
+1. Add `src/aisimulate_core/systems/<system>.yaml`.
 2. Add `<system>` to `SupportedSystems` in
-   `aic-core/src/aiconfigurator_core/sdk/common.py`.
-3. Create `aic-core/src/aiconfigurator_core/systems/data/<system>/`.
+   `src/aisimulate_core/sdk/common.py`.
+3. Create `src/aisimulate_core/systems/data/<system>/`.
 4. Populate YAML with conservative, documented values:
    - `gpu.mem_bw`
    - `gpu.mem_capacity`
@@ -184,13 +184,13 @@ Before collecting a new framework version or a new GPU SM target, check whether 
 
 1. Record the exact runtime package version from inside the container. Do not trust only the image tag.
 2. Inspect `collector/<backend>/registry.py` for version routes and the concrete `collect_xx.py` files registered for this version.
-3. Read the top of each relevant `collect_xx.py` file: docstring, `__compat__`, version notes, SM gates, and known unsupported filters.
+3. Read the op's `collector/skips.py` entries and the top of each relevant `collect_xx.py` file: docstring, `__compat__` and deviation notes.
 4. Compare against the framework source for the exact version/tag when there is any sign of API or kernel churn:
    - SGLang: attention backends, DeepGEMM, FlashInfer, DeepSeek/DSV module code, MoE runner paths.
    - vLLM: attention/MLA modules, quantized GEMM paths, GDN/Mamba modules, custom all-reduce.
    - TRT-LLM: attention plugins, MLA/DSA modules, MoE, compute-scale, GDN/Mamba modules.
 5. For a new SM such as SM120, check kernel architecture support before full collection: tiny smoke cases, import probes, and direct framework source guards.
-6. Patch collector routing or test-case generation before full collection when the runtime cannot support a case. Use version routing and explicit SM filters rather than discovering the same failure across thousands of tasks.
+6. When the runtime cannot run a whole block (an op, dtype or model on this SM), add a `collector/skips.py` entry with the reason before full collection, rather than discovering the same failure across thousands of tasks. Scattered failures still run and are recorded.
 7. If a special framework image exists for a model family or kernel family, try that image before declaring the op unsupported. Record its exact package version and image digest.
 
 Commit and push preflight collector fixes before starting long full runs.
@@ -217,6 +217,14 @@ Recommended order:
 4. module-level ops such as DSA, GDN, MHC, WideEP
 5. communication ops separately, because they may require multi-GPU or full-node ownership
 
+Collect only what the question needs (`.claude/rules/collector/overview.md`,
+"Collection cost"). An upgrade or a fix runs the affected ops and cases on one
+system per SM generation. A full plan is for bringing up a new system, or for
+a family whose kernels changed at a pin bump; the other families declare
+reuse. To run exact cases, pass each case's full string as its own
+`--case-filter`, for example `--case-filter "['fp8_block', 64, 32, 4096]"`.
+`--plan-only --sm <sm> --plan-table DIR` lists every planned case of an op.
+
 For new GPUs, prioritize ops used by the target models and backend first, but do not claim full support until all expected ops for that backend/version are collected or explicitly marked unsupported.
 
 For an all-backend bring-up, run this as separate draft PRs:
@@ -239,6 +247,37 @@ python3 collector/collect.py --backend <backend> --ops <op> \
   --checkpoint-dir "$COLLECTOR_CHECKPOINT_DIR/<backend>/<version>/<op>" --resume
 ```
 
+### Campaign mode (full plan, several GPUs) — use the checked-in launcher, do not hand-roll one
+
+Once an op's smoke/limited runs are clean, run the full retained plan through
+`tools/perf_database/collect_campaign.py`. It fixes the parameters that every
+hand-written launcher has drifted on (an sm120 campaign: `--keep-csv`
+skipped finalize for 13 shards; the official image lacked pyarrow):
+
+```bash
+# 1. image = the framework_manifest pin for (backend, op) + the finalize deps (pyarrow, pandas)
+python3 tools/perf_database/collect_campaign.py build-image --backend <backend> --op <op> [--build-arg http_proxy=...]
+# 2. declare the shards once (YAML: backend, sm, shards[{op, name, case_filter}]) — one shard = one
+#    output/checkpoint namespace <root>/<op>/<shard>/; case_filter is collect.py's substring filter
+# 3. run the GPU pool; re-run the same command after any interruption (DONE shards skip, others --resume)
+python3 tools/perf_database/collect_campaign.py run      --plan shards.yaml --root <ws>/collect --gpus 0,1,2,3
+python3 tools/perf_database/collect_campaign.py status   --plan shards.yaml --root <ws>/collect
+# 4. shards that were produced by hand with --keep-csv have no parquet: finalize them (resume-only re-entry)
+python3 tools/perf_database/collect_campaign.py finalize --plan shards.yaml --root <ws>/collect --gpus 0
+```
+
+Parameter rules the tool enforces (and that apply to any manual `collect.py` run too):
+
+- `--resume` always, `--keep-csv` never for data you intend to deliver: `--keep-csv` means
+  "keep CSV *instead of* finalizing" — no parquet, no `collection_meta.yaml`, no provenance.
+  Its only use is inspecting raw staging rows.
+- `--sm <sm>` explicit on every run (never rely on auto-detect inside a container).
+- Never point two concurrent runs at one cwd: staging files are named per table
+  (`gemm_perf.txt`) and would interleave. Shards of one op are merged at delivery
+  (playbook §8), not by sharing a directory.
+- The image is the manifest pin for the op (family pins can differ per op) — a
+  hand-typed tag is a review finding.
+
 Use a separate log directory per op when iterating:
 
 ```bash
@@ -257,7 +296,7 @@ If the process times out or crashes after partial progress, rerun with the same 
 
 Full-collection acceptance for an op:
 
-- The final collector run has zero unclassified errors, or every remaining skipped case is intentionally filtered before execution.
+- The final collector run has zero unclassified errors, or every remaining failure group is explained, and every case left out is under a `collector/skips.py` entry.
 - The output perf file was copied from the full output directory, not from an earlier smoke/limited run.
 - Row counts are plausible compared with nearby systems or the generated case count.
 - Duplicate shape keys are removed only when they are true repeated measurements for the same key; keep the latest or best-defined row consistently and document the policy.
@@ -267,7 +306,7 @@ For very long runs, commit and push safe progress periodically:
 
 ```bash
 git status --short
-git add collector tests src/aiconfigurator/systems
+git add collector tests src/aisimulate_core/systems
 git commit --signoff -m "<backend>: <op family> progress"
 git push
 ```
@@ -305,20 +344,19 @@ Fix policy:
   2. Read the failing `collector/<backend>/collect_*.py`.
   3. Search the framework source checkout for the missing class, function, import path, or attribute.
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
-  5. Patch the collector with a minimal compatibility-preserving change.
-- For API changes, use version routing and `__compat__` where needed.
-- For GPU capability gaps, filter test cases before execution using `get_sm_version()`.
-- For Blackwell/SM100+ features, gate FP4/NVFP4/FP8 paths carefully.
-- For dimension constraints, filter on per-rank dimensions such as `inter_size // tp`.
-- For CUDA-fatal errors, prefer worker restart and skip only the exact invalid region.
+  5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
+- For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), or a whole block this backend cannot run or a model it cannot serve, add an entry to `collector/skips.py` with the reason as a comment. Never filter in collector code with `get_sm_version()`.
+- For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
+- Add a worker guard only when a case would mismeasure, hang or kill the worker, or waste significant time, and the check needs the running kernel. It raises with a `FIXME(kernel-limit):` message and a comment that says why (`.claude/rules/collector/layer_permissions.md`).
+- For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
 - Preserve data quality. Do not reduce benchmark repetitions or broad test dimensions just to pass.
-- Keep older backend versions working.
 - Keep shared test-case generators deterministic when unit tests depend on them. Put runtime availability probes in backend collector wrappers when the skip is caused by a partially installed framework package.
 - Guard `importlib.util.find_spec("a.b.c")` with `try/except ModuleNotFoundError`; partial packages can make `find_spec` raise instead of return `None`.
-- If a collector route only exists for future framework versions, use `VersionRoute` in `collector/<backend>/registry.py` and add a wrapper module with an explicit `__compat__`.
+- Do not add side-by-side version fork modules; prior-version code is `git log -- <file>` away.
 - If a collector helper silently returns `None` after a dry-run or subprocess failure, make it raise or record the skip explicitly so failed coverage is visible.
 - If a valid production-like case fails in the framework kernel, file or prepare an upstream bug for SGLang, vLLM, or TRT-LLM with exact image/version, SM, minimal repro, and traceback. Link it in the PR or failure ledger.
-- If the case is not production-like or the runtime explicitly does not support that SM/path, skip it in `collect_xx.py` before execution with a clear comment and a narrow predicate.
+- If the runtime does not support that SM or path at all, add a `collector/skips.py` entry with the reason as its comment; never skip a queued case inside `collect_xx.py`.
 
 After a fix:
 
@@ -367,7 +405,7 @@ vLLM:
 
 **Job status is not evidence.** A green harness/CI job only means the wrapper
 script exited zero — it does NOT mean data was collected. Two real false-success
-signatures (2026-07-11, sglang 0.5.14 wave-2 recollection):
+signatures:
 
 - An op's case population raised (`No SGLang MoE backend for ...`) →
   `collect_module_safe` recorded a `ModuleCollectionFailure` and the job stayed
@@ -380,10 +418,12 @@ signatures (2026-07-11, sglang 0.5.14 wave-2 recollection):
 Therefore ALWAYS verify results by content, never by status:
 
 1. Unpack the artifact and count rows per expected op family; an op with zero
-   rows and no capability-floor explanation is a failure regardless of status.
+   rows and no `collector/skips.py` entry explaining it is a failure
+   regardless of status.
 2. Read `errors_*.json` / `collection_summary_*.json`; any
    `ModuleCollectionFailure` means that op collected nothing.
-3. Compare collected vs planned counts (`--plan-only` gives the plan size);
+3. Compare collected vs planned counts (`--plan-only --sm <sm>` prints the
+   plan size per dtype of every op except moe_a2a);
    large shortfalls mean the run died early — check the tail of the log for
    container/cluster death, not just collector errors.
 
@@ -391,7 +431,7 @@ The canonical destination family comes from
 `collector/op_backend_catalog.yaml`. Accept a perf file only when:
 
 - It is finalized as parquet under
-  `aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/`.
+  `src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`.
 - It is not empty and has the expected parquet schema.
 - Rows contain the expected framework, version, and device name.
 - Latency values are finite and plausible. They should usually be positive;
@@ -400,13 +440,13 @@ The canonical destination family comes from
 - Power values, when collected, are positive and below/near the configured power limit.
 - There are no unexplained duplicate rows for identical keys.
 - Coverage is comparable to the nearest existing system/backend/version.
-- Missing cases are explained by documented unsupported config filters.
+- Missing cases are explained by `collector/skips.py` entries or recorded failures.
 - Re-running sample does not produce large unexplained variance.
 
 Useful checks:
 
 ```bash
-find aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version> \
+find src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version> \
   -maxdepth 1 -type f -name '*_perf.parquet' -print
 python3 - <<'PY'
 from pathlib import Path
@@ -416,7 +456,7 @@ import pyarrow.parquet as pq
 ZERO_LATENCY_FILES = {"computescale_perf.parquet"}
 
 root = Path(
-    "aic-core/src/aiconfigurator_core/systems/data/"
+    "src/aisimulate_core/systems/data/"
     "<system>/<family>/<backend>/<version>"
 )
 failed = False
@@ -472,7 +512,7 @@ Instantiate the database:
 
 ```bash
 python3 - <<'PY'
-from aiconfigurator.sdk.perf_database import get_database
+from aisimulate.sdk.perf_database import get_database
 db = get_database("<system>", "<backend>", "<version>")
 print(db is not None)
 print(db.system_spec["gpu"])
@@ -512,7 +552,7 @@ If the new GPU should become user-visible:
 
 1. Update system support metadata.
 2. Update support matrix outputs if required by the repo workflow.
-3. Add or update tests for new SM filters or version routes.
+3. Add or update tests for new `collector/skips.py` entries or version routes.
 4. Document known gaps in the PR body.
 
 ## Phase 10: PR Preparation
@@ -529,8 +569,7 @@ Before marking the draft PR ready:
 ```bash
 git status --short
 git diff --stat main...HEAD
-pytest tests/unit/collector -q
-pytest tests/unit/sdk/test_common.py -q
+python -m pytest -q tests/unit tests/golden   # what CI runs, with no marker filter
 ```
 
 PR body checklist:
@@ -544,7 +583,9 @@ PR body checklist:
 - Ops collected and perf files added.
 - Row counts by backend/version and perf file count.
 - Collector errors fixed.
-- Unsupported/skipped configs with reasons and whether they are runtime-version limits, SM limits, or collector gaps.
+- Failure counts per consumer key, the unavailable keys, and the comparison with the previous run of the same backend/version.
+- `collector/skips.py` entries added, changed or deleted, and the deviation notes re-checked, kept or deleted for the new pin.
+- Whether measured values change; when they do, a before/after diff of the affected ops on one system per SM generation.
 - Validation commands and results.
 - Remaining risks.
 
@@ -566,9 +607,9 @@ Ruff CI runs both `ruff check` and `ruff format --check`; local targeted `ruff c
 If the draft PR does not exist yet, open it before more long-running work:
 
 ```bash
-gh repo fork ai-dynamo/aiconfigurator --clone=false
+gh repo fork ai-dynamo/aisimulate --clone=false
 git push -u <your-fork-remote> HEAD
-gh pr create --repo ai-dynamo/aiconfigurator --head <your-user>:<branch> --title "<title>" --body-file <body-file>
+gh pr create --repo ai-dynamo/aisimulate --head <your-user>:<branch> --title "<title>" --body-file <body-file>
 ```
 
 ## Stop And Escalate

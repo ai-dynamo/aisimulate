@@ -3,7 +3,7 @@
 
 //! SGLang WideEP MLA operators (context + generation).
 //!
-//! Apple-to-apple port of `aiconfigurator.sdk.operations.mla.{WideEPContextMLA,
+//! Apple-to-apple port of `aisimulate.sdk.operations.mla.{WideEPContextMLA,
 //! WideEPGenerationMLA}`. These are SGLang-only ops used by the WideEP
 //! DeepSeek variant — Python loads the tables lazily and errors at query
 //! time when the backend isn't `sglang`. The Rust perf-database layer
@@ -133,7 +133,7 @@ mod tests {
     fn h200_sglang_db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "h200_sxm", "sglang", "0.5.10").expect("db loads")
     }
 
@@ -384,7 +384,7 @@ mod tests {
     fn empirical_resolves_user_backends_and_exact_kernel_sources() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.10").expect("db loads");
         db.database_mode = crate::common::enums::DatabaseMode::Empirical;
 
@@ -466,7 +466,7 @@ mod tests {
     fn hybrid_unloaded_table_falls_to_empirical_before_whitelist() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db loads");
         db.database_mode = crate::common::enums::DatabaseMode::Hybrid;
         let result = query_wideep_context_mla_table(
@@ -545,6 +545,15 @@ pub struct WideEpGenerationMlaOp {
     /// keep the struct shape close to the Python class.
     pub fmha_quant_mode: FmhaQuantMode,
     pub attn_backend: String,
+    /// Decode context parallelism (SGLang `--dcp-size` composes with DP
+    /// attention / large EP): `num_heads * dcp` gathered query heads over
+    /// this rank's `ceil(s / dcp)` latent-KV stripe. Defaults to 1; appended
+    /// at the struct tail (schema v26).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
 }
 
 impl WideEpGenerationMlaOp {
@@ -561,6 +570,7 @@ impl WideEpGenerationMlaOp {
             kv_cache_dtype,
             fmha_quant_mode,
             attn_backend: "flashinfer".to_string(),
+            dcp_size: 1,
         }
     }
 
@@ -570,11 +580,13 @@ impl WideEpGenerationMlaOp {
         batch_size: u32,
         s: u32,
     ) -> Result<PerformanceResult, AicError> {
+        let (heads, s_local) =
+            crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
         let (latency, source) = query_wideep_generation_mla_table(
             db,
             batch_size,
-            s,
-            self.num_heads,
+            s_local,
+            heads,
             self.kv_cache_dtype,
             &self.attn_backend,
         )?;

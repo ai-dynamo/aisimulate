@@ -5,7 +5,6 @@ import hashlib
 import json
 
 import pytest
-
 from tools.finalize_wheels_in_artifactory import FinalizeError, build_manifest, finalize
 
 

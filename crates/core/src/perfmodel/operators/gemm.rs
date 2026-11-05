@@ -3,7 +3,7 @@
 
 //! GEMM operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.gemm.GEMM`. Config-time fields
+//! Mirrors `aisimulate.sdk.operations.gemm.GEMM`. Config-time fields
 //! (`n`, `k`, quant mode, scale_factor, scale_num_tokens) are set once when
 //! the model graph is built; the query takes only `x` (the M dimension /
 //! number of tokens) and routes through the GEMM perf table.
@@ -49,6 +49,23 @@ pub struct GemmOp {
 
 pub(crate) fn default_seq_split() -> u32 {
     1
+}
+
+/// Deserialize a parallel-split width that must be at least one. The
+/// tail-appended `dcp_size` fields default to 1 when absent, but an explicit
+/// zero in a serialized spec must fail at deserialization instead of being
+/// normalized away by the geometry helpers (`dcp_geometry`'s `.max(1)`).
+pub(crate) fn deserialize_positive_split<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "parallel split size must be a positive integer, got 0",
+        ));
+    }
+    Ok(value)
 }
 
 impl GemmOp {
@@ -573,7 +590,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -719,7 +736,7 @@ mod tests {
     fn w4a16_nvfp4_uses_xprofile_only_in_hybrid() {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&systems_root, "h200_sxm", "trtllm", "1.3.0rc20")
             .expect("database must load");
 
@@ -798,7 +815,7 @@ mod tests {
     fn h200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "h200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 

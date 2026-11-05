@@ -13,10 +13,10 @@ import os
 import pytest
 import yaml
 
-from aiconfigurator.cli.main import _execute_tasks, build_default_tasks
-from aiconfigurator.generator.api import generate_backend_artifacts
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
-from aiconfigurator.sdk.task_v2 import Task
+from aisimulate.generator.api import generate_backend_artifacts
+from aisimulate.generator.module_bridge import task_config_to_generator_config
+from aisimulate.legacy_cli.main import _execute_tasks, build_default_tasks
+from aisimulate.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.integration
 
@@ -181,7 +181,7 @@ class TestRecommendPicking:
 
     def test_recommend_by_request_rate(self):
         """recommend should return results with total_gpus_needed."""
-        from aiconfigurator.cli.api import cli_recommend
+        from aisimulate.legacy_cli.api import cli_recommend
 
         result = cli_recommend(
             model_path=MODEL,
@@ -207,7 +207,7 @@ class TestRecommendPicking:
 
     def test_recommend_higher_rate_needs_more_gpus(self):
         """Doubling the target rate should need at least as many GPUs."""
-        from aiconfigurator.cli.api import cli_recommend
+        from aisimulate.legacy_cli.api import cli_recommend
 
         common = dict(
             model_path=MODEL,

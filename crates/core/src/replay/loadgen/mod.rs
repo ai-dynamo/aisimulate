@@ -4,6 +4,11 @@
 mod arrival;
 mod driver;
 mod dynamo;
+mod generated;
+mod lineage;
+mod phase;
+mod profile;
+mod snapshot;
 mod steppable;
 mod trace;
 mod types;
@@ -12,8 +17,24 @@ mod weka;
 use rand::Rng;
 use rand::rngs::StdRng;
 
-pub use driver::WorkloadDriver;
+pub use driver::{
+    AGENTIC_LIFECYCLE_SCHEMA_V1, AgenticLifecycleEvent, AgenticLifecycleEventKind,
+    AgenticLifecycleTranscript, AgenticOutputFeedback, AgenticRuntimeFeedback,
+    AgenticTerminalFeedback, WorkloadDriver,
+};
 pub use dynamo::DynamoRequestTrace;
+pub use generated::GeneratedRequests;
+pub use phase::{
+    AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
+    AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
+    AgenticWarmupPolicy,
+};
+pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
+pub use snapshot::{
+    AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
+    AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
+    AgenticSnapshotSelection, PreparedAgenticSnapshots,
+};
 pub use steppable::{
     CompactDirectRequest, DynPlacement, EngineEvent, StepOutcome, SteppableAgg, SteppableDisagg,
     SteppableEngine, SteppableReplay,
@@ -24,15 +45,18 @@ pub use types::CompactReadyTurn;
 pub use types::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticHashIdScope,
-    AgenticMooncakeHeader, AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticSourceProvenance,
-    AgenticTrace, AgenticTrajectorySnapshot, ArrivalSpec, CompactHashIdsLease, DelaySpec,
-    LengthSpec, MooncakeRow, OUTPUT_REPLAY_CONSUMER_RUNTIME_KEY, OUTPUT_REPLAY_ID_ANNOTATION_KEY,
-    ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, SessionPartitionSpec, SessionTrace,
-    SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, ValidatedAgenticGraph,
-    effective_replay_key, output_replay_id_annotation,
+    AgenticMooncakeHeader, AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticPlayOutcome,
+    AgenticPlayStatus, AgenticSourceProvenance, AgenticTrace, AgenticTrajectorySnapshot,
+    ArrivalSpec, CompactHashIdsLease, DelaySpec, LengthSpec, MooncakeRow,
+    OUTPUT_REPLAY_CONSUMER_RUNTIME_KEY, OUTPUT_REPLAY_ID_ANNOTATION_KEY, ReadyTurn,
+    ReplayRequestHashes, ReplayRequestPayload, SessionPartitionSpec, SessionTrace,
+    SyntheticImages, SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace,
+    ValidatedAgenticGraph, effective_replay_key, output_replay_id_annotation,
 };
+#[cfg(feature = "python")]
+pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
+    WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
     WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
     load_weka_agentic_rows, stream_weka_agentic_rows,
 };
@@ -53,3 +77,9 @@ pub(super) fn planned_output_token_ids(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
+mod dynamo_snapshot_tests;

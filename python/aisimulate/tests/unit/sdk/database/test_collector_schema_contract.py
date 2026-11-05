@@ -40,9 +40,9 @@ import pandas as pd
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk.common import MoEQuantMode
-from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-from aiconfigurator_core.sdk.perf_database import PerfDatabase
+from aisimulate_core.sdk.common import MoEQuantMode
+from aisimulate_core.sdk.engine_table_view import fetch_table_view
+from aisimulate_core.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 

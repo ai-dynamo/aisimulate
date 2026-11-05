@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import SearchSpace
+from .afd_parallel import AFDParallelConfig
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
 # Pinned deployment/runtime scalars folded in so the selected sample stands alone.
@@ -19,6 +20,9 @@ _DEPLOYMENT_PINNED = (
     "context_length",
     "startup_time",
     "aic_nextn",
+    "nextn_accepted",
+    "enable_chunked_prefill",
+    *ENGINE_MODEL_CONTROL_FIELDS,
 )
 
 # engine knobs per branch: searched batching + pinned scalars.
@@ -32,7 +36,12 @@ _AGG_PINNED = (
     "agg_num_gpu_blocks",
     "agg_timing_model",
     "agg_forward_model",
+    "agg_fpm_parquet_path",
     "agg_startup_time",
+    "agg_host_loop",
+    "agg_frontend",
+    "agg_frontend_by_transport",
+    "agg_vision",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
 _PREFILL_PINNED = (
@@ -44,7 +53,13 @@ _PREFILL_PINNED = (
     "prefill_num_gpu_blocks",
     "prefill_timing_model",
     "prefill_forward_model",
+    "prefill_fpm_parquet_path",
     "prefill_startup_time",
+    "prefill_host_loop",
+    "prefill_frontend",
+    "prefill_frontend_by_transport",
+    "prefill_vision",
+    "prefill_context_length",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (
@@ -56,7 +71,9 @@ _DECODE_PINNED = (
     "decode_num_gpu_blocks",
     "decode_timing_model",
     "decode_forward_model",
+    "decode_fpm_parquet_path",
     "decode_startup_time",
+    "decode_context_length",
 )
 
 
@@ -72,8 +89,30 @@ def _shape_fields(shape: ParallelShape) -> dict[str, Any]:
 
 
 def _unroll_parallel(
-    deployment_mode: str, parallel_config: ReplicaParallelConfig | DisaggParallelConfig
+    deployment_mode: str,
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
 ) -> dict[str, Any]:
+    if deployment_mode in {"afd", "afd+pd"}:
+        if not isinstance(parallel_config, AFDParallelConfig):
+            raise TypeError(f"{deployment_mode} deployment_mode needs an AFDParallelConfig")
+        if parallel_config.topology.adapter_topology != deployment_mode:
+            raise TypeError(
+                f"AFD topology advertises {parallel_config.topology.adapter_topology!r}, not {deployment_mode!r}"
+            )
+        out = {
+            "afd": parallel_config.topology.provenance()["topology"],
+            "afd_provenance": parallel_config.provenance(),
+            "afd_phase": parallel_config.topology.phase.value,
+            "afd_companion_role": parallel_config.companion_role,
+            "used_gpus": parallel_config.total_gpus,
+        }
+        if parallel_config.companion is not None:
+            role = parallel_config.companion_role
+            assert role is not None
+            for key, value in _shape_fields(parallel_config.companion.shape).items():
+                out[f"{role}_{key}"] = value
+            out[f"{role}_replicas"] = parallel_config.companion.replicas
+        return out
     if deployment_mode == "agg":
         if not isinstance(parallel_config, ReplicaParallelConfig):
             raise TypeError("agg deployment_mode needs a ReplicaParallelConfig")
@@ -99,7 +138,7 @@ def unroll_sample(
     *,
     search_space: SearchSpace,
     selection: dict[str, Any],
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig,
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
 ) -> dict[str, Any]:
     """Expand a backend selection and its projected parallel configuration."""
     mode = selection["deployment_mode"]
@@ -107,15 +146,30 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
+    if search_space.systems_paths is not None:
+        sample["systems_paths"] = search_space.systems_paths
+    if search_space.fpm_profile is not None:
+        sample["fpm_profile"] = search_space.fpm_profile
+
+    if mode == "disagg":
+        sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")
+        sample["decode_hardware_sku"] = search_space.hardware_sku_for("decode")
 
     sample.update(_unroll_parallel(mode, parallel_config))
 
     # engine knobs for the active branch only
     if mode == "agg":
         searched, pinned = _AGG_SEARCHED, _AGG_PINNED
-    else:
+    elif mode == "disagg":
         searched = _PREFILL_SEARCHED + _DECODE_SEARCHED
         pinned = _PREFILL_PINNED + _DECODE_PINNED
+    elif mode == "afd+pd":
+        companion_role = sample["afd_companion_role"]
+        searched = _DECODE_SEARCHED if companion_role == "decode" else _PREFILL_SEARCHED
+        pinned = _DECODE_PINNED if companion_role == "decode" else _PREFILL_PINNED
+    else:
+        searched = ()
+        pinned = ()
     for key in searched:
         sample[key] = selection[key]
     for key in pinned:
@@ -127,4 +181,6 @@ def unroll_sample(
             "kv_transfer_timing_mode",
         ):
             sample[key] = getattr(search_space, key)
+    if search_space.speculation is not None:
+        sample["speculation"] = search_space.speculation.model_dump(mode="json")
     return sample

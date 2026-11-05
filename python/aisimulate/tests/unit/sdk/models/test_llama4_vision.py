@@ -8,14 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk import utils as utils_module
-from aiconfigurator.sdk.backends import base_backend as base_backend_module
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.models import HybridMoEModel, get_model
-from aiconfigurator.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
+from aisimulate.sdk import common, config
+from aisimulate.sdk import utils as utils_module
+from aisimulate.sdk.backends import base_backend as base_backend_module
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.models import HybridMoEModel, get_model
+from aisimulate.sdk.utils import _parse_hf_config_json, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -259,7 +259,7 @@ def test_checkpoint_configs_preserve_text_and_exact_vision_shapes(model_id, num_
 @pytest.mark.parametrize("model_id", LLAMA4_MODEL_IDS)
 def test_bundled_checkpoint_json_preserves_llama4_special_tokens_and_vision_metadata(model_id):
     config_path = (
-        pkg_resources.files("aiconfigurator_core") / "model_configs" / (f"{model_id.replace('/', '--')}_config.json")
+        pkg_resources.files("aisimulate_core") / "model_configs" / (f"{model_id.replace('/', '--')}_config.json")
     )
     checkpoint = json.loads(config_path.read_text())
 
@@ -388,7 +388,7 @@ def test_single_tile_image_produces_nonzero_engine_and_text_tokens():
 
 @pytest.mark.parametrize("encoder_dp", [False, True])
 def test_llama4_parallel_operation_dimensions_reach_compiled_specs(encoder_dp):
-    from aiconfigurator.sdk.engine import build_ops_json
+    from aisimulate.sdk.engine import build_ops_json
 
     model = get_model(
         LLAMA4_MODEL_IDS[0],

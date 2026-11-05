@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
 from .config import FPMCollectionOptions
 from .planner import FPMCollectionPlan, build_collection_plan
@@ -105,10 +108,7 @@ def _load_generator_overrides(args: argparse.Namespace) -> dict[str, Any]:
     if args.generator_dynamo_version:
         payload["generator_dynamo_version"] = args.generator_dynamo_version
     if args.generated_config_version:
-        raise ValueError(
-            "FPM resolves generated_config_version from the target Dynamo version; "
-            "do not set --generated-config-version"
-        )
+        raise ValueError("FPM uses the default benchmark templates; do not set --generated-config-version")
     k8s: dict[str, Any] = {}
     if args.namespace:
         k8s["k8s_namespace"] = args.namespace
@@ -140,6 +140,31 @@ def resolve_inputs(args: argparse.Namespace, case_plan) -> ResolvedFPMInputs:
 
     options = FPMCollectionOptions.from_args(args)
     generator_overrides = copy.deepcopy(_load_generator_overrides(args))
+    profile_path = getattr(args, "fpm_model_profile", None)
+    fpm_profile = None
+    if profile_path is not None:
+        payload = yaml.safe_load(Path(profile_path).expanduser().read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("--fpm-model-profile must contain a JSON or YAML mapping")
+        fpm_profile = load_fpm_profile(payload)
+    runtime_paths = tuple(
+        getattr(args, name, None)
+        for name in ("fpm_runtime_instrumentation", "fpm_runtime_launch", "fpm_runtime_configuration")
+    )
+    runtime_inputs = {}
+    if any(value is not None for value in runtime_paths):
+        if not all(isinstance(value, str) and value for value in runtime_paths):
+            raise ValueError(
+                "--fpm-runtime-instrumentation, --fpm-runtime-launch and "
+                "--fpm-runtime-configuration are required together"
+            )
+        from .runtime_instrumentation import read_json
+
+        runtime_inputs = {
+            "runtime_instrumentation": runtime_paths[0],
+            "runtime_launch": read_json(Path(runtime_paths[1]).expanduser()),
+            "runtime_configuration": runtime_paths[2],
+        }
     plan = build_collection_plan(
         backend=args.backend,
         model_path=case_plan.model_path,
@@ -149,8 +174,17 @@ def resolve_inputs(args: argparse.Namespace, case_plan) -> ResolvedFPMInputs:
         model_architecture=case_plan.model_architecture,
         has_model_cases=bool(case_plan.model_cases_paths),
         model_config_path=getattr(args, "fpm_model_config", None),
-        collector_config={},
+        fpm_profile=fpm_profile,
+        collector_config={
+            "runtime_backend_version": getattr(args, "fpm_runtime_backend_version", None),
+            **(
+                {"aic_database_version": args.fpm_backend_version}
+                if getattr(args, "fpm_backend_version", None) is not None
+                else {}
+            ),
+        },
         generator_overrides=generator_overrides,
+        **runtime_inputs,
     )
     return plan, generator_overrides
 

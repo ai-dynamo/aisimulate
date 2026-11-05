@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+traffic:
+  source: {type: synthetic, input_tokens: 8, output_tokens: 3}
+  load: {type: concurrency, concurrency: 2}
+  stop: {requests: 4}
+engine:
+  mode: afd
+  model: tests/e2e/configs/unified_cli/fixtures/tiny-model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 2048
+  afd:
+    phase: both
+    combined_with_pd: false
+    n_a_nodes: 1
+    n_f_nodes: 1
+    tp_a: 8
+    a_batch_size: 8
+    num_microbatches: 3
+    pipeline_model: optimistic

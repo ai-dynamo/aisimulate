@@ -9,6 +9,9 @@ use uuid::Uuid;
 use xxhash_rust::xxh3::Xxh3;
 
 use super::trace::synthesize_validated_trace_tokens;
+use crate::engine::{
+    ImageSpec, XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+};
 use crate::replay::protocol::DirectRequest;
 
 pub const OUTPUT_REPLAY_ID_ANNOTATION_KEY: &str = "output_replay_id";
@@ -46,6 +49,9 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    pub(super) conversation_lineage: Vec<Option<crate::replay::AgenticConversationLineage>>,
+    /// Source hash for each graph-local hash ID in `AgenticNode::hash_ids`.
+    pub(super) hash_values: Arc<[u64]>,
 }
 
 pub type AgenticTrace = ValidatedAgenticGraph;
@@ -220,6 +226,12 @@ pub struct TurnTrace {
     pub priority: i32,
     pub strict_priority: u32,
     pub policy_class: Option<String>,
+    /// The source row had no session ID, so the loader synthesized a single-use
+    /// one. Replay keeps it as the request's report identity but never passes it
+    /// to placement as a session.
+    pub synthetic_session_id: bool,
+    /// Prompt-order image placeholders; empty for text-only turns.
+    pub images: Vec<ImageSpec>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -229,15 +241,24 @@ pub struct AgenticNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) source_play_ordinal: Option<usize>,
     pub(super) session_id: String,
+    /// Legacy grouping identity synthesized by the loader, not serving identity.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) synthetic_session_id: bool,
     pub(super) model: String,
     pub(super) input_length: usize,
     pub(super) max_output_tokens: usize,
     pub(super) output_token_ids: Option<Vec<u32>>,
     pub(super) replay_key: Option<String>,
-    pub(super) hash_ids: Vec<u64>,
+    // Graph-local IDs, numbered first-seen over the graph's nodes. The graph's
+    // `hash_values` maps each back to its source hash.
+    pub(super) hash_ids: Vec<u32>,
     pub(super) not_before_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recorded_api_time_ms: Option<f64>,
+    // Importer provenance for formats whose execution gates do not retain
+    // recorded request starts. Excluded from the canonical graph contract.
+    #[serde(skip)]
+    pub(super) recorded_interval_ms: Option<(f64, Option<f64>)>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,
@@ -276,6 +297,11 @@ impl ValidatedAgenticGraph {
 
     pub fn nodes(&self) -> &[AgenticNode] {
         &self.nodes
+    }
+
+    /// Source hash for a graph-local hash ID from `AgenticNode::hash_ids`.
+    pub fn hash_value(&self, hash_id: u32) -> u64 {
+        self.hash_values[hash_id as usize]
     }
 
     pub fn identity(&self) -> AgenticGraphIdentity {
@@ -325,7 +351,9 @@ impl AgenticNode {
         self.max_output_tokens
     }
 
-    pub fn hash_ids(&self) -> &[u64] {
+    /// Graph-local hash IDs; `ValidatedAgenticGraph::hash_value` gives each
+    /// one's source hash.
+    pub fn hash_ids(&self) -> &[u32] {
         &self.hash_ids
     }
 
@@ -347,6 +375,29 @@ pub struct AgenticTrajectorySnapshot {
     pub total_trajectories: usize,
     pub completed_trajectories: usize,
     pub e2e_latencies_ms: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgenticPlayStatus {
+    Completed,
+    Failed,
+    Incomplete,
+}
+
+/// Canonical terminal state for one authored agentic play.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgenticPlayOutcome {
+    pub play_id: String,
+    pub status: AgenticPlayStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_terminal_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_status: Option<crate::replay::ReplayTerminalStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -390,12 +441,34 @@ pub struct SyntheticTraceSpec {
     pub turns_per_session: usize,
     pub input_tokens: LengthSpec,
     pub output_tokens: LengthSpec,
+    pub cached_prefix_tokens: usize,
     pub shared_prefix_ratio: f64,
     pub num_prefix_groups: usize,
     pub first_turn_arrivals: ArrivalSpec,
     pub inter_turn_delays: DelaySpec,
     pub seed: u64,
     pub arrival_seed: u64,
+    /// Fixed image workload attached to every turn; `None` for text-only traffic.
+    pub images: Option<SyntheticImages>,
+}
+
+/// Fixed per-request image workload for synthetic traffic.
+///
+/// The geometry is resolved by the caller from the model's processor rules;
+/// the trace only lays the placeholders out in the prompt and hands identities
+/// to the scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntheticImages {
+    /// Images per request.
+    pub count: usize,
+    /// Placeholder tokens each image occupies in the prompt.
+    pub visual_tokens: usize,
+    /// Encoder sequences and per-sequence token counts behind each image.
+    pub encoder: crate::engine::EncoderShape,
+    pub embedding_bytes: u64,
+    /// Reuse identities round-robin over this many distinct images; `None`
+    /// gives every image a fresh identity so no request shares one.
+    pub identity_pool: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -420,105 +493,74 @@ impl ReplayRequestHashes {
     /// Router implementation or its wire types.
     pub fn from_tokens(tokens: &[u32], engine_block_size: u32) -> Self {
         if engine_block_size == 0 {
-            return Self {
-                local_block_hashes: Vec::new(),
-                sequence_hashes: Vec::new(),
-            };
+            return Self::from_local_block_hashes(Vec::new());
         }
-
-        let block_size = engine_block_size as usize;
-        let local_block_hashes = tokens
-            .chunks_exact(block_size)
-            .map(|block| {
-                let mut bytes = Vec::with_capacity(std::mem::size_of_val(block));
-                for token in block {
-                    bytes.extend_from_slice(&token.to_le_bytes());
-                }
-                xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
-            })
-            .collect::<Vec<_>>();
-        let mut sequence_hashes: Vec<u64> = Vec::with_capacity(local_block_hashes.len());
-        for &block_hash in &local_block_hashes {
-            let sequence_hash =
-                sequence_hashes
-                    .last()
-                    .copied()
-                    .map_or(block_hash, |parent: u64| {
-                        let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
-                        bytes[..8].copy_from_slice(&parent.to_le_bytes());
-                        bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
-                        xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
-                    });
-            sequence_hashes.push(sequence_hash);
-        }
-
-        Self {
-            local_block_hashes,
-            sequence_hashes,
-        }
+        Self::from_local_block_hashes(block_hashes(tokens, engine_block_size as usize).collect())
     }
 
-    /// Derives engine-block identities directly from compact trace blocks.
-    ///
-    /// The result is byte-for-byte equivalent to first synthesizing the trace
-    /// tokens and passing them to [`Self::from_tokens`], without allocating a
-    /// full prompt-sized token vector.
-    pub fn from_trace_blocks(
+    /// Equal to [`Self::from_tokens`] over the prompt that
+    /// `synthesize_validated_trace_tokens` would build, without materializing
+    /// it: token `p` of that prompt is `hash_ids[p / trace_block_size]`.
+    pub(crate) fn from_trace_blocks(
         input_length: usize,
         hash_ids: &[u32],
         trace_block_size: usize,
         engine_block_size: u32,
     ) -> Self {
-        if engine_block_size == 0 || trace_block_size == 0 {
-            return Self {
-                local_block_hashes: Vec::new(),
-                sequence_hashes: Vec::new(),
-            };
+        let block_size = engine_block_size as usize;
+        if block_size == 0 {
+            return Self::from_local_block_hashes(Vec::new());
+        }
+        if trace_block_size == 0 || hash_ids.len().saturating_mul(trace_block_size) < input_length {
+            let tokens =
+                synthesize_validated_trace_tokens(input_length, hash_ids, trace_block_size);
+            return Self::from_tokens(&tokens, engine_block_size);
         }
 
-        let engine_block_size = engine_block_size as usize;
-        let complete_blocks = input_length / engine_block_size;
-        let mut local_block_hashes = Vec::with_capacity(complete_blocks);
-        let mut hasher = Xxh3::with_seed(1337);
-        let mut engine_tokens = 0;
-        let mut remaining_prompt = input_length;
-        let mut trace_bytes = vec![0_u8; trace_block_size.saturating_mul(4)];
-
-        for &hash_id in hash_ids {
-            if remaining_prompt == 0 {
-                break;
-            }
-            let trace_tokens = remaining_prompt.min(trace_block_size);
-            for bytes in trace_bytes[..trace_tokens * 4].chunks_exact_mut(4) {
-                bytes.copy_from_slice(&hash_id.to_le_bytes());
-            }
-            let mut consumed = 0;
-            while consumed < trace_tokens {
-                let take = (engine_block_size - engine_tokens).min(trace_tokens - consumed);
-                hasher.update(&trace_bytes[consumed * 4..(consumed + take) * 4]);
-                consumed += take;
-                engine_tokens += take;
-                if engine_tokens == engine_block_size {
-                    local_block_hashes.push(hasher.digest());
-                    hasher.reset();
-                    engine_tokens = 0;
+        let mut block = vec![0_u32; block_size];
+        // Consecutive engine blocks inside one trace block are identical.
+        let mut previous_run: Option<(u32, u64)> = None;
+        let local_block_hashes = (0..input_length / block_size)
+            .map(|index| {
+                let start = index * block_size;
+                let end = start + block_size;
+                let first_trace_block = start / trace_block_size;
+                if first_trace_block == (end - 1) / trace_block_size {
+                    let token = hash_ids[first_trace_block];
+                    if let Some((prior, hash)) = previous_run
+                        && prior == token
+                    {
+                        return hash;
+                    }
+                    block.fill(token);
+                    let hash = compute_block_hash_for_tokens(&block, XXH3_SEED);
+                    previous_run = Some((token, hash));
+                    return hash;
                 }
-            }
-            remaining_prompt -= trace_tokens;
-        }
 
+                let mut position = start;
+                while position < end {
+                    let trace_block = position / trace_block_size;
+                    let run_end = ((trace_block + 1) * trace_block_size).min(end);
+                    block[position - start..run_end - start].fill(hash_ids[trace_block]);
+                    position = run_end;
+                }
+                previous_run = None;
+                compute_block_hash_for_tokens(&block, XXH3_SEED)
+            })
+            .collect();
+        Self::from_local_block_hashes(local_block_hashes)
+    }
+
+    fn from_local_block_hashes(local_block_hashes: Vec<u64>) -> Self {
         let mut sequence_hashes = Vec::with_capacity(local_block_hashes.len());
         for &block_hash in &local_block_hashes {
-            let sequence_hash =
-                sequence_hashes
-                    .last()
-                    .copied()
-                    .map_or(block_hash, |parent: u64| {
-                        let mut bytes = [0_u8; std::mem::size_of::<[u64; 2]>()];
-                        bytes[..8].copy_from_slice(&parent.to_le_bytes());
-                        bytes[8..].copy_from_slice(&block_hash.to_le_bytes());
-                        xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, 1337)
-                    });
+            let sequence_hash = sequence_hashes
+                .last()
+                .copied()
+                .map_or(block_hash, |parent| {
+                    compute_next_sequence_hash(parent, block_hash)
+                });
             sequence_hashes.push(sequence_hash);
         }
 
@@ -538,6 +580,9 @@ pub struct ReadyTurn {
     pub session_id: String,
     pub turn_index: usize,
     pub emit_session_metadata: bool,
+    /// `session_id` was synthesized for a row without one (see
+    /// [`TurnTrace::synthetic_session_id`]); do not route on it as a session.
+    pub synthetic_session_id: bool,
     pub replay_key: Option<String>,
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
@@ -673,6 +718,27 @@ impl ReplayRequestPayload {
         }
     }
 
+    /// Engine-block replay hashes of the prompt, derived without materializing
+    /// a deferred prompt.
+    pub(crate) fn replay_hashes(&self, engine_block_size: u32) -> ReplayRequestHashes {
+        match self {
+            Self::Materialized(request) => {
+                ReplayRequestHashes::from_tokens(&request.tokens, engine_block_size)
+            }
+            Self::Deferred {
+                input_length,
+                hash_ids,
+                trace_block_size,
+                ..
+            } => ReplayRequestHashes::from_trace_blocks(
+                *input_length,
+                hash_ids,
+                *trace_block_size,
+                engine_block_size,
+            ),
+        }
+    }
+
     pub fn prompt_tokens(&self) -> Vec<u32> {
         match self {
             Self::Materialized(request) => request.tokens.clone(),
@@ -749,6 +815,7 @@ pub struct CompactReadyTurn {
     pub scheduled_ready_at_ms: f64,
     pub replay_hashes: Option<ReplayRequestHashes>,
     pub emit_session_metadata: bool,
+    pub synthetic_session_id: bool,
     pub request: ReplayRequestPayload,
 }
 
@@ -763,6 +830,7 @@ impl CompactReadyTurn {
             session_id: self.session_id,
             turn_index: self.turn_index,
             emit_session_metadata: self.emit_session_metadata,
+            synthetic_session_id: self.synthetic_session_id,
             replay_key: self.replay_key,
             scheduled_ready_at_ms: self.scheduled_ready_at_ms,
             replay_hashes: self.replay_hashes,

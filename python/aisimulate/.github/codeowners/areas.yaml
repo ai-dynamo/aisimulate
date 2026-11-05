@@ -21,8 +21,8 @@ areas:
   - label: generators
     github_team: "@ai-dynamo/aiconfigurator-generators"
     path_globs:
-      - src/aiconfigurator/generator/
-      - src/aiconfigurator/cli/
+      - src/aisimulate/generator/
+      - src/aisimulate/legacy_cli/
       - tools/
   - label: infra
     github_team: "@ai-dynamo/aiconfigurator-infra"
@@ -64,9 +64,9 @@ shared:
   # path and retain the same last-match routing as the hand-written file.
   - glob: src/
     owners: [runtime, docs]
-  - glob: src/aiconfigurator/generator/
+  - glob: src/aisimulate/generator/
     owners: [generators, docs]
-  - glob: src/aiconfigurator/cli/
+  - glob: src/aisimulate/legacy_cli/
     owners: [generators, docs]
   - glob: aic-core/
     owners: [runtime, docs]

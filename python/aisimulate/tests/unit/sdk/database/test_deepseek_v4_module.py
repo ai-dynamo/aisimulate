@@ -14,11 +14,11 @@ goldens.
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk import operations as ops
-from aiconfigurator.sdk.backends.sglang_backend import SGLANGBackend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk import common, config
+from aisimulate.sdk import operations as ops
+from aisimulate.sdk.backends.sglang_backend import SGLANGBackend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 
@@ -79,13 +79,13 @@ def _mhc_row(hidden_size: int, latency: float) -> dict:
 
 
 def test_mhc_module_view_returns_none_for_missing_file(tmp_path):
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     assert fetch_table_view(_mhc_view_db(tmp_path, None), "_mhc_module_data") is None
 
 
 def test_mhc_view_keys_by_op_hc_mult_hidden_size_num_tokens(tmp_path):
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
 
     db = _mhc_view_db(tmp_path, [_mhc_row(4096, 1.5), _mhc_row(7168, 2.5)])
     data = fetch_table_view(db, "_mhc_module_data")
@@ -129,7 +129,7 @@ def test_deepseek_v4_per_op_sol_queries_run_end_to_end():
     shim). The probe engine loads perf tables from disk,
     so this runs on a real shipped database rather than the synthetic-stuffed
     fixture (whose in-memory tables the engine cannot see)."""
-    from aiconfigurator.sdk.perf_database import get_database_view
+    from aisimulate.sdk.perf_database import get_database_view
 
     # b200_sxm/sglang/0.5.14 ships the full DSV4 table set (csa modules, mhc),
     # which the probe engine loads eagerly per op family even under SOL.

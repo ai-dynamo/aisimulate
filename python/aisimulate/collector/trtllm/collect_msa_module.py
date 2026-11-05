@@ -3,7 +3,7 @@
 
 # MiniMax-M3 support landed in TRT-LLM 1.3.0rc19 (modeling_minimaxm3.py +
 # attention_backend/sparse/minimax_m3/); this collector follows the rc20 APIs.
-__compat__ = "trtllm>=1.3.0rc19"
+__compat__ = "trtllm==1.3.0rc29"
 
 """
 MSA Module Collector for TRT-LLM — MiniMax-M3 sparse-attention benchmarking.
@@ -55,8 +55,19 @@ import weakref
 import tensorrt_llm
 import torch
 import transformers
-from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_minimaxm3 import MiniMaxM3DecoderLayer
@@ -66,13 +77,13 @@ from tensorrt_llm._torch.pyexecutor._util import get_kv_cache_manager_cls
 # Config registry patch — TRT-LLM's _CONFIG_REGISTRY has no "minimax_m3"
 # entry and transformers 5.5.x AutoConfig doesn't know the model_type
 # either (load_pretrained_config would raise in its AutoConfig fallback,
-# config_utils.py:569-571@1.3.0rc20).  Serving loads the checkpoint via
+# config_utils.py:569-571).  Serving loads the checkpoint via
 # trust_remote_code; the bundled config dir has auto_map stripped (see
 # helper._resolve_local_model_path), so mirror the collect_mla_module.py
 # glm_moe_dsa precedent and route through a config class instead.  The M3
 # modeling code needs attribute access only — its own VL path materialises
 # a bare PretrainedConfig the same way (_wrap_dict_as_config,
-# modeling_minimaxm3.py:65-78@1.3.0rc20) — so the base PretrainedConfig is
+# modeling_minimaxm3.py:65-78) — so the base PretrainedConfig is
 # the faithful offline stand-in.  This changes HOW the config object is
 # constructed, never which kernel runs (the M3 sparse dispatch keys on
 # sparse_attention_config / model_type, both preserved verbatim).
@@ -97,17 +108,20 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # LazyConfigDict resolves entries via getattr(tensorrt_llm._torch.configs,
-# name) (config_utils.py:493-498@1.3.0rc20), so expose the base class there
+# name) (config_utils.py:493-498), so expose the base class there
 # before registering the model_type.
 import tensorrt_llm._torch.configs as _trtllm_configs
-
-from collector.case_generator import (
-    get_mla_module_model_specs,
-    get_mla_module_precision_specs,
-    get_mla_module_sweep_spec,
+from collector.case_generator import get_mla_module_model_specs
+from collector.helper import (
+    PeriodicGarbageCollector,
+    _resolve_local_model_path,
+    benchmark_with_power,
+    get_sm_version,
+    log_perf,
 )
-from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
+from collector.trtllm.module_series import run_points
 
 if not hasattr(_trtllm_configs, "PretrainedConfig"):
     _trtllm_configs.PretrainedConfig = transformers.PretrainedConfig
@@ -120,98 +134,23 @@ if "minimax_m3" not in _CONFIG_REGISTRY:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _get_precision_combos(phase: str):
-    """(compute_dtype, kv_cache_dtype, gemm_type) triples for MSA, consumed
-    from the declared precision policy in cases/base_ops/mla_module.yaml
-    (mla_module_trtllm module_precision_combos, attention_types [msa]) — the
-    single declaration surface for sweep density and SM floors — serving
-    citations live on the YAML combos. Never re-implement SM gates here
-    (review 4969690316 S4)."""
-    return [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs(
-            "trtllm", phase=phase, sm_version=get_sm_version(), attention_type="msa"
-        )
-    ]
+def _msa_implementation(sm_version: int) -> str:
+    """Which MiniMax-M3 sparse implementation TRT-LLM can run on this SM.
 
-
-def get_context_test_cases():
-    """Context-phase test cases.
-
-    Returns list of [seq_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type, prefix_len].
+    "msa" = the fmha_sm100 kernels, hard-gated to the SM100 family
+    (msa_availability.py:ensure_msa_available raises off SM100/103, SM120
+    included); everything else runs the Triton reference (triton_backend.py),
+    whose long-prefix points skips.py leaves out.
     """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
-        for num_heads in sweep.inner_sweep_head_counts:
-            for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
-                    if (
-                        sweep.context_large_sequence_min
-                        and s >= sweep.context_large_sequence_min
-                        and b > sweep.context_large_sequence_max_batch_size
-                    ):
-                        continue
-                    for prefix_len in sweep.context_prefix_lengths:
-                        cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
-    return cases
-
-
-def get_generation_test_cases():
-    """Generation-phase test cases.
-
-    Returns list of [kv_cache_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type].
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation"):
-        for num_heads in sweep.inner_sweep_head_counts:
-            for b in sweep.generation_batch_sizes:
-                for s in sweep.generation_sequence_lengths:
-                    if b * s > sweep.generation_max_tokens:
-                        continue
-                    if (
-                        sweep.generation_large_sequence_min
-                        and s >= sweep.generation_large_sequence_min
-                        and b > sweep.generation_large_sequence_max_batch_size
-                    ):
-                        continue
-                    cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
-    return cases
-
-
-def _build_module_test_cases(mode: str):
-    """Build module-level test cases for one phase.
-
-    Output test case format is positional args for run_msa_module_worker:
-    [seq_len, batch_size, num_heads, kv_cache_dtype, compute_dtype, gemm_type,
-     model_path (, prefix_len)]
-    """
-    base_cases = get_context_test_cases() if mode == "context" else get_generation_test_cases()
-    model_specs = get_mla_module_model_specs(attention_type="msa", backend="trtllm")
-    cases = []
-    for model_spec in model_specs:
-        for base_case in base_cases:
-            s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
-            case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path]
-            if rest:
-                case.append(rest[0])
-            cases.append(case)
-    return cases
+    return "msa" if sm_version in (100, 103) else "triton"
 
 
 def get_msa_context_module_test_cases():
-    """collect.py entrypoint for MSA context module collection."""
-    return _build_module_test_cases(mode="context")
+    return plan_cases("msa_context_module", "trtllm", get_sm_version())
 
 
 def get_msa_generation_module_test_cases():
-    """collect.py entrypoint for MSA generation module collection."""
-    return _build_module_test_cases(mode="generation")
+    return plan_cases("msa_generation_module", "trtllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -247,11 +186,10 @@ def _set_quant_config(model_config, new_qc):
 def _apply_gemm_type_quant(model_config, gemm_type: str):
     """Apply GEMM quantization to model_config.quant_config.
 
-    M3 sparse attention keeps the KV cache in bf16 (see
-    _get_precision_combos), so kv_cache_quant_algo stays None on every
-    combo. The index_q/index_k projections are built with
-    ``quant_config=None`` regardless (modeling_minimaxm3.py:637-660
-    @1.3.0rc20), so GEMM quant here covers qkv_proj / o_proj only —
+    M3 sparse attention keeps the KV cache in bf16 (run_msa_module), so
+    kv_cache_quant_algo stays None on every combo. The index_q/index_k projections are built with
+    ``quant_config=None`` regardless (modeling_minimaxm3.py:637-660),
+    so GEMM quant here covers qkv_proj / o_proj only —
     matching what serving quantizes for these checkpoints.
     """
     if gemm_type == "bfloat16":
@@ -299,7 +237,7 @@ def create_msa_attention_layer(
     modeling code.
 
     Builds ``MiniMaxM3DecoderLayer`` — the same constructor serving uses for
-    layers 3..N-1 (modeling_minimaxm3.py:1191-1196@1.3.0rc20 passes
+    layers 3..N-1 (modeling_minimaxm3.py:1191-1196 passes
     ``is_sparse_attention_layer`` / ``disable_index_value`` per
     ``get_sparse_layer_ids`` / ``get_sparse_disable_index_value_layer_ids``) —
     and extracts ``layer.self_attn``.  The single benchmark layer is made
@@ -329,7 +267,7 @@ def create_msa_attention_layer(
         )
 
     # Serving constructs the M3 runtime with an explicit
-    # MiniMaxM3SparseAttentionConfig (llm_args.py:592-668@1.3.0rc20;
+    # MiniMaxM3SparseAttentionConfig (llm_args.py:592-668;
     # modeling_minimaxm3.py:1147 rejects sparse layers built without it).
     # ModelConfig.from_pretrained does NOT auto-build it for M3 (only the
     # DeepseekV32/GlmMoeDsa branch exists, model_config.py:617-647), so
@@ -363,7 +301,7 @@ def create_msa_attention_layer(
     # elsewhere. kernel_source records which one actually ran. Field-presence
     # probe keeps rc19/rc20 (no such field, pydantic strict) working.
     if "implementation" in getattr(MiniMaxM3SparseAttentionConfig, "model_fields", {}):
-        sparse_kwargs["implementation"] = "msa" if get_sm_version() in (100, 103) else "triton"
+        sparse_kwargs["implementation"] = _msa_implementation(get_sm_version())
     sparse_attention_config = MiniMaxM3SparseAttentionConfig(**sparse_kwargs)
 
     # NOTE: sparse_attention_config is intentionally NOT passed as a
@@ -373,7 +311,7 @@ def create_msa_attention_layer(
     # checkpoint's config.json carries a `sparse_attention_config` dict, so
     # the typed object would clobber the dict the modeling code reads
     # (MiniMaxM3Attention.__init__ sparse_cfg getattr,
-    # modeling_minimaxm3.py:623@1.3.0rc20). Set it on the ModelConfig after
+    # modeling_minimaxm3.py:623). Set it on the ModelConfig after
     # loading instead; the attention-backend dispatch reads it at layer
     # construction time, which happens later.
     model_config = ModelConfig.from_pretrained(
@@ -430,14 +368,14 @@ def create_msa_attention_layer(
     # would. KV heads keep the checkpoint's GQA ratio (num_kv_heads =
     # num_heads / (native_q / native_kv)) and floor at 1, matching
     # replication for tp > native_kv. index_q/index_k projections are
-    # replicated across TP ranks (modeling_minimaxm3.py:632-660@1.3.0rc20),
+    # replicated across TP ranks (modeling_minimaxm3.py:632-660),
     # so the sparse index dims are left untouched.
     #
     # FIXME(kernel-limit): the M3 sparse backend requires num_kv_heads to
     # divide sparse_num_index_heads (=4) — MiniMaxM3SparseConfig
-    # validation (sparse/minimax_m3/metadata.py:113 via backend.py:1052
-    # @1.3.0rc20). The sweep grid's num_heads=128 rows derive kv=8 and
-    # fail fast at construction (hardware-observed on SM90 2026-08-06,
+    # validation (sparse/minimax_m3/metadata.py:113 via backend.py:1052).
+    # The sweep grid's num_heads=128 rows derive kv=8 and
+    # fail fast at construction (hardware-observed on SM90,
     # smoke 3/3 failures all this class). Serving can never reach kv>4
     # (native 64q/4kv, TP>=1), so these rows stay classified failures per
     # layer_permissions.md (no generation-side filtering). Re-verify on
@@ -510,9 +448,14 @@ def _resolve_msa_metadata_cls():
     instead of sniffing the version string.
     """
     try:
-        from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
-            MiniMaxM3MsaSparseAttentionMetadata,
-        )
+        try:
+            from tensorrt_llm._torch.attention.backends.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
+        except ModuleNotFoundError:  # < rc29 layout
+            from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
     except ImportError:  # rc19/rc20 layout — Triton contract only
         return None
     return MiniMaxM3MsaSparseAttentionMetadata
@@ -522,11 +465,11 @@ def _resolve_attention_backend_cls(model_config: ModelConfig):
     """Resolve the sparse attention backend class exactly like serving.
 
     1.3.0rc23 lowers the llm_args config into SparseParams first and passes
-    ``sparse_params`` (model_engine.py:592-596@1.3.0rc23); the factory then
+    ``sparse_params`` (model_engine.py:592-596); the factory then
     routes ``implementation == "msa"`` to MiniMaxM3MsaSparseAttention after
-    ensure_msa_available() (sparse/utils.py:45-60@1.3.0rc23) and everything
+    ensure_msa_available (sparse/utils.py:45-60) and everything
     else to the Triton reference. rc19/rc20 pass the llm_args config itself
-    (model_engine.py:497-499@1.3.0rc20). Probe get_attention_backend's real
+    (model_engine.py:497-499). Probe get_attention_backend's real
     signature so the framework's own dispatch stays the selector on both
     lines.
     """
@@ -541,6 +484,28 @@ def _resolve_attention_backend_cls(model_config: ModelConfig):
     )
 
 
+# One MiniMax-M3 sparse attention layer per (model, heads, gemm type) per worker —
+# same pattern and rationale as collect_mla_module._cached_attention_layer /
+# collect_dsv4_attn._cached_dsv4_attention_module: the layer build does not depend
+# on the point; the per-case KV cache manager, metadata, dry run and timing are
+# untouched (b300 base run: msa_context_module 1.8 GPU-s per one-row case).
+_LAYER_CACHE: dict = {}
+
+
+def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str, device: str):
+    key = (model_path, int(num_heads), gemm_type, device)
+    hit = _LAYER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    if _LAYER_CACHE:
+        _LAYER_CACHE.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
+    entry = create_msa_attention_layer(model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device)
+    _LAYER_CACHE[key] = entry
+    return entry
+
+
 def create_kv_cache_and_metadata(
     model_config: ModelConfig,
     batch_size: int,
@@ -553,16 +518,16 @@ def create_kv_cache_and_metadata(
     utilities, mirroring serving's construction.
 
     Cache manager: get_kv_cache_manager_cls routes sparse-attention models to
-    MiniMaxM3KVCacheManagerV2 (pyexecutor/_util.py:75-94@1.3.0rc20;
-    :90-166@1.3.0rc23 — at rc23 the manager is shared by the Triton and MSA
+    MiniMaxM3KVCacheManagerV2 (pyexecutor/_util.py:75-94;
+    :90-166 — at rc23 the manager is shared by the Triton and MSA
     backends, sparse/minimax_m3/__init__.py); kwargs mirror the generic
-    non-MLA branch (_util.py:1859-1888@1.3.0rc20; :2079-2105@1.3.0rc23):
+    non-MLA branch (_util.py:1859-1888; :2079-2105):
     CacheType.SELF, per-layer num_kv_heads list, tokens_per_block 32,
     sparse_attention_config + pretrained_config forwarded. The single
     benchmark layer is declared sparse explicitly (sparse_layer_ids=[0]) —
     the manager's num_layers-based default assumes the full checkpoint's
     "first 3 dense" convention (sparse/minimax_m3/cache_manager.py:162-166
-    @1.3.0rc20; :170-176@1.3.0rc23) which does not apply to a one-layer
+    ; :170-176) which does not apply to a one-layer
     build.
 
     Metadata: the resolved backend's Metadata class builds the sparse runtime
@@ -570,31 +535,30 @@ def create_kv_cache_and_metadata(
     seq_lens carries the current chunk's new-token counts, the cached prefix
     travels via kv_cache_params.num_cached_tokens_per_seq, and kv_lens =
     cached + seq_lens is derived internally — the same current-chunk-only
-    prompt_lens semantics as serving (model_engine.py:2986-3017@1.3.0rc20).
+    prompt_lens semantics as serving (model_engine.py:2986-3017).
     Two framework contracts exist, discriminated by the resolved Metadata
     class (never the version string):
 
     * Triton (rc19/rc20; rc23 implementation="triton"): prepare() attaches
       the prebuilt runtime metadata + out_cache_loc as the
-      ``attn_metadata.minimax_m3`` dict (metadata.py:899-902@1.3.0rc20;
+      ``attn_metadata.minimax_m3`` dict (metadata.py:899-902;
       unchanged at rc23: triton_metadata.py:860-864, kv_lens derivation
       :842-845 both versions), which the model layer's
-      _sparse_attention_core reads (modeling_minimaxm3.py:1265-1275
-      @1.3.0rc23).
+      _sparse_attention_core reads (modeling_minimaxm3.py:1265-1275).
     * MSA / fmha_sm100 (rc23 implementation="msa"): the Metadata subclasses
       TrtllmAttentionMetadata; __post_init__ reads sparse_metadata_params
       and allocates flat CUDA-graph-stable buffers (msa_backend.py:245-249,
-      296-348@1.3.0rc23), prepare() fills the cache-write buffers
+      296-348), prepare fills the cache-write buffers
       (_build_msa_fields, :549-609, setting _msa_fields_ready) and, for a
       pure generation batch, the graph-safe fmha_sm100 decode plans
       (_build_decode_plans, :428-547; prefill/mixed leave the plans None
       and run eagerly). The model layer consumes it via run_indexer +
       the inherited TrtllmAttention forward (modeling_minimaxm3.py:
-      1130-1141@1.3.0rc23).
+      1130-1141).
 
     Serving passes max_num_sequences / num_heads_per_kv /
     sparse_metadata_params when constructing the Metadata on both lines
-    (model_engine.py:2474-2487@1.3.0rc23; :1810-1830@1.3.0rc20, where the M3
+    (model_engine.py:2474-2487; :1810-1830, where the M3
     config's to_sparse_metadata_params is the base-class None). Those kwargs
     are mirrored here, field-presence-probed to keep the rc19 claim honest.
 
@@ -610,7 +574,7 @@ def create_kv_cache_and_metadata(
     num_kv_heads = int(config.num_key_value_heads)
     # Serving forces the KV page size per implementation: 128 for "msa"
     # (the fmha_sm100 SparseK2qCsrBuilderSm100 asserts blk_kv == 128), 32
-    # for the Triton reference (py_executor_creator.py:427@1.3.0rc23:
+    # for the Triton reference (py_executor_creator.py:427:
     # `tokens_per_block = 128 if m3_sparse_config.implementation == "msa"
     # else 32`; rc19/rc20 have no implementation field and use 32).
     tokens_per_block = 128 if getattr(model_config.sparse_attention_config, "implementation", "triton") == "msa" else 32
@@ -643,9 +607,9 @@ def create_kv_cache_and_metadata(
     # NOTE(pool-size-dependent latency, 1.3.0rc23): oversizing is NOT free on
     # the MSA path. select_blocks does a permute().contiguous() copy of the
     # ENTIRE index-K pool every forward (msa_utils.cache_view_to_msa_paged
-    # @1.3.0rc23, called from msa_indexer.select_blocks:147), so the measured
+    # called from msa_indexer.select_blocks:147), so the measured
     # latency carries a term linear in the pool pages this budget allocates
-    # (~35 ns/page measured on B200 2026-08-08; 92% of the gen b=256 kv=65536
+    # (~35 ns/page measured on B200; 92% of the gen b=256 kv=65536
     # point). Serving pays the same copy over its own (memory-budget-sized)
     # pool, so this is framework truth in kind but collector-sized in
     # magnitude — keep this factor stable across campaigns for comparability.
@@ -695,16 +659,16 @@ def create_kv_cache_and_metadata(
     msa_metadata_cls = _resolve_msa_metadata_cls()
     is_msa = msa_metadata_cls is not None and issubclass(metadata_cls, msa_metadata_cls)
 
-    # Serving-parity Metadata kwargs (model_engine.py:2474-2487@1.3.0rc23;
-    # :1810-1830@1.3.0rc20), field-presence-probed for rc19:
+    # Serving-parity Metadata kwargs (model_engine.py:2474-2487;
+    # 1810-1830), field-presence-probed for rc19:
     #   max_num_sequences = batch_size * max_beam_width, beam width 1 here;
-    #   num_heads_per_kv  = GQA ratio (model_engine.py:2428-2440@1.3.0rc23) —
+    #   num_heads_per_kv  = GQA ratio (model_engine.py:2428-2440) —
     #     computed from the (TP-shard-emulated) pretrained_config like serving
     #     computes it from its config;
     #   sparse_metadata_params carries the MSA sparse geometry the rc23 MSA
     #     metadata's __post_init__ reads (msa_backend.py:245-249); the rc20 M3
     #     config inherits the base to_sparse_metadata_params -> None
-    #     (llm_args.py:570-572@1.3.0rc20), matching the field default.
+    #     (llm_args.py:570-572), matching the field default.
     init_field_names = {f.name for f in dataclasses.fields(metadata_cls) if f.init}
     serving_metadata_kwargs = {}
     if "max_num_sequences" in init_field_names:
@@ -732,7 +696,7 @@ def create_kv_cache_and_metadata(
         cross=None,
         request_ids=request_ids,
         # Current-chunk token count only — the cached prefix travels via
-        # num_cached_tokens_per_seq (model_engine.py:2986-3017@1.3.0rc20,
+        # num_cached_tokens_per_seq (model_engine.py:2986-3017,
         # same as collect_mla_module).
         prompt_lens=[seq_len_q if is_context else kv_cache_len] * batch_size,
         runtime_features=AttentionRuntimeFeatures(
@@ -746,7 +710,7 @@ def create_kv_cache_and_metadata(
     attn_metadata.prepare()
     if is_msa:
         # MSA contract: prepare() must have populated the flat cache-write
-        # buffers (msa_backend.py:549-609@1.3.0rc23 sets _msa_fields_ready on
+        # buffers (msa_backend.py:549-609 sets _msa_fields_ready on
         # success) and, for a pure generation batch, the graph-safe decode
         # plans (:442-460 — absent plans mean sparse_metadata_params never
         # reached the metadata and decode would silently take the eager
@@ -757,7 +721,15 @@ def create_kv_cache_and_metadata(
                 "the MSA cache-write buffers (msa_backend.py:549-609@1.3.0rc23); "
                 "the KV cache manager is not the M3 sparse manager"
             )
-        if not is_context and attn_metadata.msa_decode_proxy_plan is None:
+        # rc23 exposed the graph-safe decode plan as ``msa_decode_proxy_plan``; rc29's
+        # MiniMaxM3MsaSparseAttentionMetadata no longer has that attribute (AttributeError
+        # on every generation case: 2,760/2,760, b200 job 469988228). Check the plan only
+        # where the contract still names it; on later series rely on _msa_fields_ready
+        # above. FIXME(re-verify): confirm rc29's decode-plan field name and restore an
+        # explicit check once known.
+        unset = object()
+        proxy_plan = getattr(attn_metadata, "msa_decode_proxy_plan", unset)
+        if not is_context and proxy_plan is None:
             raise RuntimeError(
                 "MSA decode plans were not built for a pure generation batch "
                 "(msa_backend.py:428-460@1.3.0rc23); sparse_metadata_params "
@@ -767,7 +739,7 @@ def create_kv_cache_and_metadata(
     else:
         # Triton contract (rc19/rc20; rc23 implementation="triton"):
         # prepare() attaches the prebuilt runtime metadata dict
-        # (metadata.py:899-902@1.3.0rc20; triton_metadata.py:860-864@1.3.0rc23).
+        # (metadata.py:899-902; triton_metadata.py:860-864).
         if getattr(attn_metadata, "minimax_m3", None) is None:
             raise RuntimeError(
                 "MiniMaxM3AttentionMetadata.prepare() did not build the minimax_m3 "
@@ -798,15 +770,20 @@ def run_msa_module(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    dry_run: bool = True,
 ):
-    """Run a single MiniMax-M3 MSA module-level benchmark point."""
+    """Run a single MiniMax-M3 MSA module-level benchmark point.
+
+    ``dry_run`` False skips the checking forward before timing: a series has
+    already run it for an earlier point of this seq_len (module_series).
+    """
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
 
     if kv_cache_dtype != "bfloat16" or compute_dtype != "bfloat16":
         raise ValueError(
             f"M3 sparse attention at {tensorrt_llm.__version__} is bf16-only "
-            f"(see _get_precision_combos); got compute={compute_dtype}, kv={kv_cache_dtype}"
+            f"(skips.py leaves FP8-KV cases out); got compute={compute_dtype}, kv={kv_cache_dtype}"
         )
 
     is_context = "context" in perf_filename
@@ -818,11 +795,8 @@ def run_msa_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
-    attn_module, model_config, original_architecture = create_msa_attention_layer(
-        model_path=model_path,
-        num_heads=num_heads,
-        gemm_type=gemm_type,
-        device=device,
+    attn_module, model_config, original_architecture = _cached_msa_attention_layer(
+        model_path, num_heads, gemm_type, device
     )
 
     kv_cache_manager, attn_metadata, kernel_source = create_kv_cache_and_metadata(
@@ -837,7 +811,7 @@ def run_msa_module(
     # Cross-check: the metadata contract validated above must match the
     # backend instance the layer actually dispatches to — the model layer
     # branches on isinstance(self.attn, MiniMaxM3MsaSparseAttention)
-    # (modeling_minimaxm3.py:1130-1147@1.3.0rc23). A mismatch would benchmark
+    # (modeling_minimaxm3.py:1130-1147). A mismatch would benchmark
     # one path against the other's metadata and mislabel kernel_source.
     layer_backend_name = type(getattr(attn_module, "attn", None)).__name__
     layer_is_msa = layer_backend_name == "MiniMaxM3MsaSparseAttention"
@@ -877,15 +851,16 @@ def run_msa_module(
 
     _prev_extra_attrs = getattr(_trtllm_utils._model_extra_attrs, "attrs", None)
     try:
-        with model_extra_attrs(model_config.extra_attrs):
-            get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-            try:
-                with torch.inference_mode():
-                    attn_module.forward(position_ids, hidden_states, attn_metadata)
-            except Exception:
-                print("  Dry run failed:")
-                traceback.print_exc()
-                raise
+        if dry_run:
+            with model_extra_attrs(model_config.extra_attrs):
+                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+                try:
+                    with torch.inference_mode():
+                        attn_module.forward(position_ids, hidden_states, attn_metadata)
+                except Exception:
+                    print("  Dry run failed:")
+                    traceback.print_exc()
+                    raise
 
         _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
@@ -895,9 +870,9 @@ def run_msa_module(
 
         # Measurement mode mirrors serving's execution mode per backend/phase.
         # MSA prefill runs eagerly in serving — decode plans are cleared for
-        # prefill/mixed batches (msa_backend.py:434-436@1.3.0rc23) and the
+        # prefill/mixed batches (msa_backend.py:434-436) and the
         # indexer then plans fmha_sm100 inline with host-side work
-        # (msa_indexer.py:149-191@1.3.0rc23), which is CUDA-graph-capture
+        # (msa_indexer.py:149-191), which is CUDA-graph-capture
         # unsafe — so MSA context is measured eagerly. MSA decode replays the
         # prebuilt graph-stable plans (built for capture) and keeps graph-mode
         # measurement, as does the Triton path for both phases (unchanged from
@@ -908,6 +883,10 @@ def run_msa_module(
             device=torch_device,
             kernel_func=kernel_func,
             num_warmups=warming_up,
+            # Graph-timed cases: a dry run of this seq_len already executed this
+            # forward, three eager passes suffice before capture. Eager-timed MSA
+            # prefill keeps the full warmup since it IS the measurement's warmup.
+            num_eager_warmups=3 if use_cuda_graph else warming_up,
             num_runs=test_ite,
             repeat_n=1,
             allow_graph_fail=False,
@@ -1001,11 +980,85 @@ def run_msa_module_worker(
     )
 
 
+def run_msa_module_series(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    perf_filename: str,
+    *,
+    model_path: str,
+    device: str = "cuda:0",
+    warming_up: int = 10,
+    test_ite: int = 6,
+) -> list[float]:
+    """Measure the (seq_len, prefix_len) points of one MSA module key in one task.
+
+    Every point runs through run_msa_module, so its rows are those of a one-point
+    case. The KV cache manager stays per point: the MSA indexer copies the whole
+    index-K pool on every forward (create_kv_cache_and_metadata), so a pool sized
+    for the largest point would add latency to the smaller ones.
+    """
+
+    def run_point(seq_len: int, prefix_len: int, dry_run: bool) -> float:
+        return run_msa_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            perf_filename=perf_filename,
+            prefix_len=prefix_len,
+            model_path=model_path,
+            device=device,
+            warming_up=warming_up,
+            test_ite=test_ite,
+            dry_run=dry_run,
+        )
+
+    label = f"MSA module series b={batch_size} heads={num_heads} gemm={gemm_type} kv={kv_cache_dtype}"
+    return run_points(points, run_point, label=label)
+
+
+def run_msa_module_series_worker(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    *,
+    perf_filename: str,
+    device: str = "cuda:0",
+):
+    """Worker entry for one series task: run_msa_module_worker's positional fields, with
+    the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
+    return run_msa_module_series(
+        points,
+        batch_size,
+        num_heads,
+        kv_cache_dtype,
+        compute_dtype,
+        gemm_type,
+        perf_filename,
+        model_path=model_path,
+        device=device,
+    )
+
+
+# gc.collect() after every case cost 0.17 s of a ~1 s module case; collect periodically instead.
+_CASE_GC = PeriodicGarbageCollector()
+
+
 def _cleanup(kv_cache_manager):
     if kv_cache_manager is not None:
         kv_cache_manager.shutdown()
     torch.cuda.empty_cache()
-    gc.collect()
+    _CASE_GC.maybe_collect()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1033,71 +1086,58 @@ def main():
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    model_specs_to_run = (
-        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
-    )
-
-    for model_spec in model_specs_to_run:
-        model_path = model_spec.model_path
-        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
-
-        perf_filename = _perf_file_for(args.mode)
-
-        if args.quick:
-            run_msa_module(
-                seq_len=args.seq_len or 2048,
-                batch_size=args.batch_size or 4,
-                num_heads=args.num_heads or 64,
-                kv_cache_dtype="bfloat16",
-                compute_dtype="bfloat16",
-                gemm_type=args.gemm_type or "bfloat16",
-                prefix_len=args.prefix_len,
-                perf_filename=perf_filename,
-                model_path=model_path,
-                device=args.device,
-            )
-            continue
-
-        test_cases = get_context_test_cases() if args.mode == "context" else get_generation_test_cases()
-        if args.num_heads is not None:
-            test_cases = [tc for tc in test_cases if tc[2] == args.num_heads]
-        if args.gemm_type is not None:
-            test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
-
-        print(f"Running {len(test_cases)} {args.mode} MSA module test cases...")
+    perf_filename = _perf_file_for(args.mode)
+    if not args.quick:
+        # The full sweep is the op plan's rows; --model targets that checkpoint, as collect.py --model-path does.
+        if args.model:
+            os.environ["COLLECTOR_MODEL_PATH"] = args.model
+        rows = plan(f"msa_{args.mode}_module", "trtllm", get_sm_version()).rows
+        rows = [
+            row
+            for row in rows
+            if (args.num_heads is None or row[2] == args.num_heads)
+            and (args.gemm_type is None or row[5] == args.gemm_type)
+            and (args.batch_size is None or row[1] == args.batch_size)
+        ]
+        print(f"Running {len(rows)} {args.mode} MSA module series...")
         num_failed = 0
-        for i, tc in enumerate(test_cases):
-            s, b, h, kv_dtype, compute, gemm, *rest = tc
-            print(f"[{i + 1}/{len(test_cases)}]", end="")
+        for points, b, h, kv_dtype, compute, gemm, model_path in rows:
+            print(f"\n[MSA] {model_path} b={b} heads={h} gemm={gemm}: {len(points)}p")
             try:
-                run_msa_module(
-                    seq_len=s,
-                    batch_size=b,
-                    num_heads=h,
-                    kv_cache_dtype=kv_dtype,
-                    compute_dtype=compute,
-                    gemm_type=gemm,
-                    prefix_len=rest[0] if rest else 0,
-                    perf_filename=perf_filename,
-                    model_path=model_path,
-                    device=args.device,
+                run_msa_module_series(
+                    points, b, h, kv_dtype, compute, gemm, perf_filename, model_path=model_path, device=args.device
                 )
-            except torch.cuda.OutOfMemoryError:
-                print(f"  OOM: b={b}, s={s}, heads={h}, gemm={gemm}")
-                num_failed += 1
-                torch.cuda.empty_cache()
-                gc.collect()
             except Exception as e:
-                print(f"  FAILED: b={b}, s={s}, heads={h}, gemm={gemm}: {e}")
+                print(f"  FAILED: b={b}, heads={h}, gemm={gemm}: {e}")
                 traceback.print_exc()
                 num_failed += 1
                 torch.cuda.empty_cache()
                 gc.collect()
         if num_failed:
             # Exit non-zero so an operator (and CI) can see failures without
-            # scraping the log; per-case detail is printed above.
-            print(f"{num_failed}/{len(test_cases)} cases failed")
+            # scraping the log; per-point detail is printed above.
+            print(f"{num_failed}/{len(rows)} series failed")
             sys.exit(1)
+        return
+
+    model_specs_to_run = (
+        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
+    )
+    for model_spec in model_specs_to_run:
+        model_path = model_spec.model_path
+        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
+        run_msa_module(
+            seq_len=args.seq_len or 2048,
+            batch_size=args.batch_size or 4,
+            num_heads=args.num_heads or 64,
+            kv_cache_dtype="bfloat16",
+            compute_dtype="bfloat16",
+            gemm_type=args.gemm_type or "bfloat16",
+            prefix_len=args.prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":

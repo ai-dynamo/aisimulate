@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use rstest::rstest;
 use uuid::Uuid;
 
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, MockEngineArgs, OutputSignal, PreemptionMode,
 };
@@ -44,6 +50,221 @@ fn prefix_cache_args() -> MockEngineArgs {
         .speedup_ratio(0.0)
         .build()
         .unwrap()
+}
+
+#[test]
+fn g1_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
+    let mut core = VllmCore::new(prefix_cache_args());
+    let request = |id, output| DirectRequest {
+        uuid: Some(Uuid::from_u128(id)),
+        tokens: (0..8).collect(),
+        max_output_tokens: output,
+        ..Default::default()
+    };
+    core.receive(request(82_001, 0));
+    let cold = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(
+        cold.g1_prefix_cache_lookup,
+        Some(crate::engine::PrefixCacheLookupCounts {
+            query_count: 1,
+            queried_tokens: 8,
+            matched_tokens: 0,
+        })
+    );
+    core.receive(request(82_002, 2));
+    let hit = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(
+        hit.g1_prefix_cache_lookup,
+        Some(crate::engine::PrefixCacheLookupCounts {
+            query_count: 1,
+            queried_tokens: 8,
+            matched_tokens: 8,
+        })
+    );
+    assert_eq!(hit.admissions[0].reused_input_tokens, 4);
+    // The next decode uses existing request state, not another prefix lookup.
+    let decode = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(decode.g1_prefix_cache_lookup, Some(Default::default()));
+}
+
+#[test]
+fn g1_prefix_lookup_counts_each_effect_free_admission_retry() {
+    let mut args = prefix_cache_args();
+    args.enable_chunked_prefill = false;
+    args.max_num_batched_tokens = Some(4);
+    let mut core = VllmCore::new(args);
+    core.receive(DirectRequest {
+        tokens: (0..8).collect(),
+        max_output_tokens: 1,
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        let retry = core.try_execute_hidden_pass(0.0).unwrap();
+        assert!(retry.committed_requests.is_empty());
+        assert!(retry.admissions.is_empty());
+        assert!(retry.output_signals.is_empty());
+        assert_eq!(retry.end_ms, 0.0);
+        assert_eq!(
+            retry.g1_prefix_cache_lookup,
+            Some(crate::engine::PrefixCacheLookupCounts {
+                query_count: 1,
+                queried_tokens: 8,
+                matched_tokens: 0,
+            })
+        );
+    }
+}
+
+#[rstest]
+#[case::disabled(EngineType::Vllm, false)]
+#[case::trtllm(EngineType::Trtllm, true)]
+fn g1_prefix_lookup_unavailable_outside_vllm_prefix_cache(
+    #[case] engine_type: EngineType,
+    #[case] caching: bool,
+) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.enable_prefix_caching = caching;
+    let mut core = VllmCore::new(args);
+    core.receive(DirectRequest {
+        tokens: (0..8).collect(),
+        max_output_tokens: 1,
+        ..Default::default()
+    });
+    assert_eq!(
+        core.try_execute_hidden_pass(0.0)
+            .unwrap()
+            .g1_prefix_cache_lookup,
+        None
+    );
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_committed_chunk_but_keeps_queued_demand(#[case] engine_type: EngineType) {
+    let args = MockEngineArgs::builder()
+        .engine_type(engine_type)
+        .block_size(4)
+        .num_gpu_blocks(16)
+        .max_num_batched_tokens(Some(4))
+        .max_num_seqs(Some(1))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(true)
+        .speedup_ratio(0.0)
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let first = Uuid::from_u128(81_001);
+    let queued = Uuid::from_u128(81_002);
+    let first_tokens: Vec<_> = (0..8).collect();
+    let queued_tokens: Vec<_> = (100..108).collect();
+    let first_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&first_tokens, 4));
+    let queued_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&queued_tokens, 4));
+    let oracle = BeladyOracle::new(vec![
+        (first, first_hashes.clone()),
+        (queued, queued_hashes.clone()),
+    ])
+    .unwrap();
+    core.set_belady_oracle(oracle.clone());
+    for (uuid, tokens) in [(first, first_tokens), (queued, queued_tokens)] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 1_000.0);
+    assert_eq!(core.state.requests[&first].num_computed_tokens, 4);
+    for &hash in &first_hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
+    assert_eq!(oracle.next_use(queued_hashes[0]), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: queued })
+        .unwrap();
+    assert_eq!(oracle.next_use(queued_hashes[0]), usize::MAX);
+
+    if engine_type == EngineType::Vllm {
+        assert!(core.policy_preempt(1_000.0).is_some());
+        assert_eq!(core.state.requests[&first].num_preemptions, 1);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+        core.execute_pass(&mut collector, 1_000.0);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_full_hit_zero_output_requests(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    let mut core = VllmCore::new(args);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(81_003);
+    let second = Uuid::from_u128(81_004);
+    let oracle =
+        BeladyOracle::new(vec![(first, hashes.clone()), (second, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    for (uuid, expected_next) in [(first, 1), (second, usize::MAX)] {
+        core.receive(DirectRequest {
+            tokens: tokens.clone(),
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert!(
+            pass.output_signals
+                .iter()
+                .any(|signal| signal.uuid == uuid && signal.completed)
+        );
+        if uuid == second {
+            assert_eq!(pass.admissions[0].reused_input_tokens, tokens.len());
+        }
+        for &hash in &hashes {
+            assert_eq!(oracle.next_use(hash), expected_next);
+        }
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_terminal_rejection_without_computing_prompt(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.num_gpu_blocks = 1;
+    let mut core = VllmCore::new(args);
+    let uuid = Uuid::from_u128(81_005);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    core.receive(DirectRequest {
+        tokens,
+        max_output_tokens: 0,
+        uuid: Some(uuid),
+        ..Default::default()
+    });
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == uuid && signal.rejected)
+    );
+    assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
 }
 
 #[rstest]
@@ -319,9 +540,7 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
 
     let pass = core.execute_pass(&mut collector, 0.0);
 
-    assert!(core.state.requests.is_empty());
-    assert_eq!(core.kv_manager.num_active_blocks(), 0);
-    assert_eq!(pass.completed_requests, 2);
+    assert_eq!(pass.completed_requests, 1);
     assert_eq!(
         pass.output_signals
             .iter()
@@ -334,10 +553,831 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
             .iter()
             .filter(|signal| signal.uuid == normal_uuid && signal.token_id.is_some())
             .count(),
-        3
+        1
     );
-    assert_eq!(pass.accept_length_output_tokens, 3);
-    assert_eq!(pass.accept_length_decode_forwards, 1);
+    let second = core.execute_pass(&mut collector, pass.end_ms);
+    assert_eq!(second.output_signals.len(), 2);
+    assert!(core.state.requests.is_empty());
+    assert_eq!(core.kv_manager.num_active_blocks(), 0);
+}
+
+#[rstest]
+#[case::prefill_survives_retraction(3, true)]
+#[case::decode_retraction_is_not_committed(4, false)]
+fn speculative_retraction_preserves_only_executed_work(
+    #[case] blocks: usize,
+    #[case] prefill_pass: bool,
+) {
+    let args = MockEngineArgs::builder()
+        .block_size(4)
+        .num_gpu_blocks(blocks)
+        .max_num_batched_tokens(Some(8))
+        .max_num_seqs(Some(2))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(false)
+        .preemption_mode(PreemptionMode::Lifo)
+        .speedup_ratio(0.0)
+        .aic_nextn(Some(2))
+        .aic_nextn_accept_rates(Some("1,1".to_string()))
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let survivor = Uuid::from_u128(91_001);
+    let retracted = Uuid::from_u128(91_002);
+    for (uuid, tokens) in [(survivor, vec![1; 4]), (retracted, vec![2; 4])] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 8,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let first = core.execute_pass(&mut collector, 0.0);
+    let pass = if prefill_pass {
+        first
+    } else {
+        assert_eq!(first.output_signals.len(), 2);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        core.execute_pass(&mut collector, second.end_ms)
+    };
+    assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == survivor)
+    );
+    assert!(
+        pass.output_signals
+            .iter()
+            .all(|signal| signal.uuid != retracted)
+    );
+    assert!(pass.committed_requests.contains(&survivor));
+    assert_eq!(pass.committed_requests.contains(&retracted), prefill_pass);
+}
+
+mod speculative_scheduling {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records each decode batch and its active KV tokens.
+    #[derive(Default)]
+    struct TimingProbe(Mutex<Vec<(usize, usize)>>);
+
+    impl crate::engine::TimingModel for TimingProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            active_kv_tokens: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<f64> {
+            self.0.lock().unwrap().push((batch, active_kv_tokens));
+            Ok(11.0)
+        }
+    }
+
+    fn attach_probe(core: &mut VllmCore) -> Arc<TimingProbe> {
+        let timing = Arc::new(TimingProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        timing
+    }
+
+    fn core(engine_type: EngineType) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(2)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(Some(3))
+                .aic_nextn_accept_rates(Some("1,1,1".into()))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) -> Uuid {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        })
+    }
+
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, 1, 7.0)]
+    #[case::trtllm_unchanged(EngineType::Trtllm, 4, 18.0)]
+    fn first_prefill_has_no_drafts_and_no_extra_vllm_forward(
+        #[case] engine: EngineType,
+        #[case] output: usize,
+        #[case] expected_ms: f64,
+    ) {
+        let mut core = core(engine);
+        let timing = attach_probe(&mut core);
+        submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), output);
+        assert_eq!(first.end_ms, expected_ms);
+        let calls = usize::from(engine == EngineType::Trtllm);
+        assert_eq!(timing.0.lock().unwrap().len(), calls);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(second.output_signals.len(), 4);
+        assert_eq!(second.end_ms - first.end_ms, 11.0);
+    }
+
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(4)]
+    #[case(5)]
+    #[case(8)]
+    fn verify_tokens_share_budget_and_partial_rounds_make_progress(#[case] budget: usize) {
+        let mut core = core(EngineType::Vllm);
+        submit(&mut core, 1, 4, 9);
+        submit(&mut core, 2, 4, 9);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 2);
+        core.args.max_num_batched_tokens = Some(budget);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        // Two K3 decoders each need 4 verification positions. At all-accept,
+        // output must equal the scheduled width, never the configured burst.
+        assert_eq!(second.output_signals.len(), budget);
+        let mut emitted = first.output_signals.len() + second.output_signals.len();
+        let mut now = second.end_ms;
+        for _ in 0..32 {
+            if core.is_empty() {
+                break;
+            }
+            let pass = core.execute_pass(&mut collector, now);
+            assert!(!pass.output_signals.is_empty());
+            assert!(pass.output_signals.len() <= budget);
+            assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+            emitted += pass.output_signals.len();
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert_eq!(emitted, 18);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn context_limit_narrows_verification_before_spending_shared_budget() {
+        let mut core = core(EngineType::Vllm);
+        core.args.max_model_len = Some(8);
+        let at_limit = submit(&mut core, 1, 6, 12);
+        let follower = submit(&mut core, 2, 2, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 2);
+        core.args.max_num_batched_tokens = Some(4);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        // The first request has room for only its base token. The other three
+        // verification positions must remain available to the follower.
+        assert_eq!(second.output_signals.len(), 4);
+        assert_eq!(
+            second
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == at_limit)
+                .count(),
+            1
+        );
+        assert_eq!(
+            second
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == follower)
+                .count(),
+            3
+        );
+        assert!(
+            second
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == at_limit && signal.completed)
+        );
+    }
+
+    #[test]
+    fn mixed_prefill_uses_only_budget_left_after_sd_verification() {
+        let mut core = core(EngineType::Vllm);
+        let decode = submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        core.args.max_num_batched_tokens = Some(8);
+        let prefill = submit(&mut core, 2, 8, 8);
+        let pass = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(pass.output_signals.len(), 4);
+        assert!(
+            pass.output_signals
+                .iter()
+                .all(|signal| signal.uuid == decode)
+        );
+        assert_eq!(core.state.requests[&prefill].num_computed_tokens, 4);
+        let fpm = pass.fpm.unwrap();
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(fpm.num_decode_requests, 1);
+    }
+
+    #[test]
+    fn preemption_discards_drafts_until_recompute_has_produced_a_base_token() {
+        let mut core = core(EngineType::Vllm);
+        let request = submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 1);
+        assert!(core.policy_preempt(first.end_ms).is_some());
+        assert_eq!(core.state.requests[&request].num_computed_tokens, 0);
+        let resumed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(resumed.output_signals.len(), 1);
+        let steady = core.execute_pass(&mut collector, resumed.end_ms);
+        assert_eq!(steady.output_signals.len(), 4);
+    }
+
+    /// Pins sampler draw order and count at fractional acceptance, with widths
+    /// narrowed by the token budget and by a context limit, under KV preemption.
+    #[test]
+    fn fractional_acceptance_follows_a_fixed_burst_sequence() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(12)
+                .max_num_batched_tokens(Some(12))
+                .max_num_seqs(Some(6))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(3))
+                .aic_nextn_accept_rates(Some("0.7,0.5,0.3".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.max_model_len = Some(24);
+        for (id, prompt, output) in [
+            (1, 4, 9),
+            (2, 6, 14),
+            (3, 3, 20),
+            (4, 8, 7),
+            (5, 5, 12),
+            (6, 20, 12),
+        ] {
+            submit(&mut core, id, prompt, output);
+        }
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let (mut now, mut accepted, mut forwards) = (0.0, 0, 0);
+        let mut passes = Vec::new();
+        for _ in 0..200 {
+            if core.is_empty() {
+                break;
+            }
+            let pass = core.execute_pass(&mut collector, now);
+            accepted += pass.decode_acceptance.accepted_tokens;
+            forwards += pass.decode_acceptance.forwards;
+            // One entry per request burst: id, tokens emitted, then `!` if it completed.
+            let mut bursts: Vec<(u128, usize, bool)> = Vec::new();
+            for signal in &pass.output_signals {
+                assert!(!signal.rejected);
+                let id = signal.uuid.as_u128();
+                match bursts.last_mut() {
+                    Some(last) if last.0 == id => last.1 += usize::from(signal.token_id.is_some()),
+                    _ => bursts.push((id, usize::from(signal.token_id.is_some()), false)),
+                }
+                bursts.last_mut().unwrap().2 |= signal.completed;
+            }
+            let bursts = bursts
+                .iter()
+                .map(|(id, n, done)| format!("{id}:{n}{}", if *done { "!" } else { "" }))
+                .collect::<Vec<_>>();
+            passes.push(bursts.join(","));
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert!(
+            core.state.preemptions_total > 0,
+            "the workload must preempt"
+        );
+        assert!(
+            forwards < accepted && accepted < 4 * forwards,
+            "{accepted}/{forwards}"
+        );
+        assert_eq!(
+            passes.join(" "),
+            "1:1,2:1 1:1,2:2,3:1 1:1,2:1,3:3 1:2,2:2,3:3 1:4!,2:4,3:1 2:2,3:1 2:2!,3:2,4:1 \
+             3:2,4:1 3:2,4:1,5:1 3:1,4:2 3:1,4:1 3:3!,4:1!,5:1 5:2 5:2 5:3,6:1 5:3!,6:2 6:1!"
+        );
+    }
+
+    /// A request preempted while reserving lookahead leaves the pass; the
+    /// emitted forward prices only the survivor.
+    #[test]
+    fn reservation_preemption_prices_only_the_survivor() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(4)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(2))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .preemption_mode(PreemptionMode::Lifo)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(2))
+                .aic_nextn_accept_rates(Some("1,1".into()))
+                .build()
+                .unwrap(),
+        );
+        let timing = attach_probe(&mut core);
+        let survivor = submit(&mut core, 1, 4, 8);
+        let retracted = submit(&mut core, 2, 4, 8);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        timing.0.lock().unwrap().clear();
+        let pass = core.execute_pass(&mut collector, second.end_ms);
+        assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+        assert!(
+            pass.output_signals
+                .iter()
+                .all(|signal| signal.uuid == survivor)
+        );
+        let survivor_len =
+            core.state.requests[&survivor].sequence.len() - pass.output_signals.len();
+        assert_eq!(*timing.0.lock().unwrap(), vec![(1, survivor_len)]);
+    }
+
+    /// A request whose lookahead can never fit is rejected; the emitted
+    /// forward prices only the requests that remain.
+    #[test]
+    fn impossible_lookahead_prices_only_the_survivor() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .num_gpu_blocks(7)
+                .block_size(2)
+                .max_num_batched_tokens(Some(1024))
+                .max_num_seqs(Some(16))
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(5))
+                .aic_nextn_accept_rates(Some("1,1,1,1,1".into()))
+                .kv_cache_bytes_per_token(Some(16))
+                .state_cache(Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 16,
+                }))
+                .build()
+                .unwrap(),
+        );
+        let timing = attach_probe(&mut core);
+        let oversized = submit(&mut core, 1, 7, 12);
+        let survivor = submit(&mut core, 2, 1, 3);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert!(first.output_signals.iter().all(|signal| !signal.rejected));
+        timing.0.lock().unwrap().clear();
+        let pass = core.execute_pass(&mut collector, first.end_ms);
+        let (rejected, emitted) = pass.output_signals.split_last().unwrap();
+        assert!(rejected.uuid == oversized && rejected.rejected && rejected.token_id.is_none());
+        assert!(!emitted.is_empty());
+        assert!(
+            emitted
+                .iter()
+                .all(|signal| signal.uuid == survivor && !signal.rejected)
+        );
+        // The survivor completes; it was priced at its prompt plus first token.
+        assert!(!core.state.requests.contains_key(&survivor));
+        assert_eq!(*timing.0.lock().unwrap(), vec![(1, 2)]);
+    }
+}
+
+mod prefill_timing_totals {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records each prefill query at the whole-forward FPM coordinates
+    /// `(batch, total prefill tokens, total KV read tokens)`. A mean-based
+    /// call is mapped as the FPM provider maps it: `batch * (isl - prefix)`
+    /// and `batch * prefix`.
+    #[derive(Default)]
+    struct FpmCoordinateProbe {
+        prefill: Mutex<Vec<(usize, usize, usize)>>,
+        decode: Mutex<Vec<usize>>,
+    }
+
+    impl crate::engine::TimingModel for FpmCoordinateProbe {
+        fn predict_prefill_ms(
+            &self,
+            batch: usize,
+            mean_isl: usize,
+            mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill.lock().unwrap().push((
+                batch,
+                batch * (mean_isl - mean_prefix),
+                batch * mean_prefix,
+            ));
+            Ok(1.0)
+        }
+
+        fn predict_prefill_totals_ms(
+            &self,
+            batch: usize,
+            new_tokens: usize,
+            prefix_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill
+                .lock()
+                .unwrap()
+                .push((batch, new_tokens, prefix_tokens));
+            Ok(1.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<f64> {
+            self.decode.lock().unwrap().push(batch);
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn prefill_timing_queries_scheduled_totals_for_cached_and_partial_blocks() {
+        const BUDGET: usize = 16;
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(BUDGET))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(true)
+                .speedup_ratio(1.0)
+                .build()
+                .unwrap(),
+        );
+        let timing = Arc::new(FpmCoordinateProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        let cached: Vec<u32> = (0..8).collect();
+        let arrivals = [
+            // Caches two full blocks and finishes in its first pass.
+            vec![(1, cached.clone(), 1)],
+            // Q hits all 8 cached tokens of its 9-token prompt and computes one;
+            // R ends in a partial block; T is chunked at the budget.
+            vec![
+                (2, [cached.clone(), vec![100]].concat(), 2),
+                (3, (200..207).collect(), 2),
+                (4, (300..312).collect(), 2),
+            ],
+            // F's prompt is fully cached, so vLLM recomputes its last block.
+            vec![(5, cached, 2)],
+            vec![],
+        ];
+        // Hand-derived (batch, prefill tokens, KV read tokens) and decode
+        // batches. In the second pass, integer means (24 / 3, 8 / 3) would
+        // have queried (3, 18, 6): two tokens beyond the budget.
+        let expected = [
+            (Some((1, 8, 0)), None),
+            (Some((3, 16, 8)), None),
+            // T resumes after its 8-token chunk beside F and two decodes.
+            (Some((2, 8, 12)), Some(2)),
+            (None, Some(2)),
+        ];
+
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now_ms = 0.0;
+        for (arrivals, (prefill, decode)) in arrivals.into_iter().zip(expected) {
+            for (id, tokens, max_output_tokens) in arrivals {
+                core.receive(DirectRequest {
+                    tokens,
+                    max_output_tokens,
+                    uuid: Some(Uuid::from_u128(id)),
+                    ..Default::default()
+                });
+            }
+            let pass = core.execute_pass(&mut collector, now_ms);
+            now_ms = pass.end_ms;
+            let fpm = pass.fpm.expect("each pass reports forward-pass metrics");
+            assert_eq!(
+                std::mem::take(&mut *timing.prefill.lock().unwrap()),
+                Vec::from_iter(prefill)
+            );
+            assert_eq!(
+                std::mem::take(&mut *timing.decode.lock().unwrap()),
+                Vec::from_iter(decode)
+            );
+            let (batch, prefill_tokens, kv_tokens) = prefill.unwrap_or_default();
+            assert_eq!(
+                (
+                    fpm.num_prefill_requests as usize,
+                    fpm.sum_prefill_tokens as usize,
+                    fpm.sum_prefill_kv_tokens as usize,
+                ),
+                (batch, prefill_tokens, kv_tokens),
+                "timing must price the work this pass scheduled"
+            );
+            assert!(prefill_tokens + decode.unwrap_or_default() <= BUDGET);
+        }
+        assert!(core.is_empty());
+    }
+}
+
+mod mixed_pass_timing {
+    use super::*;
+    use crate::engine::{MixedPassMs, PrefillTotals};
+    use std::sync::{Arc, Mutex};
+
+    /// Prefill alone costs 10 ms and a separate decode pass 7 ms. With `pass`,
+    /// the provider prices a mixed pass as one forward with those prefill and
+    /// decode parts. It records each mixed query and counts separate prefills.
+    struct OnePassProbe {
+        pass: Option<MixedPassMs>,
+        queries: Mutex<Vec<(PrefillTotals, usize, usize)>>,
+        prefills: Mutex<usize>,
+    }
+
+    impl OnePassProbe {
+        fn new(pass: Option<MixedPassMs>) -> Arc<Self> {
+            Arc::new(Self {
+                pass,
+                queries: Mutex::default(),
+                prefills: Mutex::default(),
+            })
+        }
+    }
+
+    impl crate::engine::TimingModel for OnePassProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            *self.prefills.lock().unwrap() += 1;
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_mixed_pass_ms(
+            &self,
+            prefill: PrefillTotals,
+            batch: usize,
+            active_kv_tokens: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<Option<MixedPassMs>> {
+            self.queries
+                .lock()
+                .unwrap()
+                .push((prefill, batch, active_kv_tokens));
+            Ok(self.pass)
+        }
+    }
+
+    fn core(engine_type: EngineType, timing: Arc<OnePassProbe>, nextn: Option<usize>) -> VllmCore {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.perf_model =
+            crate::engine::common::perf_model::PerfModel::External { timing }.into();
+        core
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        });
+    }
+
+    /// A pass that computes prefill and a decode step costs the provider's one
+    /// forward, whose prefill part replaces the separate 10 ms prefill.
+    /// Without a composition it remains a prefill and a separate decode pass,
+    /// and passes without both kinds of work never ask.
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::trtllm(EngineType::Trtllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::no_composition(EngineType::Vllm, None, 17.0, 2)]
+    fn a_pass_with_prefill_and_decode_costs_the_provider_forward(
+        #[case] engine_type: EngineType,
+        #[case] pass: Option<(f64, f64)>,
+        #[case] mixed_ms: f64,
+        #[case] separate_prefills: usize,
+    ) {
+        let timing = OnePassProbe::new(pass.map(|(prefill_ms, decode_ms)| MixedPassMs {
+            prefill_ms,
+            decode_ms,
+        }));
+        let mut core = core(engine_type, timing.clone(), None);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 3);
+        // The first token comes from the prefill forward: no decode work.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.end_ms, 10.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, mixed_ms);
+        let decode = core.execute_pass(&mut collector, mixed.end_ms);
+        assert_eq!(decode.end_ms - mixed.end_ms, 7.0);
+        // Only the mixed pass asked, with the prefill it computes and the
+        // decoder's nine-token sequence; a composed pass prices no separate
+        // prefill.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        assert_eq!(*timing.queries.lock().unwrap(), [(prefill, 1, 9)]);
+        assert_eq!(*timing.prefills.lock().unwrap(), separate_prefills);
+    }
+
+    #[test]
+    fn speculative_pass_with_prefill_and_decode_costs_the_provider_forward() {
+        let timing = OnePassProbe::new(Some(MixedPassMs {
+            prefill_ms: 9.0,
+            decode_ms: 3.0,
+        }));
+        let mut core = core(EngineType::Vllm, timing.clone(), Some(1));
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 6);
+        let first = core.execute_pass(&mut collector, 0.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, 12.0);
+        assert_eq!(timing.queries.lock().unwrap().len(), 1);
+        assert_eq!(*timing.prefills.lock().unwrap(), 1);
+    }
+}
+
+mod async_scheduling_admission {
+    use super::*;
+
+    fn core(max_concurrent_batches: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(64))
+                .max_num_seqs(Some(8))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .max_concurrent_batches(max_concurrent_batches)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    /// Submit as replay does: mid-pass while a pass is in flight, otherwise at
+    /// a pass boundary, before the next pass starts.
+    fn arrive(core: &mut VllmCore, id: u128, output: usize, pass_in_flight: bool) -> Uuid {
+        let request = DirectRequest {
+            tokens: vec![id as u32; 8],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        };
+        match core
+            .apply_command_effects(SchedulerCommand::Submit(request), !pass_in_flight)
+            .unwrap()
+            .result
+        {
+            SchedulerCommandResult::Submitted(uuid) => uuid,
+            other => panic!("unexpected submit result {other:?}"),
+        }
+    }
+
+    /// Run one pass and return the requests it admitted.
+    fn pass(core: &mut VllmCore) -> Vec<Uuid> {
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let result = core.execute_pass(&mut collector, 0.0);
+        result
+            .admissions
+            .iter()
+            .map(|admission| admission.uuid)
+            .collect()
+    }
+
+    /// How many passes run before the one that admits each request.
+    fn passes_before_admission(core: &mut VllmCore, uuids: &[Uuid]) -> Vec<usize> {
+        let mut admitted = vec![None; uuids.len()];
+        for index in 0..8 {
+            for uuid in pass(core) {
+                if let Some(position) = uuids.iter().position(|candidate| *candidate == uuid) {
+                    admitted[position].get_or_insert(index);
+                }
+            }
+        }
+        admitted.into_iter().map(Option::unwrap).collect()
+    }
+
+    /// An engine whose first pass admitted a request with `output` tokens.
+    fn engine_after_first_pass(max_concurrent_batches: usize, output: usize) -> VllmCore {
+        let mut core = core(max_concurrent_batches);
+        let running = arrive(&mut core, 1, output, false);
+        assert_eq!(pass(&mut core), [running]);
+        core
+    }
+
+    #[rstest]
+    #[case::mid_pass(true, 1)]
+    #[case::pass_boundary(false, 2)]
+    fn arrival_at_a_busy_engine_skips_the_passes_vllm_committed(
+        #[case] pass_in_flight: bool,
+        #[case] skipped: usize,
+    ) {
+        let mut core = engine_after_first_pass(2, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [skipped]);
+    }
+
+    /// A preempted request was admitted long ago: it resumes at the next pass
+    /// while a newer arrival still skips the batch vLLM had committed.
+    #[test]
+    fn preempted_request_is_not_deferred_as_a_new_arrival() {
+        let mut core = engine_after_first_pass(2, 32);
+        let preempted = Uuid::from_u128(1);
+        let arrival = arrive(&mut core, 2, 4, true);
+        assert!(core.policy_preempt(0.0).is_some());
+        assert_eq!(core.state.requests[&preempted].num_preemptions, 1);
+
+        pass(&mut core);
+        assert_eq!(
+            core.state.requests[&preempted].status,
+            RequestStatus::Running
+        );
+        assert_ne!(core.state.requests[&arrival].status, RequestStatus::Running);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[rstest]
+    #[case::mid_pass(true)]
+    #[case::pass_boundary(false)]
+    fn synchronous_engine_admits_an_arrival_at_the_next_pass(#[case] pass_in_flight: bool) {
+        let mut core = engine_after_first_pass(1, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[test]
+    fn idle_engine_admits_an_arrival_at_the_next_pass() {
+        let mut core = engine_after_first_pass(2, 1);
+        assert!(core.is_empty());
+        let arrival = arrive(&mut core, 2, 4, false);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    /// The running request emits its last token in the second pass, so vLLM
+    /// commits an empty batch after it. Queued arrivals then run at once,
+    /// together, instead of waiting for the batch they would otherwise skip.
+    #[test]
+    fn empty_committed_batch_admits_queued_arrivals_together() {
+        // At the boundary before that last pass.
+        let mut core = engine_after_first_pass(2, 2);
+        let arrivals = [
+            arrive(&mut core, 2, 4, false),
+            arrive(&mut core, 3, 4, false),
+        ];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [1, 1]);
+
+        // While that last pass runs.
+        let mut core = engine_after_first_pass(2, 2);
+        assert!(pass(&mut core).is_empty());
+        assert!(core.state.running.is_empty());
+        let arrivals = [arrive(&mut core, 2, 4, true), arrive(&mut core, 3, 4, true)];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [0, 0]);
+    }
 }
 
 mod source_holds {
@@ -575,50 +1615,60 @@ mod destination_lifecycle {
         panic!("pending destination was not reserved");
     }
 
-    #[test]
-    fn materialized_prompt_above_max_model_len_is_rejected() {
-        let args = MockEngineArgs::builder()
-            .block_size(4)
-            .num_gpu_blocks(12)
-            .max_model_len(Some(8))
-            .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
-            .enable_chunked_prefill(true)
-            .enable_prefix_caching(true)
-            .worker_type(WorkerType::Decode)
-            .speedup_ratio(0.0)
-            .build()
-            .unwrap();
+    #[rstest]
+    fn destination_rejects_over_limit_prompt_before_reserving_kv(
+        #[values(EngineType::Vllm, EngineType::Trtllm)] engine_type: EngineType,
+        #[values(8, 9)] prompt_len: usize,
+        #[values(false, true)] allow_destination_admission: bool,
+    ) {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.max_model_len = Some(8);
         let mut core = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(30_001));
         let uuid = Uuid::from_u128(30_002);
+        let active_before = core.kv_manager.num_active_blocks();
 
-        assert!(matches!(
-            core.apply_command(SchedulerCommand::ReserveDestination {
-                handoff_id,
-                request: request(uuid, vec![1; 9], 1),
-            })
-            .unwrap(),
-            SchedulerCommandResult::DestinationAccepted { request_id } if request_id == uuid
-        ));
+        let error = core
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(uuid, vec![1; prompt_len], 1),
+                },
+                allow_destination_admission,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("max_model_len"));
+        assert!(!core.destination_is_held(handoff_id));
+        assert_eq!(core.destination_block_count(handoff_id), 0);
+        assert_eq!(core.destination_reservation_attempts(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), active_before);
+        assert!(core.retry_pending_destinations().is_empty());
+        assert!(core.is_drained());
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+
+        // Rejection must leave both IDs and KV capacity reusable by valid work.
+        assert!(reserve_destination(&mut core, handoff_id, uuid, &[1; 7], 1).is_some());
         assert_eq!(
             core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
                 .unwrap(),
             SchedulerCommandResult::Applied
         );
-
         let pass = execute(&mut core, 0.0);
         assert!(matches!(
             pass.output_signals.as_slice(),
             [OutputSignal {
                 uuid: signal_uuid,
-                token_id: None,
+                token_id: Some(_),
                 completed: true,
-                rejected: true,
+                rejected: false,
                 ..
             }] if *signal_uuid == uuid
         ));
-        assert!(!core.state().requests.contains_key(&uuid));
     }
 
     #[test]
@@ -1309,6 +2359,9 @@ mod core_behavior {
             output_token_ids: Some(planned.clone()),
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1357,6 +2410,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1364,6 +2420,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1420,6 +2479,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1427,6 +2489,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1463,6 +2528,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -1522,6 +2590,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(81)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1535,6 +2606,39 @@ mod core_behavior {
         assert_eq!(signal.handoff_delay_ms, Some(8.0));
     }
 
+    /// A prefill worker's first token comes from its prefill forward, so its
+    /// pass prices no decode work, with or without speculation.
+    #[rstest]
+    #[case::plain(None)]
+    #[case::speculative(Some(1))]
+    fn prefill_worker_prices_no_decode_work(#[case] nextn: Option<usize>) {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(8)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(1))
+                .enable_chunked_prefill(true)
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .speedup_ratio(0.0)
+                .build()
+                .unwrap(),
+        );
+        core.receive(DirectRequest {
+            tokens: vec![1; 8],
+            max_output_tokens: 2,
+            uuid: Some(Uuid::from_u128(82)),
+            ..Default::default()
+        });
+
+        let work = core.schedule_pass(None, 0.0).unwrap();
+
+        assert!(work.prefill.is_some());
+        assert_eq!(work.decode, None);
+    }
+
     #[test]
     fn test_first_token_can_arrive_on_prompt_completion_pass() {
         let mut core = VllmCore::new(make_args());
@@ -1545,6 +2649,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1587,6 +2694,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -1632,6 +2742,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(holder),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(),
@@ -1639,6 +2752,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(blocked),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (200..204).collect(),
@@ -1646,6 +2762,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(follower),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1716,6 +2835,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -1745,6 +2867,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -1780,6 +2905,9 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(short),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..104).collect(),
@@ -1787,12 +2915,17 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(long),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
         let first = core.execute_pass(&mut collector, 0.0);
-        assert_eq!(first.output_signals.len(), 6);
-        let pass = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(first.output_signals.len(), 2);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(second.output_signals.len(), 6);
+        let pass = core.execute_pass(&mut collector, second.end_ms);
         let ordered = pass
             .output_signals
             .iter()
@@ -1800,17 +2933,11 @@ mod core_behavior {
             .collect::<Vec<_>>();
         assert_eq!(
             ordered,
-            vec![
-                (short, false),
-                (short, true),
-                (long, false),
-                (long, false),
-                (long, false),
-            ]
+            vec![(short, true), (long, false), (long, false), (long, false),]
         );
 
         let request = core.state.requests.get(&long).unwrap();
-        assert_eq!(request.sequence.generated_tokens(), 6);
+        assert_eq!(request.sequence.generated_tokens(), 7);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
         assert_eq!(
             pass.fpm.unwrap().num_decode_requests,
@@ -1844,13 +2971,17 @@ mod core_behavior {
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
         assert_eq!(pass.output_signals.len(), 1);
+        // Exercise an actual verification round, not just the draft-free
+        // prefill output. Rejected drafts must not retain their reservation.
+        let pass = core.execute_pass(&mut collector, pass.end_ms);
+        assert_eq!(pass.output_signals.len(), 1);
         assert_eq!(
             core.kv_manager.num_active_blocks(),
-            2,
+            3,
             "the block reserved only for rejected drafts must be released"
         );
         let request = core.state.requests.get(&uuid).unwrap();
-        assert_eq!(request.sequence.generated_tokens(), 1);
+        assert_eq!(request.sequence.generated_tokens(), 2);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
     }
 
@@ -1878,6 +3009,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(1)),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
             core.execute_pass(&mut collector, 0.0);
             assert!(core.is_empty());
@@ -1888,6 +3022,9 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(2)),
                 arrival_timestamp_ms: None,
+                session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
             let pass = core.execute_pass(&mut collector, 1.0);
             let fpm = pass.fpm.expect("forward-pass metrics should be present");
@@ -1929,6 +3066,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1956,6 +3096,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1974,6 +3117,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // Pass 2: r1 decode + r2 prefill (mixed batch)
@@ -2003,6 +3149,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2042,6 +3191,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2086,6 +3238,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -2093,6 +3248,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2130,6 +3288,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(), // prompt_len = 12
@@ -2137,6 +3298,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2175,6 +3339,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2244,6 +3411,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // Prefill r1 and decode a few tokens to build up KV
@@ -2258,6 +3428,9 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // This pass should trigger preemption

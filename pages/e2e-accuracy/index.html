@@ -1,0 +1,170 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Public snapshot of AISim end-to-end TTFT and TPOT accuracy against measured silicon operating points."
+    />
+    <title>AISim - E2E Accuracy Overview</title>
+    <script src="./theme.js"></script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="top-header">
+      <div class="shell top-header-inner">
+        <div class="brand">
+          <a href="../" aria-label="AISim documentation home">
+            <img class="brand-logo" src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" />
+          </a>
+          <h1 id="page-title"><a href="../">AISim</a>
+            <span class="page-name">- E2E Accuracy Overview</span>
+          </h1>
+        </div>
+        <div class="header-controls">
+          <label class="branch-control" for="branch-select">Branch:
+            <select id="branch-select" disabled><option>Loading…</option></select>
+          </label>
+          <nav class="source-nav" aria-label="Source links">
+            <a class="github-link" href="https://github.com/ai-dynamo/aisimulate" aria-label="View on GitHub" title="View on GitHub">
+              <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+            </a>
+            <label class="theme-control"><span class="sr-only">Color theme</span><select id="theme-mode" aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          </nav>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell dashboard">
+      <nav class="accuracy-tabs" aria-label="Accuracy views">
+        <button id="tab-overview" type="button" aria-pressed="true">Overview(op-based)</button>
+        <button id="tab-details" type="button" aria-pressed="false">Details(op-based)</button>
+        <button id="tab-agentx" type="button" aria-pressed="false">AgentX <span class="agentx-new">NEW</span></button>
+      </nav>
+      <section id="agentx-view" hidden aria-label="AgentX accuracy">
+        <p class="agentx-beta">Beta · check the <a href="../feature-support-matrix/#agentx">AgentX feature support matrix ↗</a>.</p>
+        <div id="agentx-content"></div>
+      </section>
+      <p id="evidence-brief" class="evidence-brief" role="status">Loading evidence…</p>
+      <label class="topology-control">Decoding
+        <select id="decoding-select">
+          <option value="all">All (STP + MTP)</option>
+          <option value="none">STP</option>
+          <option value="mtp">MTP</option>
+        </select>
+      </label>
+      <div id="detail-filters" class="filter-toolbar" hidden></div>
+      <div class="exclusions" role="group" aria-label="Exclude">
+        <span>Exclude:</span>
+        <label title="Exclude prediction errors greater than 100%, independently per predictor and metric. Charts retain these points in pink."><input id="exclude-outliers" type="checkbox"> outliers <span id="outlier-count"></span></label>
+        <label title="Flag silicon latency peaks, dips, or decreases greater than 5% across concurrency within one topology."><input id="exclude-abnormal" type="checkbox"> bad silicon values</label>
+        <label><input id="exclude-multinode" type="checkbox"> multi-node</label>
+      </div>
+      <section id="details-view" hidden aria-label="Details(op-based)"></section>
+      <dialog id="point-dialog" aria-labelledby="point-title"><button id="close-point" type="button">Close</button><div id="point-content"></div></dialog>
+      <section class="summary-grid" id="summary-grid" aria-label="Snapshot summary">
+        <div class="loading-card">Loading summary…</div>
+      </section>
+
+      <section id="framework-summary" class="framework-summary"></section>
+      <section id="hardware-summary" class="framework-summary"></section>
+      <div class="matrix-layout" id="matrix-layout">
+      <section class="matrix-panel" aria-labelledby="matrix-heading">
+        <h2 id="matrix-heading">
+          MAPE vs silicon — AISim over successful replay points; AIC (legacy CLI) over successful baseline predictions
+        </h2>
+        <div class="table-scroll" role="region" aria-label="Accuracy matrix" tabindex="0">
+          <table>
+            <caption class="sr-only">
+              End-to-end accuracy metrics grouped by model and workload. Activate a column heading
+              to sort model groups. Expand a workload, then select a GPU for details.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col" aria-sort="ascending">
+                  <button class="sort-button" data-sort="model">Model <span aria-hidden="true">▲</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button" data-sort="hardware">Hardware <span aria-hidden="true">▲</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button" data-sort="precisions">Precisions <span aria-hidden="true">▲</span></button>
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aisimulatePoints">AISim points <span aria-hidden="true">▲</span></button>
+                </th>
+                <th scope="col" aria-sort="none" class="mape-heading">
+                  AISim MAPE<br />(<button class="sort-button" data-sort="aisimulateTpot" aria-label="Sort AISim TPOT MAPE">TPOT <span aria-hidden="true">▲</span></button> /
+                  <button class="sort-button" data-sort="aisimulateTtft" aria-label="Sort AISim TTFT MAPE">TTFT <span aria-hidden="true">▲</span></button>)
+                </th>
+                <th scope="col" aria-sort="none">
+                  <button class="sort-button numeric" data-sort="aicPoints">AIC (legacy CLI) points <span aria-hidden="true">▲</span></button>
+                </th>
+                <th scope="col" aria-sort="none" class="mape-heading">
+                  AIC (legacy CLI) MAPE<br />(<button class="sort-button" data-sort="aicTpot" aria-label="Sort AIC legacy CLI TPOT MAPE">TPOT <span aria-hidden="true">▲</span></button> /
+                  <button class="sort-button" data-sort="aicTtft" aria-label="Sort AIC legacy CLI TTFT MAPE">TTFT <span aria-hidden="true">▲</span></button>)
+                </th>
+              </tr>
+            </thead>
+            <tbody id="matrix-body">
+              <tr><td colspan="7" class="loading-cell">Loading accuracy matrix…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside id="drilldown" class="drilldown" aria-label="Accuracy details" hidden></aside>
+      </div>
+
+      <section class="public-notes" aria-label="Scope and provenance">
+        <details>
+          <summary>About this comparison · methodology &amp; provenance</summary>
+      <p id="filter-note" class="detail-scope"></p>
+      <section class="migration-context" aria-label="CLI migration comparison">
+        <p><strong>Compare AISim with AIC (legacy CLI).</strong>
+          We show both CLI results against measured silicon to help users build confidence
+          that AISim is comparable to AIC (legacy CLI) during migration.</p>
+        <p>AIC (legacy CLI) results are temporary: we will remove this comparison series when we
+          deprecate AIC (legacy CLI). Check successful-point counts alongside errors;
+          the two CLIs can have different prediction coverage.</p>
+      </section>
+
+      <p class="branch-status" id="branch-status" role="status">Loading branch evidence…</p>
+      <p class="identity-line" id="identity-line">Loading snapshot dimensions…</p>
+
+
+          <div class="notes-grid">
+            <article>
+              <h2>Read the scope first</h2>
+              <p id="scope-claim">
+                These numbers apply only to exact measured configurations in this snapshot.
+              </p>
+              <ul>
+                <li>Client-observed TTFT and TPOT are reported separately.</li>
+                <li>Multi-node configurations are included when available; use the exclusion filter to hide them.</li>
+                <li>No universal pass/fail threshold is applied.</li>
+              </ul>
+            </article>
+            <article>
+              <h2>Reproducible snapshot identity</h2>
+              <div id="provenance-content">Loading provenance…</div>
+              <a class="download-link" id="download-json" href="./summary.json" download>Download JSON</a>
+            </article>
+          </div>
+        </details>
+      </section>
+
+      <div class="error-banner" id="error-banner" role="alert" hidden></div>
+    </main>
+
+    <script src="./agentx.js" defer></script>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

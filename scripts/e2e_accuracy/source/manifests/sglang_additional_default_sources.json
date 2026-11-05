@@ -1,0 +1,181 @@
+{
+  "0.5.3rc1": {
+    "commit": "1ba137e98fa2fef7dcd976f1d8573dc5cd0152a8",
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/1ba137e98fa2fef7dcd976f1d8573dc5cd0152a8/python/sglang/srt/server_args.py",
+        "sha256": "377b5d6e6aca29a9d4f8e384103e70251afe949275cce573c83f8b540a697d5c"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/1ba137e98fa2fef7dcd976f1d8573dc5cd0152a8/python/sglang/srt/managers/scheduler.py",
+        "sha256": "dde6b279f2a0044a156e082a029e0a01279c905efcc002e45fcddec232a0696f"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/1ba137e98fa2fef7dcd976f1d8573dc5cd0152a8/python/sglang/srt/model_executor/model_runner.py",
+        "sha256": "5cd0561e0051f0b3640ebeadef742d5824cf3feb8545919b32cbc851c9f711a9"
+      }
+    ]
+  },
+  "0.5.16": {
+    "commit": "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1",
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1/python/sglang/srt/server_args.py",
+        "sha256": "e04556de6d99ba8a76b91fffa49aa70ea9d65cd99f09d0da5d4cfe1228e28500"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1/python/sglang/srt/managers/scheduler.py",
+        "sha256": "159837693ec244d2dfb482d5788b8f4fa934c780505609c90a728939abe89815"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1/python/sglang/srt/model_executor/model_runner.py",
+        "sha256": "1122748dcd075894b0366f6d3b02d340005e4e4b26ee046cec1a16384e0dd303"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1/python/sglang/srt/arg_groups/overrides.py",
+        "sha256": "a897f4787c5d6c6c01be71dee42b5322dcb6cdf1efeb981f0d4f2efa026a5e9e"
+      }
+    ]
+  },
+  "0.5.19": {
+    "commit": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/server_args.py",
+        "sha256": "204fe57ba81acc25b7badcabf3b4b741021767c91f1d64e0df949cb175464b7c"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/managers/scheduler.py",
+        "sha256": "3a12fdfb9c21571d8007ba60aedd7e84b67636583bac8243373c75d6a2ab324e"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/model_executor/model_runner.py",
+        "sha256": "b40efe0c7fb87d6f3baf5f9df3e755b9138247f82505183c564b4f8b1bc6663a"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/arg_groups/overrides.py",
+        "sha256": "af4086d5c3bbfc8789d82b196240226785c104809c48cb1f9a24f6962cafe4ac"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/arg_groups/pipeline.py",
+        "sha256": "4c46d8a8966914e361ed9e5d18956025c1ffe64de928d25b3a6111ac3a0ee8c8"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/arg_groups/parallel_hook.py",
+        "sha256": "ef212300c25a119138fb30199e05aefedc63f65d376e1d2e0cd6d612a07180a9"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/arg_groups/mamba_hook.py",
+        "sha256": "22e9edafc411b0007e3cd6dfac692021e615a89b3de67bdc1ad8b5a8f28d73d0"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/0bcd822377da7b5718e674eaf9c870d349424dd1/python/sglang/srt/arg_groups/model_overrides/qwen3_5.py",
+        "sha256": "e782c63b52ed3a86d96d4120edaec45b5f3f867d2cdaba6b8521e4a94e23e294"
+      }
+    ]
+  },
+  "0.0.0.dev1+g2b3d9ad37": {
+    "commit": "2b3d9ad3752eb7a20370c91a02beda7bcc073165",
+    "runtime_only": true,
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/2b3d9ad3752eb7a20370c91a02beda7bcc073165/python/sglang/srt/server_args.py",
+        "sha256": "1eff24203f4fc2162e9f5650b6883d70daf8ed407a4141c7c0a0387240472271"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/2b3d9ad3752eb7a20370c91a02beda7bcc073165/python/sglang/srt/managers/scheduler.py",
+        "sha256": "a80d9b77b4ac3cf3ea94f68f6512479e0a614262549982d4a6a93bfa37f8088b"
+      }
+    ]
+  },
+  "0.0.0.dev1+g303757ccd": {
+    "commit": "303757ccd8f91b3385cadff5c887221b76f3d728",
+    "runtime_only": true,
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/303757ccd8f91b3385cadff5c887221b76f3d728/python/sglang/srt/server_args.py",
+        "sha256": "98c693d9d4a3e12f7113f3a55567ef254250d7fb4f257e4620125d4b35293891"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/303757ccd8f91b3385cadff5c887221b76f3d728/python/sglang/srt/managers/scheduler.py",
+        "sha256": "991e77f0154c09a9a6ae66a0b8a7eb030706c75350d5cd45d534b4501e9e2929"
+      }
+    ]
+  },
+  "0.0.0.dev1+g3cbb7568b": {
+    "commit": "3cbb7568bd47da8ecde305557583c15fc8f58c22",
+    "runtime_only": true,
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/server_args.py",
+        "sha256": "1a6622a3f539f160307a2744af15dc72f9e57028cf17d71b5c7ea417d7757edf"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/managers/scheduler.py",
+        "sha256": "bd6fd067da79253c54f59a8fcb5aac66fbf40f3fb985fb9116888ad336defc95"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/configs/model_config.py",
+        "sha256": "50762de9e1bb94cf37e02dcefc497535203e9a2fe48544a1560d13dded9d70b9"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/model_loader/loader.py",
+        "sha256": "c833ca2d1d430f22f06f26bf3432ea232185a5ca18df6938b7ba1fbd42e428b3"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/layers/quantization/fp8.py",
+        "sha256": "c7a634573c649dddd54cdb71638b992385b82327660bda9b6218583f030df6f8"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/3cbb7568bd47da8ecde305557583c15fc8f58c22/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+        "sha256": "d41c21d831d3dd63459502fbceb5c582f135b4b05ef6533825664d89f490634c"
+      }
+    ],
+    "fp4_moe_reviewed": true
+  },
+  "0.0.0.dev1+gd6ef68881": {
+    "commit": "d6ef68881e263812d4901f632786015005c4d050",
+    "runtime_only": true,
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/server_args.py",
+        "sha256": "a3472f92506a15abd540b2dd76afc684584e50ae83f7821f168157a59561b5c7"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/managers/scheduler.py",
+        "sha256": "66e57f2d9895b40a076ed51dad2d6c9183fef5e6bca9584749b60c883452852d"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/configs/model_config.py",
+        "sha256": "60f37ccb03682c20d6a64670a9e8ff27630d76017c49ee1ab348004bdd0fd7ff"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/model_loader/loader.py",
+        "sha256": "b7f2e19e4d6f37da77e4902e9d88ba1f37295b543deb8f915af3778a4985bd87"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/layers/quantization/fp8.py",
+        "sha256": "2731f589488532ba47d9921d01a8e96264162571cfcc8ebe2fc5585454456485"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/d6ef68881e263812d4901f632786015005c4d050/python/sglang/srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py",
+        "sha256": "ea026b850917a80598c58143f12a3785d4763237653d90338c1d90aaae72d65e"
+      }
+    ],
+    "fp4_moe_reviewed": true
+  },
+  "0.0.0.dev1+gf825d7293": {
+    "commit": "f825d729363136a2d4a4b330fa694d0b37a878fa",
+    "runtime_only": true,
+    "sources": [
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/f825d729363136a2d4a4b330fa694d0b37a878fa/python/sglang/srt/server_args.py",
+        "sha256": "f34356b10f21814694af6c2efc0f2809d312359ed8fa495afad6106c67f1804b"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/sgl-project/sglang/f825d729363136a2d4a4b330fa694d0b37a878fa/python/sglang/srt/managers/scheduler.py",
+        "sha256": "fe6fd38a9913402fa71b55e2bfcc63290031f90d6f9031451fedd16fd9a88ca2"
+      }
+    ]
+  }
+}

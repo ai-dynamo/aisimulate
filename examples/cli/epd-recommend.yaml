@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Search E+aggregated and E+P+D; saved configurations can be passed to predict.
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 448, width: 448, count: 1}
+  load: {type: concurrency, concurrency: 8}
+  stop: {requests: 16}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  mode: {choices: [aggregated, disaggregated]}
+  workers:
+    encoder:
+      tensor: {choices: [1, 2]}
+      replicas: {choices: [1, 2]}
+      batch_size: {choices: [1, 2, 4]}
+    aggregated: &language
+      parallelism:
+        preset: false
+        tensor: 1
+        replicas: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler: {max_batched_tokens: 8192, max_sequences: 8}
+    prefill: *language
+    decode: *language
+optimization:
+  target: throughput_per_gpu
+  constraints: {max_candidate_gpus: 8}
+optimizer: {algorithm: random, max_trials: 10, parallelism: 1, seed: 13}

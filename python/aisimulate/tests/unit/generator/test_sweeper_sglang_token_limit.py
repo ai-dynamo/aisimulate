@@ -3,8 +3,8 @@
 
 import pytest
 
-from aiconfigurator.generator.api import generate_from_request
-from aiconfigurator.generator.request import ModelFacts, from_sweeper_candidate
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import ModelFacts, from_sweeper_candidate
 
 from .test_sweeper_request import _agg_candidate, _cli_flag_value, _disagg_candidate
 

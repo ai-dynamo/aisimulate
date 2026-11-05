@@ -9,13 +9,16 @@ use std::time::Instant;
 use anyhow::Result as AnyResult;
 use uuid::Uuid;
 
+use crate::engine::KvEvictionPolicy;
+use crate::engine::belady::{BeladyOracle, input_sequence_hashes};
 use crate::replay::OfflineDisaggReplayConfig;
 use crate::replay::agg::AggRuntimeImpl;
 use crate::replay::artifact::{
     ReplayArtifactKvEventVisibility, ReplayArtifactSink, ReplayArtifacts,
 };
 use crate::replay::components::{
-    AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
+    AdmissionQueue, DetokenizationLatency, DetokenizationStage, NoReplayMetadata,
+    ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{
@@ -31,10 +34,12 @@ use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::loadgen::WorkloadDriver;
 use crate::replay::protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
 use crate::replay::scaling::ReplayScalingPolicy;
-use crate::replay::telemetry::{ReplayTelemetryObserver, ReplayTelemetrySnapshot};
+use crate::replay::telemetry::{
+    ReplayTelemetryCaptureSink, ReplayTelemetryObserver, ReplayTelemetrySnapshot,
+};
 use crate::replay::{
     ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
-    ReplayResult, ReplaySpec, ReplayTopology, SlaThresholds, WorkerStage,
+    ReplayResult, ReplaySpec, ReplayTopology, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -130,6 +135,22 @@ where
 
     fn cancel_pending(&mut self, request_id: Uuid) -> bool {
         self.0.cancel_pending(request_id)
+    }
+
+    fn dispatch_committed(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_committed(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, now_ms: f64) -> AnyResult<()> {
+        self.0
+            .dispatch_aborted(request_id, now_ms)
+            .map_err(placement_boundary)
+    }
+
+    fn advance_clock(&mut self, now_ms: f64) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0.advance_clock(now_ms).map_err(placement_boundary)
     }
 
     fn request_terminal(
@@ -232,12 +253,18 @@ impl ReplayTelemetryObserver for TelemetryObserverBoundary {
 #[allow(clippy::large_enum_variant)] // Preserve the inline workload through runtime construction.
 pub enum ReplayRuntimeInput {
     Requests(VecDeque<DirectRequest>),
+    /// Generate the next request only when a concurrency slot is available.
+    /// Requires `ReplaySpec::max_in_flight`; open-loop inputs remain unchanged.
+    GeneratedRequests(crate::replay::loadgen::GeneratedRequests),
     Workload(WorkloadDriver),
 }
 
 /// Built-in engine-only composition: Round-robin placement and fixed capacity.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RoundRobinComposition;
+#[derive(Debug, Default, Clone, Copy, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoundRobinComposition {
+    pub session_affinity: bool,
+}
 
 impl ReplayComposition for RoundRobinComposition {
     type Metadata = NoReplayMetadata;
@@ -266,7 +293,8 @@ impl ReplayComposition for RoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> AnyResult<Self::AggregatedPlacement> {
-        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
+            .with_session_affinity(self.session_affinity))
     }
 
     fn create_disaggregated_placements(
@@ -277,8 +305,10 @@ impl ReplayComposition for RoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> AnyResult<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 }
@@ -292,11 +322,22 @@ pub struct Replayer<C = RoundRobinComposition> {
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+    telemetry_capture_interval_ms: Option<f64>,
+    tokenization: Option<TokenizationLatency>,
+    detokenization: Option<DetokenizationLatency>,
 }
 
 impl Replayer<RoundRobinComposition> {
     pub fn new(spec: ReplaySpec, factory: ReplayEngineFactory) -> ReplayResult<Self> {
-        Self::with_composition(spec, factory, RoundRobinComposition)
+        let placement = &spec.adapters.placement;
+        // Other providers get the default so `validate_spec` reports the provider mismatch.
+        let composition = if placement.provider != "round_robin" || placement.config.is_null() {
+            RoundRobinComposition::default()
+        } else {
+            serde_json::from_value(placement.config.clone())
+                .map_err(|error| ReplayError::InvalidSpec(error.to_string()))?
+        };
+        Self::with_composition(spec, factory, composition)
     }
 
     /// Run a fixed, aggregated single-worker replay and retain detailed
@@ -332,6 +373,9 @@ impl<C: ReplayComposition> Replayer<C> {
             runtime_input: None,
             capture: ReplayCaptureOptions::default(),
             telemetry: None,
+            telemetry_capture_interval_ms: None,
+            tokenization: None,
+            detokenization: None,
         })
     }
 
@@ -365,6 +409,83 @@ impl<C: ReplayComposition> Replayer<C> {
         Ok(self)
     }
 
+    /// Capture requests, scheduler samples and lifecycle across every replay phase.
+    /// Existing summary and per-request output keep their profile-only contracts.
+    pub fn with_telemetry_capture(mut self, sample_interval_ms: f64) -> ReplayResult<Self> {
+        if !sample_interval_ms.is_finite() || sample_interval_ms <= 0.0 {
+            return Err(ReplayError::InvalidSpec(
+                "telemetry sample interval must be finite and positive".into(),
+            ));
+        }
+        self.telemetry_capture_interval_ms = Some(sample_interval_ms);
+        Ok(self)
+    }
+
+    /// Tokenize each request on the worker it was placed on before that
+    /// worker's engine sees it. Every worker of the entry role (aggregated or
+    /// prefill) has `workers` first-come, first-served tokenizer servers, and a
+    /// request takes `base_ms + per_input_token_ms * input_tokens` on one of
+    /// them. Latency metrics still start at arrival. Both costs zero, the
+    /// default, keeps direct dispatch.
+    pub fn with_tokenization(
+        mut self,
+        workers: usize,
+        base_ms: f64,
+        per_input_token_ms: f64,
+    ) -> ReplayResult<Self> {
+        if workers == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "tokenization workers must be positive".to_string(),
+            ));
+        }
+        for (name, value) in [
+            ("tokenization base_ms", base_ms),
+            ("tokenization per_input_token_ms", per_input_token_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "{name} must be finite and non-negative, got {value}"
+                )));
+            }
+        }
+        self.tokenization = TokenizationLatency::new(workers, base_ms, per_input_token_ms);
+        Ok(self)
+    }
+
+    /// Detokenize each pass's outputs before the client receives them. Every
+    /// worker that emits tokens (aggregated, or decode) has `workers`
+    /// detokenizer servers, shared by its attention-DP ranks, and each request
+    /// belongs to one of them. A server takes the outputs of one pass that
+    /// belong to it as one job, after its earlier jobs, for
+    /// `base_ms + per_output_ms * outputs`, and the client receives them when
+    /// the job ends. Token times, latency metrics and request completion use
+    /// the client's receive time. Both costs zero, the default, keeps every
+    /// output at its pass end.
+    pub fn with_detokenization(
+        mut self,
+        workers: usize,
+        base_ms: f64,
+        per_output_ms: f64,
+    ) -> ReplayResult<Self> {
+        if workers == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "detokenization workers must be positive".to_string(),
+            ));
+        }
+        for (name, value) in [
+            ("detokenization base_ms", base_ms),
+            ("detokenization per_output_ms", per_output_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "{name} must be finite and non-negative, got {value}"
+                )));
+            }
+        }
+        self.detokenization = DetokenizationLatency::new(workers, base_ms, per_output_ms);
+        Ok(self)
+    }
+
     pub fn run(self) -> ReplayResult<ReplayReport> {
         self.run_inner(None)
     }
@@ -378,7 +499,7 @@ impl<C: ReplayComposition> Replayer<C> {
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
         validate_request_dp_ranks(&self.spec, &engine_config)?;
-        let runtime_input = match self.runtime_input.take() {
+        let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
                 input
@@ -400,16 +521,75 @@ impl<C: ReplayComposition> Replayer<C> {
             .composition
             .take_scaling_policy()
             .map_err(|error| ReplayError::Scaling(format!("{error:#}")))?;
+        let belady_oracle = if engine_config.kv_eviction_policy == KvEvictionPolicy::Belady {
+            if self.spec.max_in_flight.is_some()
+                || self.spec.adapters.scaling.provider != "none"
+                || scaling.is_some()
+            {
+                return Err(ReplayError::InvalidSpec(
+                    "belady requires fixed workers and open-loop traffic without max_in_flight or scaling"
+                        .into(),
+                ));
+            }
+            Some(prepare_belady_oracle(
+                &mut runtime_input,
+                engine_config.rank.block_size,
+            )?)
+        } else {
+            None
+        };
         let telemetry = self.telemetry.take();
+        if telemetry.is_some() && self.telemetry_capture_interval_ms.is_some() {
+            return Err(ReplayError::InvalidSpec(
+                "telemetry capture and an external telemetry observer cannot be combined".into(),
+            ));
+        }
+        let telemetry_capture = self
+            .telemetry_capture_interval_ms
+            .map(ReplayTelemetryCaptureSink::new);
+        let retain_per_request =
+            self.spec.record_per_request || self.capture.effective_per_request();
+        let encoder = match &self.spec.encoder {
+            None => None,
+            Some(encoder) => {
+                let timing = self.factory.encoder_timing().ok_or_else(|| {
+                    ReplayError::InvalidSpec(
+                        "an encoder pool requires a timing model installed through \
+                         ReplayEngineFactory::with_encoder_timing"
+                            .into(),
+                    )
+                })?;
+                Some((encoder.clone(), timing.clone()))
+            }
+        };
+        let tokenization = self.tokenization;
+        if tokenization.is_some()
+            && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        {
+            return Err(ReplayError::InvalidSpec(
+                "tokenization does not support worker scaling".to_string(),
+            ));
+        }
+        let detokenization = self.detokenization.map(DetokenizationStage::new);
+        if detokenization.is_some()
+            && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        {
+            return Err(ReplayError::InvalidSpec(
+                "detokenization does not support worker scaling".to_string(),
+            ));
+        }
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
-                let role_factory = self.factory.role_factory(
+                let mut role_factory = self.factory.role_factory(
                     &engine_config,
                     WorkerStage::Aggregated,
                     C::Observation::capture_engine_kv_events(WorkerStage::Aggregated)
                         || artifact_sink.is_some(),
                 )?;
+                if let Some(oracle) = belady_oracle {
+                    role_factory = role_factory.with_belady_oracle(oracle);
+                }
                 let startup_time_ms = positive_delay(workers.startup_delay_ms);
                 if artifact_sink.is_some()
                     && (workers.initial_workers != 1
@@ -421,6 +601,18 @@ impl<C: ReplayComposition> Replayer<C> {
                             .to_string(),
                     ));
                 }
+                // Shared-pool transfers have no fixed completion time to record.
+                if artifact_sink.is_some()
+                    && engine_config
+                        .rank
+                        .native_host_offload
+                        .as_ref()
+                        .is_some_and(|host| host.scope == crate::engine::G2Scope::ClusterShared)
+                {
+                    return Err(ReplayError::InvalidSpec(
+                        "detailed replay artifacts require dp_rank_local host_offload".to_string(),
+                    ));
+                }
 
                 let mut runtime = AggRuntimeImpl::<
                     PlacementPolicyBoundary<C::AggregatedPlacement>,
@@ -428,7 +620,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     role_factory,
-                    admission_queue(runtime_input, mode),
+                    admission_queue(runtime_input, mode)?,
                     workers.initial_workers,
                     startup_time_ms,
                     |dp_size, topology| {
@@ -440,15 +632,22 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
-                .with_per_request_records(
-                    self.spec.record_per_request || self.capture.effective_per_request(),
-                )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_sla_thresholds(self.spec.sla)
+                .with_per_request_records(retain_per_request || telemetry_capture.is_some())
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_encoder(encoder.clone())
+                .with_tokenization(tokenization)
+                .with_detokenization(detokenization);
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let (Some(sink), Some(interval)) =
+                    (&telemetry_capture, self.telemetry_capture_interval_ms)
+                {
+                    runtime = runtime.with_telemetry_capture(interval, sink.clone());
                 }
                 if let Some((sample_interval_ms, observer)) = telemetry {
                     runtime = runtime.with_telemetry_observer(
@@ -493,7 +692,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     &config,
-                    admission_queue(runtime_input, mode),
+                    admission_queue(runtime_input, mode)?,
                     false,
                     |prefill_dp, prefill_topology, decode_dp, decode_topology| {
                         self.composition
@@ -514,12 +713,19 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .map_err(runtime_error)?
                 .with_capture_options(self.capture)
-                .with_per_request_records(
-                    self.spec.record_per_request || self.capture.effective_per_request(),
-                )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_sla_thresholds(self.spec.sla)
+                .with_per_request_records(retain_per_request || telemetry_capture.is_some())
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_encoder(encoder.clone())
+                .with_tokenization(tokenization)
+                .with_detokenization(detokenization);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
+                }
+                if let (Some(sink), Some(interval)) =
+                    (&telemetry_capture, self.telemetry_capture_interval_ms)
+                {
+                    runtime = runtime.with_telemetry_capture(interval, sink.clone());
                 }
                 if let Some((sample_interval_ms, observer)) = telemetry {
                     runtime = runtime.with_telemetry_observer(
@@ -531,23 +737,104 @@ impl<C: ReplayComposition> Replayer<C> {
             }
         };
 
-        Ok(finish_report(collector, self.spec.sla)
-            .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0))
+        let mut report = collector
+            .finish()
+            .with_wall_time_ms(wall_start.elapsed().as_secs_f64() * 1_000.0);
+        if let Some(capture) = telemetry_capture {
+            report.telemetry = Some(capture.finish(&mut report, retain_per_request));
+        }
+        report.kv_eviction_policy = engine_config.kv_eviction_policy;
+        report.kv_eviction_assumption = (engine_config.kv_eviction_policy
+            == KvEvictionPolicy::Belady)
+            .then_some("global_input_trace_order_v1");
+        Ok(report)
     }
+}
+
+fn prepare_belady_oracle(
+    input: &mut ReplayRuntimeInput,
+    engine_block_size: usize,
+) -> ReplayResult<BeladyOracle> {
+    let block_size = u32::try_from(engine_block_size)
+        .ok()
+        .filter(|size| *size > 0)
+        .ok_or_else(|| {
+            ReplayError::InvalidSpec("belady requires a positive u32 block size".into())
+        })?;
+    // This external, noncausal forecast only ranks native eviction candidates.
+    // It never populates KV, changes arrivals, or predicts future routing. Demand
+    // means input occurrences, not actual chunk/recomputation/output accesses;
+    // refining it from simulated execution would change the deliberate contract.
+    let requests = match input {
+        ReplayRuntimeInput::Requests(requests) => {
+            let mut previous_arrival = 0.0;
+            let mut forecast = Vec::with_capacity(requests.len());
+            for request in requests {
+                if !request.prompt_tokens_are_placement_safe() {
+                    return Err(ReplayError::InvalidSpec(
+                        "belady requires materialized input tokens or trace block hashes; length-only prompts are unsupported"
+                            .into(),
+                    ));
+                }
+                let arrival = request.arrival_timestamp_ms.ok_or_else(|| {
+                    ReplayError::InvalidSpec("belady requires fixed request arrival times".into())
+                })?;
+                if !arrival.is_finite() || arrival < previous_arrival {
+                    return Err(ReplayError::InvalidSpec(
+                        "belady runtime requests must have finite, nonnegative arrival times in queue order"
+                            .into(),
+                    ));
+                }
+                previous_arrival = arrival;
+                let request_id = *request.uuid.get_or_insert_with(Uuid::new_v4);
+                forecast.push((
+                    request_id,
+                    input_sequence_hashes(&request.tokens, block_size as usize),
+                ));
+            }
+            forecast
+        }
+        ReplayRuntimeInput::Workload(driver) => {
+            driver
+                .prepare_belady_requests(engine_block_size)
+                .map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))?
+        }
+        ReplayRuntimeInput::GeneratedRequests(_) => {
+            return Err(ReplayError::InvalidSpec(
+                "belady requires a complete open-loop input trace; generated requests are unsupported"
+                    .into(),
+            ));
+        }
+    };
+    BeladyOracle::new(requests).map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))
 }
 
 fn validate_request_dp_ranks(
     spec: &ReplaySpec,
     engine_config: &ReplayEngineConfig,
 ) -> ReplayResult<()> {
+    const PREFERRED: &str = "preferred attention-DP";
+    const HINT_SOURCE: &str = "kv_hints source";
+    // `role` clones the rank config, so read each stage's dp_size once.
+    let [aggregated, prefill, decode] = [
+        WorkerStage::Aggregated,
+        WorkerStage::Prefill,
+        WorkerStage::Decode,
+    ]
+    .map(|stage| engine_config.role(stage).dp_size);
     let validate = |request: &ReplayRequest,
                     stage: WorkerStage,
+                    label: &str,
                     rank: Option<u32>|
      -> ReplayResult<()> {
         let Some(rank) = rank else {
             return Ok(());
         };
-        let dp_size = engine_config.role(stage).dp_size;
+        let dp_size = match stage {
+            WorkerStage::Aggregated => aggregated,
+            WorkerStage::Prefill => prefill,
+            WorkerStage::Decode => decode,
+        };
         if rank >= dp_size {
             let stage = match stage {
                 WorkerStage::Aggregated => "aggregated",
@@ -555,7 +842,7 @@ fn validate_request_dp_ranks(
                 WorkerStage::Decode => "decode",
             };
             return Err(ReplayError::InvalidSpec(format!(
-                "request {:?} {stage} placement: preferred attention-DP rank {rank} is out of range for dp_size {dp_size}",
+                "request {:?} {stage} placement: {label} rank {rank} is out of range for dp_size {dp_size}",
                 request.id
             )));
         }
@@ -563,17 +850,23 @@ fn validate_request_dp_ranks(
     };
 
     for request in &spec.requests {
+        // A peer-fetch hint's source worker is not checked: workers come and go under
+        // scaling, so placement drops a hint whose source worker is not live instead.
+        let hint_rank = request.kv_hints.map(|hints| hints.source_dp_rank);
         match spec.topology {
             ReplayTopology::Aggregated { .. } => {
-                validate(request, WorkerStage::Aggregated, request.dp_rank)?;
+                validate(request, WorkerStage::Aggregated, PREFERRED, request.dp_rank)?;
+                validate(request, WorkerStage::Aggregated, HINT_SOURCE, hint_rank)?;
             }
             ReplayTopology::Disaggregated { .. } => {
                 validate(
                     request,
                     WorkerStage::Prefill,
+                    PREFERRED,
                     request.prefill_dp_rank.or(request.dp_rank),
                 )?;
-                validate(request, WorkerStage::Decode, request.dp_rank)?;
+                validate(request, WorkerStage::Decode, PREFERRED, request.dp_rank)?;
+                validate(request, WorkerStage::Prefill, HINT_SOURCE, hint_rank)?;
             }
         }
     }
@@ -583,11 +876,19 @@ fn validate_request_dp_ranks(
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
     input: ReplayRuntimeInput,
     mode: ReplayMode,
-) -> AdmissionQueue<Metadata> {
-    match input {
+) -> ReplayResult<AdmissionQueue<Metadata>> {
+    Ok(match input {
         ReplayRuntimeInput::Requests(requests) => AdmissionQueue::new_requests(requests, mode),
+        ReplayRuntimeInput::GeneratedRequests(requests) => {
+            let ReplayMode::Concurrency { max_in_flight } = mode else {
+                return Err(ReplayError::InvalidSpec(
+                    "generated requests require max_in_flight".into(),
+                ));
+            };
+            AdmissionQueue::new_generated_requests(requests, max_in_flight)
+        }
         ReplayRuntimeInput::Workload(driver) => AdmissionQueue::new_workload(driver, mode),
-    }
+    })
 }
 
 fn positive_delay(delay_ms: f64) -> Option<f64> {
@@ -637,6 +938,7 @@ fn lower_requests(
                 dp_rank: 0,
                 preferred_dp_rank: request.dp_rank,
                 preferred_prefill_dp_rank: request.prefill_dp_rank,
+                kv_hints: request.kv_hints,
                 arrival_timestamp_ms: Some(request.arrival_time_ms),
                 priority: routing.priority,
                 strict_priority: routing.strict_priority,
@@ -647,7 +949,9 @@ fn lower_requests(
                     turn_index: request.turn_index,
                     metadata: request.metadata.clone(),
                     prompt_token_source,
+                    agentic: None,
                 }),
+                images: Vec::new(),
             })
         })
         .collect::<ReplayResult<Vec<_>>>()?;
@@ -702,20 +1006,17 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
                 ));
             }
         }
+        ReplayRuntimeInput::GeneratedRequests(requests) => requests.set_canonical_ids(),
         ReplayRuntimeInput::Workload(driver) => {
             driver.set_deterministic_request_ids(1);
         }
     }
 }
 
-fn finish_report(mut collector: crate::replay::TraceCollector, sla: SlaThresholds) -> ReplayReport {
-    collector.set_sla_thresholds(sla);
-    collector.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay::protocol::AuthoredKvHints;
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
@@ -742,9 +1043,70 @@ mod tests {
     }
 
     #[test]
+    fn belady_native_forecast_preserves_queue_identity_and_rejects_unordered_arrivals() {
+        let first_id = Uuid::from_u128(91);
+        let mut input = ReplayRuntimeInput::Requests(VecDeque::from([
+            DirectRequest {
+                tokens: vec![11, 12, 13, 14],
+                uuid: Some(first_id),
+                arrival_timestamp_ms: Some(1.0),
+                ..Default::default()
+            },
+            DirectRequest {
+                tokens: vec![11, 12, 21, 22],
+                arrival_timestamp_ms: Some(1.0),
+                ..Default::default()
+            },
+        ]));
+        let oracle = prepare_belady_oracle(&mut input, 2).unwrap();
+        let ReplayRuntimeInput::Requests(requests) = &mut input else {
+            unreachable!()
+        };
+        assert_eq!(requests[0].uuid, Some(first_id));
+        assert_eq!(requests[0].arrival_timestamp_ms, Some(1.0));
+        assert_eq!(requests[1].arrival_timestamp_ms, Some(1.0));
+        let second_id = requests[1].uuid.unwrap();
+        let shared_hash = input_sequence_hashes(&requests[0].tokens, 2)[0];
+        assert_eq!(oracle.next_use(shared_hash), 0);
+        oracle.retire_requests([second_id]);
+        assert_eq!(oracle.next_use(shared_hash), 0);
+        oracle.retire_requests([first_id]);
+        assert_eq!(oracle.next_use(shared_hash), usize::MAX);
+
+        requests[1].arrival_timestamp_ms = Some(0.0);
+        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        let ReplayRuntimeInput::Requests(requests) = &input else {
+            unreachable!()
+        };
+        assert_eq!(requests[0].uuid, Some(first_id));
+        assert_eq!(requests[1].uuid, Some(second_id));
+    }
+
+    #[test]
+    fn belady_native_forecast_rejects_duplicate_ids_and_invalid_arrivals() {
+        for arrival in [None, Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut input = ReplayRuntimeInput::Requests(VecDeque::from([DirectRequest {
+                tokens: vec![1, 2],
+                arrival_timestamp_ms: arrival,
+                ..Default::default()
+            }]));
+            assert!(prepare_belady_oracle(&mut input, 2).is_err());
+        }
+        let request = DirectRequest {
+            tokens: vec![1, 2],
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        };
+        let mut input = ReplayRuntimeInput::Requests(VecDeque::from([request.clone(), request]));
+        assert!(prepare_belady_oracle(&mut input, 2).is_err());
+    }
+
+    #[test]
     fn replay_spec_lowering_preserves_correlation_routing_and_prompt_provenance() {
         let spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::Aggregated {
                 workers: WorkerPoolSpec::default(),
             },
@@ -767,6 +1129,7 @@ mod tests {
                     output_token_ids: None,
                     dp_rank: Some(2),
                     prefill_dp_rank: Some(1),
+                    kv_hints: None,
                     session_id: Some("session-a".into()),
                     turn_index: Some(4),
                     metadata: serde_json::json!({
@@ -785,6 +1148,7 @@ mod tests {
                     output_token_ids: None,
                     dp_rank: None,
                     prefill_dp_rank: None,
+                    kv_hints: None,
                     session_id: None,
                     turn_index: None,
                     metadata: serde_json::Value::Null,
@@ -818,6 +1182,7 @@ mod tests {
     fn random_lowering_does_not_use_ordinal_request_uuids() {
         let spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::aggregated(1),
             engine: serde_json::Value::Null,
             adapters: ReplayAdapters::default(),
@@ -834,6 +1199,7 @@ mod tests {
                 output_token_ids: None,
                 dp_rank: None,
                 prefill_dp_rank: None,
+                kv_hints: None,
                 session_id: None,
                 turn_index: None,
                 metadata: serde_json::Value::Null,
@@ -845,5 +1211,326 @@ mod tests {
             .pop_front()
             .unwrap();
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
+    }
+
+    #[test]
+    fn authored_kv_hints_round_trip_and_are_omitted_when_absent() {
+        let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 2}},
+            "requests": [
+                {
+                    "id": "hinted",
+                    "arrival_time_ms": 0.0,
+                    "input_tokens": 4,
+                    "output_tokens": 1,
+                    "kv_hints": {"source_worker": 0, "source_dp_rank": 1},
+                },
+                {"id": "plain", "arrival_time_ms": 1.0, "input_tokens": 4, "output_tokens": 1},
+            ],
+        }))
+        .unwrap();
+        let hints = AuthoredKvHints {
+            source_worker: 0,
+            source_dp_rank: 1,
+        };
+        assert_eq!(spec.requests[0].kv_hints, Some(hints));
+        assert_eq!(spec.requests[1].kv_hints, None);
+
+        // The field round-trips, and a request without it serializes exactly as before.
+        let value = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            value["requests"][0]["kv_hints"],
+            serde_json::json!({"source_worker": 0, "source_dp_rank": 1})
+        );
+        assert_eq!(
+            value["requests"][1],
+            serde_json::json!({
+                "id": "plain",
+                "arrival_time_ms": 1.0,
+                "input_tokens": 4,
+                "output_tokens": 1,
+            })
+        );
+        assert_eq!(serde_json::from_value::<ReplaySpec>(value).unwrap(), spec);
+    }
+
+    #[test]
+    fn authored_kv_hint_rank_outside_dp_size_is_rejected_at_spec_load() {
+        let run = |topology: serde_json::Value, engine: serde_json::Value| {
+            let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+                "topology": topology,
+                "engine": engine,
+                "requests": [{
+                    "id": "hinted",
+                    "arrival_time_ms": 0.0,
+                    "input_tokens": 4,
+                    "output_tokens": 1,
+                    "kv_hints": {"source_worker": 0, "source_dp_rank": 1},
+                }],
+            }))
+            .unwrap();
+            match Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .run()
+            {
+                Err(ReplayError::InvalidSpec(message)) => message,
+                other => panic!("an out-of-range hint rank must be an invalid spec: {other:?}"),
+            }
+        };
+        let aggregated = run(
+            serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 2}}),
+            serde_json::json!({"dp_size": 1}),
+        );
+        // P/D checks the prefill pool, even when the decode pool has the rank.
+        let disaggregated = run(
+            serde_json::json!({
+                "kind": "disaggregated",
+                "prefill": {"initial_workers": 1},
+                "decode": {"initial_workers": 1},
+            }),
+            serde_json::json!({"prefill": {"dp_size": 1}, "decode": {"dp_size": 2}}),
+        );
+        for (message, pool) in [(aggregated, "aggregated"), (disaggregated, "prefill")] {
+            assert!(message.contains("request \"hinted\""), "{message}");
+            assert!(message.contains(&format!("{pool} placement")), "{message}");
+            assert!(
+                message.contains("rank 1 is out of range for dp_size 1"),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod generated_replay_tests {
+    use super::*;
+    use crate::engine::{Backend, EngineConfig, TimingModelConfig};
+    use crate::replay::SlaThresholds;
+    use crate::replay::loadgen::GeneratedRequests;
+    use crate::replay::{
+        CanonicalReplayCoverage, CanonicalReplayRecord, ReplayRoleConfig, WorkerPoolSpec,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn request(index: usize) -> DirectRequest {
+        DirectRequest {
+            tokens: (0..16 + index % 3)
+                .map(|offset| (index * 100 + offset) as u32)
+                .collect(),
+            output_token_ids: Some(vec![17, 18, 19]),
+            max_output_tokens: 3,
+            uuid: Some(Uuid::from_u128(index as u128 + 100)),
+            arrival_timestamp_ms: Some(index as f64 * 1000.0),
+            ..Default::default()
+        }
+    }
+
+    fn spec(backend: Backend, disagg: bool, cap: usize, prefix_caching: bool) -> ReplaySpec {
+        let mut rank = EngineConfig::for_backend(backend);
+        rank.block_size = 4;
+        rank.num_gpu_blocks = 128;
+        rank.max_num_seqs = 2;
+        rank.max_num_batched_tokens = 16;
+        rank.enable_prefix_caching = prefix_caching;
+        rank.timing_model = TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        };
+        let role = ReplayRoleConfig {
+            rank: rank.clone(),
+            ..Default::default()
+        };
+        let engine = ReplayEngineConfig {
+            rank,
+            prefill: disagg.then(|| role.clone()),
+            decode: disagg.then_some(role),
+            ..Default::default()
+        };
+        ReplaySpec {
+            version: 1,
+            encoder: None,
+            topology: if disagg {
+                ReplayTopology::Disaggregated {
+                    prefill: WorkerPoolSpec {
+                        initial_workers: 2,
+                        startup_delay_ms: 2.0,
+                    },
+                    decode: WorkerPoolSpec {
+                        initial_workers: 1,
+                        startup_delay_ms: 0.0,
+                    },
+                    handoff_latency_ms: 1.0,
+                }
+            } else {
+                ReplayTopology::aggregated(2)
+            },
+            engine: serde_json::to_value(engine).unwrap(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: Some(cap),
+            record_per_request: true,
+            sla: Default::default(),
+            requests: Vec::new(),
+        }
+    }
+
+    fn canonical(report: &ReplayReport, capture: ReplayCaptureOptions) -> Vec<u8> {
+        CanonicalReplayRecord::build(
+            report,
+            serde_json::json!({}),
+            &CanonicalReplayCoverage::from_report(report, capture),
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .into_json_line()
+        .unwrap()
+    }
+
+    #[test]
+    fn generated_concurrency_matches_eager_reports_across_backends_and_topologies() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for disagg in [false, true] {
+                for cap in [1, 4, 32] {
+                    for prefix_caching in [false, true] {
+                        for determinism in
+                            [ReplayDeterminism::Random, ReplayDeterminism::CanonicalV1]
+                        {
+                            let spec = spec(backend, disagg, cap, prefix_caching);
+                            let capture = ReplayCaptureOptions {
+                                capture_per_request: true,
+                                determinism,
+                                ..Default::default()
+                            };
+                            let eager = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+                                .unwrap()
+                                .with_runtime_input(ReplayRuntimeInput::Requests(
+                                    (0..11).map(request).collect(),
+                                ))
+                                .with_capture_options(capture)
+                                .run()
+                                .unwrap();
+                            let lazy = Replayer::new(spec, ReplayEngineFactory::new())
+                                .unwrap()
+                                .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(
+                                    GeneratedRequests::new(11, |index| Ok(request(index))),
+                                ))
+                                .with_capture_options(capture)
+                                .run()
+                                .unwrap();
+                            assert_eq!(
+                                canonical(&eager, capture),
+                                canonical(&lazy, capture),
+                                "{backend:?} disagg={disagg} cap={cap} prefix={prefix_caching} determinism={determinism:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_summary_matches_detailed_output_and_sla() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for disagg in [false, true] {
+                for cutoff in [None, Some(0.0), Some(8.0)] {
+                    let mut spec = spec(backend, disagg, 4, true);
+                    spec.max_sim_time_ms = cutoff;
+                    spec.sla = SlaThresholds {
+                        ttft_ms: Some(3.0),
+                        ..Default::default()
+                    };
+                    let mut reports = Vec::new();
+                    for detailed in [false, true] {
+                        spec.record_per_request = detailed;
+                        let report = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+                            .unwrap()
+                            .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(
+                                GeneratedRequests::new(41, |index| Ok(request(index))),
+                            ))
+                            .run()
+                            .unwrap()
+                            .with_wall_time_ms(0.0);
+                        reports.push(serde_json::to_value(report).unwrap());
+                    }
+                    // Exact counts, goodput, rates, quantiles, and worker seconds.
+                    // Mean/std accumulation order may differ at floating-point roundoff.
+                    fn compare(a: &serde_json::Value, b: &serde_json::Value) {
+                        if let (Some(a), Some(b)) = (a.as_f64(), b.as_f64()) {
+                            assert!(
+                                (a - b).abs() <= 1e-10 * a.abs().max(b.abs()).max(1.0),
+                                "{a} != {b}"
+                            );
+                        } else if let (Some(a), Some(b)) = (a.as_object(), b.as_object()) {
+                            assert_eq!(a.len(), b.len());
+                            for (key, value) in a {
+                                compare(value, &b[key]);
+                            }
+                        } else {
+                            assert_eq!(a, b);
+                        }
+                    }
+                    compare(&reports[0], &reports[1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cutoff_does_not_generate_the_unadmitted_tail() {
+        for disagg in [false, true] {
+            let mut spec = spec(Backend::Vllm, disagg, 3, false);
+            spec.max_sim_time_ms = Some(0.0);
+            let generated = Arc::new(AtomicUsize::new(0));
+            let counter = generated.clone();
+            let source = GeneratedRequests::new(10_000_000, move |index| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(request(index))
+            });
+            Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(source))
+                .run()
+                .unwrap();
+            assert_eq!(generated.load(Ordering::SeqCst), 3);
+        }
+    }
+
+    #[test]
+    fn non_round_robin_placement_reports_provider_before_config() {
+        let mut spec = spec(Backend::Vllm, false, 1, false);
+        spec.adapters.placement = crate::replay::ProviderSpec {
+            provider: "kv_router".into(),
+            config: serde_json::json!({"overlap_weight": 1.0}),
+        };
+        let Err(error) = Replayer::new(spec, ReplayEngineFactory::new()) else {
+            panic!("non-round_robin placement must be rejected");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("engine composition requires round_robin placement"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn generated_requests_reject_open_loop_without_invoking_the_factory() {
+        let mut spec = spec(Backend::Vllm, false, 1, false);
+        spec.max_in_flight = None;
+        let source = GeneratedRequests::new(1, |_| panic!("must validate mode before generation"));
+        let error = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_runtime_input(ReplayRuntimeInput::GeneratedRequests(source))
+            .run()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("generated requests require max_in_flight")
+        );
     }
 }

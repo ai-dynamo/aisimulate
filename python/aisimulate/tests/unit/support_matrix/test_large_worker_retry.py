@@ -5,7 +5,6 @@ import shlex
 
 import pandas as pd
 import pytest
-
 from tools.support_matrix import generate_support_matrix
 from tools.support_matrix import support_matrix as support_matrix_module
 from tools.support_matrix.support_matrix import (

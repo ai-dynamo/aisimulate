@@ -14,6 +14,53 @@ use crate::engine::HandoffId;
 #[cfg(test)]
 use crate::replay::protocol::DirectRequest;
 
+/// Preserve the dispatch failure even when policy cleanup also fails.
+pub(super) fn dispatch_failure(error: anyhow::Error, abort: anyhow::Result<()>) -> anyhow::Error {
+    match abort {
+        Ok(()) => error,
+        Err(cleanup) => {
+            use super::error::{ReplayError, runtime_error};
+            let message = format!("{error:#}; placement dispatch_aborted failed: {cleanup:#}");
+            match runtime_error(error) {
+                ReplayError::Engine(_) => ReplayError::Engine(message),
+                ReplayError::Placement(_) => ReplayError::Placement(message),
+                _ => ReplayError::Invariant(message),
+            }
+            .into()
+        }
+    }
+}
+
+/// Result of advancing a replay runtime to its next settled semantic boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ReplayStepOutcome {
+    Settled { now_ms: f64 },
+    Complete,
+    TimeLimitReached { now_ms: f64 },
+}
+
+/// Upper bound on consecutive progressing internal-work steps at one instant.
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
+
+/// Repeat `step` until it stops progressing, failing instead of spinning when
+/// engine internal work (for example host transfers) never converges.
+pub(super) fn settle_internal_work(
+    now_ms: f64,
+    consecutive_steps: &mut usize,
+    mut step: impl FnMut() -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    while step()? {
+        *consecutive_steps += 1;
+        anyhow::ensure!(
+            *consecutive_steps < MAX_CONSECUTIVE_INTERNAL_STEPS,
+            "offline replay detected non-converging engine internal work at {now_ms} ms"
+        );
+        changed = true;
+    }
+    Ok(changed)
+}
+
 pub(super) fn next_timestamp(
     next_arrival_ms: Option<f64>,
     next_event_ms: Option<f64>,
@@ -279,6 +326,24 @@ pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_work_settles_until_idle_and_bounds_non_convergence() {
+        let mut steps = 0;
+        let mut progress = [true, true, false].into_iter();
+        assert!(settle_internal_work(5.0, &mut steps, || Ok(progress.next().unwrap())).unwrap());
+        assert!(!settle_internal_work(5.0, &mut steps, || Ok(false)).unwrap());
+        assert_eq!(steps, 2);
+        // The budget is shared by every settlement at one instant.
+        let error = settle_internal_work(7.5, &mut steps, || Ok(true)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline replay detected non-converging engine internal work at 7.5 ms"
+        );
+        assert_eq!(steps, MAX_CONSECUTIVE_INTERNAL_STEPS);
+    }
+    use crate::engine::generalized::PassId;
+    use crate::replay::components::ScheduledEngineCompletion;
     use crate::replay::events::SimulationWorkerStage;
     use uuid::Uuid;
 
@@ -403,5 +468,55 @@ mod tests {
         assert_eq!(events.len(), 1);
         // pop_ready_worker_ready should succeed.
         assert!(pop_ready_worker_ready(&mut events, 10.0).is_some());
+    }
+
+    #[test]
+    fn same_timestamp_events_follow_semantic_phase_and_identity_order() {
+        let mut events: BinaryHeap<SimulationEvent<()>> = BinaryHeap::new();
+        let mut next_event_seq = 0;
+        push_transfer_complete(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            HandoffId::new(Uuid::from_u128(2)),
+        );
+        push_worker_ready(
+            &mut events,
+            &mut next_event_seq,
+            10.0,
+            SimulationWorkerStage::Decode,
+            3,
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Decode, 4, PassId(9)),
+            },
+        );
+        push_worker_completions(
+            &mut events,
+            &mut next_event_seq,
+            ScheduledEngineCompletion {
+                at_ms: 10.0,
+                completion: EnginePassCompletion::new(SimulationWorkerStage::Prefill, 2, PassId(3)),
+            },
+        );
+
+        let first = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(first.stage, SimulationWorkerStage::Prefill);
+        assert_eq!(first.worker_id, 2);
+        let second = pop_ready_worker_completions(&mut events, 10.0).unwrap();
+        assert_eq!(second.stage, SimulationWorkerStage::Decode);
+        assert_eq!(second.worker_id, 4);
+        assert_eq!(
+            pop_ready_worker_ready(&mut events, 10.0),
+            Some((SimulationWorkerStage::Decode, 3))
+        );
+        assert_eq!(
+            pop_ready_transfer_complete(&mut events, 10.0),
+            Some(HandoffId::new(Uuid::from_u128(2)))
+        );
     }
 }

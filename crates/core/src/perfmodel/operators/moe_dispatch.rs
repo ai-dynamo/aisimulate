@@ -3,7 +3,7 @@
 
 //! MoE dispatch / combine operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.moe.MoEDispatch`. The dispatch
+//! Mirrors `aisimulate.sdk.operations.moe.MoEDispatch`. The dispatch
 //! operation moves tokens between attention ranks and expert ranks before and
 //! after the MoE GEMMs. It has backend-specific paths:
 //!
@@ -729,7 +729,7 @@ mod tests {
     fn b200_sglang_db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.10").expect("db loads")
     }
 
@@ -795,7 +795,7 @@ mod tests {
     fn gb200_trtllm_db(mode: DatabaseMode) -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "gb200", "trtllm", "1.3.0rc10")
             .expect("db loads")
             .with_mode(mode, TransferPolicy::ALL)
@@ -804,7 +804,7 @@ mod tests {
     fn h100_sglang_db(mode: DatabaseMode) -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "h100_sxm", "sglang", "0.5.6.post2")
             .expect("db loads")
             .with_mode(mode, TransferPolicy::ALL)

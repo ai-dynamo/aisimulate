@@ -8,10 +8,10 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common, models
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.operations import CustomAllReduce, OverlapOp
-from aiconfigurator_core.sdk import models as core_models
+from aisimulate.sdk import common, models
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.operations import CustomAllReduce, OverlapOp
+from aisimulate_core.sdk import models as core_models
 
 pytestmark = pytest.mark.unit
 
@@ -45,6 +45,61 @@ def _flatten_ops(phase_ops):
             yield from op._group_b
         else:
             yield op
+
+
+@pytest.mark.parametrize("is_context", [True, False])
+def test_sglang_attention_dp_prices_folded_tp_reduction_numerically(is_context):
+    """Qwen omits its attention AR, so dispatch must retain BOTH collectives."""
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.operations import NCCL
+    from aisimulate_core.sdk.perf_database import get_database_view
+
+    model = models.get_model(
+        "Qwen/Qwen3.5-397B-A17B",
+        _model_config(tp_size=4, attention_dp_size=2, moe_tp_size=1, moe_ep_size=8),
+        "sglang",
+    )
+    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    ops = list(_flatten_ops(model.context_ops if is_context else model.generation_ops))
+    phase = "context" if is_context else "generation"
+    assert not any(op._name in (f"{phase}_gdn_ar", f"{phase}_full_ar") for op in ops)
+
+    def cost(op, tokens):
+        return float(_evaluate_single_op(db, op, is_context=is_context, batch_size=1, s=64, prefix=0, x=tokens))
+
+    dispatches = [op for op in ops if op._name.endswith("_moe_pre_dispatch")]
+    assert len(dispatches) == 2
+    for op in dispatches:
+        spec = json.loads(op._spec_json())["MoeDispatch"]
+        assert spec["attn_ar_modeled"]
+        scale, h = spec["scale_factor"], spec["hidden_size"]
+        reduction = NCCL("reference", scale, "reduce_scatter", h, 4, common.CommQuantMode.half)
+        gather = NCCL("reference", scale, "all_gather", h, 8, common.CommQuantMode.half)
+        assert cost(op, 64) == pytest.approx(cost(reduction, 64) + cost(gather, 128), rel=1e-12)
+        assert cost(op, 64) > cost(gather, 128)
+
+
+@pytest.mark.parametrize("is_context", [True, False])
+def test_trtllm_qwen_dispatch_retains_legacy_allreduce_cost(is_context):
+    """The unqualified TRT-LLM path keeps its documented pre-existing behavior."""
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.perf_database import get_database_view
+
+    model = models.get_model("Qwen/Qwen3.5-397B-A17B", _model_config(tp_size=8), "trtllm")
+    db = get_database_view("gb200", "trtllm", "current", allow_missing_data=True, database_mode="SOL")
+
+    def cost(op):
+        return float(_evaluate_single_op(db, op, is_context=is_context, batch_size=1, s=64, prefix=0, x=64))
+
+    ops = list(_flatten_ops(model.context_ops if is_context else model.generation_ops))
+    dispatches = [op for op in ops if op._name.endswith("_moe_pre_dispatch")]
+    assert len(dispatches) == 2
+    for op in dispatches:
+        spec = json.loads(op._spec_json())["MoeDispatch"]
+        assert spec["flavor"] == "TrtllmAlltoall" and spec["attn_ar_modeled"]
+        reference = CustomAllReduce("reference", spec["scale_factor"], spec["hidden_size"], 8)
+        assert cost(op) == pytest.approx(cost(reference), rel=1e-12)
+        assert cost(op) > 0
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,7 @@
 //! ALL of the work -- fraction + tolerance validation, HF-config parsing, the
 //! AIC backend memory model, the OfFree/OfTotal budget math, the naive heuristic
 //! fallback, AND the tolerance margin -- lives in
-//! `aiconfigurator.sdk.memory.estimate_kv_cache`. The Rust side:
+//! `aisimulate.sdk.memory.estimate_kv_cache`. The Rust side:
 //!
 //! 1. crosses into Python once (`with_gil → import → call estimate_kv_cache →
 //!    extract dict`), forwarding `tolerance_fraction` through;
@@ -25,7 +25,7 @@
 //!
 //! The two budget formulas (TRT-LLM free-fraction vs vLLM/SGLang total-fraction),
 //! the naive fallback, and the tolerance margin all live on the Python side; see
-//! the docstring of `aiconfigurator.sdk.memory.estimate_kv_cache`. The
+//! the docstring of `aisimulate.sdk.memory.estimate_kv_cache`. The
 //! [`KvCacheMemoryFraction`] enum still encodes the backend↔fraction XOR so the
 //! request shape is unambiguous; the variant is validated against
 //! `engine.backend` in Python.
@@ -120,6 +120,8 @@ pub enum EstimateSource {
     Native,
     /// Post-weight reservation heuristic (`naive_kv_reservation`, default 80%).
     NaiveFallback,
+    /// Explicit rank-local bounds supplied in an FPM profile.
+    Profile,
 }
 
 /// Non-KV memory components, in bytes. Maps AIC's `_get_memory_usage` dict:
@@ -221,7 +223,7 @@ impl std::error::Error for KvCacheEstimateError {}
 /// Estimate KV-cache memory (raw estimate + optional tolerance margin).
 ///
 /// Pure forwarder: crosses into Python once to compute the COMPLETE estimate. The
-/// Python `aiconfigurator.sdk.memory.estimate_kv_cache` does the backend↔fraction
+/// Python `aisimulate.sdk.memory.estimate_kv_cache` does the backend↔fraction
 /// and tolerance validation, the native AIC memory breakdown + budget math, the
 /// naive heuristic fallback, AND the tolerance margin (`tolerance_adjusted`); the
 /// Rust side rebuilds a [`KvCacheEstimate`] from the returned dict with no math
@@ -242,7 +244,7 @@ pub fn estimate_kv_cache(
 /// Cross into Python once to compute the complete estimate.
 ///
 /// Mirrors the `AicEngineBuilder` → `compile_engine` crossing: `with_gil →
-/// import aiconfigurator.sdk.memory → call estimate_kv_cache(...) → extract
+/// import aisimulate.sdk.memory → call estimate_kv_cache(...) → extract
 /// the returned dict`. `tolerance_fraction` is forwarded; the Python fn applies
 /// the tolerance and returns `tolerance_adjusted` in the dict.
 #[cfg(feature = "python")]
@@ -250,12 +252,18 @@ fn fetch_python_estimate(
     req: &KvCacheEstimateRequest,
 ) -> Result<KvCacheEstimate, KvCacheEstimateError> {
     use pyo3::prelude::*;
+    use pyo3::types::PyDictMethods;
 
     let engine = &req.engine;
 
     Python::with_gil(|py| -> PyResult<KvCacheEstimate> {
-        let engine_mod = py.import("aiconfigurator.sdk.memory")?;
+        let engine_mod = py.import("aisimulate.sdk.memory")?;
         let kwargs = estimate_kwargs(py, req)?;
+        if engine.extra.contains_key("fpm_profile") {
+            for (name, mode) in crate::py::fpm_profile_quantization(py, engine)? {
+                kwargs.set_item(name, mode)?;
+            }
+        }
 
         let out = engine_mod.call_method(
             "estimate_kv_cache",
@@ -302,6 +310,14 @@ fn estimate_kwargs<'py>(
     let (fraction_kind, fraction_value) = req.kv_cache_memory_fraction.to_wire();
     let kwargs = PyDict::new(py);
     kwargs.set_item("backend_version", engine.backend_version.as_deref())?;
+    kwargs.set_item(
+        "worker_type",
+        engine
+            .extra
+            .get("worker_type")
+            .map(String::as_str)
+            .unwrap_or("aggregated"),
+    )?;
     kwargs.set_item("max_num_tokens", req.max_num_tokens)?;
     kwargs.set_item("max_batch_size", req.max_batch_size)?;
     kwargs.set_item("memory_fraction_kind", fraction_kind)?;
@@ -311,6 +327,11 @@ fn estimate_kwargs<'py>(
     kwargs.set_item("attention_dp_size", parallel.attention_dp_size.unwrap_or(1))?;
     kwargs.set_item("moe_tp_size", parallel.moe_tp_size)?;
     kwargs.set_item("moe_ep_size", parallel.moe_ep_size)?;
+    kwargs.set_item("cp_size", parallel.cp_size.unwrap_or(1))?;
+    kwargs.set_item(
+        "fpm_profile",
+        engine.extra.get("fpm_profile").map(String::as_str),
+    )?;
     kwargs.set_item(
         "gemm_quant_mode",
         quant.weight_dtype.as_ref().map(dtype_str),
@@ -359,11 +380,18 @@ fn estimate_from_dict(
     use pyo3::exceptions::PyValueError;
     use pyo3::types::PyAnyMethods;
 
+    if out.get_item("total_kv_size_tokens")?.is_none() {
+        return Err(PyValueError::new_err(
+            "grouped FPM caches have no scalar token capacity; use ForwardPassPerfModelConfig::estimate_cache_budget and a cache-group-aware allocator",
+        ));
+    }
+
     let u64_at = |k: &str| -> pyo3::PyResult<u64> { out.get_item(k)?.extract::<u64>() };
 
     let source = match out.get_item("source")?.extract::<String>()?.as_str() {
         "native" => EstimateSource::Native,
         "naive_fallback" => EstimateSource::NaiveFallback,
+        "profile" => EstimateSource::Profile,
         other => {
             return Err(PyValueError::new_err(format!(
                 "estimate_kv_cache returned unknown source {other:?}"
@@ -435,6 +463,7 @@ fn dtype_str(dt: &crate::DataType) -> &'static str {
         W4a8Mxfp4Mxfp8 => "w4a8_mxfp4_mxfp8",
         W4a8Mxfp4Mxfp8Trtllm => "w4a8_mxfp4_mxfp8_trtllm",
         W4a16Mxfp4Cutlass => "w4a16_mxfp4_cutlass",
+        W4a16Mxfp4Humming => "w4a16_mxfp4_humming",
         W4a16Nvfp4 => "w4a16_nvfp4",
     }
 }
@@ -444,7 +473,7 @@ mod tests {
     use super::*;
 
     // Tolerance validation + application and the native/naive budget math now
-    // live entirely in Python (`aiconfigurator.sdk.memory.estimate_kv_cache`),
+    // live entirely in Python (`aisimulate.sdk.memory.estimate_kv_cache`),
     // exercised by `tests/unit/sdk/test_memory_estimation.py` and the integration
     // parity test. The Rust side is a pure forwarder; the only pure-Rust unit
     // left here is the memory-fraction wire mapping. The dict round-trip
@@ -507,6 +536,9 @@ mod tests {
                 backend: BackendKind::Vllm,
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
+                fpm_parquet_path: None,
+                decoder_replay: false,
+                moe_kernel_source: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
                     tp_size: 1,
@@ -515,11 +547,13 @@ mod tests {
                     moe_tp_size: None,
                     moe_ep_size: None,
                     cp_size: None,
+                    dcp_size: None,
                 },
                 quantization: QuantizationConfig {
                     weight_dtype: None,
                     moe_dtype: None,
                     activation_dtype: None,
+                    fpm_fmha_dtype: None,
                     kv_cache_dtype: None,
                 },
                 speculative: None,
@@ -544,6 +578,78 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embed-python")]
+    #[test]
+    fn profile_memory_preserves_exact_quantization_and_rejects_wire_conflicts() {
+        use crate::DataType;
+
+        pyo3::prepare_freethreaded_python();
+        for (gemm_mode, weight_dtype, moe_mode, moe_dtype) in [
+            ("fp8_block", DataType::Fp8Block, "nvfp4", DataType::Nvfp4),
+            ("int8_wo", DataType::Int8, "nvfp4", DataType::Nvfp4),
+            ("int4_wo", DataType::Int4, "nvfp4", DataType::Nvfp4),
+            ("sq", DataType::Int8, "nvfp4", DataType::Nvfp4),
+            ("fp8_ootb", DataType::Fp8, "nvfp4", DataType::Nvfp4),
+            ("nvfp4", DataType::Nvfp4, "int4_wo", DataType::Int4),
+        ] {
+            let mut req = python_forwarding_request();
+            req.cuda_graph_reserved_bytes = 0;
+            req.gpu_memory_capacity_bytes_override = Some(1_000);
+            req.engine.quantization.weight_dtype = Some(weight_dtype);
+            req.engine.quantization.moe_dtype = Some(moe_dtype);
+            req.engine.quantization.activation_dtype = Some(DataType::Fp8);
+            req.engine.quantization.kv_cache_dtype = Some(DataType::Fp8);
+            req.engine.extra.insert("fpm_profile".into(), serde_json::json!({
+                "schema_version": 1,
+                "model": "test-model",
+                "model_revision": "native-memory-fixture-v1",
+                "architecture": "UnregisteredMemoryFixture",
+                "context_length": 8192,
+                "num_experts": 0,
+                "provenance": "Synthetic native transport fixture; no silicon qualification",
+                "deployments": [{
+                    "system": "test-system", "backend": "vllm", "backend_version": "test-version",
+                    "tp": 1, "pp": 1, "dp": 1, "moe_tp": 1, "moe_ep": 1, "cp": 1,
+                    "gemm_quant_mode": gemm_mode, "moe_quant_mode": moe_mode,
+                    "fmha_quant_mode": "fp8", "comm_quant_mode": "half", "kv_cache_dtype": "fp8",
+                    "resources": {
+                        "weights_bytes": 100, "activations_bytes": 20, "runtime_overhead_bytes": 30,
+                        "comm_overhead_bytes": 50, "kv_bytes_per_token": 10, "cache_layout": "linear",
+                        "max_num_tokens": 8192, "max_batch_size": 256,
+                        "provenance": "Declared rank-local arithmetic fixture; excludes CUDA graphs"
+                    }
+                }]
+            }).to_string());
+            let estimate =
+                estimate_kv_cache(req.clone()).expect("profile precision must survive the wire");
+            assert_eq!(estimate.source, EstimateSource::Profile);
+            assert_eq!(estimate.total_kv_size_bytes, 600);
+            assert_eq!(estimate.total_kv_size_tokens, 60);
+
+            req.engine.quantization.weight_dtype = Some(DataType::Bfloat16);
+            let error = estimate_kv_cache(req).expect_err("a different wire dtype must fail");
+            assert!(
+                error.to_string().contains("FPM profile identity conflict"),
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn scalar_memory_transport_rejects_grouped_capacity() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyDictMethods};
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let out = PyDict::new(py);
+            out.set_item("total_kv_size_tokens", py.None()).unwrap();
+            let error = estimate_from_dict(out.as_any()).unwrap_err();
+            assert!(error.to_string().contains("no scalar token capacity"));
+        });
+    }
+
     #[cfg(feature = "python")]
     #[test]
     fn py_dict_forwarding_and_parsing_are_deterministic() {
@@ -551,9 +657,20 @@ mod tests {
         use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
 
         pyo3::prepare_freethreaded_python();
-        let req = python_forwarding_request();
+        let mut req = python_forwarding_request();
+        req.engine.extra.insert(
+            "fpm_profile".into(),
+            serde_json::json!({"model": "test-model"}).to_string(),
+        );
         Python::with_gil(|py| -> PyResult<()> {
             let kwargs = estimate_kwargs(py, &req)?;
+            assert_eq!(
+                kwargs
+                    .get_item("fpm_profile")?
+                    .unwrap()
+                    .extract::<String>()?,
+                r#"{"model":"test-model"}"#
+            );
             assert_eq!(
                 kwargs
                     .get_item("cuda_graph_reserved_bytes")?
@@ -584,6 +701,11 @@ mod tests {
                     .expect("fake native result has a breakdown")
                     .cuda_graph_reserved_bytes,
                 req.cuda_graph_reserved_bytes
+            );
+            out.set_item("source", "profile")?;
+            assert_eq!(
+                estimate_from_dict(out.as_any())?.source,
+                EstimateSource::Profile
             );
             Ok(())
         })

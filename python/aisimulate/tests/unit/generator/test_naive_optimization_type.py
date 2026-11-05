@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aiconfigurator.generator.naive import (
+from aisimulate.generator.naive import (
     _resolve_parallelization,
     build_naive_generator_params,
 )
@@ -124,11 +124,11 @@ class TestBuildNaiveOptimizationType:
     _WEIGHT = 30 * 1024**3  # 30 GiB -> fits in 1 GPU
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_default_mode_is_agg(self, _sys, _est):
@@ -143,11 +143,11 @@ class TestBuildNaiveOptimizationType:
         assert "agg" in result["params"]
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_disagg_mode_creates_prefill_decode(self, _sys, _est):
@@ -164,11 +164,11 @@ class TestBuildNaiveOptimizationType:
         assert "agg" not in result["params"]
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_disagg_prefill_decode_have_same_parallelization(self, _sys, _est):
@@ -186,11 +186,11 @@ class TestBuildNaiveOptimizationType:
         assert p["moe_expert_parallel_size"] == d["moe_expert_parallel_size"]
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_agg_worker_params_contain_parallelization_keys(self, _sys, _est):
@@ -213,11 +213,11 @@ class TestBuildNaiveOptimizationType:
             assert key in agg, f"missing key {key} in agg worker params"
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_disagg_worker_config_has_prefill_decode_counts(self, _sys, _est):
@@ -235,11 +235,11 @@ class TestBuildNaiveOptimizationType:
         assert "decode_gpus_per_worker" in wc
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=30 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_optimization_type_passed_through(self, _sys, _est):
@@ -257,11 +257,11 @@ class TestBuildNaiveOptimizationType:
             assert agg["gpus_per_worker"] >= 1
 
     @patch(
-        "aiconfigurator.generator.naive._estimate_model_weight_bytes",
+        "aisimulate.generator.naive._estimate_model_weight_bytes",
         return_value=300 * 1024**3,
     )
     @patch(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         return_value={"gpus_per_node": 8, "vram_per_gpu": 141 * 1024**3},
     )
     def test_model_too_large_for_one_gpu_selects_higher_tp(self, _sys, _est):

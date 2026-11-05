@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
-from aiconfigurator.sdk.speculative import SpeculativeDecodingProfile
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.predict import predict_agg_worker, predict_disagg_worker
+from aisimulate.sdk.speculative import SpeculativeDecodingProfile
 
 pytestmark = pytest.mark.unit
 

@@ -19,6 +19,7 @@ from aisimulate.sweeper.score import (
     is_feasible,
     make_candidate,
     meets_aggregate_sla,
+    minimum_goodput_violations,
     objective_value,
     objective_vector,
     pareto_front,
@@ -43,7 +44,95 @@ REPORT = {
     "gpu_hours": 2.0,
     "duration_ms": 1_800_000.0,  # 0.5 h
     "planner_total_ticks": 3.0,
+    "power_w": 487.5,
+    "power_coverage": 0.95,
 }
+
+
+def test_min_gpus_uses_provisioned_count_not_time_average_or_throughput():
+    candidate = make_candidate({"used_gpus": 2}, REPORT, OptimizationTarget.MIN_GPUS)
+    assert candidate.score == -2.0  # REPORT's time-averaged GPU count is four.
+    assert not OptimizationTarget.MIN_GPUS.maximize
+    with pytest.raises(ValueError, match="concrete positive"):
+        score_report(REPORT, OptimizationTarget.MIN_GPUS)
+
+
+@pytest.mark.parametrize(("target", "expected_gpus"), [("goodput_per_gpu", 4), ("min_gpus", 2)])
+def test_efficiency_and_minimum_gpu_selection_have_distinct_expected_results(target, expected_gpus):
+    # Synthetic one-second reports, ten output tokens per SLA-qualified request.
+    # Efficiency: 40/1=40, 100/2=50, 400/4=100 tok/s/GPU -> four GPUs.
+    # Sizing at 10 qualified requests/s: one GPU fails; two is the smallest feasible count.
+    goal = OptimizationGoal(
+        target=target,
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
+        min_goodput_rps=10 if target == "min_gpus" else None,
+    )
+    candidates = [
+        make_candidate(
+            {"used_gpus": gpus},
+            dict(
+                REPORT,
+                duration_ms=1000,
+                gpu_hours=gpus / 3600,
+                completed_requests=rps,
+                num_ttft_samples=rps,
+                num_tpot_samples=rps,
+                num_e2e_latency_samples=rps,
+                request_throughput_rps=rps,
+                output_throughput_tok_s=10 * rps,
+                goodput_completed_requests=rps,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=10 * rps,
+            ),
+            goal.target,
+        )
+        for gpus, rps in [(1, 4), (2, 10), (4, 40)]
+    ]
+    assert analyze_candidates(candidates, goal)[0].used_gpus == expected_gpus
+
+
+def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput_and_latency():
+    goal = OptimizationGoal(target="min_gpus", sla=SLATarget(itl_ms=30), min_goodput_rps=10)
+
+    def candidate(gpus, goodput, *, rps=10, itl=20, e2e=1200):
+        return make_candidate(
+            {"used_gpus": gpus, "name": str(goodput)},
+            dict(
+                REPORT,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=goodput,
+                mean_tpot_ms=itl,
+                mean_e2e_latency_ms=e2e,
+            ),
+            OptimizationTarget.MIN_GPUS,
+        )
+
+    large = candidate(8, 10000)
+    smaller = candidate(2, 1000)
+    tied_better = candidate(2, 2000)
+    tied_lower_latency = candidate(2, 2000, e2e=1000)
+    insufficient_rate = candidate(1, 20000, rps=9.99)
+    fails_latency = candidate(1, 20000, itl=31)
+    selected = analyze_candidates(
+        [large, insufficient_rate, fails_latency, smaller, tied_better, tied_lower_latency], goal
+    )
+    assert selected == [tied_lower_latency, tied_better, smaller, large]
+    assert selected[0].metrics["goodput_request_throughput_rps"] == 10
+    assert selected[0].metrics["goodput_output_throughput_tok_s"] == 2000
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -1, 0, 9.999, True])
+def test_min_goodput_rejects_missing_invalid_or_insufficient_measurements(value):
+    report = {"request_throughput_rps": 100, "output_throughput_tok_s": 100000}
+    if value is not None:
+        report["goodput_request_throughput_rps"] = value
+    assert minimum_goodput_violations(report, 10)
+
+
+def test_min_goodput_accepts_equality_and_is_optional_for_concurrency():
+    assert minimum_goodput_violations({"goodput_request_throughput_rps": 10}, 10) == ()
+    assert minimum_goodput_violations({}, None) == ()
 
 
 def test_objective_per_target():
@@ -60,6 +149,21 @@ def test_objective_per_target():
 def test_candidate_preserves_planner_tick_metric():
     candidate = make_candidate({"used_gpus": 4}, REPORT, OptimizationTarget.THROUGHPUT)
     assert candidate.metrics["planner_total_ticks"] == 3.0
+    assert candidate.metrics["power_w"] == 487.5
+    assert candidate.metrics["power_coverage"] == 0.95
+
+
+def test_candidate_omits_unavailable_power_instead_of_defaulting_to_zero():
+    report = {key: value for key, value in REPORT.items() if key not in {"power_w", "power_coverage"}}
+    candidate = make_candidate({"used_gpus": 4}, report, OptimizationTarget.THROUGHPUT)
+
+    assert candidate.metrics["power_w"] is None
+    assert candidate.metrics["power_coverage"] is None
+
+    withheld_report = dict(report, power_coverage=0.42)
+    withheld = make_candidate({"used_gpus": 4}, withheld_report, OptimizationTarget.THROUGHPUT)
+    assert withheld.metrics["power_coverage"] == 0.42
+    assert withheld.metrics["power_w"] is None
 
 
 def test_throughput_per_gpu_zero_when_avg_gpu_unavailable():
@@ -83,12 +187,7 @@ def test_throughput_per_gpu_zero_when_avg_gpu_unavailable():
         )
         == 0.0
     )
-    assert (
-        objective_value(
-            {"output_throughput_tok_s": 5000.0}, OptimizationTarget.THROUGHPUT_PER_GPU
-        )
-        == 0.0
-    )
+    assert objective_value({"output_throughput_tok_s": 5000.0}, OptimizationTarget.THROUGHPUT_PER_GPU) == 0.0
 
 
 def test_goodput_per_gpu_zero_when_no_gpu_hours():
@@ -145,9 +244,7 @@ def test_rank_and_pareto_ties_use_stable_config_order() -> None:
         "throughput_per_user": 1.0,
     }
     b.objectives = dict(a.objectives)
-    assert [
-        candidate.config["name"] for candidate in pareto_front([b, a], objectives)
-    ] == ["a", "b"]
+    assert [candidate.config["name"] for candidate in pareto_front([b, a], objectives)] == ["a", "b"]
 
 
 def test_objective_value_unknown_target_raises():
@@ -242,9 +339,7 @@ def test_objective_vector_reads_each_objective_raw():
     assert vec == {"throughput_per_gpu": 1250.0, "throughput_per_user": 50.0}
 
 
-def _pareto_cand(
-    tput_per_gpu: float, tput_per_user: float, used_gpus: int = 8
-) -> Candidate:
+def _pareto_cand(tput_per_gpu: float, tput_per_user: float, used_gpus: int = 8) -> Candidate:
     return Candidate(
         config={"used_gpus": used_gpus},
         used_gpus=used_gpus,
@@ -286,9 +381,7 @@ def test_make_candidate_pareto_sets_objectives():
         OptimizationTarget.THROUGHPUT_PER_GPU,
         OptimizationTarget.THROUGHPUT_PER_USER,
     ]
-    c = make_candidate(
-        {"used_gpus": 8}, REPORT, OptimizationTarget.PARETO, pareto_objectives=objs
-    )
+    c = make_candidate({"used_gpus": 8}, REPORT, OptimizationTarget.PARETO, pareto_objectives=objs)
     assert c.objectives == {"throughput_per_gpu": 1250.0, "throughput_per_user": 50.0}
     assert c.score == 1250.0  # headline = first objective
     assert c.metrics["mean_output_token_throughput_per_user"] == 50.0
@@ -304,10 +397,7 @@ def test_make_candidate_and_rank():
     c = make_candidate(cfg, REPORT, OptimizationTarget.GOODPUT_PER_GPU)
     assert c.used_gpus == 16
     assert c.score == 1000.0  # goodput / avg_gpu = 4000 / 4
-    assert (
-        c.metrics["goodput_output_throughput_tok_s"] == 4000.0
-        and c.metrics["gpu_hours"] == 2.0
-    )
+    assert c.metrics["goodput_output_throughput_tok_s"] == 4000.0 and c.metrics["gpu_hours"] == 2.0
 
     # gpu_hours=4.0 over the same 0.5h -> avg_gpu = 8.0 -> goodput_per_gpu = 4000/8 = 500
     a = make_candidate(
@@ -315,16 +405,10 @@ def test_make_candidate_and_rank():
         {**REPORT, "gpu_hours": 4.0},
         OptimizationTarget.GOODPUT_PER_GPU,
     )  # 500
-    b = make_candidate(
-        {"used_gpus": 16}, REPORT, OptimizationTarget.GOODPUT_PER_GPU
-    )  # 1000
-    tie = make_candidate(
-        {"used_gpus": 8}, REPORT, OptimizationTarget.GOODPUT_PER_GPU
-    )  # 1000, fewer gpus
+    b = make_candidate({"used_gpus": 16}, REPORT, OptimizationTarget.GOODPUT_PER_GPU)  # 1000
+    tie = make_candidate({"used_gpus": 8}, REPORT, OptimizationTarget.GOODPUT_PER_GPU)  # 1000, fewer gpus
     ranked = rank([a, b, tie])
-    assert (
-        ranked[0] is tie and ranked[1] is b and ranked[2] is a
-    )  # 1000(8gpu), 1000(16gpu), 500
+    assert ranked[0] is tie and ranked[1] is b and ranked[2] is a  # 1000(8gpu), 1000(16gpu), 500
 
 
 def test_strict_sla_filters_before_pareto_dominance():

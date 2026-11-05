@@ -14,8 +14,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from aiconfigurator.cli.main import build_default_tasks
-from aiconfigurator.cli.report_and_save import save_results
+from aisimulate.legacy_cli.main import build_default_tasks
+from aisimulate.legacy_cli.report_and_save import save_results
 
 pytestmark = pytest.mark.unit
 
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 def _dump_exp_config(tasks, tmp_path):
     args = argparse.Namespace(inclusive_tpot=False, deployment_target="dynamo-j2")
     with patch(
-        "aiconfigurator.cli.report_and_save.get_default_dynamo_version_mapping",
+        "aisimulate.legacy_cli.report_and_save.get_default_dynamo_version_mapping",
         return_value=("1.0.0", {"vllm": "current"}),
     ):
         save_results(

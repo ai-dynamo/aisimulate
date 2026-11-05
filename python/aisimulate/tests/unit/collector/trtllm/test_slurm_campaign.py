@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from collector import provenance
 from collector.wideep.trtllm import runtime_artifacts
 from collector.wideep.trtllm.finalize_campaign import SYSTEM_LAYOUTS
@@ -134,12 +133,9 @@ def test_runner_is_one_node_mpi_and_preserves_failed_rows():
     assert "/mnt/cifs|/mnt/cifs/*|/mnt/nvdl|/mnt/nvdl/*" in source
 
 
-def test_trtllm_hash_closure_includes_full_campaign_chain():
-    closure = provenance.load_closures(REPO_ROOT / "collector/hash_closures.yaml")[
-        "collector.wideep.trtllm.collect_moe_a2a"
-    ]
+def test_trtllm_collector_hash_covers_full_campaign_chain():
     assert {
-        "aic-core/src/aiconfigurator_core/sdk/operations/moe_comm.py",
+        "src/aisimulate_core/sdk/operations/moe_comm.py",
         "collector/artifact_publication.py",
         "collector/runtime_stage_publication.py",
         "collector/wideep/trtllm/finalize_campaign.py",
@@ -147,7 +143,7 @@ def test_trtllm_hash_closure_includes_full_campaign_chain():
         "collector/wideep/trtllm/slurm/submit_trtllm_image_stage.sh",
         "collector/wideep/trtllm/slurm/run_trtllm_moe_a2a_job.sh",
         "collector/wideep/trtllm/slurm/submit_trtllm_moe_a2a.sh",
-    } <= set(closure)
+    } <= set(provenance.hashed_files(REPO_ROOT))
 
 
 def _seed_image(tmp_path: Path, *, system: str) -> tuple[Path, Path, dict[str, object]]:

@@ -5,7 +5,7 @@
 
 import pytest
 
-from aiconfigurator.generator.aggregators import collect_generator_params
+from aisimulate.generator.aggregators import collect_generator_params
 
 
 @pytest.mark.unit

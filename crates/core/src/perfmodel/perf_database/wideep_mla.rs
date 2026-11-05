@@ -753,18 +753,18 @@ mod tests {
     fn b200_sglang_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.10")
+            .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sglang/0.5.10")
     }
 
     fn h200_sglang_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/data/h200_sxm/sglang/0.5.10")
+            .join("python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/sglang/0.5.10")
     }
 
     fn load_spec(name: &str) -> SystemSpec {
         let systems_yaml = PathBuf::from(REPO_ROOT_HINT).join("../..").join(format!(
-            "python/aisimulate/src/aiconfigurator_core/systems/{name}.yaml"
+            "python/aisimulate/src/aisimulate_core/systems/{name}.yaml"
         ));
         SystemSpec::load(&systems_yaml).unwrap_or_else(|_| panic!("{name}.yaml must parse"))
     }

@@ -8,10 +8,10 @@ paths:
   - "crates/core/src/perfmodel/**"
   - "crates/core/perfmodel/**"
   - "crates/core/parity_tests/perfmodel/**"
-  - "python/aisimulate/src/aiconfigurator_core/sdk/operations/**"
-  - "python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py"
-  - "python/aisimulate/src/aiconfigurator_core/sdk/engine.py"
-  - "python/aisimulate/src/aiconfigurator_core/sdk/rust_engine_step.py"
+  - "python/aisimulate/src/aisimulate_core/sdk/operations/**"
+  - "python/aisimulate/src/aisimulate_core/sdk/perf_database.py"
+  - "python/aisimulate/src/aisimulate_core/sdk/engine.py"
+  - "python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py"
   - "python/aisimulate/tests/unit/sdk/test_opspec_coverage.py"
   - "python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
 ---
@@ -56,7 +56,7 @@ estimation math. Concretely:
 
 - Do NOT add Python-side interpolation, roofline/SOL formulas,
   empirical-utilization estimates, or per-call table lookups anywhere under
-  `python/aisimulate/src/aiconfigurator_core/sdk/` (banned def shapes: the
+  `python/aisimulate/src/aisimulate_core/sdk/` (banned def shapes: the
   `_query_*` and `_lookup_*` prefixes, `get_sol`, `get_empirical`). The
   correct home is the Rust operator/table layer plus, if needed, a new
   engine FFI.

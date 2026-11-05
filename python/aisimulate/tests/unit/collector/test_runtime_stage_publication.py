@@ -6,7 +6,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from collector.runtime_stage_publication import RuntimeStagePublicationError, prepare_runtime_retry
 
 pytestmark = pytest.mark.unit

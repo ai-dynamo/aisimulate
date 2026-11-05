@@ -3,7 +3,7 @@
 
 //! Backend, database-mode, quant-mode, model-family, and perf-data-filename
 //! enums plus the `QuantMapping` payload shared by the quant-mode enums.
-//! Mirrors the enum surface of `src/aiconfigurator/sdk/common.py`.
+//! Mirrors the enum surface of `src/aisimulate/sdk/common.py`.
 //!
 //! HF-architecture-to-family routing lives in `models/registry.rs`, not
 //! here, because it carries AIC-specific lookup tables that depend on
@@ -17,8 +17,28 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Inference backend.
+/// How a VL model's vision tower is laid out over the tensor-parallel group.
 ///
+/// Mirrors `ModelConfig.enable_encoder_dp` in the Python model layer: `Tp`
+/// shards the tower's heads and MLP over the group so every rank encodes every
+/// image (SGLang's default), `Dp` gives every rank a whole tower and a ceil
+/// share of the images (`--mm-enable-dp-encoder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncoderParallel {
+    Tp,
+    Dp,
+}
+
+impl EncoderParallel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tp => "tp",
+            Self::Dp => "dp",
+        }
+    }
+}
+
 /// Mirrors `common.BackendName`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -317,8 +337,11 @@ pub enum MoeQuantMode {
     /// `w4a16_mxfp4` (mirrors Python `load_moe_data`).
     W4a16Mxfp4Cutlass,
     /// Scale-aware NVFP4 weights dequantized into the BF16 MoE compute lane.
-    /// Kept last so existing serialized enum discriminants remain stable.
+    /// Append-only extension preserving older serialized discriminants.
     W4a16Nvfp4,
+    /// Native Humming MXFP4 experts with unquantized BF16 activations.
+    /// Distinct from the Triton and FlashInfer CUTLASS W4A16 kernels.
+    W4a16Mxfp4Humming,
 }
 
 impl MoeQuantMode {
@@ -394,6 +417,12 @@ impl MoeQuantMode {
                 memory: 9.0 / 16.0,
                 compute: 1.0,
                 name: "w4a16_nvfp4",
+                compute_dtype: Some(ComputeDtype::Bfloat16),
+            },
+            Self::W4a16Mxfp4Humming => QuantMapping {
+                memory: 0.5,
+                compute: 1.0,
+                name: "w4a16_mxfp4_humming",
                 compute_dtype: Some(ComputeDtype::Bfloat16),
             },
         }
@@ -539,6 +568,8 @@ pub enum ModelFamily {
     MinimaxM3,
     Qwen3Vl,
     Qwen3VlMoe,
+    DeepSeekV41,
+    Glm53Flash,
 }
 
 impl ModelFamily {
@@ -552,6 +583,8 @@ impl ModelFamily {
             Self::DeepSeek => "DEEPSEEK",
             Self::DeepSeekV32 => "DEEPSEEKV32",
             Self::DeepSeekV4 => "DEEPSEEKV4",
+            Self::DeepSeekV41 => "DEEPSEEKV41",
+            Self::Glm53Flash => "GLM53FLASH",
             Self::KimiK25 => "KIMIK25",
             Self::NemotronNas => "NEMOTRONNAS",
             Self::NemotronH => "NEMOTRONH",
@@ -608,8 +641,6 @@ pub enum PerfDataFilename {
     Dsv4CsaGenerationModule,
     Dsv4HcaGenerationModule,
     Dsv4PagedMqaLogitsModule,
-    Dsv4HcaAttnModule,
-    Dsv4CsaAttnModule,
     Dsv4CsaTopkCalib,
     Dsv4MegamoeModule,
     MoeA2a,
@@ -649,8 +680,6 @@ impl PerfDataFilename {
             Self::Dsv4CsaGenerationModule => "dsv4_csa_generation_module_perf.parquet",
             Self::Dsv4HcaGenerationModule => "dsv4_hca_generation_module_perf.parquet",
             Self::Dsv4PagedMqaLogitsModule => "dsv4_paged_mqa_logits_module_perf.parquet",
-            Self::Dsv4HcaAttnModule => "dsv4_hca_attn_module_perf.parquet",
-            Self::Dsv4CsaAttnModule => "dsv4_csa_attn_module_perf.parquet",
             Self::Dsv4CsaTopkCalib => "dsv4_csa_topk_calib_perf.parquet",
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",
@@ -705,6 +734,29 @@ mod tests {
                 compute_dtype: Some(ComputeDtype::Fp4)
             }
         );
+    }
+
+    #[test]
+    fn humming_moe_wire_identity_is_additive() {
+        let mode: MoeQuantMode = serde_json::from_str("\"w4a16_mxfp4_humming\"").unwrap();
+        assert_eq!(mode, MoeQuantMode::W4a16Mxfp4Humming);
+        assert_eq!(
+            serde_json::to_string(&mode).unwrap(),
+            "\"w4a16_mxfp4_humming\""
+        );
+        // Historical positional discriminants must remain stable.
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Mxfp4Cutlass).unwrap(),
+            10_u32.to_le_bytes()
+        );
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Nvfp4).unwrap(),
+            11_u32.to_le_bytes()
+        );
+        let bytes = bincode::serialize(&mode).unwrap();
+        assert_eq!(bincode::deserialize::<MoeQuantMode>(&bytes).unwrap(), mode);
+        assert_eq!(mode.mapping().memory, 0.5);
+        assert_eq!(mode.mapping().compute_dtype, Some(ComputeDtype::Bfloat16));
     }
 
     #[test]

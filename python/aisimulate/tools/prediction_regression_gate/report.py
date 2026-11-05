@@ -18,8 +18,9 @@ drift, gains, added/removed rows — is reported for human review, never blocked
 on: with old-vs-new there is no baseline to refresh, the report itself is the
 review artifact.
 
-If the old side has no snapshot (base revision predates the harness), the
-report degrades to new-side statistics and exits 0.
+If the old side has no snapshot, the collection job's NO_HARNESS.txt marker
+must confirm that the base predates the harness before the report degrades to
+new-side statistics and exits 0. Missing snapshots without that marker exit 2.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from tools.accuracy_tracking.run_silicon import SILICON_FILENAME
 from tools.prediction_regression_gate import compare
 from tools.prediction_regression_gate.run_tier2 import TIER2_FILENAME
 
-CATEGORY_ORDER = ("REGRESSION", "STATUS_CHANGE", "DRIFT", "GAIN", "ROWS_ADDED", "ROWS_REMOVED")
+CATEGORY_ORDER = ("REGRESSION", "STATUS_CHANGE", "DRIFT", "GAIN", "ROWS_ADDED", "ROWS_REMOVED", "RELABELED")
 MAX_INLINE_DIFFS = 50
 
 
@@ -211,6 +212,9 @@ def main() -> int:
         return 2
 
     if not _combo_relpaths(args.old):
+        if not (args.old / "NO_HARNESS.txt").is_file():
+            print(f"error: old-side snapshot {args.old} is empty or missing without NO_HARNESS.txt", file=sys.stderr)
+            return 2
         stats = _snapshot_stats(args.new)
         summary = (
             "## AIC Prediction Regression Gate (old vs new)\n\n"

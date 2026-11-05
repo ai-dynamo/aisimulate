@@ -37,8 +37,8 @@ Fixture style follows ``test_gdn_donor_fill_pins.py`` (direct ``get_database``
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator_core.sdk.operations.mamba import GDNKernel
+from aisimulate.sdk.perf_database import get_database
+from aisimulate_core.sdk.operations.mamba import GDNKernel
 
 pytestmark = pytest.mark.unit
 

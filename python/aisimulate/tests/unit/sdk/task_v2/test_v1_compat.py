@@ -5,8 +5,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import task_v2
-from aiconfigurator.sdk.task_v1_compat import convert_v1_to_v2, is_v1_config
+from aisimulate.sdk import task_v2
+from aisimulate.sdk.task_v1_compat import convert_v1_to_v2, is_v1_config
 
 pytestmark = pytest.mark.unit
 
@@ -226,6 +226,17 @@ class TestUnmappable:
         )
         assert out["attention_backend"] == "fa3"
         assert out["wideep_num_slots"] == 288
+
+    def test_moe_kernel_source_maps_from_legacy_config(self):
+        """The recipe-pinned MoE lane remains explicit after V1 conversion."""
+        out = convert_v1_to_v2(
+            {
+                "serving_mode": "agg",
+                "model_path": "Qwen/Qwen3.8-2.4T-A95B-FP8",
+                "config": {"moe_kernel_source": "sglang_flashinfer_trtllm_moe"},
+            }
+        )
+        assert out["moe_kernel_source"] == "sglang_flashinfer_trtllm_moe"
 
     def test_multiple_profiles_raise(self):
         """Multiple V1 profiles drop all but the first -- a silent semantic change, so reject."""

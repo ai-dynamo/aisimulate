@@ -5,8 +5,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import operations
-from aiconfigurator.sdk.afd_partition import AFDPartitionError, build_afd_ops_partition
+from aisimulate.sdk import operations
+from aisimulate.sdk.afd_partition import AFDPartitionError, build_afd_ops_partition
 
 pytestmark = pytest.mark.unit
 

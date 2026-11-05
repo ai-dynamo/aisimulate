@@ -8,12 +8,11 @@ sglang's ``DeepEPMoE.run_moe_core`` — simulating an EP world of
 ``moe_ep_size`` ranks on one GPU by allocating only the rank-local expert
 shard, and emits the same unified ``moe_expert_compute_perf`` rows (one table,
 ``inference_phase`` column) consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
+``aisimulate_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
 
 DORMANT per plan decision D3: the pinned ``wideep_vllm`` runtime and empty
 registry serve standalone ``moe_a2a`` collection only. This module has no
-``OpEntry`` and no ``hash_closures.yaml`` entry; a closure may not precede
-registration. Activation is documented in ``collector/wideep/README.md``.
+``OpEntry``. Activation is documented in ``collector/wideep/README.md``.
 Enrollment MUST verify on the pinned image that the kernel invoked here is
 the one vLLM serving dispatch selects for the large-EP DeepEP compute path
 (layer_permissions.md: kernel_source records ground truth, manual pins need
@@ -293,7 +292,7 @@ def get_moe_ep_test_cases():
             moe_model_allows_quantization,
         )
 
-    recipes = get_common_moe_test_cases(backend="vllm")
+    recipes = get_common_moe_test_cases()
     dropped_not_declared = 0
     dropped_not_ep = 0
     dropped_quant = 0

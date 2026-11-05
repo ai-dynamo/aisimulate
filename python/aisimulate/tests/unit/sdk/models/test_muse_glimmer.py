@@ -7,13 +7,13 @@ from collections import Counter
 
 import pytest
 
-import aiconfigurator.sdk.operations as ops
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.models.base import _MODEL_REGISTRY
-from aiconfigurator.sdk.models.muse_glimmer import MuseGlimmerModel
-from aiconfigurator.sdk.task_v2 import Task
-from aiconfigurator.sdk.utils import _parse_hf_config_json
+import aisimulate.sdk.operations as ops
+from aisimulate.sdk import common, config
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.base import _MODEL_REGISTRY
+from aisimulate.sdk.models.muse_glimmer import MuseGlimmerModel
+from aisimulate.sdk.task_v2 import Task
+from aisimulate.sdk.utils import _parse_hf_config_json
 
 pytestmark = pytest.mark.unit
 
@@ -238,9 +238,9 @@ def test_sglang_default_sweep_keeps_tensor_and_context_parallelism_separate():
 
 
 def test_muse_uses_dense_activation_tier_on_every_backend():
-    from aiconfigurator.sdk.backends.sglang_backend import SGLANGBackend
-    from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-    from aiconfigurator.sdk.backends.vllm_backend import VLLMBackend
+    from aisimulate.sdk.backends.sglang_backend import SGLANGBackend
+    from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+    from aisimulate.sdk.backends.vllm_backend import VLLMBackend
 
     assert TRTLLMBackend.ACTIVATION_COEFFICIENTS["MUSEGLIMMER"] == TRTLLMBackend.ACTIVATION_COEFFICIENTS["LLAMA"]
     assert SGLANGBackend.ACTIVATION_COEFFICIENTS["MUSEGLIMMER"] == SGLANGBackend.ACTIVATION_COEFFICIENTS["LLAMA"]

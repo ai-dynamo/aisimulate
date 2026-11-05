@@ -84,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Path to either a single engine YAML or a root results directory. "
             "For TRT-LLM, a directory uses agg/top1/agg_config.yaml and "
             "disagg/top1/{decode,prefill}_config.yaml. For vLLM, a directory "
-            "uses agg/top1/k8s_deploy.yaml."
+            "requires both agg/top1/k8s_deploy.yaml and disagg/top1/k8s_deploy.yaml."
         ),
     )
     parser.add_argument(

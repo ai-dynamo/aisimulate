@@ -3,7 +3,7 @@
 
 //! Shared infrastructure for the operator layer.
 //!
-//! Mirrors `aiconfigurator.sdk.performance_result.PerformanceResult` and the
+//! Mirrors `aisimulate.sdk.performance_result.PerformanceResult` and the
 //! `Operation` base class. Each per-family operator (`operators/gemm.rs`
 //! etc.) owns its own struct with config-time parameters and a `query`
 //! method that takes a `&PerfDatabase` plus its runtime args and returns
@@ -73,6 +73,19 @@ impl SolComponents {
     /// Leaf SOL latency: `max(sol_math, sol_mem)` (Python `sol_time`).
     pub fn time_ms(self) -> f64 {
         self.math_ms.max(self.mem_ms)
+    }
+
+    // Keep optional-component arithmetic behind calls made only for Some.
+    // Inlining lets LLVM compute on inactive None payloads, which can trigger
+    // costly denormal assists even though those values are discarded.
+    #[inline(never)]
+    fn scaled(self, factor: f64) -> Self {
+        Self::new(self.math_ms * factor, self.mem_ms * factor)
+    }
+
+    #[inline(never)]
+    fn clamp_non_negative(self) -> Self {
+        Self::new(self.math_ms.max(0.0), self.mem_ms.max(0.0))
     }
 }
 
@@ -183,6 +196,8 @@ pub struct PerformanceResult {
     pub source: Source,
     pub sol: Option<SolComponents>,
     pub moe_comm_fallbacks: MoeCommFallbacks,
+    /// Raw direct-FPM leaves; composition never rewrites their measured support.
+    pub fpm_queries: Option<Box<Vec<crate::DirectFpmQueryEvidence>>>,
 }
 
 impl PerformanceResult {
@@ -193,6 +208,7 @@ impl PerformanceResult {
             source,
             sol: None,
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -203,6 +219,7 @@ impl PerformanceResult {
             source,
             sol: None,
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -215,6 +232,7 @@ impl PerformanceResult {
             source: Source::Sol,
             sol: Some(components),
             moe_comm_fallbacks: MoeCommFallbacks::default(),
+            fpm_queries: None,
         }
     }
 
@@ -256,11 +274,9 @@ impl PerformanceResult {
             latency_ms: self.latency_ms * factor,
             energy_wms: self.energy_wms * factor,
             source: self.source,
-            sol: self.sol.map(|c| SolComponents {
-                math_ms: c.math_ms * factor,
-                mem_ms: c.mem_ms * factor,
-            }),
+            sol: self.sol.map(|c| c.scaled(factor)),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
+            fpm_queries: self.fpm_queries,
         }
     }
 
@@ -269,6 +285,12 @@ impl PerformanceResult {
     /// AND energy both 0.0) is a source-neutral identity — the other
     /// side's tag survives, mirroring Python's zero-identity rule.
     pub fn plus(self, other: PerformanceResult) -> Self {
+        let mut fpm_queries = self.fpm_queries;
+        if let Some(other_queries) = other.fpm_queries {
+            fpm_queries
+                .get_or_insert_with(Default::default)
+                .extend(*other_queries);
+        }
         let mut moe_comm_fallbacks = self.moe_comm_fallbacks;
         moe_comm_fallbacks.extend(other.moe_comm_fallbacks);
         let (source, sol) = if self.latency_ms == 0.0 && self.energy_wms == 0.0 {
@@ -294,6 +316,7 @@ impl PerformanceResult {
             source,
             sol,
             moe_comm_fallbacks,
+            fpm_queries,
         }
     }
 
@@ -305,11 +328,9 @@ impl PerformanceResult {
             latency_ms: self.latency_ms.max(0.0),
             energy_wms: self.energy_wms.max(0.0),
             source: self.source,
-            sol: self.sol.map(|c| SolComponents {
-                math_ms: c.math_ms.max(0.0),
-                mem_ms: c.mem_ms.max(0.0),
-            }),
+            sol: self.sol.map(SolComponents::clamp_non_negative),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
+            fpm_queries: self.fpm_queries,
         }
     }
 }
@@ -474,6 +495,27 @@ mod tests {
         // subtract_sol: either side missing -> None.
         assert_eq!(subtract_sol(Some(SolComponents::default()), None), None);
         assert_eq!(subtract_sol(None, Some(SolComponents::default())), None);
+    }
+
+    #[test]
+    fn optional_sol_arithmetic_preserves_subnormal_values() {
+        // IEEE-754: bit 50 is 2^-1024; halving yields bit 49 (2^-1025).
+        // Avoiding work on None must not flush genuine subnormal components.
+        let tiny = f64::from_bits(1 << 50);
+        let half_tiny = f64::from_bits(1 << 49);
+        let result = PerformanceResult::sol(SolComponents::new(tiny, -tiny))
+            .clamp_non_negative()
+            .scaled(0.5);
+        assert_eq!(result.latency_ms, half_tiny);
+        assert_eq!(result.sol, Some(SolComponents::new(half_tiny, 0.0)));
+        assert_eq!(result.source, Source::Sol);
+
+        let result = PerformanceResult::new(tiny, Source::Empirical)
+            .clamp_non_negative()
+            .scaled(0.5);
+        assert_eq!(result.latency_ms, half_tiny);
+        assert_eq!(result.sol, None);
+        assert_eq!(result.source, Source::Empirical);
     }
 
     #[test]

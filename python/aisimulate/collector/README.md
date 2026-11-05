@@ -11,7 +11,7 @@ If you want to go through the process, you can try belowing commands. However, y
 This process is not well verified, you need to debug sometimes.
 
 For a framework-version or GPU-platform upgrade, follow the
-[Collector Upgrade Playbook](../docs/perf_database/collector-upgrade-playbook.md).
+[Collector Upgrade Playbook](../../../docs/perf-model/collector/upgrade.md).
 The repo-tracked [`aic-auto-collect`](../.claude/skills/aic-auto-collect/SKILL.md)
 skill applies that workflow during long, resumable collection runs.
 SGLang 0.5.14 Hopper/Blackwell follow-up work must also consult the
@@ -19,7 +19,55 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# Optional model-owned long-context coverage
+
+Normal collection retains the shared grid and model geometry coverage. Add
+`--include-long-context` to collect the additional correlated points declared
+on selected model rows; it defaults to off. A model selection or
+`--model-cases-full` is required. Existing long-context points in the normal
+shared module grid remain enabled.
+
+```bash
+python collect.py --backend sglang --model-path zai-org/GLM-5.2 --ops dsa_generation_module --include-long-context
+python collect.py --backend sglang --model-cases-full --sm 103 --plan-only --include-long-context
+```
+
+The optional points reuse the native geometry, actual projection precision and
+existing framework dispatch. Model context limits validate declarations; they
+do not automatically request every length or batch. Workers receive explicit
+points and retain grouped setup. No environment switch changes their rows.
+`--plan-only` reports the selected mode and hashes its actual case list. Use
+separate checkpoint/output roots for before/after cost experiments; changing a
+group's point list changes its existing task ID and can repeat its older points
+on resume, while preventing newly added points from being skipped.
+
+See [the declaration fields](cases/README.md#optional-long-context-points) and
+[coverage rationale](cases/README.md#choosing-coverage). Collection-cost
+estimates count setup changes, point preparation, warmup/capture and timed
+forwards; scheduler wait and GPU allocation overhead are excluded.
+
+Kimi-K3 adds no optional MLA long-context points yet: pinned vLLM 0.30.0
+[`MultiHeadLatentAttention`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/kimi_k3/nvidia/mla.py#L136)
+uses NoPE and fused cache operations that the existing generic DeepSeek module
+does not reproduce. A native adapter needs cache registration/binding, absorbed
+weight processing, forward/metadata and FP8 policy support, plus a consumer
+review of its output-gate timing boundary and silicon qualification. See the
+[deferred extension](cases/README.md#deferred-kimi-k3-mla-extension).
+Normal coverage and independent KDA width additions remain enabled; the missing
+native long-context route is an unmeasured gap, not zero collection cost.
+
 # Preparation
+
+SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
+On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
+so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
+576-dimensional FA3 path uses BF16 compute, including when KV storage is FP8.
+BF16 inputs to the collector do not determine the kernel's compute precision.
+Compute-precision labels are restricted to the audited `trtllm_mla`, `fa3`,
+and `triton` backends; an unknown backend raises instead of receiving a BF16 label.
+Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
+correct label; do not copy their timings into a second precision key.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash
@@ -60,15 +108,21 @@ It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using n
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and
 `custom_allreduce_perf.txt`. Collector finalization converts accepted output
 to parquet under
-`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`python/aisimulate/src/aisimulate_core/systems/data/<system>/comm/<backend>/<version>/`.
 
 # Model-centric cases and healing runs
+
+TRT-LLM MoE workers refuse a case before module allocation when its local
+resident expert weights alone exceed live device capacity. This lower bound
+accounts for gated/non-gated matrices and TP/EP sharding; passing it does not
+establish room for scales, inputs, outputs, graph buffers or native workspace.
+Those later allocation failures remain recorded failures rather than hidden
+shape exclusions. Plans remain independent of device memory.
 
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
-declared reuse; see `docs/perf_database/collector-v3-op-centric-design.md`),
-it does not replace how cases are declared or healed. A healing run collects
+declared reuse), it does not replace how cases are declared or healed. A healing run collects
 cases for a specific model/GPU pair instead of running every op bucket and
 hoping the support matrix improves. Use `--model-cases-full` when you want
 the case YAML to define a full model-centric run. Omitting all model-case
@@ -107,14 +161,17 @@ Case files (see `cases/README.md` for the full authoring guide):
 ```text
 cases/base_ops/<op>.yaml               — shared sweep recipes (interpolation grid)
 cases/models/<architecture>_cases.yaml — op activation + model shape values
-cases/capabilities.yaml                — positive hardware floors (dtype/op -> min SM)
-cases/denylist.yaml                    — hang/node-killer cases only
 model_cases.py                         — resolves which ops a model plan collects
-capabilities.py                        — generation-time capability/denylist filter
+skips.py                               — the one list of cases a collection leaves out
 ```
 
-The plan is one equation: cases = dedup(base grid ∪ model shapes), then
-intersected with hardware capability floors and minus the hang denylist.
+The plan is one equation: cases = dedup(base grid ∪ model shapes), minus what
+`skips.py` skips. For an op with an op plan (`OP_PLANS` in `op_plans.py`),
+`--plan-only` with `--sm` or `--gpu` also prints case counts per dtype and what
+was left out under which entry; `--plan-table DIR` writes one CSV row per case.
+
+TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
+in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
 
 ## Whole-forward FPM campaign
 
@@ -141,6 +198,27 @@ python3 -m collector.fpm_forward \
   --plan-only
 ```
 
+For profile-based FPM collection, the profile's `backend_version` is the dataset
+identity label. It may be a custom string such as `my-vllm-patch-3` and need not
+match the installed vLLM package version. The collector retains the actual
+container version separately in `collector-provenance.json` under
+`runtime.backend_version`; runtime capability, benchmark-schema, topology and
+precision checks still apply. An optional Dynamo version is provenance only and
+does not select FPM templates or resolve the backend version. See the
+[onboarding version contract](../../../docs/perf-model/fpm-self-service/implementation.md#plan-preview-and-explicitly-execute)
+for guided setup, omitted-version detection inside the target image, and
+publication identity.
+
+The low-level entry point also accepts `--fpm-backend-version LABEL` for dataset
+identity and `--fpm-runtime-backend-version VERSION` for an independently observed
+package-version pin. Guided onboarding supplies that pin after its image
+preflight. The low-level collector does not launch this separate CPU preflight:
+without an observed pin it can collect timings and record actual package
+provenance, but it cannot select audited version-specific memory/execution hooks.
+Supply the observed pin or accepted runtime instrumentation when those hooks are
+required. The op-level collector's runtime manifest and version-routing rules
+below are unchanged.
+
 Generation-time admission may omit a topology only when a concrete AIC
 size-vs-capacity estimate proves its configured token envelope cannot fit.
 Missing performance data, bootstrap architectures, and structural estimator
@@ -155,6 +233,15 @@ pass its real local metadata explicitly with
 is also accepted). The resolved config snapshot and SHA-256 are frozen into the
 collection plan.
 
+The collector detects a cache layout that `config.json` cannot describe, such as
+linear-attention or recurrent state, with the same check as config intake. The
+[onboarding guide](../../../docs/perf-model/fpm-self-service/implementation.md#cache-geometry-pending-the-runtime-probe)
+lists the markers. No FPM attention template represents such a layout. Without
+`--fpm-model-profile` or `--fpm-backend-version`, the collector refuses it, and
+registered model cases do not change this. With one of these options, the
+collector gives the layout the `native_runtime` capability. Precision then comes
+from the checkpoint, and the runtime measures every cell.
+
 Generator and Collector share the Dynamo-native benchmark result schema
 version through the rendered `fpm_env.sh`; the staged `fpm_exec.sh` validates
 that contract in-pod without a Collector-side text patch. Formal
@@ -162,7 +249,11 @@ that contract in-pod without a Collector-side text patch. Formal
 `collector_attempt_id`, `runtime_run_id`, `runtime_grid_digest`, and
 `kv_seed_regime` on every row. The seed regime is `real_kv`, `fake_fallback`,
 an approved `skip:<reason>`, `legacy`, or `n/a`; non-benign warm-up skips
-remain `fake_fallback` rather than acceptable evidence. Republishing the same
+remain `fake_fallback` rather than acceptable evidence. For a cache layout that
+`config.json` cannot describe, a cached prefill needs real prefix seeding.
+Planning refuses `DYN_BENCH_PREFILL_REAL_SEED` set to `off`, `0` or `false`, and
+publication refuses a cached prefill without the native `real_prefix` regime.
+Decode rows keep the classification above. Republishing the same
 attempt is idempotent. If a cell already exists under a different attempt or
 runtime identity, first publisher wins: that entire cell is skipped while
 non-overlapping cells in the same publication still land.
@@ -186,11 +277,11 @@ and `collection_summary_<backend>.json` with a classification and a
 group failing is a fix-me signal (collector bug, unverified combo, framework
 gap), not something to tolerate or auto-skip. Missing points are tolerated
 downstream by interpolation and fallback. Escalation rules — when a failure
-deserves a denylist entry, a registry `unverified` marker, or a capability
-floor — live in `.claude/rules/collector/failure_handling.md`.
+deserves a `skips.py` entry or a registry `unverified` marker — live in
+`.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
-`src/aiconfigurator/systems/<gpu>.yaml`; use `--sm <version>` on an
+`src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
 unregistered GPU. Without either, the local device capability is detected
 automatically.
 
@@ -252,9 +343,7 @@ resolve a single op's runtime, and
 `collector.framework_manifest.validate_resolution()` to check the whole
 manifest against every backend registry at once — it returns a list of error
 strings (empty = valid) and is the fail-closed CI gate asserting every
-registered op resolves to exactly one pinned runtime. See
-`docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
-design.
+registered op resolves to exactly one pinned runtime.
 
 ## File Naming Convention
 
@@ -403,15 +492,28 @@ If unavailable, a warning is logged and execution continues without power data.
 - Kernel iterations are automatically adjusted to meet minimum duration for accurate measurements
 - Backward compatible: without `--measure_power`, CSVs remain unchanged
 
-## CUDA Graph Fallback Support
+## CUDA Graph Timing Policy
 
-The `benchmark_with_power` helper function now supports graceful fallback to eager execution when CUDA graph capture fails. This is particularly useful for complex operations like MOE (Mixture of Experts) with large batch sizes.
+`benchmark_with_power` times kernels under CUDA-graph replay. A failed capture
+raises (`allow_graph_fail=False`, the default) and the case fails classified.
 
-### Features
-- **Automatic fallback**: When `allow_graph_fail=True`, CUDA graph capture failures trigger eager execution instead of raising exceptions
-- **Power measurement in both paths**: Power monitoring works correctly in both graph replay and eager execution modes
-- **Memory safety**: Automatic `torch.cuda.empty_cache()` call on graph capture failure to prevent memory fragmentation
-- **Transparency**: Results include `used_cuda_graph` flag to indicate which execution path was used
+- **No collector that writes a perf table may pass `allow_graph_fail=True`.**
+  The eager fallback times the Python launch loop and ships that floor as the
+  kernel latency, and no perf table records the helper's `used_cuda_graph`
+  flag — `.claude/rules/collector/layer_permissions.md` allows a
+  measurement-method degradation only when it is recorded in the output row.
+  `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
+  every file under `collector/`. The last fallback sites (trtllm mamba2 and
+  moe, wideep moe_compute, network trtllm alltoall) were closed;
+  the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
+- A collector that sweeps several cells inside one task counts failed cells
+  and raises a strict-completeness error at the end (GDN, mamba2), so the
+  other cells still ship rows and the failure lands in `errors_<module>.json`.
+- Multi-rank collectors agree on the capture outcome before any rank replays
+  (`collect_trtllm_alltoall._agree_graph_capturable`); a one-sided capture
+  failure would otherwise hang the peers' first replay.
+- `allow_graph_fail=True` remains available for ad-hoc diagnosis only; the
+  result then carries `used_cuda_graph=False` and must not be persisted.
 
 ### Usage Example
 ```python
@@ -421,32 +523,16 @@ def my_kernel():
     # Your kernel code here
     moe.forward(hidden_states, logits)
 
-# Use benchmark_with_power with fallback support
 with benchmark_with_power(
     device=device,
     kernel_func=my_kernel,
     num_warmups=3,
     num_runs=6,
     repeat_n=1,
-    allow_graph_fail=True,  # Enable graceful fallback
 ) as results:
     latency = results["latency_ms"]
-    power_stats = results["power_stats"]  # Available in both paths
-
-    # Check which execution path was used
-    if not results["used_cuda_graph"]:
-        print("CUDA graph capture failed, used eager execution")
+    power_stats = results["power_stats"]
 ```
-
-### When to Use
-- **Complex operations**: MOE, dynamic memory patterns, or operations that may not be graph-compatible
-- **Large batch sizes**: When graph capture may fail due to memory constraints
-- **Development/debugging**: To ensure collection continues even if graph capture fails
-
-### Backward Compatibility
-- Default behavior unchanged: `allow_graph_fail=False` maintains existing behavior
-- Existing collectors work without modifications
-- Only opt-in when needed for specific use cases
 
 ## For TensorRT-LLM
 ### Optional( Read if collecting for mxfp4 kernels)
@@ -481,7 +567,7 @@ python3 collect.py --backend trtllm
 ```
 For trtllm, the whole collecting process takes about 30 gpu-hours. On 8-gpu, it takes 3-4 hours.
 Please note that the whole process will report a lot of missing datapoints with errors. But it's okay. Our system is kindof robust to fair amount of missing data.
-Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aiconfigurator/systems/ folder to prepare the database including
+Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aisimulate_core/systems/ folder to prepare the database including
 how many files are needed accordingly.
 
 ## Resume Collection (Checkpoint)
@@ -573,6 +659,8 @@ Large-EP MoE uses stock `moe_perf` for modeled local expert compute and
 `moe_a2a_perf` records latency in microseconds; `load_moe_a2a_data` converts
 leaves to milliseconds. Stock `moe_perf` retains its existing timing contract.
 
+Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/perf-model/configuration.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
+
 **Legacy-overwrite caveats.** A new-schema row replaces a legacy-adapted
 leaf only at the *same* key, and the legacy adapters derive their node/EP
 geometry rather than reading it:
@@ -601,7 +689,7 @@ design for hardware, not a column to fake. The loaders treat absent (or
 null) power as 0.0.
 
 # Test
-Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aiconfigurator/systems/xxx.yaml
+Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aisimulate_core/systems/xxx.yaml
 
 # Validate the correctness
 Today, we have limited method to validate the database. You can try tools/sanity_check to validate the database a little bit. But it highly depends on your understanding
@@ -618,4 +706,114 @@ of the GPU system and kernel optimization.
 **Solution**: Use `/tmp/` for output files, then copy results after collection.
 
 # Support Matrix
-refer to the [**support matrix CSV**](src/aiconfigurator/systems/support_matrix.csv)
+
+Browse the [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+for CLI compatibility coverage, or inspect the
+[per-system CSV files](../src/aisimulate_core/systems/support_matrix/).
+For strict-native estimator coverage, use the
+[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/).
+
+## SGLang ordinary MLA context modules
+
+For uniform-projection checkpoints, `run_attention_torch(..., ordinary_mla=True)`
+collects the complete context attention module into
+`mla_context_module_perf.txt`. It invokes SGLang's real `prepare_qkv_latent`
+and creates fresh `AttentionInputs` on every warmup and timed iteration, so
+Q/KV down-projection is included. Prefill is timed eagerly. The loaded projection
+weights must match the requested single `gemm_type`; mixed BF16/NVFP4 modules
+are rejected instead of mislabeled.
+
+The CLI flag `--ordinary-mla` requires `--mode context --attn-type mla`.
+Other combinations fail during argument parsing, before collection starts.
+If any dispatch fails, the CLI reports its traceback, finishes the remaining
+dispatches, and exits with status 1 so partial collection is not reported as success.
+
+Pass `--target-tp-size 4` (or `8`) to derive the per-rank head count from the
+model. It must be positive and divide the model's native head count. If
+`--num-heads` is also supplied, it must equal native heads divided by TP.
+Without an explicit TP size, ordinary MLA derives TP separately for each
+per-rank head count. Python callers pass the actual per-rank head count and
+`target_tp_size`. Set
+`--chunked-prefill-size 16384` on the CLI, or `chunked_prefill_size=16384`
+on `run_mla_module()` or `run_mla_module_worker()`, to reproduce a serving
+chunk limit of 16,384 tokens. The worker forwards the limit into its subprocess.
+Explicit limits must be positive for one-shot module collection.
+Omitting the option keeps SGLang's default. The existing
+wide-EP and DSA paths keep their separate behavior. The ordinary context table
+uses the existing consumer schema; this does not add mixed-precision modeling.
+
+## TRT-LLM MoE autotuning failures
+
+TRT-LLM MoE collection requires either a loaded tactic cache or at least one
+successful autotuning attempt before measuring a tuning-enabled case. Ordinary
+failures may try smaller eligible token counts; if every attempt fails, the
+case raises before timing or publishing rows. CUDA accelerator errors propagate
+immediately. The successful collection path and historical profile values are
+unchanged by this failure guard.
+
+# Appendix: estimated extra collection time for long-context shapes
+
+These are **provisional planning estimates**, in additional collection GPU-hours
+above the pinned #676 baseline. They price the extra model-owned points enabled
+by `--include-long-context`; the existing baseline anchors remain enabled when
+the flag is off. They are not measured full-sweep totals or confidence bounds.
+The table reflects the frozen pilot inventory; the later MiniMax MXFP8 alias
+coverage correction adds projection-lane points that remain unpriced here.
+
+## Estimated long-context increment
+
+The estimates use each sampled SKU's own framework measurements and the frozen
+added-case inventory. Rounded planning centers across the three frameworks are:
+
+| GPU SKU | vLLM GPUh | SGLang GPUh | TRT-LLM GPUh | Long-context total GPUh |
+|---|---:|---:|---:|---:|
+| L40S | 2.0 | 2.6 | 3.4 | ~8 |
+| H100 SXM | 4.4 | 2.7 | 1.9 | ~9 |
+| H200 SXM | 3.9 | 10.2 | 1.7 | ~16 |
+| B200 SXM | 2.6 | 18.3 | 5.5 | ~26 |
+| B300 SXM | 2.2 | 18.7 | 1.3 | ~22 |
+| GB200 | 3.5 | 9.5 | 4.5 | ~18 |
+| GB300 | 5.6 | 13.9 | 10.6 | ~30 |
+| A100 SXM80 | Unmeasured | Unmeasured | Unmeasured | Unmeasured |
+
+The seven sampled SKUs total **approximately 130 GPU-hours** for the modeled
+long-context work. Rows include explicit analogous-operation provisions where
+native measurements are missing; 1,628 additional history cells still lack a
+same-framework analogue. The table does not establish that every planned shape
+fits memory or has a working native kernel.
+
+Preparation scales with cache/input payload and execution with attention work,
+including the sliding-window cap. Precision, geometry and dispatch extrapolations
+remain assumptions. B300 uses the intended GLM NVFP4 collection recipe and its
+own measurements; these timings do not establish canonical BF16 startup or
+capacity equivalence. Other SKUs do not borrow B300 rates.
+
+Inclusive point clocks contain input/history preparation, warmup, compilation,
+graph capture and forwards. Forward latency is not added again. Existing worker
+initialization is paid once when its group is extended; larger buffers and
+shape-dependent setup can still add cost. Scheduler wait, GPU allocation launch
+and idle reservation are excluded. Operator tests use one physical GPU even when
+their geometry represents a TP rank; actual collective ranks are counted for NCCL.
+
+## Broader expansion budget
+
+The independent MoE token, KDA width and NCCL payload changes add a separate
+**approximately 55 GPU-hours** of planning proxies across the seven sampled SKUs.
+They are outside the history flag and are not part of the 130-hour history total.
+Together, the modeled expansion subtotal is approximately **185 GPU-hours**.
+
+A provisional **eight-SKU working budget of 300 GPU-hours** adds selected reserves
+of 50 GPU-hours for unmeasured A100 work and 65 GPU-hours for remaining cases,
+setup changes and retries. A larger engineering allowance is **750 GPU-hours
+total**, not 750 additional hours. These reserves are budget choices, not measured
+rates, statistical intervals or guarantees of successful coverage. No RTX PRO
+estimate is included in this eight-SKU budget.
+
+The supporting planning calculations, unrounded per-framework values, case
+counts, native/proxy distinctions, source hashes and scratch calculations are
+retained as local campaign artifacts outside this PR, together with the six
+collection-cost audit scripts and their tests. These audit-only scripts are not
+shipped under `tools/perf_database/`. The separate strict audit
+keeps unqualified full totals unknown; these planning figures do not change its
+validation results. Deferred native Kimi coverage is not priced as zero or counted
+as equivalent-coverage savings.

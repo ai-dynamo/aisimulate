@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from collector import provenance
 from collector.network.slurm import collect_trtllm_alltoall as ata
 
@@ -66,7 +65,7 @@ def _two_sided_result() -> ata.AlltoallBenchmarkResult:
 # The oracle: the engine's legacy trtllm alltoall adapter maps, frozen here
 # because the SDK-side Python twins retired with the parsers (the
 # deprecation-cleanup PR). Source of truth:
-#   aic-core/rust/aiconfigurator-core/src/perf_database/moe_a2a.rs
+#   crates/core/src/perfmodel/perf_database/moe_a2a.rs
 #     legacy_trtllm_backend       (kernel_source -> comm_backend)
 #     legacy_trtllm_phase_dtype   (op_name -> (phase, pinned comm_dtype))
 # consumed by the query table AND the table-view fold. A drift here would put
@@ -85,7 +84,7 @@ _ENGINE_OP_TO_PHASE_DTYPE = {
 # Rust match arms the frozen literals above must keep mirroring; checked as
 # TEXT (same style as test_collector_schema_contract's twin pins — no imports
 # across the module boundary, and no FFI export for a pub(crate) internal).
-_ENGINE_ADAPTER_SOURCE = "aic-core/rust/aiconfigurator-core/src/perf_database/moe_a2a.rs"
+_ENGINE_ADAPTER_SOURCE = REPO_ROOT.parents[1] / "crates/core/src/perfmodel/perf_database/moe_a2a.rs"
 _ENGINE_ADAPTER_ARMS = (
     '"NVLinkTwoSided" => Some("nvlink_two_sided")',
     '"NVLinkOneSided" => Some("nvlink_one_sided")',
@@ -100,7 +99,7 @@ def test_mappings_mirror_the_engine_legacy_trtllm_adapter():
     assert ata.KERNEL_SOURCE_TO_COMM_BACKEND == _ENGINE_KERNEL_TO_BACKEND
     assert ata.OP_TO_PHASE_DTYPE == _ENGINE_OP_TO_PHASE_DTYPE
 
-    engine_source = (REPO_ROOT / _ENGINE_ADAPTER_SOURCE).read_text()
+    engine_source = _ENGINE_ADAPTER_SOURCE.read_text()
     for arm in _ENGINE_ADAPTER_ARMS:
         assert arm in engine_source, f"engine adapter arm drifted: {arm}"
 
@@ -211,10 +210,10 @@ def test_comparability_new_writer_leaf_equals_adapted_legacy_leaf(tmp_path):
     # each adapter must independently land equal measurements on equal keys.
     import pandas as pd
     import yaml
-
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
     from collector.helper import finalize_perf_files, log_perf
+
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import PerfDatabase
 
     root = tmp_path / "systems"
     root.mkdir()
@@ -394,16 +393,8 @@ def test_case_plan_ids_are_world_and_kernel_source_specific():
 
 
 # ---------------------------------------------------------------------------
-# Provenance — membership, closure, sidecar
+# Provenance — sidecar
 # ---------------------------------------------------------------------------
-
-
-def test_module_is_an_enrolled_standalone_collector_with_a_real_closure():
-    assert ata.MODULE_NAME in provenance.STANDALONE_COLLECTOR_MODULES
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    assert ata.MODULE_NAME in closures
-    digest = provenance.collector_hash(ata.MODULE_NAME, REPO_ROOT, closures)
-    assert digest.startswith("sha256:")
 
 
 def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
@@ -432,7 +423,6 @@ def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
         case_ids=case_ids,
         parquet_path=parquet_path,
         failure_count=0,
-        module_name=ata.MODULE_NAME,
     )
     doc = yaml.safe_load(meta_path.read_text())
     table = doc["tables"]["moe_a2a_perf"]
@@ -440,8 +430,7 @@ def test_sidecar_is_written_with_the_trtllm_module_identity(tmp_path):
     assert table["rows"] == len(rows)
     assert table["status"] == "complete"
     assert table["case_plan_hash"] == provenance.case_plan_hash(case_ids)
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    assert table["collector_hash"] == provenance.collector_hash(ata.MODULE_NAME, REPO_ROOT, closures)
+    assert table["collector_hash"] == provenance.collector_hash(REPO_ROOT)
 
 
 def test_runtime_meta_gates_the_installed_version_against_the_manifest_pin():
@@ -535,3 +524,81 @@ def test_no_fabricated_node_num_derivation_remains():
     # (the docstrings cite the legacy expression, so match its code shape).
     assert "node_num = max(" not in SOURCE_TEXT
     assert "world_size // gpus_per_node" in SOURCE_TEXT
+
+
+# ---------------------------------------------------------------------------
+# CUDA-graph timing — no eager fallback, capture outcome agreed across ranks
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_op_agrees_capture_before_timing():
+    import ast
+
+    tree = ast.parse(SOURCE_TEXT)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_op")
+    callees = [ast.unparse(node.func) for node in ast.walk(function) if isinstance(node, ast.Call)]
+    assert callees.index("_agree_graph_capturable") < callees.index("benchmark_with_power")
+
+
+class _Flag:
+    def __init__(self, value):
+        self.value = value
+
+    def item(self):
+        return self.value
+
+
+def _fake_runtime(monkeypatch, *, local_capture_fails, peer_fails, world_size):
+    import sys
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    events = []
+
+    @contextmanager
+    def graph(_graph):
+        events.append("capture")
+        if local_capture_fails:
+            raise RuntimeError("operation not permitted when stream is capturing")
+        yield
+
+    def all_reduce(flag, op=None):
+        events.append("all_reduce")
+        flag.value = max(flag.value, 1 if peer_fails else 0)
+
+    dist = SimpleNamespace(
+        is_available=lambda: True,
+        is_initialized=lambda: world_size > 1,
+        get_world_size=lambda: world_size,
+        all_reduce=all_reduce,
+        ReduceOp=SimpleNamespace(MAX="max"),
+    )
+    torch = SimpleNamespace(
+        cuda=SimpleNamespace(CUDAGraph=lambda: object(), graph=graph, synchronize=lambda: events.append("sync")),
+        tensor=lambda data, **_kwargs: _Flag(data[0]),
+        int32="int32",
+        distributed=dist,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torch.distributed", dist)
+    return events
+
+
+def test_capture_probe_warms_eagerly_then_captures_and_agrees(monkeypatch):
+    events = _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=False, world_size=8)
+    ata._agree_graph_capturable(lambda: events.append("func"), "dispatch", "cuda:0")
+    # one eager call (lazy init is not capturable), the probe capture, then the agreement
+    assert events == ["func", "sync", "capture", "func", "sync", "all_reduce"]
+
+
+def test_local_capture_failure_is_agreed_then_raises_classified(monkeypatch):
+    events = _fake_runtime(monkeypatch, local_capture_fails=True, peer_fails=False, world_size=8)
+    with pytest.raises(ata.TrtllmAlltoallBenchmarkError, match=r"CUDA graph capture of combine failed \(RuntimeError"):
+        ata._agree_graph_capturable(lambda: None, "combine", "cuda:0")
+    assert "all_reduce" in events  # the peers learn before any of them replays
+
+
+def test_peer_capture_failure_raises_on_this_rank_too(monkeypatch):
+    _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=True, world_size=8)
+    with pytest.raises(ata.TrtllmAlltoallBenchmarkError, match="peer rank"):
+        ata._agree_graph_capturable(lambda: None, "prepare", "cuda:0")

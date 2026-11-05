@@ -18,7 +18,7 @@ import math
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.api import cli_default, cli_estimate
+from aisimulate.legacy_cli.api import cli_default, cli_estimate
 
 pytestmark = pytest.mark.e2e
 

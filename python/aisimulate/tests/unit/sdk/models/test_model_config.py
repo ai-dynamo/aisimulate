@@ -9,14 +9,17 @@ Tests model validation, default models, and model-specific configurations.
 
 import json
 from collections import Counter
+from importlib.resources import files
 from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
 
-import aiconfigurator.sdk.operations as ops
-from aiconfigurator.sdk import common, config, models
-from aiconfigurator.sdk.models import (
+import aisimulate.sdk.operations as ops
+from aisimulate.sdk import common, config, models
+from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.errors import InvalidEngineConfigurationError
+from aisimulate.sdk.models import (
     LLAMAModel,
     Qwen3VLModel,
     Qwen3VLMoEModel,
@@ -24,8 +27,9 @@ from aiconfigurator.sdk.models import (
     get_model,
     get_model_family,
 )
-from aiconfigurator.sdk.performance_result import PerformanceResult
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
+from aisimulate.sdk.performance_result import PerformanceResult
+from aisimulate.sdk.speculation import SpeculationConfig
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -47,6 +51,91 @@ def test_model_config_normalizes_kernel_backend_enums():
 def test_model_config_rejects_unknown_kernel_backend(field, value):
     with pytest.raises(ValueError, match=field):
         config.ModelConfig(**{field: value})
+
+
+def test_build_model_config_preserves_existing_positional_arguments():
+    speculation = SpeculationConfig(kind="mtp", params={"depth": 2})
+    model_config = build_model_config(
+        4,
+        2,
+        2,
+        2,
+        4,
+        "fp8",
+        "fp8",
+        "bfloat16",
+        "fp8",
+        "half",
+        "fpm",
+        False,
+        "fa3",
+        speculation,
+        "megamoe",
+        True,
+        64,
+    )
+
+    assert (model_config.tp_size, model_config.pp_size, model_config.attention_dp_size) == (4, 2, 2)
+    assert (model_config.moe_tp_size, model_config.moe_ep_size) == (2, 4)
+    assert model_config.gemm_quant_mode is common.GEMMQuantMode.fp8
+    assert model_config.kvcache_quant_mode is common.KVCacheQuantMode.fp8
+    assert model_config.fmha_quant_mode is common.FMHAQuantMode.bfloat16
+    assert model_config.moe_quant_mode is common.MoEQuantMode.fp8
+    assert model_config.comm_quant_mode is common.CommQuantMode.half
+    assert model_config.forward_model == "fpm"
+    assert model_config.enable_encoder_dp is False
+    assert model_config.attention_backend is common.AttentionBackend.fa3
+    assert model_config.speculation is speculation
+    assert model_config.moe_backend is common.MoEBackend.megamoe
+    assert model_config.enable_eplb is True
+    assert model_config.wideep_num_slots == 64
+    assert model_config.moe_kernel_source is None
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_build_model_config_preserves_exact_kernel_source_keyword(source):
+    model_config = build_model_config(4, 1, 1, 4, 1, moe_kernel_source=source)
+
+    assert model_config.moe_kernel_source == source
+
+
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_model_config_rejects_invalid_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        config.ModelConfig(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize(
+    ("model_path", "moe_backend", "message"),
+    [
+        ("Qwen/Qwen3-32B", None, "require an MoE model"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "megamoe", "MegaMoE"),
+    ],
+)
+def test_model_graph_rejects_moe_kernel_source_without_a_compatible_operator(model_path, moe_backend, message):
+    model_config = config.ModelConfig(
+        tp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        moe_backend=moe_backend,
+        moe_kernel_source="missing_source",
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match=message):
+        get_model(model_path, model_config, "sglang")
+
+
+def test_model_graph_rejects_source_when_layer_override_removes_all_moe_operators():
+    # Kimi-K3 has a dense first layer; its checkpoint metadata still declares MoE.
+    model_path = "moonshotai/Kimi-K3"
+    assert check_is_moe(model_path)
+    model_config = config.ModelConfig(
+        overwrite_num_layers=1, moe_tp_size=1, moe_ep_size=1, moe_kernel_source="missing_source"
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*no compatible MoE"):
+        get_model(model_path, model_config, "sglang")
 
 
 class TestSupportedModels:
@@ -107,6 +196,7 @@ class TestSupportedModels:
             ("deepseek-ai/DeepSeek-V3", True),
             ("deepseek-ai/DeepSeek-V3.2", True),
             ("deepseek-ai/DeepSeek-V4-Flash", True),
+            ("deepseek-ai/DeepSeek-V4.1-Flash", True),
             ("deepseek-ai/DeepSeek-V4-Pro", True),
             ("sgl-project/DeepSeek-V4-Flash-FP8", True),
             ("sgl-project/DeepSeek-V4-Pro-FP8", True),
@@ -151,7 +241,7 @@ class TestMOEParallelismResolution:
 
     def test_minimax_m3_builds_with_msa_and_moe(self):
         """MiniMax-M3 registers as its own family and wires the MSA attention op + MoE."""
-        from aiconfigurator.sdk.operations.msa import ContextMSAModule
+        from aisimulate.sdk.operations.msa import ContextMSAModule
 
         model_config = config.ModelConfig(tp_size=1, attention_dp_size=1, moe_tp_size=1, moe_ep_size=1)
         model = get_model("MiniMaxAI/MiniMax-M3", model_config, backend_name="trtllm")
@@ -262,6 +352,11 @@ class TestHFModelSupport:
         assert hasattr(common, "DefaultHFModels")
         assert isinstance(common.DefaultHFModels, set)
         assert len(common.DefaultHFModels) > 0
+
+    def test_mistral3_is_not_a_bundled_default_model(self):
+        assert "mistralai/Mistral-Medium-3.5-128B" not in common.DefaultHFModels
+        config_path = files("aisimulate_core") / "model_configs" / "mistralai--Mistral-Medium-3.5-128B_config.json"
+        assert not config_path.is_file()
 
     def test_hf_models_have_valid_architecture(self):
         """Test that all HF model IDs have valid architecture mapping."""
@@ -625,7 +720,7 @@ class TestHFModelSupport:
         source policy — the rebinding the retired Python query body used to
         do per call. Restubbed at the #1357 PR-5 seam
         (``engine._evaluate_single_op``)."""
-        from aiconfigurator_core.sdk import engine as engine_module
+        from aisimulate_core.sdk import engine as engine_module
 
         recorded = {}
 
@@ -669,7 +764,7 @@ class TestHFModelSupport:
         """The Blackwell-only guard moved to the compiled engine
         (operators/dsv4.rs); it must still surface as a ValueError through the
         query shim on a real pre-Blackwell (sm90) database."""
-        from aiconfigurator.sdk.perf_database import get_database
+        from aisimulate.sdk.perf_database import get_database
 
         op = ops.DeepSeekV4MegaMoEModule(
             "test_megamoe",
@@ -814,6 +909,23 @@ class TestKVCacheElementsPerToken:
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
 
+    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+        model = self._build_model(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            tp,
+            kvcache_quant_mode=kv_dtype,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+        )
+        # The bundled config has 8 attention layers, 2 KV heads, and 128-wide heads.
+        # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
+        assert model.get_kvcache_elements_per_token() == expected_elements
+        bytes_per_token = expected_elements * kv_dtype.value.memory
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
+
     @pytest.mark.parametrize(
         "hf_id",
         [
@@ -952,7 +1064,7 @@ class TestGptOssHybridKVCache:
         """
         from types import SimpleNamespace
 
-        from aiconfigurator.sdk.backends.factory import get_backend
+        from aisimulate.sdk.backends.factory import get_backend
 
         batch_size, isl, osl = 48, 65_536, 400
         seq_len = isl + osl
@@ -1186,8 +1298,8 @@ class TestMOEModelFP8BlockQuantizationValidation:
             ),
         ],
     )
-    @patch("aiconfigurator.sdk.models._get_model_info")
-    @patch("aiconfigurator.sdk.utils._load_model_config_from_model_path")
+    @patch("aisimulate.sdk.models._get_model_info")
+    @patch("aisimulate.sdk.utils._load_model_config_from_model_path")
     def test_fp8_block_quantization_validation(
         self,
         mock_load_config,
@@ -1587,7 +1699,7 @@ class TestDSAAttentionQuantExclusion:
 
     @staticmethod
     def _excluded(raw):
-        from aiconfigurator.sdk.models.deepseek_v32 import (
+        from aisimulate.sdk.models.deepseek_v32 import (
             _dsa_attention_modules_excluded_from_quant,
         )
 
@@ -1804,7 +1916,7 @@ class TestAttentionProjectionExclusions:
 
     @staticmethod
     def _excl(patterns):
-        from aiconfigurator.sdk.models.helpers import attention_projection_exclusions
+        from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
         return attention_projection_exclusions({"quantization_config": {"ignore": patterns}})
 
@@ -1827,12 +1939,114 @@ class TestAttentionProjectionExclusions:
     def test_empty(self):
         assert self._excl([]) == frozenset()
 
+    @pytest.mark.parametrize("anchor", ["", "$"])
+    @pytest.mark.parametrize(
+        "pattern,expected",
+        [
+            (r".*self_attn\..*", {"q", "kv", "o", "indexer"}),
+            (r".*self_attn\.(q_a_proj|kv_a_proj_with_mqa)", {"q", "kv"}),
+            (r".*self_attn\.indexer\.(wq_b|wk|weights_proj)", {"indexer"}),
+            (r".*self_attn\.(q_a_layernorm|kv_a_layernorm|indexer\.k_norm|indexers_proj)", set()),
+        ],
+    )
+    def test_regex_exclusions_match_projection_module_paths(self, pattern, expected, anchor):
+        assert self._excl([f"re:{pattern}{anchor}"]) == frozenset(expected)
+
+    def test_malformed_regex_is_an_actionable_configuration_error(self):
+        import re
+
+        from aisimulate.sdk.errors import is_expected_cli_error
+
+        with pytest.raises(ValueError) as caught:
+            self._excl(["re:["])
+        assert "re:[" in str(caught.value)
+        assert isinstance(caught.value.__cause__, re.error)
+        assert is_expected_cli_error(caught.value)
+
+    @pytest.mark.parametrize("suffix", ["", "*", ".*", r"\..*"])
+    def test_whole_block_suffixes(self, suffix):
+        assert self._excl([f"model.layers.0.self_attn{suffix}"]) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl([f"model.layers.0.self_attn.indexer{suffix}"]) == frozenset({"indexer"})
+
+    def test_norm_and_auxiliary_exclusions_do_not_reclassify_projection_groups(self):
+        assert (
+            self._excl(
+                [
+                    "model.layers.0.self_attn.q_a_layernorm",
+                    "model.layers.0.self_attn.kv_a_layernorm",
+                    "model.layers.0.self_attn.indexer.k_norm",
+                    "model.layers.0.self_attn.indexer.k_norm.bias",
+                    "model.layers.0.self_attn.indexers_proj",
+                ]
+            )
+            == frozenset()
+        )
+
+    @pytest.mark.parametrize("projection", ["wq_b", "wk", "weights_proj", "wk_weights_proj"])
+    def test_named_indexer_projection_exclusion(self, projection):
+        assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
+
+    @staticmethod
+    def _dsa_gemm_mode(model_path, backend, phase, **model_config):
+        from aisimulate.sdk import engine
+
+        model = models.get_model(
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, **model_config),
+            backend_name=backend,
+        )
+        specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
+        attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
+        return model.extra_params["dsa_attn_quant_exclusions"], attention["gemm_quant_mode"]
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
+    def test_native_glm52_projections_follow_the_gemm_mode_on_every_backend(self, backend, phase, quant):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs, and every backend loads it that way. NVFP4
+        # mixed exclusions have separate tests in
+        # TestDSV32NVFP4AttentionExclusion above.
+        exclusions, gemm = self._dsa_gemm_mode(
+            "zai-org/GLM-5.2-FP8", backend, phase, gemm_quant_mode=common.GEMMQuantMode[quant]
+        )
+        assert exclusions == frozenset()
+        assert gemm == quant
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize(
+        "model_path", ["zai-org/GLM-5-FP8", "zai-org/GLM-5.1-FP8", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.3"]
+    )
+    def test_native_glm_fp8_checkpoint_prices_block_fp8_projections(self, model_path, backend, phase):
+        # quant_method fp8 with weight_block_size [128, 128]: without an
+        # explicit override, every backend's DSA module key is fp8_block.
+        exclusions, gemm = self._dsa_gemm_mode(model_path, backend, phase)
+        assert exclusions == frozenset()
+        assert gemm == "fp8_block"
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize(
+        "model_path,excluded",
+        [
+            ("nvidia/GLM-5.2-NVFP4", frozenset({"q", "kv", "o", "indexer"})),
+            ("nvidia/DeepSeek-V3.2-NVFP4", frozenset({"q", "kv", "indexer"})),
+        ],
+    )
+    def test_actual_checkpoint_projection_exclusions_are_preserved(self, backend, model_path, excluded):
+        model = models.get_model(
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode.nvfp4),
+            backend_name=backend,
+        )
+        assert model.extra_params["dsa_attn_quant_exclusions"] == excluded
+
 
 class TestBundledModelConfigsOffline:
     """Bundled configs must load without network (P2: DefaultHFModels registration)."""
 
     def test_step3p7_fp8_loads_from_bundle(self, monkeypatch):
-        import aiconfigurator.sdk.utils as sdk_utils
+        import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
             raise AssertionError("network path reached")
@@ -1847,7 +2061,7 @@ class TestBundledModelConfigsOffline:
         sdk_utils._load_model_config_from_model_path.cache_clear()
 
     def test_dsv32_nvfp4_loads_from_bundle(self, monkeypatch):
-        import aiconfigurator.sdk.utils as sdk_utils
+        import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
             raise AssertionError("network path reached")
@@ -1863,7 +2077,7 @@ class TestBundledModelConfigsOffline:
         """nvidia/MiniMax-M3-NVFP4 end-to-end: bundled MIXED_PRECISION metadata
         resolves gemm=fp8_block (MXFP8 approximation, owner decision 2026-08-09),
         moe=nvfp4 (routed experts), kv=bfloat16 (kv_cache_quant_algo null)."""
-        import aiconfigurator.sdk.utils as sdk_utils
+        import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
             raise AssertionError("network path reached")
@@ -1889,8 +2103,53 @@ class TestBundledModelConfigsOffline:
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
+    @pytest.mark.parametrize(
+        "model_path,gemm,moe,kv",
+        [
+            # Z.AI publishes the FP8-block release under the plain name and the
+            # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
+            # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
+            # NVIDIA ModelOpt MIXED_PRECISION export lists FP8 dense layers 0-2
+            # and NVFP4 routed experts; its per-module modes are pinned in
+            # test_modelopt_mixed_precision_targets.py.
+            # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
+            # backend default for fp8_block, not a checkpoint fact, so it is
+            # not asserted here.
+            ("zai-org/GLM-5.3", "fp8_block", "fp8_block", None),
+            ("zai-org/GLM-5.3-BF16", "bfloat16", "bfloat16", "bfloat16"),
+            ("nvidia/GLM-5.3-NVFP4", "fp8_static", "nvfp4", "fp8"),
+        ],
+    )
+    def test_glm53_bundles_resolve_checkpoint_quant_modes(self, monkeypatch, model_path, gemm, moe, kv):
+        """The GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        try:
+            cfg = sdk_utils.get_model_config_from_model_path(model_path)
+            assert cfg["architecture"] == "GlmMoeDsaForCausalLM"
+            model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+            get_model(model_path, model_config, backend_name="sglang")
+        finally:
+            sdk_utils.get_model_config_from_model_path.cache_clear()
+            sdk_utils._load_model_config_from_model_path.cache_clear()
+
+        assert model_config.gemm_quant_mode == common.GEMMQuantMode[gemm]
+        assert model_config.moe_quant_mode == common.MoEQuantMode[moe]
+        if kv is not None:
+            assert model_config.kvcache_quant_mode == common.KVCacheQuantMode[kv]
+
+    def test_glm53_registered_identifiers_match_the_published_repositories(self):
+        assert "zai-org/GLM-5.3-BF16" in common.DefaultHFModels
+        assert "zai-org/GLM-5.3-FP8" not in common.DefaultHFModels
+
     def test_qwen38max_loads_from_bundle_with_gdn_and_moe_fields(self, monkeypatch):
-        import aiconfigurator.sdk.utils as sdk_utils
+        import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
             raise AssertionError("network path reached")
@@ -1924,7 +2183,7 @@ class TestBundledModelConfigsOffline:
         sdk_utils._load_model_config_from_model_path.cache_clear()
 
     def test_qwen38max_fp8_loads_from_bundle(self, monkeypatch):
-        import aiconfigurator.sdk.utils as sdk_utils
+        import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
             raise AssertionError("network path reached")
@@ -2009,7 +2268,7 @@ class TestDSV4NVFP4QuantResolution:
         ],
     )
     def test_routing_expert_target_classification(self, target: str, expected: bool):
-        from aiconfigurator_core.sdk.models.helpers import _is_routing_expert_target
+        from aisimulate_core.sdk.models.helpers import _is_routing_expert_target
 
         assert _is_routing_expert_target(target) is expected
 
@@ -2028,8 +2287,8 @@ class TestDSV4NVFP4QuantResolution:
         sidecar MoE mode must win over the native DeepSeek-V4 ``expert_dtype``
         fallback so the SDK key matches the Collector artifact contract.
         """
-        import aiconfigurator.sdk.utils as sdk_utils
-        from aiconfigurator_core.sdk.models.helpers import _get_model_info
+        import aisimulate.sdk.utils as sdk_utils
+        from aisimulate_core.sdk.models.helpers import _get_model_info
 
         def _no_network(*args, **kwargs):
             raise AssertionError("network path reached")

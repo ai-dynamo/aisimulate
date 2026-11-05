@@ -4,7 +4,6 @@
 from pathlib import Path
 
 import pytest
-
 from collector.wideep.distributed_lifecycle import (
     DistributedLifecycleError,
     agree_stage,

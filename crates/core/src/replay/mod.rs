@@ -120,9 +120,9 @@ pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObse
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
-    Placement, PlacementBatchEffects, PlacementBatchError, PlacementBatchRequest,
-    PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy, RequestIdentity,
-    WorkerTopology,
+    KvFetchAction, KvHints, Placement, PlacementBatchEffects, PlacementBatchError,
+    PlacementBatchRequest, PlacementCacheSample, PlacementDecision, PlacementEffects,
+    PlacementPolicy, RequestIdentity, WorkerTopology,
 };
 pub use dynamic_placement::{
     DynamicKvEventObservation, DynamicPlacementConfig, DynamicPlacementMetadata,
@@ -153,27 +153,40 @@ pub use handoff::{
     HandoffCoordinatorCore, expected_normalized_handoff, validate_transfer_delay_ms,
     validate_transfer_timing,
 };
-pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
-pub use protocol::{DirectRequest, ReplayPromptTokenSource, ReplayRequestContext};
+pub use protocol::{
+    AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1, AgenticConversationLineage, AgenticRuntimeIdentity,
+    DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+};
+pub use protocol::{AuthoredKvHints, ForwardPassSnapshot};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{
-    PerRequestAdmissionRecord, PerRequestRecord, PerRequestRoutingRecord, ReplayReport,
-    ReplayRequestPool, ReplayRoutingOutcome, ReplayTerminalStatus,
-    ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds, TraceDistributionStats,
-    TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats, TraceRequestCounts,
-    TraceThroughputStats, TraceTrajectoryStats,
+    G2DomainStats, POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
+    PerRequestRoutingRecord, ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics,
+    ReplayPowerDiagnostics, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
+    ReplayTerminalStatus, ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds,
+    TraceDistributionStats, TraceGoodputStats, TraceInterTokenLatencyStats, TraceLatencyStats,
+    TracePowerStats, TraceRequestCounts, TraceThroughputStats, TraceTrajectoryStats,
 };
 pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
+#[cfg(test)]
+mod snapshot_tests;
 pub use spec::{
-    CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
+    CURRENT_REPLAY_SPEC_VERSION, EncoderSpec, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
 };
 pub use telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplayPromptSourceCounters, ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot,
+    ReplayTelemetryCapture, ReplayTelemetryHostCache, ReplayTelemetryLifecycle,
+    ReplayTelemetryObserver, ReplayTelemetryPhaseBoundary, ReplayTelemetryRequest,
+    ReplayTelemetrySample, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
+    ReplayTelemetryUnits, ReplayTrafficMetricsSnapshot,
 };
+
+// Typed power diagnostics are exported by the native Replay/PyO3 engine path.
+// Dynamo's external Python report adapters require their own passthrough and
+// qualification; Rust type re-exports alone do not establish adapter parity.

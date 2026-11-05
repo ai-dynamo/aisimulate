@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 const DEFAULT_CONDITIONAL_ACCEPT_RATES: [f64; 5] = [0.85, 0.3, 0.0, 0.0, 0.0];
@@ -41,32 +44,43 @@ pub fn normalize_conditional_accept_rates(
     Ok(parsed)
 }
 
+/// Seeded draft-acceptance sampler. `SmallRng` keeps per-round sampling cheap,
+/// but its algorithm, and so the stream for a seed, may change with `rand`.
 pub(crate) struct SpeculativeDecodeSampler {
     conditional_accept_rates: Vec<f64>,
-    rng: StdRng,
+    rng: SmallRng,
 }
 
 impl SpeculativeDecodeSampler {
     pub(crate) fn new(conditional_accept_rates: Vec<f64>, seed: u64) -> Self {
         Self {
             conditional_accept_rates,
-            rng: StdRng::seed_from_u64(seed),
+            rng: SmallRng::seed_from_u64(seed),
         }
     }
 
-    pub(crate) fn sample_output_tokens(&mut self, remaining_output_tokens: usize) -> usize {
-        if remaining_output_tokens == 0 {
-            return 0;
-        }
+    /// Sample verification acceptance including the base token. Callers clamp
+    /// emitted output separately so telemetry retains pre-truncation acceptance.
+    pub(crate) fn sample_accepted_tokens(&mut self) -> usize {
+        self.sample_accepted_tokens_up_to(usize::MAX)
+    }
 
+    /// Verification cannot accept drafts that were excluded by the scheduler's
+    /// token budget. Do not consume RNG draws for those unscheduled positions.
+    pub(crate) fn sample_accepted_tokens_up_to(&mut self, max_tokens: usize) -> usize {
+        debug_assert!(max_tokens > 0);
         let mut output_tokens = 1;
-        for rate in &self.conditional_accept_rates {
+        for rate in self
+            .conditional_accept_rates
+            .iter()
+            .take(max_tokens.saturating_sub(1))
+        {
             if !self.rng.random_bool(*rate) {
                 break;
             }
             output_tokens += 1;
         }
-        output_tokens.min(remaining_output_tokens)
+        output_tokens
     }
 }
 
@@ -77,23 +91,30 @@ mod tests {
     #[test]
     fn zero_and_one_rates_are_exact() {
         let mut zero = SpeculativeDecodeSampler::new(vec![0.0, 1.0], 42);
-        assert_eq!(zero.sample_output_tokens(10), 1);
+        assert_eq!(zero.sample_accepted_tokens(), 1);
 
         let mut one = SpeculativeDecodeSampler::new(vec![1.0, 1.0], 42);
-        assert_eq!(one.sample_output_tokens(10), 3);
+        assert_eq!(one.sample_accepted_tokens(), 3);
     }
 
     #[test]
     fn sampling_stops_at_first_rejection() {
         let mut sampler = SpeculativeDecodeSampler::new(vec![1.0, 0.0, 1.0], 42);
-        assert_eq!(sampler.sample_output_tokens(10), 2);
+        assert_eq!(sampler.sample_accepted_tokens(), 2);
     }
 
     #[test]
-    fn sampling_clamps_to_remaining_output() {
-        let mut sampler = SpeculativeDecodeSampler::new(vec![1.0, 1.0], 42);
-        assert_eq!(sampler.sample_output_tokens(2), 2);
-        assert_eq!(sampler.sample_output_tokens(0), 0);
+    fn unscheduled_drafts_do_not_advance_the_rng() {
+        let rates = vec![0.7, 0.5, 0.2];
+        let mut clipped = SpeculativeDecodeSampler::new(rates.clone(), 42);
+        let mut untouched = SpeculativeDecodeSampler::new(rates, 42);
+        assert_eq!(clipped.sample_accepted_tokens_up_to(1), 1);
+        assert_eq!(
+            clipped.sample_accepted_tokens(),
+            untouched.sample_accepted_tokens()
+        );
+        let mut full_accept = SpeculativeDecodeSampler::new(vec![1.0; 3], 42);
+        assert_eq!(full_accept.sample_accepted_tokens_up_to(2), 2);
     }
 
     #[test]
@@ -101,8 +122,8 @@ mod tests {
         let rates = vec![0.8, 0.6, 0.4];
         let mut left = SpeculativeDecodeSampler::new(rates.clone(), 123);
         let mut right = SpeculativeDecodeSampler::new(rates, 123);
-        let left_samples: Vec<_> = (0..100).map(|_| left.sample_output_tokens(10)).collect();
-        let right_samples: Vec<_> = (0..100).map(|_| right.sample_output_tokens(10)).collect();
+        let left_samples: Vec<_> = (0..100).map(|_| left.sample_accepted_tokens()).collect();
+        let right_samples: Vec<_> = (0..100).map(|_| right.sample_accepted_tokens()).collect();
         assert_eq!(left_samples, right_samples);
     }
 
@@ -111,8 +132,8 @@ mod tests {
         let rates = vec![0.8, 0.6, 0.4];
         let mut left = SpeculativeDecodeSampler::new(rates.clone(), 42);
         let mut right = SpeculativeDecodeSampler::new(rates, 43);
-        let left_samples: Vec<_> = (0..100).map(|_| left.sample_output_tokens(10)).collect();
-        let right_samples: Vec<_> = (0..100).map(|_| right.sample_output_tokens(10)).collect();
+        let left_samples: Vec<_> = (0..100).map(|_| left.sample_accepted_tokens()).collect();
+        let right_samples: Vec<_> = (0..100).map(|_| right.sample_accepted_tokens()).collect();
         assert_ne!(left_samples, right_samples);
     }
 
@@ -123,7 +144,7 @@ mod tests {
         let mut sampler = SpeculativeDecodeSampler::new(rates, 42);
         let samples = 200_000;
         let mean = (0..samples)
-            .map(|_| sampler.sample_output_tokens(10) as f64)
+            .map(|_| sampler.sample_accepted_tokens() as f64)
             .sum::<f64>()
             / samples as f64;
         assert!(

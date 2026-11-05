@@ -35,9 +35,9 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
-from aiconfigurator_core.sdk.engine import _evaluate_single_op
-from aiconfigurator_core.sdk.operations.moe_comm import MoEAllToAll
-from aiconfigurator_core.sdk.perf_database import get_database
+from aisimulate_core.sdk.engine import _evaluate_single_op
+from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll
+from aisimulate_core.sdk.perf_database import get_database
 
 OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "perf_database", "testdata", "moe_a2a_oracle.json")
 

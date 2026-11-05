@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the AFD default-mode search space enumeration."""
+"""Unit tests for the frozen legacy AFD parity-oracle topology enumeration."""
 
 import pytest
 
-from aiconfigurator.sdk.task_v2 import build_afd_parallel_lists
+from aisimulate.sdk.task_v2 import build_afd_parallel_lists
 
 pytestmark = pytest.mark.unit
 

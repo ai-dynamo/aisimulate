@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod bounded;
+
 use ddsketchy::DDSketch;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -9,9 +11,12 @@ use serde_json::Value;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
-use crate::engine::CacheTierAttribution;
-use crate::replay::PlacementCacheSample;
-use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
+use crate::engine::{CacheTierAttribution, TtftMilestone};
+use crate::replay::loadgen::{
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPhaseEvidence, AgenticPlayOutcome,
+    AgenticReplayPhase, AgenticSnapshotEvidence, AgenticTrajectorySnapshot,
+};
+use crate::replay::{AgenticRuntimeIdentity, PlacementCacheSample};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
@@ -19,9 +24,35 @@ use crate::replay::loadgen::{AgenticGraphIdentity, AgenticTrajectorySnapshot};
 const DDSKETCH_RELATIVE_ACCURACY: f64 = 0.001;
 const DDSKETCH_MAX_BINS: usize = 32_768;
 
+/// Match AIC's fail-closed publication gate for modeled power.
+pub const POWER_DATA_COVERAGE_THRESHOLD: f64 = 0.9;
+
+/// Final gauges of one cluster-shared G2 pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct G2DomainStats {
+    pub capacity_blocks: usize,
+    pub resident_blocks: usize,
+    /// Resident blocks plus pending store/promotion destinations.
+    pub used_blocks: usize,
+}
+
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    /// Opt-in all-phase native observation capture; independent of summary epochs.
+    pub telemetry: Option<super::telemetry::ReplayTelemetryCapture>,
+    pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
+    /// Versioned forecast contract, present only for a lookahead eviction policy.
+    pub kv_eviction_assumption: Option<&'static str>,
+    /// Prefill tokens in completed, committed forward passes, including
+    /// recomputation. This is measured from native pass metrics, not inferred
+    /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
+    pub committed_prefill_tokens: u64,
+    pub g3_offload: Option<crate::engine::G3Stats>,
+    /// Pulls of the pool that configures `kvcr`: aggregated, or prefill in P/D.
+    pub kvcr: Option<crate::engine::KvcrStats>,
+    /// Cluster-shared G2 pools; private G2 caches are not listed.
+    pub g2_domains: Vec<G2DomainStats>,
     pub request_counts: TraceRequestCounts,
     pub throughput: TraceThroughputStats,
     pub prefix_cache_reused_ratio: f64,
@@ -29,10 +60,33 @@ pub struct ReplayReport {
     pub latency: TraceLatencyStats,
     pub trajectories: Option<TraceTrajectoryStats>,
     pub agentic_graph: Option<AgenticGraphIdentity>,
+    /// Source-clock snapshot preparation, separate from actual execution events.
+    pub agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    /// Preparation is audited separately from the profile measurements.
+    pub agentic_phases: Option<AgenticPhaseEvidence>,
+    /// Fixed-duration admission, idle, and client/server completion evidence.
+    pub agentic_profile: Option<crate::replay::loadgen::AgenticProfileReport>,
+    /// Canonical driver lifecycle evidence on the absolute runtime clock. The
+    /// compact JSON report publishes only its digest and event count;
+    /// conformance tests can inspect all events.
+    pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    /// One explicit completed, failed, or incomplete result per authored play.
+    /// Timestamps share the measured per-request clock (relative to the profile
+    /// barrier when preparation succeeded).
+    pub agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
     /// SLA-goodput stats. `Some` only when an SLA was supplied to the collector
     /// (via `set_sla_thresholds`); `None` otherwise — goodput is undefined
     /// without an SLA, so the `goodput_*` keys are omitted from the report.
     pub goodput: Option<TraceGoodputStats>,
+    /// Modeled forward-pass power per GPU. Present only when the selected
+    /// timing provider exposes power evidence. `power_w` is null below
+    /// AIC's latency-weighted coverage threshold while `coverage` explains
+    /// why the estimate was withheld.
+    pub power: Option<TracePowerStats>,
+    /// Complete typed operation-energy diagnostics for bindings and direct
+    /// Rust consumers. `None` means the caller did not request or attach
+    /// diagnostics; an attached payload carries its own availability status.
+    pub power_diagnostics: Option<ReplayPowerDiagnostics>,
     /// Per-request records, one per admitted request. Populated by
     /// `TraceCollector::finish`. Intentionally NOT serialized into the summary
     /// JSON (see custom `Serialize` impl below) — consumers that want per-
@@ -75,15 +129,18 @@ pub struct TraceThroughputStats {
     /// `prefill_worker_seconds` at 0.0.
     pub prefill_worker_seconds: f64,
     pub decode_worker_seconds: f64,
-    /// GPUs per worker per role, derived from the mocker engine parallelism
-    /// (`MockEngineArgs::aic_gpus_per_worker` = tensor parallelism × materialized
-    /// DP topology); the runtime sets it on the collector. 0 when not set.
+    /// GPUs per worker per role: TP × attention DP × prefill CP, set by the
+    /// runtime. Decode CP partitions TP ranks and adds no GPUs. 0 when not set.
     pub prefill_gpus_per_worker: usize,
     pub decode_gpus_per_worker: usize,
-    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` — the
-    /// deployment's provisioned GPU-time (already including the startup ramp and
-    /// drain tail, since `*_worker_seconds` do). Computed in `finish()` straight
-    /// from the mocker's own worker parallelism, so it needs no external config.
+    /// GPUs of the static encoder pool ahead of the language workers; 0 without one.
+    pub encoder_gpus: usize,
+    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` plus the
+    /// encoder pool's GPU-seconds `/ 3600`, integrated on the same clock as the
+    /// worker-seconds — the deployment's provisioned GPU-time (already
+    /// including the startup ramp and drain tail, since `*_worker_seconds` do).
+    /// Computed in `finish()` straight from the mocker's own worker
+    /// parallelism, so it needs no external config.
     pub gpu_hours: f64,
 }
 
@@ -99,6 +156,119 @@ pub struct TraceGoodputStats {
     pub request_throughput_rps: f64,
     /// Output tokens from good requests per second, over `duration_s`.
     pub output_throughput_tok_s: f64,
+}
+
+/// Replay-level power summary derived from timing-provider energy evidence.
+///
+/// External callers construct validated values and cannot mutate their fields:
+///
+/// ```compile_fail
+/// use aisimulate_core::replay::TracePowerStats;
+/// let mut power = TracePowerStats::new(Some(500.0), 1.0).unwrap();
+/// power.coverage = 0.1;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TracePowerStats {
+    /// Active forward-pass average power per GPU, in watts. `None` means the
+    /// publication conditions did not all hold. JSON always includes this field.
+    pub(crate) power_w: Option<f64>,
+    /// Latency-weighted fraction of modeled forward-pass work with positive
+    /// measured energy, in `[0, 1]`.
+    pub(crate) coverage: f64,
+}
+
+/// Complete replay power diagnostics shared by Rust and serialized bindings.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPowerDiagnostics {
+    pub schema_version: &'static str,
+    pub scope: &'static str,
+    pub power_w_unit: &'static str,
+    pub energy_unit: &'static str,
+    pub latency_unit: &'static str,
+    pub coverage_gate: f64,
+    pub publication_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covered_latency_ms: Option<f64>,
+    pub power_w: Option<f64>,
+    pub power_coverage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<&'static str>,
+    pub phases: Vec<ReplayPhasePowerDiagnostics>,
+}
+
+/// Per-phase operation-energy diagnostics.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayPhasePowerDiagnostics {
+    pub name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    pub publication_status: &'static str,
+    pub power_w: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub operations: Vec<ReplayOperationPowerDiagnostics>,
+}
+
+/// Per-operation energy evidence and provenance.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReplayOperationPowerDiagnostics {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_wms: Option<f64>,
+    pub latency_ms: f64,
+    pub covered_latency_ms: f64,
+    pub power_coverage: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_contribution: Option<f64>,
+    pub source: String,
+    pub source_kind: &'static str,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncovered_reason: Option<&'static str>,
+}
+
+impl TracePowerStats {
+    /// Validate finite values and the inclusive power publication threshold.
+    pub fn new(power_w: Option<f64>, coverage: f64) -> anyhow::Result<Self> {
+        let stats = Self { power_w, coverage };
+        stats.validate()?;
+        Ok(stats)
+    }
+
+    /// Active forward-pass watts per GPU, or `None` when publication is withheld.
+    pub fn power_w(&self) -> Option<f64> {
+        self.power_w
+    }
+
+    /// Latency-weighted energy-evidence coverage, in `[0, 1]`.
+    pub fn coverage(&self) -> f64 {
+        self.coverage
+    }
+
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.coverage.is_finite() && (0.0..=1.0).contains(&self.coverage),
+            "/summary/power_coverage must be finite and in [0, 1]"
+        );
+        if let Some(watts) = self.power_w {
+            anyhow::ensure!(
+                watts.is_finite() && watts > 0.0,
+                "/summary/power_w must be finite and positive"
+            );
+            anyhow::ensure!(
+                self.coverage >= POWER_DATA_COVERAGE_THRESHOLD,
+                "/summary/power_w requires power_coverage >= 0.9"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +301,58 @@ pub struct TraceLatencyStats {
     pub itl: TraceInterTokenLatencyStats,
     pub e2e: TraceDistributionStats,
     pub output_token_throughput_per_user: TraceDistributionStats,
+    /// Mean time to first token split by scheduler-thread stage; present when a
+    /// host-aware engine reported stages for completed requests.
+    pub ttft_milestones: Option<TraceTtftStageStats>,
+    /// Mean arrival-to-embeddings-delivered time of the completed requests that
+    /// crossed the encoder pool; `None` without one.
+    pub encoder_latency_ms: Option<f64>,
+}
+
+/// Mean per-request time spent in each host stage on the way to the first token.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TraceTtftStageStats {
+    /// Arrival, or the encoder pool's delivery, to leaving the frontend pools;
+    /// zero without a frontend.
+    pub mean_frontend_ms: f64,
+    /// Frontend exit (or arrival) to the scheduler receiving the request.
+    pub mean_scheduler_inbox_wait_ms: f64,
+    /// Received to selected into a batch.
+    pub mean_receive_to_admit_ms: f64,
+    /// Selected to the prompt's last forward finishing on the device, of the
+    /// request's first prefill attempt; a retraction before the first token is
+    /// observed lands in `mean_result_observation_delay_ms`.
+    pub mean_prefill_elapsed_ms: f64,
+    /// Device completion to the scheduler observing the result: the KV source
+    /// hold on a prefill rank, the first token elsewhere.
+    pub mean_result_observation_delay_ms: f64,
+    /// KV handoff and the decode rank's first step on a disaggregated path;
+    /// zero when the observing scheduler emits the first token itself.
+    pub mean_handoff_to_first_token_ms: f64,
+    /// The engine emitting the first token to the client receiving it after
+    /// detokenization; zero without `engine.detokenization`.
+    pub mean_detokenization_ms: f64,
+}
+
+/// Number of [`TraceTtftStageStats`] stages.
+pub(crate) const TTFT_STAGE_COUNT: usize = 7;
+
+impl TraceTtftStageStats {
+    /// Means over `samples` requests of the per-stage sums, `None` without samples.
+    fn from_sums(sums: &[f64; TTFT_STAGE_COUNT], samples: usize) -> Option<Self> {
+        (samples > 0).then(|| {
+            let mean = |index: usize| sums[index] / samples as f64;
+            Self {
+                mean_frontend_ms: mean(0),
+                mean_scheduler_inbox_wait_ms: mean(1),
+                mean_receive_to_admit_ms: mean(2),
+                mean_prefill_elapsed_ms: mean(3),
+                mean_result_observation_delay_ms: mean(4),
+                mean_handoff_to_first_token_ms: mean(5),
+                mean_detokenization_ms: mean(6),
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +372,19 @@ pub struct TraceInterTokenLatencyStats {
 impl ReplayReport {
     pub fn with_wall_time_ms(mut self, wall_time_ms: f64) -> Self {
         self.throughput.wall_time_ms = wall_time_ms;
+        self
+    }
+
+    pub fn with_power(mut self, power: Option<TracePowerStats>) -> Self {
+        self.power = power;
+        self
+    }
+
+    pub fn with_power_diagnostics(
+        mut self,
+        power_diagnostics: Option<ReplayPowerDiagnostics>,
+    ) -> Self {
+        self.power_diagnostics = power_diagnostics;
         self
     }
 
@@ -180,6 +415,9 @@ impl ReplayReport {
 
 impl Display for ReplayReport {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        if let Some(power) = self.power {
+            power.validate().map_err(|_| std::fmt::Error)?;
+        }
         writeln!(
             f,
             "  completed_requests: {}",
@@ -217,6 +455,19 @@ impl Display for ReplayReport {
         )?;
         writeln!(f, "  mean_ttft_ms: {:.6}", self.latency.ttft.mean_ms)?;
         writeln!(f, "  mean_e2e_latency_ms: {:.6}", self.latency.e2e.mean_ms)?;
+        if let Some(power) = self.power {
+            match power.power_w {
+                Some(power_w) => writeln!(f, "  power_w: {power_w:.6}")?,
+                None => writeln!(f, "  power_w: unavailable")?,
+            }
+            writeln!(f, "  power_coverage: {:.6}", power.coverage)?;
+        } else {
+            writeln!(f, "  power_w: unavailable (energy provider unsupported)")?;
+            writeln!(
+                f,
+                "  power_coverage: unavailable (energy provider unsupported)"
+            )?;
+        }
         writeln!(
             f,
             "  prefix_cache_reused_ratio: {:.6}",
@@ -236,12 +487,27 @@ impl Serialize for ReplayReport {
     where
         S: Serializer,
     {
-        // `None`, not a hint: serde's contract is that the declared length is
-        // exact, and the entry count here is conditional (goodput adds 3,
-        // trajectories 13, agentic_graph 1). A length-prefixed format
-        // (MessagePack, CBOR, bincode) would write the declared header and
-        // then emit a different number of pairs, producing corrupt output.
+        if let Some(power) = self.power {
+            power.validate().map_err(serde::ser::Error::custom)?;
+        }
         let mut map = serializer.serialize_map(None)?;
+        if let Some(telemetry) = &self.telemetry {
+            map.serialize_entry("telemetry", telemetry)?;
+        }
+        map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
+        if let Some(assumption) = self.kv_eviction_assumption {
+            map.serialize_entry("kv_eviction_assumption", assumption)?;
+        }
+        map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
+        if let Some(g3) = &self.g3_offload {
+            map.serialize_entry("g3_offload", g3)?;
+        }
+        if let Some(kvcr) = &self.kvcr {
+            map.serialize_entry("kvcr", kvcr)?;
+        }
+        if !self.g2_domains.is_empty() {
+            map.serialize_entry("g2_domains", &self.g2_domains)?;
+        }
         map.serialize_entry("num_requests", &self.request_counts.num_requests)?;
         map.serialize_entry(
             "completed_requests",
@@ -289,6 +555,9 @@ impl Serialize for ReplayReport {
             "decode_gpus_per_worker",
             &self.throughput.decode_gpus_per_worker,
         )?;
+        if self.throughput.encoder_gpus > 0 {
+            map.serialize_entry("encoder_gpus", &self.throughput.encoder_gpus)?;
+        }
         map.serialize_entry("gpu_hours", &self.throughput.gpu_hours)?;
         if let Some(goodput) = &self.goodput {
             map.serialize_entry("goodput_completed_requests", &goodput.completed_requests)?;
@@ -300,6 +569,11 @@ impl Serialize for ReplayReport {
                 "goodput_output_throughput_tok_s",
                 &goodput.output_throughput_tok_s,
             )?;
+        }
+        map.serialize_entry("power_w", &self.power.and_then(|power| power.power_w))?;
+        map.serialize_entry("power_coverage", &self.power.map(|power| power.coverage))?;
+        if let Some(power_diagnostics) = &self.power_diagnostics {
+            map.serialize_entry("power_diagnostics", power_diagnostics)?;
         }
         map.serialize_entry("processed_tokens", &self.processed_tokens())?;
         map.serialize_entry("processed_tokens_per_s", &self.processed_tokens_per_s())?;
@@ -338,7 +612,47 @@ impl Serialize for ReplayReport {
         if let Some(agentic_graph) = &self.agentic_graph {
             map.serialize_entry("agentic_graph", agentic_graph)?;
         }
+        if let Some(snapshots) = &self.agentic_snapshots {
+            map.serialize_entry("agentic_snapshots", snapshots)?;
+        }
+        if let Some(phases) = &self.agentic_phases {
+            map.serialize_entry("agentic_phases", phases)?;
+        }
+        if let Some(profile) = &self.agentic_profile {
+            map.serialize_entry("agentic_profile", profile)?;
+        }
+        if let Some(lifecycle) = &self.agentic_lifecycle {
+            map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
+            map.serialize_entry(
+                "agentic_lifecycle_digest",
+                &lifecycle.digest().map_err(serde::ser::Error::custom)?,
+            )?;
+        }
+        if let Some(outcomes) = &self.agentic_play_outcomes {
+            map.serialize_entry("agentic_play_outcomes", outcomes)?;
+        }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
+        if let Some(stages) = &self.latency.ttft_milestones {
+            map.serialize_entry("mean_frontend_ms", &stages.mean_frontend_ms)?;
+            map.serialize_entry(
+                "mean_scheduler_inbox_wait_ms",
+                &stages.mean_scheduler_inbox_wait_ms,
+            )?;
+            map.serialize_entry("mean_receive_to_admit_ms", &stages.mean_receive_to_admit_ms)?;
+            map.serialize_entry("mean_prefill_elapsed_ms", &stages.mean_prefill_elapsed_ms)?;
+            map.serialize_entry(
+                "mean_result_observation_delay_ms",
+                &stages.mean_result_observation_delay_ms,
+            )?;
+            map.serialize_entry(
+                "mean_handoff_to_first_token_ms",
+                &stages.mean_handoff_to_first_token_ms,
+            )?;
+            map.serialize_entry("mean_detokenization_ms", &stages.mean_detokenization_ms)?;
+        }
+        if let Some(encoder_latency_ms) = self.latency.encoder_latency_ms {
+            map.serialize_entry("encoder_latency_ms", &encoder_latency_ms)?;
+        }
         serialize_rate_distribution(
             &mut map,
             "output_token_throughput_per_user",
@@ -391,6 +705,9 @@ where
 #[derive(Debug)]
 struct TraceRequestStats {
     arrival_time_ms: f64,
+    /// Position in this reporting epoch's arrival order. Unlike the request
+    /// UUID, which may be random, it orders the summary deterministically.
+    arrival_ordinal: u64,
     first_admit_ms: Option<f64>,
     terminal_time_ms: Option<f64>,
     terminal_status: Option<ReplayTerminalStatus>,
@@ -418,8 +735,57 @@ struct TraceRequestStats {
     authored_id: Option<String>,
     play_id: Option<String>,
     dispatched_at_ms: Option<f64>,
+    tokenized_ms: Option<f64>,
     metadata: Value,
+    /// Scheduler-thread stages of a host-aware engine; all `None` otherwise.
+    ttft_milestones: TtftMilestoneTimes,
+    /// When the encoder pool delivered this request's embeddings, if it crossed one.
+    encoder_ready_ms: Option<f64>,
+    agentic: Option<AgenticRuntimeIdentity>,
     detail: Option<Box<PerRequestDetail>>,
+}
+
+/// First time a request reached each scheduler-thread stage.
+#[derive(Debug, Default, Clone, Copy)]
+struct TtftMilestoneTimes {
+    frontend_ready_ms: Option<f64>,
+    scheduler_received_ms: Option<f64>,
+    selected_ms: Option<f64>,
+    prefill_complete_ms: Option<f64>,
+    /// A prefill rank observed the finished extend and holds the KV source.
+    source_held_ms: Option<f64>,
+    /// The engine emitted the first token; recorded only with
+    /// detokenization, where the client receives it later.
+    first_token_emitted_ms: Option<f64>,
+}
+
+impl TtftMilestoneTimes {
+    /// Time spent in each stage on the way to the first token, in the order of
+    /// [`TraceTtftStageStats`]; `None` until every scheduler stage was reached.
+    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; TTFT_STAGE_COUNT]> {
+        let received = self.scheduler_received_ms?;
+        let selected = self.selected_ms?;
+        let prefill_complete = self.prefill_complete_ms?;
+        let frontend_exit = self.frontend_ready_ms.unwrap_or(arrival_ms);
+        // With detokenization the client receives the first token after the
+        // engine emits it; otherwise both happen at the pass end.
+        let emitted = self.first_token_emitted_ms.unwrap_or(first_token_ms);
+        // On a prefill rank the scheduler observes the result when it holds the
+        // KV source; the handoff and the decode rank's first step follow.
+        let observed = self.source_held_ms.unwrap_or(emitted);
+        Some(
+            [
+                frontend_exit - arrival_ms,
+                received - frontend_exit,
+                selected - received,
+                prefill_complete - selected,
+                observed - prefill_complete,
+                emitted - observed,
+                first_token_ms - emitted,
+            ]
+            .map(|span| span.max(0.0)),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -663,9 +1029,19 @@ pub struct PerRequestRecord {
     /// Authored provider-neutral metadata retained for correlation.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agentic: Option<AgenticRuntimeIdentity>,
+    /// Profile attribution for warmed runs. Preparation records live only in
+    /// `agentic_phases`; cold runs retain the existing absent field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agentic_phase: Option<AgenticReplayPhase>,
     pub uuid: String,
     pub arrival_time_ms: f64,
     pub dispatched_at_ms: Option<f64>,
+    /// When tokenization finished and the request reached its worker's
+    /// engine. Present only when tokenization latency is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokenized_ms: Option<f64>,
     pub first_admit_ms: Option<f64>,
     pub terminal_time_ms: f64,
     pub first_token_ms: Option<f64>,
@@ -682,6 +1058,8 @@ pub struct PerRequestRecord {
     /// Number of output tokens actually emitted by the mock engine.
     pub output_length: usize,
     pub reused_input_tokens: usize,
+    /// Total reuse at the first admission, excluding increases from readmission.
+    pub first_admission_reused_input_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_admission_g1_reused_input_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -689,6 +1067,18 @@ pub struct PerRequestRecord {
     pub prefill_worker_idx: Option<usize>,
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
+    /// When the encoder pool delivered the embeddings; absent without an encoder pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder_ready_ms: Option<f64>,
+    /// Host-aware scheduler stages; absent unless the engine models its scheduler thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_ready_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler_received_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_complete_ms: Option<f64>,
     pub source_held_ms: Option<f64>,
     pub destination_reserved_ms: Option<f64>,
     pub destination_activated_ms: Option<f64>,
@@ -703,6 +1093,50 @@ pub struct PerRequestRecord {
     pub readmission_count: usize,
     pub pressure_record_ordinals: Vec<u64>,
     pub terminal_status: ReplayTerminalStatus,
+}
+
+impl PerRequestRecord {
+    pub(crate) fn shift_timestamps(&mut self, delta_ms: f64) {
+        self.arrival_time_ms += delta_ms;
+        self.terminal_time_ms += delta_ms;
+        for timestamp in [
+            &mut self.dispatched_at_ms,
+            &mut self.tokenized_ms,
+            &mut self.first_admit_ms,
+            &mut self.first_token_ms,
+            &mut self.last_token_ms,
+            &mut self.prefill_admit_ms,
+            &mut self.source_held_ms,
+            &mut self.destination_reserved_ms,
+            &mut self.destination_activated_ms,
+            &mut self.decode_admit_ms,
+            &mut self.source_released_ms,
+            &mut self.encoder_ready_ms,
+            &mut self.frontend_ready_ms,
+            &mut self.scheduler_received_ms,
+            &mut self.selected_ms,
+            &mut self.prefill_complete_ms,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *timestamp += delta_ms;
+        }
+        for routing in &mut self.routing_history {
+            for time in [
+                &mut routing.queue_entered_at_ms,
+                &mut routing.released_at_ms,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *time += delta_ms;
+            }
+        }
+        for admission in &mut self.admission_history {
+            admission.at_ms += delta_ms;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -810,9 +1244,21 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) g3_offload: Option<crate::engine::G3Stats>,
+    pub(crate) kvcr: Option<crate::engine::KvcrStats>,
+    pub(crate) g2_domains: Vec<G2DomainStats>,
+    committed_prefill_tokens: u64,
     requests: FxHashMap<Uuid, TraceRequestStats>,
-    /// Simulated timestamp at which this reporting epoch began. Request
-    /// timestamps remain absolute; aggregate rates use elapsed epoch time.
+    batch_reporting: bool,
+    bounded_summary: Option<bounded::BoundedSummary>,
+    completed_to_retire: Vec<Uuid>,
+    prepared_report: Option<ReplayReport>,
+    /// Ordinal of the next arrival in this reporting epoch.
+    next_arrival_ordinal: u64,
+    /// Absolute simulated timestamp at which this reporting epoch began.
+    /// Collection uses the runtime clock; aggregate rates use elapsed epoch
+    /// time. Warmed reports rebase measured request and play outcome timestamps
+    /// to the profile barrier when building the report.
     report_start_ms: f64,
     /// Global per-token distributions are folded in as requests terminate, so
     /// completed requests no longer retain one timestamp per emitted token.
@@ -834,6 +1280,9 @@ pub struct TraceCollector {
     /// count varies with startup / drain / scaling.
     prefill_worker_seconds: f64,
     decode_worker_seconds: f64,
+    /// Encoder-pool GPU-seconds integrated on the same clock as the
+    /// worker-seconds (see `add_encoder_gpu_seconds`); 0.0 without a pool.
+    encoder_gpu_seconds: f64,
     /// Static provisioned worker counts `(prefill, decode)` for externally
     /// clocked runtimes with a fixed deployment size. When `Some`, `finish()`
     /// derives worker-seconds as `count × duration_s` instead of using the
@@ -843,9 +1292,18 @@ pub struct TraceCollector {
     /// `finish()` to turn worker-seconds into gpu_hours.
     prefill_gpus_per_worker: usize,
     decode_gpus_per_worker: usize,
+    /// GPUs of the static encoder pool; `add_encoder_gpu_seconds` charges them
+    /// on every clock advance.
+    encoder_gpus: usize,
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
+    agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    agentic_phases: Option<AgenticPhaseEvidence>,
+    agentic_profile: Option<crate::replay::loadgen::AgenticProfileReport>,
+    g3_profile_baseline: Option<crate::engine::G3Stats>,
+    agentic_lifecycle: Option<AgenticLifecycleTranscript>,
+    agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
 
 impl TraceRequestStats {
@@ -977,6 +1435,82 @@ impl TraceRequestStats {
 }
 
 impl TraceCollector {
+    /// Batch runs may retire terminal state after runtime completion callbacks.
+    /// Steppable SDK runtimes retain their existing request-query semantics.
+    pub(crate) fn begin_batch_reporting(&mut self) {
+        self.batch_reporting = true;
+        if !self.capture_per_request && !self.defer_token_timeline_finalization {
+            self.bounded_summary = Some(bounded::BoundedSummary::default());
+        }
+    }
+
+    /// Retain primer/warmup admissions until the barrier copies them into the
+    /// preparation ledger. The next reporting epoch resumes bounded storage.
+    pub(crate) fn begin_batch_preparation_reporting(&mut self) {
+        self.batch_reporting = true;
+    }
+
+    pub(crate) fn is_batch_reporting(&self) -> bool {
+        self.batch_reporting
+    }
+
+    fn retire_completed(&mut self) -> anyhow::Result<()> {
+        if let Some(summary) = &mut self.bounded_summary {
+            for uuid in self.completed_to_retire.drain(..) {
+                if let Some(stats) = self.requests.remove(&uuid) {
+                    summary.add(&stats, self.sla)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_on_arrival(
+        &mut self,
+        uuid: Uuid,
+        at_ms: f64,
+        input: usize,
+        output: usize,
+    ) -> anyhow::Result<()> {
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
+        self.on_arrival(uuid, at_ms, input, output);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_batch_report(&mut self) -> anyhow::Result<()> {
+        self.retire_completed().map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?;
+        let Some(mut summary) = self.bounded_summary.take() else {
+            return Ok(());
+        };
+        for (_, mut stats) in self.requests.drain() {
+            stats.finalize_token_timeline(
+                stats.terminal_status == Some(ReplayTerminalStatus::Completed)
+                    && stats.first_admit_ms.is_some(),
+                &mut self.itl_distribution,
+                &mut self.output_token_throughput_per_user,
+            );
+            summary.add(&stats, self.sla).map_err(|error| {
+                crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+            })?;
+        }
+        let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
+        self.prepared_report = Some(summary.finish(base).map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?);
+        Ok(())
+    }
+
+    /// Call once per native pass completion, independently of sampled FPM
+    /// telemetry. Repeated admissions and preemption make reuse-derived work
+    /// estimates incorrect; only the committed pass describes executed work.
+    pub(crate) fn on_completed_prefill_work(&mut self, tokens: u64) {
+        self.committed_prefill_tokens += tokens;
+    }
+
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
     }
@@ -1032,6 +1566,14 @@ impl TraceCollector {
         self.decode_worker_seconds += decode;
     }
 
+    /// Add the encoder pool's GPU-seconds for the interval just elapsed:
+    /// `encoder_gpus × dt_s`. The runtime calls this on the same clock
+    /// advances as `add_worker_seconds`, so both terms of `gpu_hours` share one
+    /// clock. Without an encoder pool `encoder_gpus` is 0 and nothing accrues.
+    pub(crate) fn add_encoder_gpu_seconds(&mut self, dt_s: f64) {
+        self.encoder_gpu_seconds += self.encoder_gpus as f64 * dt_s;
+    }
+
     /// Declare a fixed `(prefill, decode)` provisioned worker count for an
     /// externally clocked runtime that does not integrate worker counts on
     /// each clock advance. `finish()` then reports `count × duration_s`
@@ -1042,6 +1584,11 @@ impl TraceCollector {
 
     pub(crate) fn clear_static_worker_count(&mut self) {
         self.static_worker_count = None;
+    }
+
+    /// GPUs of the encoder pool ahead of the language workers.
+    pub(crate) fn set_encoder_gpus(&mut self, gpus: usize) {
+        self.encoder_gpus = gpus;
     }
 
     /// Set GPUs-per-worker per role (from the mocker engine parallelism). Used
@@ -1062,10 +1609,13 @@ impl TraceCollector {
         input_length: usize,
         requested_output_length: usize,
     ) {
+        let arrival_ordinal = self.next_arrival_ordinal;
+        self.next_arrival_ordinal += 1;
         self.requests.insert(
             uuid,
             TraceRequestStats {
                 arrival_time_ms,
+                arrival_ordinal,
                 first_admit_ms: None,
                 terminal_time_ms: None,
                 terminal_status: None,
@@ -1080,8 +1630,12 @@ impl TraceCollector {
                 authored_id: None,
                 play_id: None,
                 dispatched_at_ms: None,
+                tokenized_ms: None,
                 metadata: Value::Null,
+                agentic: None,
                 first_admission_reused_input_tokens: 0,
+                ttft_milestones: TtftMilestoneTimes::default(),
+                encoder_ready_ms: None,
                 detail: self
                     .capture_per_request
                     .then(|| Box::new(PerRequestDetail::default())),
@@ -1127,12 +1681,48 @@ impl TraceCollector {
         stats.dispatched_at_ms = Some(dispatched_at_ms);
     }
 
+    pub fn on_tokenized(&mut self, uuid: Uuid, tokenized_ms: f64) {
+        if !self.capture_per_request {
+            return;
+        }
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.tokenized_ms = Some(tokenized_ms);
+        }
+    }
+
     pub fn set_agentic_trajectory(&mut self, snapshot: AgenticTrajectorySnapshot) {
         self.agentic_trajectory = Some(snapshot);
     }
 
     pub fn set_agentic_graph(&mut self, identity: AgenticGraphIdentity) {
         self.agentic_graph = Some(identity);
+    }
+
+    pub fn set_agentic_snapshots(&mut self, snapshots: Vec<AgenticSnapshotEvidence>) {
+        self.agentic_snapshots = Some(snapshots);
+    }
+
+    /// Preparation and lifecycle evidence use the absolute runtime clock.
+    /// Measured request and play outcome timestamps use the profile barrier
+    /// as their origin when preparation succeeded.
+    pub fn set_agentic_phases(&mut self, phases: AgenticPhaseEvidence) {
+        self.agentic_phases = Some(phases);
+    }
+
+    pub fn set_agentic_profile(&mut self, profile: crate::replay::loadgen::AgenticProfileReport) {
+        self.agentic_profile = Some(profile);
+    }
+
+    pub(crate) fn set_g3_profile_baseline(&mut self, baseline: Option<crate::engine::G3Stats>) {
+        self.g3_profile_baseline = baseline;
+    }
+
+    pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
+        self.agentic_lifecycle = Some(transcript);
+    }
+
+    pub fn set_agentic_play_outcomes(&mut self, outcomes: Vec<AgenticPlayOutcome>) {
+        self.agentic_play_outcomes = Some(outcomes);
     }
 
     /// Retain the ReplaySpec correlation fields before the request crosses
@@ -1146,13 +1736,19 @@ impl TraceCollector {
             return;
         };
         // See `on_agentic_metadata`: the fold key is not a diagnostic.
-        stats.authored_id = Some(context.authored_id.clone());
+        if !context.authored_id.is_empty() {
+            stats.authored_id = Some(context.authored_id.clone());
+        }
         if !self.capture_per_request {
             return;
         }
-        stats.session_id = context.session_id.clone().or(stats.session_id.take());
+        stats.session_id = context
+            .session_id()
+            .map(str::to_owned)
+            .or(stats.session_id.take());
         stats.turn_index = context.turn_index.or(stats.turn_index);
         stats.metadata = context.metadata.clone();
+        stats.agentic = context.agentic.clone();
     }
 
     /// Record that `uuid` was dispatched to `worker_idx` on the prefill pool
@@ -1235,7 +1831,7 @@ impl TraceCollector {
         }
     }
 
-    pub(crate) fn on_prefill_admit_with_tier_attribution(
+    pub(crate) fn on_prefill_admit(
         &mut self,
         uuid: Uuid,
         admit_time_ms: f64,
@@ -1261,7 +1857,7 @@ impl TraceCollector {
         }
     }
 
-    pub(crate) fn on_decode_admit_with_tier_attribution(
+    pub(crate) fn on_decode_admit(
         &mut self,
         uuid: Uuid,
         admit_time_ms: f64,
@@ -1288,8 +1884,32 @@ impl TraceCollector {
     }
 
     pub(crate) fn on_source_held(&mut self, uuid: Uuid, at_ms: f64) {
-        if let Some(detail) = self.detail_mut(uuid) {
-            detail.source_held_ms.get_or_insert(at_ms);
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.ttft_milestones.source_held_ms.get_or_insert(at_ms);
+            if let Some(detail) = stats.detail.as_deref_mut() {
+                detail.source_held_ms.get_or_insert(at_ms);
+            }
+        }
+    }
+
+    /// Record the first time `uuid` reached a scheduler-thread stage.
+    pub(crate) fn on_ttft_milestone(&mut self, uuid: Uuid, stage: TtftMilestone, at_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            let stages = &mut stats.ttft_milestones;
+            let slot = match stage {
+                TtftMilestone::FrontendReady => &mut stages.frontend_ready_ms,
+                TtftMilestone::Received => &mut stages.scheduler_received_ms,
+                TtftMilestone::Selected => &mut stages.selected_ms,
+                TtftMilestone::PrefillComplete => &mut stages.prefill_complete_ms,
+            };
+            slot.get_or_insert(at_ms);
+        }
+    }
+
+    /// The encoder pool delivered the request's embeddings to the language rank.
+    pub(crate) fn on_encoder_ready(&mut self, uuid: Uuid, at_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.encoder_ready_ms.get_or_insert(at_ms);
         }
     }
 
@@ -1461,6 +2081,8 @@ impl TraceCollector {
             itl_distribution,
             output_token_throughput_per_user,
             defer_token_timeline_finalization,
+            bounded_summary,
+            completed_to_retire,
             ..
         } = self;
         if let Some(stats) = requests.get_mut(&uuid)
@@ -1468,6 +2090,9 @@ impl TraceCollector {
         {
             stats.terminal_time_ms = Some(terminal_time_ms);
             stats.terminal_status = Some(status);
+            if bounded_summary.is_some() {
+                completed_to_retire.push(uuid);
+            }
             if !*defer_token_timeline_finalization {
                 stats.finalize_token_timeline(
                     status == ReplayTerminalStatus::Completed && stats.first_admit_ms.is_some(),
@@ -1503,6 +2128,22 @@ impl TraceCollector {
         }
     }
 
+    /// Record a token the engine emitted at `emitted_ms` and the client
+    /// received at `received_ms` after detokenization.
+    pub(crate) fn on_detokenized_token(&mut self, uuid: Uuid, emitted_ms: f64, received_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid)
+            && let TokenTimeline::Recording(times) = &mut stats.token_timeline
+        {
+            if times.is_empty() {
+                stats
+                    .ttft_milestones
+                    .first_token_emitted_ms
+                    .get_or_insert(emitted_ms);
+            }
+            times.push(received_ms);
+        }
+    }
+
     /// Return (ttft_ms, mean_itl_ms) for a completed request, if available.
     pub(crate) fn request_latencies(&self, uuid: Uuid) -> Option<(f64, f64)> {
         let stats = self.requests.get(&uuid)?;
@@ -1527,12 +2168,19 @@ impl TraceCollector {
         ))
     }
 
+    pub(crate) fn first_admission_input(&self, uuid: Uuid) -> Option<usize> {
+        self.requests
+            .get(&uuid)
+            .filter(|stats| stats.first_admit_ms.is_none())
+            .map(|stats| stats.input_length)
+    }
+
     /// Drain measurements while retaining the configuration that applies to
     /// each reporting epoch of a reusable runtime. The absolute report boundary
     /// includes idle time in this epoch and starts the next one.
     pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
         debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
-        let next = Self {
+        let mut next = Self {
             report_start_ms: report_end_ms,
             defer_token_timeline_finalization: self.defer_token_timeline_finalization,
             capture_per_request: self.capture_per_request,
@@ -1540,8 +2188,12 @@ impl TraceCollector {
             static_worker_count: self.static_worker_count,
             prefill_gpus_per_worker: self.prefill_gpus_per_worker,
             decode_gpus_per_worker: self.decode_gpus_per_worker,
+            encoder_gpus: self.encoder_gpus,
             ..Default::default()
         };
+        if self.batch_reporting {
+            next.begin_batch_reporting();
+        }
         std::mem::replace(self, next).finish_at(Some(report_end_ms))
     }
 
@@ -1550,21 +2202,20 @@ impl TraceCollector {
     }
 
     fn finish_at(mut self, report_end_ms: Option<f64>) -> ReplayReport {
-        let mut request_order = self.requests.keys().copied().collect::<Vec<_>>();
-        request_order.sort_unstable_by(|left_uuid, right_uuid| {
-            let left = self
+        if let Some(report) = self.prepared_report.take() {
+            return report;
+        }
+        // Arrival ordinals are unique within an epoch; the UUID only keeps the
+        // order total.
+        let request_order = {
+            let mut keys = self
                 .requests
-                .get(left_uuid)
-                .expect("request order must reference retained request");
-            let right = self
-                .requests
-                .get(right_uuid)
-                .expect("request order must reference retained request");
-            left.authored_id
-                .as_deref()
-                .cmp(&right.authored_id.as_deref())
-                .then_with(|| left_uuid.cmp(right_uuid))
-        });
+                .iter()
+                .map(|(uuid, stats)| (stats.authored_id.as_deref(), stats.arrival_ordinal, *uuid))
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.into_iter().map(|(.., uuid)| uuid).collect::<Vec<_>>()
+        };
 
         for uuid in &request_order {
             let stats = self
@@ -1594,10 +2245,30 @@ impl TraceCollector {
         let static_worker_count = self.static_worker_count;
         let accumulated_prefill_worker_seconds = self.prefill_worker_seconds;
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
+        let accumulated_encoder_gpu_seconds = self.encoder_gpu_seconds;
         let prefill_gpus_per_worker = self.prefill_gpus_per_worker;
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
+        let encoder_gpus = self.encoder_gpus;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
+        let agentic_snapshots = self.agentic_snapshots;
+        let agentic_phases = self.agentic_phases;
+        let mut agentic_profile = self.agentic_profile;
+        let agentic_lifecycle = self.agentic_lifecycle;
+        let mut agentic_play_outcomes = self.agentic_play_outcomes;
+        if let Some(origin) = agentic_phases
+            .as_ref()
+            .and_then(|phases| phases.profile_start_ms)
+        {
+            for outcome in agentic_play_outcomes.iter_mut().flatten() {
+                for time in [&mut outcome.causal_terminal_ms, &mut outcome.settled_at_ms]
+                    .into_iter()
+                    .flatten()
+                {
+                    *time -= origin;
+                }
+            }
+        }
         let trajectories = self
             .agentic_trajectory
             .map(|snapshot| TraceTrajectoryStats {
@@ -1614,15 +2285,30 @@ impl TraceCollector {
         let requests = self.requests;
         let request_count = requests.len();
         let mut ttfts = Vec::with_capacity(request_count);
+        let mut ttft_stage_sums = [0.0f64; TTFT_STAGE_COUNT];
+        let mut ttft_stage_samples = 0usize;
+        let mut encoder_sum_ms = 0.0f64;
+        let mut encoder_samples = 0usize;
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
+        // The profile's terminal boundary includes canceled requests and idle
+        // time, which must still count toward provisioned worker accounting.
         let mut duration_ms = report_end_ms
+            .into_iter()
+            .chain(
+                agentic_profile
+                    .as_ref()
+                    .and_then(|profile| profile.finished_at_ms),
+            )
+            .reduce(f64::max)
             .map(|end_ms| (end_ms - report_start_ms).max(0.0))
             .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
+        let mut observed_start_ms: Option<f64> = None;
+        let mut observed_end_ms: Option<f64> = None;
         let mut total_reused_tokens = 0usize;
         let mut total_first_admission_reused_tokens = 0usize;
         // Goodput: completed requests (and their output tokens) that satisfy the SLA.
@@ -1644,6 +2330,15 @@ impl TraceCollector {
             };
 
             completed_requests += 1;
+            observed_start_ms = Some(observed_start_ms.map_or(stats.arrival_time_ms, |value| {
+                value.min(stats.arrival_time_ms)
+            }));
+            observed_end_ms =
+                Some(observed_end_ms.map_or(terminal_time_ms, |value| value.max(terminal_time_ms)));
+            if let Some(encoder_ready_ms) = stats.encoder_ready_ms {
+                encoder_sum_ms += (encoder_ready_ms - stats.arrival_time_ms).max(0.0);
+                encoder_samples += 1;
+            }
             total_input_tokens += stats.input_length;
             let output_length = stats.actual_output_length();
             total_output_tokens += output_length;
@@ -1665,6 +2360,17 @@ impl TraceCollector {
             let e2e_ms = (last_token_ms - stats.arrival_time_ms).max(0.0);
             ttfts.push(ttft_ms);
             e2e_latencies.push(e2e_ms);
+            // The host stages start where the language rank received the request:
+            // after the encoder pool's delivery when there is one.
+            if let Some(spans) = stats.ttft_milestones.stage_spans(
+                stats.encoder_ready_ms.unwrap_or(stats.arrival_time_ms),
+                first_token_ms,
+            ) {
+                for (sum, value) in ttft_stage_sums.iter_mut().zip(spans) {
+                    *sum += value;
+                }
+                ttft_stage_samples += 1;
+            }
 
             // Goodput classification (aiperf avg-ITL; see SlaThresholds::is_good).
             if sla.is_set() && sla.is_good(ttft_ms, e2e_ms, output_length) {
@@ -1681,6 +2387,18 @@ impl TraceCollector {
             }
         }
 
+        let reporting_duration_s = (duration_ms / 1000.0).max(1e-9);
+        if let Some(profile) = &mut agentic_profile {
+            // Admission duration is a workload control, while throughput uses
+            // the observed successful-request cohort, including grace returns.
+            // Preparation and canceled requests never extend that cohort.
+            duration_ms = observed_start_ms
+                .zip(observed_end_ms)
+                .map_or(0.0, |(start, end)| (end - start).max(0.0));
+            profile.observation_duration_ms = Some(duration_ms);
+            profile.successful_request_throughput =
+                (duration_ms > 0.0).then_some(completed_requests as f64 * 1000.0 / duration_ms);
+        }
         let num_ttft_samples = ttfts.len();
         let num_tpot_samples = tpots.len();
         let num_e2e_latency_samples = e2e_latencies.len();
@@ -1700,19 +2418,27 @@ impl TraceCollector {
                 0.0
             }
         };
-        // Provisioned worker-seconds: static count × duration for an externally
-        // clocked runtime, else the runtime-integrated accumulator.
-        let (prefill_worker_seconds, decode_worker_seconds) = match static_worker_count {
-            Some((prefill, decode)) => (prefill as f64 * duration_s, decode as f64 * duration_s),
-            None => (
-                accumulated_prefill_worker_seconds,
-                accumulated_decode_worker_seconds,
-            ),
-        };
+        // Provisioned worker-seconds and encoder GPU-seconds on one clock:
+        // static count × duration for an externally clocked runtime, else the
+        // runtime-integrated accumulators.
+        let (prefill_worker_seconds, decode_worker_seconds, encoder_gpu_seconds) =
+            match static_worker_count {
+                Some((prefill, decode)) => (
+                    prefill as f64 * reporting_duration_s,
+                    decode as f64 * reporting_duration_s,
+                    reporting_duration_s * encoder_gpus as f64,
+                ),
+                None => (
+                    accumulated_prefill_worker_seconds,
+                    accumulated_decode_worker_seconds,
+                    accumulated_encoder_gpu_seconds,
+                ),
+            };
         // GPU-hours straight from the mocker's own worker parallelism (no
         // external GPU-count config). 0 when gpus_per_worker was not set.
         let gpu_hours = (prefill_worker_seconds * prefill_gpus_per_worker as f64
-            + decode_worker_seconds * decode_gpus_per_worker as f64)
+            + decode_worker_seconds * decode_gpus_per_worker as f64
+            + encoder_gpu_seconds)
             / 3600.0;
         // Goodput only when an SLA was supplied; otherwise it is undefined.
         let goodput = sla.is_set().then(|| TraceGoodputStats {
@@ -1721,6 +2447,15 @@ impl TraceCollector {
             output_throughput_tok_s: rate(goodput_output_tokens as f64),
         });
         ReplayReport {
+            telemetry: None,
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
+            kv_eviction_assumption: None,
+            committed_prefill_tokens: self.committed_prefill_tokens,
+            g3_offload: self
+                .g3_offload
+                .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
+            kvcr: self.kvcr,
+            g2_domains: self.g2_domains.clone(),
             request_counts: TraceRequestCounts {
                 num_requests: request_count,
                 completed_requests,
@@ -1738,6 +2473,7 @@ impl TraceCollector {
                 decode_worker_seconds,
                 prefill_gpus_per_worker,
                 decode_gpus_per_worker,
+                encoder_gpus,
                 gpu_hours,
             },
             prefix_cache_reused_ratio: if total_input_tokens == 0 {
@@ -1764,10 +2500,23 @@ impl TraceCollector {
                 },
                 e2e: build_distribution_stats(e2e_latencies),
                 output_token_throughput_per_user,
+                ttft_milestones: TraceTtftStageStats::from_sums(
+                    &ttft_stage_sums,
+                    ttft_stage_samples,
+                ),
+                encoder_latency_ms: (encoder_samples > 0)
+                    .then(|| encoder_sum_ms / encoder_samples as f64),
             },
             trajectories,
             agentic_graph,
+            agentic_snapshots,
+            agentic_phases,
+            agentic_profile,
+            agentic_lifecycle,
+            agentic_play_outcomes,
             goodput,
+            power: None,
+            power_diagnostics: None,
             per_request,
             runtime_evidence,
         }
@@ -1780,8 +2529,11 @@ impl TraceCollector {
     /// Only requests with a terminal outcome are emitted. Requests truncated
     /// by a simulation-time cap have no terminal outcome and remain omitted.
     pub fn per_request_records(&self) -> Vec<PerRequestRecord> {
-        let mut records = Vec::with_capacity(self.requests.len());
-        for (uuid, stats) in &self.requests {
+        // Build records in arrival order; the stable sort below keeps it for ties.
+        let mut requests = self.requests.iter().collect::<Vec<_>>();
+        requests.sort_unstable_by_key(|(uuid, stats)| (stats.arrival_ordinal, **uuid));
+        let mut records = Vec::with_capacity(requests.len());
+        for (uuid, stats) in requests {
             let Some(detail) = stats.detail.as_deref() else {
                 continue;
             };
@@ -1799,9 +2551,14 @@ impl TraceCollector {
                 session_id: stats.session_id.clone(),
                 turn_index: stats.turn_index,
                 metadata: stats.metadata.clone(),
+                agentic: stats.agentic.clone(),
+                agentic_phase: self.agentic_phases.as_ref().and_then(|phases| {
+                    phases.profile_start_ms.map(|_| AgenticReplayPhase::Profile)
+                }),
                 uuid: uuid.to_string(),
                 arrival_time_ms: stats.arrival_time_ms,
                 dispatched_at_ms: stats.dispatched_at_ms,
+                tokenized_ms: stats.tokenized_ms,
                 first_admit_ms: stats.first_admit_ms,
                 terminal_time_ms,
                 first_token_ms,
@@ -1816,6 +2573,7 @@ impl TraceCollector {
                 reused_input_tokens: detail
                     .prefill_reused_input_tokens
                     .unwrap_or(stats.reused_input_tokens),
+                first_admission_reused_input_tokens: stats.first_admission_reused_input_tokens,
                 first_admission_g1_reused_input_tokens: detail
                     .first_admission_cache_tier_attribution
                     .map(|value| value.g1_reused_input_tokens),
@@ -1825,6 +2583,11 @@ impl TraceCollector {
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
+                encoder_ready_ms: stats.encoder_ready_ms,
+                frontend_ready_ms: stats.ttft_milestones.frontend_ready_ms,
+                scheduler_received_ms: stats.ttft_milestones.scheduler_received_ms,
+                selected_ms: stats.ttft_milestones.selected_ms,
+                prefill_complete_ms: stats.ttft_milestones.prefill_complete_ms,
                 source_held_ms: detail.source_held_ms,
                 destination_reserved_ms: detail.destination_reserved_ms,
                 destination_activated_ms: detail.destination_activated_ms,
@@ -1845,6 +2608,15 @@ impl TraceCollector {
                 terminal_status,
             });
         }
+        if let Some(origin) = self
+            .agentic_phases
+            .as_ref()
+            .and_then(|phases| phases.profile_start_ms)
+        {
+            for record in &mut records {
+                record.shift_timestamps(-origin);
+            }
+        }
         // Authored IDs make agentic output stable across equivalent import
         // paths even when runtime UUIDs differ. Legacy requests retain their
         // historical arrival-time ordering.
@@ -1853,7 +2625,6 @@ impl TraceCollector {
                 .as_deref()
                 .cmp(&b.request_id.as_deref())
                 .then_with(|| a.arrival_time_ms.total_cmp(&b.arrival_time_ms))
-                .then_with(|| a.uuid.cmp(&b.uuid))
         });
         records
     }
@@ -1903,6 +2674,33 @@ impl TraceCollector {
             })
             .sum()
     }
+}
+
+// Cumulative G3 counters cover only the measured time window. Residency and
+// pending-block values are gauges of the preserved cache at report completion.
+fn g3_since(
+    mut stats: crate::engine::G3Stats,
+    baseline: Option<&crate::engine::G3Stats>,
+) -> crate::engine::G3Stats {
+    if let Some(base) = baseline {
+        stats.lookup_probes -= base.lookup_probes;
+        stats.lookup_hits -= base.lookup_hits;
+        stats.lookup_pending -= base.lookup_pending;
+        stats.evictions -= base.evictions;
+        stats.cross_worker_read_blocks -= base.cross_worker_read_blocks;
+        stats.bypassed_restores -= base.bypassed_restores;
+        for (current, previous) in [
+            (&mut stats.read, &base.read),
+            (&mut stats.write, &base.write),
+        ] {
+            current.submitted_jobs -= previous.submitted_jobs;
+            current.completed_jobs -= previous.completed_jobs;
+            current.cancelled_jobs -= previous.cancelled_jobs;
+            current.completed_bytes -= previous.completed_bytes;
+            current.transfer_ms -= previous.transfer_ms;
+        }
+    }
+    stats
 }
 
 fn mean(values: &[f64]) -> f64 {
@@ -1997,6 +2795,133 @@ fn std_dev(values: &[f64]) -> f64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn warmup_report_excludes_preparation_and_rebases_profile_timestamps() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let primer = Uuid::from_u128(1_u128 << 127);
+        collector.on_arrival(primer, 0.0, 128, 1);
+        collector.on_admit(primer, 1.0, 0);
+        collector.on_token(primer, 90.0);
+        collector.on_terminal(primer, 90.0, ReplayTerminalStatus::Completed);
+        assert_eq!(
+            collector
+                .take_report(100.0)
+                .request_counts
+                .completed_requests,
+            1
+        );
+        collector.set_agentic_phases(AgenticPhaseEvidence {
+            warmup_policy: super::super::loadgen::AgenticWarmupPolicy::RepeatedPrefixes,
+            schema: super::super::loadgen::AGENTIC_PHASE_SCHEMA_V1,
+            phase: AgenticReplayPhase::Profile,
+            barrier_condition: "all_preparation_quiescent",
+            profile_start_ms: Some(100.0),
+            finished_at_ms: Some(100.0),
+            failure_request_id: None,
+            failure_reason: None,
+            lanes: vec![],
+            requests: vec![],
+        });
+        // A late event for a preparation UUID cannot add a measured request.
+        collector.on_token(primer, 105.0);
+        collector.on_terminal(primer, 106.0, ReplayTerminalStatus::Completed);
+        let profile = Uuid::from_u128(1);
+        collector.on_arrival(profile, 110.0, 128, 2);
+        collector.on_agentic_metadata(profile, "after".into(), "play".into(), 110.0);
+        collector.on_prefill_admit(profile, 115.0, 64, None);
+        collector.on_source_held(profile, 120.0);
+        collector.on_destination_reserved(profile, 122.0);
+        collector.on_destination_activated(profile, 125.0);
+        collector.on_decode_admit(profile, 126.0, 64, None);
+        collector.on_source_released(profile, 127.0);
+        collector.on_token(profile, 130.0);
+        collector.on_token(profile, 140.0);
+        collector.on_terminal(profile, 140.0, ReplayTerminalStatus::Completed);
+        collector.set_agentic_play_outcomes(vec![
+            AgenticPlayOutcome {
+                play_id: "play".into(),
+                status: super::super::loadgen::AgenticPlayStatus::Completed,
+                causal_terminal_ms: Some(140.0),
+                settled_at_ms: Some(145.0),
+                failure_request_id: None,
+                failure_status: None,
+            },
+            AgenticPlayOutcome {
+                play_id: "still-running".into(),
+                status: super::super::loadgen::AgenticPlayStatus::Incomplete,
+                causal_terminal_ms: None,
+                settled_at_ms: None,
+                failure_request_id: None,
+                failure_status: None,
+            },
+        ]);
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 1);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.duration_ms, 40.0);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.5);
+        let record = &report.per_request[0];
+        assert_eq!(record.agentic_phase, Some(AgenticReplayPhase::Profile));
+        assert_eq!(record.arrival_time_ms, 10.0);
+        assert_eq!(record.dispatched_at_ms, Some(10.0));
+        assert_eq!(record.first_admit_ms, Some(15.0));
+        assert_eq!(record.terminal_time_ms, 40.0);
+        assert_eq!(record.first_token_ms, Some(30.0));
+        assert_eq!(record.last_token_ms, Some(40.0));
+        assert_eq!(record.source_held_ms, Some(20.0));
+        assert_eq!(record.destination_reserved_ms, Some(22.0));
+        assert_eq!(record.destination_activated_ms, Some(25.0));
+        assert_eq!(record.decode_admit_ms, Some(26.0));
+        assert_eq!(record.source_released_ms, Some(27.0));
+        assert_eq!(record.admission_history[0].at_ms, 15.0);
+        assert_eq!(record.ttft_ms, Some(20.0));
+        assert_eq!(record.e2e_latency_ms, Some(30.0));
+        assert_eq!(record.itl_ms, Some(10.0));
+        let outcomes = report.agentic_play_outcomes.as_ref().unwrap();
+        assert_eq!(
+            outcomes[0].causal_terminal_ms,
+            Some(record.terminal_time_ms)
+        );
+        assert_eq!(outcomes[0].settled_at_ms, Some(45.0));
+        assert_eq!(outcomes[1].causal_terminal_ms, None);
+        assert_eq!(outcomes[1].settled_at_ms, None);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["agentic_phases"]["profile_start_ms"],
+            100.0
+        );
+    }
+
+    #[test]
+    fn g3_profile_baseline_preserves_cache_gauges() {
+        let base = crate::engine::G3Stats {
+            lookup_probes: 10,
+            lookup_hits: 8,
+            resident_blocks: 8,
+            pending_blocks: 1,
+            write: crate::engine::G3IoStats {
+                completed_bytes: 2048,
+                transfer_ms: 4.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut current = base.clone();
+        current.lookup_probes += 3;
+        current.lookup_hits += 2;
+        current.write.completed_bytes += 1024;
+        current.write.transfer_ms += 2.0;
+        current.resident_blocks = 12;
+        current.pending_blocks = 0;
+        let measured = g3_since(current, Some(&base));
+        assert_eq!(measured.lookup_probes, 3);
+        assert_eq!(measured.lookup_hits, 2);
+        assert_eq!(measured.write.completed_bytes, 1024);
+        assert_eq!(measured.write.transfer_ms, 2.0);
+        assert_eq!(measured.resident_blocks, 12);
+        assert_eq!(measured.pending_blocks, 0);
+    }
+
     fn build_distribution_stats_sorted(values: &[f64]) -> TraceDistributionStats {
         if values.is_empty() {
             return TraceDistributionStats {
@@ -2025,6 +2950,234 @@ mod tests {
             p99_ms: sorted[percentile_rank(sorted.len(), 99.0)],
             std_ms: std_dev(values),
         }
+    }
+
+    #[test]
+    fn batch_preparation_retains_admissions_then_profile_retires_requests() {
+        let mut collector = TraceCollector::default();
+        collector.begin_batch_preparation_reporting();
+        let primer = Uuid::from_u128(1);
+        collector.try_on_arrival(primer, 0.0, 64, 1).unwrap();
+        collector.on_admit(primer, 1.0, 0);
+        collector.on_token(primer, 2.0);
+        collector.on_terminal(primer, 2.0, ReplayTerminalStatus::Completed);
+        collector
+            .try_on_arrival(Uuid::from_u128(2), 3.0, 64, 1)
+            .unwrap();
+        assert_eq!(collector.request_admission(primer), Some((1.0, 0)));
+        collector.take_report(100.0);
+        assert!(collector.is_batch_reporting());
+        assert!(collector.bounded_summary.is_some());
+
+        let profile = Uuid::from_u128(3);
+        collector.try_on_arrival(profile, 100.0, 128, 1).unwrap();
+        collector.on_admit(profile, 101.0, 64);
+        collector.on_token(profile, 102.0);
+        collector.on_terminal(profile, 102.0, ReplayTerminalStatus::Completed);
+        collector
+            .try_on_arrival(Uuid::from_u128(4), 103.0, 128, 1)
+            .unwrap();
+        assert!(!collector.contains_request(primer));
+        assert!(!collector.contains_request(profile));
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 2);
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.duration_ms, 2.0);
+        assert_eq!(report.throughput.request_throughput_rps, 500.0);
+        assert_eq!(report.first_admission_prefix_cache_reused_ratio, 0.5);
+    }
+
+    #[test]
+    fn batch_summary_retires_completed_records_and_preserves_report() {
+        let mut baseline = TraceCollector::default();
+        let mut bounded = TraceCollector::default();
+        bounded.begin_batch_reporting();
+        for index in 1..=20_000 {
+            for collector in [&mut baseline, &mut bounded] {
+                let uuid = Uuid::from_u128(index);
+                collector.try_on_arrival(uuid, index as f64, 16, 3).unwrap();
+                collector.on_admit(uuid, index as f64 + 1.0, 0);
+                for offset in [10.0, 20.0, 30.0] {
+                    collector.on_token(uuid, index as f64 + offset);
+                }
+                collector.on_terminal(uuid, index as f64 + 30.0, ReplayTerminalStatus::Completed);
+            }
+            assert!(bounded.requests.len() <= 1);
+        }
+        bounded.prepare_batch_report().unwrap();
+        assert!(bounded.requests.is_empty());
+        assert_eq!(
+            serde_json::to_value(baseline.finish()).unwrap(),
+            serde_json::to_value(bounded.finish()).unwrap()
+        );
+    }
+
+    #[rstest::rstest]
+    fn profile_bounded_summary_preserves_worker_accounting(
+        #[values(false, true)] static_workers: bool,
+        #[values(false, true)] successful_request: bool,
+        #[values(0.0, 1000.0)] epoch_start_ms: f64,
+    ) {
+        use crate::replay::loadgen::{AgenticProfileOptions, AgenticProfileReport};
+        let profile = AgenticProfileReport {
+            schema: "aisimulate.agentic.profile.v1",
+            options: AgenticProfileOptions {
+                duration_seconds: 0.03,
+                response_grace_seconds: 0.07,
+                ..Default::default()
+            },
+            profile_start_ms: Some(epoch_start_ms),
+            admission_cutoff_ms: Some(epoch_start_ms + 30.0),
+            response_grace_deadline_ms: Some(epoch_start_ms + 100.0),
+            cancel_drain_deadline_ms: Some(epoch_start_ms + 10_100.0),
+            admission_closed: true,
+            finished_at_ms: Some(epoch_start_ms + 100.0),
+            cancel_drain_timed_out: false,
+            unsettled_server_requests: 0,
+            plays_started: 1,
+            client_completed_plays: 1,
+            retired_plays: 1,
+            server_quiescent_plays: 1,
+            issued_requests: 1 + usize::from(successful_request),
+            successful_responses: usize::from(successful_request),
+            canceled_requests: 1,
+            never_issued_requests: 0,
+            client_in_flight_requests: 0,
+            server_unsettled_requests: 0,
+            first_request_ms: Some(epoch_start_ms),
+            last_successful_response_ms: successful_request.then_some(epoch_start_ms + 50.0),
+            observation_duration_ms: None,
+            successful_request_throughput: None,
+            corpus_cursor: 1,
+            idle_shifts: Vec::new(),
+        };
+        let run = |capture| {
+            let mut collector = TraceCollector::default();
+            collector.take_report(epoch_start_ms);
+            collector.set_capture_per_request(capture);
+            collector.begin_batch_reporting();
+            collector.set_gpus_per_worker(4, 8);
+            if static_workers {
+                collector.set_static_worker_count(2, 3);
+            } else {
+                collector.add_worker_seconds(1.2, 2.3);
+            }
+            // A canceled request starts earlier and finishes later than the
+            // successful cohort; neither endpoint extends observation time.
+            let canceled = Uuid::from_u128(1);
+            collector
+                .try_on_arrival(canceled, epoch_start_ms, 32, 1)
+                .unwrap();
+            collector.on_admit(canceled, epoch_start_ms + 1.0, 0);
+            if successful_request {
+                let completed = Uuid::from_u128(2);
+                collector
+                    .try_on_arrival(completed, epoch_start_ms + 10.0, 32, 1)
+                    .unwrap();
+                collector.on_admit(completed, epoch_start_ms + 11.0, 0);
+                collector.on_token(completed, epoch_start_ms + 50.0);
+                collector.on_terminal(
+                    completed,
+                    epoch_start_ms + 50.0,
+                    ReplayTerminalStatus::Completed,
+                );
+            }
+            collector.on_terminal(
+                canceled,
+                epoch_start_ms + 100.0,
+                ReplayTerminalStatus::Canceled,
+            );
+            collector.set_agentic_profile(profile.clone());
+            collector.prepare_batch_report().unwrap();
+            collector.finish()
+        };
+        let detailed = run(true);
+        let summary = run(false);
+        assert_eq!(
+            summary.throughput.duration_ms,
+            if successful_request { 40.0 } else { 0.0 }
+        );
+        assert_eq!(
+            summary.throughput.request_throughput_rps,
+            if successful_request { 25.0 } else { 0.0 }
+        );
+        let (prefill, decode) = if static_workers {
+            (0.2, 0.3)
+        } else {
+            (1.2, 2.3)
+        };
+        assert!((summary.throughput.prefill_worker_seconds - prefill).abs() < 1e-12);
+        assert!((summary.throughput.decode_worker_seconds - decode).abs() < 1e-12);
+        assert!(
+            (summary.throughput.gpu_hours - (prefill * 4.0 + decode * 8.0) / 3600.0).abs() < 1e-12
+        );
+        assert_eq!(
+            serde_json::to_value(summary).unwrap(),
+            serde_json::to_value(detailed).unwrap()
+        );
+    }
+
+    #[test]
+    fn detailed_batch_reporting_preserves_records_past_the_previous_cap() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        collector.begin_batch_reporting();
+        let request_count = 100_001;
+        // Reverse arrival insertion also checks that the existing output
+        // ordering is preserved, rather than switching to completion order.
+        for index in (0..request_count).rev() {
+            let uuid = Uuid::from_u128(index as u128);
+            collector.try_on_arrival(uuid, index as f64, 1, 1).unwrap();
+            collector.on_admit(uuid, index as f64, 0);
+            collector.on_token(uuid, index as f64 + 1.0);
+            collector.on_terminal(uuid, index as f64 + 1.0, ReplayTerminalStatus::Completed);
+        }
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, request_count);
+        assert_eq!(report.request_counts.completed_requests, request_count);
+        assert_eq!(report.request_counts.total_output_tokens, request_count);
+        assert_eq!(report.per_request.len(), request_count);
+        for (index, record) in report.per_request.iter().enumerate() {
+            assert_eq!(record.uuid, Uuid::from_u128(index as u128).to_string());
+            assert_eq!(record.arrival_time_ms, index as f64);
+            assert_eq!(record.output_length, 1);
+            assert_eq!(record.terminal_status, ReplayTerminalStatus::Completed);
+        }
+    }
+
+    #[rstest::rstest]
+    fn completed_record_retirement_preserves_live_requests_and_step_queries(
+        #[values(false, true)] batch_reporting: bool,
+    ) {
+        let mut collector = TraceCollector::default();
+        if batch_reporting {
+            collector.begin_batch_reporting();
+        }
+        let [completed, active, next] = [1, 2, 3].map(Uuid::from_u128);
+        for uuid in [completed, active] {
+            collector.try_on_arrival(uuid, 0.0, 1, 1).unwrap();
+            collector.on_admit(uuid, 1.0, 0);
+        }
+        collector.on_token(completed, 2.0);
+        collector.on_terminal(completed, 2.0, ReplayTerminalStatus::Completed);
+        // Completion callbacks can still read this request's finished stats.
+        assert_eq!(collector.actual_output_length(completed), Some(1));
+        collector.try_on_arrival(next, 3.0, 1, 1).unwrap();
+        assert_eq!(collector.contains_request(completed), !batch_reporting);
+        assert!(collector.contains_request(active));
+        assert!(collector.contains_request(next));
+        collector.on_admit(next, 3.0, 0);
+        for uuid in [active, next] {
+            collector.on_token(uuid, 4.0);
+            collector.on_terminal(uuid, 4.0, ReplayTerminalStatus::Completed);
+        }
+        collector.prepare_batch_report().unwrap();
+        let report = collector.finish();
+        assert_eq!(report.request_counts.num_requests, 3);
+        assert_eq!(report.request_counts.completed_requests, 3);
+        assert_eq!(report.request_counts.total_output_tokens, 3);
     }
 
     #[test]
@@ -2196,6 +3349,88 @@ mod tests {
     }
 
     #[test]
+    fn power_display_rejects_invalid_statistics_before_writing() {
+        use std::fmt::Write;
+
+        for (power_w, coverage) in [
+            (Some(500.0), 0.89),
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (Some(0.0), 1.0),
+            (Some(-1.0), 1.0),
+            (None, f64::NAN),
+            (None, f64::INFINITY),
+            (None, -0.1),
+            (None, 1.1),
+        ] {
+            let report = TraceCollector::default()
+                .finish()
+                .with_power(Some(TracePowerStats { power_w, coverage }));
+            let mut output = String::new();
+            assert!(write!(&mut output, "{report}").is_err());
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
+    fn power_serialization_preserves_coverage_and_fails_closed() {
+        let available = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: Some(487.5),
+                coverage: 0.95,
+            }));
+        let summary = serde_json::to_value(&available).unwrap();
+        assert_eq!(summary["power_w"], 487.5);
+        assert_eq!(summary["power_coverage"], 0.95);
+
+        let unavailable = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: None,
+                coverage: 0.42,
+            }));
+        let summary = serde_json::to_value(&unavailable).unwrap();
+        assert_eq!(summary.get("power_w"), Some(&Value::Null));
+        assert_eq!(summary["power_coverage"], 0.42);
+
+        let absent = TraceCollector::default().finish();
+        assert_eq!(absent.power, None);
+        assert_eq!(absent.power_diagnostics, None);
+        let summary = serde_json::to_value(&absent).unwrap();
+        assert_eq!(summary.get("power_w"), Some(&Value::Null));
+        assert_eq!(summary.get("power_coverage"), Some(&Value::Null));
+        assert!(summary.get("power_diagnostics").is_none());
+
+        let diagnostics = ReplayPowerDiagnostics {
+            schema_version: "1.0",
+            scope: "active_forward_pass_per_gpu",
+            power_w_unit: "W",
+            energy_unit: "W-ms",
+            latency_unit: "ms",
+            coverage_gate: POWER_DATA_COVERAGE_THRESHOLD,
+            publication_status: "unsupported",
+            energy_wms: None,
+            latency_ms: None,
+            covered_latency_ms: None,
+            power_w: None,
+            power_coverage: None,
+            unavailable_reason: Some("timing provider has no operation-energy evidence"),
+            phases: Vec::new(),
+        };
+        let typed = TraceCollector::default()
+            .finish()
+            .with_power_diagnostics(Some(diagnostics.clone()));
+        assert_eq!(typed.power_diagnostics, Some(diagnostics));
+        let summary = serde_json::to_value(&typed).unwrap();
+        assert_eq!(summary["power_diagnostics"]["schema_version"], "1.0");
+        assert_eq!(
+            summary["power_diagnostics"]["publication_status"],
+            "unsupported"
+        );
+    }
+
+    #[test]
     fn token_before_simulation_cap_does_not_count_as_completion() {
         let mut collector = TraceCollector::default();
         let uuid = Uuid::from_u128(100);
@@ -2249,13 +3484,13 @@ mod tests {
         let uuid = Uuid::from_u128(1);
         collector.on_arrival(uuid, 0.0, 100, 4);
         collector.on_prefill_route_overlap(uuid, 64);
-        collector.on_prefill_admit_with_tier_attribution(uuid, 5.0, 30, None);
+        collector.on_prefill_admit(uuid, 5.0, 30, None);
         collector.on_source_held(uuid, 10.0);
         collector.on_destination_reserved(uuid, 12.0);
         collector.on_destination_activated(uuid, 20.0);
         collector.on_source_released(uuid, 21.0);
         collector.on_decode_route_overlap(uuid, 32);
-        collector.on_decode_admit_with_tier_attribution(uuid, 25.0, 40, None);
+        collector.on_decode_admit(uuid, 25.0, 40, None);
         collector.on_prefill_assigned(uuid, 2);
         collector.on_decode_assigned(uuid, 7);
         collector.on_token(uuid, 50.0);
@@ -2281,6 +3516,7 @@ mod tests {
         assert_eq!(rec.input_length, 100);
         assert_eq!(rec.output_length, 4);
         assert_eq!(rec.reused_input_tokens, 30);
+        assert_eq!(rec.first_admission_reused_input_tokens, 30);
         assert_eq!(rec.prefill_worker_idx, Some(2));
         assert_eq!(rec.decode_worker_idx, Some(7));
         assert_eq!(rec.prefill_admit_ms, Some(5.0));
@@ -2894,6 +4130,48 @@ mod tests {
                 serde_json::to_value(&uncaptured).unwrap()
             );
         }
+    }
+
+    #[rstest::rstest]
+    fn summary_and_records_are_independent_of_runtime_uuid(
+        #[values(None, Some("request"))] request_id: Option<&str>,
+    ) {
+        let report = |uuids: [u128; 3]| {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(true);
+            for (uuid, ttft_ms) in uuids.into_iter().zip([1.0e16, 1.0, 1.0]) {
+                let uuid = Uuid::from_u128(uuid);
+                collector.on_arrival(uuid, 0.0, 100, 1);
+                if let Some(request_id) = request_id {
+                    collector.on_agentic_metadata(
+                        uuid,
+                        request_id.to_string(),
+                        "play".to_string(),
+                        0.0,
+                    );
+                }
+                collector.on_admit(uuid, 0.0, 0);
+                collector.on_token(uuid, ttft_ms);
+                collector.on_terminal(uuid, ttft_ms, ReplayTerminalStatus::Completed);
+            }
+            collector.finish()
+        };
+        let (left, right) = (report([1, 2, 3]), report([3, 1, 2]));
+
+        // Tied arrivals under different UUIDs must sum and list in the same order.
+        assert_eq!(
+            serde_json::to_value(&left).unwrap(),
+            serde_json::to_value(&right).unwrap()
+        );
+        let ttfts = |report: &ReplayReport| {
+            report
+                .per_request
+                .iter()
+                .map(|record| record.ttft_ms)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ttfts(&left), vec![Some(1.0e16), Some(1.0), Some(1.0)]);
+        assert_eq!(ttfts(&left), ttfts(&right));
     }
 
     /// Each record must round-trip cleanly to JSON. Guards against accidental

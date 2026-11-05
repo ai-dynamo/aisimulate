@@ -3,9 +3,9 @@
 
 import pytest
 
-from aiconfigurator.cli.api import _apply_power_coverage_gate, apply_row_power_coverage_gate
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.inference_summary import InferenceSummary
+from aisimulate.legacy_cli.api import _apply_power_coverage_gate, apply_row_power_coverage_gate
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.inference_summary import InferenceSummary
 
 pytestmark = pytest.mark.unit
 

@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-import aiconfigurator.sdk.common as common
-import aiconfigurator.sdk.operations as ops
-from aiconfigurator.sdk import config as cfgmod
-from aiconfigurator.sdk.utils import enumerate_parallel_config
+import aisimulate.sdk.common as common
+import aisimulate.sdk.operations as ops
+from aisimulate.sdk import config as cfgmod
+from aisimulate.sdk.utils import enumerate_parallel_config
 
 pytestmark = pytest.mark.unit
 
@@ -68,7 +68,7 @@ def test_moe_width_validation_includes_cp():
 
 def test_model_width_assert_includes_cp():
     # MoE model __init__ asserts tp*cp*dp == moe_tp*moe_ep; cp=4 vs moe_ep=8 -> mismatch.
-    from aiconfigurator.sdk.models.gemma4 import Gemma4MixModel
+    from aisimulate.sdk.models.gemma4 import Gemma4MixModel
 
     with pytest.raises(AssertionError):
         Gemma4MixModel(
@@ -110,7 +110,7 @@ def test_enumerate_non_cp_is_six_tuple_cp_one():
 
 def test_default_cp_list_auto_sweep_policy():
     # Capability-derived: any family whose class supports_cp on sglang auto-sweeps.
-    from aiconfigurator.sdk.task_v2 import _default_cp_list_for
+    from aisimulate.sdk.task_v2 import _default_cp_list_for
 
     for fam in ("DEEPSEEKV32", "DEEPSEEKV4", "LLAMA", "GPT", "MOE", "GEMMA4MIX", "HYBRIDMOE"):
         assert _default_cp_list_for(fam, "sglang") == [1, 2, 4, 8], fam
@@ -182,7 +182,7 @@ def test_enumerate_cp_rejected_on_non_sglang():
 
 
 def test_cp_kv_memory_divisor():
-    from aiconfigurator.sdk.models.llama import LLAMAModel
+    from aisimulate.sdk.models.llama import LLAMAModel
 
     def _m(cp):
         return LLAMAModel("l", "LLAMA", "LlamaForCausalLM", 4, 32, 8, 128, 4096, 14336, 128256, 131072, _mkcfg(cp), {})
@@ -198,11 +198,11 @@ def test_cp_kv_memory_divisor():
 
 
 def test_supports_cp_matrix():
-    from aiconfigurator.sdk.models.deepseek import DeepSeekModel
-    from aiconfigurator.sdk.models.gemma4 import Gemma4MixModel
-    from aiconfigurator.sdk.models.gpt import GPTModel
-    from aiconfigurator.sdk.models.hybrid_moe import HybridMoEModel
-    from aiconfigurator.sdk.models.llama import LLAMAModel
+    from aisimulate.sdk.models.deepseek import DeepSeekModel
+    from aisimulate.sdk.models.gemma4 import Gemma4MixModel
+    from aisimulate.sdk.models.gpt import GPTModel
+    from aisimulate.sdk.models.hybrid_moe import HybridMoEModel
+    from aisimulate.sdk.models.llama import LLAMAModel
 
     for cls in (LLAMAModel, GPTModel, DeepSeekModel, Gemma4MixModel, HybridMoEModel):
         assert cls.supports_cp("sglang") is True, cls.__name__
@@ -215,7 +215,7 @@ def test_supports_cp_matrix():
 
 
 def test_gemma4_cp_per_type_allgather_and_zigzag():
-    from aiconfigurator.sdk.models.gemma4 import Gemma4MixModel
+    from aisimulate.sdk.models.gemma4 import Gemma4MixModel
 
     m = Gemma4MixModel(
         8,
@@ -257,7 +257,7 @@ def test_gemma4_cp_per_type_allgather_and_zigzag():
 
 
 def test_hybrid_moe_cp_per_type_allgather():
-    from aiconfigurator.sdk.models.hybrid_moe import HybridMoEModel
+    from aisimulate.sdk.models.hybrid_moe import HybridMoEModel
 
     m = HybridMoEModel(
         8,

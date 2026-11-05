@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk.backends.sglang_backend import SGLANGBackend
-from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-from aiconfigurator.sdk.backends.vllm_backend import VLLMBackend
+from aisimulate.sdk.backends.sglang_backend import SGLANGBackend
+from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+from aisimulate.sdk.backends.vllm_backend import VLLMBackend
 
 pytestmark = pytest.mark.unit
 
@@ -42,7 +42,9 @@ def test_step3p7_uses_moe_activation_and_dispatch_workspace(backend, moe_coeffic
             nextn=0,
         ),
         get_kvcache_bytes_per_sequence=lambda _seq: 0,
-        _cp_kv_memory_divisor=lambda: 1,
+        get_resident_weights_bytes=lambda: 0,
+        get_additional_activation_bytes=lambda _tokens: 0,
+        get_kvcache_rank_bytes_per_sequence=lambda _seq: 0,
     )
     database = SimpleNamespace(system_spec={"misc": {"nccl_mem": {1: 0}, "other_mem": 0}})
 

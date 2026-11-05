@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Includes changes adapted from:
+// https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/operators/attention.rs
 
 //! Attention operators: context, generation, encoder.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.attention.{ContextAttention,
+//! Mirrors `aisimulate.sdk.operations.attention.{ContextAttention,
 //! GenerationAttention, EncoderAttention}`. Each holds its config-time
 //! attention shape (n, n_kv, head_size, window_size, quant modes) and
 //! wraps the raw `AttentionTable` query with:
 //!
 //! - prefix correction `(full_s² − prefix²) / full_s²` for context paths
-//! - fused-op extras: context qk_norm / apply_rope (optional), kv_write; and
-//!   generation qk_norm (optional), via the analytic `mem_op` formula
+//! - separately modeled extras: context qk_norm, and RoPE/KV writes when
+//!   not already covered by the selected timing carrier; generation qk_norm
 //! - 1.1× correction factor on the extras (matches Python)
 //! - `seq_imbalance_correction_scale` / `gen_seq_imbalance_correction_scale`
 //!   multiplier for unbalanced sequence distributions
@@ -26,7 +28,7 @@ use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::util_empirical::{self, UtilGrid};
 use crate::perf_database::PerfDatabase;
 use crate::perf_database::attention::{
-    context_attention_sol_ms, context_attention_sol_with_prefix,
+    ContextTimingBoundary, context_attention_sol_ms, context_attention_sol_with_prefix,
     context_attention_sol_with_prefix_ms, encoder_attention_sol, encoder_attention_sol_ms,
     generation_attention_sol, generation_attention_sol_ms, generation_attn_flops,
 };
@@ -182,7 +184,7 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 17).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 24).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Whether the fused prefill kernel applies rotary position embeddings.
@@ -191,11 +193,48 @@ pub struct ContextAttentionOp {
     /// Appended at the struct tail because bincode payloads are positional.
     #[serde(default = "default_apply_rope")]
     pub apply_rope: bool,
+    /// Decode context parallelism on the SAME engine (aggregated serving):
+    /// the persistent KV is striped across `dcp_size` ranks, so a prefill
+    /// with cached context (`prefix > 0`) must first all-gather the other
+    /// ranks' stripes of that context (vLLM `_context_parallel_compute_prefill_context`
+    /// / `dcp_manager.kv_gather`, SGLang `all_gather_kv_cache_for_*_extend`).
+    /// The new-token attention itself is unchanged: every rank computes it for
+    /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
+    /// (schema v26).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
+}
+
+/// Prefill-side cost of a DCP-striped KV: all-gather `batch * prefix` cached
+/// tokens (`kv_elems_per_token`, in comm half-elements) over `dcp` ranks.
+/// Zero when there is no DCP or no cached context.
+pub(crate) fn dcp_context_gather(
+    db: &PerfDatabase,
+    name: &str,
+    kv_elems_per_token: f64,
+    dcp: u32,
+    batch_size: u32,
+    prefix: u32,
+) -> Result<Option<PerformanceResult>, AicError> {
+    if dcp <= 1 || prefix == 0 || batch_size == 0 {
+        return Ok(None);
+    }
+    let gather = crate::operators::NcclOp::new(
+        format!("{name}_dcp_context_gather"),
+        1.0,
+        kv_elems_per_token,
+        dcp,
+        "all_gather",
+    );
+    Ok(Some(gather.query(db, batch_size.saturating_mul(prefix))?))
 }
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 17).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 24).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
@@ -228,6 +267,56 @@ impl ContextAttentionOp {
             cp_size: 1,
             lane_order: default_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
+        }
+    }
+
+    fn query_context_unscaled(
+        &self,
+        db: &PerfDatabase,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<(PerformanceResult, ContextTimingBoundary), AicError> {
+        // Mirror Python's `ContextAttention._ctx(s, pfx)`: each chunk
+        // dispatches through the database mode — the silicon table at the
+        // full sequence `s + pfx` with the prefix correction, or the
+        // util-space empirical estimate (whose SOL already discounts prefix).
+        let ctx =
+            |s: u32, pfx: u32| -> Result<(PerformanceResult, ContextTimingBoundary), AicError> {
+                query_context_attention_table_with_boundary(
+                    db,
+                    &self.lane_order,
+                    batch_size,
+                    s,
+                    pfx,
+                    self.n,
+                    self.n_kv,
+                    self.head_size,
+                    self.window_size,
+                    self.kv_cache_dtype,
+                    self.fmha_quant_mode,
+                )
+            };
+
+        // Context parallelism (SGLang AllGather / zigzag): model rank 0's two
+        // balanced chunks. c = ceil(isl / 2cp); rank 0 owns chunk 0 (prefix
+        // unchanged) and chunk 2cp-1 (attends almost the full sequence). The
+        // base attention term is split; separately modeled extras are added once.
+        // Latency and energy both sum across the chunks (Python `__add__`).
+        if self.cp_size > 1 {
+            let c = isl.div_ceil(2 * self.cp_size).max(1);
+            let (first, boundary) = ctx(c, prefix)?;
+            let (last, last_boundary) = ctx(c, prefix + isl - c)?;
+            if boundary != last_boundary {
+                return Err(AicError::InvalidPerfData(
+                    "context-parallel chunks selected incompatible measurement boundaries"
+                        .to_string(),
+                ));
+            }
+            Ok((first.plus(last), boundary))
+        } else {
+            ctx(isl, prefix)
         }
     }
 
@@ -238,42 +327,14 @@ impl ContextAttentionOp {
         isl: u32,
         prefix: u32,
     ) -> Result<PerformanceResult, AicError> {
-        // Mirror Python's `ContextAttention._ctx(s, pfx)`: each chunk
-        // dispatches through the database mode — the silicon table at the
-        // full sequence `s + pfx` with the prefix correction, or the
-        // util-space empirical estimate (whose SOL already discounts prefix).
-        let ctx = |s: u32, pfx: u32| -> Result<PerformanceResult, AicError> {
-            query_context_attention_table(
-                db,
-                &self.lane_order,
-                batch_size,
-                s,
-                pfx,
-                self.n,
-                self.n_kv,
-                self.head_size,
-                self.window_size,
-                self.kv_cache_dtype,
-                self.fmha_quant_mode,
-            )
-        };
-
-        // Context parallelism (SGLang AllGather / zigzag): model rank 0's two
-        // balanced chunks. c = ceil(isl / 2cp); rank 0 owns chunk 0 (prefix
-        // unchanged) and chunk 2cp-1 (attends almost the full sequence). Only
-        // the FMHA table term is split; the fused extras below are added once.
-        // Latency and energy both sum across the chunks (Python `__add__`).
-        if self.cp_size > 1 {
-            let c = isl.div_ceil(2 * self.cp_size).max(1);
-            Ok(ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?))
-        } else {
-            ctx(isl, prefix)
-        }
+        self.query_context_unscaled(db, batch_size, isl, prefix)
+            .map(|(result, _)| result)
     }
 
-    /// Attention kernel only, for visual-mask overlays whose ordinary language
-    /// graph already charges Q/K normalization, RoPE, and KV writes. Retains the
-    /// same database policy, lane order, CP geometry, energy, and provenance.
+    /// Base attention timing without separately modeled extras. A measured
+    /// carrier may itself include RoPE and KV writes; this is not necessarily
+    /// FMHA-only timing. Visual overlays retain their existing approximation.
+    /// Preserves database policy, lane order, CP geometry, energy and provenance.
     pub fn query_kernel(
         &self,
         db: &PerfDatabase,
@@ -323,14 +384,12 @@ impl ContextAttentionOp {
         prefix: u32,
         seq_imbalance_correction_scale: f64,
     ) -> Result<PerformanceResult, AicError> {
-        let mut result = self.query_kernel_unscaled(db, batch_size, isl, prefix)?;
+        let (mut result, boundary) = self.query_context_unscaled(db, batch_size, isl, prefix)?;
 
-        // Fused-op extras (qk_norm / rope optional, kv_write mandatory).
-        // Python evaluates them through the mode-aware `query_mem_op` and
-        // composes full PerformanceResults, so the extras keep their
-        // provenance (empirical formula under SILICON/HYBRID/EMPIRICAL, sol
-        // under SOL) and the final add below merges it into the table
-        // result's source — silicon table + empirical extras -> "mixed".
+        // Q/K normalization remains separate. Add RoPE/KV writes only when
+        // the actual measured or empirical calibration carrier does not
+        // already cover them. Unknown contracts retain the legacy extras.
+        // Full PerformanceResults preserve energy and source composition.
         let q_num = (self.n * self.head_size) as f64;
         let k_num = (self.n_kv * self.head_size) as f64;
         let v_num = (self.n_kv * self.head_size) as f64;
@@ -346,13 +405,15 @@ impl ContextAttentionOp {
                 .plus(mem_op(k_num * 2.0).scaled(2.0));
             extra = extra.plus(qk_norm.scaled(2.0)); // elementwise before norm
         }
-        if self.apply_rope {
+        if self.apply_rope && !boundary.includes_rope {
             let apply_rope = mem_op(q_num * 2.0 + k_num * 2.0).scaled(2.0);
             extra = extra.plus(apply_rope);
         }
-        let kv_write = mem_op(k_num * self.fmha_quant_mode.mapping().memory)
-            .plus(mem_op(v_num * self.fmha_quant_mode.mapping().memory));
-        extra = extra.plus(kv_write);
+        if !boundary.includes_kv_write {
+            let kv_write = mem_op(k_num * self.fmha_quant_mode.mapping().memory)
+                .plus(mem_op(v_num * self.fmha_quant_mode.mapping().memory));
+            extra = extra.plus(kv_write);
+        }
 
         // Python's correction factor for the fused extras
         // (`result += extra_latency * 1.1`): latency and energy both sum
@@ -362,6 +423,18 @@ impl ContextAttentionOp {
         if seq_imbalance_correction_scale != 1.0 {
             // Python `result * scale` scales latency AND energy.
             result = result.scaled(seq_imbalance_correction_scale);
+        }
+
+        // Decode CP on the same engine: gather the cached context stripes
+        // (per-rank K+V of `prefix` tokens, in comm half-elements). Added after
+        // the zigzag imbalance scaling, like the MLA and DSA context ops: the
+        // collective's latency does not grow with the prefill imbalance.
+        let kv_elems =
+            2.0 * (self.n_kv * self.head_size) as f64 * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) =
+            dcp_context_gather(db, &self.name, kv_elems, self.dcp_size, batch_size, prefix)?
+        {
+            result = result.plus(gather);
         }
 
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
@@ -383,13 +456,57 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 17).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 24).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Per-head RMSNorm on Q and K before decode attention. Appended at the
     /// struct tail because bincode payloads are positional (schema v16).
     #[serde(default)]
     pub use_qk_norm: bool,
+    /// Batch divisor for materialized speculative widths (the attention twin
+    /// of the gemm/elementwise `scale_num_tokens` channel). The engine widens
+    /// the decode batch by `(nextn + 1)`, but a block attention pass reads
+    /// each request's KV once for ALL its query tokens — so the op is priced
+    /// at `batch / scale_num_tokens` (the request batch, "sequence basis").
+    /// Default 1: every legacy spec and the MTP contract stay bit-identical.
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub scale_num_tokens: u32,
+    /// Real query tokens per request behind the divided-out width (verify
+    /// width for target verify attention, drafted tokens for a block-drafting
+    /// scheme's own attention; 0/1 = plain decode). Drives the roofline
+    /// guard: the table row prices one query per request (math term ≈
+    /// 1/verify_query_tokens of the true QK+PV work), so the price is lifted
+    /// to `verify_query_tokens x SOL math` when even ideal-peak compute for
+    /// the full query block exceeds the (KV-read-anchored) table value. In
+    /// the memory-bound decode regime this never fires (arithmetic intensity
+    /// ≈ 2·n/(n_kv·kv_bytes)·w FLOP/byte — w would need to exceed ~75 on
+    /// H100 GQA-4 to cross the roofline); it exists to keep the short-s /
+    /// extreme-width corner honest without collected wide-query data. No
+    /// fitted constants anywhere on this channel: the sequence-basis floor
+    /// and the ideal-peak guard are both physical bounds.
+    #[serde(default)]
+    pub verify_query_tokens: u32,
+    /// Decode context parallelism (vLLM `-dcp` / SGLang `--dcp-size`). The
+    /// KV cache is striped by token position across `dcp_size` ranks of the
+    /// attention group; each rank all-gathers the group's query heads, attends
+    /// them over its own `ceil(kv / dcp)` stripe, and the partial outputs are
+    /// merged by LSE (the merge collectives are separate NCCL ops emitted by
+    /// the model class). So the kernel prices `n * dcp` query heads against a
+    /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
+    /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
+    /// bincode payloads are positional (schema v26).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
+}
+
+/// Decode-CP kernel geometry shared by every decode attention operator:
+/// `(query heads seen by the kernel, per-rank KV tokens)` for `dcp` ranks.
+pub(crate) fn dcp_geometry(n_local: u32, kv_tokens: u32, dcp: u32) -> (u32, u32) {
+    let dcp = dcp.max(1);
+    (n_local * dcp, kv_tokens.div_ceil(dcp))
 }
 
 impl GenerationAttentionOp {
@@ -410,6 +527,9 @@ impl GenerationAttentionOp {
             kv_cache_dtype,
             lane_order: default_lane_order(),
             use_qk_norm: false,
+            scale_num_tokens: 1,
+            verify_query_tokens: 0,
+            dcp_size: 1,
         }
     }
 
@@ -420,17 +540,63 @@ impl GenerationAttentionOp {
         kv_seq_tokens: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<PerformanceResult, AicError> {
+        // Sequence basis: fold the engine's speculative width multiplier out
+        // of the batch — one KV read per REQUEST, not per query token.
+        let width = self.scale_num_tokens;
+        if width == 0 || (width > 1 && (batch_size == 0 || batch_size % width != 0)) {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "generation attention requires a positive scale_num_tokens dividing batch_size; \
+                 got scale_num_tokens={width}, batch_size={batch_size}"
+            )));
+        }
+        let seq_batch = batch_size / width;
+        // Decode CP: the kernel sees the whole DCP group's query heads over
+        // this rank's 1/dcp KV stripe (see the `dcp_size` field docs).
+        let (n_kernel, kv_local) = dcp_geometry(self.n, kv_seq_tokens, self.dcp_size);
+        // The stripe holds every dcp-th position, so a sliding window of `w`
+        // occupies ~`w / dcp` local tokens.
+        let window_local = if self.window_size > 0 && self.dcp_size > 1 {
+            self.window_size.div_ceil(self.dcp_size)
+        } else {
+            self.window_size
+        };
         let mut result = query_generation_attention_table(
             db,
             &self.lane_order,
-            batch_size,
-            kv_seq_tokens,
-            self.n,
+            seq_batch,
+            kv_local,
+            n_kernel,
             self.n_kv,
             self.head_size,
-            self.window_size,
+            window_local,
             self.kv_cache_dtype,
         )?;
+        if self.verify_query_tokens > 1 {
+            // Roofline guard (see field doc): lift to the ideal-peak math
+            // term of the full query block when it exceeds the table value.
+            {
+                let attn_flops = generation_attn_flops(&db.system_spec, self.kv_cache_dtype)?;
+                let sol = generation_attention_sol(
+                    &db.system_spec,
+                    self.n_kv,
+                    self.head_size,
+                    window_local,
+                    self.kv_cache_dtype,
+                    n_kernel as f64,
+                    seq_batch as f64,
+                    kv_local as f64,
+                    attn_flops,
+                );
+                let block_math_ms = sol.math_ms * self.verify_query_tokens as f64;
+                if let Some(components) = &mut result.sol {
+                    components.math_ms = block_math_ms;
+                }
+                if block_math_ms > result.latency_ms {
+                    result.latency_ms = block_math_ms;
+                    result.source = result.source.combine(Source::Sol);
+                }
+            }
+        }
         if self.use_qk_norm {
             // Match ContextAttention's Q/K RMSNorm accounting: two memory
             // passes before the norm, two for the norm, then the established
@@ -536,6 +702,7 @@ impl EncoderAttentionOp {
 /// prefix_correction`); the empirical path bakes the prefix into the query
 /// SOL instead (mirroring Python's `get_sol`) and carries no energy.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn query_context_attention_table(
     db: &PerfDatabase,
     lane_order: &[String],
@@ -549,9 +716,39 @@ fn query_context_attention_table(
     kv_quant: KvCacheQuantMode,
     fmha_quant: FmhaQuantMode,
 ) -> Result<PerformanceResult, AicError> {
-    let silicon = || -> Result<PerformanceResult, AicError> {
+    query_context_attention_table_with_boundary(
+        db,
+        lane_order,
+        b,
+        s,
+        prefix,
+        n,
+        n_kv,
+        head_size,
+        window_size,
+        kv_quant,
+        fmha_quant,
+    )
+    .map(|(result, _)| result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn query_context_attention_table_with_boundary(
+    db: &PerfDatabase,
+    lane_order: &[String],
+    b: u32,
+    s: u32,
+    prefix: u32,
+    n: u32,
+    n_kv: u32,
+    head_size: u32,
+    window_size: u32,
+    kv_quant: KvCacheQuantMode,
+    fmha_quant: FmhaQuantMode,
+) -> Result<(PerformanceResult, ContextTimingBoundary), AicError> {
+    let silicon = || -> Result<(PerformanceResult, ContextTimingBoundary), AicError> {
         let full_s = s + prefix;
-        let value = db.attention.query_context(
+        let (value, boundary) = db.attention.query_context_with_boundary(
             lane_order,
             b,
             full_s,
@@ -563,11 +760,30 @@ fn query_context_attention_table(
             fmha_quant,
         )?;
         let correction = prefix_correction(full_s, prefix);
-        Ok(PerformanceResult::with_energy(
-            value.latency * correction,
-            value.energy * correction,
-            Source::Silicon,
+        Ok((
+            PerformanceResult::with_energy(
+                value.latency * correction,
+                value.energy * correction,
+                Source::Silicon,
+            ),
+            boundary,
         ))
+    };
+    let empirical = || -> Result<(PerformanceResult, ContextTimingBoundary), AicError> {
+        let (latency, boundary) = context_attention_empirical(
+            db,
+            lane_order,
+            b,
+            s,
+            prefix,
+            n,
+            n_kv,
+            head_size,
+            window_size,
+            kv_quant,
+            fmha_quant,
+        )?;
+        Ok((PerformanceResult::new(latency, Source::Empirical), boundary))
     };
     match db.database_mode {
         // Python `_query_context_attention_table`: `get_sol(b, s, prefix, n,
@@ -575,53 +791,26 @@ fn query_context_attention_table(
         // at the REAL n_kv (no MHA sentinel).
         DatabaseMode::Sol | DatabaseMode::SolFull => {
             let attn_flops = quant_tc_flops(&db.system_spec, fmha_quant.mapping())?;
-            Ok(PerformanceResult::sol(context_attention_sol_with_prefix(
-                &db.system_spec,
-                b as f64,
-                s as f64,
-                prefix as f64,
-                n as f64,
-                n_kv as f64,
-                head_size,
-                window_size,
-                kv_quant,
-                attn_flops,
-            )))
-        }
-        DatabaseMode::Empirical => Ok(PerformanceResult::new(
-            context_attention_empirical(
-                db,
-                lane_order,
-                b,
-                s,
-                prefix,
-                n,
-                n_kv,
-                head_size,
-                window_size,
-                kv_quant,
-                fmha_quant,
-            )?,
-            Source::Empirical,
-        )),
-        DatabaseMode::Hybrid => match silicon() {
-            Ok(result) => Ok(result),
-            Err(err) if err.is_missing_perf_data() => Ok(PerformanceResult::new(
-                context_attention_empirical(
-                    db,
-                    lane_order,
-                    b,
-                    s,
-                    prefix,
-                    n,
-                    n_kv,
+            Ok((
+                PerformanceResult::sol(context_attention_sol_with_prefix(
+                    &db.system_spec,
+                    b as f64,
+                    s as f64,
+                    prefix as f64,
+                    n as f64,
+                    n_kv as f64,
                     head_size,
                     window_size,
                     kv_quant,
-                    fmha_quant,
-                )?,
-                Source::Empirical,
-            )),
+                    attn_flops,
+                )),
+                ContextTimingBoundary::default(),
+            ))
+        }
+        DatabaseMode::Empirical => empirical(),
+        DatabaseMode::Hybrid => match silicon() {
+            Ok(result) => Ok(result),
+            Err(err) if err.is_missing_perf_data() => empirical(),
             Err(err) => Err(err),
         },
         _ => silicon(),
@@ -655,7 +844,7 @@ fn context_attention_empirical(
     window_size: u32,
     kv_quant: KvCacheQuantMode,
     fmha_quant: FmhaQuantMode,
-) -> Result<f64, AicError> {
+) -> Result<(f64, ContextTimingBoundary), AicError> {
     let spec = &db.system_spec;
     let attn_flops = quant_tc_flops(spec, fmha_quant.mapping())?;
     let sol_time = context_attention_sol_with_prefix_ms(
@@ -691,44 +880,50 @@ fn context_attention_empirical(
             head_size,
             slice_window
         );
-        let grid = db.util_grids.get_or_try_build(&key, || {
-            match db.attention.context_points(
-                lane_order,
-                fmha_quant,
-                kv_quant,
-                n_kv_lookup,
-                head_size,
-                slice_window,
-            ) {
-                Ok(points) => {
-                    let sol = |c: &[f64]| {
-                        context_attention_sol_ms(
-                            spec,
-                            n_kv_lookup,
-                            head_size,
-                            slice_window,
-                            kv_quant,
-                            c[0],
-                            c[1],
-                            c[2],
-                            attn_flops,
-                        )
-                    };
-                    Ok(Some(UtilGrid::new(util_empirical::build_samples(
-                        points, sol,
-                    ))))
-                }
-                // Typed coverage miss -> no grid (fall through the ladder);
-                // schema/load errors propagate.
-                Err(err) if err.is_missing_perf_data() => Ok(None),
-                Err(err) => Err(err),
+        let basis = match db.attention.context_slice(
+            lane_order,
+            fmha_quant,
+            kv_quant,
+            n_kv_lookup,
+            head_size,
+            slice_window,
+        ) {
+            Ok(slice) => Some(slice),
+            Err(err) if err.is_missing_perf_data() => None,
+            Err(err) => return Err(err),
+        };
+        let grid = db.util_grids.get_or_try_build(&key, || match basis {
+            Some(slice) => {
+                let points = slice.points();
+                let sol = |c: &[f64]| {
+                    context_attention_sol_ms(
+                        spec,
+                        n_kv_lookup,
+                        head_size,
+                        slice_window,
+                        kv_quant,
+                        c[0],
+                        c[1],
+                        c[2],
+                        attn_flops,
+                    )
+                };
+                Ok(Some(UtilGrid::new(util_empirical::build_samples(
+                    points, sol,
+                ))))
             }
+            None => Ok(None),
         })?;
         if grid.as_deref().is_some_and(|g| !g.is_empty()) {
             let (latency, _) = util_empirical::estimate(sol_time, &query, grid.as_deref(), 1.0)?;
             // Own-shape util fired (Python attention.py:406, default tier).
             db.note_provenance(util_empirical::ProvenanceTier::Empirical);
-            return Ok(latency);
+            return Ok((
+                latency,
+                basis
+                    .expect("a populated util grid has a measurement basis")
+                    .boundary,
+            ));
         }
         // Cross-head_size transfer (XSHAPE): this head_size has no data, but
         // num_heads is already an in-grid axis, so only head_size differs.
@@ -736,7 +931,7 @@ fn context_attention_empirical(
         // prefill head_size-util ratio (SOL still uses the query's own
         // head_size).
         if db.transfer_policy.contains(TransferKind::XShape) {
-            if let Some((ref_grid, ref_hs)) = ctx_headsize_ref_grid(
+            if let Some((ref_grid, ref_hs, boundary)) = ctx_headsize_ref_grid(
                 db,
                 lane_order,
                 fmha_quant,
@@ -751,13 +946,14 @@ fn context_attention_empirical(
                     util_empirical::estimate(sol_time, &query, Some(&ref_grid), scale)?;
                 // Cross-head_size borrow (Python attention.py:424 "xshape").
                 db.note_provenance(util_empirical::ProvenanceTier::XShape);
-                return Ok(latency);
+                return Ok((latency, boundary));
             }
         }
     }
 
     // No own-window, full-attention, or cross-head basis -> typed miss.
-    util_empirical::estimate(sol_time, &query, None, 1.0).map(|(latency, _)| latency)
+    util_empirical::estimate(sol_time, &query, None, 1.0)
+        .map(|(latency, _)| (latency, ContextTimingBoundary::default()))
 }
 
 /// Reference util grid for context attention borrowed from the nearest
@@ -777,7 +973,7 @@ fn ctx_headsize_ref_grid(
     n_kv_lookup: u32,
     target_hs: u32,
     window_size: u32,
-) -> Result<Option<(std::sync::Arc<UtilGrid>, u32)>, AicError> {
+) -> Result<Option<(std::sync::Arc<UtilGrid>, u32, ContextTimingBoundary)>, AicError> {
     // Named `lane_order` first, then (AIC-1715/1716 follow-up, mirrors
     // `perf_database::attention::lane_slice`) every OTHER lane this table
     // actually carries: the resolved order's leftover tier is computed
@@ -834,38 +1030,36 @@ fn ctx_headsize_ref_grid(
         ref_hs,
         window_size
     );
+    let basis = db.attention.context_slice(
+        std::slice::from_ref(&ref_lane),
+        fmha_quant,
+        kv_quant,
+        n_kv_lookup,
+        ref_hs,
+        window_size,
+    )?;
     let grid = db.util_grids.get_or_try_build(&key, || {
-        match db.attention.context_points(
-            std::slice::from_ref(&ref_lane),
-            fmha_quant,
-            kv_quant,
-            n_kv_lookup,
-            ref_hs,
-            window_size,
-        ) {
-            Ok(points) => {
-                let sol = |c: &[f64]| {
-                    context_attention_sol_ms(
-                        spec,
-                        n_kv_lookup,
-                        ref_hs,
-                        window_size,
-                        kv_quant,
-                        c[0],
-                        c[1],
-                        c[2],
-                        attn_flops,
-                    )
-                };
-                let mut grid = UtilGrid::new(util_empirical::build_samples(points, sol));
-                grid.reference_provenance = Some("xshape");
-                Ok(Some(grid))
-            }
-            Err(err) if err.is_missing_perf_data() => Ok(None),
-            Err(err) => Err(err),
-        }
+        let points = basis.points();
+        let sol = |c: &[f64]| {
+            context_attention_sol_ms(
+                spec,
+                n_kv_lookup,
+                ref_hs,
+                window_size,
+                kv_quant,
+                c[0],
+                c[1],
+                c[2],
+                attn_flops,
+            )
+        };
+        let mut grid = UtilGrid::new(util_empirical::build_samples(points, sol));
+        grid.reference_provenance = Some("xshape");
+        Ok(Some(grid))
     })?;
-    Ok(grid.filter(|g| !g.is_empty()).map(|g| (g, ref_hs)))
+    Ok(grid
+        .filter(|g| !g.is_empty())
+        .map(|g| (g, ref_hs, basis.boundary)))
 }
 
 /// Generation attention latency + energy for `(b, s, shape)` under the
@@ -1287,8 +1481,40 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
+    }
+
+    /// The striped-KV context gather is owed only when something is striped
+    /// (dcp > 1) AND something is cached (prefix > 0); it is an all-gather over
+    /// `batch * prefix` tokens, so it grows with the cached context.
+    #[test]
+    fn dcp_context_gather_prices_only_striped_cached_context() {
+        let db = b200_vllm_db();
+        let kv_elems = 576.0;
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 1, 4, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 0, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        let small = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 4_096)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        let large = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 30_720)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        assert!(small.latency_ms > 0.0);
+        assert!(large.latency_ms > small.latency_ms);
     }
 
     /// The walk order Python serializes for a no-override op on
@@ -1336,6 +1562,192 @@ mod tests {
         // Measured table leaf + empirical rope/kv_write extras -> "mixed"
         // (Python `ContextAttention.query` PerformanceResult composition).
         assert_eq!(result.source, Source::Mixed);
+    }
+
+    /// The issue's published H200 BF16 row is 0.0191040001809597 ms.
+    /// Its timed forward already includes rotary/cache work. Q/K norm stays
+    /// separate: four passes over 8192 Q bytes and 1024 K bytes, each with
+    /// H200's 3 us intercept and 3.84 TB/s effective bandwidth, times 1.1,
+    /// give 0.02641056 ms. These are accounting oracles, not GPU validation.
+    #[test]
+    fn issue551_known_measurement_omits_rope_and_kv_extras() {
+        let systems_root = PathBuf::from(REPO_ROOT_HINT)
+            .join("../..")
+            .join("python/aisimulate/src/aisimulate_core/systems");
+        let mut db = PerfDatabase::load(&systems_root, "h200_sxm", "trtllm", "1.3.0rc20")
+            .expect("H200 TRT-LLM database");
+        let mut op = ContextAttentionOp::new(
+            "context_attention",
+            32,
+            4,
+            128,
+            KvCacheQuantMode::Bfloat16,
+            FmhaQuantMode::Bfloat16,
+        );
+        op.lane_order = vec!["torch_flow".to_string()];
+        let measured = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert!((measured.latency_ms - 0.0191040001809597).abs() < 1e-12);
+        assert_eq!(measured.source, Source::Silicon);
+
+        op.use_qk_norm = true;
+        let normalized = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert!((normalized.latency_ms - measured.latency_ms - 0.02641056).abs() < 1e-12);
+        assert_eq!(normalized.energy_wms, measured.energy_wms);
+        assert_eq!(normalized.source, Source::Mixed);
+        op.use_qk_norm = false;
+
+        // GPT-OSS uses both the global and 128-token window with head_dim 64.
+        op.head_size = 64;
+        for window in [0, 128] {
+            op.window_size = window;
+            let result = op.query(&db, 1, 256, 0, 1.0).unwrap();
+            let table = op.query_kernel(&db, 1, 256, 0, 1.0).unwrap();
+            assert_eq!(result.latency_ms, table.latency_ms);
+            assert_eq!(result.energy_wms, table.energy_wms);
+        }
+
+        op.head_size = 128;
+        op.window_size = 0;
+        // Measured and measurement-calibrated modes retain the inclusive
+        // boundary. SOL has no measured carrier: 20480 bytes at 4.8 TB/s,
+        // times 1.1, remain separately modeled.
+        for (mode, expected_extra_ms) in [
+            (DatabaseMode::Hybrid, 0.0),
+            (DatabaseMode::Empirical, 0.0),
+            (DatabaseMode::Sol, 0.000004693333333333334),
+        ] {
+            db.database_mode = mode;
+            let result = op.query(&db, 1, 256, 0, 1.0).unwrap();
+            let table = op.query_kernel(&db, 1, 256, 0, 1.0).unwrap();
+            assert!((result.latency_ms - table.latency_ms - expected_extra_ms).abs() < 1e-12);
+            assert_eq!(result.energy_wms, table.energy_wms);
+        }
+
+        // Boundary follows stored source metadata, not a shape allowlist.
+        db.database_mode = DatabaseMode::Silicon;
+        op.head_size = 256;
+        let result = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        let table = op.query_kernel(&db, 1, 256, 0, 1.0).unwrap();
+        assert_eq!(result.latency_ms, table.latency_ms);
+        assert_eq!(result.source, Source::Silicon);
+        op.apply_rope = false;
+        let nope = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert_eq!(nope.latency_ms, table.latency_ms);
+    }
+
+    /// Synthetic 2 ms / 7 W timings establish composition, not GPU accuracy.
+    /// The caller says vLLM/1.0, while retained row metadata says TRT-LLM:
+    /// requested identity and preferred lanes cannot determine the boundary.
+    #[test]
+    fn context_boundary_follows_selected_and_borrowed_measurements() {
+        use crate::common::enums::TransferPolicy;
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("context_attention_perf.parquet"),
+            &[
+                Col::Str("framework", vec!["TRTLLM"; 3]),
+                Col::Str("version", vec!["1.3.0rc20", "1.0.0", "1.0.0"]),
+                Col::Str(
+                    "kernel_source",
+                    vec!["torch_flow", "unverified", "unverified"],
+                ),
+                Col::Str("attn_dtype", vec!["bfloat16"; 3]),
+                Col::Str("kv_cache_dtype", vec!["bfloat16"; 3]),
+                Col::I64("num_heads", vec![32; 3]),
+                Col::I64("num_key_value_heads", vec![4; 3]),
+                Col::I64("head_dim", vec![128, 128, 256]),
+                Col::I64("batch_size", vec![1; 3]),
+                Col::I64("isl", vec![256; 3]),
+                Col::F64("latency", vec![2.0; 3]),
+                Col::F64("power", vec![7.0; 3]),
+            ],
+        );
+        let mut db = PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0").unwrap();
+        let mut op = ContextAttentionOp::new(
+            "context_attention",
+            32,
+            4,
+            128,
+            KvCacheQuantMode::Bfloat16,
+            FmhaQuantMode::Bfloat16,
+        );
+        op.lane_order = vec!["unavailable".into(), "torch_flow".into()];
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+        ] {
+            db.database_mode = mode;
+            let result = op.query(&db, 1, 256, 0, 1.0).unwrap();
+            assert!((result.latency_ms - 2.0).abs() < 1e-12);
+            assert_eq!(
+                result.energy_wms,
+                if mode == DatabaseMode::Empirical {
+                    0.0
+                } else {
+                    14.0
+                }
+            );
+        }
+        // Disabling model RoPE does not make an included KV write exclusive.
+        db.database_mode = DatabaseMode::Silicon;
+        op.apply_rope = false;
+        assert_eq!(op.query(&db, 1, 256, 0, 1.0).unwrap().latency_ms, 2.0);
+        op.use_qk_norm = true;
+        let normalized = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert!(normalized.latency_ms > 2.0);
+        assert_eq!(normalized.energy_wms, 14.0);
+        op.use_qk_norm = false;
+        op.apply_rope = true;
+
+        // Unknown selected lanes retain their legacy extras, even if a known
+        // inclusive lane was preferred but lacks this shape.
+        op.head_size = 256;
+        op.lane_order = vec!["torch_flow".into(), "unverified".into()];
+        let unknown = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert!(unknown.latency_ms > 2.0);
+        assert_eq!(unknown.energy_wms, 14.0);
+        assert_eq!(unknown.source, Source::Mixed);
+        op.head_size = 128;
+        op.lane_order = vec!["unverified".into(), "torch_flow".into()];
+        assert!(op.query(&db, 1, 256, 0, 1.0).unwrap().latency_ms > 2.0);
+
+        op.lane_order = vec!["torch_flow".into()];
+        db.database_mode = DatabaseMode::Hybrid;
+        db.transfer_policy = TransferPolicy::OFF;
+        op.window_size = 128; // Own-window miss borrows the inclusive full window.
+        let full_window = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        let base = op.query_kernel(&db, 1, 256, 0, 1.0).unwrap();
+        assert_eq!(full_window.latency_ms, base.latency_ms);
+        assert_eq!(full_window.source, Source::Empirical);
+        op.window_size = 0;
+        op.head_size = 192; // Own-head miss borrows the inclusive 128-dim basis.
+        db.transfer_policy = TransferPolicy::ALL;
+        let cross_head = op.query(&db, 1, 256, 0, 1.0).unwrap();
+        assert_eq!(
+            cross_head.latency_ms,
+            op.query_kernel(&db, 1, 256, 0, 1.0).unwrap().latency_ms
+        );
+        assert_eq!(cross_head.source, Source::Empirical);
+
+        db.database_mode = DatabaseMode::Silicon;
+        op.head_size = 128;
+        op.scale_factor = 2.0;
+        // Existing prefix correction is 3/4; layer and imbalance scaling
+        // give 2 ms * 3/4 * 2 * 1.5 = 4.5 ms, and 31.5 W-ms.
+        let prefix = op.query(&db, 1, 128, 128, 1.5).unwrap();
+        assert_eq!((prefix.latency_ms, prefix.energy_wms), (4.5, 31.5));
+        op.cp_size = 2;
+        let cp = op.query(&db, 1, 512, 0, 1.5).unwrap();
+        let base = op.query_kernel(&db, 1, 512, 0, 1.5).unwrap();
+        assert_eq!(
+            (cp.latency_ms, cp.energy_wms),
+            (base.latency_ms, base.energy_wms)
+        );
     }
 
     #[test]
@@ -2116,7 +2528,7 @@ mod tests {
     fn b200_sglang_0514_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.14").expect("db must load")
     }
 
@@ -2399,5 +2811,120 @@ mod tests {
             flashinfer.latency_ms
         );
         assert_ne!(default.latency_ms, flashinfer.latency_ms);
+    }
+    /// Speculative width channel: `scale_num_tokens = w` folds the engine's
+    /// widened decode batch back to the request batch before the table
+    /// lookup (one KV read per request, "sequence basis").
+    #[test]
+    fn generation_attention_sequence_basis_folds_batch() {
+        let db = b200_vllm_db();
+        let mut op = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        let unfolded = op.query(&db, 64, 4096, 1.0).expect("plain query");
+        op.scale_num_tokens = 8;
+        let folded = op.query(&db, 512, 4096, 1.0).expect("folded query");
+        assert_eq!(folded.latency_ms, unfolded.latency_ms);
+        assert_eq!(folded.energy_wms, unfolded.energy_wms);
+    }
+
+    /// Roofline guard: an absurd `verify_query_tokens` forces the ideal-peak
+    /// math term of the query block over the table value, lifting the price.
+    /// The fixture remains memory-bound at width eight.
+    #[test]
+    fn generation_attention_roofline_guard_lifts_on_compute_domination() {
+        let db = b200_vllm_db();
+        let mut op = with_vllm_lanes_gen(GenerationAttentionOp::new(
+            "gen",
+            64,
+            4,
+            128,
+            KvCacheQuantMode::Fp8,
+        ));
+        op.scale_num_tokens = 8;
+        let base = op.query(&db, 512, 4096, 1.0).expect("base").latency_ms;
+        // Width eight remains memory-bound on this fixture.
+        op.verify_query_tokens = 8;
+        let physical = op.query(&db, 512, 4096, 1.0).expect("physical").latency_ms;
+        assert_eq!(physical, base);
+        op.verify_query_tokens = 100_000;
+        let lifted = op.query(&db, 512, 4096, 1.0).expect("lifted").latency_ms;
+        assert!(lifted > base, "guard must lift: {lifted} vs {base}");
+    }
+    #[test]
+    fn generation_attention_rejects_invalid_batch_divisor() {
+        let db = b200_vllm_db();
+        let mut op = GenerationAttentionOp::new("gen", 64, 4, 128, KvCacheQuantMode::Fp8);
+        for (width, batch) in [(0, 8), (8, 0), (8, 7), (8, 9)] {
+            op.scale_num_tokens = width;
+            assert!(matches!(
+                op.query(&db, batch, 4096, 1.0),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn generation_attention_verify_sol_keeps_decomposition_consistent() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut op = GenerationAttentionOp::new("gen", 64, 4, 128, KvCacheQuantMode::Fp8);
+        op.scale_num_tokens = 8;
+        op.verify_query_tokens = 100_000;
+        let result = op.query(&db, 512, 4096, 1.0).unwrap();
+        assert_eq!(result.source, Source::Sol);
+        assert_eq!(result.latency_ms, result.sol.unwrap().time_ms());
+    }
+
+    /// Decode CP: a rank with `n` local heads and `dcp` stripes prices exactly
+    /// like an un-striped kernel over `n * dcp` heads and `kv / dcp` tokens,
+    /// and strictly cheaper than the same rank without DCP (the KV read is
+    /// the decode bottleneck and shrinks by `dcp`).
+    #[test]
+    fn generation_attention_dcp_prices_gathered_heads_over_kv_stripe() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut striped = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered = GenerationAttentionOp::new("gen", 64, 1, 128, KvCacheQuantMode::Fp8);
+        let plain = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        let a = striped.query(&db, 32, 8192, 1.0).unwrap();
+        let b = gathered.query(&db, 32, 2048, 1.0).unwrap();
+        let c = plain.query(&db, 32, 8192, 1.0).unwrap();
+        assert!((a.latency_ms - b.latency_ms).abs() < 1e-12);
+        assert!(a.latency_ms < c.latency_ms);
+        assert_eq!(dcp_geometry(16, 8193, 4), (64, 2049));
+        assert_eq!(dcp_geometry(16, 8192, 1), (16, 8192));
+    }
+
+    /// Prefill on a DCP-striped engine pays a cached-context gather that
+    /// scales with the prefix and vanishes without one.
+    #[test]
+    fn context_attention_dcp_gathers_cached_context_only_when_prefix_present() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let plain = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "ctx",
+            16,
+            1,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        let mut striped = plain.clone();
+        striped.dcp_size = 4;
+        let no_prefix = (
+            plain.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+        );
+        assert!((no_prefix.0 - no_prefix.1).abs() < 1e-12);
+        let with_prefix = (
+            plain.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+        );
+        assert!(with_prefix.1 > with_prefix.0);
+        let longer = striped.query(&db, 8, 512, 16384, 1.0).unwrap().latency_ms;
+        assert!(longer - with_prefix.1 > 0.0);
     }
 }

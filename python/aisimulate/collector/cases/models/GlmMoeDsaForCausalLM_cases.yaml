@@ -14,8 +14,12 @@ model_paths:
   - zai-org/GLM-5.2
   - zai-org/GLM-5.2-FP8
   - nvidia/GLM-5.2-NVFP4
+  # GLM-5.3: the plain zai-org repository is the FP8-block release and the
+  # BF16 weights carry the -BF16 suffix (no zai-org/GLM-5.3-FP8 exists).
+  # Do not spell the non-existent name here: the roster derives the coverage
+  # floor from repo mentions in these files.
   - zai-org/GLM-5.3
-  - zai-org/GLM-5.3-FP8
+  - zai-org/GLM-5.3-BF16
   - nvidia/GLM-5.3-NVFP4
 include_base: false
 description: >
@@ -37,9 +41,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         bfloat16: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
       wideep: true
     - model_path: zai-org/GLM-5-FP8
       hidden_size: 6144
@@ -55,9 +57,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
+      quantization_modes: [fp8_block]
       wideep: true
     - model_path: nvidia/GLM-5-NVFP4
       hidden_size: 6144
@@ -73,9 +73,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
       wideep: true
     - model_path: zai-org/GLM-5.1
       hidden_size: 6144
@@ -91,9 +89,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         bfloat16: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
       wideep: true
     - model_path: zai-org/GLM-5.1-FP8
       hidden_size: 6144
@@ -109,9 +105,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
+      quantization_modes: [fp8_block]
       wideep: true
     - model_path: nvidia/GLM-5.1-NVFP4
       hidden_size: 6144
@@ -127,11 +121,27 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
       wideep: true
     - model_path: zai-org/GLM-5.2
+      model_aliases:
+        - zai-org/GLM-5.3-BF16
+      hidden_size: 6144
+      inter_size: 2048
+      topk: 8
+      num_experts: 256
+      sglang_moe_scoring_func: sigmoid
+      sglang_moe_routing_method_type: DeepSeekV3
+      sglang_moe_routed_scaling_factor: 2.5
+      sglang_moe_renormalize: true
+      sglang_moe_has_correction_bias: true
+      sglang_moe_num_expert_group: 1
+      sglang_moe_topk_group: 1
+      sglang_moe_backends:
+        bfloat16: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
+      quantization_modes: [bfloat16]
+      wideep: true
+    - model_path: zai-org/GLM-5.2-FP8
       model_aliases:
         - zai-org/GLM-5.3
       hidden_size: 6144
@@ -146,30 +156,8 @@ model_case_values:
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
       sglang_moe_backends:
-        bfloat16: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
-      wideep: true
-    - model_path: zai-org/GLM-5.2-FP8
-      model_aliases:
-        - zai-org/GLM-5.3-FP8
-      hidden_size: 6144
-      inter_size: 2048
-      topk: 8
-      num_experts: 256
-      sglang_moe_scoring_func: sigmoid
-      sglang_moe_routing_method_type: DeepSeekV3
-      sglang_moe_routed_scaling_factor: 2.5
-      sglang_moe_renormalize: true
-      sglang_moe_has_correction_bias: true
-      sglang_moe_num_expert_group: 1
-      sglang_moe_topk_group: 1
-      sglang_moe_backends:
         fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
+      quantization_modes: [fp8_block]
       wideep: true
     - model_path: nvidia/GLM-5.2-NVFP4
       model_aliases:
@@ -187,9 +175,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
       wideep: true
   mla_module:
     # Keep every supported path targetable. SGLang resolves checkpoint-native
@@ -205,11 +191,97 @@ model_case_values:
         - zai-org/GLM-5.2
         - zai-org/GLM-5.2-FP8
         - nvidia/GLM-5.2-NVFP4
+        - zai-org/GLM-5.3-BF16
         - zai-org/GLM-5.3
-        - zai-org/GLM-5.3-FP8
         - nvidia/GLM-5.3-NVFP4
       attention_type: dsa
       native_num_heads: 64
+      # Real tensor-parallel shards (model-correlated narrowing): per-rank
+      # heads = 64 // tp (64/32/16/8/4); the shared inner head grid's 128 and
+      # 96/48/24/12 entries are not GLM-5.x shards.
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+
+    # Additive AgentX points belong only to the audited long-context artifacts;
+    # the normal GLM rows and shared grid above remain unchanged.
+    - model_paths:
+        - zai-org/GLM-5.2
+        - zai-org/GLM-5.2-FP8
+        - nvidia/GLM-5.2-NVFP4
+        - zai-org/GLM-5.3-BF16
+        - zai-org/GLM-5.3
+        - nvidia/GLM-5.3-NVFP4
+      attention_type: dsa
+      native_num_heads: 64
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
+      long_context_cases:
+        context:
+          - [1, 512, 786432]
+          - [1, 16384, 786432]
+          - [1, 512, 917504]
+          - [1, 16384, 917504]
+          - [1, 32768, 262144]
+          - [1, 32768, 917504]
+        generation:
+          - [1, 786432, 0]
+          - [4, 786432, 0]
+          - [8, 786432, 0]
+          - [16, 786432, 0]
+          - [32, 786432, 0]
+          - [1, 917504, 0]
+          - [4, 917504, 0]
+          - [8, 917504, 0]
+          - [16, 917504, 0]
+          - [32, 917504, 0]
+          - [8, 1048575, 0]
+          - [16, 1048575, 0]
+          - [32, 1048575, 0]
+
+
+    # #665 measured calibration frontier, not observed per-rank production
+    # batches. B52 is the real-request key; serving pads its graph to B56.
+    - model_path: nvidia/GLM-5.2-NVFP4
+      attention_type: dsa
+      native_num_heads: 64
+      long_context_tensor_parallel_sizes: [8]
+      long_context_cases:
+        generation:
+          - [52, 1, 0]
+          - [52, 4, 0]
+          - [52, 8, 0]
+          - [52, 16, 0]
+          - [52, 32, 0]
+          - [52, 64, 0]
+          - [52, 128, 0]
+          - [52, 256, 0]
+          - [52, 512, 0]
+          - [52, 1024, 0]
+          - [52, 2048, 0]
+          - [52, 4096, 0]
+          - [52, 8192, 0]
+          - [52, 16384, 0]
+          - [52, 32768, 0]
+          - [52, 65536, 0]
+          - [52, 131072, 0]
+          - [52, 262144, 0]
+          - [52, 393216, 0]
+          - [52, 524288, 0]
+          - [52, 655360, 0]
+          - [52, 720896, 0]
+
+framework_specific_model_case_values:
+  vllm:
+    mla_module:
+      # New architecture-level reference. Native vLLM layer 0 executes the
+      # full path, and index_topk_freq=4 enables separate reuse observations
+      # (deepseek_v2.py:1080-1162 @752a3a504485790a2e8491cacbb35c137339ad34).
+      # GLM-5 has matching projection/indexer dimensions but a different
+      # RoPE theta (1M vs 8M) and maximum position (202752 vs 1048576).
+      # This selects one new reference, not checkpoint-value equivalence.
+      - model_path: zai-org/GLM-5.2
+        architecture: GlmMoeDsaForCausalLM
+        attention_type: dsa
+        native_num_heads: 64
+        tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
 all_frameworks_op_cases:
   gemm:
@@ -222,8 +294,6 @@ framework_specific_op_cases:
     dsa_context_module:
       cases: all
     dsa_generation_module:
-      cases: all
-    moe_ep:
       cases: all
   vllm:
     dsa_context_module:

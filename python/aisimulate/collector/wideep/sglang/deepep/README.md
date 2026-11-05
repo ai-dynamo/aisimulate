@@ -131,7 +131,7 @@ This legacy publish contract applies only to data already collected through
 this pipeline (new collections go through `collect_moe_a2a.py` — see the
 deprecation notice at the top). After validation and parquet finalization,
 publish `wideep_deepep_{normal,ll}_perf.parquet` under
-`aic-core/src/aiconfigurator_core/systems/data/<system>/comm/sglang/<sglang_version>/`.
+`src/aisimulate_core/systems/data/<system>/comm/sglang/<sglang_version>/`.
 Publishing must also write or refresh the corresponding table entry in
 `collection_meta.yaml`; never copy a parquet table without its provenance.
 Do not merge fresh provenance into a `provenance: legacy` directory—publish

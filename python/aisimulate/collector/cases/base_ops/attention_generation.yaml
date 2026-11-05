@@ -10,9 +10,11 @@ all_frameworks_op_cases:
   attention_generation:
     cases:
     - id: base_attention_generation_shape_sweep
-      description: 'Decode attention shapes. MHA uses self attention; XQA/GQA sweeps explicit key-value head counts.
-
-        '
+      description: >
+        Decode attention shapes every backend collects: generic full attention
+        at head_dim 128. MHA uses self attention; XQA/GQA sweeps explicit
+        key-value head counts. Every other head_dim and window comes from a
+        model's attention profile (cases/models).
       batch_sizes:
       - 1
       - 2
@@ -49,14 +51,6 @@ all_frameworks_op_cases:
       - 2
       - 4
       - 8
-      - 12
-      - 16
-      - 24
-      - 32
-      - 40
-      - 48
-      - 64
-      - 96
       xqa_query_head_counts:
       - 1
       - 2
@@ -65,8 +59,6 @@ all_frameworks_op_cases:
       - 16
       - 32
       - 64
-      - 96
-      - 128
       kv_head_counts:
       - 1
       - 2
@@ -74,7 +66,8 @@ all_frameworks_op_cases:
       - 8
       head_dims:
       - 128
-      - 256
+      window_sizes:
+      - 0
       max_mha_tokens_per_step: 8388608
       max_xqa_tokens_per_step: 16777216
       min_batch_options_per_sequence: 4
@@ -85,135 +78,6 @@ all_frameworks_op_cases:
       - id: fp8_kv_cache
         fp8_kv_cache: true
 framework_specific_op_cases:
-  sglang:
-    attention_generation:
-      cases:
-      - id: base_attention_generation_shape_sweep
-        head_dims:
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        head_profiles:
-        - id: default
-          head_dims: [128, 256]
-          window_size: 0
-          mha_query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
-          xqa_query_head_counts: [1, 2, 4, 8, 16, 32, 64, 96, 128]
-          kv_head_counts: [1, 2, 4, 8]
-  trtllm:
-    attention_generation:
-      cases:
-      - id: base_attention_generation_shape_sweep
-        mha_query_head_counts:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 8
-        - 10
-        - 12
-        - 16
-        - 20
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        - 96
-        xqa_query_head_counts:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 5
-        - 6
-        - 8
-        - 10
-        - 12
-        - 16
-        - 20
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        - 96
-        - 128
-        head_dims:
-        - 64
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        head_profiles:
-        - id: default
-          head_dims: [64, 128, 256]
-          window_size: 0
-          mha_query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
-          xqa_query_head_counts: [1, 2, 4, 8, 16, 32, 64, 96, 128]
-          kv_head_counts: [1, 2, 4, 8]
-        - id: default_head64_swa
-          head_dim: 64
-          window_size: 128
-          mha_query_head_counts: []
-          xqa_query_head_counts: [1, 2, 4, 8, 16, 32, 64, 96, 128]
-          kv_head_counts: [1, 2, 4, 8]
-  vllm:
-    attention_generation:
-      cases:
-      - id: base_attention_generation_shape_sweep
-        mha_query_head_counts:
-        - 1
-        - 2
-        - 4
-        - 8
-        - 12
-        - 16
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        xqa_query_head_counts:
-        - 1
-        - 2
-        - 4
-        - 8
-        - 12
-        - 16
-        - 24
-        - 32
-        - 40
-        - 48
-        - 64
-        head_dims:
-        - 64
-        - 128
-        - 192
-        - 256
-        window_sizes:
-        - 0
-        - 128
-        - 1024
-        - 8192
-        head_profiles:
-        - id: default
-          head_dims: [64, 128]
-          window_sizes: [0, 128]
-          mha_query_head_counts: []
-          xqa_query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
-          kv_head_counts: [1, 2, 4, 8]
-          allow_xqa_mha: true
-          require_divisible: true
   vllm_xpu:
     attention_generation:
       cases:
@@ -249,9 +113,11 @@ framework_specific_op_cases:
         - 0
         - 128
         head_profiles:
+        # hd64 SWA on XPU is gpt-oss only (with sink, via its model profile);
+        # no-sink SWA has no XPU kernel, so sweep window=0 only here.
         - id: default_head64
           head_dim: 64
-          window_sizes: [0, 128]
+          window_sizes: [0]
           mha_query_head_counts: []
           xqa_query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
           kv_head_counts: [1, 2, 4, 8]

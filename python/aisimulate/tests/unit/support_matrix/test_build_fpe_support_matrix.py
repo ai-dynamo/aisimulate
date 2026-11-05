@@ -7,7 +7,6 @@ import csv
 import json
 
 import pytest
-
 from tools.support_matrix.build_fpe_support_matrix import build_web_rows, load_artifacts, write_web_matrix
 
 pytestmark = pytest.mark.unit

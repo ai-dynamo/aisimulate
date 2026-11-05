@@ -7,7 +7,8 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 use super::trace::{
-    MAX_DECLARED_SEQUENCE_TOKENS, synthesize_trace_tokens, validate_synthesizable_prompt,
+    MAX_DECLARED_SEQUENCE_TOKENS, SharedBlocks, SyntheticHashIds, synthesize_trace_tokens,
+    validate_synthesizable_prompt,
 };
 use super::*;
 use rand::SeedableRng;
@@ -511,6 +512,119 @@ fn compatible_agentic_loader_rejects_a_negative_authored_delay() {
 }
 
 #[test]
+fn legacy_snapshot_preserves_recorded_starts_without_adding_execution_gates() {
+    for timestamp_field in ["timestamp", "created_time"] {
+        let mut root = serde_json::json!({
+            "request_id": "z-root", "input_length": 4,
+            "output_length": 1, "hash_ids": [1]
+        });
+        let mut child = serde_json::json!({
+            "request_id": "a-child", "wait_for": ["z-root"], "delay_ms": 25.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        });
+        root[timestamp_field] = 1000.0.into();
+        child[timestamp_field] = 2000.0.into();
+        let file = write_trace(&[root, child]);
+        let graph = load_agentic_mooncake(file.path(), 4).unwrap();
+        // Canonical sorting reverses input order; provenance must follow IDs.
+        assert_eq!(graph.nodes()[0].request_id(), "a-child");
+        assert_eq!(graph.nodes()[0].not_before_ms(), 0.0);
+        assert_eq!(graph.nodes()[1].not_before_ms(), 1000.0);
+        let mut cold = WorkloadDriver::new_agentic_trace(graph.clone(), 4).unwrap();
+        for (id, at_ms) in [("z-root", 1000.0), ("a-child", 1035.0)] {
+            assert_eq!(cold.next_ready_time_ms(), Some(at_ms));
+            let ready = cold.pop_ready(at_ms, 1).pop().unwrap();
+            assert_eq!(ready.authored_request_id.as_deref(), Some(id));
+            cold.on_complete(ready.request_uuid, at_ms + 10.0).unwrap();
+        }
+        assert!(cold.is_drained());
+
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(0))
+            .unwrap();
+        let snapshot = &prepared.snapshots()[0];
+        assert!((1250.0..1750.0).contains(&snapshot.t_star_ms));
+        assert_eq!(snapshot.recorded_start_ms, 1000.0);
+        assert_eq!(snapshot.recorded_last_start_ms, 2000.0);
+        assert_eq!(snapshot.requests[0].recorded_start_ms, 2000.0);
+        assert!(!snapshot.requests[0].historical);
+        assert_eq!(snapshot.requests[1].recorded_start_ms, 1000.0);
+        assert!(snapshot.requests[1].historical);
+        assert!(
+            snapshot
+                .requests
+                .iter()
+                .all(|r| r.recorded_end_ms.is_none())
+        );
+        assert_eq!(snapshot.primers[0].source_request_id, "z-root");
+        let mut suffix = WorkloadDriver::new_agentic_snapshots(prepared, 4, true, 1.0).unwrap();
+        assert_eq!(suffix.total_turns(), 1);
+        assert_eq!(suffix.next_ready_time_ms(), Some(0.0));
+        let ready = suffix.pop_ready(0.0, 1).pop().unwrap();
+        assert_eq!(ready.authored_request_id.as_deref(), Some("a-child"));
+        suffix.on_complete(ready.request_uuid, 10.0).unwrap();
+        assert!(suffix.is_drained());
+
+        let mut without_provenance = graph.clone();
+        for node in &mut without_provenance.nodes {
+            node.recorded_interval_ms = None;
+        }
+        assert_eq!(
+            serde_json::to_value(graph.nodes()).unwrap(),
+            serde_json::to_value(without_provenance.nodes()).unwrap()
+        );
+        assert_eq!(
+            graph.speed_up_timing(1.0).unwrap().identity(),
+            without_provenance.speed_up_timing(1.0).unwrap().identity()
+        );
+    }
+}
+
+#[test]
+fn legacy_snapshot_retains_missing_times_and_rejects_invalid_recorded_starts() {
+    for timestamp in [None, Some(-1.0)] {
+        let root = serde_json::json!({
+            "request_id": "root", "input_length": 4,
+            "output_length": 1, "hash_ids": [1]
+        });
+        let mut child = serde_json::json!({
+            "request_id": "child", "wait_for": ["root"],
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        });
+        if let Some(timestamp) = timestamp {
+            child["timestamp"] = timestamp.into();
+        }
+        let file = write_trace(&[root, child]);
+        let graph = load_agentic_mooncake(file.path(), 4).unwrap();
+        assert!(graph.nodes().iter().all(|node| node.not_before_ms() == 0.0));
+        let mut cold = WorkloadDriver::new_agentic_trace(graph.clone(), 4).unwrap();
+        for now_ms in [0.0, 10.0] {
+            let ready = cold.pop_ready(now_ms, 1).pop().unwrap();
+            cold.on_complete(ready.request_uuid, now_ms + 10.0).unwrap();
+        }
+        assert!(cold.is_drained());
+        let prepared = graph.prepare_snapshots(1, AgenticSnapshotOptions::seeded(0));
+        if timestamp.is_some() {
+            assert!(
+                prepared
+                    .unwrap_err()
+                    .to_string()
+                    .contains("recorded API interval overflow or invalid interval")
+            );
+        } else {
+            let prepared = prepared.unwrap();
+            let snapshot = &prepared.snapshots()[0];
+            assert_eq!(snapshot.t_star_ms, 0.0);
+            assert!(snapshot.requests.iter().all(|request| {
+                request.recorded_start_ms == 0.0
+                    && request.recorded_end_ms.is_none()
+                    && !request.historical
+            }));
+        }
+    }
+}
+
+#[test]
 fn compatible_agentic_loader_lowers_multi_root_join_to_one_typed_play() {
     let file = write_trace(&[
         serde_json::json!({
@@ -931,6 +1045,8 @@ fn test_turn_to_direct_request_repeats_hash_ids_by_block_size() {
         priority: -2,
         strict_priority: 8,
         policy_class: None,
+        synthetic_session_id: false,
+        images: Vec::new(),
     };
 
     let request = turn
@@ -961,6 +1077,78 @@ fn test_turn_replay_hashes_match_full_blocks_only() {
         ReplayRequestHashes::from_tokens(&request.tokens, 4)
     );
     assert_eq!(replay_hashes.local_block_hashes.len(), 1);
+}
+
+#[test]
+fn test_replay_hashes_keep_legacy_encoding_across_repeated_blocks() {
+    fn legacy_hash(bytes: &[u8]) -> u64 {
+        xxhash_rust::xxh3::xxh3_64_with_seed(bytes, 1337)
+    }
+
+    // 64-token blocks take XXH3's long-input path. Cover repeated constant
+    // blocks, a change, a repeat after the change, repeated non-constant
+    // blocks, and an incomplete tail.
+    let block_size = 64;
+    let varied = (0..block_size as u32).collect::<Vec<_>>();
+    let tokens = [7_u32, 7, 9, 7]
+        .into_iter()
+        .flat_map(|token| std::iter::repeat_n(token, block_size))
+        .chain(varied.iter().copied())
+        .chain(varied.iter().copied())
+        .chain([1, 2, 3])
+        .collect::<Vec<_>>();
+
+    let mut expected = ReplayRequestHashes {
+        local_block_hashes: Vec::new(),
+        sequence_hashes: Vec::new(),
+    };
+    for block in tokens.chunks_exact(block_size) {
+        let bytes = block
+            .iter()
+            .flat_map(|token| token.to_le_bytes())
+            .collect::<Vec<_>>();
+        let local = legacy_hash(&bytes);
+        let sequence = expected.sequence_hashes.last().map_or(local, |parent| {
+            let mut chain = parent.to_le_bytes().to_vec();
+            chain.extend_from_slice(&local.to_le_bytes());
+            legacy_hash(&chain)
+        });
+        expected.local_block_hashes.push(local);
+        expected.sequence_hashes.push(sequence);
+    }
+
+    assert_eq!(
+        ReplayRequestHashes::from_tokens(&tokens, block_size as u32),
+        expected
+    );
+}
+
+#[test]
+fn test_trace_block_replay_hashes_match_synthesized_prompt_hashes() {
+    let hash_ids = [11_u32, 11, 12, 13, 13, 13, 14, 15];
+    for trace_block_size in [1, 3, 4, 5, 8, 64] {
+        for engine_block_size in [1_u32, 2, 3, 4, 6, 8, 16, 64] {
+            let capacity = hash_ids.len() * trace_block_size;
+            for input_length in [0, 1, capacity / 2 + 1, capacity - 1, capacity] {
+                let tokens = super::trace::synthesize_validated_trace_tokens(
+                    input_length,
+                    &hash_ids,
+                    trace_block_size,
+                );
+                assert_eq!(
+                    ReplayRequestHashes::from_trace_blocks(
+                        input_length,
+                        &hash_ids,
+                        trace_block_size,
+                        engine_block_size,
+                    ),
+                    ReplayRequestHashes::from_tokens(&tokens, engine_block_size),
+                    "trace block {trace_block_size}, engine block {engine_block_size}, \
+                     input length {input_length}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -998,12 +1186,14 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
         inter_turn_delays: DelaySpec::ConstantMs(5.0),
         seed: 7,
         arrival_seed: 42,
+        images: None,
     })
     .unwrap();
 
@@ -1123,12 +1313,14 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
         inter_turn_delays: DelaySpec::None,
         seed: 42,
         arrival_seed: 42,
+        images: None,
     })
     .unwrap();
 
@@ -1241,6 +1433,246 @@ fn test_synthetic_shared_prefix_ratio_without_groups_is_rejected() {
 }
 
 #[test]
+fn test_synthetic_exact_cached_prefix_shares_only_requested_tokens() {
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: 1,
+        num_sessions: 3,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 3,
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+        images: None,
+    })
+    .unwrap();
+
+    let prompts = trace
+        .sessions
+        .iter()
+        .map(|session| session.turns[0].synthesize_tokens(1).unwrap())
+        .collect::<Vec<_>>();
+    assert!(prompts.windows(2).all(|pair| pair[0][..3] == pair[1][..3]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|tokens| tokens[3..].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
+}
+
+fn synthetic_image_spec(identity_pool: Option<u64>, block_size: usize) -> SyntheticTraceSpec {
+    SyntheticTraceSpec {
+        block_size,
+        num_sessions: 4,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 0,
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+        images: Some(SyntheticImages {
+            count: 2,
+            visual_tokens: 3,
+            encoder: crate::engine::EncoderShape {
+                sequences: 1,
+                patch_tokens: 12,
+                transformer_tokens: 12,
+                output_tokens: 3,
+            },
+            embedding_bytes: 128,
+            identity_pool,
+        }),
+    }
+}
+
+#[test]
+fn synthetic_image_identity_validation_does_not_overflow() {
+    for (identity_pool, expected) in [
+        (None, "image identity count overflow"),
+        (Some(1), "cannot combine cached or shared text prefixes"),
+        (Some((1 << 28) + 1), "image identities must not exceed 2^28"),
+    ] {
+        let mut spec = synthetic_image_spec(identity_pool, 1);
+        spec.num_sessions = 2;
+        spec.images.as_mut().unwrap().count = usize::MAX / 2 + 1;
+        // Validate past the identity check without ever allocating this workload.
+        // An explicit pool must not evaluate the overflowing default count.
+        spec.cached_prefix_tokens = 1;
+        let error = Trace::synthetic(spec).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn test_synthetic_images_precede_text_and_share_tokens_only_inside_pool() {
+    let pooled = Trace::synthetic(synthetic_image_spec(Some(2), 1)).unwrap();
+    let prompts = pooled
+        .sessions
+        .iter()
+        .map(|session| {
+            let turn = &session.turns[0];
+            assert_eq!(turn.input_length, 8 + 2 * 3);
+            assert_eq!(
+                turn.images
+                    .iter()
+                    .map(|image| (image.token_start, image.token_end))
+                    .collect::<Vec<_>>(),
+                vec![(0, 3), (3, 6)]
+            );
+            turn.synthesize_tokens(1).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let identities = pooled
+        .sessions
+        .iter()
+        .map(|session| {
+            session.turns[0]
+                .images
+                .iter()
+                .map(|image| image.identity)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    // A pool of two identities repeats every request; the placeholder tokens
+    // repeat with it while the text tail stays unique per request.
+    assert!(identities.iter().all(|ids| ids == &[0, 1]));
+    assert!(prompts.windows(2).all(|pair| pair[0][..6] == pair[1][..6]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|tokens| tokens[6..].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
+
+    let unique = Trace::synthetic(synthetic_image_spec(None, 1)).unwrap();
+    let placeholders = unique
+        .sessions
+        .iter()
+        .map(|session| session.turns[0].synthesize_tokens(1).unwrap()[..6].to_vec())
+        .collect::<HashSet<_>>();
+    assert_eq!(placeholders.len(), unique.sessions.len());
+    let request = unique.sessions[1].turns[0]
+        .to_direct_request(1, Uuid::from_u128(1), Some(0.0))
+        .unwrap();
+    assert_eq!(request.images, unique.sessions[1].turns[0].images);
+    assert_eq!(request.images[0].identity, 2);
+
+    assert!(Trace::synthetic(synthetic_image_spec(None, 4)).is_err());
+    let mut with_prefix = synthetic_image_spec(None, 1);
+    with_prefix.cached_prefix_tokens = 2;
+    assert!(Trace::synthetic(with_prefix).is_err());
+}
+
+#[test]
+fn test_synthetic_hash_ids_are_dense_in_first_seen_order() {
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: 1,
+        num_sessions: 6,
+        turns_per_session: 2,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 2,
+        shared_prefix_ratio: 0.5,
+        num_prefix_groups: 2,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+        images: None,
+    })
+    .unwrap();
+
+    // Cached prefix, then group prefix, then unique blocks.
+    let first_session = &trace.sessions[0].turns;
+    assert_eq!(first_session[0].hash_ids, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(first_session[1].hash_ids, vec![0, 1, 2, 3, 8, 9, 10, 11]);
+
+    // Synthetic hash IDs become token values, so a block's ID is the number of
+    // distinct blocks seen before it.
+    let turns = trace.sessions.iter().flat_map(|session| &session.turns);
+    let mut seen = HashSet::new();
+    for hash_id in turns.clone().flat_map(|turn| &turn.hash_ids) {
+        if seen.insert(*hash_id) {
+            assert_eq!(*hash_id as usize, seen.len() - 1);
+        }
+    }
+
+    // Every turn shares its first four blocks; each later block belongs to
+    // exactly one turn.
+    let prefix_ids = turns
+        .clone()
+        .flat_map(|turn| turn.hash_ids[..4].iter().copied())
+        .collect::<HashSet<_>>();
+    let mut suffix_ids = HashSet::new();
+    for hash_id in turns.flat_map(|turn| &turn.hash_ids[4..]) {
+        assert!(!prefix_ids.contains(hash_id) && suffix_ids.insert(*hash_id));
+    }
+}
+
+#[test]
+fn test_synthetic_hash_ids_number_each_shared_run_once() {
+    let mut ids = SyntheticHashIds::default();
+    let mut hash_ids = Vec::new();
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(0), 2)
+        .unwrap();
+    ids.fill_unique(&mut hash_ids, 3).unwrap();
+    // Group 1 << 16 once shared group 0's packed prefix keys.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(1 << 16), 1)
+        .unwrap();
+    // An image never shares a text group's blocks.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Image(0), 1)
+        .unwrap();
+    // A longer run reuses its IDs and numbers only its new blocks.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(0), 3)
+        .unwrap();
+    assert_eq!(hash_ids, vec![0, 1, 2, 3, 4, 0, 1, 5]);
+}
+
+#[test]
+fn test_synthetic_hash_ids_stop_at_u32_max() {
+    let mut ids = SyntheticHashIds::default();
+    ids.next_id = u32::MAX as usize;
+    let mut hash_ids = Vec::new();
+    ids.fill_unique(&mut hash_ids, 1).unwrap();
+    let error = ids.fill_unique(&mut hash_ids, 2).unwrap_err();
+    assert!(error.to_string().contains("more unique hash IDs than u32"));
+    // A corrupt prompt length must not overflow the ID count either.
+    assert!(ids.fill_unique(&mut hash_ids, usize::MAX).is_err());
+    assert_eq!(hash_ids, vec![u32::MAX]);
+}
+
+#[test]
 fn test_synthetic_arrival_mode_changes_timestamps_only() {
     let build = |first_turn_arrivals, arrival_seed| {
         Trace::synthetic(SyntheticTraceSpec {
@@ -1255,12 +1687,14 @@ fn test_synthetic_arrival_mode_changes_timestamps_only() {
                 mean: 4,
                 stddev: 1.0,
             },
+            cached_prefix_tokens: 0,
             shared_prefix_ratio: 0.5,
             num_prefix_groups: 5,
             first_turn_arrivals,
             inter_turn_delays: DelaySpec::ExponentialMs { mean_ms: 8.0 },
             seed: 99,
             arrival_seed,
+            images: None,
         })
         .unwrap()
     };
@@ -1703,4 +2137,59 @@ fn test_trace_driver_rechunks_trace_blocks_into_engine_blocks() {
             .unwrap()
         )
     );
+}
+
+#[test]
+fn synthetic_exact_cached_prefix_rejects_unaligned_and_overlong_values() {
+    for (prefix, expected) in [
+        (3, "must align"),
+        (12, "exceeds sampled synthetic input length"),
+    ] {
+        let error = Trace::synthetic(SyntheticTraceSpec {
+            block_size: 4,
+            num_sessions: 1,
+            turns_per_session: 1,
+            input_tokens: LengthSpec {
+                mean: 8,
+                stddev: 0.0,
+            },
+            output_tokens: LengthSpec {
+                mean: 2,
+                stddev: 0.0,
+            },
+            cached_prefix_tokens: prefix,
+            shared_prefix_ratio: 0.0,
+            num_prefix_groups: 0,
+            first_turn_arrivals: ArrivalSpec::Burst,
+            inter_turn_delays: DelaySpec::None,
+            seed: 42,
+            arrival_seed: 42,
+            images: None,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn legacy_anonymous_session_marker_is_part_of_graph_digest() {
+    let mut row = serde_json::json!({
+        "request_id": "root", "timestamp": 0.0,
+        "input_length": 4, "output_length": 1, "hash_ids": [1]
+    });
+    let file = write_trace(&[row.clone()]);
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+    let digest = trace.graph_digest().to_owned();
+    let trace = trace.speed_up_timing(1.0).unwrap();
+    assert_eq!(trace.graph_digest(), digest);
+
+    // An authored ID equal to the loader's fallback still has different serving semantics.
+    row["session_id"] = "agentic-session".into();
+    let authored_file = write_trace(&[row]);
+    let authored = load_agentic_mooncake(authored_file.path(), 4).unwrap();
+    assert_eq!(
+        trace.nodes()[0].session_id(),
+        authored.nodes()[0].session_id()
+    );
+    assert_ne!(authored.graph_digest(), digest);
 }

@@ -1,0 +1,1479 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import gzip
+import json
+import os
+from copy import deepcopy
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+import aisimulate.main as cli
+import aisimulate.resources as resources
+from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.common import ResourceConfig, split_config_sections
+from aisimulate.resources import (
+    GB,
+    GuardedRunnerFactory,
+    HostResources,
+    ResourceEstimate,
+    ResourceLimitError,
+    build_plan,
+    constrain_to_cgroups,
+    estimate_workload,
+    guard_replay,
+    require_plan,
+    resolve_budget,
+    workload_bounds,
+)
+
+
+@pytest.fixture(autouse=True)
+def _cold_trace_scan_cache():
+    # Several tests rewrite one trace in place; each test starts uncached.
+    resources._clear_trace_scan_cache()
+    yield
+    resources._clear_trace_scan_cache()
+
+
+@pytest.fixture
+def host():
+    return HostResources(32 * GB, 16 * GB, 8)
+
+
+def _supervised(monkeypatch, memory_limit_bytes=8 * GB):
+    # Unit admission tests must not depend on the pytest process or its children.
+    monkeypatch.setattr(resources.psutil.Process, "memory_info", lambda self: SimpleNamespace(rss=64 * resources.MIB))
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": memory_limit_bytes,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+
+
+def _dynamo_row(request_id="r", *, input_length=8, output_tokens=3, contextual=True):
+    return {
+        "schema": "dynamo.request.trace.v1",
+        "event_type": "request_end",
+        "event_time_unix_ms": 10,
+        "agent_context": {"session_id": "session"} if contextual else None,
+        "request": {
+            "request_id": request_id,
+            "output_tokens": output_tokens,
+            "replay": {"trace_block_size": 4, "input_length": input_length, "input_sequence_hashes": [1, 2]},
+        },
+    }
+
+
+def _config():
+    return {
+        "engine": {
+            "model": "openai/gpt-oss-120b",
+            "hardware": "gb300",
+            "backend": "vllm",
+            "mode": "aggregated",
+            "context_length": 16384,
+            "workers": {"aggregated": {}},
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 10240, "output_tokens": 1024},
+            "load": {"type": "concurrency", "concurrency": {"choices": [8, 64512]}},
+            "stop": {"requests_per_load_unit": 100},
+        },
+        "optimization": {"target": "pareto", "constraints": {"min_candidate_gpus": 72, "max_candidate_gpus": 72}},
+        "optimizer": {"parallelism": 8, "max_trials": 256},
+    }
+
+
+def test_reported_dynamo_allocation_is_rejected_without_materialization(host):
+    raw = _config()
+    original = deepcopy(raw)
+    bounds = workload_bounds(CoreRecommendationConfig.model_validate(raw))
+    plan = build_plan(bounds, stack="dynamo", host=host, requested_parallelism=8)
+    assert plan["estimate"]["request_count"] == 6_451_200
+    assert plan["estimate"]["input_token_bytes"] == 264_241_152_000
+    assert plan["estimate"]["lower_bound_bytes"] / GB == 264.241152
+    assert plan["effective_parallelism"] == 0
+    with pytest.raises(ResourceLimitError, match="264.24 GB"):
+        require_plan(plan)
+    assert raw == original
+
+
+def test_budget_reserves_headroom_and_leaves_cpu(host):
+    budget = resolve_budget(ResourceConfig(), host)
+    assert budget["memory_limit_bytes"] == 14_400_000_000
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
+    assert budget["cpu_limit"] == 7
+    assert resolve_budget(ResourceConfig(), HostResources(32 * GB, 16 * GB, 0.5))["cpu_limit"] == 1
+
+
+@pytest.mark.parametrize(
+    ("available", "expected_budget"),
+    [
+        (900_000_000, 0),
+        (1_000_000_000, 0),
+        (1_000_000_001, 1),
+        (4_000_000_000, 3_000_000_000),
+        (16_000_000_000, 14_400_000_000),
+    ],
+)
+def test_default_reserve_is_one_decimal_gb_on_large_hosts(available, expected_budget):
+    budget = resolve_budget(ResourceConfig(), HostResources(512 * GB, available, 8))
+    assert budget["reserved_host_memory_bytes"] == 1_000_000_000
+    assert budget["memory_limit_bytes"] == expected_budget
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected_reserve", "expected_budget"),
+    [
+        ({"reserve_memory_gb": 1.5}, 1_500_000_000, 2_500_000_000),
+        ({"reserve_memory_fraction": 0.1}, 3_200_000_000, 800_000_000),
+    ],
+)
+def test_explicit_reserve_overrides(settings, expected_reserve, expected_budget):
+    budget = resolve_budget(ResourceConfig(**settings), HostResources(32 * GB, 4 * GB, 8))
+    assert budget["reserved_host_memory_bytes"] == expected_reserve
+    assert budget["memory_limit_bytes"] == expected_budget
+
+
+def test_low_memory_never_falls_back_to_one_worker():
+    host = HostResources(8 * GB, GB, 4)
+    plan = build_plan({"isl": 8, "osl": 2, "request_count": 1}, stack="engine", host=host)
+    assert plan["effective_parallelism"] == 0
+    with pytest.raises(ResourceLimitError):
+        require_plan(plan)
+
+
+def test_explicit_budgets_are_validated_against_live_limits(host):
+    with pytest.raises(ResourceLimitError, match="20.00 GB exceeds available headroom 15.00 GB"):
+        resolve_budget(ResourceConfig(memory_limit_gb=20.0), host)
+    with pytest.raises(ResourceLimitError, match="CPU allowance"):
+        resolve_budget(ResourceConfig(cpu_limit=16), host)
+    assert resolve_budget(ResourceConfig(memory_limit_gb=4.0, cpu_limit=2), host)["memory_limit_bytes"] == 4_000_000_000
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("memory_limit_gb", True),
+        ("memory_limit_gb", 0),
+        ("memory_limit_gb", float("inf")),
+        ("cpu_limit", True),
+        ("reserve_memory_fraction", 1.0),
+    ],
+)
+def test_invalid_resource_policy(field, value):
+    with pytest.raises(ValidationError):
+        ResourceConfig.model_validate({field: value})
+
+
+def test_cgroup_limits_use_ancestors_and_current_usage(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/parent/child\n")
+    (proc / "self/mountinfo").write_text("42 30 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+    base = tmp_path / "sys/fs/cgroup"
+    child = base / "parent/child"
+    child.mkdir(parents=True)
+    for directory, limit, usage, cpu in [
+        (base, 32 * GB, 4 * GB, "max 100000"),
+        (child.parent, 8 * GB, 7 * GB, "150000 100000"),
+        (child, 6 * GB, GB, "max 100000"),
+    ]:
+        (directory / "memory.max").write_text(str(limit))
+        (directory / "memory.current").write_text(str(usage))
+        (directory / "cpu.max").write_text(cpu)
+    actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
+    assert actual.total_memory_bytes == 6 * GB
+    assert actual.available_memory_bytes == GB
+    assert actual.cpu_count == 1.5
+    (child / "memory.current").unlink()
+    assert constrain_to_cgroups(host, proc=proc, root=tmp_path).available_memory_bytes == 0
+
+
+def test_unqualified_estimate_does_not_claim_admission(host):
+    plan = build_plan({"trace_path": "unknown.parquet"}, stack="dynamo", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+
+
+def test_native_estimate_is_distinct_from_eager_dynamo():
+    workload = {"request_count": 1000, "concurrency": 10, "isl": 100, "osl": 5}
+    engine = estimate_workload(workload, stack="engine")
+    dynamo = estimate_workload(workload, stack="dynamo")
+    assert engine.allocation_model != dynamo.allocation_model
+    assert engine.input_token_bytes == 10 * 100 * 4
+    assert dynamo.input_token_bytes == 1000 * 100 * 4
+
+
+def test_plugin_estimate_is_versioned(host):
+    class BadFactory:
+        def estimate_host_resources(self, workload, *, concurrency):
+            return ResourceEstimate("bad", 1, 0, 0, 1, api_version=99)
+
+    with pytest.raises(ResourceLimitError, match="incompatible"):
+        build_plan({}, stack="custom", factory=BadFactory(), host=host)
+
+
+def test_execution_section_is_core_and_roundtrips():
+    raw = _config()
+    raw["execution"] = {"resources": {"memory_limit_gb": 4.0}}
+    core, adapters = split_config_sections(raw, command="recommend")
+    assert not adapters
+    config = CoreRecommendationConfig.model_validate(core)
+    roundtrip = CoreRecommendationConfig.model_validate(config.model_dump(mode="json"))
+    assert roundtrip.execution.resources.memory_limit_gb == 4.0
+
+
+@pytest.mark.parametrize("command", ["predict"])
+def test_cli_blocks_before_runner_creation(tmp_path, monkeypatch, host, command):
+    class NeverExecute:
+        def create(self, worker_id):
+            pytest.fail("oversized workload must not create a runner")
+
+        def capabilities(self):
+            pytest.fail("oversized workload must stop before runtime preparation")
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: NeverExecute())
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    raw = _config()
+    if command == "predict":
+        raw.pop("optimizer")
+        raw.pop("optimization")
+        raw["traffic"]["load"]["concurrency"] = 64512
+        CorePredictionConfig.model_validate(raw)
+    config = tmp_path / "case.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    out = tmp_path / "result"
+    args = [command, "--stack", "dynamo", "--config", str(config), "--output-dir", str(out)]
+    assert cli.main(args) == 3
+    report = json.loads((out / "resource-plan.json").read_text())
+    assert report["status"] == "resource_limited"
+    assert report["estimate"]["input_token_bytes"] == 264_241_152_000
+
+
+def test_recommendation_applies_slots_without_changing_suggestion_batches(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    seen = []
+
+    class SubscribedAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            assert config == {"socket": "/tmp/events.sock"}
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n
+            seen.append((smart.sweep, on_candidate, on_round))
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {"socket": "/tmp/events.sock"}},
+            output_adapters={"dgd": SubscribedAdapter()},
+        )
+        == "result"
+    )
+    sweep, on_candidate, on_round = seen[0]
+    assert sweep.parallel_evals == 2
+    assert sweep.candidates_per_round == 8
+    assert sweep.max_trials == 256
+    assert on_candidate is not None
+    assert on_round is None
+    assert config.optimizer.parallelism == 8
+
+
+def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    received = []
+    searched = []
+
+    class ContextAdapter:
+        def __init__(self, name, mutate):
+            self.name = name
+            self.api_version = OUTPUT_ADAPTER_API_VERSION
+            self._mutate = mutate
+
+        def subscribe(self, config, context):
+            workload = context.workload
+            received.append((self.name, workload.model_copy(deep=True)))
+            if self._mutate:
+                # A misbehaving adapter edits "its" workload while preparing output.
+                object.__setattr__(workload, "isl", workload.isl + 1)
+                assert workload.isl != received[-1][1].isl
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n, on_candidate, on_round
+            searched.append(smart.workload)
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"first": {}, "second": {}},
+            output_adapters={
+                "first": ContextAdapter("first", mutate=True),
+                "second": ContextAdapter("second", mutate=False),
+            },
+        )
+        == "result"
+    )
+
+    # Both subscribers saw the workload the search consumes, and the second one saw it
+    # unchanged even though the first mutated its copy; the search itself was not affected.
+    assert [name for name, _ in received] == ["first", "second"]
+    assert received[0][1] == received[1][1]
+    assert searched[0] == received[0][1]
+    assert searched[0].isl == received[0][1].isl
+
+
+@pytest.mark.parametrize("failure", [False, True], ids=["success", "failure"])
+def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failure):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    events = []
+    search_error = RuntimeError("search failed")
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            return RecommendationOutputCallbacks(
+                on_candidate=lambda candidate: events.append(("candidate", candidate)),
+                on_complete=lambda: events.append(("complete",)),
+                on_failure=lambda error: events.append(("failure", error)),
+            )
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    candidate = SimpleNamespace(candidate_id="candidate-000001")
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_round
+            assert on_candidate is not None
+            on_candidate(candidate)
+            if failure:
+                events.append(("search_failure", search_error))
+                raise search_error
+            events.append(("search_return",))
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    if failure:
+        with pytest.raises(RuntimeError, match="search failed") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"dgd": {}},
+                output_adapters={"dgd": LifecycleAdapter()},
+            )
+
+        assert raised.value is search_error
+        assert events == [
+            ("candidate", candidate),
+            ("search_failure", search_error),
+            ("failure", search_error),
+        ]
+    else:
+        result = recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+        events.append(("final_write", result))
+
+        assert events == [
+            ("candidate", candidate),
+            ("search_return",),
+            ("complete",),
+            ("final_write", "result"),
+        ]
+
+
+@pytest.mark.parametrize("event", ["on_candidate", "on_round", "on_complete"])
+def test_recommendation_reports_progress_callback_failures_to_failure_hook(monkeypatch, event):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import (
+        OUTPUT_ADAPTER_API_VERSION,
+        OutputAdapterExecutionError,
+        RecommendationOutputCallbacks,
+    )
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    callback_error = ValueError(f"{event} failed")
+    failures = []
+
+    def fail(*args):
+        del args
+        raise callback_error
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            callbacks = {event: fail, "on_failure": failures.append}
+            return RecommendationOutputCallbacks(**callbacks)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n
+            if event == "on_candidate":
+                assert on_candidate is not None
+                on_candidate(SimpleNamespace(candidate_id="candidate-000001"))
+            if event == "on_round":
+                assert on_round is not None
+                on_round(1, [])
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    with pytest.raises(OutputAdapterExecutionError, match=rf"dgd.*{event}.*ValueError") as raised:
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+
+    assert raised.value.__cause__ is callback_error
+    assert failures == [raised.value]
+
+
+def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
+    import threading
+
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    from aisimulate.resource_worker import _exception_message
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    search_error = RuntimeError("ORIGINAL_SEARCH_FAILURE")
+    stop = threading.Event()
+    started = threading.Event()
+    events = []
+    publishers = []
+
+    class FailingCleanupAdapter:
+        name = "first"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def on_failure(error):
+                events.append(("first_failure", error))
+                raise ValueError("CLEANUP_FAILURE")
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class PublisherAdapter:
+        name = "publisher"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def publish():
+                events.append(("publisher_started",))
+                started.set()
+                stop.wait(5)
+                events.append(("publisher_stopped",))
+
+            publisher = threading.Thread(target=publish, daemon=False)
+            publishers.append(publisher)
+            publisher.start()
+            assert started.wait(1)
+
+            def on_failure(error):
+                events.append(("publisher_failure", error))
+                stop.set()
+                publisher.join(timeout=1)
+                assert not publisher.is_alive()
+                events.append(("publisher_joined",))
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_candidate, on_round
+            raise search_error
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    try:
+        with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"first": {}, "publisher": {}},
+                output_adapters={
+                    "first": FailingCleanupAdapter(),
+                    "publisher": PublisherAdapter(),
+                },
+            )
+    finally:
+        stop.set()
+        for publisher in publishers:
+            publisher.join(timeout=1)
+
+    assert raised.value is search_error
+    assert events == [
+        ("publisher_started",),
+        ("first_failure", search_error),
+        ("publisher_failure", search_error),
+        ("publisher_stopped",),
+        ("publisher_joined",),
+    ]
+    assert all(not publisher.is_alive() for publisher in publishers)
+    message = _exception_message(raised.value)
+    assert message.startswith("RuntimeError: ORIGINAL_SEARCH_FAILURE")
+    assert "first" in message
+    assert "on_failure" in message
+    assert "CLEANUP_FAILURE" in message
+
+
+def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    factories = []
+
+    class CaptureSweeper:
+        def __init__(self, *, runner_factory, **kwargs):
+            factories.append(runner_factory)
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    resolved = EngineReplayRunnerFactory()
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=resolved) == "result"
+
+    assert factories[0].factory == replace(resolved, trace_graph_cache=True)
+    assert resolved.trace_graph_cache is False
+
+
+def test_resource_refusal_is_not_a_failed_replay_observation():
+    from aisimulate.sweeper.search import _run_replay_detailed
+
+    class Refuse:
+        def run(self, spec):
+            raise ResourceLimitError("live pressure")
+
+    with pytest.raises(ResourceLimitError, match="live pressure"):
+        _run_replay_detailed(None, Refuse())
+
+
+def test_cgroup_namespace_root_and_v1_quota(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("1:memory:/\n2:cpu,cpuacct:/\n")
+    (proc / "self/mountinfo").write_text(
+        "42 30 0:27 /container /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n"
+        "43 30 0:28 /container /sys/fs/cgroup/cpu rw - cgroup cgroup rw,cpu,cpuacct\n"
+    )
+    memory = tmp_path / "sys/fs/cgroup/memory"
+    cpu = tmp_path / "sys/fs/cgroup/cpu"
+    memory.mkdir(parents=True)
+    cpu.mkdir(parents=True)
+    (memory / "memory.limit_in_bytes").write_text(str(4 * GB))
+    (memory / "memory.usage_in_bytes").write_text(str(GB))
+    (cpu / "cpu.cfs_quota_us").write_text("50000")
+    (cpu / "cpu.cfs_period_us").write_text("100000")
+    actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
+    assert actual.cpu_count == 0.5
+
+
+def test_error_diagnostic_preserves_existing_output(tmp_path, monkeypatch, host):
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: object())
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    config = tmp_path / "case.yaml"
+    raw = _config()
+    raw.pop("optimizer")
+    raw.pop("optimization")
+    raw["traffic"]["load"]["concurrency"] = 64512
+    config.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "output"
+    output.mkdir()
+    evidence = output / "resource-plan.json"
+    evidence.write_text("existing evidence")
+    assert cli.main(["predict", "--stack", "dynamo", "--config", str(config), "--output-dir", str(output)]) == 3
+    assert evidence.read_text() == "existing evidence"
+
+
+def test_probe_failure_does_not_assume_unlimited_memory(monkeypatch):
+    def fail():
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(resources.psutil, "virtual_memory", fail)
+    with pytest.raises(ResourceLimitError, match="cannot discover"):
+        resources.discover_host()
+
+
+def test_resource_refusal_survives_process_transport():
+    import pickle
+
+    error = ResourceLimitError("pressure", plan={"status": "resource_limited", "reason": "pressure", "bytes": 123})
+    transported = pickle.loads(pickle.dumps(error))
+    assert transported.plan == error.plan
+
+
+def test_namespace_relative_descendant_keeps_ancestor_limits(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/child\n")
+    (proc / "self/mountinfo").write_text("42 30 0:27 /container /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+    root = tmp_path / "sys/fs/cgroup"
+    (root / "child").mkdir(parents=True)
+    (root / "memory.max").write_text(str(4 * GB))
+    (root / "memory.current").write_text(str(GB))
+    actual = constrain_to_cgroups(host, proc=proc, root=tmp_path)
+    assert actual.total_memory_bytes == 4 * GB
+    assert actual.available_memory_bytes == 3 * GB
+
+
+def test_missing_container_mount_probe_fails_closed(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/\n")
+    with pytest.raises(ResourceLimitError, match="membership and mounts"):
+        constrain_to_cgroups(host, proc=proc, root=tmp_path)
+
+
+@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
+@pytest.mark.parametrize("length_field", ["input_length", "output_length", "input_tokens", "output_tokens"])
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+def test_trace_scalar_lengths_are_counted_before_token_expansion(
+    tmp_path, host, monkeypatch, trace_format, length_field, stack
+):
+    trace = tmp_path / "large.jsonl"
+    row = {"input_length": 1, "output_length": 1, "hash_ids": [1]}
+    row.pop(length_field.replace("_tokens", "_length"))
+    row[length_field] = 10**12
+    trace.write_text(json.dumps(row) + "\n")
+    _supervised(monkeypatch)
+    plan = build_plan({"trace_path": str(trace), "trace_format": trace_format}, stack=stack, host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+    assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
+    assert "requires supervised" not in plan["reason"]
+
+
+def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
+    trace = tmp_path / "large.jsonl"
+    # Each valid record exceeds the old 256 KiB limit, total exceeds 16 MiB.
+    record = '{"input_length": 2, "output_length": 1, "ignored": [' + "0," * 150_000 + "0]}\n"
+    with trace.open("w") as stream:
+        for _ in range(60):
+            stream.write(record)
+    monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("must not materialize entire JSON records"))
+    estimate = estimate_workload({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine")
+    assert estimate.request_count == 60
+    assert estimate.lower_bound_bytes == 4 * 60  # Sixty planned u32 outputs; ignored arrays add nothing.
+
+
+@pytest.mark.parametrize("trace_format", ["mooncake", "mooncake-delta"])
+def test_mooncake_traces_bound_compact_arrays_and_observe_their_peak(tmp_path, trace_format):
+    trace = tmp_path / "trace.jsonl"
+    rows = [{"input_length": 100, "output_length": 10, "hash_ids": [1, 2]}] * 4
+    rows.append({"output_length": 10, "hash_ids": [1, 2, 3]})  # The loader sizes this prompt as 3 x 64 tokens.
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    estimate = estimate_workload(
+        {"trace_path": str(trace), "trace_block_size": 64, "trace_format": trace_format}, stack="engine"
+    )
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.estimated_peak_bytes is None  # Measured from a completed replay instead.
+    assert estimate.request_count == 5
+    if trace_format == "mooncake":
+        # Rows convert u64 source hashes one at a time, so only the compact
+        # hashes, planned outputs and one expanded prompt are unavoidable.
+        assert estimate.lower_bound_bytes == max(4 * (11 + 50), 4 * 192)
+    else:
+        # Delta setup synthesizes every prompt and plans every output.
+        assert estimate.lower_bound_bytes == 4 * (4 * 100 + 192 + 50)
+
+
+def test_applied_compute_counts_turns_and_responses(tmp_path):
+    trace = tmp_path / "sessions.jsonl"
+    row = {
+        "num_turns": 2,
+        "input_prompt_length": 300,
+        "assistant_response_length": [5, 7],
+        "tool_call_output_length": [11, 13],
+        "tool_call_latency": [0.1, 0.2],
+        "final_assistant_response_length": 9,
+    }
+    trace.write_text((json.dumps(row) + "\n") * 2)
+    estimate = estimate_workload({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine")
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.request_count == 6  # Each session replays num_turns + 1 requests.
+    # The final prompt adds both responses and tool outputs to the initial prompt.
+    assert estimate.lower_bound_bytes == max(4 * 2 * (5 + 7 + 9), 4 * (300 + 5 + 7 + 11 + 13))
+
+
+def test_applied_compute_tool_output_grows_the_final_prompt(tmp_path, host, monkeypatch):
+    trace = tmp_path / "sessions.jsonl"
+    row = {
+        "num_turns": 1,
+        "input_prompt_length": 1,
+        "assistant_response_length": [1],
+        "tool_call_output_length": [10**12],
+        "tool_call_latency": [0.0],
+        "final_assistant_response_length": 1,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    _supervised(monkeypatch)
+    plan = build_plan({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["lower_bound_bytes"] == 4 * (2 + 10**12)
+    assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
+
+
+def test_fixed_capacity_kv_domain_has_a_conservative_count_bound(host):
+    raw = _config()
+    raw["traffic"]["load"] = {"type": "kv_capacity_fraction", "fraction": {"choices": [0.5, 1.5]}}
+    raw["engine"]["workers"]["aggregated"]["kv_cache"] = {
+        "block_size": 64,
+        "capacity": {"type": "fixed", "blocks": 256},
+    }
+    bounds = workload_bounds(CoreRecommendationConfig.model_validate(raw))
+    assert bounds["concurrency"] == 256 * 64 * 72 * 1.5
+    assert bounds["request_count"] == bounds["concurrency"] * 100
+
+
+def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    (proc / "self/cgroup").write_text("0::/../outside\n")
+    (proc / "self/mountinfo").write_text("42 30 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+    with pytest.raises(ResourceLimitError, match="outside its visible namespace"):
+        constrain_to_cgroups(host, proc=proc, root=tmp_path)
+
+
+def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypatch, host):
+    workload = {"source_type": "synthetic-session", "request_count": 4, "turns_per_session": 2}
+    assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
+    _supervised(monkeypatch)
+    plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
+    assert plan["status"] == "admitted"
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+
+
+def test_snapshot_lower_bound_omits_prompts_it_may_not_dispatch(tmp_path, monkeypatch, host):
+    trace = tmp_path / "large-prompt.jsonl"
+    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
+    finite = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    _supervised(monkeypatch)
+    plan = build_plan(finite, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert "lower bound" in plan["reason"]
+    # A snapshot expands prompts only for selected plays after their cuts, so
+    # this prompt may never be allocated; its retained arrays fit.
+    for load in ({"agentic_snapshot": {"seed": 1}}, {"agentic_snapshot": {"seed": 1}, "agentic_profile": {}}):
+        assert build_plan({**finite, **load}, stack="engine", host=host)["status"] == "admitted"
+
+
+@pytest.mark.parametrize(
+    "trace_format,stack",
+    [
+        ("agentic_mooncake", "engine"),
+        ("agentic_mooncake", "dynamo"),
+        ("weka", "dynamo"),
+        ("dynamo", "engine"),
+        ("dynamo", "dynamo"),
+    ],
+)
+def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
+    tmp_path, host, monkeypatch, stack, trace_format
+):
+    trace = tmp_path / "agentic.jsonl"
+    header = {
+        "schema": "dynamo.agentic_mooncake",
+        "version": 2,
+        "block_size": 1048576,
+        "hash_id_scope": "local",
+        "source": {"format": "test", "digest": "test"},
+    }
+    rows = [
+        {
+            "request_id": str(i),
+            "play_id": str(i),
+            "session_id": str(i),
+            "model": "test",
+            "input_length": 1048576,
+            "output_length": 1,
+            "hash_ids": [i],
+            "not_before_ms": 0,
+            "dependencies": [],
+        }
+        for i in range(4)
+    ]
+    if trace_format == "weka":
+        documents = [
+            {
+                "id": "play",
+                "block_size": 1048576,
+                "requests": [{"type": "s", "in": row["input_length"], "out": row["output_length"]} for row in rows],
+            }
+        ]
+    elif trace_format == "dynamo":
+        documents = [_dynamo_row(row["request_id"], input_length=1048576, output_tokens=1) for row in rows]
+    else:
+        documents = [header, *rows]
+    trace.write_text("\n".join(json.dumps(row) for row in documents) + "\n")
+    base = {"trace_path": str(trace), "trace_format": trace_format, "trace_block_size": 1048576}
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    for lanes in (1, 32, 128, 512):
+        plan = build_plan({**base, "agentic_lanes": lanes}, stack=stack, host=host)
+        assert plan["estimate"]["estimated_peak_bytes"] is None
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB  # One expanded prompt, not the corpus.
+        assert plan["status"] == "resource_limited"  # An unknown peak needs the live supervisor.
+        assert plan["reason"].startswith("unknown peak requires supervised serial execution:")
+        assert plan["estimate"]["reason"] in plan["reason"]
+
+    _supervised(monkeypatch, memory_limit_bytes=2 * GB)
+    for lanes in (1, 32, 128, 512):
+        workload = {**base, "agentic_lanes": lanes}
+        original = deepcopy(workload)
+        plan = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+        assert plan["status"] == "admitted"
+        assert plan["effective_parallelism"] == 1  # One simulation; all requested lanes are retained.
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB
+        assert workload == original
+
+    # Whitespace adds file bytes without changing stored arrays. The former
+    # 128-times-file-size guard would reject this padded trace under 2 GB.
+    estimate = plan["estimate"]
+    with trace.open("a") as stream:
+        for _ in range(256):
+            stream.write(" " * (64 * 1024) + "\n")
+    padded = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+    assert padded["status"] == "admitted"
+    assert padded["estimate"] == estimate
+
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    spec = SimpleNamespace(workload={**base, "agentic_lanes": 512}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), stack, ResourceConfig())
+    assert factory.admit_wave([spec])["status"] == "admitted"
+    with pytest.raises(ResourceLimitError, match="wave"):
+        factory.admit_wave([spec, spec])
+
+
+def test_native_weka_keeps_qualified_parallel_admission(tmp_path, host, monkeypatch):
+    trace = tmp_path / "play.json"
+    trace.write_text(json.dumps({"block_size": 4, "requests": [{"t": 0, "type": "s", "in": 4, "out": 1}]}))
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    workload = {"trace_path": str(trace), "trace_format": "weka"}
+    expected = estimate_workload(workload, stack="engine")
+    assert expected.allocation_model == "weka-materialized-v1"
+    assert expected.estimated_peak_bytes is not None
+    for lanes in (1, 32, 128, 512):
+        candidate = {**workload, "agentic_lanes": lanes}
+        assert estimate_workload(candidate, stack="engine") == expected
+        plan = build_plan(candidate, stack="engine", host=host, requested_parallelism=2)
+        assert plan["effective_parallelism"] == 2
+        spec = SimpleNamespace(workload=candidate, concurrency=None)
+        wave = factory.admit_wave([spec, spec])
+        assert wave["status"] == "admitted"
+        assert wave["required_bytes"] == 2 * expected.estimated_peak_bytes
+
+
+@pytest.mark.parametrize("output_length,authored,expected", [(0, None, 16), (5, None, 28), (2, [7, 8], 24)])
+def test_finite_agentic_arrays_ignore_unloaded_fields(tmp_path, output_length, authored, expected):
+    trace = tmp_path / "agentic.jsonl"
+    row = {
+        "request_id": "r",
+        "input_tokens": 2,
+        "output_tokens": output_length,
+        "hash_ids": [1, 2],
+        "output_token_ids": authored,
+    }
+    workload = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    trace.write_text(json.dumps(row) + "\n")
+    original = estimate_workload(workload, stack="engine")
+    # Two source u64 hashes occupy 16 bytes; five planned u32 outputs plus
+    # compact hashes occupy 28; two authored u32 outputs beside source hashes occupy 24.
+    assert original.lower_bound_bytes == expected
+    row["input_sequence_hashes"] = [1] * 100
+    row["provenance"] = {
+        "input_length": "ignored",
+        "output_tokens": 10**12,
+        "hash_ids": [1] * 100,
+        "output_token_ids": [1] * 100,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    assert estimate_workload(workload, stack="engine") == original
+
+
+@pytest.mark.parametrize(
+    "prefix,lower", [("input_tokens", 4), ("output_tokens", 4), ("hash_ids.item", 8), ("output_token_ids.item", 4)]
+)
+def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, monkeypatch, prefix, lower):
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text("{}\n")
+
+    def events(*args, **kwargs):
+        yield "", "start_map", None
+        yield prefix, "number", 1
+        yield "", "end_map", None
+        pytest.fail("must stop at the first row whose lower bound cannot fit")
+
+    monkeypatch.setattr(resources.ijson, "parse", events)
+    estimate = estimate_workload(
+        {"trace_path": str(trace), "trace_format": "agentic_mooncake"},
+        stack="engine",
+        inspection_budget_bytes=resources.WORKER_BASELINE_BYTES + lower - 1,
+    )
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.lower_bound_bytes == lower
+
+
+@pytest.mark.parametrize("peak", [None, GB])
+@pytest.mark.parametrize("external", [False, True])
+def test_only_builtin_unknown_peaks_add_baseline_to_array_bound(monkeypatch, host, peak, external):
+    # Fixed supervisor RSS plus coordinator reserve leaves exactly 1 GB free.
+    _supervised(monkeypatch, memory_limit_bytes=GB + 320 * resources.MIB)
+    factory = SimpleNamespace(
+        estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 900_000_000, peak)
+    )
+    if not external:
+        monkeypatch.setattr(resources, "estimate_workload", factory.estimate_host_resources)
+        factory = None
+    plan = build_plan({}, stack="engine", host=host, factory=factory)
+    if peak is None and not external:
+        assert plan["status"] == "resource_limited"  # 900 MB alone fits; adding the baseline does not.
+        assert "lower bound plus worker baseline" in plan["reason"]
+        _supervised(monkeypatch, memory_limit_bytes=900_000_000 + resources.WORKER_BASELINE_BYTES + 320 * resources.MIB)
+        assert build_plan({}, stack="engine", host=host, factory=factory)["status"] == "admitted"
+    else:
+        assert plan["status"] == "admitted"  # Adapter v1 bounds and qualified peaks may include process memory.
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, external):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    adapter = SimpleNamespace(
+        estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 6 * GB, None)
+    )
+    if not external:
+        monkeypatch.setattr(resources, "estimate_workload", adapter.estimate_host_resources)
+        adapter = object()
+    factory = GuardedRunnerFactory(adapter, "engine", ResourceConfig())
+    spec = SimpleNamespace(workload={}, concurrency=None)
+    required = 6 * GB + (0 if external else resources.WORKER_BASELINE_BYTES)
+    assert factory.admit_wave([spec])["required_bytes"] == required
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 5 * GB)
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec])
+    assert caught.value.plan["required_bytes"] == required
+    assert caught.value.plan["available_bytes"] < 3 * GB
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
+def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    trace = tmp_path / "agentic.jsonl"
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    else:
+        trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    raw = _config()
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 32,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    bounds = workload_bounds(config)
+    assert bounds["agentic_snapshot"] == {"seed": 42}
+    assert bounds["agentic_warmup"] is warmup
+    concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
+    # Native Weka snapshot/warmup accounting has its own peak-model tests.
+    stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
+    for stack in stacks:
+        # Lanes replay plays of one loaded corpus, so they add no corpus copies.
+        estimate = estimate_workload(bounds, stack=stack)
+        assert estimate.allocation_model == "trace-observed-peak-v1"
+        assert estimate.estimated_peak_bytes is None
+        assert estimate_workload(concrete, stack=stack) == estimate
+        # A profile starts from the same snapshot, but its peak grows with its duration.
+        profile = estimate_workload({**bounds, "agentic_profile": {}}, stack=stack)
+        assert profile.allocation_model == "agentic-profile-unqualified-v1"
+        assert profile.estimated_peak_bytes is None
+        assert profile.lower_bound_bytes == estimate.lower_bound_bytes > 0
+    # A completed snapshot replay's peak sizes later waves of the same trace.
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
+    spec = SimpleNamespace(workload=concrete, concurrency=None)
+    factory.record_peak(spec, GB)
+    assert factory.admit_wave([spec, spec])["reserved_bytes"] == [3 * GB // 2] * 2
+
+
+@pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])
+def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
+    # Put block_size last: request accounting must not depend on JSON field order.
+    play = {
+        "id": "play",
+        "requests": [
+            {"type": "s", "in": 5, "out": 2, "hash_ids": []},
+            {"type": "n", "in": 4, "out": 0, "hash_ids": [7]},
+            {
+                "type": "subagent",
+                "total_tokens": 10**12,
+                "requests": [
+                    {"type": "s", "in": 9, "out": 3, "hash_ids": [9]},
+                ],
+            },
+        ],
+        "totals": {"in": 10**12, "out": "ignored"},
+        "block_size": 4,
+    }
+    source = tmp_path / f"play.{layout}"
+    copies = 1 if layout == "json" else 2
+    if layout == "directory":
+        source.mkdir()
+        (source / "a.json").write_text(json.dumps(play))
+        (source / "b.jsonl").write_text(json.dumps(play) + "\n")
+        (source / "ignored.txt").write_text("not a trace")
+    else:
+        source.write_text((json.dumps(play) + "\n") * copies)
+    estimate = estimate_workload({"trace_path": str(source), "trace_format": "weka"}, stack="dynamo")
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
+    assert estimate.lower_bound_bytes == 48 * copies
+    assert estimate.estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_agentic_dynamo_counts_only_loaded_request_events(tmp_path, compressed):
+    first = _dynamo_row("first")
+    second = _dynamo_row("second", input_length=4, output_tokens=4)
+    second["request"]["replay"]["input_sequence_hashes"] = [3]
+    ignored = {"event_type": "request_payload", "request": {"output_tokens": 10**12}, "input_length": "ignored"}
+    tool = {"event_type": "tool_end", "agent_context": {"session_id": "s"}, "request": {"output_tokens": 10**12}}
+    first["provenance"] = {"input_tokens": 10**12, "output_token_ids": [1] * 100}
+    paths = [tmp_path / "a.jsonl", tmp_path / ("b.jsonl.gz" if compressed else "b.jsonl")]
+    paths[0].write_text(json.dumps(ignored) + "\n" + json.dumps(first) + "\n")
+    contents = json.dumps(tool) + "\n" + json.dumps({"event": second, "output_tokens": 10**12}) + "\n"
+    if compressed:
+        with gzip.open(paths[1], "wt") as stream:
+            stream.write(contents)
+    else:
+        paths[1].write_text(contents)
+    workload = {"trace_paths": list(map(str, paths)), "trace_format": "dynamo"}  # No lane hint.
+    for stack in ("engine", "dynamo"):
+        estimate = estimate_workload(workload, stack=stack)
+        assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+        assert estimate.lower_bound_bytes == 40  # Three compact hashes and seven planned outputs.
+        assert estimate.estimated_peak_bytes is None
+
+
+def test_standard_dynamo_observes_its_peak_and_rejects_mixed_context(tmp_path):
+    path = tmp_path / "requests.jsonl"
+    row = _dynamo_row(contextual=False)
+    path.write_text(json.dumps(row) + "\n")
+    # Neither the configured block size nor file bytes expand the bound.
+    workload = {"trace_path": str(path), "trace_format": "dynamo", "trace_block_size": 512}
+    estimate = estimate_workload(workload, stack="engine")
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.request_count == 1
+    # Two retained u64 hashes, compact hashes plus three outputs, or one 8-token prompt.
+    assert estimate.lower_bound_bytes == max(8 * 2, 4 * (2 + 3), 4 * 8)
+    for rows in ([row, _dynamo_row("agent")], [_dynamo_row("agent"), row]):
+        path.write_text("\n".join(map(json.dumps, rows)))
+        with pytest.raises(ResourceLimitError, match="cannot mix requests with and without agent_context"):
+            estimate_workload(workload, stack="engine")
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_standard_dynamo_validates_every_later_request(tmp_path, wrapped):
+    # After the first request selects standard mode, inspection must still
+    # validate context and lengths in later rows and files.
+    wrap = (lambda row: {"event": row}) if wrapped else (lambda row: row)
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    paths[0].write_text("\n".join(json.dumps(wrap(_dynamo_row(f"r{i}", contextual=False))) for i in range(3)))
+    workload = {"trace_paths": list(map(str, paths)), "trace_format": "dynamo", "trace_block_size": 4}
+
+    paths[1].write_text(json.dumps(wrap(_dynamo_row("agent"))))
+    with pytest.raises(ResourceLimitError, match="cannot mix requests with and without agent_context"):
+        estimate_workload(workload, stack="engine")
+
+    missing = _dynamo_row("missing", contextual=False)
+    del missing["request"]["output_tokens"]
+    for row in (missing, _dynamo_row("negative", input_length=-1, contextual=False)):
+        paths[1].write_text(json.dumps(wrap(row)))
+        estimate = estimate_workload(workload, stack="engine")
+        assert estimate.allocation_model == "trace-unqualified-v1"
+        assert estimate.reason == "cannot inspect trace metadata: trace token lengths must be nonnegative integers"
+
+    paths[1].write_text(json.dumps(wrap(_dynamo_row("last", contextual=False))))
+    assert estimate_workload(workload, stack="engine").request_count == 4
+
+
+def _count_parses(monkeypatch):
+    calls = []
+    original = resources.ijson.parse
+
+    def parse(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(resources.ijson, "parse", parse)
+    return calls
+
+
+def test_trace_scan_is_reused_until_its_files_change(tmp_path, monkeypatch, host):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    (traces / "a.jsonl").write_text(json.dumps(_dynamo_row("a", contextual=False)) + "\n")
+    parses = _count_parses(monkeypatch)
+    workload = {"trace_path": str(traces), "trace_format": "dynamo"}
+    first = estimate_workload(workload, stack="engine")
+    # Lanes, concurrency, stack and live headroom apply after the scan.
+    assert estimate_workload({**workload, "agentic_lanes": 32}, stack="dynamo", concurrency=8) == first
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    plan = build_plan(workload, stack="engine", host=host)
+    spec = SimpleNamespace(workload=workload, concurrency=None)
+    assert guard_replay(spec, stack="engine")["estimate"] == plan["estimate"]
+    assert len(parses) == 1  # Admission and the per-run guard share one pass.
+
+    with (traces / "a.jsonl").open("a") as stream:
+        stream.write(json.dumps(_dynamo_row("b", contextual=False)) + "\n")
+    assert estimate_workload(workload, stack="engine").request_count == 2
+    (traces / "c.jsonl").write_text(json.dumps(_dynamo_row("c", contextual=False)) + "\n")
+    assert estimate_workload(workload, stack="engine").request_count == 3
+    assert len(parses) == 1 + 1 + 2
+
+
+def test_trace_scan_never_reuses_partial_or_failed_inspections(tmp_path, monkeypatch):
+    path = tmp_path / "requests.jsonl"
+    rows = [_dynamo_row("a", input_length=4096, contextual=False), _dynamo_row("b", contextual=False)]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    parses = _count_parses(monkeypatch)
+    workload = {"trace_path": str(path), "trace_format": "dynamo"}
+    tight = resources.WORKER_BASELINE_BYTES + 1
+    assert estimate_workload(workload, stack="engine", inspection_budget_bytes=tight).request_count == 1
+    complete = estimate_workload(workload, stack="engine")
+    assert complete.request_count == 2
+    # A completed scan answers later calls; build_plan still compares headroom.
+    assert estimate_workload(workload, stack="engine", inspection_budget_bytes=tight) == complete
+    assert len(parses) == 2
+
+    invalid = tmp_path / "invalid.jsonl"
+    invalid.write_text("not JSON\n")
+    for _ in range(2):
+        estimate = estimate_workload({"trace_path": str(invalid), "trace_format": "dynamo"}, stack="engine")
+        assert estimate.allocation_model == "trace-unqualified-v1"
+    assert len(parses) == 4
+
+
+def test_trace_scan_cache_keeps_recent_traces_and_serves_threads(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(resources, "_TRACE_SCAN_CACHE_SIZE", 2)
+    workloads = []
+    for name in "abc":
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(json.dumps(_dynamo_row(name, contextual=False)) + "\n")
+        workloads.append({"trace_path": str(path), "trace_format": "dynamo"})
+    parses = _count_parses(monkeypatch)
+    for workload in workloads:
+        estimate_workload(workload, stack="engine")
+    estimate_workload(workloads[2], stack="engine")
+    estimate_workload(workloads[0], stack="engine")  # Evicted by the third trace.
+    assert len(parses) == 4
+    with ThreadPoolExecutor(8) as pool:
+        estimates = list(pool.map(lambda _: estimate_workload(workloads[1], stack="engine"), range(32)))
+    assert len(set(estimates)) == 1
+
+
+def test_observed_peaks_admit_parallel_waves_for_the_same_trace(tmp_path, monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    path = tmp_path / "requests.jsonl"
+    path.write_text(json.dumps(_dynamo_row(input_length=1024, contextual=False)) + "\n")
+    spec = SimpleNamespace(workload={"trace_path": str(path), "trace_format": "dynamo"}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    with pytest.raises(resources._SerialAdmissionRequired):
+        factory.admit_wave([spec, spec])
+
+    factory.record_peak(spec, 2 * GB)
+    factory.record_peak(spec, GB)  # The largest completed replay sets the reservation.
+    wave = factory.admit_wave([spec, spec])
+    assert wave["status"] == "admitted"
+    assert wave["observed_peak_bytes"] == [2 * GB, 2 * GB]
+    assert wave["reserved_bytes"] == [3 * GB, 3 * GB]  # 1.5 x the observed 2 GB peak.
+
+    # A tiny observation never reserves less than the baseline plus the lower bound.
+    small = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    small.record_peak(spec, 1)
+    assert small.admit_wave([spec, spec])["reserved_bytes"] == [resources.WORKER_BASELINE_BYTES + 4 * 1024] * 2
+
+    # Another trace identity, or a profile whose evidence outgrows the corpus,
+    # cannot borrow the observation.
+    other = SimpleNamespace(workload={**spec.workload, "trace_block_size": 64}, concurrency=None)
+    profile = SimpleNamespace(workload={**spec.workload, "agentic_profile": {}}, concurrency=None)
+    factory.record_peak(profile, GB)
+    assert factory.observed_peak(profile) is None
+    for unobserved in (other, profile):
+        with pytest.raises(resources._SerialAdmissionRequired):
+            factory.admit_wave([spec, unobserved])
+
+
+def test_observed_margin_never_refuses_a_lone_candidate(tmp_path, monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    path = tmp_path / "requests.jsonl"
+    path.write_text(json.dumps(_dynamo_row(input_length=1024, contextual=False)) + "\n")
+    spec = SimpleNamespace(workload={"trace_path": str(path), "trace_format": "dynamo"}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    factory.record_peak(spec, 6 * GB)  # 1.5 x 6 GB exceeds the 8 GB budget.
+
+    # Like the unobserved probe, a lone candidate reserves the baseline plus the lower bound.
+    wave = factory.admit_wave([spec])
+    assert wave["reserved_bytes"] == [resources.WORKER_BASELINE_BYTES + 4 * 1024]
+    assert wave["observed_peak_bytes"] == [6 * GB]
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec, spec])
+    assert not isinstance(caught.value, resources._SerialAdmissionRequired)
+    assert caught.value.plan["reserved_bytes"] == [9 * GB, 9 * GB]
+
+
+@pytest.mark.parametrize("trace_format,stack", [("weka", "dynamo"), ("dynamo", "engine"), ("dynamo", "dynamo")])
+@pytest.mark.parametrize("input_oversized", [False, True])
+def test_added_agentic_formats_reject_oversized_arrays(
+    tmp_path, monkeypatch, host, trace_format, input_oversized, stack
+):
+    _supervised(monkeypatch)
+    source = tmp_path / "large.jsonl"
+    input_length, output_length = (10**12, 1) if input_oversized else (4, 10**12)
+    if trace_format == "weka":
+        row = {"block_size": 4, "requests": [{"type": "s", "in": input_length, "out": output_length}]}
+    else:
+        row = _dynamo_row(input_length=input_length, output_tokens=output_length)
+    # A parser failure after this object would hide the bound if inspection continued.
+    source.write_text(json.dumps(row) + "\nnot JSON")
+    plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+    assert "lower bound plus worker baseline" in plan["reason"]
+
+
+def test_unsupervised_refusal_keeps_the_estimate_reason(tmp_path, monkeypatch, host):
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(json.dumps({"input_tokens": -1}))
+    for workload, detail in [
+        (
+            {"trace_path": str(path), "trace_format": "agentic_mooncake"},
+            "trace token lengths must be nonnegative integers",
+        ),
+        ({"unresolved_resource_count": True}, "candidate-specific request count is unresolved"),
+    ]:
+        plan = build_plan(workload, stack="engine", host=host)
+        assert plan["status"] == "resource_limited"
+        assert detail in plan["reason"]
+        with pytest.raises(ResourceLimitError, match=detail):
+            resources.require_plan(plan)
+
+
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
+def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path, host, monkeypatch, profile):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    trace = tmp_path / "play.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "block_size": 64,
+                "hash_id_scope": "local",
+                "models": ["model"],
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 8, "out": 1}],
+            }
+        )
+    )
+    raw = _config()
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_profile": profile,
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    bounds = workload_bounds(config)
+    assert bounds["agentic_profile"] == config.traffic.load.agentic_profile.model_dump(mode="python")
+    assert bounds["agentic_profile"]["duration_seconds"] == profile.get("duration_seconds", 3600)
+    finite = {key: value for key, value in bounds.items() if key != "agentic_profile"}
+    assert build_plan(finite, stack="engine", host=host, requested_parallelism=4)["effective_parallelism"] == 4
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    unmonitored = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
+    assert unmonitored["status"] == "resource_limited"
+    assert unmonitored["estimate"]["estimated_peak_bytes"] is None
+    assert unmonitored["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+    assert unmonitored["estimate"]["reason"] in unmonitored["reason"]
+
+    # The recommendation compiler's concrete workload reaches both the per-run
+    # guard and whole-wave admission; profile estimates must not admit a pool.
+    smart = recommendation_to_sweeper(config)
+    spec = SimpleNamespace(workload=smart.workload.model_dump(mode="python", exclude_none=True), concurrency=None)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    with pytest.raises(ResourceLimitError, match="profile"):
+        guard_replay(spec, stack="engine")
+    _supervised(monkeypatch)
+    plan = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
+    assert plan["status"] == "admitted"
+    assert plan["effective_parallelism"] == 1
+    assert guard_replay(spec, stack="engine")["estimate"]["estimated_peak_bytes"] is None
+    factory = GuardedRunnerFactory(object(), "engine", config.execution.resources)
+    assert factory.admit_wave([spec])["status"] == "admitted"
+    with pytest.raises(ResourceLimitError, match="wave"):
+        factory.admit_wave([spec, spec])
+
+
+@pytest.mark.parametrize("oversized", ["storage", "tokens"])
+def test_profile_keeps_initial_trace_materialization_guards(tmp_path, host, monkeypatch, oversized):
+    trace = tmp_path / "oversized.jsonl"
+    if oversized == "storage":
+        with trace.open("wb") as stream:
+            stream.truncate(4 * 1024**3)  # Sparse scalar sentinel; refused without reading.
+        monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
+    else:
+        trace.write_text(
+            json.dumps(
+                {
+                    "id": "play",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "models": ["model"],
+                    "requests": [{"t": 0, "type": "s", "model": "model", "in": 10**12, "out": 1}],
+                }
+            )
+            + "\n"
+        )
+    plan = build_plan(
+        {"trace_path": str(trace), "trace_format": "weka", "agentic_profile": {}}, stack="engine", host=host
+    )
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]

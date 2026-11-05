@@ -12,7 +12,7 @@ pytestmark = pytest.mark.e2e
 
 def _get_exp_yaml_files():
     """Dynamically discover all YAML files in the exps directory."""
-    exps_dir = pkg_resources.files("aiconfigurator") / "cli" / "exps"
+    exps_dir = pkg_resources.files("aisimulate") / "legacy_cli" / "exps"
     return sorted([str(yaml_file) for yaml_file in exps_dir.iterdir() if yaml_file.suffix == ".yaml"])
 
 

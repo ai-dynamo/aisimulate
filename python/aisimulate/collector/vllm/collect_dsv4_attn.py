@@ -33,6 +33,22 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
+from collector.case_generator import (
+    _DSV4_DEFAULT_MODELS,
+    _DSV4_MODULE_TP_SIZES,
+    DSV4_ATTN_KINDS,
+    get_dsv4_sweep,
+)
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
+from collector.registry_types import PerfFile
+from collector.vllm.utils import (
+    BatchSpec,
+    create_common_attn_metadata,
+    create_vllm_config,
+    enable_engine_fused_ops,
+    setup_distributed,
+)
 from vllm.config import set_current_vllm_config
 from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
@@ -45,54 +61,28 @@ from vllm.utils.torch_utils import set_default_torch_dtype
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.version import __version__ as vllm_version
 
-from collector.case_generator import (
-    _DSV4_DEFAULT_MODELS,
-    _DSV4_MODULE_BATCH_SIZES,
-    _DSV4_MODULE_SEQ_LENGTHS,
-    _DSV4_MODULE_TP_SIZES,
-    _DSV4_SPARSE_BS_LIST,
-    _DSV4_SPARSE_ISL_LIST,
-    _DSV4_SPARSE_MAX_FULL_S,
-    _DSV4_SPARSE_PAST_KV_LIST,
-    _DSV4_SPARSE_TP_LIST_ATTN,
-    _DSV4_SPARSE_TP_LIST_INDEXER,
-    DSV4_ATTN_KINDS,
-    DSV4_SPARSE_KERNELS,
-    _selected_dsv4_models,
-)
-from collector.helper import benchmark_with_power, log_perf
-from collector.registry_types import PerfFile
-from collector.vllm.utils import (
-    BatchSpec,
-    create_common_attn_metadata,
-    create_vllm_config,
-    enable_engine_fused_ops,
-    setup_distributed,
-)
-
-__compat__ = "vllm==0.24.0"
+# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968046:
+# CSA/HCA context/generation: 32/32; auxiliary sparse kernels: 4/4. The native framework
+# builders/selectors remain authoritative; no kernel fallback is introduced.
+# The campaign manifest still selects one exact release per run.
+# Versions are upgraded IN PLACE: this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
+__compat__ = "vllm==0.30.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
-SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa", "hca_attn": "hca"}
-SPARSE_KERNEL_TO_OP_NAME = {
-    "paged_mqa_logits": "dsv4_paged_mqa_logits_module",
-    "hca_attn": "dsv4_hca_attn_module",
-}
-SPARSE_KERNEL_TO_PERF_FILE = {
-    "paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE,
-    "hca_attn": PerfFile.DSV4_HCA_ATTN_MODULE,
-}
-MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aiconfigurator" / "model_configs"
+# paged_mqa_logits (the CSA indexer scoring GEMM) is the only standalone sparse
+# sub-kernel; the hca_attn FMLA sidecar was removed (retired SDK
+# placeholder).
+SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa"}
+SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
+SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
+MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
-DEFAULT_MAX_SEQ_LEN = 65536
-MAX_SEQ_LEN = int(os.environ.get("AIC_VLLM_DSV4_MAX_SEQ_LEN", DEFAULT_MAX_SEQ_LEN))
-MAX_SPARSE_QUERY_TOKENS = int(os.environ.get("AIC_VLLM_DSV4_SPARSE_MAX_QUERY_TOKENS", "8192"))
-MAX_CONTEXT_QUERY_TOKENS = 262144
-MAX_GENERATION_KV_TOKENS = 1024 * 1024
-CONTEXT_PREFIX_ANCHORS = (0, 128, 2048, 4096)
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
@@ -250,7 +240,7 @@ def _create_dsv4_attention_module(
         capability = current_platform.get_device_capability()
         if capability is not None and capability.to_int() == 89:
             raise RuntimeError(
-                "vLLM 0.24.0 DeepSeek-V4 attention is unsupported on SM89: "
+                "vLLM DeepSeek-V4 attention is unsupported on SM89 (collector/skips.py skips it below SM90): "
                 "the production selector falls back to FlashMLA, whose DSV4 "
                 "backend supports SM90 and SM10x only."
             )
@@ -358,21 +348,53 @@ def _remap_common_metadata(common, *, block_size: int, device: str):
 
 
 def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: str, *, device: str) -> torch.Tensor:
-    shape_block_size = spec.storage_block_size if spec.storage_block_size != spec.block_size else spec.block_size
-    shape = backend.get_kv_cache_shape(
-        num_blocks,
-        shape_block_size,
-        spec.num_kv_heads,
-        spec.head_size,
-        cache_dtype,
-    )
+    # 0.29: the shape contract lives in the generic spec pipeline. Serving
+    # allocates flat bytes and views each layer as the 4D logical [B,H,N,C]
+    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:253-269;
+    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views).
+    # The dsv4 layout facts (584B fp8_ds_mla state content, 576B alignment,
+    # tokens_per_state=compress_ratio) are spec fields at 0.29
+    # (models/deepseek_v4/attention.py:741-753), so the helper output IS the
+    # serving shape. Page padding: mirror create_kv_cache_views' block stride
+    # (page_size_bytes per block) via empty_strided when the spec pads pages.
+    from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
+
+    shape_bytes = compute_layer_kv_cache_shape_bytes(spec, num_blocks)
+    dtype_size = torch.empty((), dtype=spec.dtype).element_size()
+    shape = (*shape_bytes[:-1], shape_bytes[-1] // dtype_size)
     if spec.page_size_padded is None:
         return torch.zeros(shape, dtype=spec.dtype, device=device)
 
-    dtype_size = torch.empty((), dtype=spec.dtype).element_size()
     strides = list(torch.empty(shape).stride())
     strides[0] = spec.page_size_bytes // dtype_size
     return torch.empty_strided(shape, tuple(strides), dtype=spec.dtype, device=device).zero_()
+
+
+def _make_builder(backend, spec, prefix, vllm_config, common, *, device: str):
+    """Construct the layer's metadata builder exactly as serving does at 0.29.
+
+    Builders may demand kw-only block_table_width (DeepseekV32IndexerMetadataBuilder,
+    mla/indexer.py:519,531); serving computes it via get_block_table_width and
+    ALLOCATES the block table at that width (v1/worker/utils.py:276-283 +
+    v1/worker/block_table.py:29-49), so builders assume
+    table.shape[1] == width — the family-100 decode path copies the table into
+    a width-sized expanded buffer (indexer.py:609,745) and crashes on narrower
+    tables (found on B300 in the mla 029 lane; same contract here).
+    Zero-pad our ceil(seq/block)-column table to the width.
+    """
+    builder_cls = backend.get_builder_cls()
+    kwargs = {}
+    if getattr(builder_cls, "requires_block_table_width", False):
+        from vllm.v1.worker.block_table import get_block_table_width
+
+        max_num_blocks = spec.max_num_blocks_per_req(vllm_config, vllm_config.model_config.max_model_len)
+        width = get_block_table_width(max_num_blocks, spec.block_size)
+        kwargs["block_table_width"] = width
+        _bt = common.block_table_tensor
+        if _bt.shape[1] < width:
+            _pad = torch.zeros((_bt.shape[0], width - _bt.shape[1]), dtype=_bt.dtype, device=_bt.device)
+            common.block_table_tensor = torch.cat([_bt, _pad], dim=1)
+    return builder_cls(spec, [prefix], vllm_config, torch.device(device), **kwargs)
 
 
 def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_config, common, *, device: str):
@@ -389,19 +411,21 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         if spec is None:
             continue
         backend = registered_layer.get_attn_backend()
-        metadata[layer.prefix] = backend.get_builder_cls()(
-            spec,
-            [layer.prefix],
-            vllm_config,
-            torch.device(device),
-        ).build(0, common)
+        metadata[layer.prefix] = _make_builder(backend, spec, layer.prefix, vllm_config, common, device=device).build(
+            0, common
+        )
         cache_dtype = getattr(spec, "cache_dtype_str", None) or "auto"
-        registered_layer.kv_cache = _allocate_attention_kv_cache(
-            backend,
-            spec,
-            cache_blocks,
-            cache_dtype,
-            device=device,
+        # serving binds through each layer's bind_kv_cache
+        # (v1/worker/utils.py:622) — layer overrides may reshape the
+        # raw view (e.g. squeeze the H=1 dim), so never assign .kv_cache raw
+        registered_layer.bind_kv_cache(
+            _allocate_attention_kv_cache(
+                backend,
+                spec,
+                cache_blocks,
+                cache_dtype,
+                device=device,
+            )
         )
 
     compressors = [attn_module.compressor]
@@ -412,23 +436,22 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         spec = state_cache.get_kv_cache_spec(vllm_config)
         backend = state_cache.get_attn_backend()
         compressor_common = _remap_common_metadata(common, block_size=spec.block_size, device=device)
-        metadata[state_cache.prefix] = backend.get_builder_cls()(
-            spec,
-            [state_cache.prefix],
-            vllm_config,
-            torch.device(device),
+        metadata[state_cache.prefix] = _make_builder(
+            backend, spec, state_cache.prefix, vllm_config, compressor_common, device=device
         ).build(0, compressor_common)
         state_cache_blocks = _cache_blocks_for_block_size(
             int(common.num_reqs),
             int(common.max_seq_len),
             spec.block_size,
         )
-        state_cache.kv_cache = _allocate_attention_kv_cache(
-            backend,
-            spec,
-            state_cache_blocks,
-            getattr(spec, "cache_dtype_str", None) or "auto",
-            device=device,
+        state_cache.bind_kv_cache(
+            _allocate_attention_kv_cache(
+                backend,
+                spec,
+                state_cache_blocks,
+                getattr(spec, "cache_dtype_str", None) or "auto",
+                device=device,
+            )
         )
 
     return metadata
@@ -499,7 +522,7 @@ def _bench_attention_shape(
         if cache_spec is None:
             raise RuntimeError(f"DSV4 {attn_kind} layer did not register a KV-cache spec")
         architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-        # Persisted ``num_heads`` is rank-LOCAL (unified #1429 convention);
+        # Persisted ``num_heads`` is rank-LOCAL (unified convention);
         # consumers derive native as ``num_heads * tp_size``. vllm's own
         # ``n_local_heads`` is that count — cross-check it against the config
         # so a TP-simulation regression cannot mislabel rows.
@@ -671,46 +694,6 @@ def _bench_paged_mqa_logits_kernel(
     return result
 
 
-def _bench_mla_sparse_op(
-    *,
-    attn_module: DeepseekV4Attention,
-    vllm_config,
-    metadata,
-    positions: torch.Tensor,
-    num_tokens: int,
-    device: str,
-    warming_up: int,
-    test_ite: int,
-) -> dict:
-    sparse_attn = attn_module
-    q = torch.full(
-        (num_tokens, sparse_attn.padded_heads, sparse_attn.head_dim),
-        0.01,
-        dtype=torch.bfloat16,
-        device=device,
-    )
-    kv = torch.zeros((num_tokens, sparse_attn.head_dim), dtype=torch.bfloat16, device=device)
-    output = torch.empty_like(q)
-
-    with set_current_vllm_config(vllm_config), set_forward_context(metadata, vllm_config), torch.inference_mode():
-        sparse_attn.forward_mqa(q, kv, positions, output)
-        torch.cuda.synchronize()
-
-        def kernel_func():
-            sparse_attn.forward_mqa(q, kv, positions, output)
-
-        with benchmark_with_power(
-            device=torch.device(device),
-            kernel_func=kernel_func,
-            num_warmups=warming_up,
-            num_runs=test_ite,
-            repeat_n=1,
-            use_cuda_graph=True,
-        ) as result:
-            pass
-    return result
-
-
 def _bench_sparse_kernel_shape(
     *,
     model_path: str,
@@ -731,64 +714,21 @@ def _bench_sparse_kernel_shape(
         raise ValueError(f"invalid sparse sequence length: isl={isl}, past_kv={past_kv}")
 
     attn_kind = SPARSE_KERNEL_TO_ATTN_KIND[kernel]
-    is_context = isl > 1
-    query_len = isl
-    num_tokens = batch_size * query_len
+    num_tokens = batch_size * isl
 
-    if kernel == "paged_mqa_logits":
-        hf_config = SimpleNamespace(**_read_model_config(model_path))
-        architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-        native_num_heads = int(hf_config.num_attention_heads)
-        local_num_heads = native_num_heads // tp_size
-        backend_name = "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits"
-        result = _bench_paged_mqa_logits_kernel(
-            hf_config=hf_config,
-            num_query_rows=num_tokens,
-            past_kv=past_kv,
-            device=device,
-            warming_up=warming_up,
-            test_ite=test_ite,
-        )
-    else:
-        with (
-            _tp_simulation(tp_size),
-            _create_dsv4_attention_module(
-                model_path=model_path,
-                attn_kind=attn_kind,
-                batch_size=batch_size,
-                seq_len=full_seq_len,
-                tp_size=tp_size,
-                is_context=is_context,
-                device=device,
-                query_len=query_len,
-            ) as (attn_module, vllm_config),
-        ):
-            common = _make_common_metadata(
-                batch_size=batch_size,
-                seq_len=full_seq_len,
-                is_context=is_context,
-                query_len=query_len,
-                device=device,
-            )
-            metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
-            positions = common.positions
-            hf_config = vllm_config.model_config.hf_config
-            architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-            native_num_heads = int(hf_config.num_attention_heads)
-            local_num_heads = int(attn_module.n_local_heads)
-            concrete_layer = vllm_config.compilation_config.static_forward_context[attn_module.prefix]
-            backend_name = concrete_layer.get_attn_backend().get_name()
-            result = _bench_mla_sparse_op(
-                attn_module=attn_module,
-                vllm_config=vllm_config,
-                metadata=metadata,
-                positions=positions,
-                num_tokens=num_tokens,
-                device=device,
-                warming_up=warming_up,
-                test_ite=test_ite,
-            )
-            del attn_module, vllm_config, metadata, common, positions
+    hf_config = SimpleNamespace(**_read_model_config(model_path))
+    architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
+    native_num_heads = int(hf_config.num_attention_heads)
+    local_num_heads = native_num_heads // tp_size
+    backend_name = "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits"
+    result = _bench_paged_mqa_logits_kernel(
+        hf_config=hf_config,
+        num_query_rows=num_tokens,
+        past_kv=past_kv,
+        device=device,
+        warming_up=warming_up,
+        test_ite=test_ite,
+    )
 
     latency = float(result["latency_ms"])
 
@@ -797,7 +737,7 @@ def _bench_sparse_kernel_shape(
             {
                 "model": model_path,
                 "architecture": architecture,
-                "mla_dtype": "fp8_e4m3" if kernel == "paged_mqa_logits" else "bfloat16",
+                "mla_dtype": "fp8_e4m3",
                 "kv_cache_dtype": "fp8",
                 "gemm_type": "fp8_block",
                 # Sparse-op consumers key ``num_heads`` by the native model
@@ -828,111 +768,6 @@ def _bench_sparse_kernel_shape(
     torch.cuda.empty_cache()
     gc.collect()
     return latency
-
-
-def _vllm_dsv4_attention_filter_shapes(
-    mode: str,
-    batch_sizes,
-    seq_lens,
-    prefix_anchors=CONTEXT_PREFIX_ANCHORS,
-    include_dynamic_endpoint: bool = True,
-) -> list[tuple[int, int, int]]:
-    """Enumerate vLLM DSV4 attention-module shapes.
-
-    Context bounds both fresh query tokens and total KV tokens. Generation
-    follows the DSV4 common KV budget, while still allowing bs=1 through the
-    configured max sequence length.
-    """
-    is_context = mode == "context"
-    shapes = []
-    for bs in batch_sizes:
-        for sl in seq_lens:
-            if sl > MAX_SEQ_LEN:
-                continue
-            if is_context:
-                prefixes = (*prefix_anchors, MAX_SEQ_LEN - sl) if include_dynamic_endpoint else prefix_anchors
-                prefixes = dict.fromkeys(prefixes)
-                for prefix_len in prefixes:
-                    total_seq_len = prefix_len + sl
-                    if prefix_len < 0 or total_seq_len > MAX_SEQ_LEN:
-                        continue
-                    if bs * sl > MAX_CONTEXT_QUERY_TOKENS:
-                        continue
-                    if bs * total_seq_len > MAX_GENERATION_KV_TOKENS:
-                        continue
-                    shapes.append((bs, sl, prefix_len))
-            else:
-                if bs * sl > MAX_GENERATION_KV_TOKENS:
-                    continue
-                if sl >= 524288 and bs > 1:
-                    continue
-                if sl >= 262144 and bs > 2:
-                    continue
-                if sl >= 131072 and bs > 4:
-                    continue
-                if sl >= 65536 and bs > 8:
-                    continue
-                if sl >= 32768 and bs > 16:
-                    continue
-                if sl >= 8192 and bs > 64:
-                    continue
-                shapes.append((bs, sl, 0))
-    return shapes
-
-
-def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[list]:
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-    smoke = "--smoke" in sys.argv
-    seq_lens = [64] if smoke else list(_DSV4_MODULE_SEQ_LENGTHS)
-    prefix_anchors = (0, 128) if smoke else CONTEXT_PREFIX_ANCHORS
-    shapes = _vllm_dsv4_attention_filter_shapes(
-        mode,
-        _DSV4_MODULE_BATCH_SIZES,
-        seq_lens,
-        prefix_anchors,
-        include_dynamic_endpoint=not smoke,
-    )
-    return [
-        [seq_len, batch_size, tp_size, "fp8", "bfloat16", "fp8_block", model_path, attn_kind, None]
-        + ([prefix_len] if mode == "context" else [])
-        for model_path in model_paths
-        for tp_size in _DSV4_MODULE_TP_SIZES
-        for batch_size, seq_len, prefix_len in shapes
-    ]
-
-
-def _build_vllm_dsv4_sparse_test_cases(kernel: str) -> list[list]:
-    if kernel not in DSV4_SPARSE_KERNELS:
-        raise ValueError(f"unknown sparse kernel={kernel}")
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-
-    tp_list = _DSV4_SPARSE_TP_LIST_ATTN if kernel == "hca_attn" else _DSV4_SPARSE_TP_LIST_INDEXER
-    if "--smoke" in sys.argv:
-        smoke_shapes = [
-            (1, 1, 8192),
-            (1, 64, 8192),
-        ]
-        return [
-            [bs, isl, past_kv, 1, kernel, model_path] for model_path in model_paths for bs, isl, past_kv in smoke_shapes
-        ]
-
-    cases: list[list] = []
-    for model_path in model_paths:
-        for tp_size in tp_list:
-            for bs in _DSV4_SPARSE_BS_LIST:
-                for isl in _DSV4_SPARSE_ISL_LIST:
-                    if bs * isl > MAX_SPARSE_QUERY_TOKENS:
-                        continue
-                    for past_kv in _DSV4_SPARSE_PAST_KV_LIST:
-                        full_s = isl + past_kv
-                        if bs * full_s > _DSV4_SPARSE_MAX_FULL_S:
-                            continue
-                        cases.append([bs, isl, past_kv, tp_size, kernel, model_path])
-    return cases
 
 
 def run_dsv4_attn_worker(
@@ -979,8 +814,8 @@ def run_dsv4_attn_worker(
             gemm_type=gemm_type,
             device=device,
             perf_filename=perf_filename,
-            warming_up=3 if "--smoke" in sys.argv else 5,
-            test_ite=3 if "--smoke" in sys.argv else 10,
+            warming_up=5,
+            test_ite=10,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {attn_kind} {mode} b={batch_size} s={seq_len} prefix={prefix_len}")
@@ -1007,10 +842,11 @@ def run_dsv4_sparse_kernel_worker(
     if tp_size not in _DSV4_MODULE_TP_SIZES:
         raise ValueError(f"unsupported tp_size={tp_size}")
     full_s = isl + past_kv
-    if full_s > _DSV4_SPARSE_MAX_FULL_S:
+    max_full_s = get_dsv4_sweep().sparse_max_full_sequence_length
+    if full_s > max_full_s:
         raise ValueError(
             f"{kernel} b={batch_size} isl={isl} past_kv={past_kv} has "
-            f"full_s={full_s} > max_position_embeddings={_DSV4_SPARSE_MAX_FULL_S}"
+            f"full_s={full_s} > max_position_embeddings={max_full_s}"
         )
     _init_cuda(device)
     try:
@@ -1023,8 +859,8 @@ def run_dsv4_sparse_kernel_worker(
             tp_size=tp_size,
             device=device,
             perf_filename=perf_filename,
-            warming_up=3 if "--smoke" in sys.argv else 5,
-            test_ite=3 if "--smoke" in sys.argv else 10,
+            warming_up=5,
+            test_ite=10,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {kernel} b={batch_size} isl={isl} past_kv={past_kv} tp={tp_size}")
@@ -1036,27 +872,23 @@ def run_dsv4_sparse_kernel_worker(
 
 
 def get_dsv4_csa_context_test_cases():
-    return _build_dsv4_test_cases("context", "csa")
+    return plan_cases("dsv4_csa_context_module", "vllm", get_sm_version())
 
 
 def get_dsv4_hca_context_test_cases():
-    return _build_dsv4_test_cases("context", "hca")
+    return plan_cases("dsv4_hca_context_module", "vllm", get_sm_version())
 
 
 def get_dsv4_csa_generation_test_cases():
-    return _build_dsv4_test_cases("generation", "csa")
+    return plan_cases("dsv4_csa_generation_module", "vllm", get_sm_version())
 
 
 def get_dsv4_hca_generation_test_cases():
-    return _build_dsv4_test_cases("generation", "hca")
+    return plan_cases("dsv4_hca_generation_module", "vllm", get_sm_version())
 
 
 def get_dsv4_paged_mqa_logits_test_cases():
-    return _build_vllm_dsv4_sparse_test_cases("paged_mqa_logits")
-
-
-def get_dsv4_hca_attn_test_cases():
-    return _build_vllm_dsv4_sparse_test_cases("hca_attn")
+    return plan_cases("dsv4_paged_mqa_logits_module", "vllm", get_sm_version())
 
 
 def main() -> None:
@@ -1064,7 +896,7 @@ def main() -> None:
     parser.add_argument("--model-path", default=DEFAULT_MODEL)
     parser.add_argument("--mode", choices=["context", "generation"], default="context")
     parser.add_argument("--attn-kind", choices=list(DSV4_ATTN_KINDS), default="csa")
-    parser.add_argument("--sparse-kernel", choices=list(DSV4_SPARSE_KERNELS), default=None)
+    parser.add_argument("--sparse-kernel", choices=list(SPARSE_KERNEL_TO_ATTN_KIND), default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--past-kv", type=int, default=0)
     parser.add_argument("--seq-len", type=int, default=64)

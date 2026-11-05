@@ -6,8 +6,8 @@ from functools import cache
 
 import pytest
 
-from aiconfigurator.sdk.models import get_model_family
-from aiconfigurator.sdk.perf_database import get_latest_database_version
+from aisimulate.sdk.models import get_model_family
+from aisimulate.sdk.perf_database import get_latest_database_version
 
 pytestmark = [pytest.mark.e2e, pytest.mark.sweep]
 

@@ -4,7 +4,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from collector.sglang import runtime_limits
 
 pytestmark = pytest.mark.unit

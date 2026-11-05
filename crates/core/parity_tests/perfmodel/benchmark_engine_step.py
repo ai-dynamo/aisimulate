@@ -8,9 +8,9 @@ with the Python step path; historical comparative numbers live in
 ``../docs/perf-speedup-report.md``.)
 
 - `maturin develop` / `cargo build` (compilation overhead): not timed; the
-  maturin-built `aiconfigurator_core` extension must be importable already.
+  maturin-built `aisimulate_core` extension must be importable already.
 - Rust estimator setup: timed separately from step latency. Includes the
-  `aiconfigurator_core` extension import, Rust model metadata load, Rust perf
+  `aisimulate_core` extension import, Rust model metadata load, Rust perf
   DB load, and estimator construction, but not the build.
 - Step latency: timed samples use already-created runners. `hot` warms
   runtime query caches before timing; `cold` clears runtime query caches
@@ -28,12 +28,12 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 
-from aiconfigurator.sdk import config, perf_database, rust_engine_step
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.models.helpers import _get_model_info
-from aiconfigurator.sdk.operations import clear_all_op_caches
+from aisimulate.sdk import config, perf_database, rust_engine_step
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.inference_session import InferenceSession
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.helpers import _get_model_info
+from aisimulate.sdk.operations import clear_all_op_caches
 
 
 @dataclass(frozen=True)
@@ -137,9 +137,9 @@ def _clear_caches(case: BenchmarkCase) -> None:
 
 
 def _ensure_rust_library_present() -> None:
-    # The compiled engine ships as the maturin-built ``aiconfigurator_core``
+    # The compiled engine ships as the maturin-built ``aisimulate_core``
     # extension; importing it is the availability check.
-    import aiconfigurator_core  # noqa: F401
+    import aisimulate_core  # noqa: F401
 
 
 def _measure(

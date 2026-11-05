@@ -37,9 +37,8 @@ reviews:
   enable_prompt_for_ai_agents: true
 
   auto_review:
-    # Keep the pilot opt-in: applying the review-ready label triggers review
-    # even while automatic review is disabled globally.
-    enabled: false
+    # Review non-draft PRs automatically; no opt-in label is required.
+    enabled: true
     drafts: false
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 5
@@ -50,7 +49,6 @@ reviews:
       - "[skip review]"
       - "[no review]"
     labels:
-      - "review-ready"
       - "!wip"
       - "!do-not-review"
 
@@ -120,7 +118,7 @@ reviews:
         rationale. New behavior needs an independent oracle or justified
         append-only parity case.
 
-    - path: "python/aisimulate/src/aiconfigurator_core/**"
+    - path: "python/aisimulate/src/aisimulate_core/**"
       instructions: |
         Preserve the Rust single oracle: Python may describe operations, load
         raw data, orchestrate, and present results, but must not compute per-op
@@ -128,7 +126,7 @@ reviews:
         explicit absence behavior, and loud handling of corrupt or unsupported
         inputs. Do not reintroduce public per-call query shims.
 
-    - path: "python/aisimulate/src/aiconfigurator/generator/**"
+    - path: "python/aisimulate/src/aisimulate/generator/**"
       instructions: |
         Enforce the mapped generator guidelines. Trace input parsing, defaults,
         rules, parameter mapping, rendering, and emitted artifacts. Preserve
@@ -144,12 +142,18 @@ reviews:
 
     - path: "python/aisimulate/collector/**"
       instructions: |
-        Enforce the mapped collector guidelines. A queued case must execute or
-        raise; only generation-time memory feasibility may filter cases, with
-        counted drops. Reject invented geometry or kernel fallbacks, selector
-        exception machinery, untraceable results, and undocumented producer to
-        consumer schema changes. Verify runtime versions, commands, GPU
-        assumptions, and failure evidence.
+        Enforce the mapped collector guidelines (start from overview.md). Each
+        op has one plan for every backend (collector/op_plans.py), and its
+        getters are the one-line plan_cases call. A queued case must execute
+        or raise. Only collector/skips.py entries, each with its reason as a
+        comment, leave cases out; finer boundaries run and fail. Capacity is
+        refused at run time, before allocation, with a FIXME(kernel-limit):
+        does not fit reason. A worker guard is legal only for a case that would
+        mismeasure, hang or waste significant time. Reject invented geometry
+        or kernel fallbacks, environment switches that change rows, deviations
+        without a note at the deviating code, untraceable results, and
+        undocumented producer to consumer schema changes. Verify runtime
+        versions, commands, GPU assumptions, and failure evidence.
 
     - path: "crates/core/src/engine/**"
       instructions: |
@@ -331,11 +335,11 @@ knowledge_base:
       - files: "REVIEW.md,AGENTS.md"
         applyTo: "**/*"
       - files: "python/aisimulate/.claude/rules/generator-development.md,python/aisimulate/.claude/rules/generator/*.md"
-        applyTo: "python/aisimulate/src/aiconfigurator/generator/**,python/aisimulate/tools/generator_validator/**"
+        applyTo: "python/aisimulate/src/aisimulate/generator/**,python/aisimulate/tools/generator_validator/**"
       - files: "python/aisimulate/.claude/rules/collector/*.md"
         applyTo: "python/aisimulate/collector/**,python/aisimulate/tests/unit/collector/**"
       - files: "python/aisimulate/.claude/rules/rust-core/parity.md"
-        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aiconfigurator_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
+        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aisimulate_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
   learnings:
     scope: local
     approval_delay: 7

@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from collector.wideep.vllm import runtime_artifacts
 
 pytestmark = pytest.mark.unit

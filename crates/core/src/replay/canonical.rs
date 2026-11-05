@@ -210,6 +210,9 @@ fn validate_report_finite(report: &ReplayReport) -> Result<()> {
     if let Some(trajectories) = &report.trajectories {
         validate_distribution("/summary/trajectories/e2e", &trajectories.e2e)?;
     }
+    if let Some(power) = report.power {
+        power.validate()?;
+    }
     for record in &report.per_request {
         validate_per_request_finite(record)?;
     }
@@ -241,6 +244,7 @@ fn validate_per_request_finite(record: &PerRequestRecord) -> Result<()> {
         // reaches the canonical JSON line as `null` instead of a number --
         // the same class of hole the `/summary/trajectories` gate closed.
         ("dispatched_at_ms", record.dispatched_at_ms),
+        ("tokenized_ms", record.tokenized_ms),
         ("first_admit_ms", record.first_admit_ms),
         ("terminal_time_ms", Some(record.terminal_time_ms)),
         ("first_token_ms", record.first_token_ms),
@@ -364,8 +368,11 @@ pub fn canonicalize_json(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use uuid::Uuid;
 
-    use crate::replay::{ReplayCaptureOptions, TraceCollector};
+    use crate::replay::{
+        ReplayCaptureOptions, ReplayRequestPool, ReplayTerminalStatus, TraceCollector,
+    };
 
     use super::{CanonicalReplayCoverage, CanonicalReplayRecord, canonicalize_json};
 
@@ -395,6 +402,67 @@ mod tests {
         );
         let line = String::from_utf8(record.into_json_line().unwrap()).unwrap();
         assert!(line.starts_with(r#"{"coverage":"#));
+    }
+
+    #[test]
+    fn canonical_record_preserves_first_admission_reuse_after_readmission() {
+        let mut collector = TraceCollector::default();
+        collector.set_capture_per_request(true);
+        let uuid = Uuid::from_u128(904);
+        collector.on_arrival(uuid, 0.0, 32_768, 2);
+        for (at_ms, reused_input_tokens) in [(5.0, 512), (25.0, 25_088)] {
+            collector.on_admit(uuid, at_ms, reused_input_tokens);
+            collector.on_pool_admission_with_tier_attribution(
+                uuid,
+                ReplayRequestPool::Agg,
+                at_ms,
+                reused_input_tokens,
+                None,
+            );
+            collector.on_token(uuid, at_ms + 5.0);
+        }
+        collector.on_terminal(uuid, 30.0, ReplayTerminalStatus::Completed);
+
+        let report = collector.finish();
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        let record =
+            CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap();
+        let serialized: Value = serde_json::from_slice(&record.into_json_line().unwrap()).unwrap();
+        let request = &serialized["per_request"][0];
+        assert_eq!(request["first_admission_reused_input_tokens"], 512);
+        assert_eq!(request["reused_input_tokens"], 25_088);
+        assert_eq!(request["admission_count"], 2);
+        assert_eq!(request["readmission_count"], 1);
+        assert_eq!(
+            request["admission_history"],
+            json!([
+                {
+                    "admission_ordinal": 0,
+                    "pool_admission_ordinal": 0,
+                    "pool": "agg",
+                    "at_ms": 5.0,
+                    "reused_input_tokens": 512,
+                    "is_readmission": false,
+                },
+                {
+                    "admission_ordinal": 1,
+                    "pool_admission_ordinal": 1,
+                    "pool": "agg",
+                    "at_ms": 25.0,
+                    "reused_input_tokens": 25_088,
+                    "is_readmission": true,
+                },
+            ])
+        );
+        assert_eq!(
+            serialized["summary"]["first_admission_prefix_cache_reused_ratio"],
+            512.0 / 32_768.0
+        );
+        assert_eq!(
+            serialized["summary"]["prefix_cache_reused_ratio"],
+            25_088.0 / 32_768.0
+        );
     }
 
     #[test]
@@ -462,5 +530,49 @@ mod tests {
         let error =
             CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).unwrap_err();
         assert!(error.to_string().contains("dispatched_at_ms"), "{error}");
+    }
+    #[test]
+    fn canonical_record_rejects_invalid_power_contract() {
+        use crate::replay::TracePowerStats;
+        for power in [
+            TracePowerStats {
+                power_w: None,
+                coverage: -0.1,
+            },
+            TracePowerStats {
+                power_w: None,
+                coverage: 1.1,
+            },
+            TracePowerStats {
+                power_w: Some(500.0),
+                coverage: 0.89,
+            },
+            TracePowerStats {
+                power_w: Some(-1.0),
+                coverage: 1.0,
+            },
+            TracePowerStats {
+                power_w: Some(0.0),
+                coverage: 1.0,
+            },
+        ] {
+            let report = TraceCollector::default().finish().with_power(Some(power));
+            let coverage =
+                CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+            assert!(
+                CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).is_err()
+            );
+            assert!(serde_json::to_value(&report).is_err());
+        }
+        // High coverage alone does not guarantee all publication conditions.
+        let report = TraceCollector::default()
+            .finish()
+            .with_power(Some(TracePowerStats {
+                power_w: None,
+                coverage: 1.0,
+            }));
+        let coverage =
+            CanonicalReplayCoverage::from_report(&report, ReplayCaptureOptions::default());
+        assert!(CanonicalReplayRecord::build(&report, json!({}), &coverage, Value::Null).is_ok());
     }
 }

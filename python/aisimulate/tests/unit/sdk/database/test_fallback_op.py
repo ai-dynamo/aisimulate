@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk.operations import FallbackOp, MLAModule, PerformanceResult
+from aisimulate.sdk.operations import FallbackOp, MLAModule, PerformanceResult
 
 pytestmark = pytest.mark.unit
 
@@ -40,8 +40,8 @@ class TestFallbackOp:
 
         Weights route through the engine (PR-6), so the children must be
         real spec-expressible ops: bf16 GEMM weighs n*k*2 bytes."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.operations import GEMM
+        from aisimulate.sdk import common
+        from aisimulate.sdk.operations import GEMM
 
         primary = GEMM("p", 1.0, 50, 5, common.GEMMQuantMode.bfloat16)  # 500 B
         fallback = GEMM("f", 1.0, 30, 5, common.GEMMQuantMode.bfloat16)  # 300 B
@@ -51,8 +51,8 @@ class TestFallbackOp:
 
     def test_get_weights_from_fallback(self):
         """get_weights sums fallback weights when primary has none."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.operations import GEMM
+        from aisimulate.sdk import common
+        from aisimulate.sdk.operations import GEMM
 
         primary = GEMM("p", 1.0, 0, 5, common.GEMMQuantMode.bfloat16)  # 0 B
         fallback_1 = GEMM("f1", 1.0, 10, 5, common.GEMMQuantMode.bfloat16)  # 100 B
@@ -63,7 +63,7 @@ class TestFallbackOp:
 
 
 def _mla_module(is_context: bool, scale_factor: float = 1.0) -> MLAModule:
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     return MLAModule(
         "test_ctx" if is_context else "test_gen",
@@ -83,7 +83,7 @@ class TestMLAModule:
 
     @pytest.fixture
     def seam(self, monkeypatch):
-        from aiconfigurator_core.sdk import engine as engine_module
+        from aisimulate_core.sdk import engine as engine_module
 
         recorded = {}
 

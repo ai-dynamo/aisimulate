@@ -37,11 +37,11 @@ def test_area_teams_retain_maintainer_coownership() -> None:
 
 
 def test_representative_routing_contract() -> None:
-    assert _owners("src/aiconfigurator/main.py") == {
+    assert _owners("src/aisimulate/legacy_cli/entrypoint.py") == {
         "@ai-dynamo/aiconfigurator-runtime",
         MAINTAINERS,
     }
-    assert _owners("src/aiconfigurator/generator/__init__.py") == {
+    assert _owners("src/aisimulate/generator/__init__.py") == {
         "@ai-dynamo/aiconfigurator-generators",
         MAINTAINERS,
     }
@@ -69,5 +69,5 @@ def test_representative_routing_contract() -> None:
     }
     assert _owners("CODEOWNERS") == {DEVOPS}
     assert _owners("aic-core/rust/aiconfigurator-core/deny.toml") == {DEVOPS}
-    assert _owners("src/aiconfigurator/generator/deny.toml") == {DEVOPS}
+    assert _owners("src/aisimulate/generator/deny.toml") == {DEVOPS}
     assert _owners("tools/support_matrix/deny.toml") == {DEVOPS}
