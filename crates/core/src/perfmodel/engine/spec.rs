@@ -504,6 +504,7 @@ mod tests {
             full_frac: 1.0,
             attn_projection_quant_modes: None,
             dcp_size: 2,
+            attention_backend: Some("flashmla".into()),
         }
     }
 

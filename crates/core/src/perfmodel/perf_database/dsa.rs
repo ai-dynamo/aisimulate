@@ -145,6 +145,20 @@ pub(crate) fn select_dsa_backend<'a, T>(
     select_dsa_backend_name(by_backend, dsa_backend).and_then(|name| by_backend.get(name))
 }
 
+fn select_architecture_backend<'a, T>(
+    by_backend: &'a BTreeMap<String, T>,
+    dsa_backend: &str,
+    architecture: &str,
+) -> Option<&'a T> {
+    // K3.1 FlashMLA and TRT-LLM FP8 rows have different physical KV layouts.
+    // A missing requested backend cannot borrow the other backend's timings.
+    if architecture == "KimiK31ForConditionalGeneration" {
+        by_backend.get(dsa_backend)
+    } else {
+        select_dsa_backend(by_backend, dsa_backend)
+    }
+}
+
 fn select_dsa_backend_name<'a, T>(
     by_backend: &'a BTreeMap<String, T>,
     requested: &str,
@@ -210,6 +224,11 @@ pub(crate) struct DsaDims {
     pub(crate) index_topk: i64,
     pub(crate) index_head_dim: i64,
     pub(crate) index_n_heads: i64,
+    /// The native Kimi sparse-attention module includes its output gate.
+    /// Its projection and elementwise work must not be added by the model again.
+    pub(crate) output_gate: bool,
+    /// Physical bytes per FP8 latent-KV entry, including layout scales/RoPE.
+    pub(crate) fp8_kv_entry_bytes: i64,
 }
 
 const DSV32_DIMS: DsaDims = DsaDims {
@@ -222,6 +241,8 @@ const DSV32_DIMS: DsaDims = DsaDims {
     index_topk: 2048,
     index_head_dim: 128,
     index_n_heads: 64,
+    output_gate: false,
+    fp8_kv_entry_bytes: 576,
 };
 
 const GLM_MOE_DSA_DIMS: DsaDims = DsaDims {
@@ -234,21 +255,63 @@ const GLM_MOE_DSA_DIMS: DsaDims = DsaDims {
     index_topk: 2048,
     index_head_dim: 128,
     index_n_heads: 32,
+    output_gate: false,
+    fp8_kv_entry_bytes: 576,
+};
+
+// Checkpoint geometry, with the module boundary verified against SGLang
+// https://github.com/radixark/sglang-k31/tree/afcd7d6b487a9cbe73e25941971b4cc107e6f9ae
+// python/sglang/srt/models/kimi_k3.py::KimiK3MLAAttention.
+// The 32-head indexer is replicated across TP; main attention shards 96 heads.
+const KIMI_K31_DIMS: DsaDims = DsaDims {
+    hidden_size: 7168,
+    q_lora_rank: 1536,
+    kv_lora_rank: 512,
+    qk_nope_head_dim: 128,
+    qk_rope_head_dim: 64,
+    v_head_dim: 128,
+    index_topk: 2048,
+    index_head_dim: 128,
+    index_n_heads: 32,
+    output_gate: true,
+    fp8_kv_entry_bytes: 576,
+};
+
+const KIMI_K31_FLASHMLA_DIMS: DsaDims = DsaDims {
+    // 512 FP8 latent values + four FP32 scales + 64 BF16 RoPE values.
+    fp8_kv_entry_bytes: 656,
+    ..KIMI_K31_DIMS
 };
 
 /// Configured-backend bucket(s) a DSA perf row supports — the single home
-/// for the serving rule (Python `_dsa_kernel_source_buckets`), shared by the
-/// query loader and the table view so a kernel rename lands once. BF16-KV
-/// rows back BOTH buckets (one real execution path per shape); FP8 rows
-/// bucket by the executed kernel, legacy names keep the substring rule.
+/// for the serving rule, shared by the query loader and Python table view.
+/// Kimi K3.1 rows identify their physical cache layout independently of the
+/// executed kernel: dense TRT-LLM prefill can read a FlashMLA packed cache.
+/// Legacy BF16 rows back both buckets; legacy FP8 rows retain kernel keying.
 pub(crate) fn dsa_kernel_source_buckets(
     kernel_source: &str,
     kv_quant: &str,
-) -> &'static [&'static str] {
-    if kv_quant == "bfloat16" {
-        return &["trtllm", "flashmla_kv"];
+    architecture: &str,
+) -> Result<&'static [&'static str], AicError> {
+    if architecture == "KimiK31ForConditionalGeneration" {
+        let packed = kernel_source.contains("_kv_flashmla_packed");
+        let raw = kernel_source.contains("_kv_raw_fp8");
+        return match (kv_quant, packed, raw) {
+            ("fp8", true, false) if kernel_source.ends_with("_kv_flashmla_packed_eager") => {
+                Ok(&["flashmla_kv"])
+            }
+            ("fp8", false, true) if kernel_source.ends_with("_kv_raw_fp8_eager") => Ok(&["trtllm"]),
+            _ => Err(AicError::PerfDatabase(format!(
+                "Kimi K3.1 DSA rows require FP8 KV and one explicit native cache-layout \
+                 kernel_source suffix (_kv_flashmla_packed_eager or _kv_raw_fp8_eager); \
+                 got kv_cache_dtype={kv_quant:?}, kernel_source={kernel_source:?}"
+            ))),
+        };
     }
-    match kernel_source {
+    if kv_quant == "bfloat16" {
+        return Ok(&["trtllm", "flashmla_kv"]);
+    }
+    Ok(match kernel_source {
         "sglang_dsa_indexer_trtllm" | "sglang_dsa_skip_indexer_trtllm" => &["trtllm"],
         "sglang_dsa_indexer_flashmla_sparse" | "sglang_dsa_skip_indexer_flashmla_sparse" => {
             &["flashmla_kv"]
@@ -256,13 +319,30 @@ pub(crate) fn dsa_kernel_source_buckets(
         "sglang_dsa_dense_mha_trtllm_ragged" => &["trtllm", "flashmla_kv"],
         ks if ks.contains("trtllm") => &["trtllm"],
         _ => &["flashmla_kv"],
-    }
+    })
 }
 
 pub(crate) fn dsa_dims(architecture: &str) -> &'static DsaDims {
     match architecture {
         "GlmMoeDsaForCausalLM" => &GLM_MOE_DSA_DIMS,
+        "KimiK31ForConditionalGeneration" => &KIMI_K31_DIMS,
         _ => &DSV32_DIMS,
+    }
+}
+
+pub(crate) fn dsa_dims_for_backend(architecture: &str, backend: &str) -> &'static DsaDims {
+    if architecture == "KimiK31ForConditionalGeneration" && backend == "flashmla_kv" {
+        &KIMI_K31_FLASHMLA_DIMS
+    } else {
+        dsa_dims(architecture)
+    }
+}
+
+fn latent_kv_entry_bytes(dims: &DsaDims, quant: KvCacheQuantMode) -> f64 {
+    if dims.output_gate && quant == KvCacheQuantMode::Fp8 {
+        dims.fp8_kv_entry_bytes as f64
+    } else {
+        (dims.kv_lora_rank + dims.qk_rope_head_dim) as f64 * quant.mapping().memory
     }
 }
 
@@ -438,12 +518,14 @@ impl DsaTable {
         let node = nodes
             .by_keys
             .get(&key)
-            .and_then(|by_backend| select_dsa_backend(by_backend, dsa_backend))
+            .and_then(|by_backend| {
+                select_architecture_backend(by_backend, dsa_backend, architecture)
+            })
             .ok_or_else(|| {
                 AicError::PerfDatabase(format!("context DSA module data missing for {key:?}"))
             })?;
 
-        let dims = dsa_dims(architecture);
+        let dims = dsa_dims_for_backend(architecture, dsa_backend);
         let topk = index_topk as i64;
         // Engine coordinates are (num_heads, prefix, seq, batch); the SOL is
         // Python's get_sol(b, s, prefix, num_heads, ...) re-ordered to match.
@@ -520,10 +602,12 @@ impl DsaTable {
         let node = nodes
             .by_keys
             .get(&key)
-            .and_then(|by_backend| select_dsa_backend(by_backend, dsa_backend))
+            .and_then(|by_backend| {
+                select_architecture_backend(by_backend, dsa_backend, architecture)
+            })
             .ok_or_else(|| missing("generation DSA module", &self.data_root, format!("{key:?}")))?;
 
-        let dims = dsa_dims(architecture);
+        let dims = dsa_dims_for_backend(architecture, dsa_backend);
         // Engine coordinates are (num_heads, batch, seq); the SOL is
         // Python's get_sol(b, s, num_heads, kv_cache_dtype) re-ordered.
         let sol = move |c: &[f64]| {
@@ -570,7 +654,9 @@ impl DsaTable {
         grids
             .by_keys
             .get(key)
-            .and_then(|by_backend| select_dsa_backend(by_backend, dsa_backend))
+            .and_then(|by_backend| {
+                select_architecture_backend(by_backend, dsa_backend, &key.architecture)
+            })
             .ok_or_else(|| {
                 missing(
                     "raw context DSA module",
@@ -599,7 +685,9 @@ impl DsaTable {
         grids
             .by_keys
             .get(key)
-            .and_then(|by_backend| select_dsa_backend(by_backend, dsa_backend))
+            .and_then(|by_backend| {
+                select_architecture_backend(by_backend, dsa_backend, &key.architecture)
+            })
             .ok_or_else(|| {
                 missing(
                     "raw generation DSA module",
@@ -916,13 +1004,19 @@ pub(crate) fn dsa_context_sol(
     let indexer_heads = if skip_projections { 0 } else { inh };
     let indexer_dim = if skip_projections { 0 } else { ihd };
     let proj_out = q_lora + kv_lora + qk_rope + indexer_dim;
+    let gate_width = if dims.output_gate {
+        num_heads * v_dim
+    } else {
+        0
+    };
     let gemm_group_ops = 2 * tokens * hidden * proj_out
         + 2 * tokens * q_lora * (num_heads * qk_head_dim)
         + 2 * tokens * q_lora * (indexer_heads * ihd)
         + 2 * tokens * hidden * indexer_heads
         + 2 * tokens * (num_heads * v_dim) * hidden
         + 2 * num_heads * tokens * qk_nope * kv_lora
-        + 2 * num_heads * tokens * kv_lora * v_dim;
+        + 2 * num_heads * tokens * kv_lora * v_dim
+        + 2 * tokens * hidden * gate_width;
 
     // Indexer logits group: always FP8; off when the full sequence fits the
     // top-k window (regime split). A skip-indexer (reuse) layer never runs
@@ -953,11 +1047,12 @@ pub(crate) fn dsa_context_sol(
         + q_lora * num_heads * qk_head_dim
         + q_lora * indexer_heads * ihd
         + hidden * indexer_heads
-        + num_heads * v_dim * hidden;
+        + num_heads * v_dim * hidden
+        + hidden * gate_width;
     let gemm_weight_bytes = gemm_weight_elems as f64 * gemm_quant.mapping().memory;
 
     let kv_cache_bytes =
-        (b * num_heads * effective_kv * attn_head_dim) as f64 * kv_quant.mapping().memory;
+        (b * num_heads * effective_kv) as f64 * latent_kv_entry_bytes(dims, kv_quant);
     // Skip layers never store the index-K cache (the indexer never runs).
     let indexer_cache_bytes = if skip_indexer || full_s <= topk {
         0.0
@@ -966,7 +1061,11 @@ pub(crate) fn dsa_context_sol(
     };
     let q_io_bytes = (tokens * num_heads * qk_head_dim) as f64 * fmha_quant.mapping().memory * 2.0;
 
-    let total_mem = gemm_weight_bytes + kv_cache_bytes + indexer_cache_bytes + q_io_bytes;
+    // sigmoid(gate) * attention output: two BF16 inputs and one BF16 output.
+    // This is inside the native module, before o_proj, without a TP reduction.
+    let gate_io_bytes = (tokens * gate_width * 3) as f64 * 2.0;
+    let total_mem =
+        gemm_weight_bytes + kv_cache_bytes + indexer_cache_bytes + q_io_bytes + gate_io_bytes;
 
     // ── SOL ─────────────────────────────────────────────────────
     let DsaSolFlops {
@@ -1070,6 +1169,11 @@ pub(crate) fn dsa_generation_sol(
     let indexer_dim = if skip_indexer { 0 } else { ihd };
     let proj_out = q_lora + kv_lora + qk_rope + indexer_dim;
     let effective_kv = s.min((topk + topk_divisor - 1) / topk_divisor);
+    let gate_width = if dims.output_gate {
+        num_heads * v_dim
+    } else {
+        0
+    };
 
     let gemm_group_ops = 2 * tokens * hidden * proj_out
         + 2 * tokens * q_lora * num_heads * qk_head_dim
@@ -1077,7 +1181,8 @@ pub(crate) fn dsa_generation_sol(
         + 2 * tokens * hidden * indexer_heads
         + 2 * tokens * num_heads * v_dim * hidden
         + 2 * num_heads * tokens * qk_nope * kv_lora
-        + 2 * num_heads * tokens * kv_lora * v_dim;
+        + 2 * num_heads * tokens * kv_lora * v_dim
+        + 2 * tokens * hidden * gate_width;
 
     let indexer_logits_ops = 2 * tokens * indexer_heads * ihd * s;
     let sparse_attn_ops = 2 * tokens * num_heads * (attn_head_dim + kv_lora) * effective_kv;
@@ -1086,15 +1191,17 @@ pub(crate) fn dsa_generation_sol(
         + q_lora * num_heads * qk_head_dim
         + q_lora * indexer_heads * ihd
         + hidden * indexer_heads
-        + num_heads * v_dim * hidden;
+        + num_heads * v_dim * hidden
+        + hidden * gate_width;
     let gemm_weight_bytes = gemm_weight_elems as f64 * gemm_quant.mapping().memory;
     let indexer_cache_bytes = if skip_indexer {
         0.0
     } else {
         (b * s * indexer_cache_entry_bytes(dims.index_head_dim) as i128) as f64
     };
-    let kv_cache_bytes = (b * effective_kv * attn_head_dim) as f64 * kv_quant.mapping().memory;
-    let total_mem = gemm_weight_bytes + indexer_cache_bytes + kv_cache_bytes;
+    let kv_cache_bytes = (b * effective_kv) as f64 * latent_kv_entry_bytes(dims, kv_quant);
+    let gate_io_bytes = (tokens * gate_width * 3) as f64 * 2.0;
+    let total_mem = gemm_weight_bytes + indexer_cache_bytes + kv_cache_bytes + gate_io_bytes;
 
     let DsaSolFlops {
         gemm: gemm_flops,
@@ -1236,19 +1343,11 @@ pub(crate) fn load_dsa_parquet(
                 kv_quant: row.str_owned(kv_cache_dtype_col)?,
                 gemm_quant: row.str_owned(gemm_type_col)?,
             };
-            // Configured-backend bucket(s) for the row — mirrors Python
-            // `_dsa_kernel_source_buckets` (operations/dsa.py). The
-            // trtllm/flashmla_kv split is an FP8-KV serving rule; with a BF16
-            // KV cache there is exactly ONE real execution path per shape, so
-            // every bf16 row backs BOTH buckets (a bare substring test split
-            // one measured sweep across the buckets and left the default
-            // query bucket with nothing beyond 2048 tokens). FP8 rows bucket
-            // by executed-kernel name; dense ragged prefill is selected by
-            // SHAPE (isl <= 2048) under either configured backend, so it
-            // backs both. Legacy (pre-0.5.14) names keep the old substring
-            // rule.
+            // The query loader and Python table view share this classifier.
+            // Kimi's cache-layout marker takes precedence over the executed
+            // kernel name; legacy architectures keep their established rules.
             let ks_name = row.str_optional(ks_col)?.unwrap_or("").to_string();
-            let buckets = dsa_kernel_source_buckets(&ks_name, &key.kv_quant);
+            let buckets = dsa_kernel_source_buckets(&ks_name, &key.kv_quant, &key.architecture)?;
             let (step, isl) = if collapse_isl_step_to_seq {
                 // Generation: canonical coordinate is s = isl + step (see fn
                 // doc); same-`s` rows overwrite in file order below.
@@ -1483,6 +1582,88 @@ pub(crate) fn clone_err(err: &AicError) -> AicError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn kimi_k31_does_not_borrow_another_sparse_backend() {
+        let rows = BTreeMap::from([("trtllm".to_string(), 7.0)]);
+        assert_eq!(
+            select_architecture_backend(&rows, "flashmla_kv", "KimiK31ForConditionalGeneration"),
+            None
+        );
+        assert_eq!(
+            select_architecture_backend(&rows, "trtllm", "KimiK31ForConditionalGeneration"),
+            Some(&7.0)
+        );
+        // Existing DeepSeek data keeps the established single-backend fallback.
+        assert_eq!(
+            select_architecture_backend(&rows, "flashmla_kv", "DeepseekV32ForCausalLM"),
+            Some(&7.0)
+        );
+    }
+
+    #[test]
+    fn kimi_k31_rows_use_cache_layout_before_executed_kernel() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let architecture = "KimiK31ForConditionalGeneration";
+        let rows = [
+            (
+                "dsa_context_module",
+                "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+                "fp8",
+                1024,
+                7.0,
+            ),
+            (
+                "dsa_context_module",
+                "sglang_dsa_dense_mha_trtllm_ragged_kv_raw_fp8_eager",
+                "fp8",
+                1024,
+                3.0,
+            ),
+        ];
+        for file in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows_for_arch(&tmp.path().join(file), &rows, architecture);
+        }
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let key = DsaKey {
+            architecture: architecture.into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "fp8".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        for (backend, expected) in [("flashmla_kv", 7.0), ("trtllm", 3.0)] {
+            let context = table
+                .context_raw_slice(&key, backend, false)
+                .expect("context slice");
+            let generation = table
+                .generation_raw_slice(&key, backend, false)
+                .expect("decode slice");
+            assert_eq!(context[&128][&0][&1024][&1].latency, expected);
+            assert_eq!(generation[&128][&0][&1024][&1].latency, expected);
+        }
+    }
+
+    #[test]
+    fn kimi_k31_rows_require_unambiguous_fp8_cache_layout() {
+        let architecture = "KimiK31ForConditionalGeneration";
+        for (kv, source) in [
+            ("fp8", "sglang_dsa_dense_mha_trtllm_ragged_eager"),
+            ("fp8", "sglang_dsa_indexer_flashmla_kv_eager"),
+            ("fp8", "sglang_dsa_kv_raw_fp8_kv_flashmla_packed_eager"),
+            (
+                "bfloat16",
+                "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+            ),
+        ] {
+            assert!(matches!(
+                dsa_kernel_source_buckets(source, kv, architecture),
+                Err(AicError::PerfDatabase(_))
+            ));
+        }
+    }
+
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_sxm_spec() -> SystemSpec {
@@ -1499,6 +1680,102 @@ mod tests {
             ((got - want) / want).abs() < 1e-9,
             "rust {got} vs python {want}"
         );
+    }
+
+    /// Independent K3.1 ledger at TP8 (12 local heads), BF16 weights/KV.
+    /// Projection elements: Qa 11,010,048 + KVa 4,128,768 + indexK 917,504
+    /// + Qb 3,538,944 + indexQ 6,291,456 + scores 229,376
+    /// + O 11,010,048 + gate 11,010,048 = 48,136,192.
+    /// Absorbed KV BMMs add 3,145,728 FLOPs per token. At history 4096,
+    /// one decode token adds 33,554,432 index-logit FLOPs and 53,477,376
+    /// sparse attention FLOPs. Memory: weights 96,272,384 + index 540,672
+    /// + sparse KV 2,359,296 + gate IO 9,216 = 99,181,568 bytes.
+    #[test]
+    fn kimi_k31_gated_dsa_roofline_matches_hand_ledger() {
+        let mut spec = b200_sxm_spec();
+        spec.gpu.mem_bw = 1e12;
+        let flops = DsaSolFlops {
+            gemm: 1e12,
+            indexer_fp8: 1e12,
+            attn: 1e12,
+        };
+        let dims = dsa_dims("KimiK31ForConditionalGeneration");
+        for (history, math_ms, mem_ms) in [
+            (4096, 0.186449920, 0.099181568),
+            (8192, 0.220004352, 0.099722240),
+        ] {
+            let got = dsa_generation_sol(
+                &spec,
+                dims,
+                KvCacheQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                1,
+                history,
+                12,
+                1,
+                false,
+                DsaReuseSolPolicy::Sglang,
+                flops,
+            );
+            approx_rel(got.math_ms, math_ms);
+            approx_rel(got.mem_ms, mem_ms);
+        }
+        // Prefill crosses the top-k knee: 6,292,480 causal KV pairs at
+        // s=4096; a cached-prefix extension has 2,097,152 pairs across b=2.
+        // These also exercise gate work scaling with the NEW token count.
+        for (batch, tokens, prefix, math_ms, mem_ms) in [
+            (1, 4096, 0, 708.964777984, 0.200622080),
+            (2, 512, 2048, 178.039816192, 0.172445696),
+        ] {
+            let got = dsa_context_sol(
+                &spec,
+                dims,
+                2048,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                batch,
+                tokens,
+                prefix,
+                12,
+                false,
+                DsaReuseSolPolicy::Sglang,
+                flops,
+            );
+            approx_rel(got.math_ms, math_ms);
+            approx_rel(got.mem_ms, mem_ms);
+        }
+    }
+
+    #[test]
+    fn kimi_k31_fp8_sol_uses_executed_cache_layout() {
+        let mut spec = b200_sxm_spec();
+        spec.gpu.mem_bw = 1e12;
+        let flops = DsaSolFlops {
+            gemm: 1e12,
+            indexer_fp8: 1e12,
+            attn: 1e12,
+        };
+        // The decode ledger above keeps BF16 weights and a 540,672-byte
+        // index history. Only the 2048 selected latent entries change:
+        // TRTLLM 1,179,648 bytes; FlashMLA 1,343,488 bytes.
+        for (backend, expected_mem_ms) in [("trtllm", 0.098001920), ("flashmla_kv", 0.098165760)] {
+            let got = dsa_generation_sol(
+                &spec,
+                dsa_dims_for_backend("KimiK31ForConditionalGeneration", backend),
+                KvCacheQuantMode::Fp8,
+                GemmQuantMode::Bfloat16,
+                1,
+                4096,
+                12,
+                1,
+                false,
+                DsaReuseSolPolicy::Sglang,
+                flops,
+            );
+            approx_rel(got.math_ms, 0.186449920);
+            approx_rel(got.mem_ms, expected_mem_ms);
+        }
     }
 
     /// Independent GLM ledger, b=1, local heads=8, BF16 and one decode token:
@@ -2013,6 +2290,14 @@ mod tests {
 
     /// Row tuple: `(op_name, kernel_source, kv_cache_dtype, isl, latency)`.
     fn write_dsa_module_parquet_rows(path: &Path, rows: &[(&str, &str, &str, i64, f64)]) {
+        write_dsa_module_parquet_rows_for_arch(path, rows, "DeepseekV32ForCausalLM");
+    }
+
+    fn write_dsa_module_parquet_rows_for_arch(
+        path: &Path,
+        rows: &[(&str, &str, &str, i64, f64)],
+        architecture: &str,
+    ) {
         use parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type};
         use parquet::file::properties::WriterProperties;
         use parquet::file::writer::SerializedFileWriter;
@@ -2040,9 +2325,7 @@ mod tests {
         let str_cols: [Vec<ByteArray>; 6] = [
             rows.iter().map(|r| ByteArray::from(r.0)).collect(),
             rows.iter().map(|r| ByteArray::from(r.1)).collect(),
-            rows.iter()
-                .map(|_| ByteArray::from("DeepseekV32ForCausalLM"))
-                .collect(),
+            rows.iter().map(|_| ByteArray::from(architecture)).collect(),
             rows.iter().map(|_| ByteArray::from("bfloat16")).collect(),
             rows.iter().map(|r| ByteArray::from(r.2)).collect(),
             rows.iter().map(|_| ByteArray::from("bfloat16")).collect(),

@@ -47,6 +47,10 @@ def estimate_state_cache(
     from .kimi_k3 import kimi_k3_state_cache
 
     info = _get_model_info(model_path)
+    if info["architecture"] == "KimiK31ForConditionalGeneration":
+        raise ValueError(
+            "Kimi K3.1 automatic vLLM physical-state sizing is not qualified; supply manual state geometry"
+        )
     family = _architecture_to_model_family(info["architecture"])
     if family not in ("KIMIK3", "DEEPSEEKV4"):
         raise ValueError("automatic state sizing supports Kimi K3 and DeepSeek V4; supply manual state geometry")

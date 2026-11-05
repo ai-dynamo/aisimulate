@@ -1315,7 +1315,10 @@ class Task:
             if len(regimes) == 2:
                 break
         backend_name = self._role_attr(role, "backend_name")
-        return [attention_op_keys(self._model_family, backend_name, large) for large in sorted(regimes or {False})]
+        return [
+            attention_op_keys(self._model_family, backend_name, large, architecture=self._architecture)
+            for large in sorted(regimes or {False})
+        ]
 
     def _attention_op_keys(self, role: str) -> tuple[str, str]:
         """The role's primary (context_op, generation_op) keys: the large-EP

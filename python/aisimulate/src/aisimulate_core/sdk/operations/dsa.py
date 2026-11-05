@@ -39,12 +39,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# kernel_source -> configured-backend bucket(s) for FP8-KV rows. 0.5.14
-# SGLang DSA collectors record the EXECUTED kernel; dense ragged prefill is
-# selected by SHAPE (isl <= 2048) under either configured backend, so its
-# rows back both buckets.
+# Rust owns kernel_source -> configured-backend classification for both
+# queries and these table views. Kimi K3.1 records its physical KV layout
+# separately: the dense prefill kernel name alone cannot identify the cache.
 
 DSA_MODEL_DIMS: dict[str, dict] = {
+    "KimiK31ForConditionalGeneration": {
+        "hidden_size": 7168,
+        "q_lora_rank": 1536,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 128,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 128,
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_n_heads": 32,
+    },
     "DeepseekV32ForCausalLM": {
         "hidden_size": 7168,
         "q_lora_rank": 1536,

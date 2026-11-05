@@ -3708,7 +3708,7 @@ impl PyContextDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1, attention_backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3723,6 +3723,7 @@ impl PyContextDSAModule {
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
         dcp_size: u32,
+        attention_backend: Option<String>,
     ) -> PyResult<(Self, PyOperation)> {
         if dcp_size == 0 {
             return Err(PyValueError::new_err(
@@ -3747,6 +3748,7 @@ impl PyContextDSAModule {
                 gemm,
             )?),
             dcp_size,
+            attention_backend,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
     }
@@ -3787,6 +3789,7 @@ impl PyContextDSAModule {
             .into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("dsa_full_layer_fraction", o.full_frac)?;
+        kwargs.set_item("attention_backend", &o.attention_backend)?;
         if let Some(quants) = &o.attn_projection_quant_modes {
             kwargs.set_item(
                 "attn_projection_quant_modes",
@@ -3881,7 +3884,7 @@ impl PyGenerationDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1, attention_backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3894,6 +3897,7 @@ impl PyGenerationDSAModule {
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
         dcp_size: u32,
+        attention_backend: Option<String>,
     ) -> PyResult<(Self, PyOperation)> {
         if dcp_size == 0 {
             return Err(PyValueError::new_err(
@@ -3918,6 +3922,7 @@ impl PyGenerationDSAModule {
                 gemm,
             )?),
             dcp_size,
+            attention_backend,
         });
         Ok((PyGenerationDSAModule, PyOperation { inner }))
     }
@@ -3938,6 +3943,7 @@ impl PyGenerationDSAModule {
             .into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("dsa_full_layer_fraction", o.full_frac)?;
+        kwargs.set_item("attention_backend", &o.attention_backend)?;
         if let Some(quants) = &o.attn_projection_quant_modes {
             kwargs.set_item(
                 "attn_projection_quant_modes",

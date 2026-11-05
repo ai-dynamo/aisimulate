@@ -161,6 +161,8 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 29 (native VL): optional `vision` section (encoder layout plus the patch,
 #   transformer and output op groups) appended after the op lists. Claimed 21
 #   concurrently with AIC-1781; renumbered after GLM-5.3-Flash at the merge.
+# - 30 (Kimi K3.1 DSA): explicit sparse attention backend/cache layout appended
+#   to DsaModuleOp; legacy JSON defaults do not cover positional bincode.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
