@@ -244,12 +244,8 @@ families:
     architecture: full support-matrix roster (per-checkpoint, no arch dedup)
     derive: true
     extra_repos:
-    - moonshotai/Kimi-K3
     - nvidia/Kimi-K3-NVFP4
-    - nvidia/DeepSeek-V3.2-NVFP4
-    - zai-org/GLM-5.3-Flash
     - zai-org/GLM-5.3-Flash-BF16
-    - nvidia/GLM-5.3-Flash-NVFP4
     - Qwen/Qwen3.8-27B
     - Qwen/Qwen3.8-27B-FP8
     - nvidia/Qwen3.8-27B-NVFP4
@@ -257,10 +253,8 @@ families:
     - Qwen/Qwen3.8-Flash-Next-FP8
     - nvidia/Qwen3.8-Flash-Next-NVFP4
     - nvidia/Qwen3.8-2.4T-A95B-NVFP4
-    - deepseek-ai/DeepSeek-V4.1-Flash
     - nvidia/DeepSeek-V4.1-Flash-NVFP4
     - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-    - meta-models/Muse-Glimmer-30B
     - nvidia/Muse-Glimmer-30B-NVFP4
     - baerquant/Inkling
     - baerquant/Inkling-Small

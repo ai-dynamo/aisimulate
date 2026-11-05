@@ -263,3 +263,10 @@ def test_select_dummy_dir_default_order_is_family_then_generic_then_any(pd, tmp_
     assert pd.select_dummy_dir(root, "N", "rep", "roster", {}, {})[0].parent.name == "zzz"
     vdir, why = pd.select_dummy_dir(root, "Q", "rep", "roster", {}, {})
     assert vdir is None and why.startswith("no dummy dir")
+
+
+def test_the_roster_floor_is_every_model_path_the_case_yamls_declare(pd):
+    repos = pd.collector_mentioned_repos()
+    # orgs a fixed org list did not know, and a repo named only in a comment
+    assert {"stepfun-ai/Step-3.7-Flash", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "meta-models/Muse-Glimmer-30B"} <= repos
+    assert "zai-org/GLM-5.3-FP8" not in repos

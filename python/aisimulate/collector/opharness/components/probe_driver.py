@@ -182,23 +182,28 @@ def _cea(v, sm: str):
     return list(v)
 
 
-_MENTION_ORGS = (
-    r"(?:deepseek-ai|zai-org|moonshotai|nvidia|openai|meta-llama|"
-    r"mistralai|google|Qwen|XiaomiMiMo|MiniMaxAI|sgl-project)"
-)
+_REPO_KEYS = frozenset({"model_path", "model_paths", "model_aliases", "supported_model_paths", "default_model_paths"})
 
 
 def collector_mentioned_repos() -> set[str]:
-    """Every HF repo the collector's case yamls mention (the coverage floor).
-    Brace-expansion prose like org/Name-{A,B}-X truncates at '{' and .py
-    paths false-match — both filtered."""
-    mentioned: set[str] = set()
-    cases = Path(AIS_SRC).parent / "collector" / "cases" / "models"
-    for f in cases.glob("*_cases.yaml"):
-        for m in re.findall(rf"\b({_MENTION_ORGS}/[\w.\-]+)", f.read_text()):
-            if not m.endswith("-") and not m.endswith(".py"):
-                mentioned.add(m)
-    return mentioned
+    """Every checkpoint the collector's case yamls declare (the coverage floor): the values of
+    their model-path keys. A text scan with a fixed list of orgs missed four declared models
+    (RadixArk, meta-models, stepfun-ai) and took one from a comment that says it does not exist."""
+    found: set[str] = set()
+
+    def walk(node, key=None):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, k)
+        elif isinstance(node, list):
+            for x in node:
+                walk(x, key)
+        elif key in _REPO_KEYS and isinstance(node, str) and "/" in node:
+            found.add(node)
+
+    for f in sorted((Path(AIS_SRC).parent / "collector" / "cases" / "models").glob("*_cases.yaml")):
+        walk(yaml.safe_load(f.read_text()))
+    return found
 
 
 def derived_repos(fam: dict, targets: dict) -> list[str]:
