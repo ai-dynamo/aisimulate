@@ -15,7 +15,7 @@ to `python/aisimulate/` in the repository source tree.
 
 ## SGLang Kimi K3.1 native module contract
 
-`collector/sglang/collect_kimi_k31_dsa.py` adapts the native batch/request
+`collector/sglang/collect_kimi_k31_dsa_v1.py` adapts the native batch/request
 lifecycle from `python/sglang/benchmark/one_batch.py` and the attention
 observation boundary from `python/sglang/srt/models/kimi_k3.py`. The image
 identifies the upstream repository as `radixark/sglang-k31`, commit

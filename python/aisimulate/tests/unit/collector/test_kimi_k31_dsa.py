@@ -7,16 +7,18 @@ from types import SimpleNamespace
 
 import pytest
 from collector.framework_manifest import get_collector_runtime, require_collector_runtime
-from collector.op_plans import ModuleCase, plan
-from collector.sglang.collect_kimi_k31_dsa import (
+from collector.op_plans import OP_PLANS, ModuleCase, plan
+from collector.sglang.collect_kimi_k31_dsa_v1 import (
     ARCHITECTURE,
     MODEL,
     RUNTIME_VERSION,
     SOURCE_COMMIT,
     executed_kernel_source,
     perf_item,
+    run_kimi_k31_dsa_worker,
     single_layer_config,
     validate_case,
+    validate_forward_batch,
 )
 from collector.sglang.registry import REGISTRY
 from collector.version_resolver import _check_compat, resolve_module
@@ -80,12 +82,17 @@ def test_case_plan_uses_native_tp_shards_and_supported_cache_precision(monkeypat
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL)
     for phase in ("context", "generation"):
         op = f"kimi_k31_dsa_{phase}_module"
-        cases = plan(op, "sglang", 103).cases
+        structural = OP_PLANS[op].expand()
+        assert {case.num_heads for case in structural} == {96, 48, 24, 12}
+        planned = plan(op, "sglang", 103)
+        cases = planned.cases
+        assert sum(region.cases for region in planned.removed) == 3 * len(cases)
+        assert any("num_heads" in region.reason for region in planned.removed)
         assert cases
-        assert {case.num_heads for case in cases} == {96, 48, 24, 12}
+        assert {case.num_heads for case in cases} == {96}
         assert {case.kv_cache_dtype for case in cases} == {"fp8"}
         assert {case.gemm_type for case in cases} == {"bfloat16"}
-        assert {validate_case(case) for case in cases} == {1, 2, 4, 8}
+        assert {validate_case(case) for case in cases} == {1}
         assert all(case.seq_len + case.prefix_len <= 1048576 for case in cases)
         assert not plan(op, "vllm", 103).cases
 
@@ -112,7 +119,7 @@ def test_stock_runtime_cannot_select_native_preview_collector():
         assert runtime.version == RUNTIME_VERSION
         assert runtime.source_commit == SOURCE_COMMIT
         assert "@sha256:" in runtime.image()
-        assert resolve_module(entry, runtime.version) == "collector.sglang.collect_kimi_k31_dsa"
+        assert resolve_module(entry, runtime.version) == "collector.sglang.collect_kimi_k31_dsa_v1"
         assert resolve_module(entry, get_collector_runtime("sglang").version) is None
         assert _check_compat(f"sglang=={RUNTIME_VERSION}", RUNTIME_VERSION)
 
@@ -121,10 +128,10 @@ def test_kernel_source_reports_executed_native_backend_and_eager_mode():
     backend = SimpleNamespace(use_mha=False, dsa_prefill_impl="flashmla_kv", dsa_decode_impl="flashmla_kv")
     hybrid = SimpleNamespace(full_attn_backend=backend)
     pool = SimpleNamespace(dsa_kv_cache_store_fp8=True, fp8_cast_on_write=False, kv_cache_dim=656)
+    assert executed_kernel_source(hybrid, pool, "context") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
     assert (
-        executed_kernel_source(hybrid, pool, "context") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+        executed_kernel_source(hybrid, pool, "generation") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
     )
-    assert executed_kernel_source(hybrid, pool, "generation") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
     backend.use_mha = True
     backend.device_sm_major = 10
     assert (
@@ -149,3 +156,35 @@ def test_collector_rejects_fabricated_local_head_geometry():
     case = ModuleCase(4096, 1, 16, "fp8", "bfloat16", "bfloat16", MODEL, 0)
     with pytest.raises(ValueError, match="unsupported native"):
         validate_case(case)
+
+
+@pytest.mark.parametrize(("heads", "tp"), [(48, 2), (24, 4), (12, 8)])
+def test_multi_gpu_cases_require_standalone_exclusive_ownership(heads, tp, monkeypatch):
+    case = ModuleCase(4096, 1, heads, "fp8", "bfloat16", "bfloat16", MODEL, 0)
+    assert validate_case(case) == tp
+    import collector.sglang.collect_kimi_k31_dsa_v1 as module
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *_a, **_k: pytest.fail("launched an unowned GPU group"))
+    with pytest.raises(RuntimeError, match="exclusive ownership"):
+        run_kimi_k31_dsa_worker(*case, device="cuda:0", perf_filename="dsa_generation_module_perf.txt")
+
+
+def test_native_forward_batch_must_match_persisted_prefix_and_history():
+    case = ModuleCase(512, 1, 96, "fp8", "bfloat16", "bfloat16", MODEL, 2048)
+    batch = SimpleNamespace(
+        input_ids=SimpleNamespace(numel=lambda: 512),
+        seq_lens=SimpleNamespace(tolist=lambda: [2560]),
+        extend_prefix_lens_cpu=[2048],
+        extend_seq_lens_cpu=[512],
+    )
+    assert validate_forward_batch(batch, case, "context") == {
+        "seq_lens": [2560],
+        "extend_prefix_lens": [2048],
+        "extend_seq_lens": [512],
+    }
+    batch.extend_prefix_lens_cpu = [0]
+    with pytest.raises(RuntimeError, match="cached-prefix"):
+        validate_forward_batch(batch, case, "context")
+    batch.seq_lens = SimpleNamespace(tolist=lambda: [512])
+    with pytest.raises(RuntimeError, match="KV history"):
+        validate_forward_batch(batch, case, "context")

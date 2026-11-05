@@ -58,6 +58,14 @@ support. A successful collector smoke establishes execution of its tested
 points, not full-grid coverage or prediction accuracy. FPM data and its
 validation are maintained in a separate change.
 
+The model case declaration retains TP1/2/4/8 (96/48/24/12 local heads).
+The shared collector executor owns one GPU per worker, so `skips.py` leaves
+TP2/4/8 out of the runnable plan and reports those skipped cases. The worker
+also rejects multi-GPU cases before launching a process. Explicit standalone
+TP2/4/8 invocations require an allocation owned by that invocation and remain
+hardware-unverified. Initial native smoke uses TP1, FP8 KV and eager forwards;
+the registry stays unverified pending serving-graph qualification.
+
 Runtime source inspected for the module boundary and cache layout:
 SGLang source commit `afcd7d6b487a9cbe73e25941971b4cc107e6f9ae`, embedded in the
 [official K3.1 image](https://hub.docker.com/r/lmsysorg/sglang/tags?name=dev-kimi-k31-pro)
