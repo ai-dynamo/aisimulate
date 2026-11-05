@@ -117,9 +117,10 @@ worker always serves its waiting queue first-come first-served. This follows
 (`arg_groups/pd_disaggregation_hook.py`, `disaggregation/decode.py`).
 
 For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
-`decode_enable_prefix_caching: true` on SGLang decode samples; deployment
-lowering rejects the inconsistent pair and speculative decoding on a concrete
-SGLang disaggregated candidate. A sweep may include other backends,
+`decode_enable_prefix_caching: true` and no speculation when the domain includes
+SGLang disaggregated candidates. Validation rejects invalid combinations before
+enumeration; deployment lowering also checks direct sample inputs. Analytical
+AFD and AFD+P/D do not model this cache and reject the setting. A sweep may include other backends,
 whose samples omit the SGLang-only radix flag. The recommendation path carries
 both controls from the worker's `kv_cache` configuration. A search with no
 SGLang backend rejects `decode_radix_cache: true`.
