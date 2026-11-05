@@ -1935,6 +1935,11 @@ def _materialize_engine_role(
                 f"engine provider {role} async_scheduling: vLLM does not support async scheduling "
                 "with ngram speculative decoding"
             )
+        if rank.get("launch") is not None:
+            raise ValueError(
+                f"engine provider {role} launch requires async scheduling, which vLLM turns off with ngram "
+                "speculative decoding"
+            )
         rank["async_scheduling"] = False
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))

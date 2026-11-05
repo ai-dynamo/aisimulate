@@ -1365,6 +1365,10 @@ def _validate_prediction_launch(engine: EnginePredictionConfig) -> None:
         return
     if worker.scheduler.async_scheduling is False:
         raise ValueError("workers.aggregated.scheduler.launch requires async_scheduling")
+    if engine.speculation is not None and engine.speculation.kind == "ngram":
+        raise ValueError(
+            "workers.aggregated.scheduler.launch requires async scheduling, which vLLM turns off with ngram speculation"
+        )
     parallel = worker.parallelism
     if (
         parallel.tensor != 1
