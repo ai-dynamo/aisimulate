@@ -54,9 +54,16 @@ modified re-implementations of the pinned `agentic_replay.py`,
 continuations, spawns and joins, joins gated by the parent's own replay
 deadline, detected chains released when their replay barrier clears, and
 uniform idle shifts of every pending replay timer, repeated when a shift lands
-on a request still held by its replay barrier. NVIDIA modified these rules to
-operate on the native dependency graph. The original NVIDIA copyright and
-Apache-2.0 license apply; no upstream implementation is vendored.
+on a request still held by its replay barrier. The `agentx` Weka client in
+repository-root `crates/core/src/replay/loadgen/weka.rs`, its regression tests
+there, and its descriptions in the same two documents likewise re-implement
+the pinned `branch_orchestrator.py` branch dispatch with
+`src/aiperf/dataset/loader/weka_trace.py` and
+`src/aiperf/dataset/loader/weka_synth_buf.py`: subagents and flattened chains
+spawned and joined in groups by main-conversation turn, and each stream
+rendered as its own chat conversation. NVIDIA modified these rules to operate
+on the native dependency graph. The original NVIDIA copyright and Apache-2.0
+license apply; no upstream implementation is vendored.
 
 ## AIConfigurator
 
@@ -297,6 +304,32 @@ The upstream project is copyright contributors to the vLLM project and licensed
 under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
 no upstream method bodies are copied. The Rust implementation and fixtures are
 modified for simulation and do not reproduce native filesystem timing.
+
+The `offloading_v0_32` and `simple_cpu_v0_32` G2 connector profiles in
+repository-root files `crates/core/src/engine/host_offload/tier.rs` and
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`, their tests in
+those files, and their description in `docs/replay/engine/kv-cache.md` are
+independently written, modified Rust simulation adaptations of behavioral
+contracts at vLLM tag `v0.32.0` (commit `5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/lru.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+which blocks each connector stores, when a lookup hits, misses or defers, the
+eviction order of the CPU cache, how long a store holds its G1 source blocks,
+what a preemption waits for, and the engine step that submits the stores of a
+finished request.
 
 The speculative scheduling/progress corrections in repository-root files
 `crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
@@ -877,6 +910,32 @@ THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT 
 
 For any questions regarding this license, please contact model-business@notice.qwencloud.com.
 ```
+
+## NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_config.json` | `config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+| `src/aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+
+Upstream repository:
+https://huggingface.co/nvidia/Qwen3.5-397B-A17B-NVFP4-V2/tree/8f590eae8f10bf55d9a46f79ea0280bde435c9f8
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Alibaba Cloud (the base Qwen3.5-397B-A17B
+configuration). The copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: the Apache
+License, Version 2.0 (`license: apache-2.0`). The upstream repository ships
+no separate license or NOTICE file. The base model, Qwen/Qwen3.5-397B-A17B,
+uses the same license; its `LICENSE` at revision
+`8472618112abcbd45acbcdc58436aff4233c23f7` states "Copyright 2026 Alibaba
+Cloud". The license text is in the `LICENSE` file distributed with this
+notice. The file digests are recorded in the adjacent
+`src/aisimulate_core/model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md`.
 
 ## StepFun Step-3.7-Flash model configuration files
 
@@ -1580,6 +1639,8 @@ instead of adding multimodal support to Dynamo's adapter. Both offline replay
 specifications disable the encoder pool; the Python binding's synthetic trace
 explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
 rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
+The Weka import adapter retains the default recorded client when the AISimulate
+API adds the client selection field.
 It preserves the upstream copyright headers and marks each modification in the output.
 
 The replay compatibility rewrite in the same script adapts

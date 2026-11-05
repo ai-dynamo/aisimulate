@@ -36,8 +36,8 @@ pub(crate) use common::hashing::{
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Scope, G3OffloadConfig, G3Scope,
-    KvcrConfig, NativeHostOffloadConfig, PassLaunchConfig, PreemptionMode, SglangConfig,
+    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
+    G3Scope, KvcrConfig, NativeHostOffloadConfig, PassLaunchConfig, PreemptionMode, SglangConfig,
     SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};

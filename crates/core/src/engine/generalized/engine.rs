@@ -242,15 +242,15 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
 
         let mut end_ms = now_ms;
         let mut same_timestamp_retry = SameTimestampRetry::NotApplicable;
-        let mut started = Vec::new();
-        let mut pending = Vec::new();
+        let mut started = Vec::with_capacity(self.ranks.len());
+        let mut pending = Vec::with_capacity(self.ranks.len());
         for rank in &mut self.ranks {
             rank.prepare_group_pass(wave_step, self.dp_size);
         }
         // Every ready rank commits its scheduling before any pricing: a
         // rank's batch never depends on its duration, while an attention-DP
         // group's duration depends on every rank's batch.
-        let mut scheduled = Vec::new();
+        let mut scheduled = Vec::with_capacity(self.ranks.len());
         for dp_rank in 0..self.ranks.len() {
             if !self.ranks[dp_rank].is_ready() || self.ranks[dp_rank].waiting_for_external_command()
             {

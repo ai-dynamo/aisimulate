@@ -2720,6 +2720,39 @@ mod core_behavior {
         assert_eq!(signal.handoff_delay_ms, Some(8.0));
     }
 
+    /// A prefill worker's first token comes from its prefill forward, so its
+    /// pass prices no decode work, with or without speculation.
+    #[rstest]
+    #[case::plain(None)]
+    #[case::speculative(Some(1))]
+    fn prefill_worker_prices_no_decode_work(#[case] nextn: Option<usize>) {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(8)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(1))
+                .enable_chunked_prefill(true)
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .speedup_ratio(0.0)
+                .build()
+                .unwrap(),
+        );
+        core.receive(DirectRequest {
+            tokens: vec![1; 8],
+            max_output_tokens: 2,
+            uuid: Some(Uuid::from_u128(82)),
+            ..Default::default()
+        });
+
+        let work = core.schedule_pass(None, 0.0).unwrap();
+
+        assert!(work.prefill.is_some());
+        assert_eq!(work.decode, None);
+    }
+
     #[test]
     fn test_first_token_can_arrive_on_prompt_completion_pass() {
         let mut core = VllmCore::new(make_args());

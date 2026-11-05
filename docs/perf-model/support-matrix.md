@@ -25,6 +25,13 @@ adaptation and correction requirements are documented in
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
 Explicit invalid configuration is not converted into a fallback estimator.
 
+For learned-model cold start and native mixed fallback, see the
+[online GBDT tutorial](fpm-self-service/online-gbdt.md). The application owns
+initial fitting and observation admission. Native Replay consumes a prepared
+model; an application fallback wrapper does not run inside it. Complete portable
+state snapshots do not support `temporary_mixed_composition`; see the
+[persistence options](fpm-self-service/online-gbdt.md#6-save-resume-and-hand-the-model-to-replay).
+
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
 use the NemotronH text model. AISimulate reads the nested `llm_config` and
 accepts `linear_attention` and `full_attention` layer names. The bundled
@@ -51,6 +58,20 @@ measured timing data. The text path compiles, but the published matrix
 marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
 because the export declares a vision encoder that AISimulate does not
 model; the SDK tests cover the text path.
+
+The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
+configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
+quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
+`in_proj_qkv`, `in_proj_z` and `out_proj` projections, its full-attention
+projections and its shared-expert projections are static per-tensor FP8, and
+its KV cache is FP8. AISimulate prices those projections as `fp8_static`, the
+routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
+GEMMs in BF16, as the export stores them. Two lanes are approximations. The
+export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
+AISimulate prices them with the other GDN projections as `fp8_static`. The
+export also keeps its multi-token prediction (MTP) layer in BF16. With
+`nextn` above zero, AISimulate scales the decode graph by `(nextn + L) / L`
+for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
 
 ## Published FPE matrix
 

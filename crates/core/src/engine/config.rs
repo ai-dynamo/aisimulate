@@ -10,6 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::engine::common::speculative::normalize_conditional_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
+use crate::engine::host_offload::HostPolicy;
+use crate::engine::kv_manager::SourceReleaseOrder;
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
 use crate::perfmodel::FpmCacheGroup;
 
@@ -432,6 +434,118 @@ impl TryFrom<String> for G2Scope {
     }
 }
 
+/// vLLM CPU-offload connector a native G2 follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum G2Connector {
+    /// `OffloadingConnector` as of vLLM 0.24.
+    #[default]
+    #[serde(rename = "offloading_v0_24")]
+    OffloadingV024,
+    /// `OffloadingConnector` as of vLLM 0.32.0: prompt-only stores, recency
+    /// ranked at store and re-ranked when a request finishes.
+    #[serde(rename = "offloading_v0_32")]
+    OffloadingV032,
+    /// `SimpleCPUOffloadConnector` in eager mode as of vLLM 0.32.0: every
+    /// computed block stored, evicted in the CPU block pool's free-queue order.
+    #[serde(rename = "simple_cpu_v0_32")]
+    SimpleCpuV032,
+}
+
+impl G2Connector {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Each rule in which the connectors differ, for the vLLM version this
+    /// connector names.
+    pub(crate) fn rules(self) -> ConnectorRules {
+        match self {
+            Self::OffloadingV024 => ConnectorRules {
+                policy: HostPolicy::CohortLru,
+                touches_prompt: true,
+                pins_hits: false,
+                leaves_last_token: false,
+                waits_for_stores: true,
+                waits_for_loads: true,
+                stores_eagerly: false,
+                stores_what_fits: false,
+                holds_store_sources: None,
+                stores_at_finish: false,
+                reranks_at_finish: false,
+                preemption_waits_for_all: false,
+            },
+            Self::OffloadingV032 => ConnectorRules {
+                policy: HostPolicy::Ranked,
+                touches_prompt: false,
+                pins_hits: false,
+                leaves_last_token: false,
+                waits_for_stores: true,
+                waits_for_loads: true,
+                stores_eagerly: false,
+                stores_what_fits: false,
+                holds_store_sources: None,
+                stores_at_finish: true,
+                reranks_at_finish: true,
+                preemption_waits_for_all: false,
+            },
+            Self::SimpleCpuV032 => ConnectorRules {
+                policy: HostPolicy::FreeQueue,
+                touches_prompt: false,
+                pins_hits: true,
+                leaves_last_token: true,
+                waits_for_stores: false,
+                waits_for_loads: false,
+                stores_eagerly: true,
+                stores_what_fits: true,
+                holds_store_sources: Some(SourceReleaseOrder::HeadFirst),
+                stores_at_finish: true,
+                reranks_at_finish: false,
+                preemption_waits_for_all: true,
+            },
+        }
+    }
+}
+
+/// The rules in which the [`G2Connector`]s differ, so G2 branches on
+/// behavior rather than on connector names.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectorRules {
+    /// Where a block enters G2's eviction order.
+    pub(crate) policy: HostPolicy,
+    /// Each lookup and store makes the prompt's resident blocks the newest,
+    /// its first block newest of all (`LRUCachePolicy.touch`).
+    pub(crate) touches_prompt: bool,
+    /// A lookup pins its hit until the request loads it or looks up again.
+    pub(crate) pins_hits: bool,
+    /// A lookup leaves at least the last token to compute.
+    pub(crate) leaves_last_token: bool,
+    /// A lookup waits for the request's own stores and for any block whose
+    /// store is in flight. Otherwise such a block misses.
+    pub(crate) waits_for_stores: bool,
+    /// A lookup waits for a block that another request is loading.
+    /// Otherwise both requests load it.
+    pub(crate) waits_for_loads: bool,
+    /// Each pass stores every block computed before it, decode blocks
+    /// included, from a cursor that restarts at block 0 at each admission.
+    /// Otherwise each pass stores the prompt blocks it computes.
+    pub(crate) stores_eagerly: bool,
+    /// A store takes one free block per block G2 lacks, as many as are free,
+    /// and protects none. Otherwise G2 admits the request's new blocks all
+    /// or none and protects those it already holds.
+    pub(crate) stores_what_fits: bool,
+    /// A store holds the G1 blocks it copies until the copy completes, then
+    /// frees them in this order.
+    pub(crate) holds_store_sources: Option<SourceReleaseOrder>,
+    /// A finishing request stores the blocks it has not stored yet.
+    pub(crate) stores_at_finish: bool,
+    /// A finishing request re-ranks every block it stored, offered or
+    /// loaded, its first block newest.
+    pub(crate) reranks_at_finish: bool,
+    /// A preemption waits for every transfer in flight, not only the
+    /// preempted request's stores.
+    pub(crate) preemption_waits_for_all: bool,
+}
+
 const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
 
 fn default_shared_host_offload_bandwidth_gbps() -> f64 {
@@ -446,14 +560,13 @@ fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
 
-/// Physical controls for framework-native G1-to-host offload.
+/// Controls for framework-native G1-to-host offload.
 ///
-/// Framework policy remains selected by [`EngineConfig::backend`]. This
-/// descriptor intentionally contains only shared capacity and transfer
-/// parameters so additional framework profiles can reuse it without exposing
-/// unsupported policy combinations. Physical bytes per block are derived from
-/// [`EngineConfig::block_size`] and [`EngineConfig::kv_cache_bytes_per_token`].
-/// Fields at their defaults are omitted when serialized.
+/// Besides capacity and transfer parameters, `connector` selects which vLLM
+/// CPU-offload connector's store, lookup and eviction rules the tier follows.
+/// Physical bytes per block are derived from [`EngineConfig::block_size`] and
+/// [`EngineConfig::kv_cache_bytes_per_token`]. Fields at their defaults are
+/// omitted when serialized.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -489,6 +602,9 @@ pub struct NativeHostOffloadConfig {
     /// cluster-shared pools; ranks may join one pool only with an equal identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv_layout_id: Option<String>,
+    /// vLLM connector whose rules the tier follows.
+    #[serde(default, skip_serializing_if = "G2Connector::is_default")]
+    pub connector: G2Connector,
 }
 
 impl NativeHostOffloadConfig {
@@ -502,12 +618,18 @@ impl NativeHostOffloadConfig {
             shared_h2d_bandwidth_gbps: DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS,
             latency_to_first_byte_ms: 0.0,
             kv_layout_id: None,
+            connector: G2Connector::OffloadingV024,
         }
     }
 
     pub const fn with_bandwidths(mut self, d2h_gbps: f64, h2d_gbps: f64) -> Self {
         self.d2h_bandwidth_gbps = d2h_gbps;
         self.h2d_bandwidth_gbps = h2d_gbps;
+        self
+    }
+
+    pub const fn with_connector(mut self, connector: G2Connector) -> Self {
+        self.connector = connector;
         self
     }
 
@@ -543,6 +665,10 @@ impl NativeHostOffloadConfig {
                 "cluster_shared native_host_offload requires a nonempty kv_layout_id"
             );
         }
+        ensure!(
+            self.connector.is_default() || self.scope == G2Scope::DpRankLocal,
+            "native_host_offload.connector other than offloading_v0_24 requires scope dp_rank_local"
+        );
         Ok(())
     }
 }
@@ -1194,9 +1320,13 @@ impl EngineConfig {
         }
         if let Some(g3) = &self.g3_offload {
             g3.validate()?;
-            anyhow::ensure!(
-                self.native_host_offload.is_some(),
-                "g3_offload requires native_host_offload"
+            let host = self
+                .native_host_offload
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("g3_offload requires native_host_offload"))?;
+            ensure!(
+                host.connector.is_default(),
+                "g3_offload requires host_offload.connector=offloading_v0_24"
             );
             ensure!(
                 self.worker_type == WorkerType::Aggregated,
@@ -1214,6 +1344,10 @@ impl EngineConfig {
                 "kvcr requires host_offload.scope=dp_rank_local"
             );
             ensure!(
+                host.connector.is_default(),
+                "kvcr requires host_offload.connector=offloading_v0_24"
+            );
+            ensure!(
                 self.g3_offload.is_none(),
                 "kvcr cannot be combined with g3_offload"
             );
@@ -1227,6 +1361,12 @@ impl EngineConfig {
             ensure!(
                 self.backend == Backend::Vllm,
                 "native_host_offload is supported only for backend=vllm"
+            );
+            // A held P/D source reaches the connector's finish hook only after
+            // its transfer, while vLLM finishes it before.
+            ensure!(
+                host_offload.connector.is_default() || self.worker_type == WorkerType::Aggregated,
+                "native_host_offload.connector other than offloading_v0_24 is supported only for worker_type=aggregated"
             );
             ensure!(
                 self.enable_prefix_caching,
@@ -1883,10 +2023,54 @@ mod tests {
                 |config| config.aic_nextn = Some(1),
                 "does not support aic_nextn",
             ),
+            (
+                |config| {
+                    config.native_host_offload = Some(
+                        NativeHostOffloadConfig::new(8)
+                            .cluster_shared("tp1")
+                            .with_connector(G2Connector::SimpleCpuV032),
+                    )
+                },
+                "connector other than offloading_v0_24 requires scope dp_rank_local",
+            ),
+            (
+                |config| {
+                    config.worker_type = WorkerType::Prefill;
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::SimpleCpuV032;
+                },
+                "connector other than offloading_v0_24 is supported only for worker_type=aggregated",
+            ),
+            (
+                |config| {
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::OffloadingV032;
+                    config.g3_offload = serde_json::from_value(serde_json::json!(
+                        {"scope": "worker_local", "num_g3_blocks": 1}
+                    ))
+                    .unwrap();
+                },
+                "g3_offload requires host_offload.connector=offloading_v0_24",
+            ),
         ];
         for &(mutate, expected) in cases {
             assert_invalid_host_config(mutate, expected);
         }
+    }
+
+    #[test]
+    fn host_connector_round_trips_and_is_omitted_at_its_default() {
+        let config: NativeHostOffloadConfig = serde_json::from_value(
+            serde_json::json!({"num_host_blocks": 8, "connector": "offloading_v0_32"}),
+        )
+        .unwrap();
+        assert_eq!(config.connector, G2Connector::OffloadingV032);
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["connector"],
+            "offloading_v0_32"
+        );
+        let default = serde_json::to_value(NativeHostOffloadConfig::new(8)).unwrap();
+        assert!(default.get("connector").is_none());
     }
 
     #[test]
@@ -1955,6 +2139,13 @@ mod tests {
             (
                 |config| config.worker_type = WorkerType::Decode,
                 "kvcr supports aggregated and prefill workers only",
+            ),
+            (
+                |config| {
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::SimpleCpuV032
+                },
+                "kvcr requires host_offload.connector=offloading_v0_24",
             ),
             (
                 |config| {
