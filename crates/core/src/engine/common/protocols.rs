@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Scheduler-local data structures.
 //!
@@ -80,6 +83,8 @@ pub(crate) struct DirectRequest {
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     /// Image placeholders inside `tokens`; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,
@@ -171,6 +176,8 @@ pub(crate) struct SglangArgs {
     pub vlm_cache_bytes: Option<u64>,
     pub host_loop: bool,
     pub disaggregation_decode_enable_radix_cache: bool,
+    pub num_reserved_decode_tokens: Option<usize>,
+    pub disaggregation_decode_extra_slots: Option<usize>,
     pub frontend: Option<FrontendConfig>,
 }
 

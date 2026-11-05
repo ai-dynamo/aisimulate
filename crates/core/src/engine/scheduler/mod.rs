@@ -558,7 +558,7 @@ impl EngineCore {
 mod tests {
     use super::*;
     use crate::engine::HandoffId;
-    use crate::engine::common::protocols::{EngineType, MockEngineArgs, WorkerType};
+    use crate::engine::common::protocols::{EngineType, MockEngineArgs, SglangArgs, WorkerType};
 
     fn core(engine_type: EngineType, worker_type: WorkerType, blocks: usize) -> EngineCore {
         let args = MockEngineArgs::builder()
@@ -569,6 +569,10 @@ mod tests {
             .max_num_seqs(Some(1))
             .enable_prefix_caching(true)
             .worker_type(worker_type)
+            .sglang(Some(SglangArgs {
+                num_reserved_decode_tokens: Some(0),
+                ..Default::default()
+            }))
             .speedup_ratio(0.0)
             .build()
             .unwrap();
@@ -641,7 +645,8 @@ mod tests {
             assert_eq!(core.num_requests(), 0);
 
             let running_id = Uuid::from_u128(20_100 + case as u128);
-            let mut running_request = request(running_id, (100..108).collect());
+            // A partial last prompt page stays request-owned, even when complete pages are cached.
+            let mut running_request = request(running_id, (100..109).collect());
             running_request.max_output_tokens = 32;
             core.receive(running_request);
             core.execute_hidden_pass(0.0);

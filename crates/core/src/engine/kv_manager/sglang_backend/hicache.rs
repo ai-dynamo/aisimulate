@@ -154,13 +154,14 @@ impl HiCache {
         inserted_tokens: usize,
         owner: Uuid,
         session: Option<&str>,
+        cache_salt: Option<&str>,
     ) {
         let threshold = match self.write_policy {
-            SglangHiCacheWritePolicy::WriteThrough => 1,
-            SglangHiCacheWritePolicy::WriteThroughSelective => 2,
-            SglangHiCacheWritePolicy::WriteBack => return,
+            SglangHiCacheWritePolicy::WriteThrough => Some(1),
+            SglangHiCacheWritePolicy::WriteThroughSelective => Some(2),
+            SglangHiCacheWritePolicy::WriteBack => None,
         };
-        for node in cache.record_host_insert(anchor, inserted_tokens, threshold) {
+        for node in cache.record_host_insert(anchor, inserted_tokens, threshold, cache_salt) {
             self.backup(cache, node, owner, session);
         }
     }
@@ -258,8 +259,10 @@ impl HiCache {
                 self.complete_boundary(cache, self.tier.current_time_ms());
                 while !self.backups.is_empty() {
                     let deadline = self
-                        .tier
-                        .next_deadline(CLIENT)
+                        .backups
+                        .keys()
+                        .filter_map(|id| self.tier.transfer_deadline(*id))
+                        .min_by(f64::total_cmp)
                         .expect("submitted backup has a deadline");
                     self.advance(cache, deadline);
                 }
@@ -348,13 +351,13 @@ impl HiCache {
         };
         let mut pages = pages.into_iter();
         let loaded_nodes = nodes.iter().map(|blocks| blocks.node).collect::<Vec<_>>();
+        cache.begin_host_load(anchor, &loaded_nodes, transfer.get());
         for blocks in nodes {
             cache.restore_device_pages(
                 blocks.node,
                 pages.by_ref().take(blocks.keys.len()).collect(),
             );
         }
-        cache.begin_host_load(anchor, &loaded_nodes, transfer.get());
         self.loads.insert(transfer, (anchor, matched.device_tokens));
         self.depend_on_prefix(cache, anchor);
         cache.dec_lock_ref(device_anchor);
@@ -368,12 +371,14 @@ impl HiCache {
 fn node_blocks(cache: &mut RadixCache, node: NodeId, session: Option<&str>) -> NodeBlocks {
     let (mut parent, mut position) = cache.host_identity(cache.node(node).parent.unwrap());
     let session_id = session.map(Arc::<str>::from);
+    let cache_salt = cache.host_cache_salt(node);
     let mut keys = Vec::with_capacity(cache.node(node).key.len());
     let mut meta = Vec::with_capacity(keys.capacity());
     for &local in &cache.node(node).key {
         let hash = parent.map_or(local.0, |parent| compute_next_seq_hash(parent, local));
         keys.push(HostBlockKey::new(hash));
         meta.push(HostBlockMeta {
+            cache_salt: cache_salt.clone(),
             parent,
             tokens_hash: local.0,
             position,

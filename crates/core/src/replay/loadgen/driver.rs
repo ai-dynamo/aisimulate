@@ -2920,6 +2920,7 @@ impl WorkloadDriver {
                             (input_length, hash_ids, turn.output_token_ids.take())
                         };
                     let request_metadata = DirectRequest {
+                        cache_salt: None,
                         tokens: Vec::new(),
                         max_output_tokens: if live_warmup {
                             1
@@ -2956,6 +2957,7 @@ impl WorkloadDriver {
                         ReplayRequestHashes::from_tokens(&request_tokens, self.engine_block_size)
                     });
                     let request = ReplayRequestPayload::materialized(DirectRequest {
+                        cache_salt: None,
                         tokens: request_tokens,
                         max_output_tokens: turn.max_output_tokens,
                         output_token_ids: turn.output_token_ids.clone(),

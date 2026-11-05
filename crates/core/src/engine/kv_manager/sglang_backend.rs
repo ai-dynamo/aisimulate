@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+
 // Protected-prefix admission capacity follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
@@ -11,7 +13,7 @@
 use crate::engine::belady::BeladyOracle;
 use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
-    LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
+    LocalBlockHash, SequenceHash, block_hashes_with_salt, compute_next_seq_hash,
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
@@ -50,9 +52,18 @@ pub(crate) struct RadixRequestLease {
     last_node: Option<NodeId>,
     pub(crate) session_id: Option<String>,
     pub(crate) request_id: Uuid,
+
+    cache_salt: Option<String>,
 }
 
 impl RadixRequestLease {
+    pub(crate) fn new(cache_salt: Option<String>) -> Self {
+        Self {
+            cache_salt: cache_salt.filter(|salt| !salt.is_empty()),
+            ..Self::default()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn pages(&self) -> &[KvPageId] {
         &self.pages
@@ -96,10 +107,14 @@ impl RadixRequestLease {
             return;
         }
         let first_new_token = self.page_hashes.len() * page_size;
-        self.page_hashes.extend(compute_block_hash_for_seq(
-            &token_ids[first_new_token..complete_pages * page_size],
-            page_size,
-        ));
+        self.page_hashes.extend(
+            block_hashes_with_salt(
+                &token_ids[first_new_token..complete_pages * page_size],
+                page_size,
+                self.cache_salt.as_deref(),
+            )
+            .map(LocalBlockHash),
+        );
     }
 
     /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
@@ -138,6 +153,8 @@ impl RadixRequestLease {
             last_node: Some(last_node),
             session_id: None,
             request_id: Uuid::nil(),
+
+            cache_salt: None,
         }
     }
 }
@@ -426,9 +443,17 @@ impl SglangKvManager {
         inserted_tokens: usize,
         owner: Uuid,
         session: Option<&str>,
+        cache_salt: Option<&str>,
     ) {
         if let Some(host) = &mut self.hicache {
-            host.on_insert(&mut self.cache, anchor, inserted_tokens, owner, session);
+            host.on_insert(
+                &mut self.cache,
+                anchor,
+                inserted_tokens,
+                owner,
+                session,
+                cache_salt,
+            );
         }
         self.collect_host_events();
     }
@@ -486,6 +511,7 @@ impl SglangKvManager {
             prefix_tokens - loaded,
             token_ids,
             lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
         );
         self.cache.dec_lock_ref(anchor);
         Some(loaded)
@@ -712,6 +738,7 @@ impl SglangKvManager {
             lease.cached_tokens,
             token_ids,
             lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
         );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
@@ -735,6 +762,7 @@ impl SglangKvManager {
                 inserted_tokens,
                 lease.request_id,
                 lease.session_id.as_deref(),
+                lease.cache_salt.as_deref(),
             );
             return;
         }
@@ -746,6 +774,7 @@ impl SglangKvManager {
             inserted_tokens,
             lease.request_id,
             lease.session_id.as_deref(),
+            lease.cache_salt.as_deref(),
         );
         self.cache.dec_lock_ref(anchor);
     }
@@ -803,6 +832,7 @@ impl SglangKvManager {
             lease.session_id.as_deref(),
             lease.request_id,
             lease.host_inserted_tokens,
+            lease.cache_salt.as_deref(),
         );
     }
 
@@ -833,14 +863,29 @@ impl SglangKvManager {
         session_id: Option<&str>,
         owner: Uuid,
         inserted_tokens: usize,
+
+        cache_salt: Option<&str>,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
+        self.publish_stored_hashes(
+            page_hashes,
+            pages,
+            first_new_token,
+            token_ids,
+            session_id,
+            cache_salt,
+        );
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
         self.release_unretained_finished_pages(pages, new_last_node, first_new_token, complete_len);
-        self.backup_prefix(new_last_node, inserted_tokens, owner, session_id);
+        self.backup_prefix(
+            new_last_node,
+            inserted_tokens,
+            owner,
+            session_id,
+            cache_salt,
+        );
         self.cache.dec_lock_ref(last_node);
     }
 
@@ -860,6 +905,7 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
         session_id: Option<&str>,
+        cache_salt: Option<&str>,
     ) -> NodeId {
         let block_size = self.cache.page_size();
         let complete_len = page_hashes.len() * block_size;
@@ -871,7 +917,14 @@ impl SglangKvManager {
             pages.len()
         );
 
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
+        self.publish_stored_hashes(
+            page_hashes,
+            pages,
+            first_new_token,
+            token_ids,
+            session_id,
+            cache_salt,
+        );
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -1248,6 +1301,7 @@ impl SglangKvManager {
         first_new_token: usize,
         token_ids: &[u32],
         session_id: Option<&str>,
+        cache_salt: Option<&str>,
     ) -> usize {
         if self.kv_event_publishers.is_empty() {
             return 0;
@@ -1330,6 +1384,7 @@ impl SglangKvManager {
                 start_position: None,
                 blocks,
                 session_id: session_id.map(str::to_owned),
+                cache_salt: cache_salt.map(str::to_owned),
             }),
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
@@ -1391,6 +1446,7 @@ fn merge_into_tail(tail: &mut KvEvent, event: KvEvent) -> Option<KvEvent> {
         }
         (KvEventData::Stored(tail_stored), KvEventData::Stored(stored))
             if tail_stored.session_id == stored.session_id
+                && tail_stored.cache_salt == stored.cache_salt
                 && tail_stored.blocks.last().map(|block| block.block_hash)
                     == stored.parent_hash =>
         {
@@ -1442,6 +1498,89 @@ mod tests {
             self.events.lock().unwrap().push(event);
             Ok(())
         }
+    }
+
+    #[test]
+    fn cache_salt_survives_retraction_and_eviction_removes_the_published_hashes() {
+        let sink = Arc::new(MockSink::new());
+        let mut manager = SglangKvManager::new(4, 2, KvEventPublishers::new(Some(sink.clone())), 0);
+        let tokens = [1, 2, 3, 4];
+        let mut first = RadixRequestLease::new(Some("alpha".into()));
+        assert_eq!(
+            manager.allocate_for_request_lease(&tokens, &mut first),
+            Some(0)
+        );
+        manager.extend_cached_prefix(&tokens[..2], &mut first);
+        manager.retract_in_place(&mut first);
+        assert_eq!(
+            manager.allocate_for_request_lease(&tokens, &mut first),
+            Some(2)
+        );
+        manager.finish(&tokens, first);
+        manager.flush_events();
+        let first_events = sink.clone_events();
+        let [
+            KvEvent {
+                data: KvEventData::Stored(first_store),
+                ..
+            },
+        ] = first_events.as_slice()
+        else {
+            panic!("expected one coalesced store: {first_events:?}");
+        };
+        assert_eq!(first_store.cache_salt.as_deref(), Some("alpha"));
+        assert_eq!(first_store.blocks.len(), 2);
+
+        let mut same = RadixRequestLease::new(Some("alpha".into()));
+        same.ensure_page_hashes(&tokens, 2);
+        let reservation = manager
+            .reserve_destination_lease(same.page_hashes(), tokens.len())
+            .unwrap();
+        assert_eq!(reservation.prefix_len, tokens.len());
+        assert_eq!(reservation.transferable_prompt_tokens(), 0);
+        manager.cancel_destination(reservation);
+
+        let mut second = RadixRequestLease::new(Some("beta".into()));
+        second.ensure_page_hashes(&tokens, 2);
+        let reservation = manager
+            .reserve_destination_lease(second.page_hashes(), tokens.len())
+            .unwrap();
+        assert_eq!(reservation.prefix_len, 0);
+        assert_eq!(reservation.transferable_prompt_tokens(), tokens.len());
+        manager.activate_destination_lease(reservation, &tokens, &mut second);
+        manager.finish(&tokens, second);
+        manager.flush_events();
+        let events = sink.clone_events();
+        let [
+            _,
+            KvEvent {
+                data: KvEventData::Removed { block_hashes },
+                ..
+            },
+            KvEvent {
+                data: KvEventData::Stored(second_store),
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected eviction before the other namespace store: {events:?}");
+        };
+        let mut expected = first_store
+            .blocks
+            .iter()
+            .map(|block| block.block_hash)
+            .collect::<Vec<_>>();
+        let mut removed = block_hashes.clone();
+        expected.sort_unstable();
+        removed.sort_unstable();
+        assert_eq!(removed, expected);
+        assert_eq!(second_store.cache_salt.as_deref(), Some("beta"));
+        assert!(
+            second_store
+                .blocks
+                .iter()
+                .all(|block| !expected.contains(&block.block_hash))
+        );
     }
 
     #[test]
@@ -2115,7 +2254,7 @@ mod tests {
         let tokens = [1, 2, 3, 4];
         let hashes = compute_block_hash_for_seq(&tokens, 4);
         let pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
-        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None);
+        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None, None);
     }
 
     #[rstest::rstest]
@@ -2257,17 +2396,17 @@ mod tests {
         let first = mgr.allocate_for_request(&tokens).unwrap();
         let hashes = compute_block_hash_for_seq(&tokens, 2);
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None, None),
             1
         );
         mgr.flush_events();
-        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None), 0);
+        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None, None), 0);
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None, None),
             0
         );
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None, None),
             0
         );
         mgr.publish_removed_pages(&[]);
@@ -2326,17 +2465,32 @@ mod tests {
                 &pages[..1],
                 0,
                 &tokens,
-                None
+                None,
+                None,
             ),
             1
         );
         mgr.flush_events();
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(8, 4),
+                &pages,
+                0,
+                &tokens,
+                None,
+                None
+            ),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(8, 4),
+                &pages,
+                0,
+                &tokens,
+                None,
+                None
+            ),
             0
         );
 
@@ -2408,11 +2562,11 @@ mod tests {
         let hashes = compute_block_hash_for_seq(&[1, 2, 3], 1);
         // Two private copies may publish the same logical blocks before canonicalization.
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, req1.lease.pages(), 0, &[1, 2, 3], None),
+            mgr.publish_stored_hashes(&hashes, req1.lease.pages(), 0, &[1, 2, 3], None, None),
             3
         );
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, req2.lease.pages(), 0, &[1, 2, 3], None),
+            mgr.publish_stored_hashes(&hashes, req2.lease.pages(), 0, &[1, 2, 3], None, None),
             3
         );
         mgr.flush_events();
@@ -2465,6 +2619,7 @@ mod tests {
                 2,
                 &tokens,
                 None,
+                None,
             )
         }));
 
@@ -2490,6 +2645,7 @@ mod tests {
                 last_node,
                 0,
                 &tokens,
+                None,
                 None,
             )
         }));

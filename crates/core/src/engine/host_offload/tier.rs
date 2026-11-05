@@ -95,6 +95,7 @@ pub(crate) struct HostLink {
 /// Router-facing identity and store attribution, retained when publishing residency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HostBlockMeta {
+    pub(crate) cache_salt: Option<Arc<str>>,
     pub(crate) parent: Option<SequenceHash>,
     pub(crate) tokens_hash: u64,
     /// Absolute zero-based block index within its request.
@@ -1527,11 +1528,13 @@ impl HostTier {
                 Some(KvEventData::Stored(stored))
                     if stored.blocks.last().map(|last: &KvBlock| last.block_hash)
                         == meta.parent
-                        && stored.session_id.as_deref() == meta.session_id.as_deref() =>
+                        && stored.session_id.as_deref() == meta.session_id.as_deref()
+                        && stored.cache_salt.as_deref() == meta.cache_salt.as_deref() =>
                 {
                     stored.blocks.push(block);
                 }
                 _ => events.push(KvEventData::Stored(StoredBlocks {
+                    cache_salt: meta.cache_salt.as_deref().map(str::to_owned),
                     parent_hash: meta.parent,
                     start_position: Some(meta.position),
                     blocks: vec![block],
@@ -2518,6 +2521,7 @@ pub(crate) mod tests {
 
     fn meta(parent: Option<u64>, tokens_hash: u64, position: usize) -> HostBlockMeta {
         HostBlockMeta {
+            cache_salt: None,
             parent,
             tokens_hash,
             position,
@@ -2528,6 +2532,7 @@ pub(crate) mod tests {
     /// One `Stored` run of `(block_hash, tokens_hash)` pairs.
     fn stored(parent: Option<u64>, start: usize, blocks: &[(u64, u64)]) -> KvEventData {
         KvEventData::Stored(StoredBlocks {
+            cache_salt: None,
             parent_hash: parent,
             start_position: Some(start),
             blocks: blocks

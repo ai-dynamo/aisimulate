@@ -32,6 +32,9 @@ pub(super) struct SglangConfig {
     pub(super) schedule_policy: SchedulePolicy,
     pub(super) max_prefill_tokens: usize,
     pub(super) max_running_requests: usize,
+    pub(super) decode_request_slots: usize,
+    pub(super) decode_metadata_slots: usize,
+    pub(super) reserved_decode_tokens: usize,
     pub(super) chunked_prefill_size: usize,
     pub(super) prefill_decode_interval: usize,
     pub(super) clip_max_new_tokens: usize,
@@ -112,10 +115,32 @@ impl SglangConfig {
             }
         };
 
+        let total_kv_tokens = args.num_gpu_blocks * args.block_size;
+        let context_len = args.max_model_len.unwrap_or(total_kv_tokens).max(1);
+        let estimated_requests =
+            (total_kv_tokens.saturating_mul(512) / context_len).clamp(2048, 4096);
+        let max_running_requests = args
+            .max_num_seqs
+            .unwrap_or(estimated_requests)
+            .min(total_kv_tokens / 2);
+        let extra_decode_slots = sglang
+            .and_then(|s| s.disaggregation_decode_extra_slots)
+            .unwrap_or_else(|| {
+                args.max_num_seqs
+                    .filter(|&limit| limit <= 32)
+                    .unwrap_or(0)
+                    .saturating_mul(2)
+            });
+
         Self {
             schedule_policy,
             prefill_decode_interval: args.prefill_decode_interval,
-            max_running_requests: args.max_num_seqs.unwrap_or(usize::MAX),
+            max_running_requests,
+            decode_request_slots: max_running_requests.saturating_add(extra_decode_slots),
+            decode_metadata_slots: max_running_requests.saturating_mul(2),
+            reserved_decode_tokens: sglang
+                .and_then(|s| s.num_reserved_decode_tokens)
+                .unwrap_or(512),
             max_prefill_tokens: sglang
                 .and_then(|s| s.max_prefill_tokens)
                 .unwrap_or(DEFAULT_MAX_PREFILL_TOKENS),
@@ -133,7 +158,7 @@ impl SglangConfig {
             decode_speedup_ratio: args.decode_speedup_ratio,
             worker_type: args.worker_type,
             block_size: args.block_size,
-            total_kv_tokens: args.num_gpu_blocks * args.block_size,
+            total_kv_tokens,
             max_model_len: args.max_model_len,
             enable_prefix_caching,
             kv_transfer_bytes_per_token: args.kv_transfer_bytes_per_token,

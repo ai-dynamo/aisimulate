@@ -106,6 +106,17 @@ impl HostLoop {
         self.inbox.is_empty() && self.in_flight.is_none()
     }
 
+    pub(super) fn unobserved_output_tokens(&self) -> usize {
+        self.in_flight.as_ref().map_or(0, |batch| {
+            batch
+                .outputs
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count()
+        })
+    }
+
     /// Requests delivered but not yet received.
     #[cfg(test)]
     pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {

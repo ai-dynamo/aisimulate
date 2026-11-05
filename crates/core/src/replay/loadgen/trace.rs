@@ -472,6 +472,7 @@ impl TurnTrace {
     ) -> Result<DirectRequest> {
         let tokens = self.synthesize_tokens(trace_block_size)?;
         Ok(DirectRequest {
+            cache_salt: None,
             tokens,
             max_output_tokens: self.max_output_tokens,
             output_token_ids: self.output_token_ids.clone(),

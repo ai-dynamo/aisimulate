@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aisimulate_core::engine::{Backend, EngineConfig, KvEvent, KvEventData, TimingModelConfig};
+use aisimulate_core::engine::{
+    Backend, EngineConfig, KvEvent, KvEventData, SglangConfig, TimingModelConfig,
+};
 use aisimulate_core::replay::loadgen::{
     MooncakeRow, ReplayRequestPayload, Trace, load_agentic_mooncake,
 };
@@ -161,6 +163,10 @@ fn spec(disagg: bool, max_in_flight: Option<usize>) -> ReplaySpec {
             num_gpu_blocks: 64,
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
+            sglang: SglangConfig {
+                num_reserved_decode_tokens: 0,
+                ..SglangConfig::default()
+            },
             timing_model: TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
                 decode_ms: 1.0,
@@ -407,6 +413,7 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                 spec.engine = serde_json::to_value(config).unwrap();
                 spec.requests = (0..3)
                     .map(|i| ReplayRequest {
+                        cache_salt: None,
                         id: format!("request-{i}"),
                         arrival_time_ms: 0.0,
                         input_tokens: 16,

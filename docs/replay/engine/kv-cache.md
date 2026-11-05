@@ -134,6 +134,29 @@ request itself computed, which raises `reused_input_tokens` but not
 `first_admission_reused_input_tokens`; the summary's
 `first_admission_prefix_cache_reused_ratio` aggregates the latter.
 
+### SGLang request cache salt
+
+Native `Request`, authored Rust `ReplaySpec.requests`, and configured inline
+Python requests accept this per-request field:
+
+| Field | Default | Rules |
+| --- | --- | --- |
+| `cache_salt` | Absent | Optional string. Empty is equivalent to absent. Nonempty salts require the native SGLang backend. |
+
+Requests reuse a prefix only within the same salt namespace, even when their
+token IDs match. The namespace also applies to LPM scores, waiting-queue
+deduplication, P/D destination matching, and Belady input-demand forecasts.
+Session IDs remain attribution and do not separate cache contents.
+Built-in trace formats keep their existing unsalted schema; custom deferred
+replay requests carry salt in their `DirectRequest` metadata.
+
+Stored KV events carry `cache_salt`; removals reference the same salted hashes.
+AISim retains its XXH3 block/sequence representation, with unchanged identities
+for unsalted requests. It models the namespace behavior of
+[SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d),
+without reproducing SGLang's SHA256 event encoding. Placement adapters hashing
+a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
+
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>
 

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+
 // Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
@@ -64,6 +66,7 @@ fn test_args(
         .sglang(Some(SglangArgs {
             page_size: Some(block_size),
             chunked_prefill_size: Some(chunked_prefill_size),
+            num_reserved_decode_tokens: Some(0),
             ..Default::default()
         }))
         .build()
@@ -371,12 +374,347 @@ mod hicache_tests {
         manager.complete_host_boundary(0.0);
         manager.evict(8);
         let mut waiting = WaitingQueue::from([SglangRequest::new(direct_request(tokens, 1), 4, 0)]);
-        let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let admitted =
+            get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(admitted.can_run[0].materialized_tokens, 8);
         assert_eq!(admitted.prefill_fpm[0].tokens_computed, 8);
         assert_eq!(admitted.prefill_fpm[0].prefix_tokens, 0);
         assert_eq!(admitted.admissions[0].reused_input_tokens, 0);
         assert!(!manager.has_host_work());
+    }
+}
+
+mod computed_kv_completion {
+    use super::*;
+    use crate::engine::common::protocols::WorkerType;
+
+    #[rstest::rstest]
+    #[case(false, false, false, 28, 112)]
+    #[case(true, false, false, 28, 112)]
+    #[case(false, true, false, 28, 112)]
+    #[case(true, true, false, 28, 128)]
+    #[case(false, false, false, 1, 112)]
+    #[case(true, false, false, 1, 112)]
+    #[case(false, true, false, 1, 112)]
+    #[case(true, true, false, 1, 128)]
+    #[case(false, false, true, 28, 112)]
+    #[case(true, false, true, 28, 112)]
+    #[case(false, false, true, 29, 128)]
+    #[case(true, false, true, 29, 128)]
+    fn completion_reuses_only_computed_pages(
+        #[case] overlap: bool,
+        #[case] decode_role: bool,
+        #[case] speculative: bool,
+        #[case] outputs: usize,
+        #[case] cached: usize,
+    ) {
+        let mut args = test_args(64, 16, 1024);
+        let sglang = args.sglang.as_mut().unwrap();
+        sglang.host_loop = overlap;
+        sglang.disaggregation_decode_enable_radix_cache = decode_role;
+        if decode_role {
+            args.worker_type = WorkerType::Decode;
+        }
+        if speculative {
+            args.aic_nextn = Some(2);
+            args.aic_nextn_accept_rates = Some("1,1".into());
+        }
+        let mut core = SglangCore::new_with_kv_capture(args, 0);
+        let prompt_len = if outputs == 1 { 127 } else { 100 };
+        let mut sequence: Vec<u32> = (0..prompt_len).collect();
+        let planned: Vec<u32> = (1000..1000 + outputs as u32).collect();
+        let request = DirectRequest {
+            output_token_ids: Some(planned.clone()),
+            ..direct_request(sequence.clone(), outputs)
+        };
+        let uuid = if decode_role {
+            // Decode overlap is an internal lifecycle oracle; public configuration rejects it.
+            let uuid = Uuid::from_u128(90_300);
+            let handoff_id = HandoffId::from(uuid);
+            let effects = core
+                .apply_command_effects(
+                    SchedulerCommand::ReserveDestination {
+                        handoff_id,
+                        request: DirectRequest {
+                            uuid: Some(uuid),
+                            ..request
+                        },
+                    },
+                    true,
+                )
+                .unwrap();
+            assert!(!effects.lifecycle_events.is_empty());
+            core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap();
+            uuid
+        } else {
+            core.receive(request)
+        };
+        let mut emitted = Vec::new();
+        let mut terminals = 0;
+        let mut now_ms = 0.0;
+        for _ in 0..64 {
+            if core.is_drained() {
+                break;
+            }
+            let pass = core.execute_hidden_pass(now_ms);
+            now_ms = pass.end_ms;
+            for signal in pass.output_signals {
+                assert_eq!(signal.uuid, uuid);
+                assert!(!signal.rejected);
+                emitted.extend(signal.token_id);
+                terminals += usize::from(signal.completed);
+            }
+        }
+        assert!(core.is_drained());
+        assert_eq!(emitted, planned);
+        assert_eq!(terminals, 1);
+        sequence.extend(planned);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), cached);
+        sequence.push(9000);
+        core.receive(direct_request(sequence, 1));
+        let follower = core.execute_hidden_pass(now_ms);
+        assert_eq!(follower.admissions[0].reused_input_tokens, cached);
+    }
+}
+
+mod pd_admission_v0522 {
+    use super::*;
+    use crate::engine::common::protocols::WorkerType;
+
+    fn decode_args(capacity: usize, max_running: usize) -> MockEngineArgs {
+        let mut args = test_args(capacity, 1, capacity);
+        args.worker_type = WorkerType::Decode;
+        args.max_num_seqs = Some(max_running);
+        args.sglang.as_mut().unwrap().num_reserved_decode_tokens = None;
+        args
+    }
+
+    fn reserve(core: &mut SglangCore, id: u128, prompt: usize, outputs: usize) -> bool {
+        let effects = core
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(id)),
+                    request: DirectRequest {
+                        uuid: Some(Uuid::from_u128(id)),
+                        ..direct_request(vec![id as u32; prompt], outputs)
+                    },
+                },
+                true,
+            )
+            .unwrap();
+        !effects.lifecycle_events.is_empty()
+    }
+
+    fn activate(core: &mut SglangCore, id: u128) {
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(id)),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn default_headroom_admits_two_of_four_thousand_token_prompts() {
+        let mut core = SglangCore::new(decode_args(4096, 32));
+        assert_eq!(
+            (1..=4)
+                .map(|id| reserve(&mut core, id, 1000, 200))
+                .collect::<Vec<_>>(),
+            [true, true, false, false]
+        );
+        assert_eq!(core.kv_manager.cache().available_tokens(), 2096);
+        assert_eq!(core.destination_reservation_attempts(), 3);
+    }
+
+    #[test]
+    fn matched_prefix_is_protected_and_a_failed_candidate_releases_its_pin() {
+        let mut args = decode_args(128, 8);
+        let sglang = args.sglang.as_mut().unwrap();
+        sglang.num_reserved_decode_tokens = Some(16);
+        sglang.disaggregation_decode_enable_radix_cache = true;
+        let mut core = SglangCore::new(args);
+        let tokens = vec![2; 64];
+        let cached = core.kv_manager.allocate_for_request(&tokens).unwrap();
+        core.kv_manager.finish(&tokens, cached.lease);
+        assert!(reserve(&mut core, 1, 48, 1));
+        assert_eq!(core.kv_manager.cache().evictable_size, 64);
+
+        assert!(!reserve(&mut core, 2, 64, 60));
+        assert_eq!(core.kv_manager.cache().evictable_size, 64);
+        let effects = core
+            .apply_command_effects(
+                SchedulerCommand::CancelDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(1)),
+                },
+                true,
+            )
+            .unwrap();
+        assert!(matches!(
+            effects.lifecycle_events.as_slice(),
+            [SchedulerLifecycleEvent::DestinationReserved { handoff_id, .. }]
+                if *handoff_id == HandoffId::from(Uuid::from_u128(2))
+        ));
+        assert_eq!(core.kv_manager.cache().available_tokens(), 64);
+        assert_eq!(core.kv_manager.cache().evictable_size, 0);
+    }
+
+    #[test]
+    fn preallocation_charges_page_rounding_and_recovers_after_cancellation() {
+        let mut args = test_args(12, 8, 96);
+        args.worker_type = WorkerType::Decode;
+        args.sglang.as_mut().unwrap().num_reserved_decode_tokens = Some(9);
+        let mut core = SglangCore::new(args);
+        assert!(reserve(&mut core, 1, 17, 1));
+        // 72 available - 9 active reserve = 63. The next request needs
+        // 56 rounded prompt tokens + 9 reserve, even though 49 + 9 fits.
+        assert!(!reserve(&mut core, 2, 49, 1));
+        assert_eq!(core.kv_manager.cache().available_tokens(), 72);
+        let effects = core
+            .apply_command_effects(
+                SchedulerCommand::CancelDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(1)),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(effects.lifecycle_events.len(), 1);
+        assert_eq!(core.kv_manager.cache().available_tokens(), 40);
+    }
+
+    #[test]
+    fn a_running_requests_completion_guard_can_exceed_its_fixed_reserve() {
+        let mut core = SglangCore::new(decode_args(4096, 32));
+        assert!(reserve(&mut core, 1, 3000, 1000));
+        activate(&mut core, 1);
+        let mut now = 0.0;
+        for _ in 0..10 {
+            now = core.execute_hidden_pass(now).end_ms;
+        }
+        assert_eq!(core.running[0].output_len(), 10);
+        assert_eq!(core.kv_manager.cache().available_tokens(), 1087);
+        // A 512-token active reserve would leave 575 tokens for this 562-token
+        // request. The completion guard is 990 and leaves only 97.
+        assert!(!reserve(&mut core, 2, 50, 10));
+        assert!(
+            core.destination_pages(HandoffId::from(Uuid::from_u128(2)))
+                .is_empty()
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(false, true)]
+    #[case(true, false)]
+    fn completion_guard_does_not_count_an_unobserved_output(
+        #[case] overlap: bool,
+        #[case] fits: bool,
+    ) {
+        let mut args = decode_args(2561, 32);
+        args.sglang.as_mut().unwrap().host_loop = overlap;
+        let mut core = SglangCore::new(args);
+        assert!(reserve(&mut core, 1, 1000, 1000));
+        activate(&mut core, 1);
+        let mut now = 0.0;
+        for _ in 0..10 {
+            now = core.execute_hidden_pass(now).end_ms;
+        }
+        assert_eq!(core.kv_manager.cache().available_tokens(), 1552);
+        assert_eq!(reserve(&mut core, 2, 50, 10), fits);
+    }
+
+    #[rstest::rstest]
+    #[case::metadata(false, 16)]
+    #[case::request_rows(true, 24)]
+    fn preallocation_obeys_transfer_metadata_and_request_row_limits(
+        #[case] complete_transfer: bool,
+        #[case] limit: u128,
+    ) {
+        let mut core = SglangCore::new(decode_args(16384, 8));
+        for id in 1..=limit {
+            assert!(reserve(&mut core, id, 8, 32), "request {id}");
+            if complete_transfer {
+                activate(&mut core, id);
+            }
+        }
+        assert!(!reserve(&mut core, limit + 1, 8, 32));
+        if complete_transfer {
+            let pass = core.execute_hidden_pass(0.0);
+            assert_eq!(pass.admissions.len(), 8);
+            assert_eq!(core.running.len(), 8);
+        }
+    }
+
+    #[test]
+    fn source_hold_owns_a_request_row_until_transfer_release() {
+        let mut args = test_args(1024, 1, 1024);
+        args.worker_type = WorkerType::Prefill;
+        args.max_num_seqs = Some(1);
+        let mut core = SglangCore::new(args);
+        for id in 1..=2 {
+            core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+                handoff_id: HandoffId::from(Uuid::from_u128(id)),
+                request: DirectRequest {
+                    uuid: Some(Uuid::from_u128(id)),
+                    ..direct_request(vec![id as u32; 8], 1)
+                },
+            })
+            .unwrap();
+        }
+        let first = core.execute_hidden_pass(0.0);
+        assert_eq!(first.admissions.len(), 1);
+        assert!(core.source_is_held(HandoffId::from(Uuid::from_u128(1))));
+        assert!(core.waiting_for_external_command());
+        let blocked = core.execute_hidden_pass(first.end_ms);
+        assert!(blocked.admissions.is_empty());
+        core.apply_command(SchedulerCommand::ReleaseSource {
+            handoff_id: HandoffId::from(Uuid::from_u128(1)),
+        })
+        .unwrap();
+        let next = core.execute_hidden_pass(blocked.end_ms);
+        assert_eq!(next.admissions[0].uuid, Uuid::from_u128(2));
+    }
+
+    #[test]
+    fn decode_retractions_restore_before_new_transfers_without_reprefill() {
+        let mut args = decode_args(256, 8);
+        args.sglang.as_mut().unwrap().num_reserved_decode_tokens = Some(16);
+        let mut core = SglangCore::new(args);
+        for id in 1..=2 {
+            assert!(reserve(&mut core, id, 8, 200));
+            activate(&mut core, id);
+        }
+        let mut now = 0.0;
+        let mut saw_retraction = false;
+        let mut saw_readmission = false;
+        let mut outputs = 0;
+        for _ in 0..450 {
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            outputs += pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+                .count();
+            assert_eq!(pass.fpm.as_ref().unwrap().num_prefill_requests, 0);
+            if saw_retraction && !pass.admissions.is_empty() {
+                saw_readmission = true;
+            }
+            if !saw_retraction && !pass.pressure_events.is_empty() {
+                saw_retraction = true;
+                assert!(!reserve(&mut core, 3, 8, 1));
+                assert!(core.waiting.iter().any(|request| request.retracted));
+            }
+            core.retry_pending_destinations();
+            if core.running.is_empty() && core.waiting.is_empty() {
+                break;
+            }
+        }
+        assert!(saw_retraction && saw_readmission);
+        assert_eq!(outputs, 400);
+        assert_eq!(
+            core.destination_pages(HandoffId::from(Uuid::from_u128(3)))
+                .len(),
+            8
+        );
     }
 }
 
@@ -420,7 +758,7 @@ mod admission_v0522 {
             SglangRequest::new(direct_request((0..1000).collect(), 16), 16, 0),
             SglangRequest::new(direct_request(shared, 16), 16, 0),
         ]);
-        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(result.can_run.len(), 1);
         assert_eq!(waiting.len(), 1);
         assert!(result.batch_is_full);
@@ -447,7 +785,7 @@ mod admission_v0522 {
             4,
             0,
         )]);
-        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let result = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert!(result.can_run.is_empty());
         assert_eq!(manager.cache().available_tokens(), 24);
         assert!(!waiting[0].kv_lease.is_active());
@@ -470,7 +808,8 @@ mod admission_v0522 {
             4,
             0,
         )]);
-        let mut first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[], false);
+        let mut first =
+            get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[], false, 0);
         let continuation = first.can_run.pop().unwrap();
         assert_eq!(continuation.materialized_tokens, 4);
         waiting.push_back(continuation);
@@ -483,8 +822,15 @@ mod admission_v0522 {
         running.materialized_tokens = 38;
         running.allocated_tokens = 40;
         running.debug_assert_invariants(4);
-        let second =
-            get_new_batch_prefill(&mut waiting, &mut manager, &config, ratio, &[running], true);
+        let second = get_new_batch_prefill(
+            &mut waiting,
+            &mut manager,
+            &config,
+            ratio,
+            &[running],
+            true,
+            0,
+        );
         assert_eq!(second.can_run.len(), 1);
         assert_eq!(second.can_run[0].materialized_tokens, expected_materialized);
         assert_eq!(
@@ -508,14 +854,15 @@ mod admission_v0522 {
             4,
             0,
         )]);
-        let mut first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let mut first =
+            get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         let continuation = first.can_run.pop().unwrap();
         let id = continuation.uuid;
         waiting.push_back(SglangRequest::new(direct_request(hot, 1), 4, 0));
         waiting.push_back(continuation);
         apply_schedule_policy(&mut waiting, &manager, &config);
         assert_eq!(waiting.front().unwrap().uuid, id);
-        let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(next.can_run[0].uuid, id);
         assert!(next.admissions.is_empty());
     }
@@ -575,7 +922,7 @@ mod admission_v0522 {
         let survivor = core.receive(direct_request(vec![3, 4], 3));
         let first = core.execute_hidden_pass(0.0);
         assert_eq!(core.running.len(), 2);
-        let held = core.kv_manager.allocate_for_request(&vec![99; 11]).unwrap();
+        let held = core.kv_manager.allocate_for_request(&vec![99; 12]).unwrap();
         core.new_token_ratio = 0.4;
         let skipped = core.execute_hidden_pass(first.end_ms);
         assert!(skipped.pressure_events.is_empty());
@@ -831,6 +1178,7 @@ fn request_storage_reservation_is_bounded_for_submit_and_destination() {
             page_size: Some(BLOCK_SIZE),
             chunked_prefill_size: Some(16),
             clip_max_new_tokens: Some(CLIP_MAX_NEW_TOKENS),
+            num_reserved_decode_tokens: Some(0),
             ..Default::default()
         }))
         .build()
@@ -1008,6 +1356,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
     let mut running = vec![
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: zero_uuid,
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -1021,10 +1370,11 @@ fn zero_output_completion_survives_decode_reservation_failure() {
         },
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: normal_uuid,
-            sequence_tokens: vec![5, 6, 7, 8],
+            sequence_tokens: vec![5, 6, 7, 8, 9],
             prompt_len: 4,
-            max_output_tokens: 1,
+            max_output_tokens: 2,
             planned_output_ids: None,
             kv_lease: normal_alloc.lease,
             materialized_tokens: 4,
@@ -1062,10 +1412,10 @@ fn zero_output_completion_survives_decode_reservation_failure() {
 
 #[test]
 fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
-    // Two full pages, both requests need one more page for this step: r2 (no output yet) is
+    // Two full pages, both requests have a sampled token needing KV: r2 (less output) is
     // retracted, r1 takes its page, produces its last token and completes in the same step.
     // SGLang's `retract_decode` estimate is taken from the survivors before the forward
-    // (decoded 1 + 20 over max_new 2 + 1, clamped to 1.0); computing it after the forward would
+    // (decoded 2 + 20 over max_new 3 + 1, clamped to 1.0); computing it after the forward would
     // see an empty batch and reset the ratio to 0.
     let config = SglangConfig::from_args(&test_args(2, 4, 16));
     let mut kv_manager = SglangKvManager::new(8, 4, KvEventPublishers::default(), 0);
@@ -1074,10 +1424,11 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
     let mut running = vec![
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::from_u128(90_010),
-            sequence_tokens: vec![1, 2, 3, 10],
+            sequence_tokens: vec![1, 2, 3, 10, 11],
             prompt_len: 3,
-            max_output_tokens: 2,
+            max_output_tokens: 3,
             planned_output_ids: None,
             kv_lease: r1_alloc.lease,
             materialized_tokens: 4,
@@ -1087,8 +1438,9 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
         },
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::from_u128(90_011),
-            sequence_tokens: vec![5, 6, 7, 8],
+            sequence_tokens: vec![5, 6, 7, 8, 9],
             prompt_len: 4,
             max_output_tokens: 5,
             planned_output_ids: None,
@@ -1111,22 +1463,23 @@ fn committed_decode_membership_excludes_retracted_requests() {
     let mut core = SglangCore::new(test_args(2, 4, 16));
     let completed = Uuid::from_u128(90_012);
     let retracted = Uuid::from_u128(90_013);
-    // Both requests fill a page and need one more slot. The request without
-    // output is retracted; its page lets the surviving request finish.
+    // Both requests fill a page and have a sampled token awaiting KV. The request with
+    // less output is retracted; its page lets the surviving request finish.
     for (uuid, tokens, prompt_len, max_output_tokens) in [
-        (completed, vec![1, 2, 3, 10], 3, 2),
-        (retracted, vec![5, 6, 7, 8], 4, 5),
+        (completed, vec![1, 2, 3, 10, 11], 3, 3),
+        (retracted, vec![5, 6, 7, 8, 9], 4, 5),
     ] {
         core.receive(DirectRequest {
             uuid: Some(uuid),
             ..direct_request(tokens[..prompt_len].to_vec(), max_output_tokens)
         });
         core.waiting.pop_front().unwrap();
-        let allocation = core.kv_manager.allocate_for_request(&tokens).unwrap();
+        let allocation = core.kv_manager.allocate_for_request(&tokens[..4]).unwrap();
         core.running.push(SglangRequest {
             images: Vec::new(),
             pending_terminal: false,
             is_decode_handoff: false,
+            retracted: false,
             uuid,
             sequence_tokens: tokens,
             prompt_len,
@@ -1169,6 +1522,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     kv_manager.finish(&prompt, cached.lease);
     let mut waiting = WaitingQueue::from([SglangRequest {
         is_decode_handoff: false,
+        retracted: false,
         uuid: Uuid::from_u128(90_002),
         sequence_tokens: prompt.clone(),
         prompt_len: prompt.len(),
@@ -1180,7 +1534,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         images: Vec::new(),
         pending_terminal: false,
     }]);
-    let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false)
+    let mut req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false, 0)
         .can_run
         .pop()
         .unwrap();
@@ -1188,14 +1542,16 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(req.cached_tokens(), 4);
     assert_eq!(req.kv_pages()[..1], cached_pages[..1]);
     assert_eq!(req.kv_pages().len(), 2);
+    req.append_output_token(20, config.block_size);
 
     // The seven-token blocker owns two pages (it evicts the second, no longer
     // referenced cached page to get them). With four pages total there is no free capacity, so the
     // cache-hit request is retracted while the blocker can fill the remainder of its own page.
     let blocker_tokens = vec![9, 10, 11, 12, 13, 14, 15];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
-    let blocker = SglangRequest {
+    let mut blocker = SglangRequest {
         is_decode_handoff: false,
+        retracted: false,
         uuid: Uuid::from_u128(90_003),
         sequence_tokens: blocker_tokens,
         prompt_len: 7,
@@ -1207,6 +1563,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         images: Vec::new(),
         pending_terminal: false,
     };
+    blocker.append_output_token(21, config.block_size);
     kv_manager.flush_events();
     buffer.drain();
 
@@ -1250,18 +1607,20 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
 mod decode_retraction {
     use super::*;
 
-    /// A page-size-1 decode row that owns KV for its whole sequence.
+    /// A page-size-1 decode row with a sampled token beyond its computed KV.
     fn row(
         kv_manager: &mut SglangKvManager,
         id: u128,
         prompt: &[u32],
         output: &[u32],
     ) -> SglangRequest {
-        let sequence_tokens = [prompt, output].concat();
+        let mut sequence_tokens = [prompt, output].concat();
         let sequence_len = sequence_tokens.len();
         let allocation = kv_manager.allocate_for_request(&sequence_tokens).unwrap();
+        sequence_tokens.push(100 + id as u32);
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::from_u128(id),
             sequence_tokens,
             prompt_len: prompt.len(),
@@ -1288,6 +1647,7 @@ mod decode_retraction {
         sequence_tokens.push(output);
         SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::from_u128(id),
             sequence_tokens,
             prompt_len: prompt.len(),
@@ -1324,7 +1684,7 @@ mod decode_retraction {
 
         let retracted = decode::check_decode_mem(&mut running, &mut kv_manager, &config);
 
-        // Rows 2 to 4 have no output and row 4 has the shortest prompt. Rows 2 and 3 tie
+        // Rows 2 to 4 have one output and row 4 has the shortest prompt. Rows 2 and 3 tie
         // exactly, and the later one is retracted first.
         assert_eq!(ids(&retracted), vec![3]);
         // The survivors keep the retraction order: longest output, then shortest prompt.
@@ -1366,7 +1726,7 @@ mod decode_retraction {
         let prefix = [1, 2, 3, 4];
         let cached = kv_manager.allocate_for_request(&prefix).unwrap();
         kv_manager.finish(&prefix, cached.lease);
-        // Only the row without output protects the cached prefix.
+        // Only the row with one output protects the cached prefix.
         let mut running = vec![
             row(&mut kv_manager, 1, &[10, 11], &[12]),
             row(&mut kv_manager, 2, &[20, 21], &[22]),
@@ -1730,6 +2090,7 @@ mod destination_lifecycle {
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
                 disaggregation_decode_enable_radix_cache: enabled,
+                num_reserved_decode_tokens: Some(0),
                 ..Default::default()
             }))
             .build()
@@ -1762,6 +2123,7 @@ mod destination_lifecycle {
         let mut now_ms = 0.0;
         let mut stored = Vec::new();
         let mut transferable = Vec::new();
+        let mut reused = Vec::new();
         for turn in 0..2u128 {
             let request_id = Uuid::from_u128(21_000 + turn);
             let handoff_id = HandoffId::from(Uuid::from_u128(22_000 + turn));
@@ -1805,6 +2167,11 @@ mod destination_lifecycle {
                 let pass = execute(&mut destination, now_ms);
                 now_ms = pass.end_ms;
                 stored.extend(stored_hashes(&pass.kv_events));
+                reused.extend(
+                    pass.admissions
+                        .iter()
+                        .map(|event| event.reused_input_tokens),
+                );
                 if destination.is_empty() {
                     break;
                 }
@@ -1812,6 +2179,14 @@ mod destination_lifecycle {
             assert!(destination.is_empty());
         }
         stored.extend(stored_hashes(&destination.drain_kv_events()));
+        assert_eq!(reused.len(), 2);
+        assert_eq!(
+            reused,
+            transferable
+                .iter()
+                .map(|missing| 8 - missing)
+                .collect::<Vec<_>>()
+        );
 
         if enabled {
             assert!(!stored.is_empty());
@@ -1847,6 +2222,7 @@ mod destination_lifecycle {
             .sglang(Some(SglangArgs {
                 page_size: Some(4),
                 chunked_prefill_size: Some(32),
+                num_reserved_decode_tokens: Some(0),
                 ..Default::default()
             }))
             .build()
@@ -2127,7 +2503,7 @@ mod destination_lifecycle {
             .filter(|admission| admission.uuid == logical_uuid)
             .collect::<Vec<_>>();
         assert_eq!(logical_admissions.len(), 1);
-        assert_eq!(logical_admissions[0].reused_input_tokens, 0);
+        assert_eq!(logical_admissions[0].reused_input_tokens, 4);
         let running = destination
             .running
             .iter()
@@ -2218,6 +2594,7 @@ mod destination_lifecycle {
             .sglang(Some(SglangArgs {
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
+                num_reserved_decode_tokens: Some(0),
                 ..Default::default()
             }))
             .build()
@@ -2284,7 +2661,7 @@ mod destination_lifecycle {
     fn running_admission_of_a_shared_prompt_retries_the_pending_destination() {
         let args = MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)
-            .num_gpu_blocks(4)
+            .num_gpu_blocks(5)
             .block_size(4)
             .max_num_seqs(Some(1))
             .worker_type(WorkerType::Decode)
@@ -2293,6 +2670,7 @@ mod destination_lifecycle {
                 page_size: Some(4),
                 chunked_prefill_size: Some(16),
                 disaggregation_decode_enable_radix_cache: true,
+                num_reserved_decode_tokens: Some(0),
                 ..Default::default()
             }))
             .build()
@@ -2320,7 +2698,7 @@ mod destination_lifecycle {
         .unwrap();
 
         // The ready prompt is not reusable yet: the same prompt needs two fresh
-        // pages and only one is free.
+        // pages plus its output budget, and only two pages are free.
         let second = core
             .apply_command_effects(
                 SchedulerCommand::ReserveDestination {
@@ -2442,6 +2820,53 @@ mod scheduling {
     use super::*;
 
     #[test]
+    fn cache_salt_namespaces_lpm_scores_and_in_batch_deduplication() {
+        let tokens = (0..32).collect::<Vec<_>>();
+        let config = SglangConfig {
+            schedule_policy: SchedulePolicy::Lpm,
+            ..SglangConfig::from_args(&test_args(64, 4, 64))
+        };
+        let make = |index, salt: Option<&str>| {
+            SglangRequest::new(
+                DirectRequest {
+                    tokens: tokens.clone(),
+                    max_output_tokens: 1,
+                    uuid: Some(Uuid::from_u128(index)),
+                    cache_salt: salt.map(str::to_owned),
+                    ..Default::default()
+                },
+                4,
+                0,
+            )
+        };
+        let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
+        let mut waiting = WaitingQueue::from([
+            make(1, Some("alpha")),
+            make(2, Some("alpha")),
+            make(3, Some("beta")),
+            make(4, None),
+            make(5, Some("")),
+        ]);
+        apply_schedule_policy(&mut waiting, &manager, &config);
+        assert_eq!(
+            waiting
+                .iter()
+                .map(|request| request.uuid.as_u128())
+                .collect::<Vec<_>>(),
+            [1, 3, 4, 2, 5]
+        );
+
+        let mut cached = RadixRequestLease::new(Some("beta".into()));
+        manager
+            .allocate_for_request_lease(&tokens, &mut cached)
+            .unwrap();
+        manager.finish(&tokens, cached);
+        let mut waiting = WaitingQueue::from([make(1, Some("alpha")), make(2, Some("beta"))]);
+        apply_schedule_policy(&mut waiting, &manager, &config);
+        assert_eq!(waiting[0].uuid, Uuid::from_u128(2));
+    }
+
+    #[test]
     fn test_lpm_reorders_by_current_sequence_prefix_match() {
         let mut kv_manager = SglangKvManager::new(1000, 1, KvEventPublishers::default(), 0);
         kv_manager
@@ -2465,6 +2890,7 @@ mod scheduling {
         let mut waiting = WaitingQueue::from([
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: no_match_uuid,
                 sequence_tokens: vec![9, 8, 7],
                 prompt_len: 3,
@@ -2478,6 +2904,7 @@ mod scheduling {
             },
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: match_uuid,
                 sequence_tokens: vec![1, 2, 3, 4, 5, 6, 7],
                 prompt_len: 5,
@@ -2514,6 +2941,7 @@ mod scheduling {
         for _ in 0..33 {
             waiting.push_back(SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::new_v4(),
                 sequence_tokens: duplicate_prefix.clone(),
                 prompt_len: duplicate_prefix.len(),
@@ -2529,6 +2957,7 @@ mod scheduling {
         let unique_uuid = Uuid::new_v4();
         waiting.push_back(SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: unique_uuid,
             sequence_tokens: (100..132).collect(),
             prompt_len: 32,
@@ -2604,7 +3033,7 @@ mod core_behavior {
         // insert covers the prompt only: the first output token's KV is not computed yet.
         let prefill_blocks = 8 / page_size;
         let observation_delay = usize::from(host_loop);
-        let finished_blocks = 58 / page_size;
+        let finished_blocks = 57 / page_size;
         assert_eq!(
             kv_event_shapes_by_pass(&mut core),
             vec![
@@ -2622,7 +3051,7 @@ mod core_behavior {
     #[test]
     fn kv_event_removals_are_batched_like_sglang() {
         // Sixty cached one-token prompts fill the pool except for room for an eight-token prompt,
-        // so every output token of the next request evicts one cached page.
+        // so each consumed output token evicts one cached page on its decode forward.
         let mut core = SglangCore::new_with_kv_capture(test_args(68, 1, 64), 0);
         for token in 1_000..1_060 {
             let cached = core.kv_manager.allocate_for_request(&[token]).unwrap();
@@ -2635,9 +3064,9 @@ mod core_behavior {
         assert_eq!(
             kv_event_shapes_by_pass(&mut core),
             vec![
-                (0, vec![("removed", 1), ("stored", 8)]),
+                (0, vec![("stored", 8)]),
                 (40, vec![("removed", 40)]),
-                (49, vec![("removed", 9), ("stored", 50)]),
+                (49, vec![("removed", 9), ("stored", 49)]),
             ]
         );
     }
@@ -2654,6 +3083,7 @@ mod core_behavior {
             let alloc = kv_manager.allocate_for_request(&prompt).unwrap();
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::from_u128(uuid),
                 prompt_len: prompt.len(),
                 materialized_tokens: prompt.len(),
@@ -2676,8 +3106,8 @@ mod core_behavior {
         let first =
             decode::simulate_prefill_first_tokens(&mut running, &mut kv_manager, &config, 0.0)
                 .unwrap();
-        assert!(first.output_signals.is_empty());
-        assert!(running.iter().all(|req| req.output_len() == 0));
+        assert_eq!(first.output_signals.len(), 2);
+        assert!(running.iter().all(|req| req.output_len() == 1));
         assert_eq!(kv_manager.cache().prefix_match_len(&short_prompt), 4);
         assert_eq!(kv_manager.cache().prefix_match_len(&long_prompt), 8);
         kv_manager.flush_events();
@@ -2696,7 +3126,7 @@ mod core_behavior {
             panic!("expected one retraction");
         };
         assert_eq!(retracted.uuid, Uuid::from_u128(90_102));
-        assert_eq!(running[0].output_len(), 1);
+        assert_eq!(running[0].output_len(), 2);
         assert_eq!(kv_manager.cache().prefix_match_len(&short_prompt), 4);
     }
 
@@ -2710,7 +3140,7 @@ mod core_behavior {
         request.uuid = Some(uuid);
         core.receive(request);
 
-        // One prefill pass and seven decode passes: eight output tokens, two full decoded pages.
+        // Eight sampled outputs have seven computed KV tokens: only one full decoded page.
         let mut collector = crate::engine::trace::TraceCollector::default();
         let mut now_ms = 0.0;
         for _ in 0..8 {
@@ -2723,8 +3153,8 @@ mod core_behavior {
         core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
             .unwrap();
         assert!(core.is_empty());
-        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 16);
-        assert_eq!(stored_hashes(&core.drain_kv_events()).len(), 2);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), 12);
+        assert_eq!(stored_hashes(&core.drain_kv_events()).len(), 1);
     }
 
     use super::*;
@@ -2741,6 +3171,7 @@ mod core_behavior {
             let planned = vec![111, 222, 333, 444, 555, 666, 777];
             let mut sequence = vec![1, 2];
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: sequence.clone(),
                 max_output_tokens: planned.len(),
                 output_token_ids: Some(planned.clone()),
@@ -2804,6 +3235,7 @@ mod core_behavior {
         let mut kv_manager = SglangKvManager::new(12, 4, KvEventPublishers::default(), 0);
         let mut waiting = WaitingQueue::from([SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1; 16],
             prompt_len: 16,
@@ -2816,7 +3248,8 @@ mod core_behavior {
             pending_terminal: false,
         }]);
 
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false);
+        let admit =
+            get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], false, 0);
         assert!(admit.can_run.is_empty());
         assert_eq!(waiting.len(), 1);
         assert_eq!(kv_manager.cache().available_tokens(), 12);
@@ -2839,6 +3272,7 @@ mod core_behavior {
         kv_manager.extend_cached_prefix(&[1, 2, 3, 4], &mut alloc.lease);
         let mut running = vec![SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4, 5, 6],
             prompt_len: 6,
@@ -2860,7 +3294,20 @@ mod core_behavior {
         assert_eq!(running[0].allocated_tokens, 8);
 
         simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
-        assert_eq!(running[0].allocated_tokens, 12);
+        assert_eq!(running[0].allocated_tokens, 8);
+        assert_eq!(running[0].materialized_tokens, 8);
+        let final_step = decode::simulate_decode_step_with_sampler(
+            &mut running,
+            &mut kv_manager,
+            &config,
+            None,
+            0.0,
+        )
+        .unwrap();
+        assert!(running.is_empty());
+        assert_eq!(final_step.completed_requests[0].allocated_tokens, 12);
+        assert_eq!(final_step.completed_requests[0].materialized_tokens, 9);
+        assert_eq!(final_step.completed_requests[0].output_len(), 4);
     }
 
     #[test]
@@ -2886,6 +3333,7 @@ mod core_behavior {
         let base_alloc = base_kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         let mut base_running = vec![SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -2902,6 +3350,7 @@ mod core_behavior {
         let fast_alloc = fast_kv_manager.allocate_for_request(&[1, 2, 3, 4]).unwrap();
         let mut fast_running = vec![SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -2954,8 +3403,9 @@ mod core_behavior {
         let mut running = vec![
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::new_v4(),
-                sequence_tokens: vec![1, 2, 3, 4, 11, 12, 13, 14],
+                sequence_tokens: vec![1, 2, 3, 4, 11, 12, 13, 14, 15],
                 prompt_len: 4,
                 max_output_tokens: 10,
                 planned_output_ids: None,
@@ -2967,6 +3417,7 @@ mod core_behavior {
             },
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::new_v4(),
                 sequence_tokens: vec![9, 8, 7, 6, 21],
                 prompt_len: 4,
@@ -3003,6 +3454,7 @@ mod core_behavior {
         kv_manager.extend_cached_prefix(&[1, 2, 3, 4], &mut alloc.lease);
         let mut running = vec![SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::new_v4(),
             sequence_tokens: vec![1, 2, 3, 4],
             prompt_len: 4,
@@ -3043,6 +3495,7 @@ mod core_behavior {
             .unwrap();
         let mut core = SglangCore::new(args);
         core.receive(crate::engine::common::protocols::DirectRequest {
+            cache_salt: None,
             tokens: vec![1; 6],
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3190,6 +3643,7 @@ mod forward_pass_metrics {
     fn test_fpm_single_prefill_request() {
         let mut core = SglangCore::new(fpm_args());
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3223,6 +3677,7 @@ mod forward_pass_metrics {
 
         // r1: 4-token prompt, 3 output tokens
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3242,6 +3697,7 @@ mod forward_pass_metrics {
 
         // r2: arriving while r1 is decoding
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3280,6 +3736,7 @@ mod forward_pass_metrics {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3303,6 +3760,7 @@ mod forward_pass_metrics {
         assert_eq!(core.running[0].output_len(), 1);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3353,6 +3811,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(fpm_args());
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3369,6 +3828,7 @@ mod forward_pass_metrics {
         assert_eq!(pass1.mocker_metrics.sglang_cache_total_tokens, 8);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3582,6 +4042,7 @@ mod forward_pass_metrics {
 
         // Two 8-token requests but limited KV
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3592,6 +4053,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..108).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3639,6 +4101,7 @@ mod forward_pass_metrics {
 
         // Two prefill requests with different prompt lengths
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(), // prompt_len = 4
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3649,6 +4112,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..112).collect(), // prompt_len = 12
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3694,6 +4158,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(args);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..16).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3768,6 +4233,7 @@ mod forward_pass_metrics {
             (r2, (100..104).collect(), 30),
         ] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens,
                 output_token_ids: None,
@@ -3787,6 +4253,7 @@ mod forward_pass_metrics {
         assert_eq!(core.running.len(), 1);
         // A request that does not fit waits in the queue ahead of any retraction.
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (200..232).collect(),
             max_output_tokens: 40,
             output_token_ids: None,
@@ -3865,6 +4332,7 @@ mod forward_pass_metrics {
     /// so its full sequence is cached.
     fn finish_and_cache(core: &mut SglangCore, id: u128, tokens: Vec<u32>, now: &mut f64) {
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens,
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3897,6 +4365,7 @@ mod forward_pass_metrics {
         let mut r2: Vec<u32> = (0..10).collect();
         r2.extend([100, 101, 102, 103]);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: r2,
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3932,6 +4401,7 @@ mod forward_pass_metrics {
         let mut now = 0.0;
         finish_and_cache(&mut core, 1, (0..5).collect(), &mut now);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..5).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3949,13 +4419,12 @@ mod forward_pass_metrics {
         assert_eq!(fpm.sum_prefill_tokens, 1);
         assert!(pass.end_ms > now);
         // The allocator honours the same cap (see `allocation_match_is_capped_like_sglang` for the
-        // lease-level state): the fifth prompt token got its own slot at admission and the first
-        // output token took another; once the in-flight prefix was cached, the fifth token's slot
-        // was deduplicated against the identical cached page, so the pool is one token smaller.
+        // lease-level state): the fifth prompt token gets a slot at admission, then deduplicates
+        // against the cached page. The sampled output has no KV yet, so occupancy is unchanged.
         assert_eq!(core.running.len(), 1);
         assert_eq!(
             available_before - core.kv_manager.cache().available_tokens(),
-            1
+            0
         );
     }
 
@@ -3971,6 +4440,7 @@ mod forward_pass_metrics {
         r2.extend([100, 101, 102, 103]);
         for (id, tokens) in [(2u128, r2), (3u128, vec![200, 201])] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens: 2,
                 output_token_ids: None,
@@ -4000,6 +4470,7 @@ mod forward_pass_metrics {
         // neither the admission event nor the cache-hit metric may count it.
         let mut core = SglangCore::new(chunk6_args(256));
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..12).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -4059,6 +4530,7 @@ mod forward_pass_metrics {
         let r2 = Uuid::from_u128(2);
         for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -4097,6 +4569,7 @@ mod forward_pass_metrics {
         // pass completes both.
         let mut core = SglangCore::new(three_page_args());
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -4169,6 +4642,7 @@ mod forward_pass_metrics {
 
         // Two requests with 4-token prompts and long outputs to fill KV
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
@@ -4179,6 +4653,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
@@ -4196,6 +4671,7 @@ mod forward_pass_metrics {
 
         // Add a third request to increase memory pressure
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (200..212).collect(), // 12 tokens
             max_output_tokens: 10,
             output_token_ids: None,
@@ -4918,6 +5394,7 @@ mod host_loop_passes {
         let alloc = kv_manager.allocate_for_request(&prompt).unwrap();
         let mut running = vec![SglangRequest {
             is_decode_handoff: false,
+            retracted: false,
             uuid: Uuid::from_u128(1),
             sequence_tokens: prompt.iter().copied().chain([99]).collect(),
             prompt_len: 8,
@@ -4972,6 +5449,7 @@ mod host_loop_passes {
         let mut running = vec![
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::from_u128(1),
                 sequence_tokens: finishing,
                 prompt_len: 4,
@@ -4985,6 +5463,7 @@ mod host_loop_passes {
             },
             SglangRequest {
                 is_decode_handoff: false,
+                retracted: false,
                 uuid: Uuid::from_u128(2),
                 sequence_tokens: continuing,
                 prompt_len: 4,
@@ -5006,7 +5485,7 @@ mod host_loop_passes {
         assert_eq!(step.output_signals.len(), 2);
         assert!(running[0].pending_terminal);
         assert_eq!(running[0].allocated_tokens, 4);
-        assert_eq!(running[1].allocated_tokens, 8);
+        assert_eq!(running[1].allocated_tokens, 4);
         assert_eq!(
             kv_manager.cache().evictable_size,
             4,
@@ -5198,23 +5677,24 @@ mod vision_batches {
         let retracted = Uuid::from_u128(2);
         let images = vec![image(1, 0)];
         for (uuid, tokens, prompt_len, row_images) in [
-            (Uuid::from_u128(1), vec![1, 2, 3, 10], 3, Vec::new()),
-            (retracted, vec![5, 6, 7, 8], 4, images.clone()),
+            (Uuid::from_u128(1), vec![1, 2, 3, 10, 11], 3, Vec::new()),
+            (retracted, vec![5, 6, 7, 8, 9], 4, images.clone()),
         ] {
             core.receive(DirectRequest {
                 uuid: Some(uuid),
-                ..direct_request(tokens[..prompt_len].to_vec(), 2)
+                ..direct_request(tokens[..prompt_len].to_vec(), 3)
             });
             core.waiting.pop_front().unwrap();
-            let allocation = core.kv_manager.allocate_for_request(&tokens).unwrap();
+            let allocation = core.kv_manager.allocate_for_request(&tokens[..4]).unwrap();
             core.running.push(SglangRequest {
                 images: row_images,
                 pending_terminal: false,
                 is_decode_handoff: false,
+                retracted: false,
                 uuid,
                 sequence_tokens: tokens,
                 prompt_len,
-                max_output_tokens: 2,
+                max_output_tokens: 3,
                 planned_output_ids: None,
                 kv_lease: allocation.lease,
                 materialized_tokens: 4,

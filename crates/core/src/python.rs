@@ -6474,6 +6474,7 @@ mod tests {
                 SchedulerCommand::new(
                     0,
                     Command::Submit(Request {
+                        cache_salt: None,
                         request_id: uuid::Uuid::from_u128(1),
                         tokens: vec![1; 12],
                         max_output_tokens: 1,
@@ -7016,6 +7017,7 @@ mod tests {
                         SchedulerCommand::new(
                             0,
                             Command::Submit(Request {
+                                cache_salt: None,
                                 request_id: uuid::Uuid::from_u128(id),
                                 tokens: (0..length).map(|token| token as u32).collect(),
                                 max_output_tokens: 2,
@@ -10008,6 +10010,7 @@ mod tests {
             record_per_request: true,
             sla: Default::default(),
             requests: vec![ReplayRequest {
+                cache_salt: None,
                 id: "authored-id".into(),
                 arrival_time_ms: 0.0,
                 input_tokens: 4,

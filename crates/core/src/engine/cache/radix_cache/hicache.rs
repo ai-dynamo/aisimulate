@@ -8,6 +8,7 @@ use super::{KvPageId, LocalBlockHash, NodeId, RadixCache};
 use crate::engine::common::hashing::compute_next_seq_hash;
 use rustc_hash::FxHashMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub(super) struct HostNode {
     load: Option<u64>,
     locks: usize,
     hits: usize,
+    cache_salt: Option<Arc<str>>,
     pub(super) duplicate_order: Option<u64>,
     pub(super) identity: Option<(u64, usize)>,
 }
@@ -96,7 +98,8 @@ impl RadixCache {
         &mut self,
         anchor: NodeId,
         inserted_tokens: usize,
-        threshold: usize,
+        threshold: Option<usize>,
+        cache_salt: Option<&str>,
     ) -> Vec<NodeId> {
         let mut end = 0;
         let mut backups = Vec::new();
@@ -112,12 +115,22 @@ impl RadixCache {
                 .nodes
                 .entry(node)
                 .or_default();
+            if state.cache_salt.is_none() {
+                state.cache_salt = cache_salt.map(Arc::from);
+            }
+            let Some(threshold) = threshold else {
+                continue;
+            };
             state.hits = state.hits.saturating_add(1);
             if state.backup.is_none() && state.hits >= threshold {
                 backups.push(node);
             }
         }
         backups
+    }
+
+    pub(crate) fn host_cache_salt(&self, node: NodeId) -> Option<Arc<str>> {
+        self.hicache.as_ref()?.nodes.get(&node)?.cache_salt.clone()
     }
 
     pub(crate) fn enable_host_duplicate_tracking(&mut self) {
@@ -136,7 +149,6 @@ impl RadixCache {
             || state.backup != Some(HostBackup::Resident)
             || state.load.is_some()
         {
-            self.forget_host_duplicate(node);
             return;
         }
         if state.duplicate_order.is_some() {
@@ -377,7 +389,7 @@ impl RadixCache {
         transfer: u64,
         device_tokens: usize,
     ) {
-        for node in self.path_nodes(anchor) {
+        for node in self.path_nodes(anchor).into_iter().rev() {
             let Some(state) = self.hicache.as_mut().unwrap().nodes.get_mut(&node) else {
                 continue;
             };
