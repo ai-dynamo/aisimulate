@@ -260,11 +260,15 @@ def _validate_hybrid_host_offload(connector: str, prefix_match_unit: int | None,
         )
 
 
-def _omit_default_checkpoint_switches(self, handler: Any) -> dict[str, Any]:
-    # Keep the existing state_cache shape unless a checkpoint switch is on.
+def _omit_unset_state_cache_fields(self, handler: Any) -> dict[str, Any]:
+    # Keep the existing state_cache shape unless a new field is set.
     payload = handler(self)
-    for name in ("prefill_checkpoint", "junction_checkpoints"):
-        if payload.get(name) is False:
+    for name, unset in (
+        ("num_speculative_states", None),
+        ("prefill_checkpoint", False),
+        ("junction_checkpoints", False),
+    ):
+        if name in payload and payload[name] is unset:
             payload.pop(name)
     return payload
 
@@ -277,7 +281,7 @@ class StateCacheConfig(StrictModel):
     prefill_checkpoint: StrictBool = False
     junction_checkpoints: StrictBool = False
 
-    _omit_checkpoint_switches = model_serializer(mode="wrap")(_omit_default_checkpoint_switches)
+    _omit_unset_fields = model_serializer(mode="wrap")(_omit_unset_state_cache_fields)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -304,7 +308,7 @@ class StateCachePredictionConfig(StrictModel):
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
 
-    _omit_checkpoint_switches = model_serializer(mode="wrap")(_omit_default_checkpoint_switches)
+    _omit_unset_fields = model_serializer(mode="wrap")(_omit_unset_state_cache_fields)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -1379,6 +1383,8 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
             f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
             "aggregated/disaggregated language workers"
         )
+    if getattr(engine.speculation, "disable_eagle_block_drop", False) and backends != {"vllm"}:
+        raise ValueError("speculation.disable_eagle_block_drop requires backend=vllm")
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:

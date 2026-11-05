@@ -7,6 +7,7 @@
 //! manager owns KV-event metadata, while the pool owns occupancy, duplicate
 //! copies, prefix pins, and eviction.
 
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use super::AllocationRequirement;
@@ -455,6 +456,38 @@ pub(crate) struct StateHandoff {
     copies: Vec<BlockCopyId>,
 }
 
+/// This pass's hand-offs, grouped by request so a request finishing before the
+/// pass stores them takes its own without scanning the others.
+#[derive(Default)]
+struct StateHandoffQueue {
+    owners: Vec<Uuid>,
+    by_owner: FxHashMap<Uuid, Vec<StateHandoff>>,
+}
+
+impl StateHandoffQueue {
+    fn push(&mut self, handoff: StateHandoff) {
+        let owners = &mut self.owners;
+        self.by_owner
+            .entry(handoff.owner)
+            .or_insert_with(|| {
+                owners.push(handoff.owner);
+                Vec::new()
+            })
+            .push(handoff);
+    }
+
+    /// Every queued hand-off, in publication order: a request publishes its
+    /// states together when its pass finalizes.
+    fn take(&mut self) -> Vec<StateHandoff> {
+        let mut by_owner = std::mem::take(&mut self.by_owner);
+        std::mem::take(&mut self.owners)
+            .into_iter()
+            .filter_map(|owner| by_owner.remove(&owner))
+            .flatten()
+            .collect()
+    }
+}
+
 pub(crate) struct VllmKvManager {
     pool: VllmBlockPool,
     block_size: usize,
@@ -466,7 +499,7 @@ pub(crate) struct VllmKvManager {
     state_cache: Option<StateCacheManager>,
     prefix_match_unit: Option<usize>,
     /// Present while a host tier takes recurrent-state stores.
-    state_handoffs: Option<Vec<StateHandoff>>,
+    state_handoffs: Option<StateHandoffQueue>,
 }
 
 impl VllmKvManager {
@@ -516,27 +549,23 @@ impl VllmKvManager {
 
     /// Queue every newly published state for the host tier.
     pub(crate) fn record_state_handoffs(&mut self) {
-        self.state_handoffs.get_or_insert_with(Vec::new);
+        self.state_handoffs.get_or_insert_with(Default::default);
     }
 
     /// The states published since the last call, in publication order.
     pub(crate) fn take_state_handoffs(&mut self) -> Vec<StateHandoff> {
         self.state_handoffs
             .as_mut()
-            .map(std::mem::take)
+            .map(StateHandoffQueue::take)
             .unwrap_or_default()
     }
 
     /// Take `owner`'s not-yet-offered hand-offs, keeping the others queued.
     pub(crate) fn take_state_handoffs_of(&mut self, owner: Uuid) -> Vec<StateHandoff> {
-        let Some(queue) = self.state_handoffs.as_mut() else {
-            return Vec::new();
-        };
-        let (taken, kept) = std::mem::take(queue)
-            .into_iter()
-            .partition(|handoff| handoff.owner == owner);
-        *queue = kept;
-        taken
+        self.state_handoffs
+            .as_mut()
+            .and_then(|queue| queue.by_owner.remove(&owner))
+            .unwrap_or_default()
     }
 
     /// Attach the store transfer that reads a live hand-off's source copies.

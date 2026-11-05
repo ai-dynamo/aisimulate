@@ -106,7 +106,8 @@ follow the [cost-model contract](../../perf-model/configuration.md#speculative-d
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
-Grouped caches, G3 offload, G2 except MTP for a [hybrid G2](kv-cache.md#hybrid-g2), sub-block state-cache `prefix_match_unit`, AFD/EPD,
+Grouped caches, G3 offload, G2 except MTP for a [hybrid G2](kv-cache.md#hybrid-g2), sub-block state-cache `prefix_match_unit` without
+`state_cache.num_speculative_states`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -235,8 +236,8 @@ This is functional replay, not a claim of AgentX hardware accuracy.
 Rejected with MTP: grouped caches, G3 offload, G2 (except a
 [hybrid G2](kv-cache.md#hybrid-g2) with `engine.speculation.disable_eagle_block_drop`;
 legacy `nextn` cannot set the switch), and
-state-cache prefix matching with `prefix_match_unit` smaller than `block_size`.
-Full-block alignment is supported.
+state-cache prefix matching with `prefix_match_unit` smaller than `block_size`
+unless `state_cache.num_speculative_states` is set.
 Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
