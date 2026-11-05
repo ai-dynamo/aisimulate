@@ -51,3 +51,30 @@ def test_shard_plans_parse_as_pipeline_plans(gates, tmp_path):
         s["op"] == "probe.trace_case" and s["case_filter"].startswith("backend=sglang,op=") for s in plan["shards"]
     )
     assert len({s["name"] for s in plan["shards"]}) == len(plan["shards"])
+
+
+@pytest.mark.parametrize(
+    "op, select, roles, phase",
+    [
+        ("gemm", {}, ("gemm",), None),
+        ("mla_bmm_gen_post", {}, ("gemm",), None),
+        ("moe", {}, ("moe_gemm", "routing"), None),
+        ("gdn", {"phase": "generation"}, ("linear_attention",), "decode"),
+        # the gate name used to carry this; glm5_* and mamba2_* names matched no pattern and
+        # graded unscoped
+        ("mamba2", {"phase": "context"}, ("linear_attention",), "prefill"),
+        ("glm5_topk_module", {}, ("attention", "dsa_indexer"), None),
+        ("dsv4_csa_generation_module", {}, ("attention", "dsa_indexer"), "decode"),
+        ("mla_context", {}, ("attention", "dsa_indexer"), "prefill"),
+        ("encoder_attention", {}, ("attention",), "profile_run"),
+    ],
+)
+def test_the_op_decides_what_a_gate_proves(gates, op, select, roles, phase):
+    assert gates.gate_target(op, select) == (roles, phase)
+
+
+def test_plan_narrows_to_a_repo_or_family(gates):
+    by_repo = gates.shard_plan("vllm", "sm90", repo="Qwen/Qwen3.5-0.8B")["shards"]
+    assert by_repo and all("Qwen3.5-0.8B" in s["name"] for s in by_repo)
+    by_family = gates.shard_plan("vllm", "sm90", family="gdn_")["shards"]
+    assert {s["name"] for s in by_family} == {"gdn_ctx_Qwen3.5-0.8B", "gdn_gen_Qwen3.5-0.8B"}

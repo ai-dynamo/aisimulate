@@ -43,27 +43,11 @@ def _kv_equiv(a, b):
 
 
 # ---------------------------------------------------------------- the target
-# A gate proves ONE op. The taxonomy carries a `role` per kernel (attention,
-# gemm, moe_gemm, linear_attention, dsa_indexer, quant, mhc, routing, kvcache,
-# norm_rope, infra, ...); the gate's target roles say which kernels are the
-# evidence and which are auxiliary work. Auxiliary overlap (a shared quant
-# kernel next to two different GEMMs) never carries a verdict (review
-# 2026-09-25 P1). Target roles and phase come from the gate name unless given
-# explicitly; both are recorded in the verdict.
-_GATE_TARGETS = (
-    # (regex on the gate/capture name, target roles, phase or None)
-    (r"^encoder_attn", ("attention",), "profile_run"),  # vision encoder runs in vLLM's profile run
-    (r"^compute_scale", ("quant",), None),
-    (r"^gemm_", ("gemm",), None),
-    (r"^mla_bmm", ("gemm",), None),
-    (r"^moe_", ("moe_gemm", "routing"), None),
-    (r"^mhc", ("mhc",), None),
-    (r"^(gdn|kda)_ctx", ("linear_attention",), "prefill"),
-    (r"^(gdn|kda)_gen", ("linear_attention",), "decode"),
-    (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_ctx", ("attention", "dsa_indexer"), "prefill"),
-    (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_gen", ("attention", "dsa_indexer"), "decode"),
-    (r"^(attn|mla|dsa|dsv4|msa)", ("attention", "dsa_indexer"), None),  # paged_mqa_logits, ...
-)
+# A gate proves ONE op. The taxonomy carries a `role` per kernel (attention, gemm, moe_gemm,
+# linear_attention, dsa_indexer, quant, mhc, routing, kvcache, norm_rope, infra, ...); the
+# gate's target roles (gates.gate_target, from its op) say which kernels are the evidence and
+# which are auxiliary work. Auxiliary overlap (a shared quant kernel next to two different
+# GEMMs) never carries a verdict (review 2026-09-25 P1).
 # roles that are never a target: they are the glue around every op
 _NEVER_TARGET = frozenset({"infra", "kvcache", "norm_rope", "activation", "moe_infra"})
 
@@ -104,16 +88,6 @@ def equiv_key(kernel: str, role: str | None) -> str:
         if r == role:
             k = re.sub(pat, rep, k)
     return k
-
-
-def infer_target(gate_name: str | None):
-    """(target_roles, phase) from the gate name; (None, None) when unknown."""
-    if not gate_name:
-        return None, None
-    for rx, roles, phase in _GATE_TARGETS:
-        if re.match(rx, gate_name):
-            return tuple(roles), phase
-    return None, None
 
 
 def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
@@ -284,9 +258,6 @@ def diff(
     target_roles: tuple | None = None,
     phase: str | None = None,
 ) -> int:
-    inferred_roles, inferred_phase = infer_target(gate_name or (Path(save).stem if save else None))
-    target_roles = target_roles or inferred_roles
-    phase = phase or inferred_phase
     cap = load_collector_side(capture_files)
     col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k)) and not _is_launcher(n)})
     col_backends, col_unmatched = probe_driver.label_kernels(col_kernels, sm)
@@ -320,7 +291,7 @@ def diff(
         "capture_run_error": cap.get("error"),
         "kv_dtype": kv_dtype,
         "op_hint": op_hint,
-        "gate_name": gate_name or (Path(save).stem if save else None),
+        "gate_name": gate_name,
         "target_roles": g["target_roles"],
         "phase": phase,
         "phase_scoped": phase_scoped,
@@ -360,8 +331,7 @@ def main() -> int:
     ap.add_argument("--sm", required=True, help="e.g. sm100: the SM both sides ran on")
     ap.add_argument("--kv-dtype", default=None, help="fp8|auto|bf16 (auto and bf16 are one class)")
     ap.add_argument("--op-hint", default=None, help="regex over serving op labels/kernels to scope the comparison")
-    ap.add_argument("--gate-name", default=None, help="target roles and phase are inferred from it")
-    ap.add_argument("--target-roles", default=None, help="comma list of taxonomy roles the gate must prove")
+    ap.add_argument("--target-roles", required=True, help="comma list of taxonomy roles the capture must prove")
     ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"])
     ap.add_argument("--save", default=None, help="write the verdict json here")
     args = ap.parse_args()
@@ -374,8 +344,8 @@ def main() -> int:
         args.op_hint,
         args.save,
         args.kv_dtype,
-        args.gate_name,
-        tuple(args.target_roles.split(",")) if args.target_roles else None,
+        None,
+        tuple(args.target_roles.split(",")),
         args.phase,
     )
 

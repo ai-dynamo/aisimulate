@@ -171,23 +171,3 @@ def test_a_span_only_kernel_is_kept_but_leaves_the_selection_unscoped():
     }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is False
-
-
-@pytest.mark.parametrize(
-    "gate, roles, phase",
-    [
-        ("gemm_fp8_Llama-3.1-70B-FP8", ("gemm",), None),
-        ("compute_scale_Llama-3.1-70B-FP8", ("quant",), None),
-        ("attn_ctx_Llama-3.1-8B", ("attention", "dsa_indexer"), "prefill"),
-        ("dsv4_csa_gen_DeepSeek-V4-Flash-FP8", ("attention", "dsa_indexer"), "decode"),
-        ("dsa_ctx_fp8_s512_DeepSeek-V3.2", ("attention", "dsa_indexer"), "prefill"),
-        ("kda_ctx_Kimi-K3", ("linear_attention",), "prefill"),
-        ("gdn_gen_Qwen3.5-0.8B", ("linear_attention",), "decode"),
-        ("moe_fp8block_DeepSeek-V3.2", ("moe_gemm", "routing"), None),
-        ("encoder_attn_qwen3vl_Qwen3-VL-8B", ("attention",), "profile_run"),
-        ("mla_bmm_gen_DeepSeek-V3", ("gemm",), None),
-        ("something_new", None, None),
-    ],
-)
-def test_gate_name_infers_target_roles_and_phase(gate, roles, phase):
-    assert path_diff.infer_target(gate) == (roles, phase)

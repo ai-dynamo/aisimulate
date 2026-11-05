@@ -64,6 +64,28 @@ def gates_in_scope(fw: str, sm: str | None = None, table: Path = TABLE) -> list[
     return [g for g in gates if _matches(fw, g["op"], n, g["select"])]
 
 
+_PHASE = {"context": "prefill", "generation": "decode"}
+
+
+def gate_target(op: str, select: dict) -> tuple[tuple[str, ...], str | None]:
+    """(the taxonomy roles a gate proves, the serving phase its evidence comes from), by its op:
+    the gate name carries no meaning."""
+    if op in ("gemm", "mla_bmm_gen_pre", "mla_bmm_gen_post"):
+        return ("gemm",), None
+    if op == "compute_scale":
+        return ("quant",), None
+    if op == "moe":
+        return ("moe_gemm", "routing"), None
+    if op == "mhc_module":
+        return ("mhc",), None
+    if op in ("gdn", "kda", "mamba2"):
+        return ("linear_attention",), _PHASE.get(select.get("phase"))
+    if op == "encoder_attention":  # the vision encoder runs in vLLM's profile run and the probes' vision forward
+        return ("attention",), "profile_run"
+    phase = "prefill" if "context" in op else "decode" if "generation" in op else None
+    return ("attention", "dsa_indexer"), phase
+
+
 def _value(v) -> str:
     return "+".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
 
@@ -138,6 +160,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
             verdicts[g["gate"]] = "missing-trace"
             continue
         out.unlink(missing_ok=True)
+        roles, phase = gate_target(g["op"], g["select"])
         rc = path_diff.diff(
             [str(f) for f in files],
             g["repo"],
@@ -148,6 +171,8 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
             save=str(out),
             kv_dtype=g["kv"],
             gate_name=g["gate"],
+            target_roles=roles,
+            phase=phase,
         )
         verdicts[g["gate"]] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
     return verdicts
