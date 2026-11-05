@@ -261,9 +261,9 @@ def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, 
     [
         ("vllm", 32, 0),
         ("vllm", 33, 1),
-        # SGLang reserves one request token and five input safety tokens.
-        ("sglang", 37, 0),
-        ("sglang", 38, 1),
+        # SGLang requires input < context - 1 request token - 5 safety tokens.
+        ("sglang", 38, 0),
+        ("sglang", 39, 1),
         ("trtllm", 32, 0),
         ("trtllm", 33, 1),
     ],
