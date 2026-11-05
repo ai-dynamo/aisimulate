@@ -160,6 +160,7 @@ include = [
     "src/aisimulate_core/systems/**/*.json",
     "src/aisimulate_core/systems/**/*.txt",
     "src/aisimulate_core/systems/**/*.parquet",
+    "src/aisimulate_core/systems/fpm_learned/examples/synthetic-functional-v1/**",
     "src/aisimulate_core/systems/data/**/*.yaml",
     "src/aisimulate_core/systems/profiles/**/*.yaml",
     "src/aisimulate_core/systems/profiles/**/*.md",

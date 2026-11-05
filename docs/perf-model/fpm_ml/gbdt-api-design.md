@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Seeded GBDT workflow and opt-in adoption
 
-This design extends the existing seeded learned-model API with authenticated
+This design extends the existing seeded learned-model API with verified
 source bundles, consistent readiness and dependency reporting, complete portable
 snapshots, and a runnable B→B+C example. Applications own telemetry collection and
 initial training. The AISimulate runtime updates an accepted seed; it does not
@@ -94,7 +94,7 @@ or an unavailable search candidate.
 
 | Method | Contract |
 | --- | --- |
-| `best_available(config)` | Select and validate the model once. Explicit learned online mode needs a checkpoint or an eligible discovered bundle. |
+| `best_available(config)` | Select and validate the model once. Explicit learned online mode needs a checkpoint or a compatible explicit/discovered bundle. |
 | Prediction methods | Query the selected model without admitting observations or fitting an absent store. |
 | `tune_with_fpms(iterations)` | Consume complete measured iterations and update existing seeded stores under the established numerical contract. |
 | `flush_updates()` | Explicitly fit a final pending update batch; no source-free initial fit. |
@@ -110,7 +110,7 @@ selection. The existing [configuration reference](configuration.md) is normative
 
 | Field | Behavior |
 | --- | --- |
-| `bundle_path` | Explicit authenticated bundle manifest; exclusive with raw source paths. |
+| `bundle_path` | Explicit verified bundle manifest; exclusive with raw source paths. |
 | `source_policy` | `auto` permits exact learned catalogue discovery for online selection; `explicit_only` requires an explicit source. Does not change global estimator selection. |
 | `fallback` | `auto` permits a supplied qualified bundle prior; `disabled` selects learned predictions only. A/B labels alone never create a prior. |
 | `resolved_source` | Generated complete source pin for new bundle/catalogue paths. Preserve when transporting that resolved configuration. |
@@ -211,7 +211,7 @@ helpers and its existing module CLI. Training remains an explicit offline action
 export accepts an already accepted checkpoint. Return complete configurations
 resolved through the canonical native constructor, including prepared prior pins.
 
-Use new immutable destinations, authenticated dependency copies and atomic
+Use new immutable destinations, verified dependency copies and atomic
 catalogue updates. Installing a second recipe preserves the default unless
 explicitly requested otherwise. Include source bytes and notices in distributions
 as required; a synthetic fixture must identify itself as functional evidence.

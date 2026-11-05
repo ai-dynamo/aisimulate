@@ -1,0 +1,27 @@
+{
+  "after": {
+    "bundle.json": "800ad6f0d1c1f850fe5fc907db9216b62f2fe8425723f69e3c665e1497a1d71c",
+    "inputs/c_feedback.jsonl": "609b099ea9301c4589b14b1c1b00451e09050695d3cd72541af25ed665172e9c",
+    "inputs/evaluation.jsonl": "bdd86254b39f096cc76fb80ac5d1c5d48a42808512cd073325e7bc13db33f75a",
+    "inputs/inputs.json": "7b8dd847ceac255c8513adedb9c9f31493f528a8034e5153bfdeb32e37c5abb2",
+    "inputs/training.jsonl": "f865c177a2da7b07194fc6e775689c5c5cad5903b4b70b7365f14fbe101ed8df",
+    "seed/manifest.json": "358fb261bb221ec4e193fd7742c5bfa134b2fad249111ad58d662d2b8525a587",
+    "seed/model.json": "e9ded1e5efefe0bc4bd414520c0a0641b8eca1b7968d3f331c97dde8bbf43ccf",
+    "seed/pure_decode.rows.parquet": "7c89e7ab76e4ba72a454039086ddf9a8a81313b05d8dcb730588f636f53bf41f"
+  },
+  "after_native_sha256": "6a12ba8d1af12a1930d8a030a400b22aa2aacd439f458002488adb71a2f42d42",
+  "after_producer_revision": "3e6e82c1b67e4448da01d60ae9d06893d1f8489f",
+  "all_bundle_seed_input_bytes_identical": true,
+  "before": {
+    "bundle.json": "800ad6f0d1c1f850fe5fc907db9216b62f2fe8425723f69e3c665e1497a1d71c",
+    "inputs/c_feedback.jsonl": "609b099ea9301c4589b14b1c1b00451e09050695d3cd72541af25ed665172e9c",
+    "inputs/evaluation.jsonl": "bdd86254b39f096cc76fb80ac5d1c5d48a42808512cd073325e7bc13db33f75a",
+    "inputs/inputs.json": "7b8dd847ceac255c8513adedb9c9f31493f528a8034e5153bfdeb32e37c5abb2",
+    "inputs/training.jsonl": "f865c177a2da7b07194fc6e775689c5c5cad5903b4b70b7365f14fbe101ed8df",
+    "seed/manifest.json": "358fb261bb221ec4e193fd7742c5bfa134b2fad249111ad58d662d2b8525a587",
+    "seed/model.json": "e9ded1e5efefe0bc4bd414520c0a0641b8eca1b7968d3f331c97dde8bbf43ccf",
+    "seed/pure_decode.rows.parquet": "7c89e7ab76e4ba72a454039086ddf9a8a81313b05d8dcb730588f636f53bf41f"
+  },
+  "before_source": "Verified preparation export on native7fe plus original generated input directory",
+  "scope": "bundle.json, every seed file, and all packaged input files; build-info is intentionally replaced with final provenance"
+}
