@@ -375,12 +375,29 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
             for name in names
         ):
             raise ValueError("agentic host offload requires backend=vllm on every role")
+        speculation = rank.get("speculation")
+        # MTP takes G2 only for a hybrid model with the EAGLE block drop off.
+        hybrid_mtp = (
+            rank.get("state_cache") is not None
+            and (
+                rank.get("disable_eagle_block_drop") is True
+                or (isinstance(speculation, Mapping) and speculation.get("disable_eagle_block_drop") is True)
+            )
+            and all(
+                isinstance(selection, Mapping) and selection.get("kind") == "mtp"
+                for selection in (speculation, identity.get("speculation"))
+                if selection is not None
+            )
+        )
         if (
             any(rank.get(name) is not None for name in ("aic_nextn", "nextn", "speculation"))
             or any(identity.get(name) is not None for name in ("aic_nextn", "speculation"))
             or identity.get("nextn") not in (None, 0)
-        ):
-            raise ValueError("agentic replay requires speculative decoding disabled")
+        ) and not hybrid_mtp:
+            raise ValueError(
+                "agentic replay requires speculative decoding disabled, except MTP with state_cache and "
+                "disable_eagle_block_drop"
+            )
         prefix = "" if role == "aggregated" else f"{role}_"
         # A fitted snapshot's identity may spell its width unknown; as in the
         # runner, that leaves the role's own DP, which the other sources give.

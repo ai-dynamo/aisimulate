@@ -23,3 +23,6 @@ mod tests;
 
 #[cfg(test)]
 mod grouped_tests;
+
+#[cfg(test)]
+mod hybrid_prefix_tests;
