@@ -1822,6 +1822,7 @@ mod destination_lifecycle {
         let mut now_ms = 0.0;
         let mut stored = Vec::new();
         let mut transferable = Vec::new();
+        let mut reused = Vec::new();
         for turn in 0..2u128 {
             let request_id = Uuid::from_u128(21_000 + turn);
             let handoff_id = HandoffId::from(Uuid::from_u128(22_000 + turn));
@@ -1865,6 +1866,11 @@ mod destination_lifecycle {
                 let pass = execute(&mut destination, now_ms);
                 now_ms = pass.end_ms;
                 stored.extend(stored_hashes(&pass.kv_events));
+                reused.extend(
+                    pass.admissions
+                        .iter()
+                        .map(|event| event.reused_input_tokens),
+                );
                 if destination.is_empty() {
                     break;
                 }
@@ -1872,6 +1878,14 @@ mod destination_lifecycle {
             assert!(destination.is_empty());
         }
         stored.extend(stored_hashes(&destination.drain_kv_events()));
+        assert_eq!(reused.len(), 2);
+        assert_eq!(
+            reused,
+            transferable
+                .iter()
+                .map(|missing| 8 - missing)
+                .collect::<Vec<_>>()
+        );
 
         if enabled {
             assert!(!stored.is_empty());
@@ -2188,7 +2202,7 @@ mod destination_lifecycle {
             .filter(|admission| admission.uuid == logical_uuid)
             .collect::<Vec<_>>();
         assert_eq!(logical_admissions.len(), 1);
-        assert_eq!(logical_admissions[0].reused_input_tokens, 0);
+        assert_eq!(logical_admissions[0].reused_input_tokens, 4);
         let running = destination
             .running
             .iter()
