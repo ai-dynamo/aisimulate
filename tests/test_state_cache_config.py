@@ -123,10 +123,16 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
         ({"block_size": None}, "explicit positive block_size"),
         ({"bytes_per_token": "auto"}, "explicit positive bytes_per_token"),
         ({"capacity": {"type": "default"}}, "requires fixed"),
-        ({"host_offload": {"num_host_blocks": 8}}, "G1 only"),
+        # A state cache with G2 needs block-sized matching and a vLLM 0.32 connector.
+        ({"host_offload": {"num_host_blocks": 8}}, "prefix_match_unit equal to block_size"),
+        ({"prefix_match_unit": 64, "host_offload": {"num_host_blocks": 8}}, "connector=offloading_v0_32"),
         (
-            {"host_offload": {"num_host_blocks": 8}, "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8}},
-            "G1 only",
+            {
+                "prefix_match_unit": 64,
+                "host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"},
+                "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
+            },
+            "g3_offload",
         ),
         ({"state_cache": {"bytes_per_request": 1500, "tokens_per_block": 64}}, "Extra inputs"),
     ],
@@ -677,6 +683,14 @@ def test_auto_state_validates_capacity_and_prefix_after_resolution(auto_k3_paylo
         prediction_to_replay_spec(config)
 
 
+def test_prefill_checkpoint_matches_the_resolved_block_size(auto_k3_payload, forbid_estimators):
+    # 64 is a requested page size that resolves to 768-token blocks.
+    kv = auto_k3_payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    kv.update(block_size=64, prefix_match_unit=768, state_cache={"prefill_checkpoint": True})
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_k3_payload))
+    assert spec.backend_deployment.agg_engine_args["block_size"] == 768
+
+
 def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid_estimators):
     payload = auto_k3_payload
     payload["engine"]["context_length"] = 32768
@@ -701,3 +715,94 @@ def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid
         assert metrics["total_output_tokens"] == 4
         assert metrics["committed_prefill_tokens"] == 48600 - 24192
         assert metrics["prefix_cache_reused_ratio"] == pytest.approx(24192 / 48600)
+
+
+def test_speculative_state_reservations_reach_native_rank(forbid_estimators):
+    state = {"bytes_per_request": 1500, "num_speculative_states": 2}
+    raw = _public(
+        timing="default",
+        state_cache=state,
+        prefix_match_unit=16,
+        capacity={"type": "fixed", "blocks": 32},
+    )
+    raw["engine"].update(nextn=2, nextn_accepted=2.0)
+    config = CorePredictionConfig.model_validate(raw)
+    spec = prediction_to_replay_spec(config)
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == state
+
+
+def test_speculative_states_require_capacity_and_matching_depth():
+    with pytest.raises(ValidationError, match="must fit"):
+        KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "num_speculative_states": 3}})
+    raw = _public(state_cache={**STATE, "num_speculative_states": 1})
+    with pytest.raises(ValidationError, match="must match"):
+        CorePredictionConfig.model_validate(raw)
+
+
+def test_speculative_states_do_not_multiply_inferred_state_geometry():
+    raw = _public(timing="default", state_cache={"num_speculative_states": 1})
+    raw["engine"].update(nextn=1, nextn_accepted=1.0)
+    with pytest.raises(ValidationError, match="requires explicit bytes_per_request"):
+        CorePredictionConfig.model_validate(raw)
+
+
+MTP = {"kind": "mtp", "params": {"depth": 3}, "expected_accepted_tokens": 2.12}
+
+
+def test_hybrid_switches_and_g2_under_mtp_reach_the_native_rank(forbid_estimators):
+    state = {**STATE, "num_speculative_states": 3, "prefill_checkpoint": True, "junction_checkpoints": True}
+    host = {"num_host_blocks": 64, "connector": "simple_cpu_v0_32"}
+    raw = _public(
+        timing="default",
+        state_cache=state,
+        prefix_match_unit=64,
+        host_offload=host,
+        capacity={"type": "fixed", "blocks": 32},
+    )
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": True}
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == state
+    assert rank["native_host_offload"]["connector"] == "simple_cpu_v0_32"
+    assert (rank["aic_nextn"], rank["disable_eagle_block_drop"]) == (3, True)
+
+
+def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
+    raw = _public(timing="default", prefix_match_unit=64)
+    raw["engine"]["speculation"] = MTP
+    config = CorePredictionConfig.model_validate(raw)
+    # Configs that do not use the switches keep their descriptor and rank.
+    engine = config.model_dump(mode="json")["engine"]
+    assert "disable_eagle_block_drop" not in engine["speculation"]
+    assert engine["workers"]["aggregated"]["kv_cache"]["state_cache"] == {
+        **STATE,
+        "num_speculative_states": None,
+        "mamba_cache_dtype": "auto",
+        "indexer_cache_dtype": "auto",
+    }
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == STATE
+    assert "disable_eagle_block_drop" not in rank
+    with pytest.raises(ValidationError, match="requires an explicit prefix_match_unit"):
+        KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "junction_checkpoints": True}})
+    checkpoint = {**KV, "state_cache": {**STATE, "prefill_checkpoint": True}, "prefix_match_unit": 32}
+    with pytest.raises(ValidationError, match="prefill_checkpoint requires prefix_match_unit equal to block_size"):
+        KvCachePredictionConfig.model_validate(checkpoint)
+
+
+@pytest.mark.parametrize("state_cache, drop_off", [(None, True), (STATE, False)])
+def test_mtp_with_g2_needs_a_state_cache_and_the_drop_off(state_cache, drop_off):
+    host = {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"}
+    raw = _public(timing="default", state_cache=state_cache, prefix_match_unit=64, host_offload=host)
+    if state_cache is None:
+        del raw["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_match_unit"]
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": drop_off}
+    with pytest.raises(ValidationError, match="requires state_cache and disable_eagle_block_drop"):
+        CorePredictionConfig.model_validate(raw)

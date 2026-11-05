@@ -94,6 +94,14 @@ list and no scalar token rate. Existing linear profiles keep their serialized
 shape. Python exports `FpmCacheGroup` from `aisimulate.fpm_profile` and
 `aisimulate_core.fpm_profile`; Rust exports it from `aisimulate_core::perfmodel`.
 
+An explicit profile can use `cache_layout: unmodeled` when the runtime cache
+allocator has no AIS model, such as Mamba checkpoint retention.
+This layout requires observed `runtime_memory` and omits both
+`kv_bytes_per_token` and `cache_groups`. Store the native cache descriptors in
+the referenced provenance artifact. Canonical standalone timing queries can
+consume this profile. Cache sizing and replay reject it. An observed allocation
+does not establish how request lengths, cache reuse, or speculation consume it.
+
 Memory can be pending, declared, or observed at runtime. The four legacy fields
 `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes`, and
 `comm_overhead_bytes` are optional. A complete set retains the existing non-KV
@@ -204,3 +212,37 @@ These fields are currently exposed through the Rust observer API, not the Python
 JSON replay runtime. Linear snapshots retain their existing block metrics.
 
 Cache reuse, eviction, and offload lifecycle are documented in [Replay KV cache](../replay/engine/kv-cache.md).
+
+### Observed Mamba align pools
+
+The `mamba_align` layout describes one full-attention group and padded
+Mamba groups that share one physical pool. Supply observed runtime memory,
+physical page bytes, block length, state-group count, prefix unit, and
+speculative state count. Set `mamba_cache.state_storage: full_state` explicitly.
+The count must match the measured draft depth. Internal prefill checkpoint
+slots are unsupported.
+
+| Field under `resources.mamba_cache` | Meaning |
+| --- | --- |
+| `state_storage` | Required `full_state`. Other policies are rejected. |
+| `block_size_tokens` | Physical attention block length, at least two tokens. |
+| `page_size_bytes` | Padded page size shared by attention and state groups. |
+| `state_groups` | Number of state pages in one complete working state. |
+| `prefix_match_unit` | Positive divisor of the block length. |
+| `num_speculative_states` | Full-state scratch copies, equal to the measured draft depth, from zero through five. |
+
+The native budget returns `replay_cache`. This descriptor excludes one reserved
+null page and includes working-state and speculative scratch reservations.
+Do not interpret its allocation byte rate as logical KV bytes per token.
+The profile does not expose an aggregate token capacity.
+
+Use aggregated vLLM replay with the measured block length and scheduler limits.
+Keep prefix caching enabled. Fixed capacity overrides, offload, and disaggregated
+FPM replay are unsupported for this layout. Original timing imports remain valid
+as timing-only evidence.
+
+ReplaySSM and RecoverSSM lay out and size their states differently, so
+profile them as `unmodeled` for timing only; do not relabel them `full_state`.
+Lookups follow vLLM revision `db9527a46873454610df6dbedf79a36d6bf1a7f6`, which
+applies the logits cap before the MTP hash-unit drop, so some exactly aligned
+prompts miss the cached tail.

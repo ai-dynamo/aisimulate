@@ -93,6 +93,62 @@ pub(crate) fn apply_prefix_recompute(
     apply_mtp_prefix_recompute(policy, block_size, mtp_enabled, prefill_cost)
 }
 
+/// The align-mode boundaries where a prompt's state is retained: the last full
+/// block before its final token, a block-aligned resend's last full block, and
+/// the hash-unit tail. Under the EAGLE block drop each sits one block (or unit)
+/// earlier, and the first two differ when the prompt ends on a block.
+pub(crate) fn state_boundaries(
+    prompt: usize,
+    block_size: usize,
+    unit: usize,
+    eagle_block_drop: bool,
+) -> (usize, usize, usize) {
+    if eagle_block_drop {
+        (
+            (prompt / block_size * block_size).saturating_sub(block_size),
+            (prompt.saturating_sub(1) / block_size * block_size).saturating_sub(block_size),
+            (prompt / unit * unit).saturating_sub(unit),
+        )
+    } else {
+        let full = prompt.saturating_sub(1) / block_size * block_size;
+        (full, full, prompt / unit * unit)
+    }
+}
+
+/// vLLM 43b4aaea's internal Mamba prefill checkpoint for the prefill chunk
+/// `[query_start, query_end)`: `get_mamba_prefill_checkpoint_position` and
+/// `is_mamba_prefill_checkpoint_valid` (vllm/v1/kv_cache_interface.py), with
+/// Mamba2's `prefill_checkpoint_alignment = 1`. Returns the position of the
+/// state the chunk exports from inside its forward.
+///
+/// The scheduler keys the position on `prefill_end` to decide whether a chunk
+/// exports it; the block the manager reserves is keyed on the chunk end. They
+/// differ only for a resumed request whose chunk runs past `prefill_end`.
+pub(crate) fn mamba_prefill_checkpoint(
+    query_start: usize,
+    query_end: usize,
+    prefill_end: usize,
+    position_tokens: usize,
+    hash_block_size: usize,
+    block_size: usize,
+    drop_eagle_block: bool,
+) -> Option<usize> {
+    if position_tokens == 0 || query_end < prefill_end {
+        return None;
+    }
+    let mut position = (position_tokens - 1) / hash_block_size * hash_block_size;
+    if drop_eagle_block {
+        position = position.saturating_sub(hash_block_size);
+    }
+    // vLLM's `checkpoint_col > initial_state_col`, with both columns shifted
+    // up by one so they stay unsigned.
+    (query_start.is_multiple_of(hash_block_size)
+        && query_end.div_ceil(block_size) > query_start.div_ceil(block_size) + 1
+        && query_start + hash_block_size <= position
+        && position < query_end)
+        .then_some(position)
+}
+
 struct PendingStore {
     parent_hash: Option<SequenceHash>,
     local_hash: Option<BlockHash>,
@@ -135,6 +191,11 @@ pub(crate) struct BlockRequestLease {
     pending_capacity_writes: Option<Box<PendingCapacityWrites>>,
     grouped: Option<GroupedLease>,
     state: Option<Box<StateRequest>>,
+    /// Internal prefill checkpoint planned by the scheduler for this pass.
+    prefill_checkpoint: Option<usize>,
+    /// Block-aligned shared-prefix junction recorded at admission (vLLM
+    /// `Request.shared_prefix_boundary`).
+    junction: Option<usize>,
     pub(crate) session_id: Option<String>,
 }
 
@@ -155,8 +216,23 @@ impl BlockRequestLease {
             pending_capacity_writes: None,
             grouped: None,
             state: None,
+            prefill_checkpoint: None,
+            junction: None,
             session_id: None,
         }
+    }
+
+    /// Plan this pass's internal prefill checkpoint (strictly inside the chunk).
+    pub(crate) fn set_prefill_checkpoint(&mut self, position: Option<usize>) {
+        self.prefill_checkpoint = position;
+    }
+
+    pub(crate) fn junction(&self) -> Option<usize> {
+        self.junction
+    }
+
+    pub(crate) fn set_junction(&mut self, junction: Option<usize>) {
+        self.junction = junction;
     }
 
     pub(crate) fn configure_prefix_hashes(&mut self, tokens: &[u32], unit: usize) {
@@ -367,6 +443,18 @@ pub(super) enum VllmAcquire<T> {
     CapacityExhausted,
 }
 
+/// A recurrent state newly published in G1 this pass, offered to the host
+/// tier (vLLM's `MambaManager.cache_blocks` boundary hand-off).
+#[derive(Debug)]
+pub(crate) struct StateHandoff {
+    pub(crate) owner: Uuid,
+    /// Block hash of the boundary: the state's cache prefix.
+    pub(crate) hash: SequenceHash,
+    /// Boundary in tokens.
+    pub(crate) position: usize,
+    copies: Vec<BlockCopyId>,
+}
+
 pub(crate) struct VllmKvManager {
     pool: VllmBlockPool,
     block_size: usize,
@@ -377,6 +465,8 @@ pub(crate) struct VllmKvManager {
     grouped: Option<GroupedKvPool>,
     state_cache: Option<StateCacheManager>,
     prefix_match_unit: Option<usize>,
+    /// Present while a host tier takes recurrent-state stores.
+    state_handoffs: Option<Vec<StateHandoff>>,
 }
 
 impl VllmKvManager {
@@ -420,7 +510,62 @@ impl VllmKvManager {
             grouped: None,
             state_cache: None,
             prefix_match_unit: None,
+            state_handoffs: None,
         }
+    }
+
+    /// Queue every newly published state for the host tier.
+    pub(crate) fn record_state_handoffs(&mut self) {
+        self.state_handoffs.get_or_insert_with(Vec::new);
+    }
+
+    /// The states published since the last call, in publication order.
+    pub(crate) fn take_state_handoffs(&mut self) -> Vec<StateHandoff> {
+        self.state_handoffs
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Take `owner`'s not-yet-offered hand-offs, keeping the others queued.
+    pub(crate) fn take_state_handoffs_of(&mut self, owner: Uuid) -> Vec<StateHandoff> {
+        let Some(queue) = self.state_handoffs.as_mut() else {
+            return Vec::new();
+        };
+        let (taken, kept) = std::mem::take(queue)
+            .into_iter()
+            .partition(|handoff| handoff.owner == owner);
+        *queue = kept;
+        taken
+    }
+
+    /// Attach the store transfer that reads a live hand-off's source copies.
+    /// `slots` selects the state slots the host tier stores.
+    pub(crate) fn attach_state_handoff_dependency(
+        &mut self,
+        handoff: &StateHandoff,
+        slots: &[usize],
+        dependency: SourceReuseDependency,
+    ) {
+        let copies = slots
+            .iter()
+            .map(|&slot| handoff.copies[slot])
+            .collect::<Vec<_>>();
+        self.pool
+            .attach_source_reuse_dependency(&copies, dependency);
+    }
+
+    /// Whether every copy of `handoff` is still cached under its state key.
+    pub(crate) fn state_handoff_is_live(&self, handoff: &StateHandoff) -> bool {
+        handoff.copies.iter().enumerate().all(|(slot, &id)| {
+            self.pool.holds_state_key(
+                id,
+                CacheKey::State {
+                    prefix: handoff.hash,
+                    slot,
+                },
+            )
+        })
     }
 
     pub(crate) fn enable_state_cache(&mut self, blocks_per_state: usize, mtp_enabled: bool) {
@@ -446,6 +591,12 @@ impl VllmKvManager {
                 )
                 .expect("validated state cache geometry");
             self.enable_state_cache(blocks, mtp_enabled);
+            let manager = self.state_cache.as_mut().unwrap();
+            manager.speculative_blocks = blocks
+                .checked_mul(config.num_speculative_states.unwrap_or(0))
+                .expect("validated speculative state capacity");
+            manager.prefill_checkpoint = config.prefill_checkpoint;
+            manager.junction_checkpoints = config.junction_checkpoints;
         }
     }
 
@@ -497,11 +648,24 @@ impl VllmKvManager {
         reserved_blocks: usize,
     ) -> AllocationRequirement {
         let token_blocks = known_tokens.div_ceil(self.block_size);
+        if let Some(manager) = &self.state_cache
+            && cost.cached_tokens > 0
+            && lease
+                .state_hash(cost.cached_tokens, self.block_size)
+                .is_some_and(|hash| manager.defers_same_step_hit(hash))
+        {
+            // vLLM cannot allocate a hit on a state cached in this step: it
+            // asks for num_gpu_blocks + 1, so the request waits.
+            return AllocationRequirement::Blocks(self.pool.capacity() + 1);
+        }
+        let checkpoint_blocks = self.admission_checkpoint_blocks(cost.cached_tokens, known_tokens);
         if let Some(state) = &self.state_cache {
             let copies = if cost.cached_tokens > 0 { 2 } else { 1 };
             if known_tokens == 0
                 || token_blocks
                     .saturating_add(state.blocks_per_state.saturating_mul(copies))
+                    .saturating_add(state.speculative_blocks)
+                    .saturating_add(checkpoint_blocks)
                     .saturating_add(usize::from(
                         !cost.cached_tokens.is_multiple_of(self.block_size),
                     ))
@@ -513,8 +677,35 @@ impl VllmKvManager {
         AllocationRequirement::Blocks(
             token_blocks
                 .saturating_sub((cost.active_cached_tokens / self.block_size).max(reserved_blocks))
-                .saturating_add(self.state_restore_overhead(lease, cost.cached_tokens)),
+                .saturating_add(self.state_restore_overhead(lease, cost.cached_tokens))
+                .saturating_add(checkpoint_blocks),
         )
+    }
+
+    /// vLLM's full-ISL admission counts the checkpoint block of the prefill
+    /// that resumes at the hit (vLLM 43b4aaea MambaManager's
+    /// `get_num_blocks_to_allocate` with `apply_admission_cap`).
+    fn admission_checkpoint_blocks(&self, cached_tokens: usize, known_tokens: usize) -> usize {
+        let Some(manager) = &self.state_cache else {
+            return 0;
+        };
+        let Some(block_size) = manager
+            .align_block_size
+            .filter(|_| manager.prefill_checkpoint)
+        else {
+            return 0;
+        };
+        // The gate's query runs to the full sequence, which reaches prefill_end.
+        mamba_prefill_checkpoint(
+            cached_tokens,
+            known_tokens,
+            known_tokens,
+            known_tokens,
+            block_size,
+            block_size,
+            manager.speculative_drop(),
+        )
+        .map_or(0, |_| manager.blocks_per_state)
     }
 
     /// Check the operation's peak, including any required preservation copy.
@@ -531,6 +722,7 @@ impl VllmKvManager {
         slot_tokens
             .div_ceil(self.block_size)
             .saturating_add(state.blocks_per_state)
+            .saturating_add(state.speculative_blocks)
             .saturating_add(self.state_write_blocks(lease, computed_tokens))
             .saturating_add(
                 lease
@@ -538,6 +730,11 @@ impl VllmKvManager {
                     .as_ref()
                     .map_or(0, |request| state.current_source_blocks(request)),
             )
+            .saturating_add(if lease.prefill_checkpoint.is_some() {
+                state.blocks_per_state
+            } else {
+                0
+            })
             <= self.pool.capacity()
     }
 
@@ -575,6 +772,12 @@ impl VllmKvManager {
             .map_or(0, |state| state.blocks_per_state)
     }
 
+    pub(crate) fn state_reserved_blocks(&self) -> usize {
+        self.state_cache
+            .as_ref()
+            .map_or(0, StateCacheManager::reserved_blocks)
+    }
+
     fn state_write_blocks(&self, lease: &BlockRequestLease, target: usize) -> usize {
         match (&self.state_cache, &lease.state) {
             (Some(manager), Some(state)) => manager.write_blocks(&self.pool, state, target),
@@ -593,6 +796,29 @@ impl VllmKvManager {
         }
     }
 
+    // MTP resumes one hash unit before the matching attention tail. A longer
+    // matching token page proves that earlier prefix without a second alias.
+    fn partial_token_key(&self, lease: &BlockRequestLease, tokens: usize) -> Option<CacheKey> {
+        let unit = self.prefix_match_unit?;
+        let end = if self.state_cache.as_ref()?.speculative_drop() {
+            tokens.div_ceil(self.block_size) * self.block_size
+        } else {
+            tokens
+        };
+        (tokens..=end).step_by(unit).find_map(|position| {
+            let hash = if position.is_multiple_of(self.block_size) {
+                lease
+                    .entries
+                    .get(position / self.block_size - 1)?
+                    .identity
+                    .sequence_hash?
+            } else {
+                lease.state_hash(position, self.block_size)?
+            };
+            self.pool.prefix_hit(hash).map(|_| CacheKey::Token(hash))
+        })
+    }
+
     fn state_restore_overhead(&self, lease: &BlockRequestLease, cached_tokens: usize) -> usize {
         let Some(manager) = &self.state_cache else {
             return 0;
@@ -608,10 +834,19 @@ impl VllmKvManager {
                     states
                         + usize::from(
                             !cached_tokens.is_multiple_of(self.block_size)
-                                && self.pool.prefix_hit(hash).is_some_and(|hit| !hit.is_active),
+                                && self
+                                    .partial_token_key(lease, cached_tokens)
+                                    .and_then(|key| self.pool.key_hit(key))
+                                    .is_some_and(|hit| !hit.is_active),
                         )
                 });
-        manager.blocks_per_state + inactive_source_blocks
+        // A state restored from G2 landed with its speculative blocks; vLLM
+        // adds them only for a request that holds no blocks yet.
+        let held = lease
+            .state
+            .as_ref()
+            .map_or(0, |state| state.speculative.len());
+        manager.reserved_blocks() - held + inactive_source_blocks
     }
 
     /// Atomically allocate the native lease through `cumulative_tokens`.
@@ -762,14 +997,30 @@ impl VllmKvManager {
                 "authorized state checkpoint disappeared"
             );
             if partial_source {
-                keys.push(CacheKey::Token(prefix));
+                keys.push(
+                    self.partial_token_key(lease, reusable_tokens)
+                        .expect("authorized attention tail disappeared"),
+                );
             }
             keys.extend(manager.keys(prefix));
         }
         let write_blocks = self.state_write_blocks(lease, cumulative_tokens);
+        // vLLM reserves one checkpoint block per Mamba group for a pass that
+        // exports the prompt's last full-block state from inside its forward.
+        let checkpoint_blocks = if lease.prefill_checkpoint.is_some()
+            && lease
+                .state
+                .as_ref()
+                .is_none_or(|state| state.checkpoint.is_empty())
+        {
+            manager.blocks_per_state
+        } else {
+            0
+        };
         let fresh = write_blocks + new_tokens - reused_tokens
+            + checkpoint_blocks
             + if new_work {
-                manager.blocks_per_state
+                manager.reserved_blocks()
             } else {
                 0
             };
@@ -801,6 +1052,9 @@ impl VllmKvManager {
             state.working = (0..manager.blocks_per_state)
                 .map(|_| self.pool.allocate_private(&mut outcome.reservation))
                 .collect();
+            state.speculative = (0..manager.speculative_blocks)
+                .map(|_| self.pool.allocate_private(&mut outcome.reservation))
+                .collect();
             state.computed_tokens = reusable_tokens;
             if self.prefix_match_unit.is_some() {
                 state.working_slot = Some(cumulative_tokens.saturating_sub(1) / self.block_size);
@@ -813,6 +1067,9 @@ impl VllmKvManager {
                 cumulative_tokens,
                 &mut outcome.reservation,
             );
+            if checkpoint_blocks > 0 {
+                manager.allocate_checkpoint(&mut self.pool, state, &mut outcome.reservation);
+            }
         }
         for (key, copy) in sources {
             if self.prefix_match_unit.is_some() {
@@ -834,8 +1091,9 @@ impl VllmKvManager {
         NativeAllocation::Ready {
             value: write_blocks
                 + new_tokens
+                + checkpoint_blocks
                 + if new_work {
-                    self.state_cache_blocks()
+                    self.state_reserved_blocks()
                 } else {
                     0
                 },
@@ -1035,23 +1293,78 @@ impl VllmKvManager {
         if let Some(stores) = stores {
             self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
+        if let Some(unit) = self.prefix_match_unit
+            && self
+                .state_cache
+                .as_ref()
+                .is_some_and(StateCacheManager::speculative_drop)
+            && self.enable_prefix_caching
+            && sequence.enable_prefix_caching()
+        {
+            let tail = sequence.num_input_tokens() / unit * unit;
+            if tail > 0
+                && tail <= computed_after
+                && !tail.is_multiple_of(self.block_size)
+                && let Some(hash) = lease.state_hash(tail, self.block_size)
+            {
+                let copy = lease.entries[tail / self.block_size]
+                    .copy
+                    .expect("computed attention tail");
+                self.pool.cache_token_prefix(copy, hash);
+            }
+        }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
+        // A pass that crossed its planned internal checkpoint publishes the
+        // state there (vLLM 43b4aaea MambaManager checkpoint column).
+        let checkpoint_position = lease
+            .prefill_checkpoint
+            .take()
+            .filter(|&position| computed_before < position && position < computed_after)
+            .filter(|_| {
+                publish_state && self.enable_prefix_caching && sequence.enable_prefix_caching()
+            });
+        let checkpoint_hash =
+            checkpoint_position.and_then(|position| lease.state_hash(position, self.block_size));
+        let junction = lease.junction;
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
+            if !state.checkpoint.is_empty()
+                && let Some(copies) =
+                    manager.publish_checkpoint(&mut self.pool, state, checkpoint_hash)
+                && let (Some(handoffs), Some(hash), Some(position)) = (
+                    &mut self.state_handoffs,
+                    checkpoint_hash,
+                    checkpoint_position,
+                )
+            {
+                handoffs.push(StateHandoff {
+                    owner,
+                    hash,
+                    position,
+                    copies,
+                });
+            }
             // Modified default-retention behavior from vLLM v0.29.0:
             // https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
             // Copyright contributors to the vLLM project. Apache-2.0.
+            let speculative_drop = manager.speculative_drop();
             let prompt = sequence.num_input_tokens();
             let unit = self.prefix_match_unit.unwrap_or(self.block_size);
-            let tail = prompt / unit * unit;
+            // Default retention keeps the final full replay boundary below
+            // the prompt, not every executed chunk or decode boundary; a
+            // block-aligned resend cannot match the final prompt block.
+            let (replay_full, resend_full, tail) =
+                state_boundaries(prompt, self.block_size, unit, speculative_drop);
             let is_partial_tail = self.prefix_match_unit.is_some()
                 && computed_after == tail
                 && !computed_after.is_multiple_of(self.block_size);
-            // Default retention keeps the final full replay boundary below
-            // the prompt, not every executed chunk or decode boundary.
-            let replay_full = prompt.saturating_sub(1) / self.block_size * self.block_size;
+            // vLLM v0.29.0 also retains the shared-prefix junction state among
+            // its reachable boundaries.
+            let is_junction = manager.junction_checkpoints && junction == Some(computed_after);
             let cacheable_boundary = self.prefix_match_unit.is_none()
                 || computed_after == replay_full
-                || is_partial_tail;
+                || computed_after == resend_full
+                || is_partial_tail
+                || is_junction;
             let hash = (publish_state
                 && cacheable_boundary
                 && self.enable_prefix_caching
@@ -1060,15 +1373,25 @@ impl VllmKvManager {
                 && computed_after.is_multiple_of(unit))
             .then_some(computed_state_hash)
             .flatten();
-            if let Some(hash) = hash {
-                if !computed_after.is_multiple_of(self.block_size) {
-                    let copy = lease.entries[computed_after / self.block_size]
-                        .copy
-                        .expect("computed partial KV page");
-                    self.pool.cache_token_prefix(copy, hash);
-                }
+            if let Some(hash) = hash
+                && !speculative_drop
+                && !computed_after.is_multiple_of(self.block_size)
+            {
+                let copy = lease.entries[computed_after / self.block_size]
+                    .copy
+                    .expect("computed partial KV page");
+                self.pool.cache_token_prefix(copy, hash);
             }
-            manager.commit(&mut self.pool, state, computed_after, hash);
+            if let Some(copies) = manager.commit(&mut self.pool, state, computed_after, hash)
+                && let (Some(handoffs), Some(hash)) = (&mut self.state_handoffs, hash)
+            {
+                handoffs.push(StateHandoff {
+                    owner,
+                    hash,
+                    position: computed_after,
+                    copies,
+                });
+            }
         }
         #[cfg(debug_assertions)]
         sequence.debug_assert_finalized_range(
@@ -1101,7 +1424,7 @@ impl VllmKvManager {
             .min(lease.entries.len());
         // Token reuse is unchanged. The transferred state always takes fresh
         // blocks: vLLM's NIXL path sends it even after a local token hit.
-        let state_blocks = self.state_cache_blocks();
+        let state_blocks = self.state_reserved_blocks();
         let outcome = match mode {
             super::DestinationReservationMode::ReuseResidentPrefix => {
                 let prefix_candidates = lease.entries[..prompt_blocks]
@@ -1127,13 +1450,15 @@ impl VllmKvManager {
     }
 
     /// Reserve an exact already-authorized G1 prefix plus only the contiguous
-    /// suffix selected by an external logical-cache lookup.
+    /// suffix selected by an external logical-cache lookup, and the blocks of a
+    /// restored state when `restores_state`.
     pub(crate) fn reserve_external_prefix_lease(
         &mut self,
         owner: Uuid,
         lease: &BlockRequestLease,
         g1_prefix_blocks: usize,
         transferred_suffix: &[SequenceHash],
+        restores_state: bool,
     ) -> VllmAcquire<DestinationReservation> {
         lease.debug_assert_owner(owner);
         assert_eq!(
@@ -1167,19 +1492,28 @@ impl VllmKvManager {
                 .sequence_hash
                 .expect("G1 destination prefix must contain complete blocks")
         });
-        let Some(outcome) = self.pool.reserve_exact_prefix(prefix, block_count) else {
+        // A restored state lands like a P/D transfer's: working and speculative.
+        let state_blocks = if restores_state {
+            self.state_reserved_blocks()
+        } else {
+            0
+        };
+        let Some(outcome) = self
+            .pool
+            .reserve_exact_prefix(prefix, block_count + state_blocks)
+        else {
             return VllmAcquire::CapacityExhausted;
         };
         assert_eq!(
             outcome.reservation.fresh_len(),
-            transferred_suffix.len(),
+            transferred_suffix.len() + state_blocks,
             "external reservation changed the exact tier boundary"
         );
         self.publish_removed(outcome.removed);
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count,
-            state_blocks: 0,
+            state_blocks,
             pool: outcome.reservation,
         })
     }
@@ -1305,16 +1639,31 @@ impl VllmKvManager {
             },
         );
         lease.allocated_tokens = (prompt_blocks * self.block_size).min(sequence.num_input_tokens());
-        if let Some(manager) = &self.state_cache {
-            // The transferred state already covers the prompt.
-            let prompt = sequence.num_input_tokens();
+        if let Some(manager) = &mut self.state_cache {
+            // The state covers the destination's prefix: the prompt of a P/D
+            // transfer, or the blocks of a host load.
+            let tokens = lease.allocated_tokens;
+            // vLLM's post-load `cache_blocks` also caches a loaded state where a
+            // later lookup of this prompt can resume: the last boundary before
+            // its final token, or the junction.
+            let last_boundary =
+                (sequence.num_input_tokens() - 1) / self.block_size * self.block_size;
+            let publish = (tokens == last_boundary || lease.junction() == Some(tokens))
+                .then(|| lease.state_hash(tokens, self.block_size))
+                .flatten();
             let state = lease.state.get_or_insert_with(Default::default);
             state.working = (0..manager.blocks_per_state)
                 .map(|_| self.pool.allocate_private(&mut reservation.pool))
                 .collect();
-            state.computed_tokens = prompt;
+            state.speculative = (0..manager.speculative_blocks)
+                .map(|_| self.pool.allocate_private(&mut reservation.pool))
+                .collect();
+            state.computed_tokens = tokens;
             if self.prefix_match_unit.is_some() {
-                state.working_slot = Some(prompt.saturating_sub(1) / self.block_size);
+                state.working_slot = Some(tokens.saturating_sub(1) / self.block_size);
+            }
+            if let Some(hash) = publish {
+                manager.publish_working(&mut self.pool, state, hash);
             }
         }
         assert_eq!(
@@ -1327,6 +1676,8 @@ impl VllmKvManager {
 
     pub(crate) fn preempt_lease(&mut self, owner: Uuid, lease: &mut BlockRequestLease) {
         lease.debug_assert_owner(owner);
+        lease.prefill_checkpoint = None;
+        lease.junction = None;
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
             manager.preempt(&mut self.pool, state);
         }
@@ -1515,6 +1866,7 @@ impl VllmKvManager {
             };
         if let (Some(unit), Some(manager)) = (self.prefix_match_unit, &self.state_cache) {
             if self.enable_prefix_caching && sequence.enable_prefix_caching() {
+                // vLLM applies the logits cap before the speculative hash-unit drop.
                 let limit = if sequence.generated_tokens() < sequence.max_output_tokens() {
                     sequence.len().saturating_sub(1)
                 } else {
@@ -1526,16 +1878,37 @@ impl VllmKvManager {
                         .saturating_mul(self.block_size)
                         .saturating_sub(1),
                 );
+                let limit = if manager.speculative_drop() {
+                    let attention_hit = (1..=limit / unit)
+                        .rev()
+                        .map(|i| i * unit)
+                        .find(|&tokens| {
+                            (tokens.is_multiple_of(self.block_size)
+                                && tokens <= overlap_blocks * self.block_size)
+                                || lease
+                                    .state_hash(tokens, self.block_size)
+                                    .is_some_and(|hash| self.pool.prefix_hit(hash).is_some())
+                        })
+                        .unwrap_or(0);
+                    attention_hit.saturating_sub(unit)
+                } else {
+                    limit
+                };
                 let cached_tokens = (1..=limit / unit)
                     .rev()
                     .map(|i| i * unit)
                     .find(|&tokens| {
-                        lease
+                        // A host load's state, landed at its prefix end.
+                        lease.state.as_deref().is_some_and(|state| {
+                            !state.working.is_empty()
+                                && state.computed_tokens == tokens
+                                && tokens <= overlap_blocks * self.block_size
+                        }) || lease
                             .state_hash(tokens, self.block_size)
                             .is_some_and(|hash| {
-                                manager.has_snapshot(&self.pool, hash)
+                                manager.lookup_snapshot(&self.pool, hash)
                                     && (tokens.is_multiple_of(self.block_size)
-                                        || self.pool.prefix_hit(hash).is_some())
+                                        || self.partial_token_key(lease, tokens).is_some())
                             })
                     })
                     .unwrap_or(0);
@@ -1600,6 +1973,45 @@ impl VllmKvManager {
             cached_tokens,
             active_cached_tokens,
         }
+    }
+
+    /// The shared-prefix junction of a fresh lookup: the attention hit when it
+    /// runs deeper than the restorable state (vLLM v0.29.0
+    /// `KVCacheManager.get_computed_blocks`, with
+    /// `HybridKVCacheCoordinator.find_longest_cache_hit`'s
+    /// `num_uncached_common_prefix_tokens`). The attention hit is block-aligned
+    /// and capped by the logits rule. A resumed request replaying its output
+    /// tokens can find one past its prompt; vLLM keeps that stop, block-floored.
+    pub(crate) fn prefix_junction(
+        &self,
+        sequence: &RequestSequence,
+        lease: &BlockRequestLease,
+        cached_tokens: usize,
+    ) -> Option<usize> {
+        let manager = self.state_cache.as_ref()?;
+        if !manager.junction_checkpoints
+            || !self.enable_prefix_caching
+            || !sequence.enable_prefix_caching()
+        {
+            return None;
+        }
+        let overlap_blocks = lease
+            .entries
+            .iter()
+            .map_while(|entry| entry.identity.sequence_hash)
+            .take_while(|&hash| self.pool.prefix_hit(hash).is_some())
+            .count();
+        let limit = if sequence.generated_tokens() < sequence.max_output_tokens() {
+            sequence.len().saturating_sub(1)
+        } else {
+            sequence.len()
+        };
+        let mut attention = overlap_blocks.min(limit / self.block_size) * self.block_size;
+        if manager.speculative_drop() {
+            // The EAGLE attention finder drops its trailing matched block.
+            attention = attention.saturating_sub(self.block_size);
+        }
+        (attention > cached_tokens).then_some(attention)
     }
 
     pub(crate) fn reserve_decode_blocks(
@@ -2186,7 +2598,8 @@ mod tests {
 
         let owner = Uuid::from_u128(2);
         let (sequence, mut lease) = request(owner, &[7, 8, 9], false);
-        let reservation = ready(manager.reserve_external_prefix_lease(owner, &lease, 1, &[8]));
+        let reservation =
+            ready(manager.reserve_external_prefix_lease(owner, &lease, 1, &[8], false));
         assert_eq!(reservation.block_count, 2);
         assert_eq!(reservation.pool.fresh_len(), 1);
         assert_eq!(manager.num_active_blocks(), 2);

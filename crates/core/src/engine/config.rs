@@ -680,6 +680,21 @@ impl NativeHostOffloadConfig {
 pub struct StateCacheConfig {
     /// Bytes occupied by one physical working state or snapshot.
     pub bytes_per_request: usize,
+    /// Private scratch states retained for speculative verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_speculative_states: Option<usize>,
+    /// Export the prompt's last full-block state from inside the final
+    /// prefill chunk instead of cutting the chunk at that block (vLLM
+    /// 43b4aaea Mamba2 `num_prefill_checkpoint_blocks = 1`). Needs
+    /// `prefix_match_unit` equal to `block_size`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefill_checkpoint: bool,
+    /// Stop a chunk at the block-aligned end of a deeper attention hit, cache
+    /// the state there, and wait one pass for a state published in the same
+    /// pass: vLLM v0.29.0's `shared_prefix_boundary` rules, which the default
+    /// model omits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub junction_checkpoints: bool,
 }
 
 impl StateCacheConfig {
@@ -779,6 +794,10 @@ pub struct EngineConfig {
     /// Base seed for deterministic worker-local MTP acceptance sampling.
     #[serde(default = "default_aic_mtp_seed")]
     pub aic_mtp_seed: u64,
+    /// vLLM `speculative_config.disable_eagle_block_drop`: MTP keeps the
+    /// non-speculative prefix-cache rules (no trailing-block drop).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_eagle_block_drop: bool,
     /// Scheduler role.
     pub worker_type: WorkerType,
     /// Decode preemption victim order.
@@ -878,6 +897,8 @@ struct EngineConfigWire {
     aic_nextn_accept_rates: Option<String>,
     #[serde(default = "default_aic_mtp_seed")]
     aic_mtp_seed: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disable_eagle_block_drop: bool,
     #[serde(default)]
     worker_type: WorkerType,
     #[serde(default)]
@@ -956,6 +977,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             aic_nextn: wire.aic_nextn,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
+            disable_eagle_block_drop: wire.disable_eagle_block_drop,
             worker_type: wire.worker_type,
             preemption_mode: wire.preemption_mode,
             emit_kv_events: wire.emit_kv_events,
@@ -1003,6 +1025,7 @@ impl Default for EngineConfig {
             aic_nextn: None,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),
+            disable_eagle_block_drop: false,
             worker_type: WorkerType::Aggregated,
             preemption_mode: PreemptionMode::Lifo,
             emit_kv_events: false,
@@ -1071,26 +1094,57 @@ impl EngineConfig {
                 self.backend == Backend::Vllm,
                 "state_cache is supported only for backend=vllm"
             );
-            ensure!(
-                self.native_host_offload.is_none(),
-                "state_cache does not support native_host_offload in the G1-only implementation"
-            );
+            if let Some(host) = &self.native_host_offload {
+                // vLLM's CPU connectors hit a hybrid model at block boundaries
+                // (Mamba align mode); vLLM 0.24's connector stores no states.
+                ensure!(
+                    self.prefix_match_unit == Some(self.block_size),
+                    "state_cache with host_offload requires prefix_match_unit equal to block_size"
+                );
+                ensure!(
+                    host.connector != G2Connector::OffloadingV024,
+                    "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32"
+                );
+            }
             ensure!(
                 self.g3_offload.is_none(),
-                "state_cache does not support g3_offload in the G1-only implementation"
+                "state_cache does not support g3_offload"
             );
             ensure!(
                 self.prefix_match_unit.is_none()
                     || self.prefix_match_unit == Some(self.block_size)
-                    || self.aic_nextn.is_none(),
+                    || self.aic_nextn.is_none()
+                    || state_cache.num_speculative_states.is_some(),
                 "sub-block prefix_match_unit does not support speculative decoding"
+            );
+            ensure!(
+                self.prefix_match_unit.is_some() || !state_cache.junction_checkpoints,
+                "state_cache.junction_checkpoints requires an explicit prefix_match_unit (align mode)"
+            );
+            // A sub-block checkpoint would have no cached attention page to
+            // resume from.
+            ensure!(
+                !state_cache.prefill_checkpoint || self.prefix_match_unit == Some(self.block_size),
+                "state_cache.prefill_checkpoint requires prefix_match_unit equal to block_size"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
                 .ok_or_else(|| anyhow::anyhow!("state_cache requires kv_cache_bytes_per_token"))?;
             let state_blocks = state_cache.state_blocks(self.block_size, bytes_per_token)?;
+            if let Some(depth) = state_cache.num_speculative_states {
+                ensure!(
+                    depth > 0 && self.aic_nextn == Some(depth),
+                    "state_cache.num_speculative_states must match positive aic_nextn"
+                );
+            }
             let minimum = state_blocks
-                .checked_add(1)
+                .checked_mul(
+                    state_cache
+                        .num_speculative_states
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                )
+                .and_then(|blocks| blocks.checked_add(1))
                 .ok_or_else(|| anyhow::anyhow!("state_cache minimum capacity overflowed"))?;
             ensure!(
                 self.num_gpu_blocks >= minimum,
@@ -1177,6 +1231,10 @@ impl EngineConfig {
             ensure!(
                 self.aic_nextn_accept_rates.is_none(),
                 "aic_nextn_accept_rates requires aic_nextn"
+            );
+            ensure!(
+                !self.disable_eagle_block_drop,
+                "disable_eagle_block_drop requires aic_nextn"
             );
         }
         if self.backend == Backend::Sglang {
@@ -1302,9 +1360,12 @@ impl EngineConfig {
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
+            // Replay does not model the EAGLE block drop hiding the last block,
+            // and the state, that a host load restored.
             ensure!(
-                self.aic_nextn.is_none(),
-                "native_host_offload does not support aic_nextn in the initial implementation"
+                self.aic_nextn.is_none()
+                    || (self.state_cache.is_some() && self.disable_eagle_block_drop),
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop"
             );
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1424,6 +1485,52 @@ mod tests {
             "num_gpu_blocks": 8, "block_size": 64, "kv_cache_bytes_per_token": 16,
             "state_cache": {"bytes_per_request": 1500}
         })
+    }
+
+    #[test]
+    fn hybrid_prefix_cache_switches_default_off_and_validate() {
+        let config: EngineConfig = serde_json::from_value(state_cache_config_json()).unwrap();
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            encoded["state_cache"],
+            serde_json::json!({"bytes_per_request": 1500})
+        );
+        assert!(encoded.get("disable_eagle_block_drop").is_none());
+
+        let mut checkpoints = config.clone();
+        checkpoints
+            .state_cache
+            .as_mut()
+            .unwrap()
+            .junction_checkpoints = true;
+        assert!(
+            checkpoints
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires an explicit prefix_match_unit")
+        );
+        checkpoints.prefix_match_unit = Some(checkpoints.block_size);
+        checkpoints.validate().unwrap();
+        checkpoints.state_cache.as_mut().unwrap().prefill_checkpoint = true;
+        checkpoints.validate().unwrap();
+        checkpoints.prefix_match_unit = Some(checkpoints.block_size / 2);
+        assert!(
+            checkpoints
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_checkpoint requires prefix_match_unit equal to block_size")
+        );
+
+        let mut drop = config;
+        drop.disable_eagle_block_drop = true;
+        assert!(
+            drop.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("disable_eagle_block_drop requires aic_nextn")
+        );
     }
 
     #[test]
@@ -1573,6 +1680,9 @@ mod tests {
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
+                num_speculative_states: None,
+                prefill_checkpoint: false,
+                junction_checkpoints: false,
             }
             .state_blocks(2, 1)
             .unwrap(),
@@ -1588,7 +1698,7 @@ mod tests {
             (
                 "native_host_offload",
                 serde_json::json!({"num_host_blocks": 8}),
-                "native_host_offload",
+                "host_offload",
             ),
             (
                 "g3_offload",
@@ -1950,8 +2060,11 @@ mod tests {
                 "enable_prefix_caching=true",
             ),
             (
-                |config| config.aic_nextn = Some(1),
-                "does not support aic_nextn",
+                |config| {
+                    config.aic_nextn = Some(1);
+                    config.disable_eagle_block_drop = true;
+                },
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop",
             ),
             (
                 |config| {
@@ -1981,6 +2094,55 @@ mod tests {
                     .unwrap();
                 },
                 "g3_offload requires host_offload.connector=offloading_v0_24",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    /// A hybrid G2 under MTP: a state cache at block granularity, a vLLM 0.32
+    /// connector and the EAGLE block drop off.
+    fn hybrid_mtp_host_config(config: &mut EngineConfig) {
+        config.native_host_offload.as_mut().unwrap().connector = G2Connector::SimpleCpuV032;
+        config.state_cache = Some(StateCacheConfig {
+            bytes_per_request: 1500,
+            num_speculative_states: None,
+            prefill_checkpoint: false,
+            junction_checkpoints: false,
+        });
+        config.prefix_match_unit = Some(config.block_size);
+        config.aic_nextn = Some(3);
+        config.disable_eagle_block_drop = true;
+    }
+
+    #[test]
+    fn state_cache_with_g2_needs_block_boundaries_a_v0_32_connector_and_no_block_drop() {
+        let mut config = native_host_offload_config();
+        hybrid_mtp_host_config(&mut config);
+        config.validate().unwrap();
+        let cases: &[InvalidHostConfigCase] = &[
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.prefix_match_unit = None;
+                },
+                "state_cache with host_offload requires prefix_match_unit equal to block_size",
+            ),
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::OffloadingV024;
+                },
+                "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32",
+            ),
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.disable_eagle_block_drop = false;
+                },
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop",
             ),
         ];
         for &(mutate, expected) in cases {
