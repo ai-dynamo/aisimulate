@@ -20,7 +20,7 @@ fn cache_salt_isolates_reuse_in_both_topologies_and_aggregated_events() {
         let engine = ReplayEngineConfig {
             rank: EngineConfig {
                 block_size: 4,
-                num_gpu_blocks: 128,
+                num_gpu_blocks: 256,
                 max_num_batched_tokens: 64,
                 emit_kv_events: true,
                 emit_kv_token_ids: !disagg,
