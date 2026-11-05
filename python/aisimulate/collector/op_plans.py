@@ -48,6 +48,7 @@ from collector.case_generator import (
     MoeCommonTestCase,
     _attention_profile_shapes,
     _framework_specific_model_case_values,
+    _get_model_path_filter,
     _model_case_values,
     get_attention_encoder_head_configs,
     get_attention_shapes,
@@ -1225,7 +1226,14 @@ def _projection_gemm(model_path: str) -> str:
     modelopt = _modelopt_quant(model_path)
     if str(modelopt.get("quant_algo", "")).upper() == "MIXED_PRECISION":
         lanes = modelopt.get("quantized_layers") or {}
-        return "nvfp4" if any(_fp4_lane(lane) for key, lane in lanes.items() if key.endswith("o_proj")) else "bfloat16"
+        projection_lanes = [lane for key, lane in lanes.items() if key.endswith("o_proj")]
+        if any(_fp4_lane(lane) for lane in projection_lanes):
+            return "nvfp4"
+        # Match the SDK's MXFP8 -> fp8_block projection approximation
+        # (sdk/models/helpers.py:_infer_mixed_precision_quant_modes).
+        if any(str(lane.get("quant_algo", "")).upper() == "MXFP8" for lane in projection_lanes):
+            return "fp8_block"
+        return "bfloat16"
     patterns = [str(pattern) for pattern in modelopt.get("exclude_modules") or []]
     keeps_o_proj = any(
         "o_proj" in pattern or ("self_attn" in pattern and pattern.rsplit("self_attn", 1)[1] in ("", "*", ".*"))
@@ -1441,10 +1449,15 @@ def _with_history_module_cases(
         if not shards or any(type(tp) is not int or tp <= 0 or native_heads % tp for tp in shards):
             raise ValueError(f"long-context module {model_path} requires valid tensor_parallel_sizes")
         heads = sorted({native_heads // tp for tp in shards}, reverse=True)
-        # A checkpoint contributes only its actual projection precision, instead
-        # of crossing new history points with unrelated checkpoint GEMMs.
+        # Resolve declared artifact precision before selecting the canonical
+        # measurement owner: aliases may have different projection GEMMs.
+        artifacts = [model_path, *profile.get("model_aliases", [])]
+        selected = _get_model_path_filter()
+        if selected in artifacts:
+            artifacts = [selected]
+        projection_gemms = {_projection_gemm(artifact) for artifact in artifacts}
         for precision in precisions:
-            if precision.gemm_type != _projection_gemm(model_path):
+            if precision.gemm_type not in projection_gemms:
                 continue
             owner = representatives.get((architecture, precision.gemm_type, signatures[model_path]), model_path)
             for num_heads in heads:

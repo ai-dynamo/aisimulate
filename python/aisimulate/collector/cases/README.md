@@ -267,7 +267,11 @@ contract, even for a short cached query. Shared native indexing constraints
 still apply; device capacity is refused at runtime, not used to vary the plan.
 
 Module additions use their model's declared TP shards and native projection
-GEMM. Their workload points are unioned before deduplication. Runtime-sensitive
+GEMM. Resolve projection precision for the selected artifact before choosing a
+canonical alias owner; a full plan unions the projection lanes of all declared
+artifacts. MiniMax NVFP4's MXFP8 attention projections use the SDK's `fp8_block`
+approximation while retaining the canonical MiniMax measurement owner.
+Their workload points are unioned before deduplication. Runtime-sensitive
 cases share an owner only when native attention semantics agree, not merely
 because the models have the same head count. Unknown quantization remains part
 of that comparison; new incompatible collisions raise before collection. Existing normal points and their ownership

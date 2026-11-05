@@ -757,6 +757,8 @@ These are **provisional planning estimates**, in additional collection GPU-hours
 above the pinned #676 baseline. They price the extra model-owned points enabled
 by `--include-long-context`; the existing baseline anchors remain enabled when
 the flag is off. They are not measured full-sweep totals or confidence bounds.
+The table reflects the frozen pilot inventory; the later MiniMax MXFP8 alias
+coverage correction adds projection-lane points that remain unpriced here.
 
 ## Estimated long-context increment
 

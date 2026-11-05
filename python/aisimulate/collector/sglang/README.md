@@ -23,12 +23,15 @@ batches use graphs; other batches are timed eagerly. Native QKV projection and
 fresh `AttentionInputs` are included in every timed DSA forward; history
 initialization is measured separately as collection overhead.
 
-Graph-eligible native TC DSA prefill currently raises
-`MeasurementBoundaryError`: the per-model Dynamo entry remains inside the
-per-layer timing boundary. It writes no performance row. Eager timing applies
-when the native graph path is ineligible; collection does not replace a rejected
-graph measurement with an eager row. Boundary failures remain explicit in the
-collection result.
+Current SGLang 0.5.21 DSA prefill collection disables prefill CUDA graphs and
+measures the eager path. Serving uses the newer native breakable-prefill graph,
+whose attention-only adapter is not yet ported; enabling that path currently
+raises `ValueError` rather than producing a graph measurement. This is an
+explicit serving-parity deviation, not graph qualification.
+
+The historical TC graph path's per-model Dynamo entry can raise
+`MeasurementBoundaryError` inside the per-layer timing boundary. That guard
+writes no performance row, but it is not the current eager-prefill path.
 
 This corrects future collection. Historical exact-shape batch-52 rows must
 not be relabeled as padded-serving measurements.

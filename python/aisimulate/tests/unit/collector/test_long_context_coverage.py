@@ -318,3 +318,33 @@ def test_unqualified_kimi_nope_extension_is_not_enabled(monkeypatch, op):
     profiles = case_generator._framework_specific_model_case_values("mla_module", "vllm")
     assert profiles and all("long_context_cases" not in profile for profile in profiles)
     assert all("long_context_tensor_parallel_sizes" not in profile for profile in profiles)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize(
+    ("selected", "expected_gemms"),
+    [
+        ("MiniMaxAI/MiniMax-M3", {"bfloat16"}),
+        ("nvidia/MiniMax-M3-NVFP4", {"fp8_block"}),
+        (None, {"bfloat16", "fp8_block"}),
+    ],
+)
+def test_minimax_long_context_preserves_artifact_projection_lanes(
+    monkeypatch, backend, phase, selected, expected_gemms
+):
+    if selected:
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", selected)
+    normal = plan(f"msa_{phase}_module", backend, 103)
+    expanded = plan(f"msa_{phase}_module", backend, 103, include_long_context=True)
+    added = set(expanded.cases) - set(normal.cases)
+    length, prefix = (32768, 917504) if phase == "context" else (917504, 0)
+    points = [
+        case
+        for case in added
+        if (case.batch_size, case.seq_len, case.prefix_len, case.num_heads, case.kv_cache_dtype)
+        == (1, length, prefix, 8, "bfloat16")
+    ]
+    assert {case.gemm_type for case in points} == expected_gemms
+    assert {case.model_path for case in points} == {"MiniMaxAI/MiniMax-M3"}
+    assert set(normal.cases) <= set(expanded.cases)
