@@ -386,6 +386,10 @@ def _require_known_sections(raw: dict[str, Any], *, command: str, stack: str) ->
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .package_identity import warn_on_overlap
+
+    # Before parsing, so --help and argument errors also carry the repair guidance.
+    warn_on_overlap()
     from .cli_args import _apply_overrides, _extract_output_configs, _load_mapping, build_parser
     from .output import prepare_output_directory
 
