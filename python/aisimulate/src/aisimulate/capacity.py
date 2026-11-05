@@ -360,6 +360,10 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
         raise ValueError("runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation")
     if deployment.resources.cache_layout not in ("grouped", "mamba_align"):
         return False
+    if deployment.resources.cache_layout == "mamba_align" and (
+        raw.get("native_host_offload") is not None or raw.get("g3_offload") is not None
+    ):
+        raise ValueError("Mamba FPM cache supports HBM replay only")
     if raw.get("num_gpu_blocks") is not None:
         raise ValueError(
             f"{deployment.resources.cache_layout} FPM cache requires a byte budget; fixed num_gpu_blocks is unsupported"

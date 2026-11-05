@@ -534,26 +534,39 @@ impl VllmHostOffloadAdapter {
         {
             HostLookup::Deferred
         } else {
-            // A block still being stored counts when the connector waits for
-            // stores; the hit then defers.
-            let present = |key: &HostBlockKey| match tier.lookup(*key) {
-                Lookup::Hit => true,
-                Lookup::Pending { .. } => rules.waits_for_stores,
-                Lookup::Miss => false,
+            // `None` ends the match. A matched key that is being loaded, or
+            // still being stored when the connector waits for stores, defers
+            // the hit.
+            let busy = |key: &HostBlockKey| match tier.lookup(*key) {
+                Lookup::Hit => Some(load_by_key.contains_key(key)),
+                Lookup::Pending { .. } => rules.waits_for_stores.then_some(true),
+                Lookup::Miss => None,
             };
-            let mut matched = request.block_keys[base_g1_blocks..end]
-                .iter()
-                .take_while(|key| present(key))
-                .count();
+            let mut matched = 0usize;
+            let mut first_busy = usize::MAX;
+            for key in &request.block_keys[base_g1_blocks..end] {
+                let Some(key_busy) = busy(key) else {
+                    break;
+                };
+                if key_busy {
+                    first_busy = first_busy.min(matched);
+                }
+                matched += 1;
+            }
             // A hybrid hit ends at the deepest boundary that also holds every
             // slot of its state.
             let mut keys = Vec::new();
+            let mut states_busy = false;
             if let Some(hybrid) = hybrid {
-                (matched, keys) = (1..=matched)
+                (matched, keys, states_busy) = (1..=matched)
                     .rev()
                     .find_map(|blocks| {
                         let states = hybrid.keys(request.block_keys[base_g1_blocks + blocks - 1]);
-                        states.iter().all(present).then_some((blocks, states))
+                        let mut any_busy = false;
+                        for key in &states {
+                            any_busy |= busy(key)?;
+                        }
+                        Some((blocks, states, any_busy))
                     })
                     .unwrap_or_default();
             }
@@ -561,9 +574,7 @@ impl VllmHostOffloadAdapter {
             keys.extend_from_slice(&request.block_keys[base_g1_blocks..base_g1_blocks + matched]);
             if matched == 0 {
                 HostLookup::Miss
-            } else if keys.iter().any(|key| {
-                load_by_key.contains_key(key) || matches!(tier.lookup(*key), Lookup::Pending { .. })
-            }) {
+            } else if states_busy || first_busy < matched {
                 HostLookup::Deferred
             } else {
                 HostLookup::Hit(HostLookupHit {
@@ -1105,22 +1116,23 @@ impl VllmHostOffloadAdapter {
         if self.rules.reranks_at_finish {
             // Head to tail by end position (`order_request_keys`); a state's
             // slots precede the block ending at its boundary, as vLLM lists a
-            // hybrid model's Mamba groups first.
-            let mut keys = request
-                .accessed_blocks
-                .iter()
-                .map(|&index| (index + 1, 1, request.block_keys[index]))
-                .collect::<Vec<_>>();
-            if let Some(hybrid) = self.hybrid {
-                for &boundary in &request.accessed_states {
-                    let states = hybrid.keys(request.block_keys[boundary - 1]);
-                    keys.extend(states.into_iter().map(|key| (boundary, 0, key)));
-                }
-            }
-            keys.sort_by_key(|&(end, group, _)| (end, group));
+            // hybrid model's Mamba groups first. Touched tail first.
+            let (hybrid, block_keys) = (self.hybrid, &request.block_keys);
+            let states = |boundary: usize| {
+                hybrid
+                    .into_iter()
+                    .flat_map(move |hybrid| hybrid.keys(block_keys[boundary - 1]).into_iter().rev())
+            };
+            let mut boundaries = request.accessed_states.iter().rev().copied().peekable();
             let mut tier = self.host.lock();
-            for (_, _, key) in keys.into_iter().rev() {
-                tier.touch(key);
+            for &index in request.accessed_blocks.iter().rev() {
+                while let Some(boundary) = boundaries.next_if(|&boundary| boundary > index + 1) {
+                    states(boundary).for_each(|key| tier.touch(key));
+                }
+                tier.touch(request.block_keys[index]);
+            }
+            for boundary in boundaries {
+                states(boundary).for_each(|key| tier.touch(key));
             }
         }
     }

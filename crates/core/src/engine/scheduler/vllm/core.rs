@@ -2568,10 +2568,6 @@ impl VllmCore {
             self.store_pass_blocks(&scheduled, now_ms);
         }
 
-        let compute_start_ms = self
-            .native_host_offload
-            .as_ref()
-            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         let prefill = priced_prefill(
             batch_count,
             batch_total_isl,
@@ -2603,6 +2599,12 @@ impl VllmCore {
         if store_after_emission {
             self.store_pass_blocks(&scheduled, now_ms);
         }
+        // Read after emission: preempting a request for MTP draft slots there
+        // can add a store the forward must wait for.
+        let compute_start_ms = self
+            .native_host_offload
+            .as_ref()
+            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -4185,8 +4187,10 @@ mod state_cache_tests {
 
     #[test]
     fn full_state_mtp_preserves_vllm_resend_boundaries() {
-        // Source-derived fixtures: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6,
+        // Resend positions follow vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6's
         // KVCacheCoordinator.get_replay_boundaries plus attention/Mamba lookup.
+        // Replay also stops a chunk there so the state exists; vLLM has one only
+        // where a chunk ended (the align-mode difference in kv-cache.md).
         // The logits cap precedes the MTP drop; partial tails exclude page boundaries.
         // The draft depth sizes the scratch states only, so one depth covers it.
         let depth = 3;

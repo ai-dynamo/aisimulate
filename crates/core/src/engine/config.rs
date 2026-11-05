@@ -1237,6 +1237,10 @@ impl EngineConfig {
                 "disable_eagle_block_drop requires aic_nextn"
             );
         }
+        ensure!(
+            self.backend == Backend::Vllm || !self.disable_eagle_block_drop,
+            "disable_eagle_block_drop is supported only for backend=vllm"
+        );
         if self.backend == Backend::Sglang {
             ensure!(
                 self.enable_chunked_prefill,
@@ -1530,6 +1534,20 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("disable_eagle_block_drop requires aic_nextn")
+        );
+
+        let sglang = EngineConfig {
+            backend: Backend::Sglang,
+            aic_nextn: Some(1),
+            disable_eagle_block_drop: true,
+            ..EngineConfig::default()
+        };
+        assert!(
+            sglang
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("disable_eagle_block_drop is supported only for backend=vllm")
         );
     }
 

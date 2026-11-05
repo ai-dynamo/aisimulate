@@ -2900,6 +2900,10 @@ fn materialize_aic_capacity(
             role.rank.enable_prefix_caching,
             "Mamba FPM cache requires the recorded prefix caching policy"
         );
+        ensure!(
+            role.rank.native_host_offload.is_none() && role.rank.g3_offload.is_none(),
+            "Mamba FPM cache supports HBM replay only"
+        );
         let budget = estimate_aic_grouped_budget(config, role)?;
         let cache = budget
             .replay_cache

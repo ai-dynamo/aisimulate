@@ -781,7 +781,6 @@ def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
     assert "disable_eagle_block_drop" not in engine["speculation"]
     assert engine["workers"]["aggregated"]["kv_cache"]["state_cache"] == {
         **STATE,
-        "num_speculative_states": None,
         "mamba_cache_dtype": "auto",
         "indexer_cache_dtype": "auto",
     }
@@ -795,6 +794,14 @@ def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
     checkpoint = {**KV, "state_cache": {**STATE, "prefill_checkpoint": True}, "prefix_match_unit": 32}
     with pytest.raises(ValidationError, match="prefill_checkpoint requires prefix_match_unit equal to block_size"):
         KvCachePredictionConfig.model_validate(checkpoint)
+
+
+def test_the_drop_switch_requires_vllm():
+    raw = _public(timing="default", state_cache=None)
+    raw["engine"]["backend"] = "sglang"
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": True}
+    with pytest.raises(ValidationError, match="disable_eagle_block_drop requires backend=vllm"):
+        CorePredictionConfig.model_validate(raw)
 
 
 @pytest.mark.parametrize("state_cache, drop_off", [(None, True), (STATE, False)])

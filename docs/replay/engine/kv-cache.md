@@ -461,7 +461,7 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | Knob | Default | Rules |
 |---|---|---|
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
-| `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match the draft depth, from positive `nextn` or `engine.speculation`. Requires numeric state bytes and token geometry. |
+| `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match the draft depth, from positive `nextn` or `engine.speculation`. Requires numeric state bytes and token geometry. Under MTP it also applies vLLM's [EAGLE block drop](speculation.md#prefix-caching) to state lookups. |
 | `state_cache.prefill_checkpoint` | `false` | vLLM's internal prefill checkpoint; see [below](#opt-in-align-rules). Needs `prefix_match_unit` equal to `block_size`. |
 | `state_cache.junction_checkpoints` | `false` | vLLM v0.29.0's shared-prefix junction states; see [below](#opt-in-align-rules). Needs an explicit `prefix_match_unit`. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
@@ -497,7 +497,11 @@ is modeled.
 Prefix reuse resumes from a stored state snapshot, so it does not land on every
 matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
-sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
+sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode,
+with one difference: when a prompt ends on a block boundary, replay also keeps
+the state one block earlier (two under the EAGLE block drop), so an identical
+resend resumes there. vLLM keeps a state there only if a prefill chunk ended
+there.
 
 In `mode: disaggregated`, set `state_cache` on both `prefill` and `decode`;
 each role sizes its own state. The decode worker reserves the prompt blocks
@@ -513,7 +517,7 @@ transfers the state for the whole prompt and does not model the recompute.
 
 <a id="opt-in-align-rules"></a>
 
-Two align-mode behaviors of vLLM are opt-in; `false` keeps the earlier model:
+Two align-mode behaviors of vLLM are opt-in and off by default:
 
 - **`prefill_checkpoint`** is vLLM's `num_prefill_checkpoint_blocks = 1`, which
   vLLM 43b4aaea sets for Mamba2 layers. When the final prefill chunk starts on a
@@ -537,7 +541,8 @@ For sub-block matching, supply `state_cache.num_speculative_states` equal to
 the draft depth, from positive `nextn` or `engine.speculation`.
 Each scratch copy consumes the same padded pages as the
 working state. The pool must fit these copies plus one token page.
-Omitting the field preserves the existing state model.
+Without the field, MTP reserves no scratch copies and state lookups skip the
+EAGLE block drop.
 This explicit mode models full-state scratch storage, not ReplaySSM or
 RecoverSSM rings or temporary records.
 

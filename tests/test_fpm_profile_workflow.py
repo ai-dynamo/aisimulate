@@ -1633,6 +1633,9 @@ def test_observed_mamba_pool_reaches_native_replay(profile, timing_systems):
     assert lowered["state_cache"] == {"bytes_per_request": 320}
     assert lowered["kv_cache_bytes_per_token"] == 8
     assert lowered["prefix_match_unit"] == 2
+    host = {"num_host_blocks": 4, "connector": "simple_cpu_v0_32"}
+    with pytest.raises(ValueError, match="Mamba FPM cache supports HBM replay only"):
+        materialize_aic_num_gpu_blocks({**spec.backend_deployment.agg_engine_args, "native_host_offload": host})
     result = EngineReplayRunnerFactory().create(0).run(spec)
     assert result.metrics["completed_requests"] == 1
     recommendation = {**_engine(profile), "mode": "aggregated"}
