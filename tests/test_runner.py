@@ -3046,6 +3046,25 @@ def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
     assert runtime.execution_spec["traffic"]["weka_client"] == "agentx"
 
 
+def test_weka_chat_template_requires_explicit_runner_capability_and_reaches_native():
+    template = {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "weka_chat_template": template,
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_weka_chat_template
+    with pytest.raises(ValueError, match="does not support weka_chat_template"):
+        replace(capabilities, supports_weka_chat_template=False).require_compatible(_spec(workload=workload))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["weka_chat_template"] == template
+
+
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
 def test_runner_honors_length_sampler(sampler):
     # Fixed vectors from the benchmark's NumPy RandomState contract and the

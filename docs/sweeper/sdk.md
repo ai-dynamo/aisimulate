@@ -259,8 +259,9 @@ cuts for matched comparisons. The live warmup policy follows the pinned referenc
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
 `supports_agentic_profile` for `agentic_profile`, `supports_agentic_live_warmup` for
-`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, and `supports_weka_client`
-for `weka_client: agentx`; unsupported runners fail validation.
+`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, `supports_weka_client`
+for `weka_client: agentx`, and `supports_weka_chat_template` for `weka_chat_template`; unsupported
+runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 

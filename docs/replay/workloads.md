@@ -312,6 +312,9 @@ and tokenizer, as AIPerf does to size its prompts:
 - `tail_tokens`: the tokens after the last user message's content, that is its
   end marker and the generation prompt.
 
+A runner accepts `chat_template` only if it advertises
+`supports_weka_chat_template`, as the engine stack does.
+
 A Weka corpus can name several source models. Replay runs every request on
 `engine.model` and records the source models and target under
 `agentic_model_projection`.
