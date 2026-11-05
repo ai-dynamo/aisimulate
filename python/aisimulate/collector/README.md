@@ -42,7 +42,7 @@ group's point list changes its existing task ID and can repeat its older points
 on resume, while preventing newly added points from being skipped.
 
 See [the declaration fields](cases/README.md#optional-long-context-points) and
-[coverage rationale and disposition](cases/agentic_coverage.md). Collection-cost
+[coverage rationale](cases/README.md#choosing-coverage). Collection-cost
 estimates count setup changes, point preparation, warmup/capture and timed
 forwards; scheduler wait and GPU allocation overhead are excluded.
 
@@ -52,7 +52,7 @@ uses NoPE and fused cache operations that the existing generic DeepSeek module
 does not reproduce. A native adapter needs cache registration/binding, absorbed
 weight processing, forward/metadata and FP8 policy support, plus a consumer
 review of its output-gate timing boundary and silicon qualification. See the
-[deferred extension](cases/agentic_coverage.md#deferred-kimi-k3-mla-extension).
+[deferred extension](cases/README.md#deferred-kimi-k3-mla-extension).
 Normal coverage and independent KDA width additions remain enabled; the missing
 native long-context route is an unmeasured gap, not zero collection cost.
 
