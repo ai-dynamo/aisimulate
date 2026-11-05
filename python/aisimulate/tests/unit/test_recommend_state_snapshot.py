@@ -24,6 +24,7 @@ from aisimulate.recommend import recommendation_from_payload, recommendation_to_
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolutionError, ForwardPassEstimatorResolver
+from aisimulate.sweeper.state_snapshot import SnapshotRole, _validate_fitted
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.perf_database import resolve_query_version
 
@@ -800,6 +801,19 @@ def test_planner_snapshot_rules_fail_validation(planner_snapshots, name, edit, m
 
     with pytest.raises((ValidationError, ValueError), match=message):
         _space(raw)
+
+
+def test_a_learned_snapshot_fitted_with_mtp_is_rejected_on_vllm():
+    # Replay prices nextn > 0 only with a vLLM fpm_regression model.
+    summary = {
+        "kind": "learned_frozen",
+        "selected_estimation_mode": "fpm_learned",
+        "readiness": {"stores": [{"workload_kind": "pure_decode", "ready": True}]},
+        "identity": {"backend": "vllm", "nextn": 1},
+    }
+    snapshot = SnapshotRole(role="decode", path="snapshot", summary=summary, config={})
+    with pytest.raises(ValueError, match=r"records nextn=1; only a vLLM fpm_regression model prices MTP rounds"):
+        _validate_fitted(snapshot)
 
 
 def test_planner_snapshots_without_the_role_stores_are_rejected(planner_snapshots):
