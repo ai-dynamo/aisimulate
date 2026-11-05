@@ -1093,9 +1093,10 @@ For a model without an analytical class, create a JSON or YAML FPM profile and p
 
 A legacy declared-memory `resources` record supplies all four integer fields: `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes` and `comm_overhead_bytes`. They are optional for the pending runtime-memory workflow. Every profile requires positive `max_num_tokens` and `max_batch_size`, and a `provenance` explanation. Choose either `cache_layout: linear` with positive `kv_bytes_per_token`, or `cache_layout: grouped` with a nonempty `cache_groups` list and no scalar token rate, as described in [grouped cache review](#review-grouped-cache-resources). Existing linear profiles retain their serialized shape. Supply a complete legacy declaration only when those bounds are already known and intended; new onboarding observes runtime cache capacity instead. A profile is an input declaration; AISimulate does not certify that its values describe your runtime.
 
-For observed hybrid pools, import `cache_layout: mamba_align` (or `unmodeled`
-for timing only) from the measured allocation. Onboarding neither infers these
-layouts nor plans with them; use the profile in a prediction config. See
+For observed hybrid pools, import `cache_layout: mamba_align` from the measured
+allocation and use the profile in a prediction config. Import `unmodeled` only
+for standalone FPM timing queries; cache sizing and replay reject it.
+Onboarding neither infers nor plans with either layout. See
 [memory accounting](../memory.md#observed-mamba-align-pools).
 
 All resource bytes are **per rank**, and must bound every rank. Scheduler envelope limits are also per attention-DP rank; they are not the summed batch and token totals used by the worker's FPM timing query. Do not copy TP resource values into DEP/TEP merely because GPU counts match. Include all non-KV storage, including quantization overheads. Overhead fields exclude the separate `kv_cache.capacity.cuda_graph_reserved_bytes` reservation. Profiles carry explicit quantization identity; `text_only` and `unrecorded_quant_modes` overrides are rejected on this route. Requests above the declared scheduler envelope fail explicitly. Collection validates both prefill and explicit decode batch limits against that envelope before launching workers.
