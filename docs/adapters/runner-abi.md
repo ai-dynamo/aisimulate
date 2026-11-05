@@ -80,8 +80,9 @@ schemes' draft costs. A stack must explicitly declare generic speculation
 support and retain those costs through its timing provider.
 
 `require_compatible(spec)` checks versions and coarse combinations before
-execution. AgentX G2 additionally requires offline vLLM, a static single
-aggregated worker or 1P1D, and DP1 on every role. G3 and speculation cannot be
+execution. AgentX G2 additionally requires offline vLLM, static workers (one
+aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
+G2 each), and DP1 on every role. G3 and speculation cannot be
 combined with AgentX G2. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.
 

@@ -217,6 +217,7 @@ Every `Workload` field:
 | `load_type` | `str \| None` | `None` | Explicit traffic load kind passed to replay; must be `"trace_timestamps"` when `agentic_lanes` or `agentic_snapshot` is set. |
 | `trace_path` | `str \| None` | `None` | Path to a replay trace. Its presence selects the trace shape and **forbids** all synthetic fields. |
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
+| `weka_client` | `Literal["recorded", "agentx"] \| None` | `None` | [Weka client](../replay/workloads.md#weka-client) whose replay to follow; `None` selects `recorded`. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
@@ -244,7 +245,8 @@ shared synthetic knobs carried by `ReplaySpec.workload`.
 Profile controls are concrete workload values, not search dimensions. The built-in Engine runner
 supports profiles on offline aggregated or P/D vLLM/SGLang replay with HBM-only KV cache.
 vLLM also supports local or shared [G2 host offload](../replay/engine/kv-cache.md) on a static single
-aggregated worker or 1P1D, with attention DP1 on every role. G3 remains unsupported;
+aggregated worker or 1P1D, or local G2 on several static aggregated workers, with attention DP1
+on every role. G3 remains unsupported;
 speculative decoding follows the narrower [engine SD constraints](../replay/engine/speculation.md).
 Warmup is optional: `repeated_prefixes` retains the saved snapshot frontier,
 `live_trajectory_v1` advances it, and `primers_only` sends only the primers.
@@ -253,8 +255,8 @@ until the admission deadline. Seed-only sampling differs from the AgentX referen
 cuts for matched comparisons. The live warmup policy follows the pinned reference's accelerated
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
-`supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` or `primers_only`;
-unsupported runners fail validation.
+`supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` or `primers_only`,
+and `supports_weka_client` for `weka_client: agentx`; unsupported runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 
