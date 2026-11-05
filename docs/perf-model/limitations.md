@@ -50,6 +50,7 @@ patches, 9 embeddings, and 12 context tokens.
 - [Whole-forward](methods/whole-forward.md) documents exact identity and query-domain failures.
 - [Memory](memory.md) distinguishes physical payload/resource estimates from observed allocations.
 - [DeepSeek-V4.1](models/deepseek-v41.md) separates analytical and measured execution contracts.
+- [Kimi K3.1 Pro](models/kimi-k31.md) distinguishes analytical support from native FP8 collection.
 - [Replay features](../replay/features.md) records supported scheduler/cache/topology combinations.
 
 These are current modeling boundaries. Completed implementation plans and
