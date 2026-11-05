@@ -1466,6 +1466,51 @@ def test_recommendation_candidate_yaml_spells_out_op_level_like_other_defaults()
     assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
 
 
+@pytest.mark.parametrize("timing", [{"type": "default", "forward_model": "fpm"}, {"type": "default"}])
+@pytest.mark.parametrize(
+    "aiperf",
+    [
+        None,
+        {
+            "per_chunk_usage": True,
+            "constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 9}],
+        },
+    ],
+)
+def test_recommendation_candidate_reproduces_aiperf_evaluation_in_predict(timing, aiperf) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.config import OptimizationGoal
+
+    raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
+    raw["engine"]["workers"]["aggregated"]["timing"] = timing
+    raw["optimization"]["target"] = "output_token_throughput_per_user.p50"
+    raw["optimization"]["strict_sla"] = aiperf is not None
+    if aiperf is not None:
+        raw["evaluation"] = {"aiperf": aiperf}
+    config = CoreRecommendationConfig.model_validate(raw)
+    smart = recommendation_to_sweeper(config)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "agg",
+            "backend": "vllm",
+            "agg_max_num_batched_tokens": 8192,
+            "agg_max_num_seqs": 256,
+        },
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    )
+    deployment = build_backend_deployment(sample, backend_version="test")
+    prediction = _candidate_prediction(
+        config, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
+    )
+    # The exported prediction reports the same metric definitions the search scored.
+    reloaded = CorePredictionConfig.model_validate(prediction)
+    goal = OptimizationGoal.model_validate(prediction_to_replay_spec(reloaded).goal)
+    assert goal.uses_aiperf_metrics and smart.goal.uses_aiperf_metrics
+    assert goal.aiperf == smart.goal.aiperf == config.evaluation.aiperf
+    assert goal.aiperf_per_chunk_usage is (aiperf is not None)
+
+
 def _pd_hardware_config(*, recommend=False, **overrides):
     engine = {
         **_engine(),

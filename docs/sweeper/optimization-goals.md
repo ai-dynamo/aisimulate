@@ -34,7 +34,7 @@ Every `OptimizationTarget` and the exact report metric it reads (`score.objectiv
 |---|---|---|---|
 | `throughput` | maximize | `output_throughput_tok_s` | no |
 | `throughput_per_gpu` | maximize | `output_throughput_tok_s / avg_gpu` (tok/s/gpu) | no |
-| `throughput_per_user` | maximize | `mean_output_token_throughput_per_user` (tok/s/user) | no |
+| `throughput_per_user` | maximize | `mean_output_token_throughput_per_user` (tok/s/user, one `1000 / ITL` sample per request) | no |
 | `ttft` | **minimize** | `mean_ttft_ms` | no |
 | `e2e_latency` | **minimize** | `mean_e2e_latency_ms` | no |
 | `goodput` | maximize | `goodput_output_throughput_tok_s` | **yes** |
@@ -51,8 +51,16 @@ absent, but `ttft` and `e2e_latency` default to `+inf` when their metric is miss
 no qualifying samples. Such a latency report scores worst-possible (`-inf` after negation)
 rather than best.
 
-The `*_per_user` metric is already a rate (mean of per-token-gap `1000/itl`), so it gets
-**no** GPU/time normalization — it is the InferenceX x-axis (tok/s/user).
+The `*_per_user` metric is already a rate, so it gets **no** GPU/time normalization. It is
+the InferenceX x-axis (tok/s/user). Each completed request with at least two output tokens
+and a positive ITL contributes one sample, `1000 / ITL`, where ITL is the request's
+first-to-last token interval divided by its output tokens minus one. This matches
+`output_token_throughput_per_user.avg` without per-chunk usage.
+
+Compatibility: earlier releases averaged `1000 / gap` over every individual token gap. That
+value weighted long responses more and did not match AIPerf. The native summary distribution
+`output_token_throughput_per_user` and `mean_output_token_throughput_per_user` now use the
+request definition. Per-token gaps remain available in the native `itl` distribution.
 
 ### `avg_gpu` — the per-GPU divisor
 
@@ -115,23 +123,31 @@ are `time_to_first_token`, `request_latency`, `inter_token_latency`, and
 `p99`. Latency targets minimize milliseconds; user throughput targets maximize
 tokens/s/user. The SDK also accepts these selectors in `pareto_objectives`.
 
+The `evaluation.aiperf` block selects the metric definitions. `predict`, `recommend`,
+and the Sweeper share it, so each reports all 20 statistics for the same request
+population. A recommendation copies the block into every exported prediction
+configuration. If the target is a selector and the block is absent, `recommend`
+adds an empty block.
+
 ```yaml
-optimization:
-  target: throughput_per_gpu
-  strict_sla: true
-  aiperf_per_chunk_usage: false
-  constraints:
-    metrics:
+evaluation:
+  aiperf:
+    per_chunk_usage: false
+    constraints:
       - metric: output_token_throughput_per_user.p50
         operator: gte
         threshold: 50
       - metric: time_to_first_token.p99
         operator: lte
         threshold: 2000
+optimization:
+  target: throughput_per_gpu
+  strict_sla: true
 ```
 
 Set `target: request_latency.p99` to minimize request latency p99 instead.
-The SDK uses `OptimizationGoal.metric_constraints` for the same constraint list.
+The SDK uses `OptimizationGoal.aiperf` with the same fields. `predict` reports the
+statistics but does not reject a configuration that violates a constraint.
 Each entry requires `metric`, `operator` (`lte` or `gte`), and a finite,
 nonnegative `threshold`. Equality passes. Missing values or empty sample
 populations fail strict constraints and cannot qualify an objective.
@@ -152,26 +168,39 @@ The definitions match ordinary metrics in
 - TTFT spans arrival to first content; request latency ends at last content.
   A single-token response contributes both, but no ITL or user TPS.
 - ITL divides the first-to-last content interval by output tokens minus one.
-  `aiperf_per_chunk_usage: true` subtracts the first content chunk's token count,
+  `per_chunk_usage: true` subtracts the first content chunk's token count,
   matching AIPerf's `--per-chunk-usage`. Missing, nonpositive, or inconsistent counts
   fall back to subtracting one. Native replay treats tokens delivered at the
   same first timestamp as the first chunk.
 - User TPS is `1000 / ITL` for each request with positive ITL. A zero ITL remains
   an ITL sample but contributes no user TPS. Aggregation happens after inversion.
 - Percentiles use NumPy's linear interpolation over these request samples.
-  Native token-gap metrics and their existing quantiles remain unchanged.
+  The native per-token-gap `itl` distribution remains unchanged.
 
 Candidate metrics use the `aiperf.` prefix, such as
 `aiperf.output_token_throughput_per_user.p50`, with a corresponding `.count`.
 These selectors require native offline request replay. FPM and op-level timing
 both use that path. Analytical AFD and analytical EPD cannot supply this evidence.
 
-Request capture runs only when an AIPerf objective or constraint needs it.
+Request capture runs only when `evaluation.aiperf` is set or an objective needs it.
 The runner retains scalar summaries unless the caller also requests raw records.
 Exact percentiles therefore cost request-level capture and memory proportional
 to the number of requests; they do not require token-level trace retention.
 Matching these definitions does not model an unconfigured transport or frontend
-cost. Compare calibrated replay against serving measurements before admission.
+cost. Native replay models the first chunk from token timestamps; it does not
+observe HTTP or SSE chunking. Compare calibrated replay against serving
+measurements before admission.
+
+### Differences from AIPerf goodput
+
+`evaluation.sla` and the `goodput` targets keep their native per-request filters.
+They are not AIPerf goodput:
+
+- Native goodput counts the output tokens/s of qualifying requests. AIPerf
+  goodput counts qualifying requests/s.
+- The native ITL filter divides by the actual output length minus one and
+  admits a single-token response. AIPerf has no ITL value for such a response.
+- The `aiperf` constraints apply to aggregate statistics, not to each request.
 
 ## Minimum GPUs
 

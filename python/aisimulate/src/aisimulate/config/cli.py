@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
+from ..aiperf_metrics import AIPerfEvaluation, AIPerfMetric
 from .common import (
     Choices,
     EvaluationConfig,
@@ -83,11 +84,14 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("AFD recommendation requires an absolute traffic load, not kv_capacity_fraction")
         if isinstance(source, TraceSource) and source.format == "mooncake-delta" and "disaggregated" in modes:
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        if isinstance(self.optimization.target, AIPerfMetric) and self.evaluation.aiperf is None:
+            # Exported predictions must report the metric family that was optimized.
+            self.evaluation.aiperf = AIPerfEvaluation()
         sla = self.evaluation.sla
         if (
             self.optimization.strict_sla
             and (sla is None or not sla.has_bound)
-            and not self.optimization.constraints.metrics
+            and not (self.evaluation.aiperf and self.evaluation.aiperf.constraints)
         ):
             raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound or metric constraint")
         if self.optimization.target in {"goodput", "goodput_per_gpu", "min_gpus"} and (

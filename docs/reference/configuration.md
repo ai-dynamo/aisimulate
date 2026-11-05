@@ -105,6 +105,9 @@ evaluation:
 | `evaluation.sla.ttft_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.itl_ms` | `null` | `x` | `-` | Positive and independently optional; an unset field is unbounded. |
 | `evaluation.sla.e2e_ms` | `null` | `x` | `-` | Positive; mutually exclusive with TTFT plus ITL. |
+| `evaluation.aiperf` | `null` | `x` | `-` | When set, report the [AIPerf metric selectors](../sweeper/optimization-goals.md#aiperf-metric-selectors) as `aiperf.<metric>.<statistic>`. Requires native offline request replay. `recommend` sets it when the target is a selector. |
+| `evaluation.aiperf.per_chunk_usage` | `false` | `x` | `-` | Match AIPerf `--per-chunk-usage`: subtract the first content chunk's token count in ITL. |
+| `evaluation.aiperf.constraints` | `[]` | `x` | `-` | Aggregate constraints with `metric`, `operator` (`lte` or `gte`), and nonnegative `threshold`. `recommend` enforces them only when `optimization.strict_sla` is true. `predict` reports the statistics only. |
 
 `goodput` and `goodput_per_gpu` optimization require at least one SLA bound. Planner throughput
 scaling specifically uses the `ttft_ms` plus `itl_ms` form when the recommendation target is
@@ -120,9 +123,7 @@ The `optimization` section is required, even when its target uses a default.
 |---|---:|---|---|---|
 | `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. Also accepts the [AIPerf metric selectors](../sweeper/optimization-goals.md#aiperf-metric-selectors). With `--stack dynamo`, `min_gpus` accepts `router` and rejects `planner`. |
 | `optimization.hardware` | `null` | `x` | `-` | One nonempty hardware identifier; required for `engine.hardware: auto`. |
-| `optimization.strict_sla` | `false` | `x` | `-` | When true, enforce the configured mean SLA bounds and `constraints.metrics` before ranking or Pareto analysis. |
-| `optimization.aiperf_per_chunk_usage` | `false` | `x` | `-` | Match AIPerf's optional first-content-chunk token divisor for the new metric selectors. |
-| `optimization.constraints.metrics` | `[]` | `x` | `-` | Request metric constraints with `metric`, `operator` (`lte` or `gte`), and nonnegative `threshold`. Enforced when `strict_sla` is true. See [AIPerf metric selectors](../sweeper/optimization-goals.md#aiperf-metric-selectors). |
+| `optimization.strict_sla` | `false` | `x` | `-` | When true, enforce the configured mean SLA bounds and `evaluation.aiperf.constraints` before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
 | `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with open-loop traffic (a request or session rate, or `trace_timestamps` without `agentic_lanes`). It cannot exceed the offered request rate, which for sessions is `sessions_per_second` times `session.turns`; a trace's timestamp rate is not checked. Optional with fixed concurrency or agentic lanes. |

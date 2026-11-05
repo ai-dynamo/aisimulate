@@ -62,6 +62,18 @@ class MetricConstraint(BaseModel):
     threshold: float = Field(strict=True, ge=0, allow_inf_nan=False)
 
 
+class AIPerfEvaluation(BaseModel):
+    """Request AIPerf metrics from native per-request records.
+
+    ``constraints`` gate candidates only when strict aggregate filtering is on.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    per_chunk_usage: bool = Field(default=False, strict=True)
+    constraints: list[MetricConstraint] = Field(default_factory=list)
+
+
 def metric_value(report: Mapping[str, float], metric: AIPerfMetric) -> float:
     """Missing samples never become a zero-latency or zero-throughput result."""
     count, value = report.get(metric.count_key), report.get(metric.report_key)

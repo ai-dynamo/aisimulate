@@ -1570,7 +1570,7 @@ def test_aiperf_constraint_filters_before_optimizer_feedback(monkeypatch, strict
         goal={
             "target": "throughput",
             "strict_sla": strict,
-            "metric_constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}],
+            "aiperf": {"constraints": [{"metric": "request_latency.p99", "operator": "lte", "threshold": 512}]},
         },
     )
     result = Sweeper(

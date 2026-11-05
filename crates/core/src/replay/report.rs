@@ -1316,10 +1316,13 @@ impl TraceRequestStats {
 
         if include_in_distributions {
             for window in times.windows(2) {
-                let itl_ms = (window[1] - window[0]).max(0.0);
-                itl_distribution.add(itl_ms);
-                if itl_ms > 0.0 {
-                    output_token_throughput_per_user.add(1000.0 / itl_ms);
+                itl_distribution.add((window[1] - window[0]).max(0.0));
+            }
+            // AIPerf user TPS: one reciprocal of the request's mean ITL per request.
+            if let [first, .., last] = times.as_slice() {
+                let request_itl_ms = (last - first).max(0.0) / (times.len() - 1) as f64;
+                if request_itl_ms > 0.0 {
+                    output_token_throughput_per_user.add(1000.0 / request_itl_ms);
                 }
             }
         }
@@ -3257,6 +3260,9 @@ mod tests {
             let row = &report.per_request[0];
             assert_eq!(row.first_content_chunk_tokens, Some(2));
             assert_eq!(row.itl_ms, Some(7.5)); // Native TPOT keeps its existing definition.
+            // One request sample, 1000 / 7.5, not the per-gap mean of 1000 / 10.
+            let user_tps = &report.latency.output_token_throughput_per_user;
+            assert!((user_tps.mean_ms - 1000.0 / 7.5).abs() < 1e-9, "{user_tps:?}");
         }
     }
 

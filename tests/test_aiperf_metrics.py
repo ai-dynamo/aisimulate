@@ -3,7 +3,9 @@
 
 """Synthetic cases for the AIPerf definitions pinned in THIRD_PARTY_NOTICES.md."""
 
+import json
 import math
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -41,6 +43,22 @@ def test_request_populations_and_linear_percentiles():
     for name, values in expected.items():
         for stat, value in zip(("count", "avg", "p50", "p90", "p95", "p99"), values, strict=True):
             assert result[f"aiperf.{name}.{stat}"] == pytest.approx(value)
+
+
+PINNED = json.loads((Path(__file__).parent / "fixtures" / "aiperf_b0276e19_request_metrics.json").read_text())
+
+
+@pytest.mark.parametrize("case", PINNED["cases"], ids=lambda c: f"{len(c['rows'])}rows-chunk{c['per_chunk_usage']}")
+def test_matches_pinned_aiperf_classes(case):
+    # Expected values come from the pinned AIPerf metric classes (see the fixture's generator).
+    rows = [
+        record(first, last, output, status=status, first_chunk=chunk)
+        for first, last, output, chunk, status in case["rows"]
+    ]
+    actual = summarize_requests(rows, per_chunk_usage=case["per_chunk_usage"])
+    assert actual.keys() == case["expected"].keys()
+    for key, expected in case["expected"].items():
+        assert actual[key] == pytest.approx(expected, rel=1e-12, abs=1e-12), key
 
 
 @pytest.mark.parametrize("first_chunk, expected", [(None, 7.5), (-1, 7.5), (0, 7.5), (2, 10), (5, 7.5)])
@@ -87,7 +105,9 @@ def test_scoring_is_independent_of_strict_rejection(target):
     goal = OptimizationGoal(
         target=target,
         sla={"ttft_ms": 100} if target == "goodput" else None,
-        metric_constraints=[{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 101}],
+        aiperf={
+            "constraints": [{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 101}]
+        },
     )
     # Preserve goodput's existing strict mean gate when it is explicitly enabled.
     report.update(completed_requests=1, num_ttft_samples=1, mean_ttft_ms=10)
@@ -108,14 +128,15 @@ def test_cli_forwards_metric_policy_without_changing_goodput_sla():
                 "hardware": "h200_sxm",
                 "workers": {"aggregated": {}},
             },
-            "optimization": {
-                "target": "request_latency.p99",
-                "strict_sla": True,
-                "aiperf_per_chunk_usage": True,
-                "constraints": {
-                    "metrics": [{"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 50}]
-                },
+            "evaluation": {
+                "aiperf": {
+                    "per_chunk_usage": True,
+                    "constraints": [
+                        {"metric": "output_token_throughput_per_user.p50", "operator": "gte", "threshold": 50}
+                    ],
+                }
             },
+            "optimization": {"target": "request_latency.p99", "strict_sla": True},
         }
     )
     restored = CoreRecommendationConfig.model_validate_json(config.model_dump_json())

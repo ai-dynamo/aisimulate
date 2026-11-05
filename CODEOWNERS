@@ -74,6 +74,7 @@
 /tests/test_cli_config.py                                @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_cli.py                               @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_aiperf_metrics.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_g3_offload_cli.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_power_contract.py                            @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners
@@ -87,6 +88,7 @@
 /tests/fixtures/power-contract-v1.json                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_unified_traffic_runtime.py                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_output_adapter_discovery.py                  @ai-dynamo/aisimulate-replay-codeowners
+/tests/fixtures/aiperf_b0276e19_request_metrics.json     @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
 /crates/core/src/engine/                                 @ai-dynamo/aisimulate-mocker-codeowners

@@ -1015,6 +1015,8 @@ def _run_afd_replay(
     mean_ttft = sum(float(record["ttft_ms"]) for record in request_records) / completed
     mean_tpot = sum(float(record["tpot_ms"]) for record in request_records) / completed
     mean_e2e = sum(float(record["e2e_latency_ms"]) for record in request_records) / completed
+    # Request-weighted, as in AIPerf: one reciprocal of each request's ITL.
+    user_tps = [1_000.0 / float(record["tpot_ms"]) for record in request_records if float(record["tpot_ms"]) > 0.0]
     input_tokens = completed * input_length
     duration_s = duration_ms / 1_000.0
     metrics = {
@@ -1033,7 +1035,7 @@ def _run_afd_replay(
         "mean_ttft_ms": mean_ttft,
         "mean_tpot_ms": mean_tpot,
         "mean_e2e_latency_ms": mean_e2e,
-        "mean_output_token_throughput_per_user": 1_000.0 / mean_tpot if mean_tpot > 0.0 else 0.0,
+        "mean_output_token_throughput_per_user": float(np.mean(user_tps)) if user_tps else 0.0,
         "completed_requests": float(completed),
         "error_rate": 0.0,
         "num_total_gpus": float(total_gpus),

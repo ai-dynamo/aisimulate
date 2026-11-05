@@ -1851,8 +1851,9 @@ OSRB approval.
 
 ## AIPerf request metric compatibility
 
-- Derived files: `python/aisimulate/src/aisimulate/aiperf_metrics.py` and
-  `tests/test_aiperf_metrics.py`.
+- Derived files: `python/aisimulate/src/aisimulate/aiperf_metrics.py`,
+  `tests/test_aiperf_metrics.py`, and
+  `tests/fixtures/aiperf_b0276e19_request_metrics.json`.
 - Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/b0276e19398169eb450f5a79db28509dd4bcb48f),
   revision `b0276e19398169eb450f5a79db28509dd4bcb48f`.
 - Original paths: `src/aiperf/metrics/types/ttft_metric.py`,
@@ -1862,4 +1863,6 @@ OSRB approval.
 - License: Apache-2.0 (the repository's `LICENSE` includes the license text).
 - Modifications: independent implementation of the pinned request metric
   definitions over native replay records, with synthetic compatibility tests.
+  The fixture holds values computed by the pinned AIPerf metric classes with
+  `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
   No AIPerf runtime dependency or source files are bundled.

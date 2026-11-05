@@ -106,6 +106,8 @@ def prediction_to_replay_spec(
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
+    if evaluation.get("aiperf") is not None:
+        goal["aiperf"] = evaluation["aiperf"]
     if deployment.encoder is not None and deployment.encoder.mode == "analytical" and goal["sla"] is not None:
         goal["strict_sla"] = True
     return ReplaySpec(

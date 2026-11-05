@@ -78,6 +78,8 @@ areas:
       - tests/test_agentx_snapshot_export.py
       - tests/test_agentx_live_warmup.py
       - tests/test_runner.py
+      - tests/test_aiperf_metrics.py
+      - tests/fixtures/aiperf_b0276e19_request_metrics.json
       - tests/test_traffic.py
       - tests/e2e/
   - label: mocker
