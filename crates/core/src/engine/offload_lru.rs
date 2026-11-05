@@ -13,7 +13,8 @@ use crate::engine::host_offload::HostBlockKey;
 /// relinks in O(1). The caller keeps each block's node in a slot, normally a
 /// field of the block's own entry; node 0 is the sentinel between the newest
 /// and oldest blocks. Callers make a cohort newest in key order, the tiers'
-/// deterministic tie-break.
+/// deterministic tie-break, unless a G2 tier keeps release order (a free
+/// queue) or ranks blocks when their store starts.
 pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
@@ -60,6 +61,11 @@ impl Lru {
             self.unlink(node);
             self.vacant.push(node);
         }
+    }
+
+    /// Number of linked blocks.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len() - 1 - self.vacant.len()
     }
 
     /// The `count` oldest blocks that pass `is_eligible`.

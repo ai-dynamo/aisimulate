@@ -53,9 +53,9 @@ pub use types::{
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaChatTemplate, WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
-    WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
-    load_weka_agentic_rows, stream_weka_agentic_rows,
+    WekaChatTemplate, WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter,
+    WekaNestedTimestampBasis, WekaResolvedTimestampBasis, load_weka_agentic_graph,
+    load_weka_agentic_graph_with_options, load_weka_agentic_rows, stream_weka_agentic_rows,
 };
 
 pub(super) const SYNTHETIC_OUTPUT_SEED: u64 = 0xD37A_0A7E_5EED;

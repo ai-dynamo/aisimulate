@@ -35,6 +35,7 @@ import json
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import MappingProxyType
 from typing import NamedTuple
@@ -45,7 +46,10 @@ from collector.case_generator import (
     AttentionOwner,
     Dsv4Sweep,
     MoeCommonTestCase,
+    _attention_profile_shapes,
     _framework_specific_model_case_values,
+    _get_model_path_filter,
+    _model_case_values,
     get_attention_encoder_head_configs,
     get_attention_shapes,
     get_base_common_case_values,
@@ -73,6 +77,7 @@ from collector.case_generator import (
     moe_planned_modes,
     without_models,
 )
+from collector.coverage import includes_long_context, long_context_coverage, long_context_points
 from collector.helper import _AIC_MODEL_CONFIG_DIR
 
 # Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
@@ -153,6 +158,7 @@ class Plan:
     where: str = ""
     # The model rows the plan left out; rows read the model profiles without them.
     skipped_models: frozenset[str] = frozenset()
+    include_long_context: bool = False
 
     @property
     def by_dispatch(self) -> dict[str, int]:
@@ -161,7 +167,11 @@ class Plan:
 
     @property
     def rows(self) -> list:
-        """What the getter queues: the cases, or the backend's rows for them."""
+        """What the getter queues, retaining the coverage selected when this plan was built."""
+        with long_context_coverage(self.include_long_context):
+            return self._rows()
+
+    def _rows(self) -> list:
         if self.to_batch_rows is not None:
             units = self.cases
             if self.dispatches:
@@ -201,7 +211,14 @@ class _Run(NamedTuple):
         return getattr(self.case, name)
 
 
-def plan(op: str, backend: str, sm_version: int | None) -> Plan:
+def plan(op: str, backend: str, sm_version: int | None, *, include_long_context: bool | None = None) -> Plan:
+    """Plan ordinary coverage, optionally unioned with declared model-owned long-context points."""
+    enabled = includes_long_context() if include_long_context is None else include_long_context
+    with long_context_coverage(enabled):
+        return _plan(op, backend, sm_version)
+
+
+def _plan(op: str, backend: str, sm_version: int | None) -> Plan:
     """Expand an op's shared cases and leave out what ``skips.SKIPS`` skips for this backend on this SM.
 
     A ``model`` entry drops the model's rows before cases are merged, so a case
@@ -259,6 +276,7 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         sm_version=sm_version,
         where=f"{backend} {op}",
         skipped_models=skipped_models,
+        include_long_context=includes_long_context(),
     )
 
 
@@ -1089,7 +1107,7 @@ def _mla_module_expand(phase: str) -> Callable[[], list[ModuleCase]]:
                                     model.model_path,
                                 )
                             )
-        return cases
+        return _with_history_module_cases(cases, "mla", phase, sweep)
 
     return expand
 
@@ -1208,7 +1226,14 @@ def _projection_gemm(model_path: str) -> str:
     modelopt = _modelopt_quant(model_path)
     if str(modelopt.get("quant_algo", "")).upper() == "MIXED_PRECISION":
         lanes = modelopt.get("quantized_layers") or {}
-        return "nvfp4" if any(_fp4_lane(lane) for key, lane in lanes.items() if key.endswith("o_proj")) else "bfloat16"
+        projection_lanes = [lane for key, lane in lanes.items() if key.endswith("o_proj")]
+        if any(_fp4_lane(lane) for lane in projection_lanes):
+            return "nvfp4"
+        # Match the SDK's MXFP8 -> fp8_block projection approximation
+        # (sdk/models/helpers.py:_infer_mixed_precision_quant_modes).
+        if any(str(lane.get("quant_algo", "")).upper() == "MXFP8" for lane in projection_lanes):
+            return "fp8_block"
+        return "bfloat16"
     patterns = [str(pattern) for pattern in modelopt.get("exclude_modules") or []]
     keeps_o_proj = any(
         "o_proj" in pattern or ("self_attn" in pattern and pattern.rsplit("self_attn", 1)[1] in ("", "*", ".*"))
@@ -1312,9 +1337,159 @@ def _sparse_module_expand(
                         )
                         for batch, length, prefix in points
                     ]
-        return cases
+        return _with_history_module_cases(cases, attention_type, phase, sweep, shared_index_only=shared_index_only)
 
     return expand
+
+
+def _history_config(model_path: str) -> dict:
+    config = _packaged_config(model_path)
+    return config.get("text_config") or config
+
+
+def _history_limit(model_path: str) -> int:
+    limit = _history_config(model_path).get("max_position_embeddings")
+    if type(limit) is not int or limit <= 0:
+        raise ValueError(f"long-context model {model_path} has no valid max_position_embeddings")
+    return limit
+
+
+def _history_attention_unquantized(model_path: str, config: dict) -> bool:
+    """Prove a routed-expert quantization recipe leaves every self-attention module alone."""
+    quant = config.get("quantization_config") or {}
+    if not quant:
+        return True
+    modelopt = _modelopt_quant(model_path)
+    algo = str(modelopt.get("quant_algo", "")).upper()
+    if algo == "MIXED_PRECISION":
+        lanes = modelopt.get("quantized_layers")
+        return isinstance(lanes, dict) and bool(lanes) and all(".mlp." in path for path in lanes)
+    if algo != "NVFP4":
+        return False
+    layers = config.get("num_hidden_layers")
+    # Only whole-attention wildcards establish exclusion of all current and
+    # future projections/indexers; a match for one named projection is insufficient.
+    patterns = [
+        pattern
+        for pattern in modelopt.get("exclude_modules") or []
+        if isinstance(pattern, str) and pattern.endswith("*")
+    ]
+    return (
+        type(layers) is int
+        and layers > 0
+        and all(
+            any(
+                fnmatchcase(f"model.layers.{layer}.self_attn", pattern)
+                or fnmatchcase(f"model.layers.{layer}.self_attn.", pattern)
+                for pattern in patterns
+            )
+            for layer in range(layers)
+        )
+    )
+
+
+def _history_runtime_signature(model_path: str) -> str:
+    config = dict(_history_config(model_path))
+    for label in ("_name_or_path", "_commit_hash", "transformers_version"):
+        config.pop(label, None)
+    if config.get("model_type") == "glm_moe_dsa":
+        # These are outside the extracted self_attn module. Its native builders
+        # take explicit qk_nope/qk_rope/v dimensions, not HF's redundant head_dim:
+        # vllm.collect_mla_module._create_attention_module; TRT create_attention_layer;
+        # SGLang DeepseekV2AttentionMLA.__init__ (deepseek_v2.py:1993-1998
+        # @e00930c5489053f26d86b179cee0d087f846acbb) takes those explicit args;
+        # its local config loader strips HF layer_types before constructing it.
+        for field in ("bos_token_id", "eos_token_id", "pad_token_id", "num_experts", "mlp_bias", "moe_router_dtype"):
+            config.pop(field, None)
+        layer_types = config.get("layer_types")
+        if isinstance(layer_types, list) and set(layer_types) == {"deepseek_sparse_attention"}:
+            config.pop("layer_types")
+        if all(config.get(field) is not None for field in ("qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim")):
+            config.pop("head_dim", None)
+        # Never strip arbitrary quantization: every self_attn must be excluded,
+        # or the mixed recipe must explicitly name only MLP modules. KV precision
+        # is separately explicit in ModuleCase and the workers' cache config.
+        if _history_attention_unquantized(model_path, config):
+            config.pop("quantization_config", None)
+        else:
+            config["resolved_modelopt_quantization"] = _modelopt_quant(model_path)
+    return json.dumps(config, sort_keys=True)
+
+
+def _with_history_module_cases(
+    cases: list[ModuleCase], attention_type: str, phase: str, sweep, *, shared_index_only: bool = False
+) -> list[ModuleCase]:
+    """Union exact model points before deduplicating consumer keys; keep ordinary owners first."""
+    if not includes_long_context():
+        return cases
+    # Reuse the pinned planner's representative for an equivalent runtime,
+    # even when a newly requested point was absent from its old grid.
+    signatures = {path: _history_runtime_signature(path) for path in {case.model_path for case in cases}}
+    representatives = {}
+    for case in cases:
+        architecture = (
+            None if attention_type == "mla" else tuple(_history_config(case.model_path).get("architectures", []))
+        )
+        representatives.setdefault((architecture, case.gemm_type, signatures[case.model_path]), case.model_path)
+    profiles = _model_case_values("mla_module")
+    for backend in ("vllm", "sglang", "trtllm"):
+        profiles += _framework_specific_model_case_values("mla_module", backend)
+    precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type=attention_type)
+    for profile in profiles:
+        if profile.get("attention_type") != attention_type or not profile.get("long_context_cases"):
+            continue
+        model_path = profile["model_path"]
+        if shared_index_only and not _shares_dsa_index(model_path):
+            continue
+        points = long_context_points(profile, phase, _history_limit(model_path))
+        signatures.setdefault(model_path, _history_runtime_signature(model_path))
+        architecture = None if attention_type == "mla" else tuple(_history_config(model_path).get("architectures", []))
+        native_heads = int(profile["native_num_heads"])
+        shards = profile.get("long_context_tensor_parallel_sizes", profile.get("tensor_parallel_sizes"))
+        if not shards or any(type(tp) is not int or tp <= 0 or native_heads % tp for tp in shards):
+            raise ValueError(f"long-context module {model_path} requires valid tensor_parallel_sizes")
+        heads = sorted({native_heads // tp for tp in shards}, reverse=True)
+        # Resolve declared artifact precision before selecting the canonical
+        # measurement owner: aliases may have different projection GEMMs.
+        artifacts = [model_path, *profile.get("model_aliases", [])]
+        selected = _get_model_path_filter()
+        if selected in artifacts:
+            artifacts = [selected]
+        projection_gemms = {_projection_gemm(artifact) for artifact in artifacts}
+        for precision in precisions:
+            if precision.gemm_type not in projection_gemms:
+                continue
+            owner = representatives.get((architecture, precision.gemm_type, signatures[model_path]), model_path)
+            for num_heads in heads:
+                for batch, length, prefix in points:
+                    cases.append(
+                        ModuleCase(
+                            length,
+                            batch,
+                            num_heads,
+                            precision.kv_cache_dtype,
+                            precision.compute_dtype,
+                            precision.gemm_type,
+                            owner,
+                            prefix,
+                        )
+                    )
+    # Keep #676's ordinary owners, then union equal-runtime points onto them.
+    # Config signatures are memoized only within this plan, never across inputs.
+    physical = {}
+    for case in cases:
+        architecture = (
+            None if attention_type == "mla" else tuple(_history_config(case.model_path).get("architectures", []))
+        )
+        key = (*case[:6], architecture, case.prefix_len)
+        existing = physical.get(key)
+        if existing is not None and signatures[existing.model_path] != signatures[case.model_path]:
+            raise ValueError(
+                f"long-context coverage collides at one {attention_type} persisted key with incompatible runtime "
+                f"semantics: {existing.model_path} versus {case.model_path}; declare a compatible representative"
+            )
+        physical.setdefault(key, case)
+    return list(physical.values())
 
 
 def _sglang_dsa_backend(phase: str) -> Callable[[ModuleCase, int | None], str]:
@@ -1929,7 +2104,33 @@ def _attention_expand(phase: str) -> Callable[[], list[AttentionCase]]:
                             "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
                         )
                     )
-        return cases
+        if includes_long_context():
+            for profile in _model_case_values("attention"):
+                if not profile.get("long_context_cases"):
+                    continue
+                points = long_context_points(profile, phase, _history_limit(profile["model_path"]))
+                if any(prefix for _batch, _length, prefix in points):
+                    raise ValueError("dense long_context_cases use full lookup sequence with prefix=0")
+                for num_heads, num_kv_heads, head_dim, window_size in _attention_profile_shapes(profile, sweep, phase):
+                    for batch, length, _prefix in points:
+                        # Preserve the existing universal native indexing bound.
+                        sequence = length if phase == "context" else length + 1
+                        if batch * sequence * num_kv_heads * head_dim * 2 >= 2**31 - 1:
+                            continue
+                        for precision in sweep["precision_cases"]:
+                            cases.append(
+                                AttentionCase(
+                                    batch,
+                                    length,
+                                    num_heads,
+                                    num_kv_heads,
+                                    head_dim,
+                                    window_size,
+                                    "fp8" if precision["fp8_kv_cache"] else "bfloat16",
+                                    "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
+                                )
+                            )
+        return list(dict.fromkeys(cases))
 
     return expand
 

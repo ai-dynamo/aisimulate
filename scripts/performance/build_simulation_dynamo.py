@@ -132,7 +132,7 @@ class LiteralSite(NamedTuple):
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 # Adds `field: None` for new optional AISimulate fields and empty images for the
-# pinned text-only Request; Dynamo behavior is otherwise unchanged.
+# pinned text-only Request; retain the recorded Weka client behavior.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -168,6 +168,13 @@ OPTIONAL_FIELD_LITERALS = (
         "fn build_synthetic_workload(",
         "SyntheticTraceSpec",
         "src/replay/loadgen/types.rs",
+    ),
+    LiteralSite(
+        "lib/bindings/python/rust/llm/replay.rs",
+        "5f0f5910a77f6bb1bd315c67b75e161d792dddc8fd6381ea35e2046855470f41",
+        "fn parse_weka_import_options(",
+        "WekaImportOptions",
+        "src/replay/loadgen/weka.rs",
     ),
 )
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
@@ -252,6 +259,10 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     defaults = {
         "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
         "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
+        "WekaImportOptions": {
+            "client": ((True, "WekaClient"), "WekaImportOptions::default().client"),
+            "chat_template": ((True, "Option<WekaChatTemplate>"), "None"),
+        },
         "SglangConfig": {
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),

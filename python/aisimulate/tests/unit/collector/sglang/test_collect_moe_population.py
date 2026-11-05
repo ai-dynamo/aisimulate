@@ -166,12 +166,12 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
         module_config={"group_size": 32},
     )
 
-    # 114 (quant, shape, tp, ep, distribution) series x 27 token points = the 3078
-    # per-token rows the per-token layout used to schedule as separate cases.
+    # 114 (quant, shape, tp, ep, distribution) series x 29 token points,
+    # including the added 32K and 64K anchors.
     assert len(populated) == 114
-    assert sum(len(case[1]) for case in populated) == 3078
-    assert sum(len(case[1]) for case in populated if case[7] == 64) == 243
-    assert sum(len(case[1]) for case in populated if case[7] == 128) == 162
+    assert sum(len(case[1]) for case in populated) == 3306
+    assert sum(len(case[1]) for case in populated if case[7] == 64) == 261
+    assert sum(len(case[1]) for case in populated if case[7] == 128) == 174
     # int4_wo opened to SM100/103: serving
     # auto-selects flashinfer_trtllm for Kimi INT4 there (server_args.py:3736),
     # replacing the old zero-population contract.
@@ -181,7 +181,7 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
         allowed_mode="int4_wo",
         module_config={"group_size": 32},
     )
-    assert len(sm100) == 114 and sum(len(case[1]) for case in sm100) == 3078
+    assert len(sm100) == 114 and sum(len(case[1]) for case in sm100) == 3306
     from types import SimpleNamespace
 
     from collector.case_generator import get_sglang_moe_backend

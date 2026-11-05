@@ -36,7 +36,13 @@ from .model_hw import (
     parallel_configs_for,
     resolve_model_hardware,
 )
-from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
+from .parallel_enum import (
+    _DEFAULT_GPUS_PER_WORKER,
+    DisaggParallelConfig,
+    ParallelShape,
+    ReplicaParallelConfig,
+    enumerate_worker_shapes,
+)
 from .replay import RunnerCapabilities
 
 
@@ -145,6 +151,49 @@ def _parallel_role(config: _ParallelConfig, role: str) -> ReplicaParallelConfig:
             raise ValueError(f"AFD parallel config has no {role!r} companion")
         return config.companion
     return config.prefill if role == "prefill" else config.decode
+
+
+def _mixed_budget_candidates(search_space, backend: str, custom_by_role) -> list[DisaggParallelConfig]:
+    """Probe the automatic shape menu without enumerating a larger replica budget.
+
+    Replicas do not change per-worker KV feasibility. For an independent role,
+    its smallest allowed replica count suffices to find an over-budget witness;
+    explicit role presets retain their exact replica counts and shape membership.
+    """
+    choices = search_space.parallel_independent_by_mode.get("disagg", {})
+    bounds = search_space.parallel_independent_log_ranges_by_mode.get("disagg", {})
+    per_role = {}
+    for role in ("prefill", "decode"):
+        mh = resolve_model_hardware(
+            search_space.model_name,
+            search_space.hardware_sku_for(role),
+            backend=backend,
+            **_estimator_root_kwargs(search_space, role),
+        )
+        shapes = [
+            shape
+            for width in _DEFAULT_GPUS_PER_WORKER
+            for shape in enumerate_worker_shapes(
+                is_moe=mh.is_moe,
+                backend=backend,
+                gpus_per_worker=width,
+                enable_wideep=mh.enable_wideep,
+            )
+        ]
+        if role in custom_by_role:
+            per_role[role] = [candidate for candidate in custom_by_role[role] if candidate.shape in shapes]
+        else:
+            replica_key = f"{role}_replicas"
+            replicas = bounds[replica_key][0] if replica_key in bounds else min(choices.get(replica_key) or (1,))
+            per_role[role] = [ReplicaParallelConfig(shape, replicas) for shape in shapes]
+    candidates = [
+        DisaggParallelConfig(prefill, decode) for prefill in per_role["prefill"] for decode in per_role["decode"]
+    ]
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.total_gpus > search_space.gpu_budget and matches_parallel_domains(candidate, choices, bounds)
+    ]
 
 
 def _engine_knobs(deployment_mode: str) -> tuple[str, ...]:
@@ -393,6 +442,36 @@ def _heterogeneous_disagg_configs(
             f"heterogeneous P/D roles have no legal pair within gpu_budget={search_space.gpu_budget}"
         )
     return configs
+
+
+def _legal_parallel_configs(search_space, deployment_mode, backend, max_seq_len, candidate_configs):
+    if deployment_mode == "disagg" and (
+        search_space.hardware_sku_for("prefill") != search_space.hardware_sku_for("decode")
+        or search_space.systems_paths_for("prefill") != search_space.systems_paths_for("decode")
+    ):
+        return _heterogeneous_disagg_configs(
+            search_space,
+            backend=backend,
+            max_seq_len=max_seq_len,
+            candidate_configs=candidate_configs,
+        )
+    role = "agg" if deployment_mode == "agg" else "prefill"
+    return parallel_configs_for(
+        search_space.model_name,
+        search_space.hardware_sku_for(role),
+        gpu_budget=search_space.gpu_budget,
+        deployment_mode=deployment_mode,
+        backend=backend,
+        backend_version=search_space.requested_backend_version(backend),
+        min_gpu_budget=search_space.min_gpu_budget,
+        max_seq_len=max_seq_len,
+        role_runtime=_runtime_by_role(search_space, backend, deployment_mode),
+        role_max_seq_len=_context_by_role(search_space, deployment_mode, max_seq_len),
+        **_engine_memory_kwargs(search_space),
+        **_estimator_root_kwargs(search_space, role),
+        **({"fpm_profile": search_space.fpm_profile} if search_space.fpm_profile is not None else {}),
+        **({"candidate_configs": candidate_configs} if candidate_configs is not None else {}),
+    )
 
 
 def _pinned_afd_topology(
@@ -694,33 +773,7 @@ def enumerate_branches(
             ):
                 continue
             try:
-                if deployment_mode == "disagg" and (
-                    ss.hardware_sku_for("prefill") != ss.hardware_sku_for("decode")
-                    or ss.systems_paths_for("prefill") != ss.systems_paths_for("decode")
-                ):
-                    legal = _heterogeneous_disagg_configs(
-                        ss,
-                        backend=backend,
-                        max_seq_len=max_seq_len,
-                        candidate_configs=candidate_configs,
-                    )
-                else:
-                    legal = parallel_configs_for(
-                        ss.model_name,
-                        ss.hardware_sku_for("agg" if deployment_mode == "agg" else "prefill"),
-                        gpu_budget=ss.gpu_budget,
-                        deployment_mode=deployment_mode,
-                        backend=backend,
-                        backend_version=ss.requested_backend_version(backend),
-                        min_gpu_budget=ss.min_gpu_budget,
-                        max_seq_len=max_seq_len,
-                        role_runtime=_runtime_by_role(ss, backend, deployment_mode),
-                        role_max_seq_len=_context_by_role(ss, deployment_mode, max_seq_len),
-                        **_engine_memory_kwargs(ss),
-                        **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
-                        **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
-                        **({"candidate_configs": candidate_configs} if candidate_configs is not None else {}),
-                    )
+                legal = _legal_parallel_configs(ss, deployment_mode, backend, max_seq_len, candidate_configs)
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
             legal = [
@@ -743,6 +796,41 @@ def enumerate_branches(
                     support.setdefault(cfg, set()).add(backend)
 
         if not support:
+            if custom_by_role and pinned is None and deployment_mode == "disagg" and ss.fpm_profile is None:
+                # Preserve the automatic menu used by mixed presets. A declared
+                # FPM profile has a separate topology domain and is not probed here.
+                over_budget = []
+                for backend in unique_backends:
+                    if backend in runner_incompatible:
+                        continue
+                    try:
+                        candidates = _mixed_budget_candidates(ss, backend, custom_by_role)
+                        if not candidates:
+                            continue
+                        probe_space = ss.model_copy(update={"gpu_budget": max(c.total_gpus for c in candidates)})
+                        legal = _legal_parallel_configs(probe_space, deployment_mode, backend, max_seq_len, candidates)
+                    except (NoPerfDatabase, NoViableParallelConfig):
+                        continue
+                    over_budget.extend(
+                        cfg
+                        for cfg in legal
+                        if cfg.total_gpus > ss.gpu_budget
+                        and matches_custom(cfg)
+                        and matches_parallel_domains(
+                            cfg,
+                            ss.parallel_independent_by_mode.get(deployment_mode, {}),
+                            ss.parallel_independent_log_ranges_by_mode.get(deployment_mode, {}),
+                        )
+                        and _runner_supports_parallel_config(runner_capabilities, deployment_mode, cfg)
+                    )
+                if over_budget:
+                    candidate = min(over_budget, key=lambda cfg: cfg.total_gpus)
+                    raise NoViableParallelConfig(
+                        f"mixed preset/independent parallel config {candidate}: used_gpus={candidate.total_gpus} "
+                        f"exceeds gpu_budget={ss.gpu_budget} "
+                        "(optimization.constraints.max_candidate_gpus in recommend); "
+                        "remove this preset or increase the GPU budget"
+                    )
             if (pinned is not None or custom_by_role) and all_runner_incompatible:
                 raise RunnerIncompatibleError(
                     "no configured backend/topology is supported by the Replay runner; "
