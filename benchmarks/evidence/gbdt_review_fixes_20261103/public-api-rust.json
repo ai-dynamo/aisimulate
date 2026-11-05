@@ -1,0 +1,26 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--manifest-path",
+    "crates/tests/public-api/Cargo.toml",
+    "--",
+    "--test-threads=2"
+  ],
+  "cwd": "/Users/yueqiz/Documents/ChatGPT/AISimulate/work/gbdt-implementation",
+  "started_utc": "2026-11-03T10:52:48.091487+00:00",
+  "environment": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": null,
+    "MKL_NUM_THREADS": null,
+    "PYTHONPATH": null,
+    "CARGO_TARGET_DIR": "/private/tmp/aisimulate-gbdt-baseline-e0b8d65e/target",
+    "GIT_CONFIG_COUNT": null,
+    "GIT_CONFIG_KEY_0": null,
+    "GIT_CONFIG_VALUE_0": null
+  },
+  "exit_code": 0,
+  "seconds": 18.383397250028793,
+  "log_sha256": "5d8ec78450d0aaf7892afd3f438bdf4469b4451c9da3246db6c27d444b3e3c43"
+}

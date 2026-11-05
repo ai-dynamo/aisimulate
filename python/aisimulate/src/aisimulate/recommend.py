@@ -32,7 +32,7 @@ from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
-from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
+from .sweeper.state_snapshot import state_snapshot_reference
 
 # Engine fields whose omission differs from an explicit default: a role timed
 # by a state snapshot takes an omitted one from the snapshot, while an explicit
@@ -1087,12 +1087,16 @@ def _candidate_prediction(
                 "fallback_policy": "deny",
                 "estimator_config": deepcopy(resolved["estimator_config"]),
             }
-            # Per-role roots can differ; preserve them next to the role's timing.
-            # A learned model can depend on a native fallback. Core reports
-            # the roots it actually loaded; a packed snapshot relocates its own.
-            dependency_roots = (estimator.diagnostics or {}).get("dependencies", {}).get("systems_paths", [])
-            if dependency_roots and packed_systems_root(resolved["estimator_config"]) is None:
+            # Owned timing roots relocate with the snapshot. Explicit role
+            # roots also supply hardware/version/memory facts and must survive
+            # even when every timing dependency is packed.
+            dependencies = (estimator.diagnostics or {}).get("dependencies", {})
+            dependency_roots = dependencies.get("external_systems_paths", [])
+            resource_roots = raw_worker.get("timing", {}).get("systems_paths")
+            if dependency_roots:
                 timing["systems_paths"] = list(dependency_roots)
+            elif resource_roots is not None:
+                timing["systems_paths"] = deepcopy(resource_roots)
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None

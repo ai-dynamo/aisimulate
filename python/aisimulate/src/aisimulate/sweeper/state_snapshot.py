@@ -29,6 +29,7 @@ from typing import Any
 from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY as UNKNOWN
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from ..estimator_readiness import learned_unready_message
 
 _WORKER_TYPES = {"agg": "aggregated", "prefill": "prefill", "decode": "decode"}
 _PUBLIC_ROLES = {"agg": "aggregated", "prefill": "prefill", "decode": "decode"}
@@ -114,7 +115,7 @@ class SnapshotRole:
 
     @property
     def fitted(self) -> bool:
-        """Whether a regression or learned model, which reads no performance data, is saved."""
+        """Whether the snapshot prices complete iterations with a fitted estimator."""
 
         return self.summary["kind"] in _FITTED_KINDS
 
@@ -125,11 +126,20 @@ class SnapshotRole:
         return None if value == UNKNOWN else int(value)
 
     @property
-    def packed_root(self) -> str | None:
-        """The snapshot's own systems root when it was saved with ``include_perf_db``."""
+    def dependencies(self) -> dict[str, Any]:
+        """Native dependency declarations; construction verifies their contents."""
 
-        root = os.path.join(self.path, "perf_db", "systems")
-        return root if self.identity.get("systems_paths") == [root] else None
+        return self.summary["dependencies"]
+
+    @property
+    def packed_root(self) -> str | None:
+        """An owned root explicitly used by the saved deployment configuration.
+
+        Nested learned priors can own other systems roots. They do not replace
+        the caller's hardware/version/memory inputs for the deployment.
+        """
+
+        return _packed_identity_root(self.summary)
 
     def estimator_controls(self) -> dict[str, Any]:
         """Controls a candidate request takes from the snapshot instead of the search space."""
@@ -188,12 +198,12 @@ def spell_as_saved(saved: dict[str, Any], request: dict[str, Any]) -> dict[str, 
 def saved_snapshot_config(estimator_config: Any) -> dict[str, Any]:
     """The configuration a referenced state snapshot was saved with; empty without a snapshot."""
 
-    from aisimulate_core.sdk.rust_engine_step import _snapshot_config
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     reference = state_snapshot_reference({"estimator_config": estimator_config})
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
         return {}
-    return _snapshot_config(reference["path"])
+    return RustForwardPassPerfModel.inspect_state_snapshot(reference["path"])["resolved_config"]
 
 
 def snapshot_pinned_controls(saved: dict[str, Any]) -> dict[str, Any]:
@@ -211,46 +221,35 @@ def snapshot_pinned_controls(saved: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def packed_systems_root(estimator_config: Any) -> str | None:
-    """The systems root a referenced snapshot carries itself; ``None`` without one.
-
-    It moves with the snapshot and restoration reads it from there, so a
-    saved configuration names the snapshot instead of this root.
-    """
-
-    from aisimulate_core.sdk import RustForwardPassPerfModel
-
-    reference = state_snapshot_reference({"estimator_config": estimator_config})
-    if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
-        return None
-    path = os.path.abspath(os.path.expanduser(reference["path"]))
-    root = os.path.join(path, "perf_db", "systems")
-    identity = RustForwardPassPerfModel.inspect_state_snapshot(path)["identity"]
-    return root if identity.get("systems_paths") == [root] else None
+def _packed_identity_root(summary: dict[str, Any]) -> str | None:
+    roots = summary["dependencies"]["owned_systems_paths"]
+    identity_roots = (summary.get("identity") or {}).get("systems_paths")
+    return next((root for root in roots if identity_roots == [root]), None)
 
 
 def load_snapshot_role(role: str, reference: Any) -> SnapshotRole:
     """Read and validate one role's snapshot reference; raise ``ValueError`` when replay cannot use it."""
 
     from aisimulate_core.sdk import RustForwardPassPerfModel
-    from aisimulate_core.sdk.rust_engine_step import _snapshot_config
 
     where = f"engine.workers.{_PUBLIC_ROLES[role]}.timing.estimator_config.state_snapshot"
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str) or not reference["path"]:
         raise ValueError(f"{where} must be a mapping with a nonempty path")
-    unknown = set(reference) - {"path", "sha256"}
+    unknown = set(reference) - {"path", "sha256", "on_tune"}
     if unknown:
-        raise ValueError(f"{where} accepts only path and sha256; got {sorted(unknown)}")
+        raise ValueError(f"{where} accepts only path, sha256 and on_tune; got {sorted(unknown)}")
     path = os.path.abspath(os.path.expanduser(reference["path"]))
     try:
         summary = RustForwardPassPerfModel.inspect_state_snapshot(path)
-        config = _snapshot_config(path)
+        config = copy.deepcopy(summary["resolved_config"])
     except OSError as exc:
         raise ValueError(f"{where}: cannot read the snapshot at {path}: {exc}") from exc
     pinned = config["estimator_config"]["state_snapshot"].get("sha256")
     expected = reference.get("sha256")
     if expected is not None and (not isinstance(expected, str) or expected.lower() != str(pinned).lower()):
         raise ValueError(f"{where}.sha256 does not match the snapshot manifest at {path}")
+    if "on_tune" in reference:
+        config["estimator_config"]["state_snapshot"]["on_tune"] = reference["on_tune"]
     snapshot = SnapshotRole(role=role, path=path, summary=summary, config=config)
     _validate_replayable(snapshot)
     return snapshot
@@ -318,17 +317,25 @@ def _validate_fitted(snapshot: SnapshotRole) -> None:
 
     summary, role, identity = snapshot.summary, snapshot.role, snapshot.identity
     mode = summary["selected_estimation_mode"]
-    ready = {store["workload_kind"] for store in summary["readiness"]["stores"] if store["ready"]}
-    required = set(_FITTED_STORES[role])
-    if role == "agg" and identity["backend"] in _LOCALLY_MIXED_BACKENDS:
-        required.add("contains_locally_mixed")
-    missing = sorted(required - ready)
-    if missing:
-        raise ValueError(
-            f"{snapshot.describe()} holds an {mode} model without a ready {', '.join(missing)} workload store; "
-            f"replay prices every {_WORKER_TYPES[role]} iteration with it, so tune it with observed forward passes "
-            "of that work before saving it"
-        )
+    if mode == "fpm_learned":
+        # Core owns required stores and eligible fallback routes. An unknown
+        # attention-DP width is supplied by the role later; the native engine
+        # gate then checks readiness for that actual execution width.
+        execution = summary["readiness"].get("execution")
+        if execution is not None and not execution["ready"]:
+            raise ValueError(f"{snapshot.describe()}: {learned_unready_message(summary['readiness'])}")
+    else:
+        ready = {store["workload_kind"] for store in summary["readiness"]["stores"] if store["ready"]}
+        required = set(_FITTED_STORES[role])
+        if role == "agg" and identity["backend"] in _LOCALLY_MIXED_BACKENDS:
+            required.add("contains_locally_mixed")
+        missing = sorted(required - ready)
+        if missing:
+            raise ValueError(
+                f"{snapshot.describe()} holds an {mode} model without a ready {', '.join(missing)} workload store; "
+                f"replay prices every {_WORKER_TYPES[role]} iteration with it, so tune it with observed forward passes "
+                "of that work before saving it"
+            )
     if int(identity.get("nextn") or 0) > 0:
         raise ValueError(
             f"{snapshot.describe()} records nextn={identity['nextn']}; an {mode} model prices no speculative decoding"
@@ -576,6 +583,8 @@ def _check_fitted_shape(snapshot: SnapshotRole, shape: dict[str, int]) -> None:
             f"the {_PUBLIC_ROLES[snapshot.role]} role's shape {shape} uses {gpus} GPUs per replica, but "
             f"{snapshot.describe()} was saved with deployment_limits.num_gpus={recorded}"
         )
+    if snapshot.summary["selected_estimation_mode"] == "fpm_learned":
+        return  # The native engine gate checks the role's actual attention-DP width.
     ready = {store["workload_kind"] for store in snapshot.summary["readiness"]["stores"] if store["ready"]}
     if snapshot.role == "agg" and shape["attention_dp"] > 1 and "cross_rank_aggregated" not in ready:
         raise ValueError(

@@ -10,6 +10,9 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
 use sha2::{Digest, Sha256};
 
+use super::super::source::{
+    LearnedDependency, LearnedSeedKind, LearnedSourceKind, VerifiedLearnedSource,
+};
 use super::*;
 
 const INITIAL_SCHEMA: &str = "aisimulate_fpm_training_checkpoint";
@@ -37,6 +40,8 @@ struct Manifest {
     has_mixed_composition_state: Option<bool>,
     #[serde(skip)]
     source_sha256: String,
+    #[serde(skip)]
+    source_byte_length: u64,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +173,7 @@ fn manifest_pinned(path: &Path, expected: Option<&str>) -> Result<Manifest, AicE
     let mut m: Manifest = serde_json::from_slice(&bytes)
         .map_err(|e| invalid(format!("invalid checkpoint manifest: {e}")))?;
     m.source_sha256 = actual;
+    m.source_byte_length = bytes.len() as u64;
     if m.schema == RUNTIME_SCHEMA && m.schema_version == 1 {
         return Err(invalid(
             "runtime checkpoint version 1 predates dynamic replay state; resume from its training seed or regenerate with this binary",
@@ -197,6 +203,51 @@ fn manifest_pinned(path: &Path, expected: Option<&str>) -> Result<Manifest, AicE
 }
 
 fn manifest_model(path: &Path, m: &Manifest) -> Result<LearnedForwardPassModel, AicError> {
+    manifest_model_with_dependency(path, m).map(|(model, _)| model)
+}
+
+fn recorded_dependency(
+    path: &Path,
+    sha256: &str,
+    byte_length: u64,
+    purpose: &str,
+) -> Result<LearnedDependency, AicError> {
+    Ok(LearnedDependency {
+        path: std::path::absolute(path).map_err(|e| io(path, e))?,
+        byte_length,
+        sha256: sha256.to_owned(),
+        purpose: purpose.into(),
+    })
+}
+
+fn checkpoint_receipt(
+    path: &Path,
+    m: &Manifest,
+    payloads: Vec<LearnedDependency>,
+) -> Result<VerifiedLearnedSource, AicError> {
+    let mut files = vec![recorded_dependency(
+        &path.join("manifest.json"),
+        &m.source_sha256,
+        m.source_byte_length,
+        "checkpoint_manifest",
+    )?];
+    files.extend(payloads);
+    VerifiedLearnedSource::from_files(
+        LearnedSourceKind::Checkpoint,
+        path,
+        if m.schema == INITIAL_SCHEMA {
+            LearnedSeedKind::TrainingCheckpoint
+        } else {
+            LearnedSeedKind::RuntimeCheckpoint
+        },
+        files,
+    )
+}
+
+fn manifest_model_with_dependency(
+    path: &Path,
+    m: &Manifest,
+) -> Result<(LearnedForwardPassModel, LearnedDependency), AicError> {
     let p = child(path, &m.artifact_file)?;
     let bytes = std::fs::read(&p).map_err(|e| io(&p, e))?;
     if format!("{:x}", Sha256::digest(&bytes)) != m.artifact_sha256 {
@@ -206,10 +257,17 @@ fn manifest_model(path: &Path, m: &Manifest) -> Result<LearnedForwardPassModel, 
         )));
     }
     let text = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
-    LearnedForwardPassModel::from_json(text)
+    let model = LearnedForwardPassModel::from_json(text)?;
+    let dependency = recorded_dependency(
+        &p,
+        &m.artifact_sha256,
+        bytes.len() as u64,
+        "learned_artifact",
+    )?;
+    Ok((model, dependency))
 }
 
-fn runtime_state(path: &Path, m: &Manifest) -> Result<LoadState, AicError> {
+fn runtime_state(path: &Path, m: &Manifest) -> Result<(LoadState, LearnedDependency), AicError> {
     let (state_path, file) = checked_file(
         path,
         m.state_file
@@ -243,7 +301,13 @@ fn runtime_state(path: &Path, m: &Manifest) -> Result<LoadState, AicError> {
             "runtime mixed composition state differs from its manifest",
         ));
     }
-    Ok(state)
+    let dependency = recorded_dependency(
+        &state_path,
+        m.state_sha256.as_deref().expect("checked above"),
+        bytes,
+        "runtime_state",
+    )?;
+    Ok((state, dependency))
 }
 
 fn has_saved_corrections(corrections: &str) -> Result<bool, AicError> {
@@ -261,6 +325,13 @@ pub(crate) fn checkpoint_model_for_config(
     path: &Path,
     config: &ForwardPassPerfModelConfig,
 ) -> Result<LearnedForwardPassModel, AicError> {
+    checkpoint_model_for_config_with_receipt(path, config).map(|(model, _)| model)
+}
+
+pub(crate) fn checkpoint_model_for_config_with_receipt(
+    path: &Path,
+    config: &ForwardPassPerfModelConfig,
+) -> Result<(LearnedForwardPassModel, VerifiedLearnedSource), AicError> {
     let settings = config.estimator_config.fpm_learned.runtime_source_config();
     let m = manifest_pinned(path, settings.source_sha256.as_deref())?;
     if m.identity != canonical_learned_identity(config)? {
@@ -268,7 +339,7 @@ pub(crate) fn checkpoint_model_for_config(
             "checkpoint deployment/store identity does not match resolved configuration",
         ));
     }
-    let model = manifest_model(path, &m)?;
+    let (model, artifact) = manifest_model_with_dependency(path, &m)?;
     if m.schema == RUNTIME_SCHEMA
         && config.estimator_config.fpm_learned.adaptation == LearnedAdaptation::Frozen
         && m.has_mixed_composition_state == Some(true)
@@ -280,7 +351,7 @@ pub(crate) fn checkpoint_model_for_config(
             "frozen inference cannot discard saved mixed composition state; use online continuation or the original seed with explicit mixed-state restoration",
         ));
     }
-    Ok(model)
+    Ok((model, checkpoint_receipt(path, &m, vec![artifact])?))
 }
 
 pub(crate) fn canonical_learned_identity(
@@ -407,6 +478,27 @@ pub(super) fn load_with(
     canonical: &ForwardPassPerfModelConfig,
     combined_runtime: bool,
 ) -> Result<OnlineLearner, AicError> {
+    load_impl(path, learned, config, canonical, combined_runtime, false).map(|(learner, _)| learner)
+}
+
+pub(super) fn load_with_receipt(
+    path: &Path,
+    learned: &mut LearnedForwardPassModel,
+    config: &FpmLearnedConfig,
+    canonical: &ForwardPassPerfModelConfig,
+    combined_runtime: bool,
+) -> Result<(OnlineLearner, VerifiedLearnedSource), AicError> {
+    load_impl(path, learned, config, canonical, combined_runtime, true)
+}
+
+fn load_impl(
+    path: &Path,
+    learned: &mut LearnedForwardPassModel,
+    config: &FpmLearnedConfig,
+    canonical: &ForwardPassPerfModelConfig,
+    combined_runtime: bool,
+    complete_closure: bool,
+) -> Result<(OnlineLearner, VerifiedLearnedSource), AicError> {
     let m = manifest_pinned(path, config.source_sha256.as_deref())?;
     if combined_runtime
         && !(m.schema == RUNTIME_SCHEMA && config.adaptation == LearnedAdaptation::CausalSelector)
@@ -421,7 +513,8 @@ pub(super) fn load_with(
             "checkpoint deployment/store identity does not match resolved configuration",
         ));
     }
-    let model = manifest_model(path, &m)?;
+    let (model, artifact) = manifest_model_with_dependency(path, &m)?;
+    let mut receipt = checkpoint_receipt(path, &m, vec![artifact])?;
     if model.artifact() != learned.artifact() {
         return Err(invalid("predictor does not match checkpoint artifact"));
     }
@@ -434,7 +527,8 @@ pub(super) fn load_with(
                 "causal_selector requires a training checkpoint; online runtime snapshots do not contain frozen calibration and selector state",
             ));
         }
-        let mut state = runtime_state(path, &m)?;
+        let (mut state, dependency) = runtime_state(path, &m)?;
+        receipt.source.dependencies.push(dependency);
         let mut saved = state.learner.config.clone();
         saved.artifact_path = config.artifact_path.clone();
         saved.checkpoint_path = config.checkpoint_path.clone();
@@ -459,7 +553,25 @@ pub(super) fn load_with(
                 config,
             );
         }
-        return Ok(state.learner);
+        // Unusual extra declared training rows were also part of the legacy
+        // closure, even though runtime decoding does not consume them.
+        let mut extra_rows = BTreeMap::new();
+        for (kind, seed) in m.stores.iter().filter(|_| complete_closure) {
+            let (path, file) = checked_file(path, &seed.rows_file, &seed.rows_sha256)?;
+            let length = file.metadata().map_err(|e| io(&path, e))?.len();
+            extra_rows.insert(
+                serde_json::to_string(kind).map_err(|e| invalid(e.to_string()))?,
+                recorded_dependency(&path, &seed.rows_sha256, length, "training_rows")?,
+            );
+        }
+        receipt.source.dependencies.extend(extra_rows.into_values());
+        let receipt = VerifiedLearnedSource::from_files(
+            LearnedSourceKind::Checkpoint,
+            path,
+            LearnedSeedKind::RuntimeCheckpoint,
+            receipt.source.dependencies,
+        )?;
+        return Ok((state.learner, receipt));
     }
     let target = match learned.target() {
         LearnedTarget::LogMs => "log_ms",
@@ -484,11 +596,33 @@ pub(super) fn load_with(
         rejected_observations: 0,
         restored_corrections: None,
     };
+    if complete_closure && let Some(name) = &m.state_file {
+        let expected = m
+            .state_sha256
+            .as_deref()
+            .ok_or_else(|| invalid("missing state_sha256"))?;
+        let (state_path, file) = checked_file(path, name, expected)?;
+        let length = file.metadata().map_err(|e| io(&state_path, e))?.len();
+        receipt.source.dependencies.push(recorded_dependency(
+            &state_path,
+            expected,
+            length,
+            "runtime_state",
+        )?);
+    }
+    let mut row_dependencies = BTreeMap::new();
     for (kind, seed) in m.stores {
         let width = learned.feature_names().len();
         validate_seed(&seed, width)?;
         let (rows_path, rows_file) = checked_file(path, &seed.rows_file, &seed.rows_sha256)?;
+        let byte_length = rows_file.metadata().map_err(|e| io(&rows_path, e))?.len();
         let anchors = read_rows(&rows_path, rows_file, &seed, width, &learned.target())?;
+        // Match canonical JSON manifest key order without changing the native
+        // learner's store iteration or arithmetic order.
+        row_dependencies.insert(
+            serde_json::to_string(&kind).map_err(|e| invalid(e.to_string()))?,
+            recorded_dependency(&rows_path, &seed.rows_sha256, byte_length, "training_rows")?,
+        );
         if let Some(id) = anchors.ids.iter().max() {
             learner.next_row_id = learner.next_row_id.max(
                 id.checked_add(1)
@@ -545,7 +679,17 @@ pub(super) fn load_with(
         learner.stores.insert(kind, state);
     }
     validate_state(&learner, learned)?;
-    Ok(learner)
+    receipt
+        .source
+        .dependencies
+        .extend(row_dependencies.into_values());
+    let receipt = VerifiedLearnedSource::from_files(
+        LearnedSourceKind::Checkpoint,
+        path,
+        LearnedSeedKind::TrainingCheckpoint,
+        receipt.source.dependencies,
+    )?;
+    Ok((learner, receipt))
 }
 
 /// Check that rows and recorded fitting controls explain the imported leaves.

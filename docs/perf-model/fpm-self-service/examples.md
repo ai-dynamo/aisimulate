@@ -731,7 +731,22 @@ Add `--prediction-config "$FPM_RUN/learned-predict.yaml"` to the replay command
 below and choose a separate learned validation output directory. Source identity
 must match this deployment exactly; validation rejects mismatches. This explicit
 choice preserves the generated interpolation files and the global `auto` default.
-Register bundle dependencies/configs as `scope: learned`, derived validation as
+If a required workload store is missing, inspect native readiness in
+`validation.json`; validation stops before replay and remains incomplete. Supply
+a compatible trained source or qualified fallback before rerunning in a fresh
+output directory. For B+C, the application adapts B with accepted measured C and
+supplies the resulting snapshot. It owns initial fitting, telemetry, complete rank
+groups, ordering, deduplication and stream offsets; these commands never start a
+live learner or train an absent store.
+A complete model state snapshot can replace the bundle selection. Restore it
+through `RustForwardPassPerfModel.best_available(state_snapshot=PATH)` and take
+`model.diagnostics()["provenance"]["config"]["estimator_config"]` for the timing
+block above. Keep its `state_snapshot.on_tune: reject` during replay and serving
+validation. After moving a snapshot, restore from its new directory before
+writing the prediction file; Core relocates owned sources and prior data. Save a
+new snapshot after further tuning and use fresh validation output directories.
+
+Register bundle or snapshot dependencies/configs as `scope: learned`, derived validation as
 `scope: learned_validation`, and source/recipe choices in `learned_inputs`.
 
 For a first trace check, select one complete local AgentX play and preserve its

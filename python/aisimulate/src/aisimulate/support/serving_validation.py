@@ -28,7 +28,15 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig
 
-from .timing import canonical_timing_config, dependency_identities, learned_timing_evidence, selected_timing_mode
+from ..estimator_readiness import learned_unready_message
+from .timing import (
+    LearnedTimingDependencyError,
+    canonical_timing_config,
+    dependency_identities,
+    learned_timing_evidence,
+    selected_timing_mode,
+    verify_timing_dependencies,
+)
 
 AIPERF_REVISION = "7db2ba37a62aa80c882bc90eaf61cc8073e2387b"
 AIPERF_SOURCE = "https://github.com/ai-dynamo/aiperf"
@@ -479,6 +487,8 @@ def prepare_serving_validation(
     learned = (
         learned_timing_evidence(prediction, pin=True) if selected_timing_mode(prediction) == "fpm_learned" else None
     )
+    if learned and learned["readiness"].get("execution", {}).get("ready") is not True:
+        issues.append(learned_unready_message(learned["readiness"]))
     timing_paths = {
         path.resolve()
         for root in ([] if learned else engine.get("systems_paths", []))
@@ -596,12 +606,15 @@ def prepare_serving_validation(
     return path
 
 
-def _checked_recipe(path: Path) -> dict[str, Any]:
+def _checked_recipe(path: Path, *, verify_timing: bool = False) -> dict[str, Any]:
     recipe = json.loads(path.read_text(encoding="utf-8"))
     if recipe.get("schema_version") != SCHEMA:
         raise ValueError("unsupported serving validation recipe schema")
     if recipe.get("status") != "ready":
-        raise ValueError("serving validation preparation is incomplete: " + "; ".join(recipe.get("issues", [])))
+        message = "serving validation preparation is incomplete: " + "; ".join(recipe.get("issues", []))
+        if verify_timing and recipe.get("timing_model"):
+            raise LearnedTimingDependencyError(message)
+        raise ValueError(message)
     if recipe.get("aiperf") != {"repository": AIPERF_SOURCE, "revision": AIPERF_REVISION}:
         raise ValueError("serving recipe must use the qualified AIPerf source pin")
     if recipe.get("command_arguments") != _benchmark_arguments(recipe):
@@ -609,6 +622,8 @@ def _checked_recipe(path: Path) -> dict[str, Any]:
     for key in ("trace", "prediction_config", "prediction_report", "benchmark_trace"):
         if _identity(Path(recipe[key]["path"])) != recipe[key]:
             raise ValueError(f"serving recipe {key} changed after preparation")
+    if verify_timing and recipe.get("timing_model"):
+        verify_timing_dependencies(recipe["timing_model"])
     for source in [*recipe["tokenizer_files"], *recipe["timing_artifacts"]]:
         if _identity(Path(source["path"])) != source:
             raise ValueError("pinned tokenizer or FPM timing files changed after serving preparation")
@@ -873,12 +888,12 @@ def _forward_validation(path: Path | None, recipe_path: Path, threshold: float) 
         failures.append("forward evidence belongs to a different serving recipe")
     from aisimulate_core.sdk import RustForwardPassPerfModel
 
-    recipe = _checked_recipe(recipe_path)
-    prediction = yaml.safe_load(Path(recipe["prediction_config"]["path"]).read_text())
     try:
+        recipe = _checked_recipe(recipe_path)
+        prediction = yaml.safe_load(Path(recipe["prediction_config"]["path"]).read_text())
         config = recipe["timing_model"]["config"] if recipe.get("timing_model") else canonical_timing_config(prediction)
         model = RustForwardPassPerfModel.best_available(config)
-    except (ValueError, RuntimeError) as error:
+    except (OSError, ValueError, RuntimeError) as error:
         return {
             "status": "incomplete",
             "issue": f"forward timing construction failed: {error}",
@@ -983,7 +998,23 @@ def validate_serving_measurements(
 ) -> dict[str, Any]:
     """Compare real AIPerf records with ordinary prediction; retain all request evidence."""
     recipe_path = recipe_path.expanduser().resolve()
-    recipe = _checked_recipe(recipe_path)
+    if output_report is not None and output_report.exists():
+        raise ValueError("save each serving assessment to a fresh report path; raw measurements can be reused")
+    try:
+        recipe = _checked_recipe(recipe_path, verify_timing=True)
+    except LearnedTimingDependencyError as error:
+        report = {
+            "schema_version": SCHEMA,
+            "status": "incomplete",
+            "recipe": _identity(recipe_path),
+            "timing_model": {"status": "incomplete", "issues": [str(error)]},
+            "missing_evidence": [str(error)],
+            "failures": [],
+            "samples": [],
+        }
+        if output_report is not None:
+            _write(output_report, report)
+        return report
     policy = dict(recipe["policy"])
     if latency_p95_error is not None:
         policy["latency_p95_relative_error"] = _threshold(latency_p95_error, "latency_p95_error")
@@ -995,8 +1026,6 @@ def validate_serving_measurements(
     ):
         if value is not None:
             policy[key] = _number(value, key)
-    if output_report is not None and output_report.exists():
-        raise ValueError("save each serving assessment to a fresh report path; raw measurements can be reused")
     missing, failures = [], []
     report: dict[str, Any] = {
         "schema_version": SCHEMA,
@@ -1235,7 +1264,12 @@ def validate_serving_measurements(
         report["status"] = "failed"
     elif not missing and all(status == "passed" for status in statuses) and report["forward"]["status"] != "incomplete":
         report["status"] = "passed"
-    _checked_recipe(recipe_path)
+    try:
+        _checked_recipe(recipe_path, verify_timing=True)
+    except LearnedTimingDependencyError as error:
+        report["status"] = "incomplete"
+        missing.append(str(error))
+        report["timing_model"] = {"status": "incomplete", "issues": [str(error)]}
     if output_report is not None:
         _write(output_report, report)
     return report

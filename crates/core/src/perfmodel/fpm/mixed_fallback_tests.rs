@@ -365,6 +365,34 @@ fn large_original_a_legacy_construction_and_portable_references() {
 }
 
 #[test]
+fn large_original_a_complete_snapshot_relocation() {
+    let fixture = large_original_a_fixture();
+    let model = ForwardPassPerfModel::best_available(fixture.config.clone()).unwrap();
+    let query = group(Kind::CrossRankAggregated);
+    let expected = model.estimate_forward_pass_time_ms(&query).unwrap();
+    let snapshots = tempfile::tempdir().unwrap();
+    let saved = snapshots.path().join("saved");
+    let mut restored_config = model
+        .save_state_snapshot(&saved, &Default::default())
+        .unwrap();
+    let moved = snapshots.path().join("moved");
+    std::fs::rename(saved, &moved).unwrap();
+    std::fs::remove_dir_all(fixture._dir.path()).unwrap();
+    restored_config
+        .estimator_config
+        .state_snapshot
+        .as_mut()
+        .unwrap()
+        .path = moved;
+    let restored = ForwardPassPerfModel::best_available(restored_config).unwrap();
+    assert_eq!(
+        restored.estimate_forward_pass_time_ms(&query).unwrap(),
+        expected
+    );
+    restored.verify_dependencies().unwrap();
+}
+
+#[test]
 fn mixed_original_a_routes_cover_absent_partial_and_complete_support() {
     for (cross, local, expected) in [
         (0, 0, [true, true]),

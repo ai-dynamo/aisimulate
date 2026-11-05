@@ -338,9 +338,16 @@ and `recommend` configurations for ordinary simulation.
 
 Seeded learned timing is optional within these same six stages. Preserve the
 accepted profile and generated interpolation configs, train or install a verified
-A/B bundle, and select `fpm_learned` explicitly in a separate ordinary prediction
-config. Pass it to `onboard validate-fpm --prediction-config PATH`; matched
-serving validation retains that selected model and its pinned source files.
+A/B bundle or restore a complete learned state snapshot, and select `fpm_learned`
+explicitly in a separate ordinary prediction config. Pass it to `onboard validate-fpm --prediction-config PATH`; matched
+serving validation retains that selected model and its complete pinned dependency
+closure. Snapshot validation keeps `on_tune: reject`; model learning and the
+session's onboarding checkpoint remain separate.
+A partly ready source produces incomplete validation with native per-store
+readiness; absent learned sources are construction errors. For B+C, an external
+application adapts an accepted B seed using measured C and supplies a fixed
+snapshot for validation. It owns collection, rank grouping, deduplication, initial
+fitting and stream offsets; the onboarding CLI does not run a live learner.
 The global `auto` default and collection-quality interpolation assay are unchanged.
 See [optional learned validation](implementation.md#optional-seeded-learned-validation).
 

@@ -27,7 +27,10 @@ use crate::AicError;
 
 #[cfg(test)]
 use checkpoint::checkpoint_model;
-pub(crate) use checkpoint::{canonical_learned_identity, checkpoint_model_for_config};
+pub(crate) use checkpoint::{
+    canonical_learned_identity, checkpoint_model_for_config,
+    checkpoint_model_for_config_with_receipt,
+};
 
 fn invalid(message: impl Into<String>) -> AicError {
     AicError::InvalidEngineConfig(format!("online learned model: {}", message.into()))
@@ -280,6 +283,7 @@ pub(crate) struct OnlineLearner {
 }
 
 impl OnlineLearner {
+    #[cfg(test)]
     pub(crate) fn load(
         path: &Path,
         learned: &mut LearnedForwardPassModel,
@@ -298,6 +302,16 @@ impl OnlineLearner {
         identity: &ForwardPassPerfModelConfig,
     ) -> Result<Self, AicError> {
         checkpoint::load_with(path, learned, config, identity, true)
+    }
+
+    pub(crate) fn load_with_receipt(
+        path: &Path,
+        learned: &mut LearnedForwardPassModel,
+        config: &FpmLearnedConfig,
+        identity: &ForwardPassPerfModelConfig,
+        combined_runtime: bool,
+    ) -> Result<(Self, super::source::VerifiedLearnedSource), AicError> {
+        checkpoint::load_with_receipt(path, learned, config, identity, combined_runtime)
     }
 
     /// Validate the complete incoming training checkpoint before adding one

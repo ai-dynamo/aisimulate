@@ -192,8 +192,30 @@ def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_as
                 assert model.estimate_forward_pass_time_ms(rows[0]) == expected
                 assert model.dependency_info()["files"]
                 assert all(Path(item["path"]).is_file() for item in model.dependency_info()["files"])
+                model.tune_with_fpms(rows[:2])
+                expected = model.estimate_forward_pass_time_ms(rows[0])
+                model.save_state_snapshot("seeded-snapshot")
+                shutil.move("seeded-snapshot", "moved-seeded-snapshot")
+                shutil.rmtree("systems")
+                restored = RustForwardPassPerfModel.best_available(state_snapshot="moved-seeded-snapshot")
+                assert restored.estimate_forward_pass_time_ms(rows[0]) == expected
+                assert restored.readiness_report()["execution"]["ready"]
+                try:
+                    restored.tune_with_fpms(rows[2:3])
+                except ValueError as error:
+                    assert "on_tune" in str(error)
+                else:
+                    raise AssertionError("Fixed seeded snapshot accepted feedback")
+                continuation = restored.diagnostics()["provenance"]["config"]
+                continuation["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
+                restored.close()
+                resumed = RustForwardPassPerfModel.best_available(continuation)
+                for learner in (model, resumed):
+                    learner.tune_with_fpms(rows[2:6])
+                assert resumed.export_learned_artifact() == model.export_learned_artifact()
+                resumed.close()
                 model.close()
-                print("Verified installed learned train, bundle, install and discovery")
+                print("Verified installed learned train, bundle, install and discovery; portable continuation")
                 """
             ),
             str(installed_purelib),

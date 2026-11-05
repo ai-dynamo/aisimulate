@@ -1033,10 +1033,11 @@ class SearchSpace(BaseModel):
             if role in roles and (reference := state_snapshot_reference(controls)) is not None
         }
         for role, snapshot in self._state_snapshots.items():
-            # Regression and learned models read no performance data.
-            if snapshot.fitted:
+            # Dependency ownership comes from Core: learned snapshots can
+            # carry an interpolation prior as well as fitted forests.
+            if not snapshot.dependencies["external_systems_paths"]:
                 continue
-            if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
+            if len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
                 raise ValueError(
                     f"{snapshot.describe()} references performance data outside the snapshot; give the "
                     f"{role} role exactly one systems root holding that data"

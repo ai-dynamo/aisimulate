@@ -56,13 +56,16 @@ def learned_timing_evidence(prediction: dict[str, Any], *, pin: bool = False) ->
     model = RustForwardPassPerfModel.best_available(canonical_timing_config(prediction))
     try:
         resolved = model.diagnostics()["provenance"]["config"]
+        # Legacy explicit paths intentionally keep their old public config
+        # shape. Their native dependency inventory is still fully pinned.
         dependencies = model.dependency_info()
-        if not dependencies["files"]:
+        if not dependencies.get("files"):
             raise ValueError("seeded learned validation requires complete native dependency records")
         result = {
             "config": resolved,
             "readiness": model.readiness_report(),
             "dependencies": dependencies["files"],
+            "dependency_info": dependencies,
         }
         if pin:
             timing = prediction["engine"]["workers"]["aggregated"].setdefault("timing", {})
@@ -84,11 +87,45 @@ def dependency_identities(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def verify_timing_dependencies(evidence: dict[str, Any]) -> None:
-    """Recheck immutable evidence at a later boundary, after replay or before assessment."""
-    for ref in dependency_identities(evidence):
-        path = Path(ref["path"])
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        if path.stat().st_size != ref["size_bytes"] or digest != ref["sha256"]:
-            raise ValueError(f"learned timing dependency changed: {path}")
+class LearnedTimingDependencyError(ValueError):
+    """Recorded learned timing can no longer be validated for assessment."""
+
+
+def verify_timing_dependencies(evidence: dict[str, Any], *, config: dict[str, Any] | None = None) -> None:
+    """Revalidate the native closure once at a replay/serving assessment boundary.
+
+    File checks provide precise drift diagnostics. Explicit native verification
+    rechecks fingerprints, including directory additions and removals;
+    Python never reproduces those dependency rules. No prediction or tuning is
+    performed, and the verification model is immediately closed.
+    """
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    from ..estimator_readiness import learned_unready_message
+
+    try:
+        for ref in dependency_identities(evidence):
+            path = Path(ref["path"])
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if path.stat().st_size != ref["size_bytes"] or digest != ref["sha256"]:
+                raise ValueError(f"learned timing dependency changed: {path}")
+        model = RustForwardPassPerfModel.best_available(evidence["config"] if config is None else config)
+        try:
+            model.verify_dependencies()
+            if model.diagnostics()["provenance"]["config"] != evidence["config"]:
+                raise ValueError("learned replay model differs from its recorded resolved configuration")
+            # Legacy explicit sources keep their public configuration shape.
+            # Compare Rust's full closure too: additions to an original-A data
+            # directory change its fingerprint without changing a pinned file.
+            if model.dependency_info() != evidence.get("dependency_info"):
+                raise ValueError("learned timing native dependency closure changed")
+            readiness = model.readiness_report()
+            if readiness.get("execution", {}).get("ready") is not True:
+                raise ValueError(learned_unready_message(readiness))
+        finally:
+            model.close()
+    except (OSError, ValueError, RuntimeError) as error:
+        raise LearnedTimingDependencyError(
+            f"learned timing dependencies are unavailable or changed: {error}"
+        ) from error

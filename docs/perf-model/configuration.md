@@ -358,7 +358,7 @@ fields report their nested paths. The supported namespaces are:
 
 | Temporary mixed policy field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.temporary_mixed_composition` | Absent | Opt-in original-A fallback eligibility for aggregated GBDT A/A+C, frozen hybrid A+C, and selector A+C. Requires `scenario`, `mode` and `original_a.manifest_path`. A+C GBDT can require a continuous quality check before selecting ordinary predictions. Frozen hybrid calibrates interpolation for missing mixed stores. For eligible selector classes, calibrated interpolation replaces the frozen/calibrated expert and competes causally with online GBDT after its C bootstrap. |
+| `estimator_config.temporary_mixed_composition` | Absent | Opt-in original-A fallback eligibility for aggregated GBDT A/A+C, frozen hybrid A+C, and selector A+C. Requires `scenario`, `mode` and `original_a.manifest_path`. A+C GBDT can require a continuous quality check before selecting ordinary predictions. Frozen hybrid calibrates interpolation for missing mixed stores. For eligible selector classes, calibrated interpolation replaces the frozen/calibrated expert and competes causally with online GBDT after its caller-managed initial fit from C. |
 | `estimator_config.temporary_mixed_composition.original_a.source_sha256` | `null` | Pins the original-A manifest; normalization verifies or fills its digest. C updates cannot change its capability decisions. |
 | `estimator_config.temporary_mixed_composition.calibration` | Hybrid; `[4, 4]` bins, 64 slots per policy/class, 5 observations, factors `[0.5, 2.0]` | Independent attention/MoE correction for missing mixed classes in A+C. Its fixed score bounds come from original A and do not reuse ordinary correction geometry. |
 
@@ -532,7 +532,7 @@ For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md
 
 ### State snapshots
 
-Configuration describes a cold model. To keep what a model has learned from
+Configuration selects and configures a model. To keep what it has learned from
 `tune_with_fpms()`, save it with `model.save_state_snapshot(path)` (Rust:
 `ForwardPassPerfModel::save_state_snapshot(path, &StateSnapshotOptions)`).
 Saving atomically writes a new directory and returns the pinned canonical
@@ -565,23 +565,26 @@ snapshot owns are redirected into it:
 | Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. A configured `op_level.execution_profile` file is copied. |
 | `fpm_regression` | Every workload store: retained samples, fits, incremental statistics, lazy-update and spline search clocks. |
 | `fpm_learned`, `frozen` | The forest (an artifact's exact bytes, or the checkpoint's forest exported unchanged) and correction stores. |
-| `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
+| `fpm_learned`, `online` | An online runtime checkpoint with seeded forest stores, pending rows, retained history, existing tree capacity, fitting state and continuation clocks. |
 | `fpm_learned`, `causal_selector` | The frozen expert, the adaptive expert's runtime checkpoint, every calibration store and all twelve selector evidence keys. |
 | `from_learned` model | The forest, its constructor options and correction stores. |
 
-Models with `estimator_config.temporary_mixed_composition` reject portable
-snapshot saving and restoration because this format does not package their
-interpolation prior and additional source/state dependencies. See the
-[mixed-policy persistence contract](fpm_ml/mixed-workload-fallback.md#diagnostics-persistence-and-compatibility)
-for online checkpoint and partial mixed-state alternatives.
+Learned snapshots also retain the resolved fallback strategy, its original-A
+eligibility and source bytes, interpolation prior, independent calibration and
+quality-gate state. The prior stays available after a learned store becomes
+ready. Legacy source references are remapped through verified records; the
+original manifest bytes and their digests are preserved. Restore uses this
+saved selection without catalogue discovery. Missing or incompatible state
+fails instead of creating a fresh model.
 
 Saving does not fit pending online rows or change the model. Every staged
 file and directory is synced to disk before the staging directory is renamed
 into place, and the parent directory after. A restored model
 predicts bit-identically, reports the same readiness, store and correction
 diagnostics, and after the same later feedback holds byte-identical state,
-including in another process. Readiness follows the restored state: a cold
-regression saved before it fit is restored cold. The restored provenance
+including in another process. Readiness follows the restored state: an untrained
+regression stays untrained, and missing learned stores remain missing. Saving does
+not advance admission clocks, fit pending updates or change routing evidence. The restored provenance
 describes the snapshot construction, so it records the explicit mode, no
 selection failures and no fallback warning; a not-ready regression that was
 originally selected by fallback therefore reports `insufficient_data`
@@ -635,8 +638,20 @@ copied unchanged, so packing requires its `data_dir` to be a relative path of
 plain directory names; a `data_dir` with `..` components, an absolute path or
 one outside the systems root can be referenced but not packed. A packed snapshot holds a
 copy of the system's whole data directory, so its size follows that data.
-Learned forests and online checkpoints are always copied. The model
-configuration is not: native restoration reads `model` again, from a
+Learned forests, online checkpoints and required fallback dependencies are
+always copied. A learned model's interpolation prior is packed even when
+`include_perf_db=False`; the option only controls data packing for a top-level
+native snapshot. Its prior uses the same fingerprint scope described above,
+including the selected system's whole data directory and any external FPM
+parquet/metadata pair. Accepted source captures required to validate original-A
+eligibility are included too, so snapshot size follows this complete closure.
+The model architecture configuration is not part of this timing dependency
+closure. When `fpm_profile` is supplied, its pinned checkpoint `config.json`
+must remain available for independent architecture verification, including for
+learned snapshots. Hardware and KV-capacity checks still require their matching
+resource inputs.
+
+The model configuration is not copied: native restoration reads `model` again, from a
 configuration bundled with the package, a local directory or Hugging Face, so
 a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
@@ -662,15 +677,18 @@ without `include_perf_db` reads its data through `systems_paths` (and
 fingerprint decides. `best_available(state_snapshot=path)` keeps the roots
 recorded at save time, so on another host either save with
 `include_perf_db=True` or pass a configuration with `systems_paths` replaced.
-Regression and learned estimators read no performance data, so their
-`systems_paths` are not compared. Every other field, such as the model,
-hardware, backend version, parallelism, `kv_block_size`, quantization and the
-estimator controls, must still equal the saved identity. A snapshot is
-self-contained only when saved with `include_perf_db=True`: re-saving a model
-restored from a packed snapshot without it references that snapshot's packed
-data as external data.
+Regression and learned forests need no operation tables, but a learned fallback
+can depend on a native prior. Its owned roots relocate with the snapshot; caller
+roots for hardware/version/memory facts remain separate requirements. Every
+identity field, such as the model, hardware, backend version, parallelism,
+`kv_block_size`, quantization and estimator controls, must still equal the saved
+identity. For top-level native snapshots, re-saving a model restored from a
+packed snapshot without `include_perf_db=True` references that snapshot's data
+as external data. Learned snapshots always retain their required prior closure.
 
-The manifest schema version is 2. Version 1 manifests, written before
+The manifest schema and state-layout versions are 3. Explicit readers retain
+same-build manifest versions 1/2 and state-layout version 2; these readers
+preserve the saved policy and never introduce a fallback. Version 1 manifests, written before
 snapshots were relocatable (for example by nightly
 `0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
 the save location. A snapshot restores only in the aisimulate-core version
@@ -707,17 +725,44 @@ and its energy scale with the correction, so reported power is unchanged.
 
 Gates for replaying a saved model read the snapshot without loading it.
 `RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
-kind, versions, pinned identity, deployment topology and the readiness report
-recorded at save time. `model.readiness_report()` lists, for every logical
+kind, versions, pinned identity, deployment topology, complete `resolved_config`,
+`dependencies` and the readiness report recorded at save time. The dependency
+record contains `systems_paths`, `owned_systems_paths`, `external_systems_paths`,
+`files` (absolute path, byte length and SHA-256), and fallback provenance. These
+are manifest-pinned declarations; construction verifies the payload and native
+data. Legacy manifests may declare nested state without listing its files;
+`model.dependency_info()` returns the same shape for a prepared model with that
+verified nested inventory included.
+Callers preserve this record instead of deriving dependencies from the estimator
+name or a fixed snapshot directory layout.
+
+
+| Dependency method | Behavior |
+| --- | --- |
+| `model.dependency_info()` | Return captured verified input pins without filesystem I/O. |
+| `model.verify_dependencies()` | Explicitly recheck current timing files and native data against those pins; return `None` in Python or `Ok(())` in Rust, or raise/return an error on drift or missing inputs. |
+
+Call `verify_dependencies()` at preparation or assessment boundaries when sources
+may have changed since construction. It streams file hashes and freshly checks
+native directory inventories, including nested learned priors and relocated
+snapshot members. It does not rediscover a source, update the model, or validate
+independent architecture and capacity resources. Prediction and diagnostics never
+perform these filesystem checks. A low-level native model without canonical
+construction provenance cannot verify its external data and returns an error.
+
+`model.readiness_report()` lists, for every logical
 workload store of the worker role, whether an estimator route is available
-and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
+and why not (including `insufficient_data`, `no_usable_fit`,
+`untrained_forest_store`),
 plus every correction store's readiness; native estimators are always ready.
 Eligible mixed interpolation routes count as ready even when their learned
 forest store is absent, consistently with `regression_store_diagnostics()`.
 Readiness does not guarantee coverage for every query: an interpolation route
-can still return no estimate outside its support. Portable snapshots reject
-the temporary mixed policy, so snapshot inspection does not report mixed
-fallback readiness.
+can still return no estimate outside its support. The report's `execution`
+entry identifies the required stores and whether they are ready for the saved
+role and attention-DP width. A saved unknown width is bound to the explicit
+replay shape and checked by the native execution gate. Partially ready learned snapshots remain inspectable and resumable; they cannot run a replay
+whose required stores have no available route.
 `model.readiness_report()` also exposes an additive `execution` decision for
 the constructed role, backend scheduler and attention-DP width. Its
 `required_stores` and `unavailable` entries use the same Core gate as replay.
@@ -888,7 +933,7 @@ concrete-only.
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
-| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256, on_tune}` of a calibrated snapshot; only `path` is required, and `on_tune` defaults to `reject`. The role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
@@ -974,7 +1019,10 @@ workload store for each kind of iteration the role computes: pure prefill for a
 prefill worker, pure decode for a decode worker, and pure prefill and pure
 decode for an aggregated worker, plus locally mixed for an aggregated vLLM or
 TensorRT-LLM worker and cross-rank aggregated when the role runs attention DP
-above one. Its identity facts may be
+above one. Core's shared execution-readiness check counts an eligible fallback
+route as available, including a saved original-A prior without a mixed forest.
+It also checks the actual width when a snapshot records an unknown attention-DP
+value. Its identity facts may be
 [`"unknown"`](#engine-identity-controls); the planner should record what it
 does not know that way rather than defaults such as `system: unprofiled` or
 `tp: 1`:
@@ -1014,9 +1062,10 @@ deployed version or `"unknown"`. `deployment_limits.num_gpus` and
 `context_length` may stay unknown, and `context_length` is not read. A native
 snapshot keeps the rules above this section and does not apply its
 `deployment_limits`. The exported prediction YAML names the snapshot with the
-role's explicit shape and fixed KV capacity, but no systems root, since these
-models read no performance data, and no quantization mode the snapshot records
-as unknown. `predict` spells the unknown facts as the snapshot does, so it
+role's explicit shape and fixed KV capacity. Snapshot-owned timing roots stay
+inside the snapshot; external timing roots and the caller's explicit hardware,
+version and memory roots are retained. No quantization mode recorded as unknown
+is exported as an engine setting. `predict` spells the unknown facts as the snapshot does, so it
 replays the same model. A `backend_version` alias such as `current` resolves
 from the roles that know their version, or on the role's hardware when none
 does. Candidate provenance reports the hardware the role ran on when its

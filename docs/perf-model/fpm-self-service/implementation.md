@@ -1933,14 +1933,17 @@ The expected `traces.jsonl` SHA-256 is `e39cd2ff3eba21d4a3664be51da743ac3d2149a1
 The generated plan remains explicit direct interpolation, and the global
 `estimation_mode` default remains `auto`. To evaluate GBDT, first create or
 install an accepted A/B source bundle with the
-[learned-model producer](../fpm_ml/learned-forward-pass-model.md). Training/evaluation separation,
+[learned-model producer](../fpm_ml/learned-forward-pass-model.md), or restore a
+complete learned [state snapshot](../configuration.md#state-snapshots).
+Training/evaluation separation,
 source provenance and resolved memory remain required. The collection-quality
 holdout remains an interpolation assay of the collected table; it does not
 qualify the learned model.
 
 Copy the accepted plan's `predict/pilot.yaml` to a separate file. Under
 `engine.workers.aggregated.timing`, set `estimation_mode: fpm_learned`,
-`fallback_policy: deny` and the producer's complete `estimator_config`, retaining
+`fallback_policy: deny` and the producer's or restored snapshot's complete
+`estimator_config`, retaining
 the same model/profile, hardware, precision, topology, scheduler and cache
 settings. Role-specific `systems_paths` may select installed bundle roots.
 Then run the same command with an explicit selection and fresh output:
@@ -1967,8 +1970,46 @@ replay report to the unchanged `validate-serving` sequence above to evaluate the
 same learned model on matched request payloads. The recipe retains source pins
 and uses the same canonical configuration for optional measured forward samples.
 Measured serving accuracy remains separate from model readiness and replay
-completion. This path requires a seeded source; untrained online lifecycle and
-portable state-snapshot handling are separate capabilities.
+completion. A partly ready learned source remains incomplete and retains Core's
+execution-readiness report before replay starts. Missing learned sources and
+invalid configuration are construction errors; validation does not collect
+feedback or train missing stores. Prefill readiness alone does not qualify decode
+or mixed execution; an eligible native fallback counts only where Core reports it
+ready. Fit and validate any missing source coverage outside the onboarding command,
+then rerun validation in a fresh output directory. Serving preparation likewise
+records incomplete coverage and does not run the matched prediction.
+
+For B+C, first create an accepted B seed with the offline producer, then let the
+application feed complete measured C iterations to that seeded model. The
+application owns telemetry collection, rank synchronization, sampling,
+deduplication, order, initial fitting and stream offsets. Predict before admission,
+reconcile partial failures before retrying, explicitly flush when intended, and
+save a new B+C snapshot. Supply that fixed snapshot to validation; the offline
+onboarding CLI does not automatically learn from serving traffic. The six stages,
+existing interpolation choices and collection-quality assay stay unchanged.
+
+For a snapshot, restore through `RustForwardPassPerfModel.best_available(state_snapshot=PATH)`
+and use its resolved configuration for the timing selection above. Keep
+`estimator_config.state_snapshot.on_tune: reject` for validation. A moved
+snapshot supplies its own model state and required prior dependencies; external
+model/resource inputs still have to match the accepted deployment. In particular,
+retain the pinned checkpoint's `config.json` for the independent `fpm_profile`
+architecture check, along with the hardware and KV-capacity evidence. Owning the
+timing sources does not replace these checks. Validation
+binds the manifest, runtime state, source evidence and prior files reported by
+Core. Assessment also reconstructs the recorded configuration once at each
+verification boundary, so native dependency fingerprints catch directory
+additions/removals as well as changed file bytes. This check never predicts or
+tunes. Missing, changed or unready timing dependencies leave an incomplete
+serving assessment. Updating the learned model
+requires a new snapshot and fresh validation, including a fresh matched serving
+recipe.
+
+Register model-snapshot files/configs under `scope: learned` and derived reports
+under `scope: learned_validation`. The session's `onboarding-checkpoint.json`
+remains a progress/evidence record; it does not hold mutable model state or replace
+`save_state_snapshot`. Resuming model learning is a separate explicit operation
+with `on_tune: continue`, followed by saving and validating a new snapshot.
 
 Register the bundle manifest, checkpoint/dependency files and selected prediction
 config as `scope: learned`, and learned replay/serving reports as

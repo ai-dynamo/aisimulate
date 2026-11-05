@@ -99,6 +99,8 @@ def _bits(model: RustForwardPassPerfModel, queries: list[list[dict]]) -> list[st
 def _state(model: RustForwardPassPerfModel) -> dict:
     diagnostics = model.diagnostics()
     diagnostics.pop("provenance")
+    # Relocation replaces dependency locations; model state must remain equal.
+    diagnostics.pop("dependencies", None)
     return {
         "diagnostics": diagnostics,
         "stores": model.regression_store_diagnostics(),
@@ -653,21 +655,43 @@ def test_snapshots_of_other_formats_load_where_possible_and_report_their_version
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(15, 40))
     queries = _queries()
-    for name in ("legacy", "nightly", "future"):
+    for name in ("legacy-1", "legacy-2", "nightly", "future"):
         model.save_state_snapshot(tmp_path / name)
-    # A path-pinned schema 1 snapshot from this same build still loads; a
-    # regression owns no paths, so nothing needs relocating.
-    _rewrite_manifest(tmp_path / "legacy", lambda manifest: manifest.update(schema_version=1))
-    shutil.move(tmp_path / "legacy", tmp_path / "moved-legacy")
-    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "moved-legacy")
-    assert _bits(restored, queries) == _bits(model, queries)
+
+    def legacy(directory, version):
+        # Regression's positional bincode1_fixint payload is unchanged. Encode
+        # the historical layout discriminator as well as its manifest version;
+        # merely relabeling a layout-3 snapshot must not pass a legacy reader.
+        state = directory / "state.bin"
+        payload = state.read_bytes()
+        assert payload[:4] == (3).to_bytes(4, "little")
+        state.write_bytes((2).to_bytes(4, "little") + payload[4:])
+
+        def edit(manifest):
+            manifest.update(schema_version=version, state_layout_version=2)
+            record = next(record for record in manifest["files"] if record["path"] == "state.bin")
+            record.update(sha256=_digest(state), size_bytes=state.stat().st_size)
+
+        _rewrite_manifest(directory, edit)
+
+    # Same-build schema 1 and 2 snapshots still load after moving. Regression
+    # owns no paths, so neither reader needs an identity-path relocation.
+    for version in (1, 2):
+        original, moved = tmp_path / f"legacy-{version}", tmp_path / f"moved-legacy-{version}"
+        legacy(original, version)
+        shutil.move(original, moved)
+        restored = RustForwardPassPerfModel.best_available(state_snapshot=moved)
+        try:
+            assert _bits(restored, queries) == _bits(model, queries)
+        finally:
+            restored.close()
 
     # Every other build, including the nightly that introduced snapshots,
     # wrote a different producer version and is rejected with its versions.
     def nightly(manifest: dict) -> None:
-        manifest.update(schema_version=1)
         manifest["producer"]["aisimulate_core_version"] = "0.13.0-dev.202610280000000086"
 
+    legacy(tmp_path / "nightly", 1)
     _rewrite_manifest(tmp_path / "nightly", nightly)
     for call in (
         lambda: RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "nightly"),
@@ -679,8 +703,10 @@ def test_snapshots_of_other_formats_load_where_possible_and_report_their_version
             r"restore it with that version or tune and save a new snapshot with this one",
         ):
             call()
-    _rewrite_manifest(tmp_path / "future", lambda manifest: manifest.update(schema_version=3))
-    with pytest.raises(ValueError, match="version 3; this binary reads aisimulate_fpm_state_snapshot versions 1 and 2"):
+    _rewrite_manifest(tmp_path / "future", lambda manifest: manifest.update(schema_version=4))
+    with pytest.raises(
+        ValueError, match="version 4; this binary reads aisimulate_fpm_state_snapshot versions 1, 2, and 3"
+    ):
         RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "future")
 
 

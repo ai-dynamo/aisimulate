@@ -1004,3 +1004,133 @@ def test_exported_fitted_predictions_leave_unknown_facts_to_the_snapshot(planner
     assert spec.backend_deployment.backend_version == known != "unknown"
     assert spec.backend_deployment.performance_model_metadata["prefill"]["config"]["backend_version"] == "unknown"
     assert _replay(aliased).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
+
+
+@pytest.fixture(scope="module")
+def learned_snapshots(tmp_path_factory):
+    """Small caller-trained seeds; these exercise callers, not GPU accuracy."""
+    from aisimulate_core.sdk import fpm_learned
+
+    pytest.importorskip("sklearn")
+    root = tmp_path_factory.mktemp("learned-snapshots")
+    saved = {}
+    for name, phases, attention_dp, num_gpus in (
+        ("ready", ("prefill", "decode", "mixed"), 1, 1),
+        ("partial", ("prefill",), 1, 1),
+        ("unknown-adp", ("prefill", "decode", "mixed"), "unknown", "unknown"),
+    ):
+        config = {
+            "model": _MODEL,
+            "system": "unknown",
+            "backend": "vllm",
+            "backend_version": "unknown",
+            "worker_type": "aggregated",
+            "tp": 1,
+            "pp": 1,
+            "attention_dp": attention_dp,
+            "kv_block_size": _BLOCK,
+            "estimation_mode": "fpm_learned",
+            "deployment_limits": {**_LIMITS, "num_gpus": num_gpus},
+            "estimator_config": {"correction": {"enabled": False}, "fpm_learned": {"source_policy": "explicit_only"}},
+        }
+        rows = []
+        for index in range(20):
+            for phase in phases:
+                rank = _scheduled(
+                    int(phase != "decode"),
+                    32 + index if phase != "decode" else 0,
+                    int(phase != "prefill"),
+                    128 + index if phase != "prefill" else 0,
+                )
+                rank.update(counter_id=len(rows), worker_id="synthetic", dp_rank=0, wall_time=0.002)
+                rows.append([rank])
+        seed = root / f"{name}-seed"
+        fpm_learned.train(rows, "aggregated", identity=config, online_checkpoint_dir=seed)
+        config["estimator_config"]["fpm_learned"]["checkpoint_path"] = str(seed)
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            saved[name] = root / name
+            model.save_state_snapshot(saved[name])
+        finally:
+            model.close()
+    return saved
+
+
+def test_learned_snapshot_recommendation_exports_complete_movable_state(learned_snapshots, tmp_path):
+    original = tmp_path / "state"
+    shutil.copytree(learned_snapshots["ready"], original)
+    result = _planner_run(_planner_request(original, mode="aggregated"))
+    [candidate] = result.selected_candidates
+    selected = candidate.config["forward_pass_estimators"]["agg"]
+    dependency_paths = {item["path"] for item in selected["diagnostics"]["dependencies"]["files"]}
+    assert str(original / "manifest.json") in dependency_paths
+    timing = candidate.prediction_config["engine"]["workers"]["aggregated"]["timing"]
+    assert timing["estimator_config"]["state_snapshot"]["on_tune"] == "reject"
+    assert "systems_paths" not in timing
+    moved = tmp_path / "relocated"
+    shutil.move(original, moved)
+    replay = deepcopy(candidate.prediction_config)
+    replay["engine"]["workers"]["aggregated"]["timing"]["estimator_config"]["state_snapshot"]["path"] = str(moved)
+    metrics = _replay(replay).metrics
+    assert (metrics["mean_ttft_ms"], metrics["mean_tpot_ms"]) == (
+        candidate.metrics["mean_ttft_ms"],
+        candidate.metrics["mean_tpot_ms"],
+    )
+
+
+@pytest.mark.parametrize("name", ["partial"])
+def test_unready_learned_snapshot_reports_native_required_stores(learned_snapshots, name):
+    with pytest.raises(
+        (ValidationError, ValueError), match="fpm_learned estimator is not ready.*untrained_forest_store"
+    ):
+        _space(_planner_request(learned_snapshots[name], mode="aggregated"))
+
+
+def test_learned_snapshot_export_keeps_external_resource_roots(learned_snapshots, tmp_path):
+    packaged = Path(str(resources.files("aisimulate_core") / "systems"))
+    custom = tmp_path / "systems"
+    custom.mkdir()
+    for entry in packaged.iterdir():
+        (custom / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+    (custom / "review_h200.yaml").write_text((packaged / f"{_SYSTEM}.yaml").read_text())
+    raw = _planner_request(learned_snapshots["ready"], mode="aggregated")
+    raw["engine"]["hardware"] = "review_h200"
+    raw["engine"]["workers"]["aggregated"]["timing"]["systems_paths"] = [str(custom)]
+    result = _planner_run(raw)
+    [candidate] = result.selected_candidates
+    timing = candidate.prediction_config["engine"]["workers"]["aggregated"]["timing"]
+    assert timing["systems_paths"] == [str(custom)]
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+
+
+def test_unknown_learned_snapshot_width_is_checked_by_native_execution(learned_snapshots):
+    single_rank = _planner_run(_planner_request(learned_snapshots["unknown-adp"], mode="aggregated"))
+    assert single_rank.counts.feasible == 1
+    raw = _planner_request(
+        learned_snapshots["unknown-adp"],
+        decode_parallelism={**_DECODE_SHAPE, "attention_data": 2},
+        mode="aggregated",
+    )
+    # The adapter may bind the unknown width, but cannot certify its store coverage.
+    assert _space(raw).parallel_independent_by_mode["agg"]["attention_dp"] == [2]
+    # Run the actual engine directly so deployment enumeration cannot filter
+    # this shape before the native execution-width gate sees it.
+    [candidate] = single_rank.selected_candidates
+    prediction = deepcopy(candidate.prediction_config)
+    prediction["engine"]["workers"]["aggregated"]["parallelism"]["attention_data"] = 2
+    with pytest.raises((ValueError, RuntimeError), match="cross_rank_aggregated"):
+        _replay(prediction)
+
+
+def test_corrupt_learned_snapshot_is_a_failed_candidate_not_unavailable(learned_snapshots, tmp_path):
+    saved = tmp_path / "corrupt-state"
+    shutil.copytree(learned_snapshots["ready"], saved)
+    payload = saved / "state.bin"
+    payload.write_bytes(payload.read_bytes() + b"changed")
+    result = _planner_run(_planner_request(saved, mode="aggregated"))
+    assert result.counts.feasible == 0
+    assert result.candidates
+    for record in result.candidates:
+        assert record.status.value == "failed"
+        assert record.reason_category.value != "estimator_unavailable"
+        assert "state.bin" in record.reason

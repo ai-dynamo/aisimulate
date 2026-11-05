@@ -301,13 +301,18 @@ guard. Frozen hybrid callers can save the mixed snapshot
 explicitly, but must also preserve ordinary calibration and their admission
 cursor for a complete continuation.
 
-Portable `save_state_snapshot()` and `estimator_config.state_snapshot` reject
-this policy explicitly. Their existing format does not package the extra
-interpolation engine, A sources, mixed calibration and appended selector
-stores. A portable snapshot must not silently omit them. Ordinary portable
-snapshots retain their existing layout and behavior; adding complete portable
-mixed-model snapshots is separate work. Full mixed-selector continuation is
-not supplied by the partial mixed-state API.
+Portable `save_state_snapshot()` and `estimator_config.state_snapshot` preserve
+the complete model: original-A source bytes and eligibility evidence, the
+interpolation prior, mixed calibration and quality state, all selector experts
+and histories, and deterministic continuation state. The required native prior
+closure is packed even when `include_perf_db=False`; this differs from the
+optional data packing for a top-level native snapshot. Verified remapping records
+retain legacy source references without rewriting original manifest bytes.
+Restoration validates the saved prior fingerprint and strategy before use and
+does not perform catalogue discovery. See the existing
+[state-snapshot reference](../configuration.md#state-snapshots) for format/version
+checks, relocation and external resource requirements. Full mixed-selector
+continuation uses this API; it is not supplied by the partial mixed-state API.
 
 ## Cost and validation boundaries
 

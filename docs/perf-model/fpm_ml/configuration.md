@@ -33,7 +33,9 @@ and `checkpoint_path`. Online adaptation can discover a matching seed from the
 learned catalogue in the configured systems roots. Frozen and selector modes
 require an explicit source. A bundle carries a training/runtime checkpoint or
 an inference artifact with declared adaptation capabilities; online adaptation
-requires a checkpoint. Omitted `correction.enabled` resolves to
+requires a checkpoint. Without a matching seed, online construction fails; the
+application owns collection and initial training. An invalid
+explicit or catalogue source is still an error. Omitted `correction.enabled` resolves to
 `false` for standalone online learned mode; explicitly enabling it is invalid. The combined
 `causal_selector` adaptation requires a training seed checkpoint and enabled
 hybrid correction. Learned mode
@@ -118,7 +120,7 @@ nondefault control preserves the complete block, even without a source path.
 | `resolved_fallback` | `null` | Rust-generated strategy and source binding, including the selected native interpolation dependency when applicable. Resolved absence is explicit; later catalogue changes do not add a prior to that configuration. |
 | `source_sha256` | `null` | Optional 64-character hexadecimal digest of the bundle manifest, artifact file or checkpoint manifest. Rust checks and fills this during normalization. Legacy explicit sources retain this path-and-hash contract: clear the hash when deliberately replacing the source. For a pinned bundle, create a new request without the old generated source/fallback pins. |
 | `adaptation` | `online` | `frozen` preserves tree values and topology; `online` updates the forest with correction disabled; `causal_selector` chooses between a frozen hybrid-calibrated forest and an independent online forest. The selector requires enabled hybrid correction and a training checkpoint. Set `frozen` explicitly when loading an inference artifact. |
-| `update_mode` | `structural` | With online adaptation, `leaf_only` refits existing leaves; `structural` can rebuild subtrees within each seed tree's existing capacity. Neither adds trees nor relearns feature-bin thresholds. |
+| `update_mode` | `structural` | With online adaptation, `leaf_only` refits existing leaves; `structural` can rebuild subtrees within each imported seed tree's existing capacity. Neither mode adds trees, reserves extra native capacity, nor relearns feature-bin thresholds. |
 | `recent_window` | `64`; selector: `8` | Positive maximum number of retained online observations per learned store. FIFO eviction removes the oldest recent observations; immutable training history is additional to this budget. |
 | `update_every` | `1`; selector: `4` | Positive number of pending observations in a store that triggers a fitting batch. Predictions use the last published forest until fitting succeeds; `flush_updates()` processes a partial batch explicitly. Counts admitted observations, independently of the caller's feedback schedule. |
 | `derivative_refresh` | `lazy` | `eager` recomputes derivatives on the full retained fitting population. `lazy` updates cached statistics for insertions and evictions, with eager fallback when structure must change. |
@@ -162,6 +164,10 @@ create this layout through the existing training module. `dependency_info()` on
 a prepared canonical model exposes verified files and external systems roots
 without filesystem I/O. Consumers preserve that record and the complete resolved
 configuration, including external native dependencies for an optional prior.
+Call `verify_dependencies()` explicitly at later preparation or assessment
+boundaries to recheck those pins and the complete native prior directory
+fingerprint. This does not admit observations, reconstruct the model, or add
+filesystem I/O to predictions and diagnostics.
 
 Checkpoint loading verifies the normalized deployment identity; an inference
 artifact verifies it when `metadata.identity` is present. Legacy artifacts
@@ -416,7 +422,7 @@ selector comparison evidence. Subsequent labels update the online learner and,
 when both experts predicted successfully before that update, selector losses.
 Interpolation calibration continues independently, including after the online
 expert becomes selected. Pure and original-A-supported classes retain their
-existing selector experts and bootstrap behavior.
+existing selector experts and caller-managed initialization behavior.
 
 Prepare a standard single-class training checkpoint, then invoke the
 canonical model's `append_mixed_learned_checkpoint(path)`. This operation is
@@ -477,9 +483,13 @@ calibration and standalone quality state, with identity, source and policy check
 ordinary experts, selector histories or the caller's admission cursor; preserve
 those separately for a complete resume. Standalone online learned
 `save_online_checkpoint()` includes mixed state automatically. Portable
-`save_state_snapshot()` and `estimator_config.state_snapshot` reject this policy;
-their format does not package the mixed prior and its source/state dependencies.
-A full mixed-selector checkpoint remains unsupported. A runtime checkpoint containing mixed
+`save_state_snapshot()` and `estimator_config.state_snapshot` preserve the complete
+mixed model, including its original-A source bytes, interpolation prior,
+calibration and quality state, selector experts and histories. Required prior
+data is packed even without `include_perf_db=True`; restore does not rediscover
+the source or fallback strategy. Use this portable snapshot API for full
+mixed-selector continuation; the partial mixed-state API still omits ordinary
+experts and selector histories. A standalone runtime checkpoint containing mixed
 state cannot be loaded with frozen adaptation, even if the new configuration
 omits the policy. Continue it online, or use the original training seed and
 restore the mixed snapshot explicitly; this prevents silently losing calibration.
