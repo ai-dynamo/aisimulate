@@ -14,6 +14,29 @@ Use [FPM self-service](../fpm-self-service/README.md) to prepare, review, collec
 or import a profile. The existing [implementation guide](../fpm-self-service/implementation.md)
 owns artifact validation, publication, checkpoints, and recovery.
 
+## KDA hybrid models
+
+Kimi-K3.1-Pro uses recurrent KDA layers alongside sparse attention. Its FPM
+collection uses the native-runtime capability, with an explicit model profile
+or `--fpm-backend-version`; an existing MLA or DSA operation table does not
+qualify its whole-forward runtime. Checkpoint-native precision on this route
+does not require new operation-level timing tables first.
+
+For autoregressive text inference, select the existing `text_only` FPM option
+and leave speculative decoding disabled. The whole-forward SOL transfer uses
+the original model graph, including the KDA byte model and its fractional
+prefill coordinates. Exact measured hits retain their recorded latency. This
+does not establish support for visual inputs or KDA speculative verification.
+
+Every decode point must report native `real_kv` seeding. A balanced MoE router
+or synthetic KV allocation does not establish the request's recurrent state.
+Cached prefill likewise requires `real_prefix` seeding. These checks retain the
+native protocol evidence; they do not inspect recurrent tensors or establish
+numerical correctness. A compatible serving image, successful native-state
+smoke, measured graph behavior, matching timing/memory artifacts and independent
+accuracy validation are still required for each deployment. No K3 measurements
+are relabelled as K3.1-Pro data.
+
 ## Hybrid FPM/OP deprecation and migration
 
 The legacy `forward_model="fpm"` route that combines an autoregressive target

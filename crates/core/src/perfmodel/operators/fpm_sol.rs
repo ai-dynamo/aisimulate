@@ -119,6 +119,7 @@ pub(crate) fn op_sol_latency_ms(
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
+        Op::Kda(o) => o.fpm_sol_latency_ms(db, batch, s),
         Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
         Op::Glm53Primitive(o) => {
             o.validate()?;
@@ -769,6 +770,65 @@ mod tests {
             (got - expected).abs() <= 1e-9 * expected.abs().max(1e-12),
             "got {got}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn kda_fpm_sol_preserves_fractional_prefill_coordinates() {
+        let db = db();
+        let op = Op::Kda(crate::operators::KdaOp {
+            name: "context_kda".into(),
+            scale_factor: 69.0,
+            kernel_source: "flashkda_fwd".into(),
+            phase: "context".into(),
+            d_model: 7168,
+            d_conv: 4,
+            num_k_heads: 96,
+            head_k_dim: 128,
+            num_v_heads: 96,
+            head_v_dim: 128,
+            draft_tokens: 0,
+        });
+        // 129 tokens over two requests => s=64.5, one 64-token state chunk.
+        // KDA's documented byte model reads/writes 15,851,520 token bytes,
+        // 25,165,824 recurrent-state bytes and 25,165,824 chunk-state bytes:
+        // 66,183,168 bytes / 7.7 TB/s, repeated over the 69 KDA layers.
+        approx(
+            op_sol_latency_ms(&op, &db, 129.0, 2.0, 64.5, 8192.0).unwrap(),
+            0.008_595_216_623_376_624 * 69.0,
+        );
+    }
+
+    #[test]
+    fn kda_fpm_sol_decode_ignores_kv_length_and_rejects_verify() {
+        let db = db();
+        let mut kda = crate::operators::KdaOp {
+            name: "generation_kda".into(),
+            scale_factor: 1.0,
+            kernel_source: "kda_fused_decode".into(),
+            phase: "generation".into(),
+            d_model: 7168,
+            d_conv: 4,
+            num_k_heads: 12,
+            head_k_dim: 128,
+            num_v_heads: 12,
+            head_v_dim: 128,
+            draft_tokens: 0,
+        };
+        // TP8, batch=3: fused conv moves 165,888 bytes; recurrent tokens
+        // move 46,080 bytes and fp32 state moves 4,718,592 bytes.
+        // The total 4,930,560 bytes is independent of past KV length.
+        for kv in [128.0, 1_048_575.0] {
+            approx(
+                op_sol_latency_ms(&Op::Kda(kda.clone()), &db, 3.0, 3.0, kv, 0.0).unwrap(),
+                0.000_640_332_467_532_467_6,
+            );
+        }
+        kda.phase = "verify".into();
+        kda.draft_tokens = 4;
+        assert!(matches!(
+            op_sol_latency_ms(&Op::Kda(kda), &db, 12.0, 12.0, 1.0, 0.0),
+            Err(AicError::SolNotImplemented(_))
+        ));
     }
 
     #[test]

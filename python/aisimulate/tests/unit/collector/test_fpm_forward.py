@@ -31,7 +31,7 @@ from collector.fpm_forward.database import (
     write_formal_database,
 )
 from collector.fpm_forward.memory_admission import filter_memory_infeasible_topologies
-from collector.fpm_forward.model_capability import load_model_config
+from collector.fpm_forward.model_capability import ResolvedModelConfig, load_model_config
 from collector.fpm_forward.planner import (
     BackendPolicy,
     FPMCell,
@@ -1205,6 +1205,34 @@ def test_packaged_recurrent_state_configs_get_no_attention_template(
     capability = _layout_capability(model, native=True, has_model_cases=has_model_cases, model_config_path=path)
     assert capability.architecture == architecture
     _assert_native_runtime(capability, reasons, is_moe=is_moe)
+
+
+def test_kimi_k31_nested_dsa_keeps_native_runtime_without_op_data(tmp_path, monkeypatch):
+    # Reuse the repository's K3 fixture and declare only the independent K3.1
+    # geometry facts; do not bundle the differently licensed Pro checkpoint.
+    config = json.loads((_MODEL_CONFIGS / "moonshotai--Kimi-K3_config.json").read_text())
+    config["architectures"] = ["KimiK31ForConditionalGeneration"]
+    text = config["text_config"]
+    text["dsa_config"] = {
+        "dsa_layers": list(text["linear_attn_config"]["full_attn_layers"]),
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_num_heads": 32,
+        "index_rope_dim": 0,
+        "index_k_norm_type": "layernorm",
+        "index_topk_freq": 1,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    _forbid_templates_and_timing_data(monkeypatch)
+    capability = _layout_capability(path, native=True, has_model_cases=True)
+    _assert_native_runtime(capability, "recurrent-state field linear_attn_config", is_moe=True)
+    assert capability.model_config.payload["architectures"] == ["KimiK31ForConditionalGeneration"]
+    assert capability.model_config.effective_payload["dsa_config"] == text["dsa_config"]
+    # An explicit runtime/profile is required even when the model's op cases
+    # are registered; its hybrid state is never represented by an MLA table.
+    with pytest.raises(ValueError, match="--fpm-model-profile or --fpm-backend-version"):
+        _layout_capability(path, native=False, has_model_cases=True)
 
 
 _ENTRY_ERROR = "layer_types entries must be nonempty strings"
@@ -2508,6 +2536,44 @@ def test_detected_layout_decode_keeps_the_existing_classification(tmp_path, kvwa
     plan.capability.is_moe = False
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     assert {row["kv_seed_regime"] for row in rows} == {regime}
+
+
+@pytest.mark.parametrize(
+    "kvwarm,marker",
+    [
+        (_WARM_ELIGIBLE, "kvwarm_fake_fallback"),
+        (
+            {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"},
+            "kvwarm_fake_fallback",
+        ),
+        (_DENSE_LABEL, "kvwarm_fake_fallback"),
+        (None, None),
+    ],
+)
+def test_kda_decode_cannot_publish_fake_recurrent_state(tmp_path, kvwarm, marker):
+    plan, cell, cell_dir = _synthetic_decode_cell(tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy="tp")
+    plan.capability.model_config = ResolvedModelConfig(
+        {"text_config": {"linear_attn_config": {"num_heads": 12, "head_dim": 128}}},
+        source_kind="test",
+        source_reference="synthetic KDA geometry",
+    )
+    plan.capability.is_moe = True
+    with pytest.raises(ValueError, match="KDA decode publication requires real_kv"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_kda_decode_preserves_real_seed_evidence(tmp_path):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path, kvwarm=_WARM_ELIGIBLE, markers=("kvwarm_real_kv",), parallel_strategy="tp"
+    )
+    plan.capability.model_config = ResolvedModelConfig(
+        {"text_config": {"linear_attn_config": {"num_heads": 12, "head_dim": 128}}},
+        source_kind="test",
+        source_reference="synthetic KDA geometry",
+    )
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert [row["kv_seed_regime"] for row in rows] == ["real_kv"]
+    assert rows[0]["latency_ms"] == 10.0  # Fixture's measured 0.01 seconds, unchanged.
 
 
 def test_native_validation_rejects_cross_rank_kvwarm_disagreement(tmp_path):
