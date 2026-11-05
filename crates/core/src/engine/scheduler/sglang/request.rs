@@ -47,7 +47,7 @@ impl SglangRequest {
             / block_size;
         let mut kv_lease = RadixRequestLease::default();
         kv_lease.session_id = req.session_id;
-        kv_lease.reserve_page_hashes(completion_pages);
+        kv_lease.reserve_completion_pages(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
 
         Self {

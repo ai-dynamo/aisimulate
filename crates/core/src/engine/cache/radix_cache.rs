@@ -220,6 +220,13 @@ struct BeladyLeaves {
 }
 
 /// Leave the suffix in `edge` and return a compact prefix.
+/// `items` in a vector with room for `tail` more.
+fn vec_with_tail<T: Copy>(items: &[T], tail: usize) -> Vec<T> {
+    let mut vec = Vec::with_capacity(items.len() + tail);
+    vec.extend_from_slice(items);
+    vec
+}
+
 fn split_edge_prefix<T>(edge: &mut Vec<T>, at: usize) -> Vec<T> {
     let suffix = edge.split_off(at);
     let mut prefix = std::mem::replace(edge, suffix);
@@ -687,12 +694,17 @@ impl RadixCache {
     }
 
     /// Insert page identities already materialized by the request lease.
+    ///
+    /// `tail_reserve_pages` is how many more pages the caller expects to append to the
+    /// returned path later. An edge that must grow here is sized for them at once, so a
+    /// request's later chunks extend its tail without reallocating and copying it.
     pub(crate) fn insert_page_hashes_from_node(
         &mut self,
         prefix_node: NodeId,
         prefix_len: usize,
         page_keys: &[LocalBlockHash],
         pages: &[KvPageId],
+        tail_reserve_pages: usize,
     ) -> NodeId {
         assert_eq!(
             prefix_len % self.page_size,
@@ -716,6 +728,7 @@ impl RadixCache {
             &page_keys[prefix_pages..],
             &pages[prefix_pages..page_keys.len()],
             true,
+            tail_reserve_pages,
         );
         #[cfg(test)]
         self.debug_assert_evictable_index();
@@ -747,6 +760,7 @@ impl RadixCache {
             &page_keys,
             page_ids,
             allow_locked_tail_extension,
+            0,
         )
     }
 
@@ -756,6 +770,7 @@ impl RadixCache {
         page_keys: &[LocalBlockHash],
         page_ids: &[KvPageId],
         allow_locked_tail_extension: bool,
+        tail_reserve_pages: usize,
     ) -> NodeId {
         assert!(
             page_ids.len() >= page_keys.len(),
@@ -786,6 +801,7 @@ impl RadixCache {
                     &page_keys[key_offset..],
                     &page_ids[key_offset..],
                     now,
+                    tail_reserve_pages,
                 );
             }
 
@@ -800,6 +816,7 @@ impl RadixCache {
                         current,
                         &page_keys[key_offset..],
                         &page_ids[key_offset..],
+                        tail_reserve_pages,
                     );
                 }
             };
@@ -826,6 +843,7 @@ impl RadixCache {
                             intermediate,
                             &page_keys[key_offset..],
                             &page_ids[key_offset..],
+                            tail_reserve_pages,
                         );
                     }
                     return intermediate;
@@ -852,6 +870,7 @@ impl RadixCache {
         key: &[LocalBlockHash],
         value: &[KvPageId],
         now: Instant,
+        tail_reserve_pages: usize,
     ) -> NodeId {
         let was_indexed = self.remove_evictable_leaf(node_id);
         self.record_belady_pages(node_id, key, value);
@@ -859,6 +878,9 @@ impl RadixCache {
         node.last_access_time = now;
         debug_assert!(node.children.is_empty());
         debug_assert!(node.lock_ref <= 1);
+        // `reserve` keeps amortized growth when no more pages are expected.
+        node.key.reserve(key.len() + tail_reserve_pages);
+        node.value.reserve(value.len() + tail_reserve_pages);
         node.key.extend_from_slice(key);
         node.value.extend_from_slice(value);
         node.edge_version += 1;
@@ -926,14 +948,15 @@ impl RadixCache {
         parent_id: NodeId,
         key: &[LocalBlockHash],
         value: &[KvPageId],
+        tail_reserve_pages: usize,
     ) -> NodeId {
         self.record_belady_pages(parent_id, key, value);
         let now = self.now();
         let new_node = TreeNode {
             children: FxHashMap::default(),
             parent: Some(parent_id),
-            key: key.to_vec(),
-            value: value.to_vec(),
+            key: vec_with_tail(key, tail_reserve_pages),
+            value: vec_with_tail(value, tail_reserve_pages),
             lock_ref: 0,
             last_access_time: now,
             edge_version: 0,
@@ -1675,7 +1698,7 @@ mod tests {
             let root = fixture.cache.root();
             fixture
                 .cache
-                .insert_page_hashes_from_node(root, 0, &hashes, &pages);
+                .insert_page_hashes_from_node(root, 0, &hashes, &pages, 0);
         } else {
             fixture.cache.insert(prefix, prefix_indices);
         }
@@ -1695,9 +1718,13 @@ mod tests {
         let inserted = if hashed {
             let hashes = fixture.cache.page_hashes(&fixture.older);
             let pages = fixture.cache.page_ids(&fixture.older_indices, hashes.len());
-            fixture
-                .cache
-                .insert_page_hashes_from_node(node, fixture.older.len(), &hashes, &pages)
+            fixture.cache.insert_page_hashes_from_node(
+                node,
+                fixture.older.len(),
+                &hashes,
+                &pages,
+                0,
+            )
         } else {
             fixture.cache.insert_from_node(
                 node,
