@@ -230,7 +230,7 @@ fn spec(
     num_gpu_blocks: usize,
     requests: Vec<ReplayRequest>,
 ) -> ReplaySpec {
-    let engine = ReplayEngineConfig {
+    let mut engine = ReplayEngineConfig {
         rank: EngineConfig {
             block_size: 4,
             num_gpu_blocks,
@@ -244,6 +244,8 @@ fn spec(
         },
         ..Default::default()
     };
+    // Tiny pools isolate callback lifecycle from the default 512-token decode headroom.
+    engine.rank.sglang.num_reserved_decode_tokens = 0;
     ReplaySpec {
         encoder: None,
         version: CURRENT_REPLAY_SPEC_VERSION,
@@ -359,9 +361,9 @@ fn prefill_started_reports_each_first_prefill_admission_once() {
             let mut replay = spec(backend, disagg, num_gpu_blocks, requests);
             if backend == Backend::Sglang && scenario == "pressure" {
                 let mut engine: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
-                // Admit alongside a running request without reserving its future outputs,
-                // so decode growth exercises retraction and readmission.
+                // A short output forecast admits all rows before decode growth forces retraction.
                 engine.rank.sglang.schedule_conservativeness = 0.0;
+                engine.rank.sglang.clip_max_new_tokens = 1;
                 replay.engine = serde_json::to_value(engine).unwrap();
             }
             let (report, log) = run(replay, false);
