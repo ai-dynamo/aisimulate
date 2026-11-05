@@ -286,6 +286,15 @@ impl<Request, T: PlacementPolicy<Request> + ?Sized> PlacementPolicy<Request> for
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>> {
         (**self).observe(observation, now_ms)
     }
+    fn dispatch_committed(&mut self, request_id: Uuid, now_ms: f64) -> Result<()> {
+        (**self).dispatch_committed(request_id, now_ms)
+    }
+    fn dispatch_aborted(&mut self, request_id: Uuid, now_ms: f64) -> Result<()> {
+        (**self).dispatch_aborted(request_id, now_ms)
+    }
+    fn advance_clock(&mut self, now_ms: f64) -> Result<Vec<Placement>> {
+        (**self).advance_clock(now_ms)
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool {
         (**self).cancel_pending(request_id)
     }
