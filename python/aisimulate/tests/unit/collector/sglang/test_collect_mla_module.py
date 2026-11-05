@@ -185,14 +185,68 @@ class TestDsaCudaGraph:
         mod = _import_module()
         runner = types.SimpleNamespace(
             server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=True,
                 cuda_graph_config=types.SimpleNamespace(
                     decode=types.SimpleNamespace(backend="cudagraphs", bs=[1, 4, 16], max_bs=None)
-                )
+                ),
             )
         )
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 4)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 8)
+
+    @pytest.mark.parametrize("disable_padding, expected", [(False, 56), (True, None)])
+    def test_batch_52_uses_serving_bucket_only_when_padding_enabled(self, disable_padding, expected):
+        mod = _import_module()
+        runner = types.SimpleNamespace(
+            server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=disable_padding,
+                cuda_graph_config=types.SimpleNamespace(
+                    decode=types.SimpleNamespace(backend="full", bs=[1, 2, 4, 8, 48, 56, 64], max_bs=64)
+                ),
+            )
+        )
+        assert mod._generation_cuda_graph_batch_size(runner, 52) == expected
+        assert mod._generation_cuda_graph_batch_size(runner, 56) == 56
+        assert mod._generation_cuda_graph_batch_size(runner, 65) is None
+
+    def test_padding_uses_native_registry_and_backend_sentinel(self, monkeypatch):
+        mod = _import_module()
+        calls = {}
+        padded = types.SimpleNamespace(seq_lens_sum=None)
+
+        class Registry:
+            def fill_from(self, batch, **kwargs):
+                calls["fill"] = (batch, kwargs)
+
+            def extract_buffer(self, **kwargs):
+                calls["extract"] = kwargs
+                return padded
+
+        def build_registry(**kwargs):
+            calls["build"] = kwargs
+            return Registry()
+
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.model_executor.cuda_graph_buffer_registry",
+            types.SimpleNamespace(build_decode_registry=build_registry),
+        )
+        batch = types.SimpleNamespace(
+            batch_size=52,
+            seq_lens_sum=52 * 4097,
+            input_ids=types.SimpleNamespace(device="cuda:0"),
+            out_cache_loc=types.SimpleNamespace(dtype="int64"),
+        )
+        runner = types.SimpleNamespace(attn_backend=types.SimpleNamespace(get_cuda_graph_seq_len_fill_value=lambda: 7))
+        assert mod._padded_dsa_decode_batch(runner, batch, 56) is padded
+        assert calls["build"]["seq_len_fill_value"] == 7
+        assert calls["fill"] == (
+            batch,
+            dict(raw_bs=52, padded_bs=56, raw_num_tokens=52, padded_num_tokens=56),
+        )
+        assert padded.seq_lens_sum == batch.seq_lens_sum + 4 * 7
+        assert batch.batch_size == 52
 
     def test_generation_cuda_graph_can_be_disabled(self):
         mod = _import_module()

@@ -1885,3 +1885,26 @@ https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fff
 and its full text is included in this repository as `LICENSE`.
 Modified for AISimulate request leases, physical page accounting and replay.
 No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang 0.5.21 collector serving-shape adaptation
+
+The synthetic batch staging in repository-root file
+`python/aisimulate/collector/sglang/collect_mla_module.py` adapts the native
+padded-decode buffer contract at SGLang revision
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+
+- `python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py`
+  (`DecodeCudaGraphRunner.load_batch`).
+- `python/sglang/srt/model_executor/cuda_graph_buffer_registry.py`.
+- `python/sglang/srt/model_executor/runner_utils/buffers.py`.
+
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright SGLang Team and contributors, Apache-2.0. Upstream license:
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
+
+Modified for isolated synthetic attention collection: preserve real request
+counts in performance keys while staging sentinel slots for native graph
+buckets. The evidence harness calls the installed native runner; it does not
+vendor its implementation. This source attribution does not assert separate
+OSRB approval.

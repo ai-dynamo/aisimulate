@@ -291,7 +291,7 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     # leaves out tp>1 with ep>1 (collector/skips.py). The count moves only
     # with the model rows or the shared grid.
     assert len(cases) == 2265
-    assert sum(len(case[1]) for case in cases) == 61155
+    assert sum(len(case[1]) for case in cases) == 65685
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,
