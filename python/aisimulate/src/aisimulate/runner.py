@@ -411,6 +411,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_warmup=True,
             supports_agentic_live_warmup=True,
             supports_weka_client=True,
+            supports_weka_chat_template=True,
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),

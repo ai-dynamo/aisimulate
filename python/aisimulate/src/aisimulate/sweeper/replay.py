@@ -422,6 +422,7 @@ class RunnerCapabilities:
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
     supports_weka_client: bool = False
+    supports_weka_chat_template: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
@@ -636,6 +637,8 @@ class RunnerCapabilities:
             if trace_format != "weka":
                 raise ValueError("weka_chat_template requires Weka input")
             WekaChatTemplate.model_validate(weka_chat_template)
+            if not self.supports_weka_chat_template:
+                raise ValueError("runner does not support weka_chat_template; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:
