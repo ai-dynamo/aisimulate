@@ -821,10 +821,14 @@ ADAPTERS = {
 
 
 def main() -> int:
+    import os
+
+    ws = Path(os.environ.get("AIS_PROBE_WORKSPACE") or Path(__file__).resolve().parents[1] / "workspace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--configs", type=Path, required=True, help="dir of <org>_<repo>.json originals")
-    ap.add_argument("--out", type=Path, required=True, help="output root for dummy model dirs")
+    ap.add_argument("--configs", type=Path, default=ws / "configs", help="dir of <org>_<repo>.json originals")
+    ap.add_argument("--out", type=Path, default=ws / "dummy_models", help="output root for dummy model dirs")
     args = ap.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
 
     manifest = {"generator": Path(__file__).name, "rule": "depth-only cut, width preserved", "variants": []}
     failures = 0

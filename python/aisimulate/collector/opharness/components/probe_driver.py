@@ -575,12 +575,16 @@ def emit_shards(runs: list[dict], cdir: Path, url_base: str, upload: bool = True
     src_info = _generator_src_commit()
     plans: dict[tuple[int, str], list[dict]] = {}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    if upload:  # WebDAV refuses a PUT into a missing collection; an existing one answers 405
-        try:
-            opener.open(urllib.request.Request(f"{url_base}/", method="MKCOL"), timeout=60).close()
-        except urllib.error.HTTPError as exc:
-            if exc.code != 405:
-                raise
+    if upload:  # WebDAV refuses a PUT (409) into a missing collection: create each level; an existing one answers 405
+        scheme, _, rest = url_base.partition("://")
+        host, *parts = rest.split("/")
+        for i in range(1, len(parts) + 1):
+            try:
+                url = f"{scheme}://{host}/{'/'.join(parts[:i])}/"
+                opener.open(urllib.request.Request(url, method="MKCOL"), timeout=60).close()
+            except urllib.error.HTTPError as exc:
+                if exc.code != 405:
+                    raise
     for run in (r for r in runs if "skip" not in r):
         run.update(src_info)
         probe = _prepare_probe(run, cdir)

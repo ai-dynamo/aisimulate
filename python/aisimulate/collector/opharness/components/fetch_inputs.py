@@ -100,6 +100,7 @@ def _bundled_fallback(repo: str, configs: Path, reason: str) -> dict | None:
 
 
 def fetch(repo: str, configs: Path, token: str | None) -> dict:
+    configs.mkdir(parents=True, exist_ok=True)
     try:
         info = json.loads(_get(f"https://huggingface.co/api/models/{repo}", token))
     except Exception as e:  # 401/403/404/offline: fall back to the bundled config if there is one
