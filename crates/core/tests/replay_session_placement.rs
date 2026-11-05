@@ -413,6 +413,7 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                 spec.engine = serde_json::to_value(config).unwrap();
                 spec.requests = (0..3)
                     .map(|i| ReplayRequest {
+                        cache_salt: None,
                         id: format!("request-{i}"),
                         arrival_time_ms: 0.0,
                         input_tokens: 16,

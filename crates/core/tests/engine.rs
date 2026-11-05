@@ -60,6 +60,7 @@ fn request(
     output_tokens: usize,
 ) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: id.to_string(),
         arrival_time_ms,
         input_tokens,
@@ -571,6 +572,7 @@ fn submit_interval_request(
             SchedulerCommand::new(
                 dp_rank,
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: Uuid::from_u128(id),
                     tokens: vec![id as u32; input_tokens],
                     max_output_tokens: output_tokens,
@@ -653,6 +655,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
                 SchedulerCommand::new(
                     0,
                     Command::Submit(Request {
+                        cache_salt: None,
                         request_id,
                         tokens,
                         max_output_tokens: 0,
@@ -709,6 +712,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
                     SchedulerCommand::new(
                         0,
                         Command::Submit(Request {
+                            cache_salt: None,
                             request_id: Uuid::from_u128(index as u128 + 1),
                             tokens,
                             max_output_tokens: 0,
@@ -1833,6 +1837,7 @@ fn native_images_require_sglang_even_with_vision_timing(
         SchedulerCommand::new(
             0,
             Command::Submit(Request {
+                cache_salt: None,
                 request_id,
                 tokens: (0..8).collect(),
                 max_output_tokens: 1,
@@ -2708,6 +2713,7 @@ fn submit_tokens(engine: &mut Engine, dp_rank: u32, id: u128, tokens: usize, out
             SchedulerCommand::new(
                 dp_rank,
                 Command::Submit(Request {
+                    cache_salt: None,
                     request_id: Uuid::from_u128(id),
                     tokens: (0..tokens as u32)
                         .map(|token| token + 100 * id as u32)

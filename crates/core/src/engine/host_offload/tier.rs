@@ -1425,6 +1425,7 @@ impl HostTier {
                     stored.blocks.push(block);
                 }
                 _ => events.push(KvEventData::Stored(StoredBlocks {
+                    cache_salt: None,
                     parent_hash: meta.parent,
                     start_position: Some(meta.position),
                     blocks: vec![block],
@@ -2419,6 +2420,7 @@ pub(crate) mod tests {
     /// One `Stored` run of `(block_hash, tokens_hash)` pairs.
     fn stored(parent: Option<u64>, start: usize, blocks: &[(u64, u64)]) -> KvEventData {
         KvEventData::Stored(StoredBlocks {
+            cache_salt: None,
             parent_hash: parent,
             start_position: Some(start),
             blocks: blocks

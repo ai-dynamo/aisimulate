@@ -4284,6 +4284,7 @@ fn direct_to_native(
     kv_hint: Option<KvHintSource>,
 ) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
+        cache_salt: request.cache_salt,
         request_id: request
             .uuid
             .ok_or_else(|| anyhow!("offline replay request must have a UUID before dispatch"))?,

@@ -28,6 +28,7 @@ fn request(
     output_tokens: usize,
 ) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: id.to_string(),
         arrival_time_ms,
         input_tokens,

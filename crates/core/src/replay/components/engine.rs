@@ -1312,6 +1312,7 @@ fn native_request(request: DirectRequest, kv_hint: Option<KvHintSource>) -> Resu
             .uuid
             .context("offline replay request must have a UUID before dispatch")?,
         tokens: request.tokens,
+        cache_salt: request.cache_salt,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
         session_id: request

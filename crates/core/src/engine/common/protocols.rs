@@ -83,6 +83,8 @@ pub(crate) struct DirectRequest {
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     /// Image placeholders inside `tokens`; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,

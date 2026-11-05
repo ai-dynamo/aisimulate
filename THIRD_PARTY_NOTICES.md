@@ -13,6 +13,34 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 cache-salt namespaces
+
+The cache-salt behavior in repository-root
+`crates/core/src/engine/common/hashing.rs`,
+`crates/core/src/engine/common/protocols.rs`,
+`crates/core/src/engine/protocol.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`,
+`crates/core/src/engine/scheduler/sglang/request.rs`,
+`crates/core/src/engine/scheduler/sglang/tests.rs`,
+`crates/core/src/replay/{protocol.rs,spec.rs,replayer.rs}`,
+`crates/core/src/replay/loadgen/{types.rs,tests.rs}`,
+`crates/core/tests/replay_cache_salt.rs`,
+`docs/replay/engine/kv-cache.md`, and the inline request normalization in
+`src/aisimulate/traffic.py` and repository-root `tests/test_traffic.py`
+is a modified behavioral adaptation of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/managers/io_struct.py`,
+`python/sglang/srt/managers/schedule_batch.py`,
+`python/sglang/srt/managers/schedule_policy.py`, and
+`python/sglang/srt/mem_cache/{radix_cache.py,utils.py,events.py}`.
+Copyright 2023-2024 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's native request lifecycle,
+replay, and XXH3 page/sequence identities. No serving code is vendored;
+the hashes model namespace isolation rather than SGLang's SHA256 encoding.
+
 ## SGLang v0.5.22 computed KV and finish boundaries
 
 The output/committed-KV bookkeeping and regression cases in repository-root

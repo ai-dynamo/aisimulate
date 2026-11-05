@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+
 // Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
@@ -2503,6 +2505,53 @@ mod scheduling {
     use super::*;
 
     #[test]
+    fn cache_salt_namespaces_lpm_scores_and_in_batch_deduplication() {
+        let tokens = (0..32).collect::<Vec<_>>();
+        let config = SglangConfig {
+            schedule_policy: SchedulePolicy::Lpm,
+            ..SglangConfig::from_args(&test_args(64, 4, 64))
+        };
+        let make = |index, salt: Option<&str>| {
+            SglangRequest::new(
+                DirectRequest {
+                    tokens: tokens.clone(),
+                    max_output_tokens: 1,
+                    uuid: Some(Uuid::from_u128(index)),
+                    cache_salt: salt.map(str::to_owned),
+                    ..Default::default()
+                },
+                4,
+                0,
+            )
+        };
+        let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
+        let mut waiting = WaitingQueue::from([
+            make(1, Some("alpha")),
+            make(2, Some("alpha")),
+            make(3, Some("beta")),
+            make(4, None),
+            make(5, Some("")),
+        ]);
+        apply_schedule_policy(&mut waiting, &manager, &config);
+        assert_eq!(
+            waiting
+                .iter()
+                .map(|request| request.uuid.as_u128())
+                .collect::<Vec<_>>(),
+            [1, 3, 4, 2, 5]
+        );
+
+        let mut cached = RadixRequestLease::new(Some("beta".into()));
+        manager
+            .allocate_for_request_lease(&tokens, &mut cached)
+            .unwrap();
+        manager.finish(&tokens, cached);
+        let mut waiting = WaitingQueue::from([make(1, Some("alpha")), make(2, Some("beta"))]);
+        apply_schedule_policy(&mut waiting, &manager, &config);
+        assert_eq!(waiting[0].uuid, Uuid::from_u128(2));
+    }
+
+    #[test]
     fn test_lpm_reorders_by_current_sequence_prefix_match() {
         let mut kv_manager = SglangKvManager::new(1000, 1, KvEventPublishers::default(), 0);
         kv_manager
@@ -2807,6 +2856,7 @@ mod core_behavior {
             let planned = vec![111, 222, 333, 444, 555, 666, 777];
             let mut sequence = vec![1, 2];
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens: sequence.clone(),
                 max_output_tokens: planned.len(),
                 output_token_ids: Some(planned.clone()),
@@ -3130,6 +3180,7 @@ mod core_behavior {
             .unwrap();
         let mut core = SglangCore::new(args);
         core.receive(crate::engine::common::protocols::DirectRequest {
+            cache_salt: None,
             tokens: vec![1; 6],
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3277,6 +3328,7 @@ mod forward_pass_metrics {
     fn test_fpm_single_prefill_request() {
         let mut core = SglangCore::new(fpm_args());
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3310,6 +3362,7 @@ mod forward_pass_metrics {
 
         // r1: 4-token prompt, 3 output tokens
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3329,6 +3382,7 @@ mod forward_pass_metrics {
 
         // r2: arriving while r1 is decoding
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3367,6 +3421,7 @@ mod forward_pass_metrics {
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3390,6 +3445,7 @@ mod forward_pass_metrics {
         assert_eq!(core.running[0].output_len(), 1);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
@@ -3440,6 +3496,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(fpm_args());
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3456,6 +3513,7 @@ mod forward_pass_metrics {
         assert_eq!(pass1.mocker_metrics.sglang_cache_total_tokens, 8);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3669,6 +3727,7 @@ mod forward_pass_metrics {
 
         // Two 8-token requests but limited KV
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3679,6 +3738,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..108).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3726,6 +3786,7 @@ mod forward_pass_metrics {
 
         // Two prefill requests with different prompt lengths
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(), // prompt_len = 4
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3736,6 +3797,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..112).collect(), // prompt_len = 12
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3781,6 +3843,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(args);
 
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..16).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -3855,6 +3918,7 @@ mod forward_pass_metrics {
             (r2, (100..104).collect(), 30),
         ] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens,
                 output_token_ids: None,
@@ -3874,6 +3938,7 @@ mod forward_pass_metrics {
         assert_eq!(core.running.len(), 1);
         // A request that does not fit waits in the queue ahead of any retraction.
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (200..232).collect(),
             max_output_tokens: 40,
             output_token_ids: None,
@@ -3952,6 +4017,7 @@ mod forward_pass_metrics {
     /// so its full sequence is cached.
     fn finish_and_cache(core: &mut SglangCore, id: u128, tokens: Vec<u32>, now: &mut f64) {
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens,
             max_output_tokens: 1,
             output_token_ids: None,
@@ -3984,6 +4050,7 @@ mod forward_pass_metrics {
         let mut r2: Vec<u32> = (0..10).collect();
         r2.extend([100, 101, 102, 103]);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: r2,
             max_output_tokens: 1,
             output_token_ids: None,
@@ -4019,6 +4086,7 @@ mod forward_pass_metrics {
         let mut now = 0.0;
         finish_and_cache(&mut core, 1, (0..5).collect(), &mut now);
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..5).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -4057,6 +4125,7 @@ mod forward_pass_metrics {
         r2.extend([100, 101, 102, 103]);
         for (id, tokens) in [(2u128, r2), (3u128, vec![200, 201])] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens: 2,
                 output_token_ids: None,
@@ -4086,6 +4155,7 @@ mod forward_pass_metrics {
         // neither the admission event nor the cache-hit metric may count it.
         let mut core = SglangCore::new(chunk6_args(256));
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..12).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -4145,6 +4215,7 @@ mod forward_pass_metrics {
         let r2 = Uuid::from_u128(2);
         for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
             core.receive(DirectRequest {
+                cache_salt: None,
                 tokens,
                 max_output_tokens: 1,
                 output_token_ids: None,
@@ -4183,6 +4254,7 @@ mod forward_pass_metrics {
         // pass completes both.
         let mut core = SglangCore::new(three_page_args());
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
@@ -4255,6 +4327,7 @@ mod forward_pass_metrics {
 
         // Two requests with 4-token prompts and long outputs to fill KV
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (0..4).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
@@ -4265,6 +4338,7 @@ mod forward_pass_metrics {
             kv_hint: None,
         });
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (100..104).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
@@ -4282,6 +4356,7 @@ mod forward_pass_metrics {
 
         // Add a third request to increase memory pressure
         core.receive(DirectRequest {
+            cache_salt: None,
             tokens: (200..212).collect(), // 12 tokens
             max_output_tokens: 10,
             output_token_ids: None,

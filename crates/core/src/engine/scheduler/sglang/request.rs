@@ -49,7 +49,7 @@ impl SglangRequest {
             .checked_add(output_capacity)
             .expect("SGLang request completion length overflow")
             / block_size;
-        let mut kv_lease = RadixRequestLease::default();
+        let mut kv_lease = RadixRequestLease::new(req.cache_salt);
         kv_lease.session_id = req.session_id;
         kv_lease.reserve_page_hashes(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);

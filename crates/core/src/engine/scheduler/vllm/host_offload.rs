@@ -1572,6 +1572,7 @@ mod tests {
             event_id: 0,
             dp_rank: 0,
             data: KvEventData::Stored(StoredBlocks {
+                cache_salt: None,
                 parent_hash: None,
                 start_position: Some(0),
                 blocks: vec![block(0), block(1)],

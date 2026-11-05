@@ -285,6 +285,7 @@ fn request(
         prefill_dp_rank: None,
         kv_hints: None,
         session_id: None,
+        cache_salt: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
     }
