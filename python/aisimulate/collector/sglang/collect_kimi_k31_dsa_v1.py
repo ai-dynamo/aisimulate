@@ -112,7 +112,8 @@ def single_layer_config(config: dict) -> dict:
     text["linear_attn_config"]["kda_layers"] = []
     dsa["dsa_layers"] = [1]
     # Native framework config classes resolve this architecture. The collector
-    # does not execute checkpoint-supplied Python or redistribute its config.
+    # does not execute checkpoint-supplied model configuration Python or
+    # redistribute its config. The native tokenizer is loaded separately.
     result.pop("auto_map", None)
     return result
 
@@ -159,7 +160,11 @@ def executed_kernel_source(backend, pool, phase: str) -> str:
 
 def run_kimi_k31_dsa_worker(*args, device="cuda:0", perf_filename=None):
     case = ModuleCase(*args)
-    validate_case(case)
+    if validate_case(case) != 1:
+        raise RuntimeError(
+            "native K31 TP>1 needs exclusive ownership of its GPU group; "
+            "use the standalone module on a dedicated allocation, not the per-GPU collector worker"
+        )
     if perf_filename is None:
         raise ValueError("native Kimi K3.1 collection requires an output filename")
     phase = "context" if "context" in str(perf_filename) else "generation"
@@ -169,7 +174,7 @@ def run_kimi_k31_dsa_worker(*args, device="cuda:0", perf_filename=None):
         [
             sys.executable,
             "-m",
-            "collector.sglang.collect_kimi_k31_dsa",
+            "collector.sglang.collect_kimi_k31_dsa_v1",
             "--case",
             json.dumps(list(case)),
             "--phase",
@@ -236,6 +241,25 @@ def _prepare_forward(bench, case: ModuleCase, phase: str):
     return captured[0]
 
 
+def validate_forward_batch(batch, case: ModuleCase, phase: str) -> dict:
+    """Verify native scheduler history against the persisted DSA coordinates."""
+    expected_tokens = case.batch_size * (case.seq_len if phase == "context" else 1)
+    if batch.input_ids.numel() != expected_tokens:
+        raise RuntimeError("native forward token count differs from the persisted case")
+    seq_lens = batch.seq_lens.tolist()
+    expected_length = case.seq_len + case.prefix_len
+    if seq_lens != [expected_length] * case.batch_size:
+        raise RuntimeError(f"native KV history {seq_lens} differs from persisted length {expected_length}")
+    receipt = {"seq_lens": seq_lens}
+    if phase == "context":
+        prefixes = batch.extend_prefix_lens_cpu
+        lengths = batch.extend_seq_lens_cpu
+        if prefixes != [case.prefix_len] * case.batch_size or lengths != [case.seq_len] * case.batch_size:
+            raise RuntimeError("native cached-prefix/extension lengths differ from the persisted case")
+        receipt.update(extend_prefix_lens=prefixes, extend_seq_lens=lengths)
+    return receipt
+
+
 def _rank_main(rank, server_args, port_args, case_values, phase, output, first_gpu):
     import torch
     from sglang.benchmark.one_batch import _init_process_global_configs, load_model
@@ -264,9 +288,7 @@ def _rank_main(rank, server_args, port_args, case_values, phase, output, first_g
     if not attention.use_output_gate or attention.num_local_heads != case.num_heads:
         raise RuntimeError("native gate or local TP head geometry differs from the case")
     batch = _prepare_forward(bench, case, phase)
-    expected_tokens = case.batch_size * (case.seq_len if phase == "context" else 1)
-    if batch.input_ids.numel() != expected_tokens:
-        raise RuntimeError("native forward token count differs from the persisted case")
+    batch_receipt = validate_forward_batch(batch, case, phase)
 
     # KimiK3DecoderLayer._run_self_attn calls the Module normally. Events
     # observe that boundary without replacing its implementation or inputs.
@@ -302,6 +324,23 @@ def _rank_main(rank, server_args, port_args, case_values, phase, output, first_g
         duration = torch.tensor(latency, device=f"cuda:{gpu}")
         torch.distributed.all_reduce(duration, op=torch.distributed.ReduceOp.MAX)
         if rank == 0:
+            print(
+                json.dumps(
+                    {
+                        "native_module": type(attention).__name__,
+                        "native_indexer": type(attention.indexer).__name__,
+                        "local_heads": attention.num_local_heads,
+                        "output_gate": attention.use_output_gate,
+                        "case": list(case),
+                        "phase": phase,
+                        "forward_batch": batch_receipt,
+                        "kernel_source": source,
+                        "observations": len(starts),
+                        "latency_ms": duration.item(),
+                    }
+                ),
+                flush=True,
+            )
             log_perf(
                 [perf_item(case, phase, duration.item())],
                 "SGLang",
@@ -340,7 +379,10 @@ def main() -> None:
     tokenizer_path = snapshot_download(
         MODEL,
         revision=MODEL_REVISION,
-        allow_patterns=["tokenizer*", "special_tokens_map.json", "vocab.json", "merges.txt"],
+        # Native one_batch loads this checkpoint's TikTokenTokenizer even
+        # for synthetic token IDs. Its only local Python dependency is
+        # encoding_k3.py; both were inspected at this immutable revision.
+        allow_patterns=["tokenizer_config.json", "tokenization_kimi.py", "encoding_k3.py", "tiktoken.model"],
     )
     with tempfile.TemporaryDirectory(prefix="kimi-k31-native-") as directory:
         Path(directory, "config.json").write_text(json.dumps(config))
@@ -353,7 +395,7 @@ def main() -> None:
             load_format="dummy",
             dtype="bfloat16",
             tp_size=tp,
-            trust_remote_code=False,
+            trust_remote_code=True,
             disable_radix_cache=True,
             disable_cuda_graph=True,
             disable_prefill_cuda_graph=True,

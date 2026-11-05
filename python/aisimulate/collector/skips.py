@@ -59,6 +59,17 @@ SKIPS: list[dict] = [
     # Native K31 Gated DSA has one source-pinned SGLang implementation.
     # Other framework implementations require their own serving audit.
     {"backend": ["vllm", "trtllm"], "op": ["kimi_k31_dsa_context_module", "kimi_k31_dsa_generation_module"]},
+    # collect.py::main starts device_count workers; worker_process assigns one
+    # device_id to each worker. Native K31's standalone entry creates an entire
+    # TP rank group (collect_kimi_k31_dsa_v1.py::main/_rank_main), so TP > 1
+    # would overlap independently queued workers. Keep structural TP geometry
+    # in the model YAML, but only enqueue TP1 until an exclusive group launcher
+    # owns the other devices. Standalone TP2/4/8 remain hardware-unverified.
+    {
+        "backend": "sglang",
+        "op": ["kimi_k31_dsa_context_module", "kimi_k31_dsa_generation_module"],
+        "num_heads": [48, 24, 12],
+    },
     # The sparse-attention (DSA) modules and the DeepSeek-V4 and GLM-5 sparse
     # kernels (DeepGEMM fp8_mqa_logits, FlashMLA sparse, JIT top-k) need Hopper
     # (SM90) or newer.
