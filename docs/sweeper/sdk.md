@@ -255,8 +255,9 @@ until the admission deadline. Seed-only sampling differs from the AgentX referen
 cuts for matched comparisons. The live warmup policy follows the pinned reference's accelerated
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
-`supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` or `primers_only`,
-and `supports_weka_client` for `weka_client: agentx`; unsupported runners fail validation.
+`supports_agentic_profile` for `agentic_profile`, `supports_agentic_live_warmup` for
+`live_trajectory_v1` or `primers_only`, and `supports_weka_client` for `weka_client: agentx`;
+unsupported runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 

@@ -2016,6 +2016,31 @@ def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, 
     assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
 
 
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy: str) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 2,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_warmup_policy": policy,
+    }
+    if policy == "live_trajectory_v1":
+        load["agentic_profile"] = {}
+    traffic = {"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load}
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_warmup_policy"] == policy
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_warmup_policy"] == policy
+    assert Workload.model_validate(recommended).agentic_warmup_policy == policy
+
+
 @pytest.mark.parametrize(
     "profile",
     [
