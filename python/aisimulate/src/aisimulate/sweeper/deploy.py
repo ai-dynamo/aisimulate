@@ -99,12 +99,9 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
-    if (
-        backend == "sglang"
-        and sample["deployment_mode"] == "disagg"
-        and role == "decode"
-        and sample.get("decode_radix_cache")
-    ):
+    if backend == "sglang" and role == "decode" and sample.get("decode_radix_cache"):
+        if sample["deployment_mode"] != "disagg":
+            raise ValueError("decode_radix_cache requires native SGLang disaggregated decode")
         if not payload["enable_prefix_caching"]:
             raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
         if sample.get("aic_nextn") or sample.get("speculation") is not None:

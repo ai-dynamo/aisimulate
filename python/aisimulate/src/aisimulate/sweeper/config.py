@@ -902,6 +902,8 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_afd_contract(self) -> SearchSpace:
         afd_modes = [mode for mode in dict.fromkeys(self.deployment_mode) if mode in {"afd", "afd+pd"}]
+        if afd_modes and self.decode_radix_cache:
+            raise ValueError("decode_radix_cache is unsupported for AFD")
         if self.afd_phase not in {"prefill", "decode", "both"}:
             raise ValueError("afd_phase must be 'prefill', 'decode', or 'both'")
         if any(value not in {"optimistic", "conservative", "serial"} for value in self.afd_pipeline_model_candidates):
