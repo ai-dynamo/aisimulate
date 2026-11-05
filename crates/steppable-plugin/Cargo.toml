@@ -41,7 +41,7 @@ without-timestamped-events = []
 # TRANSITIONAL: this exact-revision git pin becomes a registry requirement
 # (`aiperf-steppable-abi = "0.x"`) once AIPerf publishes the crate. The pin is
 # the pushed `feat/compact-hash-leases` head that defines `CAPABILITY_NAMES_V1`.
-aiperf-steppable-abi = { git = "https://github.com/NVIDIA-dev/aiperf-rs.git", rev = "539e4819f440cce0773fe6288341c7dc815425c3", package = "aiperf-steppable-abi" }
+aiperf-steppable-abi = { git = "https://github.com/NVIDIA-dev/aiperf-rs.git", rev = "b921cb82deb0941d2f00d3f98771d40377ff57f2", package = "aiperf-steppable-abi" }
 aisimulate-core = { path = "../core", package = "aisim-core", default-features = false }
 anyhow = { workspace = true }
 libloading = "0.8"
