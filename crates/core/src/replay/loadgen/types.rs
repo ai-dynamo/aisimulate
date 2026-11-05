@@ -526,22 +526,26 @@ impl ReplayRequestHashes {
             // Streaming XXH3 has the same canonical little-endian byte input as
             // engine block hashing, but never allocates a block-sized buffer.
             let mut scratch = [0_u8; MAX_HASH_SCRATCH_TOKENS * 4];
-            let local_block_hashes = (0..input_length / block_size).map(|index| {
-                let mut hash = xxhash_rust::xxh3::Xxh3::with_seed(XXH3_SEED);
-                let mut position = index * block_size;
-                let end = position + block_size;
-                while position < end {
-                    let token = hash_ids[position / trace_block_size].to_le_bytes();
-                    let count = (trace_block_size - position % trace_block_size)
-                        .min(end - position)
-                        .min(MAX_HASH_SCRATCH_TOKENS);
-                    let bytes = &mut scratch[..count * 4];
-                    for encoded in bytes.chunks_exact_mut(4) { encoded.copy_from_slice(&token); }
-                    hash.update(bytes);
-                    position += count;
-                }
-                hash.digest()
-            }).collect();
+            let local_block_hashes = (0..input_length / block_size)
+                .map(|index| {
+                    let mut hash = xxhash_rust::xxh3::Xxh3::with_seed(XXH3_SEED);
+                    let mut position = index * block_size;
+                    let end = position + block_size;
+                    while position < end {
+                        let token = hash_ids[position / trace_block_size].to_le_bytes();
+                        let count = (trace_block_size - position % trace_block_size)
+                            .min(end - position)
+                            .min(MAX_HASH_SCRATCH_TOKENS);
+                        let bytes = &mut scratch[..count * 4];
+                        for encoded in bytes.chunks_exact_mut(4) {
+                            encoded.copy_from_slice(&token);
+                        }
+                        hash.update(bytes);
+                        position += count;
+                    }
+                    hash.digest()
+                })
+                .collect();
             return Self::from_local_block_hashes(local_block_hashes);
         }
         let mut block = vec![0_u32; block_size];

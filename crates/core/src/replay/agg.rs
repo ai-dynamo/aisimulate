@@ -3508,7 +3508,10 @@ where
         self.submit_dynamic_payload(ReplayRequestPayload::materialized(request))
     }
 
-    pub(crate) fn submit_dynamic_payload(&mut self, request: ReplayRequestPayload) -> anyhow::Result<Uuid> {
+    pub(crate) fn submit_dynamic_payload(
+        &mut self,
+        request: ReplayRequestPayload,
+    ) -> anyhow::Result<Uuid> {
         let arrival_time_ms = self.now_ms;
         let uuid = self.assign_request(
             request,

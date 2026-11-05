@@ -1534,7 +1534,9 @@ where
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        if self.defer_drive { self.step_quiescent.push(uuid); }
+        if self.defer_drive {
+            self.step_quiescent.push(uuid);
+        }
         match self.awaiting_receipt.get_mut(&uuid) {
             // Released right after the client receives the request.
             Some(quiescent) => *quiescent = true,
@@ -2487,7 +2489,9 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
-            if self.defer_drive { self.step_tokens.push((signal.uuid, token_id)); }
+            if self.defer_drive {
+                self.step_tokens.push((signal.uuid, token_id));
+            }
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2843,7 +2847,9 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
-            if self.defer_drive && self.step_freed_slot { return Ok(changed); }
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
         }
     }
 
@@ -2863,7 +2869,9 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
-            if self.defer_drive && self.step_freed_slot { return Ok(changed); }
+            if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
         }
     }
 
@@ -4198,23 +4206,45 @@ where
         self
     }
 
-    pub(crate) fn collector(&self) -> &TraceCollector { &self.collector }
-    pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector { &mut self.collector }
-    pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> { std::mem::take(&mut self.step_tokens) }
-    pub(crate) fn take_step_terminals(&mut self) -> Vec<(Uuid, ReplayTerminalStatus)> { std::mem::take(&mut self.step_terminals) }
-    pub(crate) fn take_step_quiescent(&mut self) -> Vec<Uuid> { std::mem::take(&mut self.step_quiescent) }
+    pub(crate) fn collector(&self) -> &TraceCollector {
+        &self.collector
+    }
+    pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector {
+        &mut self.collector
+    }
+    pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> {
+        std::mem::take(&mut self.step_tokens)
+    }
+    pub(crate) fn take_step_terminals(&mut self) -> Vec<(Uuid, ReplayTerminalStatus)> {
+        std::mem::take(&mut self.step_terminals)
+    }
+    pub(crate) fn take_step_quiescent(&mut self) -> Vec<Uuid> {
+        std::mem::take(&mut self.step_quiescent)
+    }
 
-    pub(crate) fn submit_dynamic_payload(&mut self, mut request: ReplayRequestPayload) -> Result<Uuid> {
+    pub(crate) fn submit_dynamic_payload(
+        &mut self,
+        mut request: ReplayRequestPayload,
+    ) -> Result<Uuid> {
         request.metadata_mut().arrival_timestamp_ms = Some(self.now_ms);
-        let session_id = request.metadata().replay_context.as_ref().and_then(|context| context.session_id()).map(str::to_owned);
+        let session_id = request
+            .metadata()
+            .replay_context
+            .as_ref()
+            .and_then(|context| context.session_id())
+            .map(str::to_owned);
         let uuid = self.on_external_arrival(request, self.now_ms, None, session_id, false)?;
         self.drive_pending = true;
         Ok(uuid)
     }
 
     pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {
-        let Some(state) = self.flow.requests.get(&uuid) else { return Ok(None); };
-        if state.terminal_status().is_some() { return Ok(None); }
+        let Some(state) = self.flow.requests.get(&uuid) else {
+            return Ok(None);
+        };
+        if state.terminal_status().is_some() {
+            return Ok(None);
+        }
         let handoff_id = state.handoff_id;
         self.apply_handoff_fact(uuid, HandoffFact::Canceled { handoff_id })?;
         self.drive_pending_actions()?;
@@ -4226,8 +4256,12 @@ where
     }
 
     pub(crate) fn next_dynamic_timestamp(&mut self) -> Option<f64> {
-        if self.is_workload_done() { return None; }
-        if self.drive_pending { return Some(self.now_ms); }
+        if self.is_workload_done() {
+            return None;
+        }
+        if self.drive_pending {
+            return Some(self.now_ms);
+        }
         self.next_timestamps().1
     }
 
@@ -4242,34 +4276,51 @@ where
     }
 
     pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> Result<f64> {
-        anyhow::ensure!(!until_ms.is_nan() && until_ms >= self.now_ms, "disaggregated step deadline precedes runtime time");
+        anyhow::ensure!(
+            !until_ms.is_nan() && until_ms >= self.now_ms,
+            "disaggregated step deadline precedes runtime time"
+        );
         self.step_freed_slot = false;
         if self.drive_pending {
             self.drive_pending = false;
             self.drain_current_timestamp()?;
-        } else if self.evaluate_dynamic_completions()? { return Ok(self.now_ms); }
+        } else if self.evaluate_dynamic_completions()? {
+            return Ok(self.now_ms);
+        }
         if self.step_tokens.is_empty() && !self.step_freed_slot {
             if let Some(next_ms) = self.next_dynamic_timestamp() {
                 if next_ms <= until_ms {
                     self.advance_now_ms(next_ms);
                     self.evaluate_dynamic_completions()?;
-                } else if until_ms.is_finite() { self.advance_now_ms(until_ms); }
+                } else if until_ms.is_finite() {
+                    self.advance_now_ms(until_ms);
+                }
             }
         }
         Ok(self.now_ms)
     }
 
-    pub(crate) fn take_report_dynamic(&mut self, wall_ms: f64) -> Result<crate::replay::ReplayReport> {
+    pub(crate) fn take_report_dynamic(
+        &mut self,
+        wall_ms: f64,
+    ) -> Result<crate::replay::ReplayReport> {
         anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
-        anyhow::ensure!(self.is_workload_done(), "replay report requires an idle runtime");
+        anyhow::ensure!(
+            self.is_workload_done(),
+            "replay report requires an idle runtime"
+        );
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
-        self.collector.set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        self.collector
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.kvcr = self.prefill_engine.kvcr_stats();
         self.collector.g2_domains = match self.prefill_engine.g2_domains() {
             domains if domains.is_empty() => self.decode_engine.g2_domains(),
             domains => domains,
         };
-        Ok(self.collector.take_report(self.now_ms).with_wall_time_ms(wall_ms))
+        Ok(self
+            .collector
+            .take_report(self.now_ms)
+            .with_wall_time_ms(wall_ms))
     }
 
     /// Run the staged offline replay until both prefill and decode pipelines are drained.
