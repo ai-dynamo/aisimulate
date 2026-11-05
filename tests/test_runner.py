@@ -6,7 +6,7 @@
 import json
 import math
 import pickle
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 from pydantic import ValidationError
@@ -30,6 +30,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
+    RunnerCapabilities,
     RuntimeHookSpec,
 )
 from aisimulate.sweeper.config import Workload
@@ -2728,6 +2729,16 @@ def test_agentic_warmup_policy_requires_its_own_runner_capability_and_reaches_na
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
     assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == policy
+
+
+def test_primers_only_capability_keeps_existing_positional_arguments():
+    # RunnerCapabilities is public: an adapter passing the earlier fields positionally keeps their meaning.
+    default = RunnerCapabilities()
+    earlier = [field.name for field in fields(RunnerCapabilities) if field.name != "supports_agentic_primers_only"]
+    positional = RunnerCapabilities(
+        *(True if name == "supports_weka_client" else getattr(default, name) for name in earlier)
+    )
+    assert positional == replace(default, supports_weka_client=True)
 
 
 def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
