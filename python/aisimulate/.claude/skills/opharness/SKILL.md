@@ -7,7 +7,7 @@ description: Use when running or extending the op-path harness under collector/o
 
 Runbook pointers only; policy is in `.claude/rules/` (collector rules apply to
 anything under `collector/`). Read `collector/opharness/README.md` first, then
-the workflow you are on (`collector/opharness/workflows/<workflow>.md` + `.yaml`).
+the workflow you are on (`collector/opharness/workflows/<workflow>.md`).
 
 ## Environment knobs (the complete list — nothing else is read from the env)
 

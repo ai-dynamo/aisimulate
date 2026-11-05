@@ -6,7 +6,7 @@ collector's cells are shown to run what serving runs on the new pin.
 
 Collection itself follows `docs/perf-model/collector/upgrade.md` and the
 collector overview's "Every pin bump" row; this table adds the serving side.
-`upgrade_op.yaml` lists the steps `workflow_check.py` checks.
+`workflow_check.py upgrade_op` checks the steps marked Check.
 
 | # | Step | Who | How |
 |---|------|-----|-----|

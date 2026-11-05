@@ -682,6 +682,20 @@ gates:
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
+- gate: mla_attn_ctx_bf16_DeepSeek-V3
+  backend: trtllm
+  op: mla_context
+  select: {input_len: 4096, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1, is_context_phase: true}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
+- gate: mla_attn_gen_bf16_DeepSeek-V3
+  backend: trtllm
+  op: mla_generation
+  select: {input_len: 4095, batch_size: 1, kv_cache_dtype: bfloat16, num_heads: 128, tp_size: 1, is_context_phase: false}
+  repo: deepseek-ai/DeepSeek-V3
+  kv: auto
+  hint: MLA
 - gate: mla_bmm_gen_DeepSeek-V3
   backend: trtllm
   op: mla_bmm_gen_pre

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Component: workflow step checker. Progress is derived from artifacts, never self-reported.
 
-Each step of a workflow manifest (workflows/<name>.yaml) names one of four checks:
+Each checked step of a workflow (WORKFLOWS) names one of four checks:
 
   pin_is                  collector/framework_manifest.yaml pins fw at version
   case_set_no_regression  the CPU plan diff (case_inventory.py) lost nothing skips.py does not explain
@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import functools
 import json
-import re
 from pathlib import Path
 
 import yaml
@@ -158,59 +157,66 @@ def declared_gates(fw: str, version: str, sm: str | None = None) -> set:
     return {g["gate"] for g in rows}
 
 
-# Which gate-name families must exist for a backend registry op before the
-# op's serving alignment can be called verified. A registry op with no
-# mapping is a finding (the table must grow with the registry), an op mapped
-# to None is deliberately gate-free with the reason recorded here. Review
-# 2026-09-29: rebuilding the vllm gate set for 0.30.0 silently dropped 11 of
-# the 32 gates (attention, dsa, encoder, gemm m=1, msa, kda decode) and
-# the path check happily reported 19/19 — coverage is now checked
-# against the registry, not against whatever the script happens to declare.
-_OP_GATE_FAMILIES = {
-    "gemm": [r"^gemm_"],
-    "compute_scale": None,  # deviation note in collector/vllm/collect_computescale.py; no serving instance to gate
-    "attention_context": [r"^attn\w*_ctx"],
-    "attention_generation": [r"^attn\w*_gen"],
-    "encoder_attention": [r"^encoder_attn"],
-    "moe": [r"^moe_"],
-    "mla_bmm_gen_pre": [r"^mla_bmm"],
-    "mla_bmm_gen_post": [r"^mla_bmm"],
-    "mla_context": [r"^mla_ctx"],
-    "mla_context_module": [r"^mla_ctx"],
-    "mla_generation": [r"^mla_gen"],
-    "mla_generation_module": [r"^mla_gen"],
-    "dsa_context_module": [r"^dsa_ctx"],
-    "dsa_context_module_skip_indexer": None,  # sglang variant of the same path
-    "dsa_generation_module": [r"^dsa_gen"],
-    "dsa_generation_module_skip_indexer": None,
-    "msa_context_module": [r"^msa\w*_ctx"],
-    "msa_generation_module": [r"^msa\w*_gen"],
-    "dsv4_csa_context_module": [r"^dsv4_csa_ctx"],
-    "dsv4_csa_generation_module": [r"^dsv4_csa_gen"],
-    "dsv4_csa_topk_calib": None,  # calibration helper, not a serving op
-    "dsv4_hca_context_module": [r"^dsv4_hca_ctx"],
-    "dsv4_hca_generation_module": [r"^dsv4_hca_gen"],
-    "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
-    "glm5_dsa_attn_module": [r"^glm5_dsa"],
-    "glm5_mqa_logits_module": [r"^glm5_mqa"],
-    "glm5_topk_module": [r"^glm5_topk"],
-    # mhc_module: the collector measures the no-norm mhc_pre by producer/consumer contract (the SDK bills
-    # attn_norm separately); serving fuses the norm -> explained deviation, kept under facts/pathdiff/explained
-    "mhc_module": None,
-    "gdn": [r"^gdn_ctx", r"^gdn_gen"],
-    "kda": [r"^kda_ctx", r"^kda_gen"],
-    "mamba2": [r"^mamba2"],
+# Registry ops (or op:phase) no gate can prove, each with its reason. Every other registry op
+# needs a gates.yaml row naming it (`op`, or an `also` case), and an op whose cases carry a
+# `phase` needs one per planned phase: coverage is checked against the registry, not the
+# table (review 2026-09-29: a rebuilt vllm gate set kept 19 of 32 gates, kda decode among
+# the lost, and the check reported 19/19).
+UNGATED = {
+    "compute_scale": "deviation note in collector/vllm/collect_computescale.py; no serving instance to gate",
+    "mhc_module": "measures the no-norm mhc_pre by contract (the SDK bills attn_norm); serving fuses the norm",
+    "dsa_context_module_skip_indexer": "the sglang dsa_context_module path without the indexer",
+    "dsa_generation_module_skip_indexer": "the sglang dsa_generation_module path without the indexer",
+    "dsv4_csa_topk_calib": "calibration helper, not a serving op",
+    "dsv41_module": "the native runner times TP ranks in spawned processes; probe.trace_case refuses it",
+    "kda:verify": "the serving probe runs no speculative decoding",
 }
 
 
 def registry_ops(fw: str) -> list:
-    """Op names the backend's collector registry declares (text-parsed: the
-    harness never imports collector machinery). Wide-EP registries are the
-    multi-node plane and are not gated here."""
-    reg = HARNESS.parent / fw / "registry.py"
-    if not reg.exists():
+    """Op names the backend's collector registry declares (the wide-EP registries are the
+    multi-node plane and are not gated here)."""
+    import importlib
+    import sys
+
+    sys.path.insert(0, str(COLLECTOR.parent))
+    try:
+        registry = importlib.import_module(f"collector.{fw}.registry").REGISTRY
+    except ModuleNotFoundError:
         return []
-    return sorted(set(re.findall(r'op="([a-z0-9_]+)"', reg.read_text())))
+    return sorted({entry.op for entry in registry})
+
+
+def _phases(op: str, fw: str) -> list:
+    """The `phase` values an op plans (any SM), or [] when its cases carry none."""
+    import contextlib
+    import os
+
+    from collector.op_plans import OP_PLANS, plan
+
+    if op not in OP_PLANS or "phase" not in OP_PLANS[op].case_type._fields:
+        return []
+    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet):
+        return sorted({case.phase for case in plan(op, fw, None).cases})
+
+
+def uncovered(fw: str, ops: list, gates: list) -> list:
+    """Registry ops (op or op:phase) of ``fw`` that no gate names and UNGATED does not list."""
+    named = set()
+    for g in gates:
+        for op, select in [(g["op"], g["select"]), *((a["op"], a["select"]) for a in g.get("also") or [])]:
+            named.add(op)
+            if "phase" in select:
+                named.add(f"{op}:{select['phase']}")
+    missing = []
+    for op in ops:
+        if op in UNGATED:
+            continue
+        if op not in named:
+            missing.append(op)
+            continue
+        missing += [f"{op}:{ph}" for ph in _phases(op, fw) if f"{op}:{ph}" not in named | set(UNGATED)]
+    return missing
 
 
 def pred_gates_aligned(p):
@@ -221,19 +227,9 @@ def pred_gates_aligned(p):
     sm, fw, version = p["sm"], p["fw"], p["version"]
     expected = declared_gates(fw, version, sm)
     if not p.get("repo") and not p.get("family"):
-        ops = registry_ops(fw)
-        unmapped = [op for op in ops if op not in _OP_GATE_FAMILIES]
-        if unmapped:
-            return False, f"registry ops without a gate-family mapping: {unmapped[:4]} (extend _OP_GATE_FAMILIES)"
-        all_gates = declared_gates(fw, version)
-        uncovered = [
-            f"{op}:{rx}"
-            for op in ops
-            for rx in _OP_GATE_FAMILIES[op] or []
-            if not any(re.match(rx, g) for g in all_gates)
-        ]
-        if uncovered:
-            return False, f"{len(uncovered)} gate families undeclared for {fw} {version}: {uncovered[:4]}"
+        gaps = uncovered(fw, registry_ops(fw), _gates_module().gates_in_scope(fw, None, GATES_TABLE))
+        if gaps:
+            return False, f"registry ops no gate names (add a gates.yaml row or an UNGATED reason): {gaps[:4]}"
     if p.get("family"):
         expected = {g for g in expected if g.startswith(p["family"])}
     if not expected:
@@ -272,31 +268,42 @@ PREDICATES = {
 }
 
 
+# The checked steps of each workflow (workflows/<name>.md holds the full step table):
+# (step id, who does it, the check that says it is done).
+WORKFLOWS = {
+    "upgrade_op": [
+        ("pin_bumped", "owner", "pin_is"),
+        ("case_set_no_regression", "script", "case_set_no_regression"),
+        ("path_aligned", "script", "gates_aligned"),
+        ("skips_rechecked", "ai", "skips_rechecked"),
+    ],
+    "onboard_model": [
+        ("case_set_no_regression", "script", "case_set_no_regression"),
+        ("path_aligned", "script", "gates_aligned"),
+    ],
+    "new_op_collector": [
+        ("case_set_no_regression", "script", "case_set_no_regression"),
+        ("path_aligned", "script", "gates_aligned"),
+    ],
+}
+
+
 def evaluate(workflow: str, params: dict) -> dict:
     params = {k: v for k, v in params.items() if v is not None}
-    manifest = yaml.safe_load((HARNESS / "workflows" / f"{workflow}.yaml").read_text())
     steps = []
-    for step in manifest["steps"]:
-        check = step["done_when"]["check"]
+    for step_id, actor, check in WORKFLOWS[workflow]:
         try:
-            ok, reason = PREDICATES[check]({**params, **(step["done_when"].get("args") or {})})
+            ok, reason = PREDICATES[check](params)
         except KeyError as e:
             ok, reason = False, f"unknown check or missing param: {e}"
-        steps.append(
-            {
-                "id": step["id"],
-                "actor": step.get("actor", "script"),
-                "status": "done" if ok else "todo",
-                "reason": reason,
-            }
-        )
+        steps.append({"id": step_id, "actor": actor, "status": "done" if ok else "todo", "reason": reason})
     first = next((s["id"] for s in steps if s["status"] == "todo"), None)
     return {"workflow": workflow, "params": params, "steps": steps, "first_todo": first, "all_done": first is None}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("workflow", help="manifest name under workflows/ (without .yaml)")
+    ap.add_argument("workflow", choices=sorted(WORKFLOWS))
     ap.add_argument("--param", action="append", default=[], help="key=value campaign parameter")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()

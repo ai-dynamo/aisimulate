@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Component: the path gates of gates.yaml, scheduled and graded.
 
-  plan   --fw <backend> --sm <sm> --out <dir>
+  plan   --fw <backend> --sm <sm> --out <dir> [--repo <checkpoint> | --family <prefix>]
          A shard plan (``<dir>/<backend>.yaml``) with one ``probe.trace_case`` shard per
          gate planned on that SM (plus one per ``also`` case), for the collection pipeline:
          collect.py runs each planned case once under the profiler. A gate whose select
@@ -21,7 +21,9 @@ The table is the one home of the gates; workflow_check reads it through ``gates_
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import re
 import sys
 import time
@@ -48,7 +50,9 @@ def _matches(backend: str, op: str, sm: int, select: dict) -> bool:
     from collector.op_plans import plan
     from collector.probes.trace_case import _matches as case_matches
 
-    return sum(1 for case in plan(op, backend, sm).cases if case_matches(case, select)) == 1
+    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet):  # planning prints model notes
+        cases = plan(op, backend, sm).cases
+    return sum(1 for case in cases if case_matches(case, select)) == 1
 
 
 def gates_in_scope(fw: str, sm: str | None = None, table: Path = TABLE) -> list[dict]:
@@ -81,9 +85,13 @@ def _cases(gate: dict) -> list[tuple[str, dict]]:
     return out
 
 
-def shard_plan(fw: str, sm: str) -> dict:
+def shard_plan(fw: str, sm: str, repo: str | None = None, family: str | None = None) -> dict:
+    """The probe.trace_case shards of the gates in scope on ``sm``; ``repo`` / ``family`` narrow
+    them as workflow_check scopes onboard_model / new_op_collector."""
     shards = []
     for g in gates_in_scope(fw, sm):
+        if (repo and g["repo"] != repo) or (family and not g["gate"].startswith(family)):
+            continue
         for name, select in _cases(g):
             op = select.pop("op", g["op"])
             shards.append({"op": SHARD_OP, "name": name, "case_filter": case_filter(fw, op, select, g.get("env"))})
@@ -152,6 +160,8 @@ def main() -> int:
     p.add_argument("--fw", required=True)
     p.add_argument("--sm", required=True, help="e.g. sm100")
     p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--repo", default=None, help="only the gates that name this checkpoint")
+    p.add_argument("--family", default=None, help="only the gates whose name starts with this family")
     g = sub.add_parser("grade")
     g.add_argument("--fw", required=True)
     g.add_argument("--sm", required=True)
@@ -160,7 +170,7 @@ def main() -> int:
     args = ap.parse_args()
     if args.cmd == "plan":
         args.out.mkdir(parents=True, exist_ok=True)
-        doc = shard_plan(args.fw, args.sm)
+        doc = shard_plan(args.fw, args.sm, args.repo, args.family)
         (args.out / f"{args.fw}.yaml").write_text(yaml.safe_dump(doc, sort_keys=False, width=1000))
         print(f"{len(doc['shards'])} probe shards -> {args.out / f'{args.fw}.yaml'}")
         return 0

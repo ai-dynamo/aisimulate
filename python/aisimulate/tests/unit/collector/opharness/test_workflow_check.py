@@ -29,6 +29,7 @@ def wc(tmp_path, monkeypatch):
     (harness / "workflows").mkdir()
     monkeypatch.setattr(mod, "HARNESS", harness)
     monkeypatch.setattr(mod, "_results", lambda: tmp_path / "ws" / "results")
+    monkeypatch.setattr(mod, "registry_ops", lambda fw: [])  # coverage is tested on its own
     monkeypatch.setattr(mod, "GATES_TABLE", tmp_path / "gates.yaml")
     return mod
 
@@ -106,17 +107,7 @@ def test_pin_is_reads_the_manifest_default_or_a_family_pin(wc):
 
 
 def test_evaluate_names_the_first_todo_and_flags_unknown_checks(wc):
-    (wc.HARNESS / "workflows" / "w.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "workflow": "w",
-                "steps": [
-                    {"id": "pin", "done_when": {"check": "pin_is"}},
-                    {"id": "odd", "done_when": {"check": "no_such_check"}},
-                ],
-            }
-        )
-    )
+    wc.WORKFLOWS["w"] = [("pin", "owner", "pin_is"), ("odd", "script", "no_such_check")]
     manifest = yaml.safe_load((wc.COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"]["vllm"]
     state = wc.evaluate("w", {"fw": "vllm", "version": str(manifest["default"]["version"]), "sm": "sm90"})
     assert [(s["id"], s["status"]) for s in state["steps"]] == [("pin", "done"), ("odd", "todo")]
@@ -124,25 +115,38 @@ def test_evaluate_names_the_first_todo_and_flags_unknown_checks(wc):
     assert "unknown check" in state["steps"][1]["reason"]
 
 
-def test_gate_coverage_is_checked_against_the_registry_not_the_table(wc, tmp_path):
-    """Review 2026-09-29: the 0.30 gate rebuild kept 19 of 32 gates and
-    the path check reported 19/19. gates_aligned without a repo/family filter requires
-    a declared gate family for every registry op (or a recorded gate-free reason)."""
-    (wc.HARNESS.parent / "vllm").mkdir(parents=True)
-    (wc.HARNESS.parent / "vllm" / "registry.py").write_text(
-        'REGISTRY = [OpEntry(op="gemm"), OpEntry(op="gdn"), '
-        'OpEntry(op="compute_scale"), OpEntry(op="msa_context_module")]\n'
-    )
-    _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen"])
+def test_gate_coverage_is_checked_against_the_registry_not_the_table(wc, monkeypatch):
+    """Review 2026-09-29: the 0.30 gate rebuild kept 19 of 32 gates (kda decode among them) and
+    the path check reported 19/19. Without a repo/family filter every registry op needs a gate
+    row naming it, one per planned phase when its cases carry a phase, or an UNGATED reason."""
+    ops = ["gemm", "gdn", "compute_scale", "msa_context_module"]
+    monkeypatch.setattr(wc, "registry_ops", lambda fw: ops)
+    gdn = lambda name, phase: {"gate": name, "op": "gdn", "select": {"_gate": name, "phase": phase}}
+    _gates_table(wc, ["gemm_bf16_Llama", gdn("gdn_ctx_Qwen", "context")])
     ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
-    assert not ok and "gdn:^gdn_gen" in reason and "msa_context_module" in reason
-    _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen", "gdn_gen_Qwen", "msa_ctx_M3"])
+    assert not ok and "gdn:generation" in reason and "msa_context_module" in reason
+    assert "compute_scale" not in reason  # listed in UNGATED with its reason
+    msa = {"gate": "msa_ctx_M3", "op": "msa_context_module"}
+    _gates_table(wc, ["gemm_bf16_Llama", gdn("gdn_ctx_Qwen", "context"), gdn("gdn_gen_Qwen", "generation"), msa])
     ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
     assert not ok and "without a verdict" in reason  # covered now; the verdicts are still missing
     # an op the table does not know is a finding, never silently gate-free
-    (wc.HARNESS.parent / "vllm" / "registry.py").write_text('REGISTRY = [OpEntry(op="brand_new_op")]\n')
+    monkeypatch.setattr(wc, "registry_ops", lambda fw: ["brand_new_op"])
     ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
     assert not ok and "brand_new_op" in reason
+
+
+def test_kda_verify_is_the_one_ungated_phase(wc):
+    names = lambda *phases: [{"gate": f"kda_{p}", "op": "kda", "select": {"phase": p}} for p in phases]
+    assert wc.uncovered("vllm", ["kda"], names("context")) == ["kda:generation"]
+    assert wc.uncovered("vllm", ["kda"], names("context", "generation")) == []
+
+
+def test_the_registries_are_read_from_the_collector():
+    spec = importlib.util.spec_from_file_location("workflow_check_reg", COMPONENTS / "workflow_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert {"gemm", "moe"} <= set(mod.registry_ops("vllm")) and "dsv41_module" in mod.registry_ops("sglang")
 
 
 def test_the_plan_and_no_serving_floors_decide_the_gates_on_an_sm(wc):

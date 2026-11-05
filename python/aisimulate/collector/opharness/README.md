@@ -21,7 +21,7 @@ already answers (`collect.py --plan-only`, `--smoke`, `--case-filter`,
 | `components/path_diff.py` | a collector case's kernels vs the serving record, through the same taxonomy |
 | `components/case_inventory.py` | the CPU plan diff against a base revision; `--skips` lists the entries a pin bump re-checks |
 | `components/workflow_check.py` | the four checks the workflows use |
-| `workflows/` | `upgrade_op`, `onboard_model`, `new_op_collector`: a step table (.md) and its checked steps (.yaml) |
+| `workflows/` | `upgrade_op`, `onboard_model`, `new_op_collector`: the step tables; `workflow_check.py` holds the checked steps |
 
 ## Driving a workflow
 
