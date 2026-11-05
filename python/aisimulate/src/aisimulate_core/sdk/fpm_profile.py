@@ -94,7 +94,7 @@ def _load_pinned_checkpoint_config(model: str, revision: str) -> dict | None:
     return _download_hf_json(model, "config.json", revision=revision)
 
 
-def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
+def _validate_checkpoint_architecture(profile: FpmModelProfile) -> str:
     """Verify raw checkpoint metadata without loading weights or remote code."""
     from aisimulate_core.sdk.utils import HuggingFaceDownloadError, _load_local_config
 
@@ -114,6 +114,7 @@ def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
         ) from error
     if not isinstance(metadata, dict):
         raise ValueError(f"FPM profile checkpoint config.json must be a mapping for {identity}")
+    wrapper_architectures = metadata.get("architectures")
     # Match the collector's text-model view of checkpoint metadata.
     text_config = metadata.get("text_config")
     if isinstance(text_config, dict):
@@ -133,6 +134,20 @@ def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
             f"FPM profile architecture mismatch for {identity}: "
             f"checkpoint={architectures[0]!r}, profile={profile.architecture!r}"
         )
+    # Profile identity describes the decoder. The analytical SDK retains a
+    # registered multimodal wrapper when it unwraps text_config; check that
+    # same class for SOL availability without changing the profile identity.
+    from aisimulate_core.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
+
+    if (
+        isinstance(wrapper_architectures, list)
+        and len(wrapper_architectures) == 1
+        and isinstance(wrapper_architectures[0], str)
+        and MULTIMODAL_TEXT_CONFIG_KEY.get(wrapper_architectures[0]) == "text_config"
+        and isinstance(text_config, dict)
+    ):
+        return wrapper_architectures[0]
+    return profile.architecture
 
 
 def _validate_forward_pass_profile(config_json: str) -> str:
@@ -159,12 +174,17 @@ def _validate_forward_pass_profile(config_json: str) -> str:
         moe_ep_size=config.get("moe_ep_size"),
     )
     deployment.validate_overrides(**{key: config.get(key) for key in deployment.quantization_kwargs()})
-    _validate_checkpoint_architecture(profile)
+    analytical_architecture = _validate_checkpoint_architecture(profile)
+    text_only = config.get("estimator_config", {}).get("fpm_interpolation", {}).get("text_only", False)
+    if not text_only:
+        # Preserve existing decoder-profile auto selection until the caller
+        # explicitly requests the wrapper's language-only analytical graph.
+        analytical_architecture = profile.architecture
 
     from aisimulate_core.sdk import common
     from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
 
-    family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(profile.architecture, profile.architecture)
+    family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(analytical_architecture, analytical_architecture)
     return json.dumps(
         {
             "profile": profile.model_dump(mode="json"),

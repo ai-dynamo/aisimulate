@@ -214,6 +214,22 @@ def test_profile_architecture_matches_collector_text_config_view(profile_dict, c
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+@pytest.mark.parametrize("text_only, expected", [(None, "direct"), (False, "direct"), (True, "sol")])
+@pytest.mark.parametrize("wrapper", ["KimiK3ForConditionalGeneration", "KimiK31ForConditionalGeneration"])
+def test_kimi_wrapper_registration_requires_explicit_text_scope(
+    profile_dict, checkpoint_configs, text_only, expected, wrapper
+):
+    profile_dict["architecture"] = "KimiLinearForCausalLM"
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": [wrapper],
+        "text_config": {"architectures": [profile_dict["architecture"]]},
+    }
+    request = _request(profile_dict)
+    if text_only is not None:
+        request["estimator_config"]["fpm_interpolation"]["text_only"] = text_only
+    assert _normalize(request)["estimator_config"]["fpm_interpolation"]["method"] == expected
+
+
 @pytest.mark.parametrize("metadata", [None, "not JSON"])
 def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
     profile_dict, monkeypatch, tmp_path, metadata
@@ -2126,7 +2142,14 @@ def test_registered_profile_outer_auto_keeps_op_level_priority_with_inner_direct
     assert provenance["config"]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
-@pytest.mark.parametrize("options", [{"text_only": True}, {"unrecorded_quant_modes": ["fmha"]}])
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"unrecorded_quant_modes": ["fmha"]},
+        {"unrecorded_quant_modes": ["comm"]},
+        {"text_only": True, "unrecorded_quant_modes": ["fmha"]},
+    ],
+)
 def test_profile_rejects_unsupported_fpm_options_at_canonical_and_compile_boundaries(profile_dict, options):
     config = _request(profile_dict, "direct")
     config["estimator_config"] = {"fpm_interpolation": {"method": "direct", **options}}

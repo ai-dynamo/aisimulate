@@ -1838,3 +1838,29 @@ counts in performance keys while staging sentinel slots for native graph
 buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
+
+
+## vLLM Kimi K3.1 FPM runtime evidence mapping
+
+The Kimi K3.1 native backend, cache precision and MXFP4 evidence mappings in
+`python/aisimulate/collector/fpm_forward/{model_capability,planner,runtime_memory,runtime_observations}.py`,
+the configuration observations in `runtime/instrumentation/observer.py`, and
+associated collector tests are original AISimulate integrations informed by
+vLLM's runtime interfaces. The inspected upstream artifact is
+`vllm/vllm-openai:kimi-k31`, pinned to AMD64 image manifest
+`sha256:88175ddf4f59944ccbb24c6b60c1bc535a160be3c4f09a3b08702c5e301a599e`
+(package version `0.1.dev24216+g266e88c05`). A full upstream Git commit is not
+asserted from the abbreviated build version. Original paths:
+`vllm/model_executor/models/config.py`,
+`vllm/model_executor/layers/quantization/mxfp4.py`,
+`vllm/model_executor/layers/fused_moe/oracle/mxfp4.py`,
+`vllm/v1/attention/backends/registry.py`,
+`vllm/v1/attention/backends/mla/indexer.py`, and
+`vllm/models/kimi_k3/nvidia/kda_metadata.py`.
+
+Source repository: https://github.com/vllm-project/vllm
+Artifact: https://hub.docker.com/r/vllm/vllm-openai/tags?name=kimi-k31
+Copyright contributors to the vLLM project. The inspected files are licensed
+under Apache-2.0, available in the repository root `LICENSE` and Python
+distribution. No upstream implementation is copied; the integrations are
+modified for AISimulate's explicit policy and evidence validation contracts.
