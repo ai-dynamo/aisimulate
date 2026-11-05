@@ -4060,8 +4060,7 @@ where
     }
 
     /// Current simulated time in milliseconds.
-    #[cfg(test)]
-    fn now_ms(&self) -> f64 {
+    pub(crate) fn now_ms(&self) -> f64 {
         self.now_ms
     }
 
@@ -4199,7 +4198,6 @@ where
         self
     }
 
-    pub(crate) fn now_ms(&self) -> f64 { self.now_ms }
     pub(crate) fn collector(&self) -> &TraceCollector { &self.collector }
     pub(crate) fn collector_mut(&mut self) -> &mut TraceCollector { &mut self.collector }
     pub(crate) fn take_step_tokens(&mut self) -> Vec<(Uuid, u32)> { std::mem::take(&mut self.step_tokens) }
