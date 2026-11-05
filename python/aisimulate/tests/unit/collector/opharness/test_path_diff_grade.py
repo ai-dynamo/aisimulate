@@ -194,3 +194,13 @@ def test_serving_records_match_the_sm_kv_class_and_prompt_length(tmp_path, monke
     assert ids("sm100", "fp8") == ["e"]
     assert ids("sm90", "auto", 512) == ["b"]
     assert ids("sm103", "auto") == []
+
+
+def test_a_capture_with_kernels_the_vocabulary_cannot_name_never_passes():
+    # sm100 gdn_ctx, 2026-11-06: the Blackwell GDN cubins were unlabeled and the gate passed on conv1d
+    g = grade(["flash::FlashAttnFwdSm90", "blackwell_gdn_cubin"], ["flash::FlashAttnFwdSm90"], ("attention",))
+    assert g["verdict"] == "unlabeled-kernels" and g["unlabeled_kernels"] == ["blackwell_gdn_cubin"]
+    assert grade(["blackwell_gdn_cubin"], ["x"], ("attention",))["verdict"] == "unlabeled-kernels"
+    # a drift stays a drift: the unlabeled kernels are listed beside it
+    g = grade(["kernel_unified_attention", "blackwell_gdn_cubin"], ["flash::FlashAttnFwdSm90"], ("attention",))
+    assert g["verdict"] == "diverged" and g["unlabeled_kernels"] == ["blackwell_gdn_cubin"]

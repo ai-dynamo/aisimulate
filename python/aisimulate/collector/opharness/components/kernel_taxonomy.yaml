@@ -35,7 +35,7 @@ rules:
   - {backend: fla_triton, role: linear_attention, sms: [sm90, sm100, sm103, sm120],
      match: "gated_delta_rule|ChunkGatedDeltaRule|chunk_fwd_kernel_o|chunk_local_cumsum|recompute_w_u_fwd|fused_gdn_gating|fused_qkv_split_gdn|fused_qkvzba_split"}
   - {backend: flashinfer, role: linear_attention,
-     match: "FlatKernelTmaWarpSpecializedDeltaRule|kernel_cutlass_gdn_decode|flashinfergdn_kernelsdelta_rule"}
+     match: "FlatKernelTmaWarpSpecializedDeltaRule|kernel_cutlass_gdn_decode|flashinfergdn_kernels(delta_rule|blackwell)"}
   - {backend: fla_triton, role: linear_attention,
      match: "_fused_gdn_post_conv_kernel"}
   - {backend: causal_conv1d, role: linear_attention,

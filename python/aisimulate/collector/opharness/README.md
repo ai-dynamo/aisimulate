@@ -61,7 +61,8 @@ pipeline (the `aisim-campaign` skill). Nothing generated is committed.
   is planned; `no_serving` marks an SM where the model cannot be served, which gets a
   `platform-floor` verdict.
 - **SM.** A campaign's SM is its system's (`src/aisimulate_core/systems/<system>.yaml`);
-  a record's is the one its raw reports. SM103 uses the SM100 rules where every framework
+  a record's is the one its raw reports. Records keep every kernel the taxonomy labels, so
+  after a taxonomy edit re-run `--records` before grading. SM103 uses the SM100 rules where every framework
   selects kernels by capability family (`major == 10`): branch on the family, never on
   `sm == 100`.
 

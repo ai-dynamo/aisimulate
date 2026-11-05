@@ -5,7 +5,7 @@
 # and graded by path_diff against the serving record of `repo` at kv `kv`, scoped by the
 # backend's `hint` regex. A gate whose select matches no planned case on an SM is not a gate
 # there (the plan decides). `no_serving` names SMs where serving cannot run the model at all
-# (a probe-box fact, not a plan fact); `also` traces further planned cases into the same
+# (a serving fact, not a plan fact); `also` traces further planned cases into the same
 # verdict; `env` is a capture-only switch the collector reads; `isl` grades against a serving
 # record probed at that prompt length (probe_driver.py --isl). The version graded is the
 # manifest's framework default.
@@ -42,7 +42,7 @@ gates:
 - gate: moe_fp8block_DeepSeek-V3.2
   backend: vllm
   op: moe
-  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   no_serving: {sm89: 'Ada: vLLM 0.30.0 has no sparse (DSA) MLA attention backend below SM90 — DeepSeek-V3.2 fails at attention-backend selection with kv auto AND
       fp8 (findings sm89_vllm_0300_probe_2026_10_04); no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
@@ -51,14 +51,14 @@ gates:
 - gate: moe_bf16_gemma4-26B-A4B
   backend: vllm
   op: moe
-  select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced}
+  select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   repo: google/gemma-4-26B-A4B
   kv: auto
   hint: MOE
 - gate: moe_mxfp4_gpt-oss-120b
   backend: vllm
   op: moe
-  select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced}
+  select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   repo: openai/gpt-oss-120b
   kv: auto
   hint: MOE
@@ -105,14 +105,14 @@ gates:
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: vllm
   op: gdn
-  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: vllm
   op: gdn
-  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
@@ -252,7 +252,7 @@ gates:
 - gate: kda_gen_Kimi-K3
   backend: vllm
   op: kda
-  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128, batch_sizes: [1]}
   env: {AIS_KDA_DECODE_PATHS: fused}
   no_serving: {sm89: 'capacity: Kimi-K3 has no faithful dummy cut that fits one 44 GiB L40 (CUDA OOM at load, kimi-k3 vllm 0.30.0 probe); no KDA serving record can
       exist on this box'}
@@ -278,7 +278,7 @@ gates:
 - gate: kda_ctx_Kimi-K3
   backend: vllm
   op: kda
-  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   no_serving: {sm89: 'capacity: Kimi-K3 has no faithful dummy cut that fits one 44 GiB L40 (CUDA OOM at load, kimi-k3 vllm 0.30.0 probe); no KDA serving record can
       exist on this box'}
   repo: moonshotai/Kimi-K3
@@ -389,7 +389,7 @@ gates:
 - gate: moe_fp8block_DeepSeek-V3
   backend: sglang
   op: moe
-  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: deepseek-ai/DeepSeek-V3
@@ -398,14 +398,14 @@ gates:
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: sglang
   op: gdn
-  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32}
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: sglang
   op: gdn
-  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32}
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, mamba_ssm_dtype: float32, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
@@ -484,7 +484,7 @@ gates:
 - gate: kda_ctx_Kimi-K3
   backend: sglang
   op: kda
-  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  select: {phase: context, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: moonshotai/Kimi-K3
@@ -493,7 +493,7 @@ gates:
 - gate: kda_gen_Kimi-K3
   backend: sglang
   op: kda
-  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128}
+  select: {phase: generation, model_name: moonshotai/Kimi-K3, d_model: 7168, d_conv: 4, num_k_heads: 96, head_k_dim: 128, num_v_heads: 96, head_v_dim: 128, batch_sizes: [1]}
   no_serving: {sm89: 'capacity: no faithful dummy cut of this checkpoint fits one 44 GiB L40 under sglang 0.5.21 (CUDA OOM at load / no KV room after weights); no
       serving record can exist on this box (findings sm89_*_probe_2026_10_04)'}
   repo: moonshotai/Kimi-K3
@@ -587,7 +587,7 @@ gates:
 - gate: moe_fp8block_DeepSeek-V3
   backend: trtllm
   op: moe
-  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced}
+  select: {moe_type: fp8_block, model_name: deepseek-ai/DeepSeek-V3, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
   no_serving: {sm89: 'TRT-LLM 1.3.0rc29 on Ada: DeepSeek-V3/R1 cannot boot — no MoE implementation serves FP8 block-scales below SM90/SM120 (CutlassFusedMoE SM90/SM120,
       TritonFusedMoE SM90, Marlin NVFP4 only; findings sm89_trtllm_rc29_probe_2026_10_04) AND MLA has no FMHA kernel (attentionOp.cpp:3234, re-verified 2026-10-04);
       no serving record can exist'}
@@ -597,7 +597,7 @@ gates:
 - gate: gdn_ctx_Qwen3.5-0.8B
   backend: trtllm
   op: gdn
-  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  select: {phase: context, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
@@ -679,7 +679,7 @@ gates:
 - gate: gdn_gen_Qwen3.5-0.8B
   backend: trtllm
   op: gdn
-  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128}
+  select: {phase: generation, model_name: Qwen/Qwen3.5-0.8B, d_model: 1024, d_conv: 4, num_k_heads: 16, head_k_dim: 128, num_v_heads: 16, head_v_dim: 128, batch_sizes: [1]}
   repo: Qwen/Qwen3.5-0.8B
   kv: auto
   hint: GDN
@@ -713,14 +713,14 @@ gates:
 - gate: mamba2_ctx_Nemotron-H-56B
   backend: trtllm
   op: mamba2
-  select: {phase: context, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128}
+  select: {phase: context, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128, batch_sizes: [1], seq_lens: [4096]}
   repo: nvidia/Nemotron-H-56B-Base-8K
   kv: auto
   hint: MAMBA
 - gate: mamba2_gen_Nemotron-H-56B
   backend: trtllm
   op: mamba2
-  select: {phase: generation, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128}
+  select: {phase: generation, model_name: nvidia/Nemotron-H-56B-Base-8K, d_model: 8192, d_state: 256, d_conv: 4, nheads: 256, head_dim: 64, n_groups: 8, chunk_size: 128, batch_sizes: [1]}
   repo: nvidia/Nemotron-H-56B-Base-8K
   kv: auto
   hint: MAMBA

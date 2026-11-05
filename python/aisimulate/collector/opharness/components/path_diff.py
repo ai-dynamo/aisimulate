@@ -17,6 +17,7 @@ a campaign (probe_driver.py). Both kernel sets go through the ONE vocabulary
   diverged             a target role the collector ran is absent from serving, a
                        collector-only backend family inside a target role, or kernel drift
                        inside a role
+  unlabeled-kernels    the capture ran kernels the vocabulary cannot label on this SM
   no-collector-signal  the capture ran no kernel of any target role
   invalid-capture      the capture itself failed
 """
@@ -107,6 +108,8 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
                            serving (wrong phase/op), a collector-only backend
                            family inside a target role, or kernel drift inside
                            a role (same family, different kernel)
+      unlabeled-kernels    the capture ran kernels kernel_taxonomy.yaml cannot label on this
+                           SM: label them before the gate can pass
       no-collector-signal  the capture executed no kernel of any target role:
                            it proves nothing about the op (auxiliary quant /
                            norm / kv-cache overlap does not count)
@@ -148,12 +151,18 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
         evidence[role] = {"collector": sorted(ck), "serving": sorted(sk), "matched": sorted(hits)}
     # auxiliary roles the collector ran that serving did not: information, not a verdict
     aux_only = sorted(r for r in col_roles if r not in target_roles and r not in _NEVER_TARGET and r not in srv_roles)
+    # a kernel the vocabulary cannot name has no role, so it would be invisible to the rule above:
+    # an op whose own kernels are unlabeled (the Blackwell flashinfer GDN cubins under the sm100
+    # rules, 2026-11-06) passed on its conv1d alone
+    unlabeled = sorted(k for k in col_kernels if role_of(k) is None)
     if cap_error:
         verdict = "invalid-capture"
     elif not col_target:
-        verdict = "no-collector-signal"
+        verdict = "unlabeled-kernels" if unlabeled else "no-collector-signal"
     else:
         verdict = "aligned" if not (missing_roles or drift or only_col) else "diverged"
+        if verdict == "aligned" and unlabeled:
+            verdict = "unlabeled-kernels"
     return {
         "verdict": verdict,
         "target_roles": list(target_roles),
@@ -162,6 +171,7 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
         "kernel_drift": drift or None,
         "role_evidence": evidence,
         "aux_collector_only_roles": aux_only,
+        "unlabeled_kernels": unlabeled,
     }
 
 
@@ -265,7 +275,7 @@ def diff(
 ) -> int:
     cap = load_collector_side(capture_files)
     col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k)) and not _is_launcher(n)})
-    col_backends, col_unmatched = probe_driver.label_kernels(col_kernels, sm)
+    col_backends, _ = probe_driver.label_kernels(col_kernels, sm)
     candidates = serving_records(repo, framework, version, sm, kv_dtype, isl)
     if not candidates:
         _hint = (f" kv={kv_dtype}" if kv_dtype else "") + (f" isl={isl}" if isl else "")
@@ -305,6 +315,7 @@ def diff(
         "kernel_drift": g["kernel_drift"],
         "role_evidence": g["role_evidence"],
         "aux_collector_only_roles": g["aux_collector_only_roles"],
+        "unlabeled_kernels": g["unlabeled_kernels"],
         "serving_record": {
             "id": serving["id"],
             "campaign": serving["campaign"],
@@ -316,7 +327,6 @@ def diff(
         },
         "collector_backends": sorted(col_backends),
         "serving_backends": sorted(srv_backends),
-        "collector_unmatched_kernels": sorted(col_unmatched)[:10],
     }
     print(json.dumps(report, indent=1, ensure_ascii=False))
     if save:
