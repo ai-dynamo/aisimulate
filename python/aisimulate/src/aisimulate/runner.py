@@ -396,6 +396,7 @@ class EngineReplayRunnerFactory:
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
             supports_detokenization=True,
+            supports_scheduler_launch=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
@@ -1933,6 +1934,11 @@ def _materialize_engine_role(
             raise ValueError(
                 f"engine provider {role} async_scheduling: vLLM does not support async scheduling "
                 "with ngram speculative decoding"
+            )
+        if rank.get("launch") is not None:
+            raise ValueError(
+                f"engine provider {role} launch requires async scheduling, which vLLM turns off with ngram "
+                "speculative decoding"
             )
         rank["async_scheduling"] = False
 

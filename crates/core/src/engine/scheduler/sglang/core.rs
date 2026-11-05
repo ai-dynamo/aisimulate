@@ -1625,6 +1625,7 @@ impl SglangCore {
                 .unwrap_or_default(),
             fpm: Some(fpm),
             decode_acceptance: decode.decode_acceptance,
+            previous_returned_ms: None,
         };
         self.unpriced = Some(UnpricedPass {
             selected_ms,

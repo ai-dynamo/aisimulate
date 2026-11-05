@@ -121,6 +121,16 @@ class ParallelismPredictionConfig(ParallelismPresetConfig):
     decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
+class PassLaunchConfig(StrictModel):
+    """CPU launch costs of vLLM's async engine loop, measured on the serving deployment."""
+
+    decode_ms: NonNegativeFloat
+    piecewise_ms: NonNegativeFloat
+    eager_ms: NonNegativeFloat
+    max_cudagraph_capture_size: PositiveInt
+    eager_queue_fraction: Annotated[float, Field(strict=True, ge=0, lt=1, allow_inf_nan=False)]
+
+
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
@@ -139,6 +149,13 @@ class SchedulerPredictionConfig(StrictModel):
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
             "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+        ),
+    )
+    launch: PassLaunchConfig | None = Field(
+        default=None,
+        description=(
+            "vLLM aggregated workers with async scheduling only: CPU launch costs of vLLM's engine loop. A pass's "
+            "outputs then leave once the next pass is launched, and an arrival joins the first pass decided after it."
         ),
     )
 
@@ -954,6 +971,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
+        _validate_prediction_launch(self)
         _validate_prediction_host(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
@@ -1330,9 +1348,38 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
             ("async_scheduling", "vllm", None),
+            ("launch", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def _validate_prediction_launch(engine: EnginePredictionConfig) -> None:
+    """`scheduler.launch` models vLLM's engine loop with its uniprocess executor: one aggregated GPU per engine."""
+    for role in ("prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is not None and worker.scheduler.launch is not None:
+            raise ValueError(f"workers.{role}.scheduler.launch is supported only on aggregated workers")
+    worker = engine.workers.aggregated
+    if worker is None or worker.scheduler.launch is None:
+        return
+    if worker.scheduler.async_scheduling is False:
+        raise ValueError("workers.aggregated.scheduler.launch requires async_scheduling")
+    if engine.speculation is not None and engine.speculation.kind == "ngram":
+        raise ValueError(
+            "workers.aggregated.scheduler.launch requires async scheduling, which vLLM turns off with ngram speculation"
+        )
+    parallel = worker.parallelism
+    if (
+        parallel.tensor != 1
+        or parallel.pipeline != 1
+        or parallel.attention_data != 1
+        or parallel.prefill_context not in (None, 1)
+    ):
+        raise ValueError(
+            "workers.aggregated.scheduler.launch models vLLM's uniprocess executor and requires tensor=1, "
+            "pipeline=1, attention_data=1 and prefill_context=1"
+        )
 
 
 def require_native_vl_parallelism(

@@ -1246,6 +1246,42 @@ engine:
     assert runtime.execution_spec["spec"]["engine"]["rank"][field] == value
 
 
+def test_public_scheduler_launch_reaches_native_execution_rank(tmp_path):
+    launch = {
+        "decode_ms": 5.0,
+        "piecewise_ms": 50.0,
+        "eager_ms": 150.0,
+        "max_cudagraph_capture_size": 512,
+        "eager_queue_fraction": 0.4,
+    }
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        f"""\
+engine:
+  mode: aggregated
+  model: example/model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  workers:
+    aggregated:
+      scheduler:
+        launch: {json.dumps(launch)}
+      kv_cache:
+        block_size: 16
+        capacity: {{type: fixed, blocks: 128}}
+      timing: {{type: fixed, prefill_ms: 1.0, decode_ms: 1.0}}
+""",
+        encoding="utf-8",
+    )
+    runtime = RecordingRuntime()
+    public = CorePredictionConfig.from_yaml(path)
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
+
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["launch"] == launch
+
+
 def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
@@ -3351,6 +3387,28 @@ def test_detokenization_requires_capability_and_offline_replay() -> None:
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
     spec = _spec(deployment=_detokenization_deployment(detokenization, 1))
     with pytest.raises(ValueError, match="does not support engine.detokenization"):
+        RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
+    engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
+    engine.require_compatible(spec)
+    with pytest.raises(ValueError, match="offline"):
+        replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
+            replace(spec, execution_mode="online")
+        )
+
+
+def test_scheduler_launch_requires_capability_and_offline_replay() -> None:
+    from aisimulate.sweeper import RunnerCapabilities
+
+    launch = {
+        "decode_ms": 5.0,
+        "piecewise_ms": 50.0,
+        "eager_ms": 150.0,
+        "max_cudagraph_capture_size": 512,
+        "eager_queue_fraction": 0.4,
+    }
+    deployment = replace(_detokenization_deployment(None, 1), agg_engine_args=_engine_args() | {"launch": launch})
+    spec = _spec(deployment=deployment)
+    with pytest.raises(ValueError, match="does not support scheduler.launch"):
         RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
     engine.require_compatible(spec)

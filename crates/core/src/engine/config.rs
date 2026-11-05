@@ -673,6 +673,53 @@ impl NativeHostOffloadConfig {
     }
 }
 
+/// CPU launch costs of vLLM's async engine loop (`scheduler.launch`).
+///
+/// vLLM decides and launches pass k+1 before it returns pass k's outputs, so a
+/// pass's outputs leave once the next pass is launched, and a request joins the
+/// first pass decided after it arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassLaunchConfig {
+    /// From deciding a pass without prefill and with at most
+    /// `max_cudagraph_capture_size` scheduled tokens to the end of its launch,
+    /// in ms.
+    pub decode_ms: f64,
+    /// The same for such a pass with prefill (piecewise CUDA graphs).
+    pub piecewise_ms: f64,
+    /// The same for a larger pass, which runs eager with or without prefill.
+    pub eager_ms: f64,
+    /// vLLM's `max_cudagraph_capture_size`.
+    pub max_cudagraph_capture_size: usize,
+    /// The part of an eager pass the GPU has run before its launch can end:
+    /// the CPU waits once the CUDA launch queue is full.
+    pub eager_queue_fraction: f64,
+}
+
+impl PassLaunchConfig {
+    fn validate(&self) -> Result<()> {
+        for (field, ms) in [
+            ("decode_ms", self.decode_ms),
+            ("piecewise_ms", self.piecewise_ms),
+            ("eager_ms", self.eager_ms),
+        ] {
+            ensure!(
+                ms.is_finite() && ms >= 0.0,
+                "launch.{field} must be finite and non-negative"
+            );
+        }
+        ensure!(
+            self.max_cudagraph_capture_size > 0,
+            "launch.max_cudagraph_capture_size must be positive"
+        );
+        ensure!(
+            (0.0..1.0).contains(&self.eager_queue_fraction),
+            "launch.eager_queue_fraction must lie in [0, 1)"
+        );
+        Ok(())
+    }
+}
+
 /// Recurrent-state allocation size for one simulated rank/GPU.
 /// Token block geometry and pool capacity use the existing EngineConfig fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,6 +803,14 @@ pub struct EngineConfig {
     /// misses. `None` selects vLLM's default: on, except with ngram drafts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub async_scheduling: Option<bool>,
+    /// vLLM async scheduling's CPU launch costs: a pass's outputs leave once
+    /// the next pass is launched, and an arrival joins the first pass decided
+    /// after it. `None` keeps outputs at the pass end and the pass-count rule.
+    /// A rank holds the outputs until the driver releases them through
+    /// `GeneralizedMockerEngine::take_due_emissions`, as offline replay does;
+    /// other drivers must leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<PassLaunchConfig>,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -864,6 +919,8 @@ struct EngineConfigWire {
     prefill_decode_interval: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     async_scheduling: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<PassLaunchConfig>,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -949,6 +1006,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             prefill_schedule_interval: wire.prefill_schedule_interval,
             prefill_decode_interval: wire.prefill_decode_interval,
             async_scheduling: wire.async_scheduling,
+            launch: wire.launch,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -996,6 +1054,7 @@ impl Default for EngineConfig {
             prefill_schedule_interval: default_prefill_schedule_interval(),
             prefill_decode_interval: 0,
             async_scheduling: None,
+            launch: None,
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -1132,6 +1191,17 @@ impl EngineConfig {
             self.backend == Backend::Vllm || self.async_scheduling.is_none(),
             "async_scheduling is supported only for backend=vllm"
         );
+        if let Some(launch) = &self.launch {
+            launch.validate()?;
+            ensure!(
+                self.max_concurrent_batches() > 1,
+                "launch requires vLLM async_scheduling"
+            );
+            ensure!(
+                self.worker_type == WorkerType::Aggregated,
+                "launch is supported only on aggregated workers"
+            );
+        }
         ensure!(
             self.backend == Backend::Sglang || !self.sglang.host_loop,
             "sglang.host_loop is supported only for backend=sglang"
@@ -2258,6 +2328,50 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn launch_needs_async_scheduling_on_an_aggregated_vllm_worker() {
+        let launch = PassLaunchConfig {
+            decode_ms: 5.0,
+            piecewise_ms: 50.0,
+            eager_ms: 150.0,
+            max_cudagraph_capture_size: 512,
+            eager_queue_fraction: 0.4,
+        };
+        let config = EngineConfig {
+            launch: Some(launch),
+            ..EngineConfig::default()
+        };
+        config.validate().unwrap();
+        let decoded: EngineConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.launch, Some(launch));
+        for (edit, message) in [
+            (
+                (|config: &mut EngineConfig| config.async_scheduling = Some(false))
+                    as fn(&mut EngineConfig),
+                "launch requires vLLM async_scheduling",
+            ),
+            (
+                |config| config.worker_type = WorkerType::Decode,
+                "launch is supported only on aggregated workers",
+            ),
+            (
+                |config| config.launch.as_mut().unwrap().eager_queue_fraction = 1.0,
+                "launch.eager_queue_fraction must lie in [0, 1)",
+            ),
+        ] {
+            let mut invalid = config.clone();
+            edit(&mut invalid);
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
         }
     }
 
