@@ -1649,6 +1649,31 @@ class TestParseCompressedTensorsQuant:
         assert "shared_experts" in ignored
         assert "routing_experts" not in ignored
 
+    @pytest.mark.parametrize(
+        "projection",
+        [
+            "block_sparse_moe.routed_expert_up_proj",
+            "block_sparse_moe.routed_expert_down_proj",
+            r"re:.*block_sparse_moe\.routed_expert_(up|down)_proj.*",
+        ],
+    )
+    @pytest.mark.parametrize("architecture", ["KimiK3ForConditionalGeneration", "KimiK31ForConditionalGeneration"])
+    def test_latent_moe_projection_exclusion_preserves_quantized_experts(self, projection, architecture):
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields, parse_compressed_tensors_quant
+
+        # Synthetic mixed-precision declaration: non-expert projections are
+        # BF16, while the expert bank retains four-bit floating-point weights.
+        quant = self._make_quant_config(4, "float", ignore=["self_attn", projection])
+        assert parse_compressed_tensors_quant(quant) == ("w4a16_mxfp4", frozenset({"attention"}))
+        raw = _attach_inferred_quant_fields(
+            {"architectures": [architecture], "text_config": {"quantization_config": quant}}
+        )
+        modes = _infer_quant_modes_from_raw_config(raw)
+        assert modes.get("gemm_quant_mode", common.GEMMQuantMode.bfloat16) == common.GEMMQuantMode.bfloat16
+        assert modes["moe_quant_mode"] == common.MoEQuantMode.w4a16_mxfp4
+
     def test_dense_mlp_pattern_detected(self):
         from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
