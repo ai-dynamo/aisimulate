@@ -1,0 +1,30 @@
+# Measured calibration for Atlas 800T A3, Ascend910_9382 runtime chips.
+# One device is one runtime chip: 16 devices per node, not eight boards.
+# Evidence: benchmarks/evidence/ascend910c-glm52-w8a8/hardware-calibration.json
+# Scope and limitations: systems/data/ascend910c/README.md
+# Compute coefficients are observed 4096-cube throughput, not datasheet peaks.
+# This calibration does not establish a strict SOL lower bound or GLM support.
+
+data_dir: data/ascend910c
+gpu:
+  mem_bw: 1269033356802
+  mem_bw_empirical_scaling_factor: 1.0
+  mem_capacity: 65787658240
+  bfloat16_tc_flops: 321185140687191
+  int8_tc_flops: 553066482547203
+
+node:
+  num_gpus_per_node: 16
+  inter_node_bw: 126790338165
+  intra_node_bw: 130673385019
+  p2p_latency: 0.00001328329980375
+
+misc:
+  hccl_version: 9.1.0-b243-drv26.1.1-nodes31-32-v3
+  nccl_mem:
+    1: 0
+    2: 0
+    4: 0
+    8: 0
+    16: 0
+  other_mem: 937753092
