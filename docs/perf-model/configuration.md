@@ -84,6 +84,7 @@ identities must be quoted to preserve their exact spelling:
 | --- | --- | --- |
 | `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
 | `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+| `attention_backend` | absent | Runtime attention selector. Kimi K3.1 accepts `flashmla` or `trtllm_mla`; FP8 KV requires one of these explicit physical cache layouts. BF16 KV also permits the default. |
 | `system`, `backend_version`, `tp`, `pp`, `attention_dp`, `moe_tp_size`, `moe_ep_size`, `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` | As above | With `estimation_mode` `fpm_regression` or `fpm_learned`, each may be the literal `"unknown"` for a fact the saver did not know. Every other mode, a `fallback_policy` other than `deny` and an `fpm_profile` reject it. The integer fields accept only the string spelling. |
 | `deployment_limits` | absent | Optional mapping of the calibrated deployment's `num_gpus` (GPUs of one worker, `tp * pp * attention_dp`), `max_num_batched_tokens`, `max_num_seqs`, `max_kv_tokens` (KV capacity of one attention-DP rank, in tokens) and `context_length`. Each is a positive integer or `"unknown"`; an omitted entry is `"unknown"`. Absent, it is omitted from the serialized configuration. Accepted in every mode. |
 
@@ -1060,6 +1061,12 @@ does not prevent FP8 KV inference. For regular language roles using default timi
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;
 this does not make an `int8` checkpoint KV declaration valid.
+Kimi K3.1 accepts BF16 or FP8 KV only. Its FP8 cache requires
+`attention_backend: flashmla` (656 bytes per sparse-layer latent entry) or
+`attention_backend: trtllm_mla` (576 bytes). Both retain a separate 132-byte
+indexer entry per token per sparse layer; the sparse top-k does not truncate
+the cached history. BF16 latent entries are 1152 bytes. An explicit K3.1
+backend never substitutes timing observations from the other backend.
 Fixed/polynomial timing, EPD, and AFD currently reject this engine override.
 
 Ordinary `predict` output shows each known role's effective KV dtype and source.
@@ -1070,8 +1077,10 @@ declaration), `fpm_profile`, or `aisimulate_policy`. `--detail memory` also incl
 estimate omit this disclosure. Fixed/polynomial timing roles currently size capacity
 at compile time and do not report the resolved precision through this path.
 
-FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
-FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+For uniformly stored KV without layout overhead, FP8 uses one byte per element
+and BF16 uses two; FP8 then holds twice as many tokens at the same byte budget.
+Mixed RoPE precision and per-block scales change that ratio, as in K3.1 above.
+This does not imply twice the throughput.
 
 ## Migrating saved configuration
 

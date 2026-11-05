@@ -21,8 +21,8 @@ use crate::operators::util_empirical::{self, UtilGrid};
 use crate::perf_database::PerfDatabase;
 use crate::perf_database::dsa::{
     DsaHeadGrid, DsaKey, DsaSparseTables, bs_slice, dsa_context_sol, dsa_context_sol_flops,
-    dsa_context_sol_ms, dsa_dims, dsa_generation_sol, dsa_generation_sol_flops,
-    dsa_generation_sol_ms, dsa_sparse_file_prefix, lookup_2d,
+    dsa_context_sol_ms, dsa_dims, dsa_dims_for_backend, dsa_generation_sol,
+    dsa_generation_sol_flops, dsa_generation_sol_ms, dsa_sparse_file_prefix, lookup_2d,
 };
 use crate::perf_database::perf_interp::LeafValue;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,10 @@ pub struct DsaModuleOp {
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
     )]
     pub dcp_size: u32,
+    /// Explicit K3.1 sparse kernel/cache layout. Legacy architectures retain
+    /// their original backend selection when unset (engine schema v30).
+    #[serde(default)]
+    pub attention_backend: Option<String>,
 }
 
 /// The four DSA projection groups' quant modes (weight bytes only).
@@ -153,6 +157,7 @@ impl DsaModuleOp {
             full_frac: 1.0,
             attn_projection_quant_modes: None,
             dcp_size: 1,
+            attention_backend: None,
         }
     }
 
@@ -183,10 +188,19 @@ impl DsaModuleOp {
             + kv_lora * local_heads * (dims.qk_nope_head_dim as f64 + v);
         let o_params = local_heads * v * h;
         let indexer_params = q_lora * idx + h * dims.index_n_heads as f64;
+        // Kimi's native module owns g_proj and a separate replicated index-K
+        // projection. Keep the legacy DeepSeek/GLM weight ledger unchanged.
+        let gated_bytes = if dims.output_gate {
+            o_params * quants.o.mapping().memory
+                + h * dims.index_head_dim as f64 * quants.indexer.mapping().memory
+        } else {
+            0.0
+        };
         let bytes = q_params * quants.q.mapping().memory
             + kv_params * quants.kv.mapping().memory
             + o_params * quants.o.mapping().memory
-            + indexer_params * quants.indexer.mapping().memory;
+            + indexer_params * quants.indexer.mapping().memory
+            + gated_bytes;
         bytes * self.scale_factor
     }
 
@@ -224,11 +238,56 @@ impl DsaModuleOp {
     }
 
     fn context_table_backend(&self) -> &'static str {
+        if self.architecture == "KimiK31ForConditionalGeneration" {
+            return self.generation_table_backend();
+        }
         if self.cp_size > 1 {
             "flashmla_kv"
         } else {
             "trtllm"
         }
+    }
+
+    fn generation_table_backend(&self) -> &'static str {
+        if self.architecture == "KimiK31ForConditionalGeneration"
+            && self.attention_backend.as_deref() == Some("flashmla")
+        {
+            "flashmla_kv"
+        } else {
+            "trtllm"
+        }
+    }
+
+    fn validate_kimi_backend(&self) -> Result<(), AicError> {
+        if self.architecture != "KimiK31ForConditionalGeneration" {
+            return Ok(());
+        }
+        if !matches!(
+            self.kv_cache_dtype,
+            KvCacheQuantMode::Bfloat16 | KvCacheQuantMode::Fp8
+        ) {
+            return Err(AicError::InvalidEngineConfig(
+                "Kimi K3.1 supports only bfloat16 or fp8 KV cache".into(),
+            ));
+        }
+        match self.attention_backend.as_deref() {
+            Some("flashmla" | "trtllm_mla") => Ok(()),
+            None if self.kv_cache_dtype == KvCacheQuantMode::Bfloat16 => Ok(()),
+            _ => Err(AicError::InvalidEngineConfig(
+                "Kimi K3.1 FP8 KV requires attention_backend=flashmla or trtllm_mla; BF16 also permits the default".into(),
+            )),
+        }
+    }
+
+    fn validate_kimi_geometry(&self) -> Result<(), AicError> {
+        if self.architecture == "KimiK31ForConditionalGeneration"
+            && (self.cp_size != 1 || self.dcp_size != 1 || self.full_frac != 1.0)
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "Kimi K3.1 DSA requires CP=1, DCP=1 and an indexer on every sparse layer".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn query_context(
@@ -238,6 +297,8 @@ impl DsaModuleOp {
         isl: u32,
         prefix: u32,
     ) -> Result<PerformanceResult, AicError> {
+        self.validate_kimi_geometry()?;
+        self.validate_kimi_backend()?;
         // CP composes latency-only sparse MQA/top-k deltas with the base DSA
         // and all-gather results. Those collected deltas do not provide a
         // defensible math-vs-memory split, so reject decomposition requests
@@ -535,9 +596,11 @@ impl DsaModuleOp {
         batch_size: u32,
         s: u32,
     ) -> Result<PerformanceResult, AicError> {
+        self.validate_kimi_geometry()?;
+        self.validate_kimi_backend()?;
         // Same short-circuit as query_context: no probe for full_frac >= 1.0
         // or the analytic SOL modes.
-        let backend = "trtllm";
+        let backend = self.generation_table_backend();
         let w = if self.full_frac >= 1.0
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
@@ -638,7 +701,7 @@ fn query_context_table(
         // skip_indexer / gemm quant / the op's index_topk.
         DatabaseMode::Sol | DatabaseMode::SolFull => {
             let spec = &db.system_spec;
-            let dims = dsa_dims(&op.architecture);
+            let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
             let flops = dsa_context_sol_flops(spec, op.gemm_quant_mode, op.fmha_quant_mode)?;
             Ok(PerformanceResult::sol(dsa_context_sol(
                 spec,
@@ -692,7 +755,7 @@ fn query_generation_table(
     // full local stripe. Apportion the measured module time with the analytic
     // roofline ratio of the two geometries (the SOL leaf already carries it).
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
     let sol = |topk_divisor: i64| {
         dsa_generation_sol_ms(
@@ -750,7 +813,7 @@ fn query_generation_table_raw(
         // full-indexer approximation for generation.
         DatabaseMode::Sol | DatabaseMode::SolFull => {
             let spec = &db.system_spec;
-            let dims = dsa_dims(&op.architecture);
+            let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
             let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
             Ok(PerformanceResult::sol(dsa_generation_sol(
                 spec,
@@ -839,7 +902,7 @@ fn context_empirical(
     skip_indexer: bool,
 ) -> Result<f64, AicError> {
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
     let topk = op.index_topk as i64;
     let (kv, fmha, gemm) = (op.kv_cache_dtype, op.fmha_quant_mode, op.gemm_quant_mode);
     let flops = dsa_context_sol_flops(spec, gemm, fmha)?;
@@ -1082,7 +1145,7 @@ fn generation_empirical(
     skip_indexer: bool,
 ) -> Result<f64, AicError> {
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
     let (kv, gemm) = (op.kv_cache_dtype, op.gemm_quant_mode);
     let flops = dsa_generation_sol_flops(spec, gemm)?;
     // Python's inner `get_sol(b, s, num_heads, kv_cache_dtype)` (the
@@ -1299,6 +1362,7 @@ mod tests {
             full_frac: 1.0,
             attn_projection_quant_modes: None,
             dcp_size: 1,
+            attention_backend: None,
         }
     }
 
@@ -1902,7 +1966,7 @@ mod tests {
         db.database_mode = DatabaseMode::Sol;
         let spec = db.system_spec.clone();
         let op = glm_cp_op(1);
-        let dims = dsa_dims(&op.architecture);
+        let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
 
         let result = op.query_context(&db, 2, 4096, 512).expect("ctx sol");
         let flops = dsa_context_sol_flops(&spec, op.gemm_quant_mode, op.fmha_quant_mode).unwrap();
@@ -1942,5 +2006,58 @@ mod tests {
         );
         assert_eq!(result.latency_ms, expected);
         assert_eq!(result.source, Source::Sol);
+    }
+
+    #[test]
+    fn kimi_k31_weights_include_one_gate_and_index_k() {
+        let mut op = dsa_op(
+            "KimiK31ForConditionalGeneration",
+            12,
+            KvCacheQuantMode::Bfloat16,
+        );
+        // TP8: 48,136,192 projection parameters (including 11,010,048 gate
+        // and 917,504 index-K), plus 1,572,864 absorbed KV weights.
+        // All are BF16: 49,709,056 * 2 = 99,418,112 bytes per layer.
+        assert_eq!(op.weight_bytes(), 99_418_112.0);
+        op.scale_factor = 24.0;
+        assert_eq!(op.weight_bytes(), 2_386_034_688.0);
+    }
+
+    #[test]
+    fn kimi_k31_requires_explicit_fp8_cache_layout() {
+        let mut op = dsa_op("KimiK31ForConditionalGeneration", 12, KvCacheQuantMode::Fp8);
+        assert!(matches!(
+            op.validate_kimi_backend(),
+            Err(AicError::InvalidEngineConfig(_))
+        ));
+        for (backend, bucket) in [("flashmla", "flashmla_kv"), ("trtllm_mla", "trtllm")] {
+            op.attention_backend = Some(backend.into());
+            assert!(op.validate_kimi_backend().is_ok());
+            assert_eq!(op.context_table_backend(), bucket);
+            assert_eq!(op.generation_table_backend(), bucket);
+        }
+    }
+
+    #[test]
+    fn kimi_k31_rejects_unqualified_cp_and_index_reuse() {
+        let db = b200_db("vllm", "0.24.0", DatabaseMode::Sol);
+        for (cp, dcp, full_frac) in [(2, 1, 1.0), (1, 2, 1.0), (1, 1, 0.5)] {
+            let mut op = dsa_op(
+                "KimiK31ForConditionalGeneration",
+                12,
+                KvCacheQuantMode::Bfloat16,
+            );
+            op.cp_size = cp;
+            op.dcp_size = dcp;
+            op.full_frac = full_frac;
+            assert!(matches!(
+                op.query_context(&db, 1, 2048, 0),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+            assert!(matches!(
+                op.query_generation(&db, 1, 4096),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
     }
 }

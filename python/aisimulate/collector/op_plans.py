@@ -1557,6 +1557,51 @@ def _dsa_module_plan(phase: str, *, skip_indexer: bool = False) -> OpPlan:
     )
 
 
+def _kimi_k31_dsa_expand(phase: str) -> Callable[[], list[ModuleCase]]:
+    """Native Gated DSA shapes with the existing shared workload budgets.
+
+    Geometry and precision come from the model declaration, without loading
+    or redistributing its checkpoint configuration. Runtime validates that
+    declaration against the immutable upstream config before building a model.
+    """
+
+    def expand() -> list[ModuleCase]:
+        sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
+        cases = []
+        for model in _model_case_values("kimi_k31_dsa_module"):
+            heads = model["native_num_heads"]
+            for tp in model["tensor_parallel_sizes"]:
+                if type(tp) is not int or tp <= 0 or heads % tp:
+                    raise ValueError(f"invalid native Kimi K3.1 TP geometry: {heads=}, {tp=}")
+                for kv in model["kv_cache_dtypes"]:
+                    for batch, length, prefix in _long_context_points(phase, sweep, model["max_position_embeddings"]):
+                        cases.append(
+                            ModuleCase(
+                                length,
+                                batch,
+                                heads // tp,
+                                kv,
+                                model["compute_dtype"],
+                                model["gemm_type"],
+                                model["model_path"],
+                                prefix,
+                            )
+                        )
+        return cases
+
+    return expand
+
+
+def _kimi_k31_dsa_plan(phase: str) -> OpPlan:
+    return OpPlan(
+        ModuleCase,
+        _kimi_k31_dsa_expand(phase),
+        dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
+        group_fields=_MODULE_GROUP,
+        dispatch={"sglang": lambda case, sm: "native_kimi_k31"},
+    )
+
+
 def _sglang_msa_rows(phase: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
     def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
         """One run_msa_module_worker task per ModelRunner: one context batch, or every decode batch.
@@ -2339,6 +2384,8 @@ OP_PLANS: dict[str, OpPlan] = {
     "mla_generation_module": _mla_module_plan("generation"),
     "dsa_context_module": _dsa_module_plan("context"),
     "dsa_generation_module": _dsa_module_plan("generation"),
+    "kimi_k31_dsa_context_module": _kimi_k31_dsa_plan("context"),
+    "kimi_k31_dsa_generation_module": _kimi_k31_dsa_plan("generation"),
     "dsa_context_module_skip_indexer": _dsa_module_plan("context", skip_indexer=True),
     "dsa_generation_module_skip_indexer": _dsa_module_plan("generation", skip_indexer=True),
     "msa_context_module": _msa_module_plan("context"),

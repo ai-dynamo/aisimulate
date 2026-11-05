@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Native K31 collection keeps its own architecture and real TP geometry."""
+
+import copy
+from types import SimpleNamespace
+
+import pytest
+from collector.framework_manifest import get_collector_runtime, require_collector_runtime
+from collector.op_plans import ModuleCase, plan
+from collector.sglang.collect_kimi_k31_dsa import (
+    ARCHITECTURE,
+    MODEL,
+    RUNTIME_VERSION,
+    SOURCE_COMMIT,
+    executed_kernel_source,
+    perf_item,
+    single_layer_config,
+    validate_case,
+)
+from collector.sglang.registry import REGISTRY
+from collector.version_resolver import _check_compat, resolve_module
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def config():
+    # Independently written contract fixture, not a checkpoint config copy.
+    return {
+        "architectures": [ARCHITECTURE],
+        "auto_map": {"AutoConfig": "untrusted.CheckpointConfig"},
+        "text_config": {
+            "hidden_size": 7168,
+            "num_attention_heads": 96,
+            "q_lora_rank": 1536,
+            "kv_lora_rank": 512,
+            "qk_nope_head_dim": 128,
+            "qk_rope_head_dim": 64,
+            "v_head_dim": 128,
+            "mla_use_output_gate": True,
+            "num_hidden_layers": 93,
+            "num_nextn_predict_layers": 5,
+            "linear_attn_config": {"full_attn_layers": [4, 8], "kda_layers": [1, 2, 3]},
+            "dsa_config": {
+                "dsa_layers": [4, 8],
+                "index_topk": 2048,
+                "index_head_dim": 128,
+                "index_num_heads": 32,
+                "index_rope_dim": 0,
+                "index_k_norm_type": "layernorm",
+                "index_topk_freq": 1,
+                "index_skip_topk_offset": 1,
+            },
+        },
+    }
+
+
+def test_native_builder_preserves_geometry_and_input_config(config):
+    before = copy.deepcopy(config)
+    result = single_layer_config(config)
+    text = result["text_config"]
+    assert config == before
+    assert "auto_map" not in result
+    assert text["num_attention_heads"] == 96
+    assert text["num_hidden_layers"] == 1
+    assert text["num_nextn_predict_layers"] == 0
+    assert text["linear_attn_config"] == {"full_attn_layers": [1], "kda_layers": []}
+    assert text["dsa_config"]["dsa_layers"] == [1]
+
+
+@pytest.mark.parametrize(("field", "wrong"), [("index_rope_dim", 64), ("index_topk_freq", 2)])
+def test_changed_upstream_indexer_contract_fails_closed(config, field, wrong):
+    config["text_config"]["dsa_config"][field] = wrong
+    with pytest.raises(ValueError, match=field):
+        single_layer_config(config)
+
+
+def test_case_plan_uses_native_tp_shards_and_both_cache_precisions(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL)
+    for phase in ("context", "generation"):
+        op = f"kimi_k31_dsa_{phase}_module"
+        cases = plan(op, "sglang", 103).cases
+        assert cases
+        assert {case.num_heads for case in cases} == {96, 48, 24, 12}
+        assert {case.kv_cache_dtype for case in cases} == {"bfloat16", "fp8"}
+        assert {case.gemm_type for case in cases} == {"bfloat16"}
+        assert {validate_case(case) for case in cases} == {1, 2, 4, 8}
+        assert all(case.seq_len + case.prefix_len <= 1048576 for case in cases)
+        assert not plan(op, "vllm", 103).cases
+
+
+def test_existing_dsa_key_represents_complete_decode_history():
+    case = ModuleCase(8192, 4, 24, "fp8", "bfloat16", "bfloat16", MODEL, 0)
+    item = perf_item(case, "generation", 1.5)
+    assert item["isl"] + item["step"] == 8192
+    assert item["tp_size"] == 4
+    assert item["architecture"] == ARCHITECTURE
+    assert item["num_heads"] == 24
+
+
+def test_stock_runtime_cannot_select_native_preview_collector():
+    for entry in REGISTRY:
+        if not entry.op.startswith("kimi_k31_dsa_"):
+            continue
+        runtime = require_collector_runtime(
+            "sglang",
+            RUNTIME_VERSION,
+            requested_ops={entry.op},
+            model_path=MODEL,
+        )
+        assert runtime.version == RUNTIME_VERSION
+        assert runtime.source_commit == SOURCE_COMMIT
+        assert "@sha256:" in runtime.image()
+        assert resolve_module(entry, runtime.version) == "collector.sglang.collect_kimi_k31_dsa"
+        assert resolve_module(entry, get_collector_runtime("sglang").version) is None
+        assert _check_compat(f"sglang=={RUNTIME_VERSION}", RUNTIME_VERSION)
+
+
+def test_kernel_source_reports_executed_native_backend_and_eager_mode():
+    backend = SimpleNamespace(use_mha=False, dsa_prefill_impl="flashmla_sparse", dsa_decode_impl="trtllm")
+    hybrid = SimpleNamespace(full_attn_backend=backend)
+    assert executed_kernel_source(hybrid, "context") == "sglang_dsa_indexer_flashmla_sparse_eager"
+    assert executed_kernel_source(hybrid, "generation") == "sglang_dsa_indexer_trtllm_eager"
+    backend.use_mha = True
+    backend.device_sm_major = 10
+    assert executed_kernel_source(hybrid, "context") == "sglang_dsa_dense_mha_trtllm_ragged_eager"
+
+
+def test_collector_rejects_fabricated_local_head_geometry():
+    case = ModuleCase(4096, 1, 16, "fp8", "bfloat16", "bfloat16", MODEL, 0)
+    with pytest.raises(ValueError, match="unsupported native"):
+        validate_case(case)

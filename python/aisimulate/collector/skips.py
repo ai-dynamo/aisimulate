@@ -56,6 +56,9 @@ _MSA_MODULE_OPS = ["msa_context_module", "msa_generation_module"]
 _ATTENTION_OPS = ["attention_context", "attention_generation"]
 
 SKIPS: list[dict] = [
+    # Native K31 Gated DSA has one source-pinned SGLang implementation.
+    # Other framework implementations require their own serving audit.
+    {"backend": ["vllm", "trtllm"], "op": ["kimi_k31_dsa_context_module", "kimi_k31_dsa_generation_module"]},
     # The sparse-attention (DSA) modules and the DeepSeek-V4 and GLM-5 sparse
     # kernels (DeepGEMM fp8_mqa_logits, FlashMLA sparse, JIT top-k) need Hopper
     # (SM90) or newer.

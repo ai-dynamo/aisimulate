@@ -13,6 +13,38 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang Kimi K3.1 native module contract
+
+`collector/sglang/collect_kimi_k31_dsa.py` adapts the native batch/request
+lifecycle from `python/sglang/benchmark/one_batch.py` and the attention
+observation boundary from `python/sglang/srt/models/kimi_k3.py`. The image
+identifies the upstream repository as `radixark/sglang-k31`, commit
+`afcd7d6b487a9cbe73e25941971b4cc107e6f9ae`; that GitHub repository is not
+publicly accessible. The immutable source is embedded in the official
+[`lmsysorg/sglang` image](https://hub.docker.com/r/lmsysorg/sglang/tags?name=dev-kimi-k31-pro) index
+`sha256:67fc77d1cbe67de27ca54d874c82757a4844743fea899ea7d0df547e30c2c391`,
+whose `.k31-source-commit` records that revision. The model implementation
+is byte-identical to the public SGLang file at
+https://github.com/sgl-project/sglang/blob/e086da8aa1b675a61e08cc09c9aa940a7f66f490/python/sglang/srt/models/kimi_k3.py.
+
+Copyright 2023-2024 SGLang Team and contributors. Apache-2.0; the license
+text is included at repository root as `LICENSE`. No applicable upstream
+NOTICE file was present in the inspected source. Modified by NVIDIA: retain
+the native model/batch builders, reduce the untimed model to one layer,
+observe gated attention with CUDA events, and emit AISimulate DSA rows.
+The serving implementation is imported from the runtime, not vendored.
+
+The gated-module and physical KV-layout accounting in
+`src/aisimulate_core/sdk/models/kimi_k3.py`, repository-root
+`crates/core/src/perfmodel/operators/dsa.rs`,
+`crates/core/src/perfmodel/perf_database/dsa.rs`,
+`docs/perf-model/configuration.md`, and `docs/perf-model/models/kimi-k31.md`
+describes and independently models the same native attention boundary and
+`python/sglang/srt/mem_cache/memory_pool.py` layout at that revision.
+The analytical equations and hand-derived regression vectors are original
+AISimulate work. No Kimi K3.1 checkpoint config, weights, or checkpoint Python
+source is redistributed by this change.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root

@@ -45,6 +45,17 @@ logger = logging.getLogger(__name__)
 # rows back both buckets.
 
 DSA_MODEL_DIMS: dict[str, dict] = {
+    "KimiK31ForConditionalGeneration": {
+        "hidden_size": 7168,
+        "q_lora_rank": 1536,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 128,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 128,
+        "index_topk": 2048,
+        "index_head_dim": 128,
+        "index_n_heads": 32,
+    },
     "DeepseekV32ForCausalLM": {
         "hidden_size": 7168,
         "q_lora_rank": 1536,

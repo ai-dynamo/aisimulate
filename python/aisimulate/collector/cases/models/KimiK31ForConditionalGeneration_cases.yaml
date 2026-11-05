@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: KimiK31ForConditionalGeneration
+model_path: moonshotai/Kimi-K3.1-Pro
+include_base: false
+description: >
+  Native Kimi K3.1 Gated DSA collection. The model-scoped day-zero runtime
+  collects the complete attention module, including the output gate. KDA and
+  routed-expert shapes remain independently reusable through existing tables;
+  this plan does not run their older collectors in the day-zero image.
+
+model_case_values:
+  kimi_k31_dsa_module:
+    - model_path: moonshotai/Kimi-K3.1-Pro
+      native_num_heads: 96
+      tensor_parallel_sizes: [1, 2, 4, 8]
+      max_position_embeddings: 1048576
+      gemm_type: bfloat16
+      compute_dtype: bfloat16
+      kv_cache_dtypes: [bfloat16, fp8]
+
+framework_specific_op_cases:
+  sglang:
+    kimi_k31_dsa_context_module:
+      cases: all
+    kimi_k31_dsa_generation_module:
+      cases: all
