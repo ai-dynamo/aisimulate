@@ -519,7 +519,8 @@ explicitly advertise `supports_agentic_live_warmup` and forward the policy.
 
 `agentic_warmup_policy: primers_only` models AIPerf's snapshot warmup when no
 cache-pressure warmup is configured: the live policy's primers, timed the same
-way, and no further preparation request. See
+way, and no further preparation request. External SDK adapters must explicitly
+advertise `supports_agentic_primers_only` and forward the policy. See
 [primers-only policy](agentic/warmup.md#primers-only-policy).
 
 <a id="agentic-profile"></a>

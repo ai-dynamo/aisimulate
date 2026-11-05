@@ -2698,8 +2698,14 @@ def test_agentic_profile_capability_is_explicit() -> None:
         )
 
 
-@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
-def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native(policy):
+@pytest.mark.parametrize(
+    "policy,capability,unsupported",
+    [
+        ("live_trajectory_v1", "supports_agentic_live_warmup", "live agentic warmup"),
+        ("primers_only", "supports_agentic_primers_only", "primers-only agentic warmup"),
+    ],
+)
+def test_agentic_warmup_policy_requires_its_own_runner_capability_and_reaches_native(policy, capability, unsupported):
     workload = {
         "source_type": "trace",
         "load_type": "trace_timestamps",
@@ -2712,9 +2718,10 @@ def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_nat
         "agentic_warmup_policy": policy,
     }
     capabilities = EngineReplayRunnerFactory().capabilities()
-    assert capabilities.supports_agentic_live_warmup
-    with pytest.raises(ValueError, match="does not support live agentic warmup"):
-        replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    assert getattr(capabilities, capability)
+    # The other policy's capability alone does not admit this policy.
+    with pytest.raises(ValueError, match=f"does not support {unsupported}"):
+        replace(capabilities, **{capability: False}).require_compatible(_spec(workload=workload))
     if policy == "primers_only":
         with pytest.raises(ValueError, match="primers_only requires agentic_warmup"):
             capabilities.require_compatible(_spec(workload={**workload, "agentic_warmup": False}))

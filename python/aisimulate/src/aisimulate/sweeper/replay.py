@@ -421,6 +421,7 @@ class RunnerCapabilities:
     supports_native_epd: bool = False
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
+    supports_agentic_primers_only: bool = False
     supports_weka_client: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
@@ -664,14 +665,22 @@ class RunnerCapabilities:
             "primers_only",
         }:
             raise ValueError("unknown agentic_warmup_policy")
-        if warmup_policy == "live_trajectory_v1" and (not agentic_warmup or agentic_profile is None):
-            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
-        if warmup_policy == "primers_only" and not agentic_warmup:
-            raise ValueError("primers_only requires agentic_warmup")
-        if warmup_policy != "repeated_prefixes" and not self.supports_agentic_live_warmup:
-            raise ValueError(
-                f"runner does not support live agentic warmup; update the adapter before selecting {warmup_policy}"
-            )
+        if warmup_policy == "live_trajectory_v1":
+            if not agentic_warmup or agentic_profile is None:
+                raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+            if not self.supports_agentic_live_warmup:
+                raise ValueError(
+                    "runner does not support live agentic warmup; "
+                    "update the adapter before selecting live_trajectory_v1"
+                )
+        if warmup_policy == "primers_only":
+            if not agentic_warmup:
+                raise ValueError("primers_only requires agentic_warmup")
+            if not self.supports_agentic_primers_only:
+                raise ValueError(
+                    "runner does not support primers-only agentic warmup; "
+                    "update the adapter before selecting primers_only"
+                )
         if agentic_snapshot is not None:
             try:
                 snapshot = AgenticSnapshotOptions.model_validate(agentic_snapshot)

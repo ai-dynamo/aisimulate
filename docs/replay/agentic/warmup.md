@@ -256,7 +256,8 @@ warmup when no cache-pressure warmup is configured, as in its
 `inferencex-agentx-mvp` scenario
 ([`agentic_replay.py`](https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py),
 `_execute_warmup` and `_capped_warmup_lead_ms`, Apache-2.0). It requires
-`agentic_warmup: true`; a continuous profile is optional.
+`agentic_warmup: true`; a continuous profile is optional. SDK integrations need
+the explicit `supports_agentic_primers_only` capability.
 
 1. Primers are timed as in step 1 of the live policy: leads are divided by
    `speedup`, capped at `agentic_profile.global_idle_cap_seconds` (10 s without
