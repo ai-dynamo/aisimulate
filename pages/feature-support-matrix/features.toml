@@ -80,7 +80,13 @@ note = "Engine-specific admission and token budgets; SGLang --enable-mixed-chunk
 name = "Prefix caching (G1 reuse)"
 doc = "replay/engine/kv-cache.md#gpu-cache-g1"
 cells = ["supported", "supported", "supported"]
-note = "Backend block and admission rules apply."
+note = "Backend block and admission rules apply. SGLang P/D decode reuse is opt-in through decode_radix_cache and requires prefix caching without speculation."
+
+[[sections.rows]]
+name = "Request cache-salt isolation"
+doc = "replay/engine/kv-cache.md#sglang-request-cache-salt"
+cells = ["not_supported", "supported", "not_supported"]
+note = "Native SGLang requests and inline replay preserve salt in prefix identity and KV events. Different salts cannot reuse each other's KV; memory pools remain shared. Built-in trace formats are unsalted."
 
 [[sections.rows]]
 name = "Sub-block prefix reuse"

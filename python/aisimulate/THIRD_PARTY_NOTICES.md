@@ -108,7 +108,7 @@ and discrete-event scheduling. No serving implementation is vendored.
 
 The synthetic probes in repository-root
 `crates/core/src/engine/scheduler/sglang/semantic_evidence.rs` and their inputs,
-expected contracts and measured reports in
+expected contracts and synthetic probe reports in
 `benchmarks/evidence/sglang-semantics-20261105/` are modified behavioral
 adaptations of the pinned SGLang v0.5.22 sources identified in the three
 preceding sections and the decode radix-cache section below.

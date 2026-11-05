@@ -99,9 +99,16 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
-    if backend == "sglang" and role == "decode" and sample.get("decode_radix_cache"):
+    if (
+        backend == "sglang"
+        and sample["deployment_mode"] == "disagg"
+        and role == "decode"
+        and sample.get("decode_radix_cache")
+    ):
         if not payload["enable_prefix_caching"]:
             raise ValueError("decode_radix_cache requires decode_enable_prefix_caching=true for SGLang decode")
+        if sample.get("aic_nextn") or sample.get("speculation") is not None:
+            raise ValueError("decode_radix_cache is incompatible with speculative decoding for SGLang decode")
         payload["sglang"] = {"disaggregation_decode_enable_radix_cache": True}
     if sample.get("systems_paths") is not None and sample.get(f"{role}_timing_model") is not None:
         from .forward_pass_estimator import resolve_systems_paths

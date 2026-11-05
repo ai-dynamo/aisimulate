@@ -263,6 +263,9 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
         "SglangConfig": {
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),
+            "disaggregation_decode_enable_radix_cache": ((True, "bool"), "false"),
+            "num_reserved_decode_tokens": ((True, "usize"), "SglangConfig::default().num_reserved_decode_tokens"),
+            "disaggregation_decode_extra_slots": ((True, "Option<usize>"), "None"),
         },
     }.get(site.struct)
     if defaults is not None:
