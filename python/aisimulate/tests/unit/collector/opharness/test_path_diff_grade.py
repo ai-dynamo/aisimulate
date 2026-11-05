@@ -142,7 +142,7 @@ def test_review_p1_prefill_gate_cannot_borrow_decode_evidence():
     record = {
         "ops": [],
         "orphan_kernels": ["flash::FlashAttnFwdSm90", "kernel_unified_attention"],
-        "orphan_phases": {"flash::FlashAttnFwdSm90": ["prefill"], "kernel_unified_attention": ["decode"]},
+        "kernel_phases": {"flash::FlashAttnFwdSm90": ["prefill"], "kernel_unified_attention": ["decode"]},
     }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is True
@@ -158,20 +158,19 @@ def test_profile_run_evidence_is_a_separate_phase():
     record = {
         "ops": [],
         "orphan_kernels": ["flash::FlashAttnFwdSm90"],
-        "orphan_phases": {"flash::FlashAttnFwdSm90": ["profile_run"]},
+        "kernel_phases": {"flash::FlashAttnFwdSm90": ["profile_run"]},
     }
     assert path_diff.select_serving(record, "prefill", None, _is_launcher)[0] == set()
     assert path_diff.select_serving(record, "profile_run", None, _is_launcher)[0] == {"flash::FlashAttnFwdSm90"}
 
 
-def test_legacy_record_without_phase_info_is_marked_unscoped():
+def test_a_span_only_kernel_is_kept_but_leaves_the_selection_unscoped():
     record = {
-        "ops": [{"phase": "decode", "kernels": ["kernel_unified_attention"]}],
-        "orphan_kernels": ["flash::FlashAttnFwdSm90"],
+        "ops": [{"phase": "decode", "kernels": ["kernel_unified_attention", "flash::FlashAttnFwdSm90"]}],
+        "kernel_phases": {"kernel_unified_attention": ["decode"]},
     }
     srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
-    assert "flash::FlashAttnFwdSm90" in srv and scoped is False
-    assert "kernel_unified_attention" not in srv  # ops DO carry phase and are scoped
+    assert srv == {"flash::FlashAttnFwdSm90"} and scoped is False
 
 
 @pytest.mark.parametrize(

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Execution identity (review 2026-09-25 P1 #3): the run id names the CASE; the
 execution fingerprint names what actually shaped the run (engine invocation,
-dummy config, image, kv override). A raw is evidence for the current plan only
-when its fingerprint (sidecar or the argv it recorded) matches."""
+dummy config, probe code, image, kv override). The spec carries it into the job and
+--import-raws files a raw only when the job ran this emit's fingerprint."""
 
 import importlib.util
 import os
@@ -85,45 +85,6 @@ def test_engine_tokens_drop_deployment_specific_values_only(pd):
     assert pd.engine_tokens("vllm", toks) == ["--tensor-parallel-size", "1", "--max-num-batched-tokens", "6016"]
 
 
-def test_evidence_status_sidecar_is_decisive(pd, tmp_path):
-    run = _plan_run(pd, tmp_path, 6016)
-    run["exec_fingerprint"] = pd.exec_fingerprint(run)
-    fp = run["exec_fingerprint"]["fingerprint"]
-    assert pd.evidence_status(run, fp, {}) == "current"
-    assert pd.evidence_status(run, "000000000000", {}) == "stale"
-
-
-def test_evidence_status_legacy_raw_checked_on_its_recorded_argv(pd, tmp_path):
-    run = _plan_run(pd, tmp_path, 6016)
-    run["exec_fingerprint"] = pd.exec_fingerprint(run)
-    # the probe substitutes the dummy dir for --model; everything else identical -> current
-    raw_same = {
-        "engine_argv": [
-            "python3",
-            "-m",
-            "dynamo.vllm",
-            "--model",
-            "/work/dummy_models/generic/m__rep",
-            "--served-model-name",
-            "org/m",
-            "--tensor-parallel-size",
-            "1",
-            "--max-num-seqs",
-            "512",
-            "--max-num-batched-tokens",
-            "6016",
-            "--dump-config-to",
-            "/results/resolved.json",
-        ]
-    }
-    assert pd.evidence_status(run, None, raw_same) == "current"
-    raw_old = {"engine_argv": [t if t != "6016" else "6012" for t in raw_same["engine_argv"]]}
-    assert pd.evidence_status(run, None, raw_old) == "stale"
-    # no sidecar, nothing recorded: never 'current'
-    assert pd.evidence_status(run, None, {}) == "unverified"
-    assert pd.evidence_status({"backend": "vllm"}, None, raw_same) == "unverified"
-
-
 def test_trtllm_engine_yaml_compared_semantically(pd, tmp_path):
     ws = Path(pd.ROOT)
     (ws / "archive" / "run_sh").mkdir(parents=True, exist_ok=True)
@@ -140,8 +101,8 @@ def test_trtllm_engine_yaml_compared_semantically(pd, tmp_path):
         "render_artifact": str(y),
         "model_dir": "",
     }
-    run["exec_fingerprint"] = pd.exec_fingerprint(run)
-    same = {"engine_yaml": {"kv_cache_config": {"dtype": "auto"}, "max_num_tokens": 4672, "backend": "pytorch"}}
-    assert pd.evidence_status(run, None, same) == "current"
-    other = {"engine_yaml": {"kv_cache_config": {"dtype": "auto"}, "max_num_tokens": 4608, "backend": "pytorch"}}
-    assert pd.evidence_status(run, None, other) == "stale"
+    a = pd.exec_fingerprint(run)["engine"]
+    y.write_text("max_num_tokens: 4672\nbackend: pytorch\nkv_cache_config: {dtype: auto}\n")
+    assert pd.exec_fingerprint(run)["engine"] == a  # formatting and key order never count
+    y.write_text("backend: pytorch\nmax_num_tokens: 4608\nkv_cache_config:\n  dtype: auto\n")
+    assert pd.exec_fingerprint(run)["engine"] != a

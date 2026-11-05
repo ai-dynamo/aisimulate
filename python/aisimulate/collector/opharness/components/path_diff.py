@@ -6,30 +6,19 @@ PROFILER-MEASURED ON BOTH SIDES (owner rule 2026-09-19: selector/class names
 are leads, never the verdict; only captured kernels count).
 
 The collector side is the result of `collect.py --ops probe.trace_case` (one planned
-case run under torch.profiler, the same capture the serving probes use; nsys is the
-escalation tool for cases torch.profiler cannot see). components/gates.py schedules
-those probes and calls diff() for every gate.
+case run under torch.profiler). The serving side is a probe record of the same SM from
+a campaign (probe_driver.py). Both kernel sets go through the ONE vocabulary
+(kernel_taxonomy.yaml rules for that SM); components/gates.py calls diff() for every gate.
 
-  --diff      (host) Translate BOTH kernel sets — the collector capture and
-              the serving probe's records.jsonl entry — through the ONE
-              vocabulary (kernel_taxonomy.yaml rules for AIS_SM, default sm90) and report the verdict:
-                aligned   collector's canonical backend set matches serving's
-                          for the op's kernels (subset relation: the collector
-                          exercises one op, serving runs the whole model)
-                diverged  collector executed backend families serving never
-                          did (the wrong-path signal), or vice versa for the
-                          op under test
-                no-collector-signal  the capture ran no kernel the vocabulary
-                          can attribute (empty set = subset of everything —
-                          refused). GEMM-class ops whose only families are
-                          infra (cublas/vllm_kernel/...) are graded on
-                          kernel-NAME overlap inside those families instead.
-                invalid-capture  the capture command itself failed
-
-Usage (host):
-  AIS_PROBE_WORKSPACE=<ws> python3 path_diff.py --diff \
-      --capture-file <shard>/probe_trace_case.json --repo deepseek-ai/DeepSeek-V3.2 \
-      --framework vllm --version 0.29.0 [--op-hint 'attn|mla|sparse']
+  aligned              every collector kernel of the gate's target roles name-matches a
+                       serving kernel of that role, and the collector launched no
+                       target-role backend family serving did not (subset relation: the
+                       collector exercises one op, serving runs the whole model)
+  diverged             a target role the collector ran is absent from serving, a
+                       collector-only backend family inside a target role, or kernel drift
+                       inside a role
+  no-collector-signal  the capture ran no kernel of any target role
+  invalid-capture      the capture itself failed
 """
 
 from __future__ import annotations
@@ -37,53 +26,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path(
-    os.environ.get("AIS_PROBE_WORKSPACE")
-    or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
-    or Path.cwd()
-)
-
-
-# --------------------------------------------------------------------------
-# diff (host; shares the probes' normalization + taxonomy)
-
-
-def _load_labeler():
-    sys.path.insert(0, str(HERE))
-    from probe_driver import label_kernels, normalize_kernel
-
-    return label_kernels, normalize_kernel
-
-
-def _record_from_raw(raw_path: str) -> dict:
-    """Turn a raw probe JSON that is NOT in the plan (an A/B run such as a
-    different --isl) into a minimal serving record with the same shape
-    build_records emits, so a verdict can be computed against explicit
-    evidence and the report names that file."""
-    from probe_driver import build_ops
-
-    f = json.loads(Path(raw_path).read_text())
-    from probe_driver import build_orphan_phases
-
-    ops, orphans = build_ops(f)
-    return {
-        "id": f"raw:{Path(raw_path).name}",
-        "ops": ops,
-        "orphan_kernels": orphans,
-        "orphan_phases": {k: v for k, v in build_orphan_phases(f).items() if k in set(orphans)},
-        "runtime": {
-            "tp": None,
-            "kv_cache_dtype": f.get("probe_kv_cache_dtype"),
-            "isl": f.get("probe_isl"),
-            "prefix_caching": f.get("probe_prefix_caching"),
-        },
-    }
+sys.path.insert(0, str(HERE))
+import probe_driver
 
 
 def _kv_equiv(a, b):
@@ -245,340 +194,190 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
 def select_serving(record: dict, phase: str | None, op_hint: str | None, is_launcher) -> tuple[set, bool]:
     """Serving kernels for the comparison, scoped to `phase`.
 
-    Phase truth is the record's `kernel_phases` (every kernel the device
-    tables saw, by phase) — span attribution is by NAME across phases, so a
-    kernel launched in both phases but attributed to one phase's span must
-    still count for the other. Records without `kernel_phases` (legacy)
-    fall back to op phases + unscoped orphans and report phase_scoped=False.
+    Phase truth is the record's `kernel_phases` (every kernel the device tables saw, by
+    phase): span attribution is by NAME across phases, so a kernel launched in both phases
+    but attributed to one phase's span must still count for the other. A kernel seen only
+    in a span (no device-table entry) is kept but leaves the selection unscoped.
     Returns (kernels, phase_scoped)."""
-    kernels: set = set()
-    kphases = record.get("kernel_phases")
-    scoped = phase is not None
-    if phase is not None and isinstance(kphases, dict) and kphases:
-        pool = set(record.get("orphan_kernels") or [])
-        for op in record.get("ops") or []:
-            if op_hint and not re.search(
-                op_hint, " ".join([op.get("op") or op.get("label") or ""] + (op.get("kernels") or [])), re.I
-            ):
-                continue
-            pool |= set(op.get("kernels") or [])
-        for k in pool:
-            ph = kphases.get(k)
-            if ph is None:
-                kernels.add(k)  # not in a device table (span-only): keep, unproven
-                scoped = False
-            elif phase in ph:
-                kernels.add(k)
-        return {k for k in kernels if not is_launcher(k)}, scoped
-    # legacy path (no kernel_phases): op phases where known, orphans unscoped
-    phases = record.get("orphan_phases") or {}
-    for k in record.get("orphan_kernels") or []:
-        if phase is None:
-            kernels.add(k)
-        elif k in phases:
-            if phase in phases[k]:
-                kernels.add(k)
-        else:
-            kernels.add(k)
-            scoped = False
+    kphases = record.get("kernel_phases") or {}
+    pool = set(record.get("orphan_kernels") or [])
     for op in record.get("ops") or []:
-        op_phase = op.get("phase") if op.get("phase") in ("prefill", "decode", "profile_run") else None
-        if phase is not None and op_phase not in (phase, None):
+        if op_hint and not re.search(op_hint, " ".join([op.get("op") or ""] + (op.get("kernels") or [])), re.I):
             continue
-        if phase is not None and op_phase is None:
+        pool |= set(op.get("kernels") or [])
+    kernels, scoped = set(), phase is not None
+    for k in pool:
+        ph = kphases.get(k)
+        if phase is None or (ph is not None and phase in ph):
+            kernels.add(k)
+        elif ph is None:
+            kernels.add(k)
             scoped = False
-        if op_hint and not re.search(
-            op_hint, " ".join([op.get("op") or op.get("label") or ""] + (op.get("kernels") or [])), re.I
-        ):
-            continue
-        kernels |= set(op.get("kernels") or [])
     return {k for k in kernels if not is_launcher(k)}, scoped
 
 
 def load_collector_side(files) -> dict:
-    """The collector side of a gate from one or more files: a ``probe.trace_case`` result
-    (``{"result": {"kernels", "error", "env", "row", ...}}``) or a legacy capture
-    (``{"kernels", "error", "cmd", "env"}``). Several files (a gate's ``also`` cases) union
+    """The collector side of a gate: the ``probe_trace_case.json`` of each of its cases
+    (``{"result": {"kernels", "error", "env", "row", ...}}``). A gate's ``also`` cases union
     their kernels; the first error wins."""
     files = [files] if isinstance(files, (str, Path)) else list(files)
     kernels, errors, cmds, envs = set(), [], [], {}
     for f in files:
         doc = json.loads(Path(f).read_text())
         part = doc.get("result") or {}
-        if "result" in doc or "probe" in doc:
-            errors.append(doc.get("error") or part.get("error"))
-            cmds.append(f"probe.{doc.get('probe')} {part.get('op')} {part.get('row')}")
-            envs.update(part.get("env") or {})
-            kernels.update(part.get("kernels") or [])
-        else:
-            errors.append(doc.get("error"))
-            cmds.append(doc.get("cmd"))
-            envs.update(doc.get("env") or {})
-            kernels.update(doc.get("kernels") or [])
+        errors.append(doc.get("error") or part.get("error"))
+        cmds.append(f"probe.{doc.get('probe')} {part.get('op')} {part.get('row')}")
+        envs.update(part.get("env") or {})
+        kernels.update(part.get("kernels") or [])
     return {"kernels": sorted(kernels), "error": next((e for e in errors if e), None), "cmd": cmds, "env": envs or None}
 
 
+def serving_records(repo: str, framework: str, version: str, sm: str, kv_dtype: str | None) -> list[dict]:
+    """The probe records of every campaign in the workspace for (repo, framework, version)
+    on this SM with a clean outcome, the kv class matching, newest first."""
+    out = []
+    for path in sorted((probe_driver.ROOT / "campaigns").glob("*/records.jsonl")):
+        for r in map(json.loads, path.open()):
+            rt = r["runtime"]
+            if (
+                r["target"].get("repo") == repo
+                and rt.get("backend") == framework
+                and rt.get("version") == version
+                and rt.get("sm") == sm
+                and (r.get("outcome") or {}).get("status") == "ok"
+                and (kv_dtype is None or _kv_equiv(rt.get("kv_cache_dtype"), kv_dtype))
+            ):
+                out.append({**r, "campaign": path.parent.name})
+    # no kv asked: the RENDERED configuration is the serving truth, a kv-variant record never
+    # stands in for it; then the most recent import wins
+    out.sort(
+        key=lambda r: (
+            kv_dtype is not None or r["runtime"].get("kv_cache_dtype") in (None, "auto"),
+            r.get("imported_at", 0),
+        )
+    )
+    return out[::-1]
+
+
+# custom-op LAUNCHERS shadow their kernels under a second name (_vllm_fa3_C::fwd wraps
+# flash::FlashAttnFwdSm90; trtllm::<op> wraps tensorrt_llm::_v1::kernels::...)
+_LAUNCHER = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm|trtllm)::(?!.*_kernel)")
+
+
+def _is_launcher(name: str) -> bool:
+    # a tail naming a kernel or a GEMM instantiation is the kernel itself: vllm::cutlass_3x_gemm_sm90_fp8
+    # IS the CUTLASS GEMM (the fp8 GEMM gate was once graded on the quant kernel alone)
+    tail = name.split("::")[-1].lower()
+    return bool(_LAUNCHER.match(name)) and "kernel" not in tail and "gemm" not in tail
+
+
 def diff(
-    capture_file,
+    capture_files,
     repo: str,
     framework: str,
     version: str,
+    sm: str,
     op_hint: str | None,
     save: str | None = None,
     kv_dtype: str | None = None,
-    isl: int | None = None,
-    serving_raw: str | None = None,
     gate_name: str | None = None,
     target_roles: tuple | None = None,
     phase: str | None = None,
 ) -> int:
-    label_kernels, normalize_kernel = _load_labeler()
-    from probe_driver import kernel_role
-
     inferred_roles, inferred_phase = infer_target(gate_name or (Path(save).stem if save else None))
     target_roles = target_roles or inferred_roles
     phase = phase or inferred_phase
-    cap = load_collector_side(capture_file)
-    # custom-op LAUNCHERS shadow their kernels under a second name
-    # (_vllm_fa3_C::fwd wraps flash::FlashAttnFwdSm90) — same exclusion
-    # build_ops applies to serving orphans, applied here to both sides
-    # trtllm's custom ops surface as `trtllm::<op>` launchers over
-    # `tensorrt_llm::_v1::kernels::...` kernels (causal_conv1d_fwd vs
-    # causal_conv1d::causal_conv1d_fwd_kernel) — same exclusion
-    _launcher = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm|trtllm)::(?!.*_kernel)")
-
-    def _is_launcher(name: str) -> bool:
-        # launchers are <ext module>::<op> names (fwd, scaled_mm, causal_conv1d_fwd);
-        # a tail naming a kernel or a GEMM instantiation is the kernel itself —
-        # vllm::cutlass_3x_gemm_sm90_fp8 IS the CUTLASS GEMM (found 2026-09-25: the
-        # fp8 GEMM gate had been graded on the quant kernel alone because its GEMM
-        # was dropped here)
-        tail = name.split("::")[-1].lower()
-        return bool(_launcher.match(name)) and "kernel" not in tail and "gemm" not in tail
-
-    col_kernels = sorted({n for k in cap["kernels"] if (n := normalize_kernel(k)) and not _is_launcher(n)})
-    col_backends, col_unmatched = label_kernels(col_kernels)
-
-    candidates = []
-    if serving_raw:  # explicit evidence file (A/B run outside the plan)
-        candidates = [_record_from_raw(serving_raw)]
-    else:
-        for line in (ROOT / "archive" / "records.jsonl").open():
-            r = json.loads(line)
-            if not (
-                r["target"].get("repo") == repo
-                and r["runtime"]["backend"] == framework
-                and r["runtime"].get("version") == version
-                and (r.get("outcome") or {}).get("status") == "ok"
-            ):
-                continue
-            if kv_dtype is not None and not _kv_equiv(r["runtime"].get("kv_cache_dtype"), kv_dtype):
-                continue
-            if isl is not None and r["runtime"].get("isl") != isl:
-                continue
-            candidates.append(r)
-
-    # Several records can match one (repo, framework, version, kv) — tp/ep
-    # variants, re-probes, older runs. Pick by EVIDENCE QUALITY, never by file
-    # order: cache-cold prefill (prefix_caching False) beats a cached
-    # residual, a record with both phase tables beats a decode-only one, a
-    # known isl beats an unknown one. Found 2026-09-23: "last match" picked a
-    # decode-only Qwen3.5 record over the cache-cold one and produced a false
-    # collector-only `flashinfer` (GDN prefill) verdict.
-    def _quality(r):
-        rt = r["runtime"]
-        return (
-            rt.get("prefix_caching") is False,
-            # no --kv-dtype asked: the RENDERED configuration (kv None/auto) is the serving truth;
-            # a variant record (probe --kv-cache-dtype fp8) only wins when asked for. Found on the
-            # B200 and sm120 campaigns (2026-09-29): the bf16 attention gate graded the fp8-KV Llama record.
-            kv_dtype is not None or rt.get("kv_cache_dtype") in (None, "auto"),
-            # framework-mode probe (CUDA graphs / compile = serving truth,
-            # owner decision 2026-09-24) beats an eager or pre-flag record
-            rt.get("probe_eager") is False,
-            bool(r.get("ops")) and any((o.get("phase") == "prefill") for o in r.get("ops") or []),
-            rt.get("isl") is not None,
-        )
-
-    candidates.sort(key=_quality)
-    serving = candidates[-1] if candidates else None
-    if len(candidates) > 1:  # several serving configs match (tp/ep/kv variants): say which one won
+    cap = load_collector_side(capture_files)
+    col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k)) and not _is_launcher(n)})
+    col_backends, col_unmatched = probe_driver.label_kernels(col_kernels, sm)
+    candidates = serving_records(repo, framework, version, sm, kv_dtype)
+    if not candidates:
+        _hint = f" kv={kv_dtype}" if kv_dtype else ""
+        print(f"[no-serving-record] {repo} {framework}-{version} {sm}{_hint} — probe that config first")
+        return 2
+    serving = candidates[0]
+    if len(candidates) > 1:  # several serving configs match (tp / kv variants, re-probes): say which one won
         print(
-            f"[note] {len(candidates)} serving records match; using {serving['id']} "
-            f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')}); "
-            f"others: {[c['id'] for c in candidates[:-1]]}",
+            f"[note] {len(candidates)} serving records match; using {serving['id']} from {serving['campaign']} "
+            f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')})",
             file=sys.stderr,
         )
-    if serving is None:
-        _hint = f" kv={kv_dtype}" if kv_dtype else ""
-        print(f"[no-serving-record] {repo} {framework}-{version}{_hint} — probe that config first")
-        return 2
     srv_kernels, phase_scoped = select_serving(serving, phase, op_hint, _is_launcher)
-    srv_backends, _ = label_kernels(srv_kernels)
-    g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), kernel_role)
-    verdict, only_col, kernel_drift = g["verdict"], g["only_col"], g["kernel_drift"]
+    srv_backends, _ = probe_driver.label_kernels(srv_kernels, sm)
+    g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), lambda k: probe_driver.kernel_role(k, sm))
+    files = [capture_files] if isinstance(capture_files, (str, Path)) else list(capture_files)
     report = {
-        "verdict": verdict,
+        "verdict": g["verdict"],
         "repo": repo,
         "framework": framework,
         "version": version,
-        # reproducibility: a verdict must name both inputs and the scoping it
-        # was computed under, or it cannot be re-derived after a taxonomy change
-        "capture_file": str(capture_file) if isinstance(capture_file, (str, Path)) else [str(f) for f in capture_file],
+        "sm": sm,
+        # reproducibility: both inputs and the scoping the verdict was computed under
+        "capture_files": [str(f) for f in files],
+        "capture_sha256": hashlib.sha256(b"".join(Path(f).read_bytes() for f in files)).hexdigest()[:16],
         "capture_cmd": cap.get("cmd"),
-        "capture_env": cap.get("env"),  # the collector cell filters the capture ran under
+        "capture_env": cap.get("env"),
         "capture_run_error": cap.get("error"),
         "kv_dtype": kv_dtype,
         "op_hint": op_hint,
-        # what this gate proves: the target op roles and the execution phase
-        # the serving evidence was selected from (phase_scoped False = legacy
-        # record without phase information, evidence unscoped)
         "gate_name": gate_name or (Path(save).stem if save else None),
         "target_roles": g["target_roles"],
         "phase": phase,
         "phase_scoped": phase_scoped,
-        "role_evidence": g["role_evidence"],
         "missing_roles": g["missing_roles"],
+        "collector_only_signal": g["only_col"],
+        "kernel_drift": g["kernel_drift"],
+        "role_evidence": g["role_evidence"],
         "aux_collector_only_roles": g["aux_collector_only_roles"],
         "serving_record": {
             "id": serving["id"],
+            "campaign": serving["campaign"],
             "tp": serving["runtime"].get("tp"),
             "kv_cache_dtype": serving["runtime"].get("kv_cache_dtype"),
             "isl": serving["runtime"].get("isl"),
-            "prefix_caching": serving["runtime"].get("prefix_caching"),
-            "raw_file": serving_raw,
+            "exec_fingerprint": serving.get("exec_fingerprint"),
             "candidates": len(candidates),
         },
         "collector_backends": sorted(col_backends),
         "serving_backends": sorted(srv_backends),
-        "collector_only_signal": only_col,
-        "kernel_drift": kernel_drift or None,
-        "serving_kernels_matched_in_collector": sorted(
-            k for k in srv_kernels if any(k.split("<")[0] in c or c in k for c in col_kernels)
-        )[:10],
         "collector_unmatched_kernels": sorted(col_unmatched)[:10],
-        "note": "subset semantics: the collector exercises ONE op; serving runs the whole "
-        "model. Graded on the target roles only: every collector kernel of a target "
-        "role must name-match a serving kernel of that role in the selected phase.",
     }
-    report["capture_sha256"] = hashlib.sha256(
-        b"".join(
-            Path(f).read_bytes() for f in ([capture_file] if isinstance(capture_file, (str, Path)) else capture_file)
-        )
-    ).hexdigest()[:16]
-    report["serving_record"]["exec_fingerprint"] = serving.get("exec_fingerprint")
-    report["serving_record"]["evidence_status"] = serving.get("evidence_status")
     print(json.dumps(report, indent=1, ensure_ascii=False))
     if save:
-        # the committed verdict is the CONCLUSION: what was compared (ids, sha,
-        # fingerprint, roles, phase) and what came out (verdict, counts, the
-        # drifting names when red). Kernel lists are evidence and go to the
-        # workspace (archive/evidence/pathdiff/...) — owner decision 2026-09-26.
         Path(save).parent.mkdir(parents=True, exist_ok=True)
-        Path(save).write_text(json.dumps(summarize_report(report), indent=1, ensure_ascii=False))
-        ev = ROOT / "archive" / "evidence" / "pathdiff" / Path(save).parent.name / Path(save).name
-        ev.parent.mkdir(parents=True, exist_ok=True)
-        ev.write_text(json.dumps(report, indent=1, ensure_ascii=False))
-    return 0 if verdict == "aligned" else 1
-
-
-def summarize_report(report: dict) -> dict:
-    """Committed view of a verdict: identity of both inputs, the scoping, the
-    verdict, per-role counts, and — only when not aligned — the names that
-    decide it (missing roles, collector-only families, drifting kernels)."""
-    keep = (
-        "verdict",
-        "repo",
-        "framework",
-        "version",
-        "gate_name",
-        "target_roles",
-        "phase",
-        "phase_scoped",
-        "kv_dtype",
-        "op_hint",
-        "capture_file",
-        "capture_sha256",
-        "capture_env",
-        "capture_run_error",
-        "serving_record",
-        "collector_backends",
-        "serving_backends",
-        "missing_roles",
-        "aux_collector_only_roles",
-    )
-    out = {k: report.get(k) for k in keep if k in report}
-    out["role_counts"] = {
-        role: {"collector": len(ev["collector"]), "serving": len(ev["serving"]), "matched": len(ev["matched"])}
-        for role, ev in (report.get("role_evidence") or {}).items()
-    }
-    if report.get("verdict") != "aligned":
-        out["collector_only_signal"] = report.get("collector_only_signal")
-        out["kernel_drift"] = report.get("kernel_drift")
-    out["evidence"] = (
-        "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
-    )
-    return out
+        Path(save).write_text(json.dumps(report, indent=1, ensure_ascii=False))
+    return 0 if g["verdict"] == "aligned" else 1
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--diff", action="store_true")
-    ap.add_argument("--capture-file", action="append", help="probe.trace_case result (repeat for a gate's also cases)")
-    ap.add_argument("--repo")
-    ap.add_argument("--framework", default="vllm")
-    ap.add_argument("--version")
-    ap.add_argument("--save-verdict", default=None, help="persist the verdict json (the workflow gate reads these)")
+    ap = argparse.ArgumentParser(description="one collector capture vs the serving record of the same SM")
+    ap.add_argument(
+        "--capture-file", action="append", required=True, help="probe_trace_case.json (repeat for also cases)"
+    )
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--framework", required=True)
+    ap.add_argument("--version", required=True)
+    ap.add_argument("--sm", required=True, help="e.g. sm100: the SM both sides ran on")
+    ap.add_argument("--kv-dtype", default=None, help="fp8|auto|bf16 (auto and bf16 are one class)")
     ap.add_argument("--op-hint", default=None, help="regex over serving op labels/kernels to scope the comparison")
-    ap.add_argument(
-        "--kv-dtype",
-        default=None,
-        help="select the serving record whose kv-cache dtype matches this "
-        "capture (fp8|auto|bf16); auto and bf16 are treated as equivalent",
-    )
-    ap.add_argument(
-        "--isl",
-        type=int,
-        default=None,
-        help="select the serving record probed at this prompt length (records carry "
-        "runtime.isl); prefill dispatch is length-conditional",
-    )
-    ap.add_argument(
-        "--serving-raw",
-        default=None,
-        help="diff against this raw probe JSON instead of archive/records.jsonl "
-        "(A/B evidence outside the plan); the report names the file",
-    )
-    ap.add_argument(
-        "--gate-name",
-        default=None,
-        help="gate name (e.g. gemm_fp8_Llama-3.1-70B-FP8); target roles and phase are inferred "
-        "from it unless --target-roles/--phase are given; default: the --save-verdict stem",
-    )
+    ap.add_argument("--gate-name", default=None, help="target roles and phase are inferred from it")
     ap.add_argument("--target-roles", default=None, help="comma list of taxonomy roles the gate must prove")
-    ap.add_argument(
-        "--phase",
-        default=None,
-        choices=["prefill", "decode", "profile_run"],
-        help="select serving evidence from this execution phase only",
-    )
+    ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"])
+    ap.add_argument("--save", default=None, help="write the verdict json here")
     args = ap.parse_args()
-    if args.diff:
-        return diff(
-            args.capture_file,
-            args.repo,
-            args.framework,
-            args.version,
-            args.op_hint,
-            args.save_verdict,
-            args.kv_dtype,
-            args.isl,
-            args.serving_raw,
-            args.gate_name,
-            tuple(args.target_roles.split(",")) if args.target_roles else None,
-            args.phase,
-        )
-    ap.error("pass --diff")
+    return diff(
+        args.capture_file,
+        args.repo,
+        args.framework,
+        args.version,
+        args.sm,
+        args.op_hint,
+        args.save,
+        args.kv_dtype,
+        args.gate_name,
+        tuple(args.target_roles.split(",")) if args.target_roles else None,
+        args.phase,
+    )
 
 
 if __name__ == "__main__":

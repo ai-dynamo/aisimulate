@@ -484,9 +484,3 @@ topology_policy:
     tp: 2
     sms: [100]
   note: topology is ALWAYS recorded in records.runtime (tp/ep/dp/a2a) even when kernels match.
-platform:
-  # Reference platform of the PR branch. The per-SM working branches (sm100, sm89, sm120)
-  # carry their own pin; on another machine run with AIS_SM / the platform override.
-  name: h20_sm90
-  sm: 90
-  system: h200_sxm

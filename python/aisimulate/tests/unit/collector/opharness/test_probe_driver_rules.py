@@ -4,7 +4,6 @@
 contract, and the orphan keep rule that framework-mode probes depend on."""
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
@@ -80,7 +79,7 @@ def test_normalize_drops_denied_names(pd):
     ],
 )
 def test_taxonomy_labels_identity_kernels(pd, kernel, family):
-    labels, unmatched = pd.label_kernels([kernel])
+    labels, unmatched = pd.label_kernels([kernel], "sm90")
     assert family in labels and not unmatched
 
 
@@ -96,15 +95,27 @@ def test_taxonomy_labels_identity_kernels(pd, kernel, family):
     ],
 )
 def test_taxonomy_glue_carries_no_identity(pd, kernel):
-    labels, unmatched = pd.label_kernels([kernel])
+    labels, unmatched = pd.label_kernels([kernel], "sm90")
     assert labels == set() and not unmatched, (labels, unmatched)
 
 
-def test_only_attention_rules_emit_triton(pd):
+@pytest.mark.parametrize("sm", ["sm89", "sm90", "sm100", "sm103", "sm120"])
+def test_only_attention_rules_emit_triton(pd, sm):
     # the one-vocabulary contract: `triton` names the Triton ATTENTION backend
-    for rx, backend, role in pd._TAXONOMY:
+    for rx, backend, role in pd.taxonomy(sm):
         if backend == "triton":
             assert role == "attention", rx.pattern
+
+
+def test_sm_scoped_rules_label_only_on_their_sm(pd):
+    # a record is labeled with the rules of the SM its raw ran on, not a configured box
+    sm89_only = next(
+        r
+        for r in __import__("yaml").safe_load((COMPONENTS / "kernel_taxonomy.yaml").read_text())["rules"]
+        if r.get("sms") == ["sm89"]
+    )
+    assert any(rx.pattern == sm89_only["match"] for rx, _, _ in pd.taxonomy("sm89"))
+    assert not any(rx.pattern == sm89_only["match"] for rx, _, _ in pd.taxonomy("sm100"))
 
 
 def test_orphans_keep_every_labeled_kernel_including_infra_families(pd):
@@ -121,7 +132,7 @@ def test_orphans_keep_every_labeled_kernel_including_infra_families(pd):
             {"kernel": "void flash::FlashAttnFwdSm90<int>(flash::Params)", "us": 0.1},
         ]
     }
-    ops, orphans = pd.build_ops(facts)
+    ops, orphans = pd.build_ops(facts, "sm90")
     assert ops == []
     assert "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN" in orphans
     assert "vllm::scaled_fp8_quant_kernel_strided" in orphans
@@ -139,73 +150,52 @@ def test_spans_and_launchers_are_not_orphans(pd):
             {"kernel": "void flash::FlashAttnFwdSm90<int>(flash::Params)", "us": 5},
         ]
     }
-    _, orphans = pd.build_ops(facts)
+    _, orphans = pd.build_ops(facts, "sm90")
     assert orphans == ["flash::FlashAttnFwdSm90"]
 
 
-def _targets_for(repo: str, variants: list[str]) -> dict:
+def _targets_for(repo: str, variants: list[str], **extra) -> dict:
     return {
-        "topologies": [{"tp": 1, "evidence": "real"}],
+        "topologies": [{"tp": 1, "evidence": "real"}, {"tp": 2, "evidence": "real"}],
         "backends": {"vllm": {"versions": ["0.29.0"], "images": {"0.29.0": "img"}}},
         "families": {"fam": {"checkpoints": [{"repo": repo, "profile": "bfloat16", "variants": variants}]}},
+        **extra,
     }
 
 
-def test_capacity_fallback_advances_past_a_load_oom(pd, tmp_path, monkeypatch):
-    """The representative dummy cut is the FIRST variant unless its raw probe
-    OOMed at engine load on this backend; then the next smaller faithful cut is
-    queued and the switch is recorded on the run (never silent)."""
+def test_a_campaign_renders_and_identifies_by_its_system(pd, tmp_path, monkeypatch):
+    """The system names the render, the SM and the run id: the same case on h200 and on
+    b200 is two runs, so two campaigns' raws never overwrite each other."""
+    monkeypatch.setattr(pd, "ROOT", tmp_path)
+    (tmp_path / "dummy_models" / "generic" / "M__rep").mkdir(parents=True)
+    targets = _targets_for("org/M", ["rep"])
+    h200 = [r for r in pd.enumerate_runs(targets, "h200_sxm", False, ["vllm"]) if "skip" not in r]
+    b200 = [r for r in pd.enumerate_runs(targets, "b200_sxm", False, ["vllm"]) if "skip" not in r]
+    assert {(r["system"], r["sm"]) for r in h200} == {("h200_sxm", "sm90")}
+    assert {(r["system"], r["sm"]) for r in b200} == {("b200_sxm", "sm100")}
+    assert not {r["id"] for r in h200} & {r["id"] for r in b200}
+    assert pd.system_sm("b300_sxm") == "sm103" and pd.system_sm("rtx_pro_6000_server") == "sm120"
 
+
+def test_the_representative_cut_is_the_first_variant_unless_overridden(pd, tmp_path, monkeypatch):
     monkeypatch.setattr(pd, "ROOT", tmp_path)
     for v in ("depth8", "depth4"):
         (tmp_path / "dummy_models" / "generic" / f"Big__{v}").mkdir(parents=True)
     targets = _targets_for("org/Big", ["depth8", "depth4"])
-    # no evidence yet: index 0 is the representative
-    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
-    assert {r["variant"] for r in runs} == {"depth8"}
-    assert all("capacity_fallback_from" not in r for r in runs)
-    # the depth8 probe OOMed at load -> depth4 becomes the representative
-    oom_rid = next(r["id"] for r in runs if r["kv_dtype"] is None)
-    (tmp_path / "archive" / "raw").mkdir(parents=True)
-    (tmp_path / "archive" / "raw" / f"{oom_rid}.json").write_text(
-        json.dumps({"errors": {"load": "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 GiB"}})
-    )
-    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
+    runs = [r for r in pd.enumerate_runs(targets, "h200_sxm", False, ["vllm"]) if "skip" not in r]
+    assert {r["variant"] for r in runs} == {"depth8"} and {r["tp"] for r in runs} == {1}
+    targets["families"]["fam"]["checkpoints"][0]["variant_overrides"] = {"vllm": "depth4"}
+    runs = [r for r in pd.enumerate_runs(targets, "h200_sxm", False, ["vllm"]) if "skip" not in r]
     assert {r["variant"] for r in runs} == {"depth4"}
-    assert {r["capacity_fallback_from"] for r in runs} == {"depth8"}
-    # a non-OOM failure is NOT a capacity signal: the representative stays
-    (tmp_path / "archive" / "raw" / f"{oom_rid}.json").write_text(
-        json.dumps({"errors": {"load": "RuntimeError: CUDA error: an illegal memory access was encountered"}})
-    )
-    runs = [r for r in pd.enumerate_runs(targets, full=False, backends=["vllm"]) if "skip" not in r]
-    assert {r["variant"] for r in runs} == {"depth8"}
 
 
-def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
-    """When every cut OOMed the smallest one stays queued (its failure is the
-    honest matrix cell) — the fallback never invents a cut that does not exist."""
-
+def test_tp_required_scoped_by_the_campaign_sm(pd, tmp_path, monkeypatch):
     monkeypatch.setattr(pd, "ROOT", tmp_path)
-    for v in ("depth8", "depth4"):
-        (tmp_path / "dummy_models" / "generic" / f"Big__{v}").mkdir(parents=True)
-    (tmp_path / "archive" / "raw").mkdir(parents=True)
-    ck = {"repo": "org/Big", "profile": "bfloat16"}
-    # both OOM phrasings count: torch's and the trtllm executor's
-    for v, msg in (
-        ("depth8", "CUDA out of memory"),
-        ("depth4", "RuntimeError: Executor creation failed due to insufficient GPU memory."),
-    ):
-        rid = pd._run_id(
-            ck, v, "vllm", "0.29.0", 1, None, "h20_sm90"
-        )  # ids carry the platform (default h20_sm90 without a targets platform)
-        (tmp_path / "archive" / "raw" / f"{rid}.json").write_text(json.dumps({"errors": {"load": msg}}))
-    runs = [
-        r
-        for r in pd.enumerate_runs(_targets_for("org/Big", ["depth8", "depth4"]), full=False, backends=["vllm"])
-        if "skip" not in r
-    ]
-    assert {r["variant"] for r in runs} == {"depth4"}
-    assert {r["capacity_fallback_from"] for r in runs} == {"depth8"}
+    (tmp_path / "dummy_models" / "generic" / "K__rep").mkdir(parents=True)
+    policy = {"tp_required": [{"repo": "org/K", "backend": "vllm", "tp": 2, "sms": [100]}]}
+    targets = _targets_for("org/K", ["rep"], topology_policy=policy)
+    tps = lambda system: {r["tp"] for r in pd.enumerate_runs(targets, system, False, ["vllm"]) if "skip" not in r}
+    assert tps("b200_sxm") == {2} and tps("h200_sxm") == {1}
 
 
 def test_customization_sms_scope(pd, monkeypatch):
@@ -218,19 +208,19 @@ def test_customization_sms_scope(pd, monkeypatch):
     assert pd._cea(["-b"], "sm120") == ["-b"]
 
 
-def test_run_id_carries_the_platform(pd):
+def test_run_id_carries_the_system_and_kv(pd):
     ck = {"repo": "org/m", "profile": "fp8"}
-    legacy = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None)
-    h20 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "h20_sm90")
-    b200 = pd._run_id(ck, "v", "vllm", "0.30.0", 1, None, "b200_sm100")
-    assert len({legacy, h20, b200}) == 3 and len(h20) == 12
+    ids = {
+        pd._run_id(ck, "v", "vllm", "0.30.0", 1, kv, sys) for kv in (None, "fp8") for sys in ("h200_sxm", "b200_sxm")
+    }
+    assert len(ids) == 4 and all(len(i) == 12 for i in ids)
 
 
 def test_attention_identity_uses_taxonomy_backend_labels(pd):
     """The identity column shows the backend label, not an 80-char cubin name."""
-    assert pd.attn_identity_label("flash::FlashAttnFwdSm90<...>") == "fa3"
+    assert pd.attn_identity_label("flash::FlashAttnFwdSm90<...>", "sm90") == "fa3"
     unknown = "some_totally_unknown_kernel_name"
-    assert pd.attn_identity_label(unknown) == pd.normalize_kernel(unknown)
+    assert pd.attn_identity_label(unknown, "sm90") == pd.normalize_kernel(unknown)
 
 
 # --- golden render facts status + dummy adapter guard (sm120 V4.1 re-probe, 2026-10-01) ---

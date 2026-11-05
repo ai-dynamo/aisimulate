@@ -141,12 +141,12 @@ def fetch(repo: str, configs: Path, token: str | None) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ws = os.environ.get("AIS_PROBE_WORKSPACE") or os.environ.get("AIC_PROBE_WORKSPACE") or os.getcwd()
+    ws = Path(os.environ.get("AIS_PROBE_WORKSPACE") or Path(__file__).resolve().parents[1] / "workspace")
     ap.add_argument(
         "--configs",
         type=Path,
-        default=Path(ws) / "configs",
-        help="workspace configs/ dir (default: $AIS_PROBE_WORKSPACE/configs, else ./configs)",
+        default=ws / "configs",
+        help="workspace configs/ dir (default: <probe workspace>/configs)",
     )
     ap.add_argument("--from-roster", action="store_true", help="every repo the targets.yaml probe roster names")
     ap.add_argument("repos", nargs="*")

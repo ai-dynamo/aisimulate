@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""One probe invocation per run, two routes: the per-GPU docker queue on a probe box and
-the probe.serving shard on the collection pipeline. Both run the same in-container probe
-script with the same argv; the pipeline spec replaces the workspace mount with the
-unpacked bundle and the raw path with the shard dir."""
+"""A serving-probe campaign end to end on the collection pipeline: emit (render, bundle,
+spec, shard plan) -> the job's probe.serving shards -> --import-raws (only this emit's
+fingerprint) -> records labeled with the SM the raw ran on -> the per-model matrix."""
 
 import importlib.util
 import io
@@ -35,17 +34,16 @@ def pd(tmp_path, monkeypatch):
     (golden / "run.sh").write_text("engine_command=(vllm serve /m --tp 1)\n")
     (golden / "run_0.sh").write_text("python -m sglang.launch_server --model /m --tp 1\n")
     (golden / "agg_config.yaml").write_text("kv_cache_config: {}\n")
-    monkeypatch.setattr(mod, "render_golden", lambda run: golden)
+    monkeypatch.setattr(mod, "render_golden", lambda run, cdir: golden)
     monkeypatch.setattr(mod, "extract_sglang_cli_from_run_sh", lambda p: "--attention-backend fa3")
     monkeypatch.setattr(mod, "_generator_src_commit", lambda: {"generator_commit": "abc"})
-    monkeypatch.setattr(mod, "SCRATCH_QUEUES", tmp_path / "queues")
     dummy = tmp_path / "ws" / "dummy_models" / "m__rep"
     dummy.mkdir(parents=True)
     (dummy / "config.json").write_text("{}")
     return mod
 
 
-def _run(pd, backend, tp=1):
+def _run(pd, backend, tp=1, system="b200_sxm"):
     return {
         "id": f"{backend}_tp{tp}",
         "backend": backend,
@@ -53,8 +51,10 @@ def _run(pd, backend, tp=1):
         "repo": "org/m",
         "variant": "rep",
         "version": "1",
+        "system": system,
+        "sm": pd.system_sm(system),
         "image": f"img/{backend}",
-        "kv_dtype": "fp8",
+        "kv_dtype": None,
         "model_dir": f"{pd.WORK}/dummy_models/m__rep",
     }
 
@@ -62,51 +62,92 @@ def _run(pd, backend, tp=1):
 @pytest.mark.parametrize(
     "backend, tp, script, expect",
     [
-        ("vllm", 1, "probe_vllm.py", "--entrypoint python3 img/vllm /harness"),
-        ("sglang", 1, "probe_sglang.py", "img/sglang python3 /harness"),
-        ("sglang", 2, "probe_sglang_server.py", "--tp 2 --kv-dtype fp8"),
-        ("trtllm", 1, "probe_trtllm.py", "-e TLLM_WORKER_USE_SINGLE_PROCESS=1"),
-        ("trtllm", 2, "probe_trtllm_server.py", "--model /work/dummy_models/m__rep --tp 2 --trust-remote-code"),
+        ("vllm", 1, "probe_vllm.py", "--run-sh"),
+        ("sglang", 1, "probe_sglang.py", "--trace"),
+        ("sglang", 2, "probe_sglang_server.py", "--tp"),
+        ("trtllm", 1, "probe_trtllm.py", "--engine-yaml"),
+        ("trtllm", 2, "probe_trtllm_server.py", "--tp"),
     ],
 )
-def test_the_docker_queue_runs_the_prepared_probe(pd, monkeypatch, backend, tp, script, expect):
-    monkeypatch.setattr(pd, "PROBES_IN_CONTAINER", "/harness/probes")
-    runs = [_run(pd, backend, tp)]
-    pd.emit_queues(runs, [0, 1], "plan.json")
-    cmd = (pd.SCRATCH_QUEUES / "gpu0.sh").read_text()
-    assert f"/harness/probes/{script}" in cmd and expect in cmd
-    assert f"--out {pd.WORK}/archive/raw/{runs[0]['id']}.json" in cmd
-    assert runs[0]["probe_script"] == script and runs[0]["exec_fingerprint"]
+def test_emit_writes_a_spec_per_run_with_bundle_and_out_paths(pd, backend, tp, script, expect):
+    cdir = pd.campaign_dir("c")
+    pd.emit_shards([_run(pd, backend, tp)], cdir, "http://share/c", upload=False)
+    (shard,) = yaml.safe_load((cdir / "shards" / f"tp{tp}" / f"{backend}.yaml").read_text())["shards"]
+    rid = f"{backend}_tp{tp}"
+    assert shard["op"] == "probe.serving" and shard["case_filter"] == f"spec=http://share/c/{rid}.json"
+    spec = json.loads((cdir / "bundles" / f"{rid}.json").read_text())
+    assert spec["script"] == script and expect in spec["args"]
+    assert "{BUNDLE}/dummy_models/m__rep" in spec["args"] and f"{{OUT}}/raw_{rid}.json" in spec["args"]
+    assert (spec["env"] == {"TLLM_WORKER_USE_SINGLE_PROCESS": "1"}) == (backend == "trtllm" and tp == 1)
+    with tarfile.open(cdir / "bundles" / f"{rid}.tgz") as tar:
+        names = set(tar.getnames())
+    assert "dummy_models/m__rep/config.json" in names
+    assert all(not a.startswith("/") for a in names)
+    plan = json.loads((cdir / "plan.json").read_text())
+    assert plan[0]["exec_fingerprint"]["fingerprint"] == spec["fingerprint"]
 
 
-def test_emit_shards_bundles_the_inputs_and_rewrites_the_paths(pd, tmp_path):
-    runs = [_run(pd, "vllm"), _run(pd, "trtllm", tp=2)]
-    pd.emit_shards(runs, "plan.json", tmp_path / "shards", "http://share/plans/x", upload=False)
-    plan = yaml.safe_load((tmp_path / "shards" / "tp1" / "vllm.yaml").read_text())
-    (shard,) = plan["shards"]
-    assert shard["op"] == "probe.serving" and shard["case_filter"] == "spec=http://share/plans/x/vllm_tp1.json"
-    assert yaml.safe_load((tmp_path / "shards" / "tp2" / "trtllm.yaml").read_text())["shards"]
-    spec = json.loads((tmp_path / "shards" / "bundles" / "vllm_tp1.json").read_text())
-    assert spec["script"] == "probe_vllm.py" and spec["bundle"] == "http://share/plans/x/vllm_tp1.tgz"
-    assert "{BUNDLE}/dummy_models/m__rep" in spec["args"] and "{OUT}/raw_vllm_tp1.json" in spec["args"]
-    assert not any(a.startswith(pd.WORK) for a in spec["args"])
-    with tarfile.open(tmp_path / "shards" / "bundles" / "vllm_tp1.tgz") as tar:
-        assert {"dummy_models/m__rep/config.json", "archive/run_sh/vllm_tp1.sh"} <= set(tar.getnames())
-    saved = {r["id"]: r for r in json.loads((pd.ROOT / "archive" / "plan.json").read_text())}
-    assert saved["vllm_tp1"]["exec_fingerprint"]["fingerprint"] == spec["fingerprint"]
+def _job_shard(job: Path, rid: str, fingerprint: str, raw: dict | None, tail: str = "") -> None:
+    shard = job / f"probe.serving__{rid}"
+    shard.mkdir(parents=True)
+    result = {"run_id": rid, "fingerprint": fingerprint, "raw": f"raw_{rid}.json" if raw else None, "tail": tail}
+    (shard / "probe_serving.json").write_text(json.dumps({"probe": "serving", "result": result}))
+    if raw:
+        (shard / f"raw_{rid}.json").write_text(json.dumps(raw))
 
 
-def test_import_raws_files_the_job_raws_with_their_fingerprint(pd, tmp_path):
-    runs = [_run(pd, "vllm")]
-    pd.emit_shards(runs, "plan.json", tmp_path / "shards", "http://share/x", upload=False)
-    job = tmp_path / "job" / "probe.serving__vllm_tp1"
-    job.mkdir(parents=True)
-    (job / "raw_vllm_tp1.json").write_text('{"errors": {}}')
-    pd.import_raws(tmp_path / "job", "plan.json")
-    assert (pd.ROOT / "archive" / "raw" / "vllm_tp1.json").read_text() == '{"errors": {}}'
-    assert (pd.ROOT / "archive" / "raw" / "vllm_tp1.fp").read_text().strip() == runs[0]["exec_fingerprint"][
-        "fingerprint"
+RAW_SM100 = {
+    "errors": {},
+    "device_capability": "sm100",
+    "probe_isl": 4096,
+    "decode_kernels": [
+        {"kernel": "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvDenseP32VarSeqQ8Kv128StaticSwapsAbForGen", "us": 3}
+    ],
+}
+
+
+def test_import_files_only_this_emit_and_records_label_by_the_raw_sm(pd, tmp_path):
+    cdir = pd.campaign_dir("c")
+    runs = [
+        _run(pd, "vllm"),
+        dict(_run(pd, "vllm"), id="vllm_fp8", kv_dtype="fp8"),
+        dict(_run(pd, "vllm"), id="dead", repo="org/d"),
     ]
+    pd.emit_shards(runs, cdir, "http://share/c", upload=False)
+    fps = {r["id"]: r["exec_fingerprint"]["fingerprint"] for r in json.loads((cdir / "plan.json").read_text())}
+    job = tmp_path / "job"
+    _job_shard(job, "vllm_tp1", fps["vllm_tp1"], RAW_SM100)
+    _job_shard(job, "vllm_fp8", "0" * 12, RAW_SM100)  # ran another emit of this run: not filed
+    _job_shard(job, "dead", fps["dead"], None, tail="loading\nRuntimeError: CUDA error: no kernel image\n")
+    pd.import_raws(job, cdir)
+    assert (cdir / "raw" / "vllm_tp1.json").exists() and not (cdir / "raw" / "vllm_fp8.json").exists()
+    assert "no kernel image" in (cdir / "raw" / "dead.tail").read_text()
+
+    pd.build_records(cdir)
+    (rec,) = pd.load_records(cdir).values()
+    assert rec["runtime"]["sm"] == "sm100" and rec["runtime"]["system"] == "b200_sxm"
+    # the Blackwell FMHA cubin is labeled by the sm100 rules (the sm90 rules leave it unlabeled)
+    assert rec["identity"]["attn_backend"] == "trtllm_fmha"
+
+    (matrix,) = pd.build_matrix({"families": {}}, cdir)
+    doc = yaml.safe_load(matrix.read_text())
+    assert doc["_meta"]["sm"] == "sm100" and doc["_meta"]["system"] == "b200_sxm"
+    assert doc["results"]["org/m"]["verdict"] == "pass" and doc["results"]["org/m"]["topology"] == "tp1"
+    # a probe that died before its raw: the observation is its own error line
+    assert doc["results"]["org/d"] == {
+        "verdict": "fail",
+        "cause": "no raw (crashed before dump)",
+        "error": "RuntimeError: CUDA error: no kernel image",
+    }
+
+
+def test_reemitting_a_campaign_starts_it_over(pd, tmp_path):
+    cdir = pd.campaign_dir("c")
+    pd.emit_shards([_run(pd, "vllm")], cdir, "http://share/c", upload=False)
+    (cdir / "raw").mkdir()
+    (cdir / "raw" / "vllm_tp1.json").write_text("{}")
+    pd.emit_shards([_run(pd, "vllm")], cdir, "http://share/c", upload=False)
+    assert not (cdir / "raw").exists()
 
 
 def test_the_serving_probe_runs_the_spec_script_on_the_unpacked_bundle(monkeypatch, tmp_path):

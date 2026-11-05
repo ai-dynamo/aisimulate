@@ -10,9 +10,10 @@
          matches no planned case on the SM is not a gate there.
   grade  --fw <backend> --sm <sm> --results <dir> [--version <v>]
          For every gate in scope, the ``probe_trace_case.json`` of its shards (found under
-         ``<dir>``) against the serving record of its repo and kv, through path_diff.diff;
-         verdicts land in results/pathdiff/<sm>/<fw>-<version>/<gate>.json. ``no_serving``
-         SMs get a platform-floor verdict. The version defaults to the manifest's default.
+         ``<dir>``) against the serving record of its repo and kv on the same SM (probe_driver
+         campaigns), through path_diff.diff; verdicts land in the workspace,
+         results/pathdiff/<sm>/<fw>-<version>/<gate>.json. ``no_serving`` SMs get a
+         platform-floor verdict. The version defaults to the manifest's default.
 
 The table is the one home of the gates; workflow_check reads it through ``gates_in_scope``.
 """
@@ -89,6 +90,14 @@ def shard_plan(fw: str, sm: str) -> dict:
     return {"backend": fw, "shards": shards}
 
 
+def verdict_dir(sm: str, fw: str, version: str) -> Path:
+    """Where the verdicts of (sm, fw, version) live: the probe workspace on the control machine."""
+    sys.path.insert(0, str(HERE))
+    import probe_driver
+
+    return probe_driver.ROOT / "results" / "pathdiff" / sm / f"{fw}-{version}"
+
+
 def _manifest_default(fw: str) -> str:
     manifest = yaml.safe_load((COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"][fw]
     return str(manifest["default"]["version"])
@@ -100,7 +109,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
     import path_diff
 
     version = version or _manifest_default(fw)
-    out_dir = HARNESS / "results" / "pathdiff" / sm / f"{fw}-{version}"
+    out_dir = verdict_dir(sm, fw, version)
     out_dir.mkdir(parents=True, exist_ok=True)
     hints = load()["hints"][fw]
     verdicts = {}
@@ -120,18 +129,19 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
         if not all(files):
             verdicts[g["gate"]] = "missing-trace"
             continue
-        path_diff.diff(
+        out.unlink(missing_ok=True)
+        rc = path_diff.diff(
             [str(f) for f in files],
             g["repo"],
             fw,
             version,
+            sm,
             hints[g["hint"]],
             save=str(out),
             kv_dtype=g["kv"],
-            serving_raw=g.get("serving_raw"),
             gate_name=g["gate"],
         )
-        verdicts[g["gate"]] = json.loads(out.read_text()).get("verdict") if out.exists() else "no-verdict"
+        verdicts[g["gate"]] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
     return verdicts
 
 

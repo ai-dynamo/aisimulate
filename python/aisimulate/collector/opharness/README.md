@@ -12,8 +12,8 @@ already answers (`collect.py --plan-only`, `--smoke`, `--case-filter`,
 
 | Path | What it does |
 |---|---|
-| `targets.yaml` | the probe roster's overlay: per-model generate args (each with its fact), dummy overrides, owner exclusions, topologies, the box's platform. Versions and images come from `collector/framework_manifest.yaml` (`probe_driver.load_targets`) |
-| `components/probe_driver.py` | golden `cli generate` render -> probe queues -> `archive/records.jsonl` -> per-model matrix `results/<sm>/<fw>-<ver>.yaml` |
+| `targets.yaml` | the probe roster's overlay: per-model generate args (each with its fact), dummy overrides, owner exclusions, topologies. Versions and images come from `collector/framework_manifest.yaml` (`probe_driver.load_targets`) |
+| `components/probe_driver.py` | a campaign for one system: golden `cli generate` render -> `probe.serving` shards -> raws -> `records.jsonl` -> per-model matrix |
 | `components/probes/` | in-container probes: in-process for tp1, the real server (`probe_*_server.py`) for tp>1 |
 | `components/dummies.py`, `fetch_inputs.py` | depth-cut, width-true dummy checkpoints from fetched configs |
 | `components/kernel_taxonomy.yaml` | kernel name -> backend label and role, one file for every SM (`sms:` scopes a rule) |
@@ -26,7 +26,7 @@ already answers (`collect.py --plan-only`, `--smoke`, `--case-filter`,
 ## Driving a workflow
 
 ```
-python3 components/workflow_check.py upgrade_op --param fw=vllm --param version=0.33.0
+python3 components/workflow_check.py upgrade_op --param fw=vllm --param version=0.33.0 --param sm=sm100
 ```
 
 prints each checked step as done or todo with the reason; do the first todo and
@@ -40,26 +40,30 @@ reads it; otherwise cite the run (pipeline id, system, version) at the code.
 
 ## Running
 
-- **Workspace.** `AIS_PROBE_WORKSPACE` holds data only: `configs/`,
-  `dummy_models/`, `archive/` (plan, raw probes with `.fp` fingerprint
-  sidecars, records), `facts/`, `jitcache/`. A raw counts as evidence only when
-  its fingerprint (engine invocation, dummy config, probe code, image, kv)
-  matches the plan; the matrix marks the rest `stale evidence`.
-- **SM.** `targets.yaml` `platform.sm` names the box; `AIS_SM` overrides it to
-  grade another box's evidence. SM103 uses the SM100 rules: every framework
-  selects kernels by capability family (`major == 10`, `in (100, 103)`), so
-  branch on the family, never on `sm == 100`.
-- **Gates** run on the collection pipeline: `gates.py plan --fw <fw> --sm <sm> --out <dir>`
-  writes a shard plan of `probe.trace_case` shards (collect.py runs each planned case once
-  under the profiler, its measurement child processes included), and `gates.py grade` reads
-  the unpacked job result. A gate exists on an SM where its case is planned; `no_serving`
-  marks an SM whose probe box cannot serve the model, which gets a `platform-floor` verdict.
-- **Serving probes** run on the collection pipeline too: `probe_driver.py --emit-shards
-  <dir> --url-base <share dir>` renders each run's golden config, uploads its inputs (dummy
-  model dir and rendered config) and writes `probe.serving` shard plans per tp
-  (`collector/probes/serving.py` runs the same `probes/probe_<fw>.py`); after the job,
-  `--import-raws <job result dir>` files the raws, then `--records` / `--matrix` as before.
-  `--emit-queues` keeps the per-GPU docker route for a box with the framework images.
+Everything runs from one control machine; GPU work goes through the collection
+pipeline (the `aisim-campaign` skill). Nothing generated is committed.
+
+- **Workspace.** `AIS_PROBE_WORKSPACE` (default `collector/opharness/workspace/`,
+  git-ignored) holds `configs/`, `dummy_models/`, `campaigns/<name>/` and `results/`.
+- **Serving probes.** A campaign is one system: `probe_driver.py --system <system>
+  --backends <fw> --only <repos> --emit-shards --url-base <share dir>` renders each run's
+  golden config for that system, uploads its inputs (dummy model dir and rendered config)
+  and writes `probe.serving` shard plans per tp under `campaigns/<name>/shards/`
+  (`collector/probes/serving.py` runs `probes/probe_<fw>.py` in the job). Then
+  `--import-raws <job result dir>` (only shards that ran this emit), `--records` (kernels
+  labeled with the rules of the SM each raw ran on) and `--matrix`. Two campaigns'
+  matrices for the same models (old pin, new pin) diff into the identity report.
+- **Gates.** `gates.py plan --fw <fw> --sm <sm> --out <dir>` writes the `probe.trace_case`
+  shards for one SM (collect.py runs each planned case once under the profiler, its
+  measurement child processes included); `gates.py grade --fw <fw> --sm <sm> --results
+  <job result dir>` grades them against the serving records of the same SM and writes the
+  verdicts to `results/pathdiff/<sm>/<fw>-<version>/`. A gate exists on an SM where its case
+  is planned; `no_serving` marks an SM where the model cannot be served, which gets a
+  `platform-floor` verdict.
+- **SM.** A campaign's SM is its system's (`src/aisimulate_core/systems/<system>.yaml`);
+  a record's is the one its raw reports. SM103 uses the SM100 rules where every framework
+  selects kernels by capability family (`major == 10`): branch on the family, never on
+  `sm == 100`.
 
 ## Rules
 
@@ -69,5 +73,5 @@ reads it; otherwise cite the run (pipeline id, system, version) at the code.
    (framework file and symbol) explains it, as the collector rules require.
 3. One home per fact: versions and images in the manifest, cases in the plan,
    skips in `collector/skips.py`, kernel labels in `kernel_taxonomy.yaml`.
-4. Results stay in the workspace; golden commands stamp the generator commit,
-   and result files carry their framework version.
+4. Results stay in the workspace on the control machine; a plan records the
+   generator commit, and result files carry their system, SM and framework version.

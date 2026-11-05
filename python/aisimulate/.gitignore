@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 dev/
 results/
+collector/opharness/workspace/
 archived/
 *.egg-info/
 .VSCodeCounter/

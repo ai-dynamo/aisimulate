@@ -20,7 +20,6 @@ import importlib
 import importlib.abc
 import importlib.util
 import json
-import os
 import sys
 import traceback
 from collections import Counter, defaultdict
@@ -231,9 +230,7 @@ def main() -> None:
     # prompt length of the profiled request (same knob/default as the vllm and
     # sglang probes; recorded as probe_isl). The historical 16-token prompt
     # sat below every length-conditional dispatch threshold.
-    ap.add_argument(
-        "--isl", type=int, default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096")
-    )
+    ap.add_argument("--isl", type=int, default=4096)
     ap.add_argument(
         "--kv-dtype",
         default=None,

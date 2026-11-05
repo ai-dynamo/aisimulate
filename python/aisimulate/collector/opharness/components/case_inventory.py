@@ -18,7 +18,7 @@ Cases leave a plan on purpose only through collector/skips.py, and every such
 entry is counted under `removed` with its reason. A loss the growth of
 `removed` does not account for is a regression; there is no waiver file.
 
-Output (local results/, not committed): results/<sm>/cases/<fw>-<version>.yaml
+Output (the probe workspace on the control machine, never committed): results/<sm>/cases/<fw>-<version>.yaml
   _meta : fw / version (the pin under test, a label) / sm / revisions / counts
   ops   : per planned op — cases, by_dtype, by_dispatch, removed {region: cases},
           plan_hash (the case_plan_hash of a run that attempts every case), and
@@ -224,7 +224,10 @@ def skip_key(entry: dict) -> str:
 
 
 def inventory_path(sm: str, fw: str, version: str) -> Path:
-    return HARNESS / "results" / sm / "cases" / f"{fw}-{version}.yaml"
+    sys.path.insert(0, str(HERE))
+    import probe_driver
+
+    return probe_driver.ROOT / "results" / sm / "cases" / f"{fw}-{version}.yaml"
 
 
 def main() -> int:

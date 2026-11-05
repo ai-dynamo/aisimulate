@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import traceback
 from collections import Counter, defaultdict
 
@@ -155,9 +154,7 @@ def main() -> None:
     # conditional (NSA/DSA dense-vs-sparse thresholds, M3 sparse threshold,
     # chunked prefill), so the historical implicit 32 hid those paths — same
     # knob and default as probe_vllm (owner-set 2026-09-19); recorded as probe_isl.
-    ap.add_argument(
-        "--isl", type=int, default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096")
-    )
+    ap.add_argument("--isl", type=int, default=4096)
     ap.add_argument("--override", default=None, help='json_model_override_args, e.g. \'{"expert_dtype": "fp8"}\'')
     ap.add_argument(
         "--quantization", default=None, help="explicit ServerArgs.quantization (collector sets fp8 for dsv4)"

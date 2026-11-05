@@ -15,7 +15,9 @@ and reports done or todo with the reason; the driving loop is "do the first todo
 Judgment steps without an artifact (triage, review) are prose in the workflow's .md.
 
 Usage:
-  AIS_PROBE_WORKSPACE=<ws> python3 workflow_check.py upgrade_op --param fw=sglang --param version=0.5.21 [--json]
+  python3 workflow_check.py upgrade_op --param fw=sglang --param version=0.5.21 --param sm=sm100 [--json]
+
+The artifacts are the probe workspace's results/ on the control machine (probe_driver.ROOT).
 """
 
 from __future__ import annotations
@@ -43,6 +45,10 @@ def _probe_driver_module():
     return mod
 
 
+def _results() -> Path:
+    return _probe_driver_module().ROOT / "results"
+
+
 def pred_pin_is(p):
     """The manifest pins fw at version: its framework default, or a family pin (a family upgrade)."""
     fw = yaml.safe_load((COLLECTOR / "framework_manifest.yaml").read_text())["frameworks"].get(p["fw"]) or {}
@@ -61,10 +67,9 @@ def pred_case_set_no_regression(p):
     collection: job 469988017 lost paged_mqa (op out of plan), the V4-Pro topk
     calibration (a getter's drop) and the sglang mla_context_module table (no
     producer) — all visible in a plan diff."""
-    sm = p.get("sm", "sm90")
-    inv = HARNESS / "results" / sm / "cases" / f"{p['fw']}-{p['version']}.yaml"
+    inv = _results() / p["sm"] / "cases" / f"{p['fw']}-{p['version']}.yaml"
     if not inv.exists():
-        return False, f"no case plan ({inv.relative_to(HARNESS)}) — run components/case_inventory.py --base <rev>"
+        return False, f"no case plan ({inv}) — run components/case_inventory.py --base <rev>"
     doc = yaml.safe_load(inv.read_text()) or {}
     meta = doc.get("_meta") or {}
     if meta.get("framework") != p["fw"] or str(meta.get("version")) != str(p["version"]):
@@ -95,13 +100,12 @@ def pred_skips_rechecked(p):
     The Kimi-K3 96-head gap sat in a conclusion for two days while the collector
     swept num_heads=96 on B200 and failed 362 cases 'unexpected': a conclusion
     about what a backend cannot run belongs in skips.py, where the plan reads it."""
-    sm = p.get("sm", "sm90")
     ci = _case_inventory_module()
     ops = [op for op in str(p.get("ops") or "").split(",") if op]
     in_scope = {ci.skip_key(entry) for entry in ci.skips_in_scope(p["fw"], ops or None)}
-    rec_path = HARNESS / "results" / sm / "rechecks" / f"{p['fw']}-{p['version']}.yaml"
+    rec_path = _results() / p["sm"] / "rechecks" / f"{p['fw']}-{p['version']}.yaml"
     if not rec_path.exists():
-        return False, f"{len(in_scope)} skips.py entries in scope, no recheck record ({rec_path.relative_to(HARNESS)})"
+        return False, f"{len(in_scope)} skips.py entries in scope, no recheck record ({rec_path})"
     items = {it.get("entry"): it for it in (yaml.safe_load(rec_path.read_text()) or {}).get("skips") or []}
     missing = sorted(in_scope - set(items))
     if missing:
@@ -214,7 +218,7 @@ def pred_gates_aligned(p):
     file that names this framework/version and reads 'aligned'. --param repo= or family=
     narrows the scope to the gates that name the repo or start with the family; without a
     filter, every registry op must also be covered (a rebuilt gate set once kept 19 of 32)."""
-    sm, fw, version = p.get("sm", "sm90"), p["fw"], p["version"]
+    sm, fw, version = p["sm"], p["fw"], p["version"]
     expected = declared_gates(fw, version, sm)
     if not p.get("repo") and not p.get("family"):
         ops = registry_ops(fw)
@@ -234,7 +238,7 @@ def pred_gates_aligned(p):
         expected = {g for g in expected if g.startswith(p["family"])}
     if not expected:
         return False, f"no gates declared in scope for {fw} {version} in components/gates.yaml"
-    vd = HARNESS / "results" / "pathdiff" / sm / f"{fw}-{version}"
+    vd = _results() / "pathdiff" / sm / f"{fw}-{version}"
     missing, bad, foreign, named = [], [], [], 0
     for g in sorted(expected):
         f = vd / f"{g}.json"
@@ -269,7 +273,7 @@ PREDICATES = {
 
 
 def evaluate(workflow: str, params: dict) -> dict:
-    params = {"sm": _probe_driver_module().current_sm(), **{k: v for k, v in params.items() if v is not None}}
+    params = {k: v for k, v in params.items() if v is not None}
     manifest = yaml.safe_load((HARNESS / "workflows" / f"{workflow}.yaml").read_text())
     steps = []
     for step in manifest["steps"]:

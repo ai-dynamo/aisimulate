@@ -128,9 +128,7 @@ def main() -> None:
     # default and hid those paths; records carry probe_isl so evidence from
     # both eras stays distinguishable. Coverage is a parameter, never a
     # per-model special case.
-    ap.add_argument(
-        "--isl", type=int, default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096")
-    )
+    ap.add_argument("--isl", type=int, default=4096)
     # Sweep the collector-relevant serving config. kv-cache-dtype is the
     # typical one (fp8 is a common deployment); the collector sweeps it
     # universally, so the probe must too or path_diff can never compare the

@@ -19,16 +19,16 @@ COMPONENTS = Path(__file__).resolve().parents[4] / "collector" / "opharness" / "
 
 @pytest.fixture()
 def wc(tmp_path, monkeypatch):
-    """A scratch harness dir (results, workflows) and gates table beside a scratch collector dir."""
+    """A scratch harness dir (workflows), workspace results and gates table beside a scratch collector dir."""
     spec = importlib.util.spec_from_file_location("workflow_check_t", COMPONENTS / "workflow_check.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["workflow_check_t"] = mod
     spec.loader.exec_module(mod)
     harness = tmp_path / "harness"
     (harness / "components").mkdir(parents=True)
-    (harness / "results" / "sm90" / "pathdiff").mkdir(parents=True)
     (harness / "workflows").mkdir()
     monkeypatch.setattr(mod, "HARNESS", harness)
+    monkeypatch.setattr(mod, "_results", lambda: tmp_path / "ws" / "results")
     monkeypatch.setattr(mod, "GATES_TABLE", tmp_path / "gates.yaml")
     return mod
 
@@ -47,13 +47,13 @@ def _gates_table(wc, rows, planned=None):
 
 
 def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0"):
-    d = wc.HARNESS / "results" / "pathdiff" / "sm90" / "vllm-0.29.0"
+    d = wc._results() / "pathdiff" / "sm90" / "vllm-0.29.0"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{gate}.json").write_text(json.dumps({"verdict": verdict, "framework": fw, "version": version}))
 
 
 def _verdict(wc, gate, verdict="aligned", fw="vllm", version="0.29.0", repo="org/m"):
-    d = wc.HARNESS / "results" / "pathdiff" / "sm90" / "vllm-0.29.0"
+    d = wc._results() / "pathdiff" / "sm90" / "vllm-0.29.0"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{gate}.json").write_text(json.dumps({"verdict": verdict, "framework": fw, "version": version, "repo": repo}))
 
@@ -134,14 +134,14 @@ def test_gate_coverage_is_checked_against_the_registry_not_the_table(wc, tmp_pat
         'OpEntry(op="compute_scale"), OpEntry(op="msa_context_module")]\n'
     )
     _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen"])
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
     assert not ok and "gdn:^gdn_gen" in reason and "msa_context_module" in reason
     _gates_table(wc, ["gemm_bf16_Llama", "gdn_ctx_Qwen", "gdn_gen_Qwen", "msa_ctx_M3"])
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
     assert not ok and "without a verdict" in reason  # covered now; the verdicts are still missing
     # an op the table does not know is a finding, never silently gate-free
     (wc.HARNESS.parent / "vllm" / "registry.py").write_text('REGISTRY = [OpEntry(op="brand_new_op")]\n')
-    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0"})
+    ok, reason = wc.pred_gates_aligned({"fw": "vllm", "version": "0.30.0", "sm": "sm90"})
     assert not ok and "brand_new_op" in reason
 
 
@@ -171,7 +171,7 @@ def test_skips_rechecked_needs_a_kept_record_with_evidence_for_every_entry_in_sc
     ci = wc._case_inventory_module()
     keys = [ci.skip_key(e) for e in ci.skips_in_scope("vllm", ["dsv4_hca_context_module"])]
     assert keys and len(keys) < len(ci.skips_in_scope("vllm"))
-    f = wc.HARNESS / "results" / "sm90" / "rechecks" / "vllm-0.33.0.yaml"
+    f = wc._results() / "sm90" / "rechecks" / "vllm-0.33.0.yaml"
     f.parent.mkdir(parents=True)
     items = [{"entry": k, "outcome": "kept", "how": "source", "ref": "vllm/x.py:f"} for k in keys]
     f.write_text(yaml.safe_dump({"skips": items[1:]}))
@@ -191,7 +191,7 @@ def test_case_set_no_regression_reads_the_recorded_plan_diff(wc):
     p = {"fw": "sglang", "version": "0.5.21", "sm": "sm100"}
     ok, reason = wc.pred_case_set_no_regression(p)
     assert ok is False and "no case plan" in reason
-    d = wc.HARNESS / "results" / "sm100" / "cases"
+    d = wc._results() / "sm100" / "cases"
     d.mkdir(parents=True)
     doc = {"_meta": {"framework": "sglang", "version": "0.5.21", "revision": "abc", "dirty": False}, "ops": {}}
     (d / "sglang-0.5.21.yaml").write_text(yaml.safe_dump(doc))
