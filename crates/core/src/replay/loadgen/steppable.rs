@@ -305,7 +305,8 @@ impl LiveRequests {
 
     fn validate(&self, request: &DirectRequest, retained: bool, dp_size: u32, prefill_dp_size: u32, workers: usize) -> anyhow::Result<()> {
         if let Some(uuid) = request.uuid {
-            anyhow::ensure!(!self.contains(uuid) && !retained, "steppable replay request {uuid} is already live or retained");
+            anyhow::ensure!(!self.contains(uuid), "steppable replay request {uuid} is already live");
+            anyhow::ensure!(!retained, "steppable replay request {uuid} is already retained");
         }
         anyhow::ensure!(request.preferred_dp_rank.is_none_or(|rank| rank < dp_size), "preferred attention-DP rank is out of range");
         anyhow::ensure!(request.preferred_prefill_dp_rank.or(request.preferred_dp_rank).is_none_or(|rank| rank < prefill_dp_size), "preferred prefill attention-DP rank is out of range");
