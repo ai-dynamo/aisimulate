@@ -563,6 +563,24 @@ def _launch_kind(fpm: dict[str, Any], max_cudagraph_capture_size: int) -> str:
     return "piecewise" if prefill > 0 else "decode"
 
 
+def _check_launch_stall(stall_ms: Any, max_cudagraph_capture_size: Any) -> None:
+    if (
+        not isinstance(max_cudagraph_capture_size, int)
+        or isinstance(max_cudagraph_capture_size, bool)
+        or max_cudagraph_capture_size <= 0
+    ):
+        raise ValueError(f"max_cudagraph_capture_size must be a positive integer, got {max_cudagraph_capture_size!r}")
+    carriers, kinds = {"decode", "prefill"}, {"piecewise", "eager"}
+    if not isinstance(stall_ms, dict) or set(stall_ms) != carriers:
+        raise ValueError(f"stall_ms needs exactly the carriers {sorted(carriers)}, got {stall_ms!r}")
+    for carrier, by_kind in stall_ms.items():
+        if not isinstance(by_kind, dict) or set(by_kind) != kinds:
+            raise ValueError(f"stall_ms[{carrier!r}] needs exactly the next-pass kinds {sorted(kinds)}, got {by_kind}")
+        for kind, value in by_kind.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"stall_ms[{carrier!r}][{kind!r}] must be a finite, nonnegative number, got {value!r}")
+
+
 def charge_own_launch(
     iterations: Sequence[Sequence[dict[str, Any]]],
     stall_ms: dict[str, dict[str, float]],
@@ -581,20 +599,39 @@ def charge_own_launch(
     predecessor carried for it. Two records are consecutive when they share
     ``worker_id`` and their ``counter_id`` values differ by one, so a pass after
     an idle heartbeat keeps its own launch. Times are floored at 0.5 ms.
+
+    Raises ``ValueError`` unless ``stall_ms`` gives a finite, nonnegative value
+    for each carrier and next-pass kind, ``max_cudagraph_capture_size`` is
+    positive, and every record has ``counter_id`` and a non-empty
+    ``worker_id`` that no other record shares with the same ``counter_id``.
     """
     if any(len(ranks) != 1 for ranks in iterations):
         raise ValueError(
             "charge_own_launch needs one rank per iteration; only a one-GPU vLLM worker launches in its engine loop"
         )
+    _check_launch_stall(stall_ms, max_cudagraph_capture_size)
     fpms = [ranks[0] for ranks in iterations]
-    keys = [(str(fpm.get("worker_id") or ""), int(fpm["counter_id"])) for fpm in fpms]
-    position = {key: i for i, key in enumerate(keys)}
+    position: dict[tuple[str, int], int] = {}
+    for i, fpm in enumerate(fpms):
+        worker = str(fpm.get("worker_id") or "")
+        if not worker or "counter_id" not in fpm:
+            raise ValueError(
+                "charge_own_launch needs counter_id and a non-empty worker_id on every record to find the pass after it"
+            )
+        key = (worker, int(fpm["counter_id"]))
+        if key in position:
+            raise ValueError(
+                f"duplicate FPM record for worker_id={key[0]!r} counter_id={key[1]}; counter_id repeats (worker "
+                "restart or concatenated runs) make the pass after it ambiguous"
+            )
+        position[key] = i
+    keys = list(position)
     kinds = [_launch_kind(fpm, max_cudagraph_capture_size) for fpm in fpms]
     carried = []
     for fpm, (worker, counter) in zip(fpms, keys, strict=True):
         nxt = position.get((worker, counter + 1))
         carrier = "prefill" if int(_sched(fpm).get("sum_prefill_tokens", 0)) > 0 else "decode"
-        carried.append(0.0 if nxt is None else stall_ms.get(carrier, {}).get(kinds[nxt], 0.0))
+        carried.append(0.0 if nxt is None or kinds[nxt] == "decode" else float(stall_ms[carrier][kinds[nxt]]))
     out = []
     for fpm, (worker, counter), own in zip(fpms, keys, carried, strict=True):
         prev = position.get((worker, counter - 1))
@@ -1270,6 +1307,8 @@ def _load_iterations(paths: Sequence[str], args: argparse.Namespace) -> list[lis
     iterations = group_iterations(iter_fpm_records(paths), args.join_ranks)
     if args.launch_stall:
         spec = json.loads(Path(args.launch_stall).read_text(encoding="utf-8"))
+        if not isinstance(spec, dict) or set(spec) != {"max_cudagraph_capture_size", "stall_ms"}:
+            raise ValueError(f"--launch-stall needs exactly max_cudagraph_capture_size and stall_ms, got {spec!r}")
         iterations = charge_own_launch(iterations, spec["stall_ms"], spec["max_cudagraph_capture_size"])
     return iterations
 

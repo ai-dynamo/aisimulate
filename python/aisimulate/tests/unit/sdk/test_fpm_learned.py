@@ -204,6 +204,39 @@ def test_charge_own_launch_moves_the_next_launch_back() -> None:
         fpm_learned.charge_own_launch([records[:2]], stall_ms, 4096)
 
 
+def test_charge_own_launch_rejects_ambiguous_records() -> None:
+    stall_ms = {"decode": {"piecewise": 50.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
+    first, second = _decode_fpm(8, 800, 0.020, counter=0), _decode_fpm(8, 800, 0.020, counter=1)
+    # a second capture of the same worker restarts its counters
+    with pytest.raises(ValueError, match="duplicate FPM record for worker_id='w0' counter_id=0"):
+        fpm_learned.charge_own_launch([[first], [second], [dict(first)]], stall_ms, 4096)
+    no_counter = {key: value for key, value in first.items() if key != "counter_id"}
+    for record in ({**first, "worker_id": ""}, no_counter):
+        with pytest.raises(ValueError, match="non-empty worker_id"):
+            fpm_learned.charge_own_launch([[record]], stall_ms, 4096)
+
+
+def test_charge_own_launch_needs_every_stall_value() -> None:
+    piecewise = _decode_fpm(0, 0, 0.040, counter=1)
+    piecewise["scheduled_requests"] = {"num_prefill_requests": 1, "sum_prefill_tokens": 1024}
+    records = [[_decode_fpm(8, 800, 0.020, counter=0)], [piecewise]]
+    full = {"decode": {"piecewise": 0.0, "eager": 180.0}, "prefill": {"piecewise": 10.0, "eager": 190.0}}
+    # an explicit zero moves nothing
+    out = fpm_learned.charge_own_launch(records, full, 4096)
+    assert [fpm_learned.iteration_wall_ms(ranks) for ranks in out] == pytest.approx([20.0, 40.0])
+    for stall_ms in (
+        {"decode": {"eager": 180.0}, "prefill": full["prefill"]},
+        {"decode": {**full["decode"], "eager": -1.0}, "prefill": full["prefill"]},
+        {"decode": {**full["decode"], "eager": math.nan}, "prefill": full["prefill"]},
+        {"decode": full["decode"]},
+    ):
+        with pytest.raises(ValueError, match="stall_ms"):
+            fpm_learned.charge_own_launch(records, stall_ms, 4096)
+    for size in (0, 4096.0):
+        with pytest.raises(ValueError, match="max_cudagraph_capture_size"):
+            fpm_learned.charge_own_launch(records, full, size)
+
+
 def _stump_artifact() -> dict:
     return {
         "schema": fpm_learned.SCHEMA_NAME,
