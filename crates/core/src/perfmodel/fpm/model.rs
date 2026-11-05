@@ -484,6 +484,8 @@ pub struct ForwardPassPerfModel {
     pub(super) query_coverage: Option<FpmCoverageState>,
     /// Feedback policy of a model restored from a state snapshot.
     snapshot_tuning: Option<StateSnapshotTuning>,
+    /// Private source closure keeps historical public config re-authoring compatible.
+    pinned_learned_config: Option<ForwardPassPerfModelConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -605,6 +607,7 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            pinned_learned_config: None,
             mixed_composition: None,
         }
     }
@@ -642,12 +645,15 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            pinned_learned_config: None,
             mixed_composition: None,
         })
     }
 
     fn from_learned_config(config: &ForwardPassPerfModelConfig) -> Result<Self, AicError> {
-        let settings = &config.estimator_config.fpm_learned;
+        // Bundle identity remains in provenance. The loader consumes the exact
+        // verified seed and its own digest, rather than the bundle's digest.
+        let settings = config.estimator_config.fpm_learned.runtime_source_config();
         let mut learned = if let Some(path) = &settings.checkpoint_path {
             checkpoint_model_for_config(path, config)?
         } else {
@@ -690,7 +696,7 @@ impl ForwardPassPerfModel {
         let identity_verified = settings.checkpoint_path.is_some() || artifact_identity.is_some();
         if config
             .estimator_config
-            .temporary_mixed_composition
+            .effective_mixed_composition()
             .is_some()
             && settings.adaptation == super::LearnedAdaptation::Frozen
         {
@@ -713,7 +719,7 @@ impl ForwardPassPerfModel {
                     .as_ref()
                     .expect("validated online checkpoint"),
                 &mut learned,
-                settings,
+                &settings,
                 config,
             )?)
         } else {
@@ -768,6 +774,7 @@ impl ForwardPassPerfModel {
             is_correction_enabled: config.estimator_config.correction.enabled,
             query_coverage: None,
             snapshot_tuning: None,
+            pinned_learned_config: None,
             mixed_composition,
         })
     }
@@ -818,6 +825,7 @@ impl ForwardPassPerfModel {
             is_correction_enabled: true,
             query_coverage: None,
             snapshot_tuning: None,
+            pinned_learned_config: None,
             mixed_composition: None,
         })
     }
@@ -915,6 +923,45 @@ impl ForwardPassPerfModel {
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
+                if let (Some(fallback), Some(mixed)) = (
+                    resolved
+                        .estimator_config
+                        .fpm_learned
+                        .source
+                        .resolved_fallback
+                        .as_mut(),
+                    model.mixed_composition.as_ref(),
+                ) {
+                    let native = mixed.dependency_provenance();
+                    if !native.is_null() {
+                        fallback.native = Some(native.clone());
+                    }
+                }
+                if resolved
+                    .estimator_config
+                    .fpm_learned
+                    .source
+                    .resolved_source
+                    .is_none()
+                {
+                    let mut pinned = resolved.clone();
+                    super::source::pin_legacy_source(&mut pinned)?;
+                    if let (Some(fallback), Some(mixed)) = (
+                        pinned
+                            .estimator_config
+                            .fpm_learned
+                            .source
+                            .resolved_fallback
+                            .as_mut(),
+                        model.mixed_composition.as_ref(),
+                    ) {
+                        let native = mixed.dependency_provenance();
+                        if !native.is_null() {
+                            fallback.native = Some(native.clone());
+                        }
+                    }
+                    model.pinned_learned_config = Some(pinned);
+                }
                 model.provenance = Some(ForwardPassPerfProvenance {
                     config: resolved,
                     selected_systems_root: None,
@@ -2531,6 +2578,45 @@ impl ForwardPassPerfModel {
     /// Exact immutable construction identity and selected systems root.
     pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
         self.provenance.as_ref()
+    }
+
+    /// Immutable inputs required to reconstruct this model. Callers use the
+    /// selected dependencies rather than infer data use from an estimator name.
+    /// This only reports construction-time pins; it performs no filesystem I/O.
+    pub fn dependency_info(&self) -> serde_json::Value {
+        let mut systems_paths = Vec::new();
+        let mut files = serde_json::json!([]);
+        if let Some(provenance) = &self.provenance {
+            if let Some(root) = &provenance.selected_systems_root {
+                systems_paths.push(root.clone());
+            }
+            if let Some(source) = &self
+                .pinned_learned_config
+                .as_ref()
+                .unwrap_or(&provenance.config)
+                .estimator_config
+                .fpm_learned
+                .source
+                .resolved_source
+            {
+                files =
+                    serde_json::to_value(&source.dependencies).expect("dependency serialization");
+            }
+        }
+        let fallback = self
+            .mixed_composition
+            .as_ref()
+            .map(MixedComposition::dependency_provenance);
+        if let Some(root) =
+            fallback.and_then(|value| value["provenance"]["selected_systems_root"].as_str())
+        {
+            let root = PathBuf::from(root);
+            if !systems_paths.contains(&root) {
+                systems_paths.push(root);
+            }
+        }
+        serde_json::json!({"systems_paths": systems_paths, "files": files, "fallback": fallback,
+            "owned_systems_paths": [], "external_systems_paths": systems_paths})
     }
 
     /// Whether some native estimate differs from the engine's: correction is

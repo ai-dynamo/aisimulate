@@ -42,6 +42,7 @@ mod resources;
 mod samples;
 mod selector;
 mod snapshot;
+mod source;
 mod speculative;
 
 #[cfg(test)]
@@ -62,8 +63,6 @@ pub use execution::{
     FpmSpeculativeMethod, FpmTimingScope,
 };
 pub use learned::LEARNED_SCHEMA_VERSION;
-#[cfg(feature = "python")]
-pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 #[cfg(feature = "python")]
@@ -84,4 +83,5 @@ pub use resources::{
     FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};
+pub use source::*;
 pub use speculative::SpeculativeForwardPassEstimate;

@@ -131,3 +131,11 @@ pub use fpm::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
     FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };
+
+pub use fpm::{
+    LearnedBundleManifest, LearnedBundlePrior, LearnedBundleSeed, LearnedCatalogue,
+    LearnedCatalogueEntry, LearnedDependency, LearnedDependencyRemap, LearnedFallback,
+    LearnedFallbackKind, LearnedSeedKind, LearnedSourceConfig, LearnedSourceKind,
+    LearnedSourcePolicy, LearnedSourceProvenance, LearnedSourceReference, LearnedTrainingRecipe,
+    ResolvedLearnedFallback, ResolvedLearnedSource,
+};

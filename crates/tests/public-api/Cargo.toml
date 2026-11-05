@@ -8,6 +8,9 @@ edition = "2021"
 publish = false
 license = "Apache-2.0"
 
+# Keep this external-consumer crate independent in nested Git worktrees too.
+[workspace]
+
 [dependencies]
 anyhow = "1"
 aisimulate-core = { package = "aisim-core", path = "../../core", features = ["python"] }

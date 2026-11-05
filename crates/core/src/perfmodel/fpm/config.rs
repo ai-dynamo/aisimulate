@@ -423,6 +423,20 @@ impl<'de> Deserialize<'de> for ForwardPassPerfModelConfig {
             ));
         }
         let mut value = serde_json::Value::deserialize(value).map_err(serde::de::Error::custom)?;
+        if value
+            .pointer("/estimator_config/temporary_mixed_composition")
+            .is_some_and(|v| !v.is_null())
+            && (value
+                .pointer("/estimator_config/fpm_learned/fallback")
+                .is_some()
+                || value
+                    .pointer("/estimator_config/fpm_learned/resolved_fallback")
+                    .is_some_and(|v| !v.is_null()))
+        {
+            return Err(serde::de::Error::custom(
+                "stable fallback and temporary_mixed_composition cannot both be supplied",
+            ));
+        }
         let mode = value
             .get("estimation_mode")
             .or_else(|| value.get("forward_model"));
@@ -547,6 +561,33 @@ impl ForwardPassPerfModelConfig {
         self.resolve_with_registration().map(|(config, _)| config)
     }
 
+    /// Normalize deployment identity before an offline learned source exists.
+    /// Source selection, snapshots, and fitting controls are not identity facts
+    /// and must not trigger I/O while producing their own training checkpoint.
+    /// Other estimator requests retain their ordinary normalization behavior.
+    pub(crate) fn resolve_learned_identity(mut self) -> Result<serde_json::Value, AicError> {
+        if self.estimation_mode == EstimationMode::FpmLearned {
+            if self.nextn != 0
+                || self
+                    .speculation
+                    .as_ref()
+                    .is_some_and(|spec| spec.kind != "none")
+            {
+                return Err(invalid_config(
+                    "fpm_learned does not support speculative decoding",
+                ));
+            }
+            // Regression shares the fitted identity rules (including explicit
+            // unknown hardware facts) and requires no learned source. No model
+            // is constructed here; the estimator fields are removed below.
+            self.estimation_mode = EstimationMode::FpmRegression;
+            self.fallback_policy = ForwardPassFallbackPolicy::Deny;
+            self.estimator_config = EstimatorConfig::default();
+            self.systems_paths.clear();
+        }
+        super::learned_online::canonical_learned_identity(&self.resolve()?)
+    }
+
     /// Retain registry availability for native candidate selection without
     /// adding transient registry facts to the serialized request.
     pub(crate) fn resolve_with_registration(self) -> Result<(Self, Option<bool>), AicError> {
@@ -579,12 +620,6 @@ impl ForwardPassPerfModelConfig {
             self.estimator_config.correction.mode = super::CorrectionMode::Hybrid;
         }
         self.validate()?;
-        if self.estimation_mode == EstimationMode::FpmLearned {
-            self.estimator_config.fpm_learned.resolve_source()?;
-            if let Some(mixed) = &mut self.estimator_config.temporary_mixed_composition {
-                mixed.original_a.resolve_source()?;
-            }
-        }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
             {
@@ -645,6 +680,9 @@ impl ForwardPassPerfModelConfig {
         } else {
             None
         };
+        if self.estimation_mode == EstimationMode::FpmLearned {
+            super::source::resolve(&mut self)?;
+        }
         self.estimator_config.fpm_interpolation.method = self
             .estimator_config
             .fpm_interpolation
@@ -686,7 +724,7 @@ impl ForwardPassPerfModelConfig {
             ));
         }
 
-        if let Some(mixed) = &self.estimator_config.temporary_mixed_composition {
+        if let Some(mixed) = self.estimator_config.effective_mixed_composition() {
             if self.estimator_config.state_snapshot.is_some() {
                 return Err(invalid_config(
                     "temporary_mixed_composition does not support portable state_snapshot restoration; use an online checkpoint or explicit mixed state",
@@ -723,13 +761,33 @@ impl ForwardPassPerfModelConfig {
                     "fpm_learned requires fallback_policy='deny'",
                 ));
             }
-            if learned.artifact_path.is_some() == learned.checkpoint_path.is_some() {
+            let source_count = [
+                learned.artifact_path.is_some(),
+                learned.checkpoint_path.is_some(),
+                learned.source.bundle_path.is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            let pending_discovery = source_count == 0
+                && learned.adaptation == super::LearnedAdaptation::Online
+                && learned.source.source_policy == super::LearnedSourcePolicy::Auto;
+            let pinned_source = learned
+                .source
+                .resolved_source
+                .as_ref()
+                .is_some_and(|pin| pin.kind != super::LearnedSourceKind::None);
+            if source_count > 1 || (source_count == 0 && !pending_discovery && !pinned_source) {
                 return Err(invalid_config(
-                    "fpm_learned requires exactly one artifact_path or checkpoint_path",
+                    "fpm_learned accepts at most one artifact_path, checkpoint_path, or bundle_path; a source is required unless online catalogue discovery is enabled",
                 ));
             }
+            let runtime = learned.runtime_source_config();
             if learned.adaptation == super::LearnedAdaptation::Online {
-                if learned.checkpoint_path.is_none() {
+                if runtime.checkpoint_path.is_none()
+                    && learned.source.bundle_path.is_none()
+                    && !pending_discovery
+                {
                     return Err(invalid_config(
                         "online learned adaptation requires checkpoint_path",
                     ));
@@ -741,7 +799,7 @@ impl ForwardPassPerfModelConfig {
                 }
             }
             if learned.adaptation == super::LearnedAdaptation::CausalSelector {
-                if learned.checkpoint_path.is_none() {
+                if runtime.checkpoint_path.is_none() && learned.source.bundle_path.is_none() {
                     return Err(invalid_config(
                         "causal_selector requires a training checkpoint_path",
                     ));
@@ -767,7 +825,10 @@ impl ForwardPassPerfModelConfig {
                     "fpm_learned does not support speculative decoding",
                 ));
             }
-        } else if learned.artifact_path.is_some() || learned.checkpoint_path.is_some() {
+        } else if learned.artifact_path.is_some()
+            || learned.checkpoint_path.is_some()
+            || learned.source != super::LearnedSourceConfig::default()
+        {
             return Err(invalid_config(
                 "learned sources require explicit estimation_mode='fpm_learned'",
             ));
@@ -1078,7 +1139,11 @@ mod tests {
         // Configuration resolution binds bytes; model construction validates
         // the actual artifact and manifest schemas separately.
         std::fs::write(&seed_path, b"seed source bytes").unwrap();
-        std::fs::write(&manifest_path, b"original A source bytes").unwrap();
+        std::fs::write(
+            &manifest_path,
+            br#"{"seed_artifacts":[],"provenance":{"sources":[]}}"#,
+        )
+        .unwrap();
         let mut requested = mixed_config("a", "compose");
         requested.estimator_config.fpm_learned.artifact_path = Some(seed_path);
         requested
@@ -1091,10 +1156,15 @@ mod tests {
         let resolved = requested.resolve().unwrap();
         let learned = &resolved.estimator_config.fpm_learned;
         assert_eq!(learned.source_sha256.as_ref().unwrap().len(), 64);
+        assert!(
+            resolved
+                .estimator_config
+                .temporary_mixed_composition
+                .is_some()
+        );
         let source = &resolved
             .estimator_config
-            .temporary_mixed_composition
-            .as_ref()
+            .effective_mixed_composition()
             .unwrap()
             .original_a;
         assert!(source.manifest_path.is_absolute());

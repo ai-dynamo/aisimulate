@@ -261,10 +261,8 @@ pub(crate) fn checkpoint_model_for_config(
     path: &Path,
     config: &ForwardPassPerfModelConfig,
 ) -> Result<LearnedForwardPassModel, AicError> {
-    let m = manifest_pinned(
-        path,
-        config.estimator_config.fpm_learned.source_sha256.as_deref(),
-    )?;
+    let settings = config.estimator_config.fpm_learned.runtime_source_config();
+    let m = manifest_pinned(path, settings.source_sha256.as_deref())?;
     if m.identity != canonical_learned_identity(config)? {
         return Err(invalid(
             "checkpoint deployment/store identity does not match resolved configuration",

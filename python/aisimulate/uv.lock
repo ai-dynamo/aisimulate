@@ -122,7 +122,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = "==3.8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.14.1" },
-    { name = "scikit-learn", marker = "extra == 'learned'", specifier = ">=1.4" },
+    { name = "scikit-learn", marker = "extra == 'learned'", specifier = "==1.9.1" },
     { name = "scipy", specifier = ">=1.13.1" },
     { name = "tfp-nightly", extras = ["jax"], specifier = "==0.26.0.dev20260626" },
     { name = "tqdm", specifier = ">=4.0.0" },

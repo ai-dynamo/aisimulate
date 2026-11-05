@@ -61,6 +61,7 @@ fn _build_smoke() -> u32 {
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static EMPIRICAL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static MISSING_SYSTEM_FLOPS_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static LEARNED_SOURCE_UNAVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 static SOL_NOT_IMPLEMENTED_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 
 /// Resolve (and memoize) one sdk error class; `None` when the sdk is not
@@ -131,6 +132,11 @@ pub(crate) fn aic_to_py(e: AicError) -> PyErr {
         ))
     } else if matches!(e, AicError::MissingSystemFlops(_)) {
         Some((&MISSING_SYSTEM_FLOPS_ERROR, "MissingSystemFlopsError"))
+    } else if matches!(e, AicError::LearnedSourceUnavailable { .. }) {
+        Some((
+            &LEARNED_SOURCE_UNAVAILABLE_ERROR,
+            "LearnedSourceUnavailableError",
+        ))
     } else if matches!(e, AicError::SolNotImplemented(_)) {
         Some((&SOL_NOT_IMPLEMENTED_ERROR, "SolNotImplementedError"))
     } else {
@@ -2101,11 +2107,9 @@ impl PyForwardPassPerfModel {
     /// Resolve the deployment identity used by learned artifacts and checkpoints.
     #[staticmethod]
     fn learned_identity(config_json: &str) -> PyResult<String> {
-        let config = parse_forward_pass_config(config_json)?
-            .resolve()
+        let identity = parse_forward_pass_config(config_json)?
+            .resolve_learned_identity()
             .map_err(aic_to_py)?;
-        let identity =
-            crate::perfmodel::fpm::canonical_learned_identity(&config).map_err(aic_to_py)?;
         serde_json::to_string(&identity).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -2600,6 +2604,11 @@ impl PyForwardPassPerfModel {
     fn diagnostics(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.diagnostics())
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
+    }
+
+    fn dependency_info_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.dependency_info())
+            .map_err(|e| PyValueError::new_err(format!("dependencies serialize: {e}")))
     }
 
     /// Bounded direct-FPM native lookup evidence, or JSON null when disabled.
@@ -3158,6 +3167,12 @@ mod tests {
                 "SolNotImplementedError",
             );
 
+            check(
+                AicError::LearnedSourceUnavailable {
+                    reason: "no compatible bundle".to_owned(),
+                },
+                "LearnedSourceUnavailableError",
+            );
             // Non-typed variants stay ValueError regardless of the sdk.
             let other = aic_to_py(AicError::InvalidEngineConfig("bad".to_string()));
             assert_eq!(other.get_type(py).name().unwrap().to_string(), "ValueError");

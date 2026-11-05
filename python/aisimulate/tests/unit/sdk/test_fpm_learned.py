@@ -254,6 +254,8 @@ def test_canonical_frozen_model_is_independent_of_native_tables(tmp_path, enable
     learned_config = exported_config["estimator_config"]["fpm_learned"]
     learned_config["artifact_path"] = str(exported_path)
     learned_config.pop("source_sha256", None)
+    # Historical explicit sources need no new pins stripped when re-authored.
+    assert "resolved_source" not in learned_config
     reloaded = RustForwardPassPerfModel.best_available(exported_config)
     assert reloaded.diagnostics()["source"] == "learned"
     assert reloaded.diagnostics()["retained_observations"] == 0

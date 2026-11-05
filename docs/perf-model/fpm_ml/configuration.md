@@ -28,10 +28,12 @@ token) and carrying `extend_lengths` / `past_kv_lengths` and the length
 variances when the artifact reads request, slot or variance features (see
 [engine replay timing](../configuration.md#engine-replay-timing)). Replay does
 not tune the model.
-Supply exactly one of
-`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
-adaptation accepts either source; online adaptation is the default and requires
-a training or runtime checkpoint. Omitted `correction.enabled` resolves to
+Supply at most one of `estimator_config.fpm_learned.bundle_path`, `artifact_path`
+and `checkpoint_path`. Online adaptation can discover a matching seed from the
+learned catalogue in the configured systems roots. Frozen and selector modes
+require an explicit source. A bundle carries a training/runtime checkpoint or
+an inference artifact with declared adaptation capabilities; online adaptation
+requires a checkpoint. Omitted `correction.enabled` resolves to
 `false` for standalone online learned mode; explicitly enabling it is invalid. The combined
 `causal_selector` adaptation requires a training seed checkpoint and enabled
 hybrid correction. Learned mode
@@ -78,9 +80,14 @@ nondefault control preserves the complete block, even without a source path.
 
 | Field | Default | Meaning and constraints |
 | --- | --- | --- |
-| `artifact_path` | `null` | Path to the inference JSON artifact. Explicit learned mode requires exactly one source path. An artifact alone supports frozen adaptation. Empty paths are invalid. |
-| `checkpoint_path` | `null` | Path to a seed training checkpoint or saved online checkpoint. Contains the forest, fitted bins, fitting metadata and required training state. Required for online adaptation and the causal selector; the selector accepts training seeds only. Mutually exclusive with `artifact_path`. |
-| `source_sha256` | `null` | Optional 64-character hexadecimal digest of the artifact file or checkpoint manifest. Rust checks and fills this during normalization, pinning the source in the resolved configuration. Remove the old digest when intentionally changing source paths. |
+| `artifact_path` | `null` | Path to the inference JSON artifact. An artifact alone supports frozen adaptation. Empty paths are invalid. Mutually exclusive with the other source paths. |
+| `checkpoint_path` | `null` | Path to a seed training checkpoint or saved online checkpoint. Contains the forest, fitted bins, fitting metadata and required training state. The selector accepts training seeds only. Mutually exclusive with the other source paths. |
+| `bundle_path` | `null` | Path to a version-1 learned bundle manifest. Rust verifies identity, every declared dependency, ordered feature ABI and the requested adaptation capability. Mutually exclusive with `artifact_path` and `checkpoint_path`. |
+| `source_policy` | `auto` | For online adaptation, use an explicit source first; otherwise discover the first exact identity with a designated default in the ordered systems roots. `explicit_only` disables discovery. It does not change global estimator selection. |
+| `fallback` | `auto` | Prepare the selected bundle's qualified internal interpolation strategy when supplied. `disabled` uses learned predictions only. A/B anchor labels alone never create a prior. This is separate from top-level `fallback_policy`, which remains `deny`. |
+| `resolved_source` | `null` | Rust-generated bundle/discovery source pin containing the manifest, seed, offline training recipe, provenance and verified dependency records. Preserve it with the complete exported configuration; subsequent loads validate the pin instead of rediscovering a source. |
+| `resolved_fallback` | `null` | Rust-generated strategy and source binding, including the selected native interpolation dependency when applicable. Resolved absence is explicit; later catalogue changes do not add a prior to that configuration. |
+| `source_sha256` | `null` | Optional 64-character hexadecimal digest of the bundle manifest, artifact file or checkpoint manifest. Rust checks and fills this during normalization. Legacy explicit sources retain this path-and-hash contract: clear the hash when deliberately replacing the source. For a pinned bundle, create a new request without the old generated source/fallback pins. |
 | `adaptation` | `online` | `frozen` preserves tree values and topology; `online` updates the forest with correction disabled; `causal_selector` chooses between a frozen hybrid-calibrated forest and an independent online forest. The selector requires enabled hybrid correction and a training checkpoint. Set `frozen` explicitly when loading an inference artifact. |
 | `update_mode` | `structural` | With online adaptation, `leaf_only` refits existing leaves; `structural` can rebuild subtrees within each seed tree's existing capacity. Neither adds trees nor relearns feature-bin thresholds. |
 | `recent_window` | `64`; selector: `8` | Positive maximum number of retained online observations per learned store. FIFO eviction removes the oldest recent observations; immutable training history is additional to this budget. |
@@ -106,6 +113,27 @@ history is grouped. See [the mathematical contract](online-gbdt-and-causal-selec
 for group weights, split ranks and derivative refresh.
 
 Normalization makes source paths absolute and records their content digest.
+Legacy explicit artifact/checkpoint requests retain their existing configuration
+shape and can add `temporary_mixed_composition` after normalization. Their
+complete source closure is captured privately for dependency reporting; genuine
+supplied source and fallback pins are never silently discarded. An online
+catalogue miss raises `LearnedSourceUnavailableError`; an explicitly selected
+missing or corrupt source remains a hard error. No source-free learned model is
+constructed. `source_policy: explicit_only` requires a source path.
+The learned catalogue lives at `<systems_root>/fpm_learned/index.json`; it never
+scans benchmark directories or downloads models. Each advertised identity has
+one default bundle in each root. Additional A/B seeds and recipes may coexist as
+explicit sources. An invalid matching entry fails construction; it does not
+silently fall through to another root. Unknown identity facts cannot qualify
+an exact catalogue match. Auto's estimator order remains
+`op_level -> fpm_interpolation -> fpm_regression` and never searches this catalogue.
+
+The [offline producer and installer](learned-forward-pass-model.md#package-and-install-an-ab-source-bundle)
+create this layout through the existing training module. `dependency_info()` on
+a prepared canonical model exposes verified files and external systems roots
+without filesystem I/O. Consumers preserve that record and the complete resolved
+configuration, including external native dependencies for an optional prior.
+
 Checkpoint loading verifies the normalized deployment identity; an inference
 artifact verifies it when `metadata.identity` is present. Legacy artifacts
 without this metadata remain supported, with `identity_verified: false` in

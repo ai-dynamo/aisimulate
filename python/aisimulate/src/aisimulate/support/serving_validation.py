@@ -28,6 +28,8 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig
 
+from .timing import canonical_timing_config, dependency_identities, learned_timing_evidence, selected_timing_mode
+
 AIPERF_REVISION = "7db2ba37a62aa80c882bc90eaf61cc8073e2387b"
 AIPERF_SOURCE = "https://github.com/ai-dynamo/aiperf"
 SCHEMA = "aisimulate-serving-validation/v1"
@@ -179,13 +181,19 @@ def _scope(prediction: dict[str, Any], trace: Path) -> dict[str, Any]:
     if worker["kv_cache"].get("host_offload") or worker["kv_cache"].get("g3_offload"):
         raise ValueError("serving validation initially qualifies HBM-only cache")
     timing = worker["timing"]
+    learned = selected_timing_mode(prediction) == "fpm_learned"
     if (
         timing.get("type") != "default"
-        or timing.get("estimation_mode") != "fpm_interpolation"
-        or timing.get("fallback_policy") != "deny"
-        or timing.get("estimator_config", {}).get("fpm_interpolation", {}).get("method") != "direct"
+        or (timing.get("fallback_policy") or engine.get("fallback_policy", "deny")) != "deny"
+        or (
+            not learned
+            and (
+                timing.get("estimation_mode") != "fpm_interpolation"
+                or timing.get("estimator_config", {}).get("fpm_interpolation", {}).get("method") != "direct"
+            )
+        )
     ):
-        raise ValueError("serving validation requires ordinary strict direct-FPM prediction")
+        raise ValueError("serving validation requires strict direct-FPM or explicitly selected learned prediction")
     return {
         "qualification": "one_complete_single_stream_weka_play",
         "replay": "cold_aggregated",
@@ -198,6 +206,7 @@ def _scope(prediction: dict[str, Any], trace: Path) -> dict[str, Any]:
         "speculation": "disabled",
         "model_projection": engine["model"],
         "token_count_source": "server_usage",
+        **({"estimation_mode": "fpm_learned"} if learned else {}),
     }
 
 
@@ -364,11 +373,27 @@ def _prepare_matched_workload(
     )
     prediction_path = output / "prediction/prediction.json"
     coverage_path = output / "prediction/fpm-coverage.json"
-    if status or not prediction_path.is_file() or not coverage_path.is_file():
+    learned = selected_timing_mode(prediction) == "fpm_learned"
+    if status or not prediction_path.is_file() or (not learned and not coverage_path.is_file()):
         raise ValueError("ordinary prediction on frozen target-tokenized requests did not finish")
     replay = json.loads(prediction_path.read_text())
     issues = _completion_issues(replay)
-    if issues or json.loads(coverage_path.read_text()).get("status") != "covered":
+    if learned:
+        if issues:
+            raise ValueError(
+                "frozen target-tokenized requests did not complete with learned timing: " + "; ".join(issues)
+            )
+        coverage_path = output / "learned-coverage.json"
+        _write(
+            coverage_path,
+            {
+                "kind": "learned_replay",
+                "status": "covered",
+                "accuracy": "not_assessed",
+                "prediction_evidence": _identity(prediction_path),
+            },
+        )
+    elif issues or json.loads(coverage_path.read_text()).get("status") != "covered":
         raise ValueError("frozen target-tokenized requests lack complete direct-FPM coverage: " + "; ".join(issues))
     return {
         **materialization,
@@ -451,17 +476,28 @@ def prepare_serving_validation(
     ]
     if not tokenizer_files:
         issues.append("the pinned tokenizer directory has no tokenizer/config artifacts")
+    learned = (
+        learned_timing_evidence(prediction, pin=True) if selected_timing_mode(prediction) == "fpm_learned" else None
+    )
     timing_paths = {
         path.resolve()
-        for root in engine.get("systems_paths", [])
+        for root in ([] if learned else engine.get("systems_paths", []))
         for path in Path(root).expanduser().rglob("fpm_forward_perf.*")
         if path.is_file()
     }
-    external = worker["timing"].get("estimator_config", {}).get("fpm_interpolation", {}).get("fpm_parquet_path")
-    if external:
+    estimator_config = worker.get("timing", {}).get("estimator_config")
+    if estimator_config is None:
+        estimator_config = engine.get("estimator_config") or {}
+    external = estimator_config.get("fpm_interpolation", {}).get("fpm_parquet_path")
+    if external and not learned:
         timing_paths.update((Path(external).resolve(), Path(external).with_suffix(".metadata.json").resolve()))
-    if not timing_paths:
+    if not learned and not timing_paths:
         issues.append("the prediction's collected FPM timing artifacts could not be located")
+    if learned:
+        for ref in learned["dependencies"]:
+            source = Path(ref["path"]).resolve()
+            if source == output or output in source.parents:
+                raise ValueError(f"serving output must not contain the learned source {source}")
     output.mkdir(parents=True, exist_ok=False)
     observer_dir = output / "observer"
     observer_dir.mkdir()
@@ -490,7 +526,10 @@ def prepare_serving_validation(
         "endpoint": endpoint,
         "tokenizer": str(tokenizer),
         "tokenizer_files": tokenizer_files,
-        "timing_artifacts": [_identity(path) for path in sorted(timing_paths)],
+        "timing_artifacts": dependency_identities(learned)
+        if learned
+        else [_identity(path) for path in sorted(timing_paths)],
+        **({"timing_model": learned} if learned else {}),
         "expected_execution": expected_execution,
         "policy": {
             "latency_p95_relative_error": _threshold(latency_p95_error, "latency_p95_error"),
@@ -836,27 +875,8 @@ def _forward_validation(path: Path | None, recipe_path: Path, threshold: float) 
 
     recipe = _checked_recipe(recipe_path)
     prediction = yaml.safe_load(Path(recipe["prediction_config"]["path"]).read_text())
-    engine = prediction["engine"]
-    worker = engine["workers"]["aggregated"]
-    parallel = worker["parallelism"]
-    config = {
-        "model": engine["model"],
-        "system": engine["hardware"],
-        "backend": engine["backend"],
-        "backend_version": engine["backend_version"],
-        "worker_type": "aggregated",
-        "tp": parallel.get("tensor", 1),
-        "pp": parallel.get("pipeline", 1),
-        "attention_dp": parallel.get("attention_data", 1),
-        "moe_tp_size": parallel.get("moe_tensor", 1),
-        "moe_ep_size": parallel.get("moe_expert", 1),
-        "fpm_profile": engine["fpm_profile"],
-        "systems_paths": engine["systems_paths"],
-        "estimation_mode": "fpm_interpolation",
-        "fallback_policy": "deny",
-        "estimator_config": worker["timing"]["estimator_config"],
-    }
     try:
+        config = recipe["timing_model"]["config"] if recipe.get("timing_model") else canonical_timing_config(prediction)
         model = RustForwardPassPerfModel.best_available(config)
     except (ValueError, RuntimeError) as error:
         return {
@@ -879,29 +899,48 @@ def _forward_validation(path: Path | None, recipe_path: Path, threshold: float) 
             unsupported = []
             for row in rows:
                 try:
-                    if row.get("unit") != "ms" or not isinstance(row.get("scheduled_requests"), dict):
-                        raise ValueError("forward samples require native scheduled_requests coordinates and ms units")
+                    metrics = row.get("metrics_by_rank")
+                    if metrics is None:
+                        if config["attention_dp"] != 1:
+                            raise ValueError(
+                                "multi-rank forward samples require the complete metrics_by_rank iteration"
+                            )
+                        metrics = [{"scheduled_requests": row.get("scheduled_requests")}]
+                    if (
+                        row.get("unit") != "ms"
+                        or not isinstance(metrics, list)
+                        or len(metrics) != config["attention_dp"]
+                        or any(
+                            not isinstance(item, dict) or not isinstance(item.get("scheduled_requests"), dict)
+                            for item in metrics
+                        )
+                    ):
+                        raise ValueError(
+                            "forward samples require native per-rank scheduled_requests coordinates and ms units"
+                        )
                     measured = _number(row.get("measured_ms"), "measured forward latency", positive=True)
-                    scheduled = row["scheduled_requests"]
+                    scheduled_by_rank = [item["scheduled_requests"] for item in metrics]
                     if (
                         phase == "prefill"
                         and (
-                            scheduled.get("num_prefill_requests", 0) < 1 or scheduled.get("num_decode_requests", 0) != 0
+                            not any(scheduled.get("num_prefill_requests", 0) > 0 for scheduled in scheduled_by_rank)
+                            or any(scheduled.get("num_decode_requests", 0) != 0 for scheduled in scheduled_by_rank)
                         )
                     ) or (
                         phase == "decode"
                         and (
-                            scheduled.get("num_decode_requests", 0) < 1 or scheduled.get("num_prefill_requests", 0) != 0
+                            not any(scheduled.get("num_decode_requests", 0) > 0 for scheduled in scheduled_by_rank)
+                            or any(scheduled.get("num_prefill_requests", 0) != 0 for scheduled in scheduled_by_rank)
                         )
                     ):
                         raise ValueError("forward phase does not match scheduled request coordinates")
-                    predicted = model.estimate_forward_pass_time_ms({"scheduled_requests": scheduled})
-                    predicted = _number(predicted, "native direct-FPM forward estimate", positive=True)
+                    predicted = model.estimate_forward_pass_time_ms(metrics)
+                    predicted = _number(predicted, "selected forward estimate", positive=True)
                     samples.append(
                         {**row, "predicted_ms": predicted, "forward_relative_error": _error(predicted, measured)}
                     )
                 except (ValueError, RuntimeError) as error:
-                    unsupported.append({"scheduled_requests": row.get("scheduled_requests"), "reason": str(error)})
+                    unsupported.append({**row, "reason": str(error)})
             phases[phase] = {
                 **_compare_samples(samples, "forward", threshold),
                 "samples": samples,

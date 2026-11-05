@@ -24,6 +24,10 @@ pub enum AicError {
     },
     #[error("invalid engine config: {0}")]
     InvalidEngineConfig(String),
+    /// A valid learned discovery request has no compatible installed source.
+    /// Explicit malformed or missing sources remain configuration errors.
+    #[error("learned source unavailable: {reason}")]
+    LearnedSourceUnavailable { reason: String },
     #[error("engine spec wire-format error: {0}")]
     EngineSpec(String),
     #[error("invalid forward pass metrics: {0}")]

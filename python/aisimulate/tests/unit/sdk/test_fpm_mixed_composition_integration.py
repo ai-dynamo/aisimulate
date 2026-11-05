@@ -118,6 +118,51 @@ def _config(fixture, checkpoint=None, *, enabled=True, adaptation="online"):
     return config
 
 
+def test_resolved_fallback_preserves_native_dependencies_across_root_order_changes(mixed_seed, tmp_path):
+    _, seed, original_a = mixed_seed
+    legacy = _config(mixed_seed)
+    bundled = fpm_learned.export_bundle(
+        seed,
+        tmp_path / "bundle",
+        config=_config(mixed_seed, enabled=False),
+        prior={
+            "original_a": original_a,
+            "calibration": legacy["estimator_config"]["temporary_mixed_composition"]["calibration"],
+        },
+        provenance={
+            "anchor_kind": "a",
+            "sources": [{"reference": "fixture:original-a", "sha256": original_a["source_sha256"]}],
+            "evaluation_sources": [],
+        },
+    )
+    model = RustForwardPassPerfModel.best_available(bundled)
+    resolved = model.diagnostics()["provenance"]["config"]
+    assert "temporary_mixed_composition" not in resolved["estimator_config"]
+    pin = resolved["estimator_config"]["fpm_learned"]["resolved_fallback"]
+    assert pin["kind"] == "mixed_interpolation_v1"
+    assert pin["native"]["fingerprint"]["sha256"]
+    dependencies = model.dependency_info()
+    assert dependencies["systems_paths"] == mixed_seed[0]["systems_paths"]
+    assert dependencies["fallback"] == pin["native"]
+    assert len(dependencies["files"]) >= 5
+
+    # Reordering discovery roots cannot change an already selected prior.
+    first = tmp_path / "new-root"
+    first.mkdir()
+    resolved["systems_paths"] = [str(first), *resolved["systems_paths"]]
+    restored = RustForwardPassPerfModel.best_available(resolved)
+    assert restored.dependency_info() == dependencies
+    query = _iteration("mixed")
+    assert restored.estimate_forward_pass_time_ms(query) == model.estimate_forward_pass_time_ms(query)
+
+    # Original-A evidence remains in the complete closure, even though the
+    # prediction itself has no filesystem reads.
+    manifest = Path(pin["policy"]["original_a"]["manifest_path"])
+    manifest.write_bytes(manifest.read_bytes() + b" ")
+    with pytest.raises((ValueError, RuntimeError), match="sha256|digest"):
+        RustForwardPassPerfModel.best_available(resolved)
+
+
 def _load(fixture, checkpoint=None, **kwargs):
     return RustForwardPassPerfModel.best_available(_config(fixture, checkpoint, **kwargs))
 
@@ -569,3 +614,101 @@ def test_public_snapshot_restore_is_atomic_and_selector_experts_stay_unchanged(m
     finally:
         model.close()
         restored.close()
+
+
+def test_unchanged_gym_original_a_trains_and_appends_its_own_mixed_seed(mixed_seed, monkeypatch):
+    """Gym keeps collection and first-fit policy while using native seeded updates."""
+    from types import SimpleNamespace
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[5]))
+    from scripts.fpm_accuracy.models.learned_scenario import LearnedScenarioPredictor
+    from scripts.fpm_accuracy.models.mixed_scenario import MixedOriginalA
+    from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, ForwardPassMetric, RequestMetrics
+
+    config, _, original = mixed_seed
+    mixed = object.__new__(MixedOriginalA)
+    mixed.scenario, mixed.manifests = "ac", {}
+    mixed.provenance = json.loads(Path(original["manifest_path"]).read_text())["provenance"]
+    mixed.prepared = SimpleNamespace(close=lambda: None)
+    # This fixture already owns the canonical profile and staged exact table.
+    # Exercise the production bind/export path without restaging that fixture.
+    mixed.configure_request = lambda request: request
+
+    def observed(kind, index, target):
+        payload = _iteration(kind, index=index, wall_ms=target)[0]
+        return ForwardPassIteration.single_rank(
+            ForwardPassMetric(
+                fpm_id=index,
+                configuration_id="mixed-fixture",
+                version=1,
+                worker_id="worker",
+                dp_rank=0,
+                counter_id=index,
+                wall_time_s=target / 1000,
+                scheduled=RequestMetrics(**payload["scheduled_requests"]),
+                queued=RequestMetrics(),
+                capture_id="fixture",
+            )
+        )
+
+    a_rows = [observed(kind, index, target) for kind, target in (("prefill", 2), ("decode", 3)) for index in range(20)]
+    model = LearnedScenarioPredictor(
+        "gbdt",
+        RustForwardPassPerfModel,
+        ForwardPassPerfModelConfig(**config),
+        fpm_learned,
+        a_rows,
+        online=True,
+        mixed=mixed,
+    )
+    try:
+        query = observed("mixed", 100, 8)
+        initial = model.predict(query.prediction_input())
+        assert initial.value_ms == pytest.approx(4.0)
+        assert initial.metadata["temporary_mixed_composition"]["route"] == "interpolation"
+        seed_config = next(iter(model.seed_configurations().values()))
+        assert seed_config["estimator_config"]["fpm_learned"]["checkpoint_path"]
+        assert "temporary_mixed_composition" in seed_config["estimator_config"]
+        assert "resolved_fallback" not in seed_config["estimator_config"]["fpm_learned"]
+        scope = next(iter(model._scopes.values()))
+        native = scope.model
+        initial_hashes = model.diagnostics()["scopes"][0]["initial_store_sha256"]
+
+        train = fpm_learned.train
+        append = native.append_mixed_learned_checkpoint
+        fitted_rows, appended = [], []
+
+        def record_train(rows, *args, **kwargs):
+            fitted_rows.append(len(rows))
+            return train(rows, *args, **kwargs)
+
+        def record_append(path):
+            appended.append(path)
+            return append(path)
+
+        monkeypatch.setattr(fpm_learned, "train", record_train)
+        monkeypatch.setattr(native, "append_mixed_learned_checkpoint", record_append)
+        for index in range(20):
+            model.predict(observed("mixed", 100 + index, 8).prediction_input())
+            model.tune([observed("mixed", 100 + index, 8)])
+        diagnostics = model.diagnostics()["scopes"][0]
+        assert fitted_rows == [20]
+        assert len(appended) == 1
+        assert {kind: diagnostics["initial_store_sha256"][kind] for kind in initial_hashes} == initial_hashes
+        assert {kind: diagnostics["final_store_sha256"][kind] for kind in initial_hashes} == initial_hashes
+        assert diagnostics["bootstrap_observations"] == 20
+        assert diagnostics["store_additions"] == 1
+        assert "contains_locally_mixed" in diagnostics["stores"]
+        assert len(model.seed_checkpoint_paths()) == 2
+        online = native.learned_online_diagnostics()
+        assert online["stores"]["contains_locally_mixed"]["recent_rows"] == 0
+        before = model.predict(observed("mixed", 120, 8).prediction_input())
+        assert before.value_ms == pytest.approx(8.0)
+        assert before.metadata["temporary_mixed_composition"]["paired_comparisons"] == 0
+        model.tune([observed("mixed", 120, 8)])
+        after = model.predict(observed("mixed", 121, 8).prediction_input())
+        assert after.metadata["temporary_mixed_composition"]["paired_comparisons"] == 1
+    finally:
+        model.close()

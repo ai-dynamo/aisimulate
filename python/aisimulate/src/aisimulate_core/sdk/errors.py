@@ -12,6 +12,14 @@ class InvalidEngineConfigurationError(ValueError):
     """Invalid caller controls; estimator fallback must not hide these errors."""
 
 
+class LearnedSourceUnavailableError(ValueError):
+    """A valid discovery request has no compatible learned source.
+
+    Enumerated learned searches may omit this candidate. Explicit missing or
+    corrupt sources and invalid configurations do not use this exception.
+    """
+
+
 class NoResultsError(RuntimeError):
     """Base class for *expected* "the sweep produced no results" outcomes.
 

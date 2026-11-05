@@ -1,0 +1,7 @@
+{
+  "base": "9f4819e2b77afb4798bc8133c42ccc1d1b045e5c",
+  "rust_check": "passed",
+  "rust_fpm_passed": 414,
+  "public_api_passed": 25,
+  "stage": "source bundles and seeded workflows; no shared execution readiness or complete mixed snapshots yet"
+}
