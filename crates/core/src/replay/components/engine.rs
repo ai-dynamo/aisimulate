@@ -1229,7 +1229,12 @@ where
             .engine
             .complete_pass(completion.pass_id, now_ms)
             .map_err(crate::replay::error::engine_boundary)?;
-        self.required_worker_mut(completion.worker_id)?.pending_pass = None;
+        // The engine accepted the completion; only now retire the recorded pass.
+        let pending = self
+            .required_worker_mut(completion.worker_id)?
+            .pending_pass
+            .take()
+            .context("offline replay completed a worker with no pass in flight")?;
         let by_rank = completed.effects.into_by_rank();
         // Resolve every rank's scheduler before committing any of them. The loop
         // below retires requests from `in_flight_by_rank`/`total_in_flight` and
