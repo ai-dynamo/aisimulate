@@ -228,6 +228,9 @@ impl FrontendConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SglangConfig {
+    /// Per-rank host KV cache for aggregated SGLang workers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hicache: Option<SglangHiCacheConfig>,
     /// Waiting-queue policy.
     pub schedule_policy: SglangSchedulePolicy,
     /// Page-aware prefill-token budget per pass.
@@ -264,6 +267,7 @@ const fn default_vlm_cache_bytes() -> u64 {
 impl Default for SglangConfig {
     fn default() -> Self {
         Self {
+            hicache: None,
             schedule_policy: SglangSchedulePolicy::Fifo,
             max_prefill_tokens: default_max_prefill_tokens(),
             chunked_prefill_size: default_chunked_prefill_size(),
@@ -290,6 +294,86 @@ impl SglangConfig {
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
         );
+        Ok(())
+    }
+}
+
+/// Physical controls for SGLang's private, write-through host cache.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SglangHiCacheConfig {
+    /// Host capacity in pages per attention-DP rank, with the GPU page geometry.
+    pub num_host_blocks: usize,
+    /// Decimal GB/s; zero models instantaneous byte transfer.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub d2h_bandwidth_gbps: f64,
+    /// Decimal GB/s; zero models instantaneous byte transfer.
+    #[serde(default = "default_host_offload_bandwidth_gbps")]
+    pub h2d_bandwidth_gbps: f64,
+    #[serde(default)]
+    pub latency_to_first_byte_ms: f64,
+}
+
+impl SglangHiCacheConfig {
+    pub const fn new(num_host_blocks: usize) -> Self {
+        Self {
+            num_host_blocks,
+            d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
+            latency_to_first_byte_ms: 0.0,
+        }
+    }
+
+    fn validate(&self, engine: &EngineConfig) -> Result<()> {
+        ensure!(
+            engine.backend == Backend::Sglang,
+            "sglang.hicache requires backend=sglang"
+        );
+        ensure!(
+            engine.worker_type == WorkerType::Aggregated,
+            "sglang.hicache requires worker_type=aggregated"
+        );
+        ensure!(
+            engine.enable_prefix_caching,
+            "sglang.hicache requires enable_prefix_caching=true"
+        );
+        ensure!(
+            self.num_host_blocks > 0,
+            "sglang.hicache.num_host_blocks must be positive"
+        );
+        let block_bytes = engine.kv_cache_bytes_per_token
+            .and_then(|bytes| bytes.checked_mul(engine.block_size))
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| anyhow::anyhow!("sglang.hicache requires a positive, representable block_size * kv_cache_bytes_per_token"))?;
+        let capacity_bytes = self
+            .num_host_blocks
+            .checked_mul(block_bytes)
+            .ok_or_else(|| anyhow::anyhow!("sglang.hicache capacity in bytes overflowed"))?;
+        for (name, value) in [
+            ("d2h_bandwidth_gbps", self.d2h_bandwidth_gbps),
+            ("h2d_bandwidth_gbps", self.h2d_bandwidth_gbps),
+            ("latency_to_first_byte_ms", self.latency_to_first_byte_ms),
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "sglang.hicache.{name} must be finite and non-negative"
+            );
+        }
+        for bandwidth in [self.d2h_bandwidth_gbps, self.h2d_bandwidth_gbps] {
+            ensure!(
+                (bandwidth * 1e6).is_finite(),
+                "sglang.hicache bandwidth in bytes/ms is not representable"
+            );
+            let duration = if bandwidth == 0.0 {
+                0.0
+            } else {
+                capacity_bytes as f64 / (bandwidth * 1e6)
+            };
+            ensure!(
+                (duration + self.latency_to_first_byte_ms).is_finite(),
+                "sglang.hicache transfer duration is not representable"
+            );
+        }
         Ok(())
     }
 }
@@ -1108,6 +1192,9 @@ impl EngineConfig {
     /// Validate rank configuration without constructing a scheduler or timing provider.
     pub fn validate(&self) -> Result<()> {
         self.validate_state_cache()?;
+        if let Some(hicache) = &self.sglang.hicache {
+            hicache.validate(self)?;
+        }
         ensure!(self.num_gpu_blocks > 0, "num_gpu_blocks must be positive");
         ensure!(self.block_size > 0, "block_size must be positive");
         if matches!(self.backend, Backend::Vllm | Backend::Trtllm) {
@@ -1810,6 +1897,92 @@ mod tests {
         let linear = serde_json::to_value(EngineConfig::default()).unwrap();
         assert!(linear.get("kv_cache_groups").is_none());
         assert!(linear.get("kv_cache_capacity_bytes").is_none());
+    }
+
+    fn hicache_config() -> EngineConfig {
+        EngineConfig {
+            backend: Backend::Sglang,
+            block_size: 4,
+            kv_cache_bytes_per_token: Some(250_000),
+            sglang: SglangConfig {
+                hicache: Some(SglangHiCacheConfig::new(32)),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hicache_round_trip_preserves_transfer_controls_and_rejects_bad_geometry() {
+        let mut config = hicache_config();
+        let host = config.sglang.hicache.as_mut().unwrap();
+        host.d2h_bandwidth_gbps = 0.0;
+        host.h2d_bandwidth_gbps = 7.0;
+        host.latency_to_first_byte_ms = 2.0;
+        config.validate().unwrap();
+        let decoded: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(decoded, config);
+        decoded.validate().unwrap();
+
+        let cases: &[InvalidHostConfigCase] = &[
+            (|c| c.backend = Backend::Vllm, "backend=sglang"),
+            (
+                |c| c.worker_type = WorkerType::Decode,
+                "worker_type=aggregated",
+            ),
+            (
+                |c| c.enable_prefix_caching = false,
+                "enable_prefix_caching=true",
+            ),
+            (
+                |c| c.kv_cache_bytes_per_token = None,
+                "kv_cache_bytes_per_token",
+            ),
+            (
+                |c| c.kv_cache_bytes_per_token = Some(usize::MAX),
+                "representable",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().num_host_blocks = 0,
+                "num_host_blocks",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().num_host_blocks = usize::MAX,
+                "overflowed",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = -1.0,
+                "h2d_bandwidth_gbps",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().d2h_bandwidth_gbps = f64::NAN,
+                "d2h_bandwidth_gbps",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().latency_to_first_byte_ms = f64::INFINITY,
+                "latency_to_first_byte_ms",
+            ),
+            (
+                |c| c.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = f64::from_bits(1),
+                "duration",
+            ),
+        ];
+        let mut overflow = hicache_config();
+        overflow.sglang.hicache.as_mut().unwrap().h2d_bandwidth_gbps = f64::MAX;
+        assert!(
+            overflow
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("bytes/ms")
+        );
+        for &(mutate, expected) in cases {
+            let mut config = hicache_config();
+            mutate(&mut config);
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
     }
 
     #[test]

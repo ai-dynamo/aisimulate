@@ -52,6 +52,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `capacity.blocks` | Unset | fixed | G1 blocks per attention-DP rank. `fixed` capacity only. |
 | `capacity.bytes` | Unset | predict only | G1 bytes per attention-DP rank, instead of `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`, unless `state_cache: {}` infers them. |
 | `host_offload` | Unset (off) | fixed | G2 block; see [host offload](#host-offload-g2). |
+| `hicache` | Unset (off) | Rejected | SGLang host KV cache for aggregated prediction; see [SGLang HiCache](#sglang-hicache). |
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
 | `kvcr` | Unset (off) | Rejected | KVCR block; see [KVCR peer fetch](#kvcr-peer-fetch). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
@@ -135,6 +136,46 @@ request itself computed, which raises `reused_input_tokens` but not
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>
+
+## SGLang HiCache
+
+Set `engine.workers.aggregated.kv_cache.hicache` to model SGLang v0.5.22
+write-through caching on a private host pool for each attention-DP rank.
+Prefix caching must be enabled. This is supported for aggregated prediction
+and native offline replay; disaggregated roles, recommendation, Belady eviction,
+external storage, and peer KVCR fetch are not supported by this option.
+
+| Field under `hicache` | Default | Meaning |
+|---|---|---|
+| `num_host_blocks` | Required | Positive host capacity per attention-DP rank. |
+| `d2h_bandwidth_gbps` | `32` | Device-to-host bandwidth in decimal GB/s; zero is unlimited. |
+| `h2d_bandwidth_gbps` | `32` | Host-to-device bandwidth in decimal GB/s; zero is unlimited. |
+| `latency_to_first_byte_ms` | `0` | Non-negative latency per transfer operation. |
+
+Host pages use the GPU page geometry: `block_size * bytes_per_token` bytes.
+The compiler resolves `bytes_per_token: auto` from the model and rank layout.
+Native engine configurations place these fields under `sglang.hicache` and
+require `kv_cache_bytes_per_token`.
+
+Completed chunk and request inserts back up their canonical radix pages,
+including materialized output pages. Each step submits one merged D2H operation;
+its acknowledgement publishes host residency and releases the independent GPU
+page locks. GPU eviction preserves backed-up radix nodes. Host eviction removes
+only unlocked, host-only leaves in last-access order and may reclaim old entries
+even when the new node ultimately cannot fit.
+
+Admission selects the prefill shape before queuing H2D and budgets both the host
+prefix and new GPU work. Load-back restores the entire promised host prefix or
+recomputes admission without it; host hits below ten tokens are recomputed.
+Ordinary forward duration includes the maximum of compute and dependent H2D,
+without a per-layer pipeline model. With `host_loop`, this duration belongs to
+the launched forward; its results are observed by a later loop iteration.
+Admission reports device and host reuse separately. Host transfers continue to
+drain and emit cache events after the last request completes or is cancelled.
+
+These semantics follow public SGLang v0.5.22 at
+[`baa9befa`](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d).
+The separate `host_offload` option below models vLLM connectors.
 
 ## Host offload (G2)
 

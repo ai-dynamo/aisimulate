@@ -166,6 +166,15 @@ class KvCapacityPredictionConfig(StrictModel):
         return self
 
 
+class HiCacheConfig(StrictModel):
+    """Private SGLang host KV capacity and transfer links per attention-DP rank."""
+
+    num_host_blocks: PositiveInt
+    d2h_bandwidth_gbps: NonNegativeFloat = 32.0
+    h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+    latency_to_first_byte_ms: NonNegativeFloat = 0.0
+
+
 class HostOffloadConfig(StrictModel):
     """Native G2. ``dp_rank_local`` gives each DP rank its own cache; ``cluster_shared``
     is one deployment-wide pool whose ``num_host_blocks`` is the pool total."""
@@ -280,6 +289,7 @@ class KvCachePredictionConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
+    hicache: HiCacheConfig | None = None
     g3_offload: G3OffloadConfig | None = None
     kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
@@ -957,6 +967,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             speculative=bool(self.nextn) or self.speculation is not None,
         )
         _validate_prediction_host_offload(self)
+        _validate_prediction_hicache(self)
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
@@ -1071,6 +1082,8 @@ class KvCacheRecommendationConfig(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("hicache") is not None:
+            raise ValueError("hicache currently supports prediction only; recommendation is not supported")
         if isinstance(value, dict) and value.get("state_cache") is not None:
             raise ValueError("state_cache currently supports prediction only; recommendation is not supported")
         return value
@@ -1461,6 +1474,19 @@ def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
             raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
         if configured:
             raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
+
+
+def _validate_prediction_hicache(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.hicache is None:
+            continue
+        if engine.backend != "sglang" or engine.mode != "aggregated" or role != "aggregated":
+            raise ValueError("hicache requires backend=sglang and mode=aggregated")
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("hicache requires prefix_caching=true")
+        if worker.kv_cache.host_offload is not None:
+            raise ValueError("hicache cannot be combined with host_offload")
 
 
 def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:

@@ -22,6 +22,7 @@
 
 use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -35,6 +36,7 @@ use crate::engine::common::speculative::{
     SpeculativeDecodeSampler, normalize_conditional_accept_rates,
 };
 use crate::engine::common::utils::prefill_handoff_transfer_timing;
+use crate::engine::host_offload::HostOffloadObserver;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
@@ -260,6 +262,22 @@ impl SglangCore {
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
 
+        let mut kv_manager = SglangKvManager::new_with_prefix_caching(
+            total_tokens,
+            args.block_size,
+            kv_event_publishers,
+            dp_rank,
+            enable_prefix_caching,
+            args.emit_kv_token_ids,
+        );
+        if let Some(hicache) = args.sglang.as_ref().and_then(|sglang| sglang.hicache) {
+            let block_bytes = args.block_size
+                * args
+                    .kv_cache_bytes_per_token
+                    .expect("HiCache has KV byte geometry");
+            kv_manager.enable_hicache(hicache, block_bytes);
+        }
+
         Self {
             config,
             dp_rank,
@@ -269,14 +287,7 @@ impl SglangCore {
             running: Vec::new(),
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
             batch_is_full: false,
-            kv_manager: SglangKvManager::new_with_prefix_caching(
-                total_tokens,
-                args.block_size,
-                kv_event_publishers,
-                dp_rank,
-                enable_prefix_caching,
-                args.emit_kv_token_ids,
-            ),
+            kv_manager,
             belady: None,
             speculative_sampler,
             kv_event_buffer,
@@ -638,10 +649,35 @@ impl SglangCore {
         self.frontend
             .as_ref()
             .and_then(FrontendRuntime::next_deadline_ms)
+            .into_iter()
+            .chain(self.kv_manager.host_deadline_ms())
+            .min_by(f64::total_cmp)
     }
 
     pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
         self.deliver_frontend(now_ms);
+        if self.kv_manager.advance_host(now_ms) {
+            self.batch_is_full = false;
+            self.bump_capacity_generation();
+        }
+        if self.kv_manager.hicache_enabled() {
+            self.kv_manager.flush_events();
+        }
+    }
+
+    pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
+        if self.kv_manager.complete_host_boundary(now_ms) {
+            self.batch_is_full = false;
+            self.bump_capacity_generation();
+        }
+    }
+
+    pub(crate) fn host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        self.kv_manager.host_cache_metrics()
+    }
+
+    pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
+        self.kv_manager.set_host_offload_observer(observer);
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
@@ -862,11 +898,13 @@ impl SglangCore {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        !self.scheduler_is_drained()
+        !self.scheduler_is_drained() || self.kv_manager.has_prepared_host_stores()
     }
 
     pub(crate) fn is_drained(&self) -> bool {
-        self.scheduler_is_drained() && self.frontend.as_ref().is_none_or(FrontendRuntime::is_empty)
+        self.scheduler_is_drained()
+            && self.frontend.as_ref().is_none_or(FrontendRuntime::is_empty)
+            && !self.kv_manager.has_host_work()
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
@@ -1057,6 +1095,7 @@ impl SglangCore {
     ) -> anyhow::Result<EnginePassResult> {
         self.schedule_pass(collector.as_deref_mut(), now_ms)?;
         let result = self.resolve_pass(None)?;
+        self.complete_engine_boundary(result.end_ms);
         if let Some(collector) = collector {
             for signal in &result.output_signals {
                 if signal.token_id.is_some() {
@@ -1102,7 +1141,12 @@ impl SglangCore {
                 },
             },
         };
-        let forward_end_ms = forward_time.end_ms(pass.forward_start_ms);
+        let stream_start_ms = self.host.as_ref().map_or(pass.selected_ms, |host| {
+            host.forward_start_ms(pass.selected_ms)
+        });
+        let forward_end_ms = forward_time
+            .end_ms(stream_start_ms + pass.forward_start_ms - pass.selected_ms)
+            .max(self.kv_manager.host_load_end_ms());
         let mut result = pass.result;
         if let Some(launch) = pass.launch {
             let host = self
@@ -1112,7 +1156,7 @@ impl SglangCore {
             let forward_ms = launch
                 .forward
                 .is_some()
-                .then_some(forward_end_ms - pass.selected_ms);
+                .then_some(forward_end_ms - stream_start_ms);
             let gpu_end_ms = host.launch(pass.selected_ms, forward_ms.zip(launch.forward));
             self.last_forward_ms = Some(forward_ms.unwrap_or(0.0));
             if let Some(gpu_end_ms) = gpu_end_ms {
@@ -1130,7 +1174,7 @@ impl SglangCore {
         }
         result.end_ms = pass.end_ms.unwrap_or(forward_end_ms);
         if let Some(fpm) = &mut result.fpm {
-            fpm.wall_time_secs = (forward_end_ms - pass.selected_ms) / 1000.0;
+            fpm.wall_time_secs = (forward_end_ms - stream_start_ms) / 1000.0;
         }
         Ok(result)
     }
@@ -1146,6 +1190,10 @@ impl SglangCore {
             self.unpriced.is_none(),
             "SGLang scheduler already has a scheduled pass awaiting its forward time"
         );
+        if self.kv_manager.begin_host_pass(now_ms) {
+            self.batch_is_full = false;
+            self.bump_capacity_generation();
+        }
         let grouped = std::mem::take(&mut self.group_pass_prepared);
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
@@ -1293,9 +1341,13 @@ impl SglangCore {
 
         let previously_running = self.running.len();
         let mut prefill_completed = Vec::new();
+        let mut chunk_commits = Vec::new();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
                 cache_materialized_prefix(&mut req, &mut self.kv_manager, &self.config);
+                if self.host.is_some() && self.kv_manager.hicache_enabled() {
+                    chunk_commits.push((req.uuid, req.materialized_tokens));
+                }
                 self.waiting.push_front(req);
             } else {
                 prefill_completed.push(req.uuid);
@@ -1430,7 +1482,10 @@ impl SglangCore {
                 let launched = forward.then(|| ForwardOutputs {
                     prefill: prefill_pass,
                     output_signals: std::mem::take(&mut decode.output_signals),
-                    cache_commits: std::mem::take(&mut decode.cache_commits),
+                    cache_commits: {
+                        chunk_commits.append(&mut decode.cache_commits);
+                        chunk_commits
+                    },
                     ..Default::default()
                 });
                 let (end_ms, observed) = host.observe(selected_ms);
@@ -1457,6 +1512,10 @@ impl SglangCore {
                         .chain(0..cursor)
                         .find(|&index| self.running[index].uuid == request_id)
                     else {
+                        if let Some(request) = self.waiting.iter().find(|r| r.uuid == request_id) {
+                            self.kv_manager
+                                .backup_cached_prefix(&request.kv_lease, tokens);
+                        }
                         continue;
                     };
                     cursor = index;

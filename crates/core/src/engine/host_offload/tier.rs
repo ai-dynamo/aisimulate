@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Merged backup submission adapts SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
@@ -949,6 +952,48 @@ impl HostTier {
             if let Some(completes_at_ms) = completes_at_ms
                 && let Some(observer) = &self.observer
             {
+                observer.record(HostOffloadObservation {
+                    request_id: transfer.request_id,
+                    event: HostOffloadObservationData::StoreSubmitted {
+                        at_ms: now_ms,
+                        completes_at_ms,
+                        transfer_id,
+                        blocks: &transfer.blocks,
+                    },
+                });
+            }
+        }
+        prepared.len()
+    }
+
+    /// One private D2H operation for the step, with one completion boundary for every cohort.
+    /// SGLang retains every participating device node until the merged backup is acknowledged.
+    pub(crate) fn submit_prepared_stores_merged(&mut self, client: u64, now_ms: f64) -> usize {
+        assert_eq!(self.config.eviction, HostEviction::Caller);
+        let now_ms = self.prepare_mutation(now_ms);
+        let prepared = std::mem::take(&mut self.client(client).prepared_stores);
+        if prepared.is_empty() {
+            return 0;
+        }
+        let blocks = prepared
+            .iter()
+            .map(|id| self.transfers[id].blocks.len())
+            .sum();
+        let bytes = self.transfer_bytes(blocks);
+        let ready = now_ms + self.clients[&client].link.latency_to_first_byte_ms;
+        let Transport::Fifo { d2h, deadlines, .. } = &mut self.transport else {
+            unreachable!("caller-managed pools are private")
+        };
+        let completes_at_ms = d2h.submit(ready, bytes);
+        for &transfer_id in &prepared {
+            assert!(deadlines.insert(Deadline {
+                at_ms: completes_at_ms,
+                kind: Kind::Store,
+                transfer_id,
+            }));
+            let transfer = self.transfers.get_mut(&transfer_id).unwrap();
+            transfer.deadline = Some(completes_at_ms);
+            if let Some(observer) = &self.observer {
                 observer.record(HostOffloadObservation {
                     request_id: transfer.request_id,
                     event: HostOffloadObservationData::StoreSubmitted {
@@ -2725,6 +2770,32 @@ pub(crate) mod tests {
             eviction: HostEviction::Caller,
         });
         assert!(result.err().unwrap().to_string().contains("private pool"));
+    }
+
+    #[test]
+    fn merged_backups_publish_all_cohorts_at_one_ack() {
+        let mut tier = tier(3);
+        tier.config.eviction = HostEviction::Caller;
+        tier.client(C).link.latency_to_first_byte_ms = 2.0;
+        let mut transfers = Vec::new();
+        for keys in [&[key(1)][..], &[key(2), key(3)][..]] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.prepare_store(C, request_id(), keys, None, 0.0)
+            else {
+                panic!("store must fit")
+            };
+            transfers.push(transfer_id);
+        }
+        assert_eq!(tier.submit_prepared_stores_merged(C, 0.0), 2);
+        for id in transfers {
+            assert_eq!(tier.transfer_deadline(id), Some(5.0));
+        }
+        assert_eq!(tier.submit_prepared_stores_merged(C, 0.0), 0);
+        assert!(tier.tick(C, 3.0).0.is_empty());
+        assert_eq!(tier.occupancy(), (0, 3));
+        assert_eq!(tier.tick(C, 5.0).0.len(), 2);
+        assert_eq!(tier.resident_snapshot(), [key(1), key(2), key(3)]);
+        assert!(!tier.has_pending_work(C));
     }
 
     fn load(tier: &mut HostTier, blocks: &[HostBlockKey], at_ms: f64) -> f64 {

@@ -161,6 +161,7 @@ pub(crate) enum KvTransferTimingMode {
 /// Materialized SGLang controls used by the moved scheduler implementation.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SglangArgs {
+    pub hicache: Option<crate::engine::SglangHiCacheConfig>,
     pub schedule_policy: Option<String>,
     pub page_size: Option<usize>,
     pub max_prefill_tokens: Option<usize>,

@@ -89,7 +89,7 @@ impl SchedulerRank {
     pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
         match &self.core {
             EngineCore::Vllm(core) => core.per_rank_host_cache_metrics(),
-            EngineCore::Sglang(_) => None,
+            EngineCore::Sglang(core) => core.host_cache_metrics(),
         }
     }
 
@@ -534,6 +534,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             PreemptionMode::Fifo => CorePreemptionMode::Fifo,
         },
         sglang: Some(SglangArgs {
+            hicache: config.sglang.hicache,
             schedule_policy: Some(
                 match config.sglang.schedule_policy {
                     crate::engine::SglangSchedulePolicy::Fifo => "fifo",

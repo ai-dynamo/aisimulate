@@ -195,13 +195,17 @@ impl HostLoop {
             "observe the previous forward first"
         );
         let (gpu_ms, outputs) = forward?;
-        let gpu_end_ms = self.gpu_free_ms.max(selected_ms) + gpu_ms;
+        let gpu_end_ms = self.forward_start_ms(selected_ms) + gpu_ms;
         self.gpu_free_ms = gpu_end_ms;
         self.in_flight = Some(InFlightBatch {
             gpu_end_ms,
             outputs,
         });
         Some(gpu_end_ms)
+    }
+
+    pub(super) fn forward_start_ms(&self, selected_ms: f64) -> f64 {
+        self.gpu_free_ms.max(selected_ms)
     }
 }
 

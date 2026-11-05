@@ -945,7 +945,7 @@ def _worker_engine_args(
         payload["aic_nextn"] = engine.nextn
         payload["aic_nextn_accepted"] = engine.nextn_accepted
     host_offload = cache.host_offload
-    if host_offload is not None:
+    if host_offload is not None or cache.hicache is not None:
         payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
             engine,
             worker,
@@ -974,6 +974,8 @@ def _worker_engine_args(
                 frontend=worker.frontend,
             )
         )
+    if cache.hicache is not None:
+        payload.setdefault("sglang", {})["hicache"] = cache.hicache.model_dump(mode="json")
     return payload
 
 

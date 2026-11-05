@@ -390,8 +390,9 @@ impl EngineCore {
     }
 
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        if let Self::Vllm(core) = self {
-            core.set_host_offload_observer(observer);
+        match self {
+            Self::Vllm(core) => core.set_host_offload_observer(observer),
+            Self::Sglang(core) => core.set_host_offload_observer(observer),
         }
     }
 
@@ -440,8 +441,9 @@ impl EngineCore {
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.complete_engine_boundary(now_ms);
+        match self {
+            Self::Vllm(core) => core.complete_engine_boundary(now_ms),
+            Self::Sglang(core) => core.complete_engine_boundary(now_ms),
         }
     }
 

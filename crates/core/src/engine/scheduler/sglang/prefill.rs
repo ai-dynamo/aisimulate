@@ -7,6 +7,7 @@
 use super::super::AdmissionEvent;
 use super::config::{SglangConfig, ceil_to_block};
 use super::request::{SglangRequest, WaitingQueue};
+use crate::engine::CacheTierAttribution;
 use crate::engine::kv_manager::SglangKvManager;
 
 /// Per-request prefill data needed for FPM snapshot construction.
@@ -67,7 +68,7 @@ pub(super) fn get_new_batch_prefill(
         let continuation = waiting.remove(index).expect("continuation is queued");
         waiting.push_front(continuation);
     }
-    while let Some(mut req) = waiting.pop_front() {
+    'requests: while let Some(mut req) = waiting.pop_front() {
         let first_admission = req.materialized_tokens == 0;
         if first_admission && (batch_is_full || can_run.len() >= available_running_slots) {
             batch_is_full = true;
@@ -80,7 +81,7 @@ pub(super) fn get_new_batch_prefill(
         // without the tree cache and never re-match; the request simply continues from the tokens
         // it already owns. Zero-output (prefix-only) replay requests keep the full match: they
         // have no first token to sample, so a fully cached prompt is no forward-pass work.
-        let cached_prefix = if req.materialized_tokens == 0 && config.enable_prefix_caching {
+        let matched = if req.materialized_tokens == 0 && config.enable_prefix_caching {
             req.kv_lease
                 .ensure_page_hashes(&req.sequence_tokens, config.block_size);
             let match_len = if req.max_output_tokens == 0 {
@@ -89,62 +90,94 @@ pub(super) fn get_new_batch_prefill(
                 req.current_sequence_len().saturating_sub(1)
             };
             let pages = (match_len / config.block_size).min(req.kv_lease.page_hashes().len());
-            kv_manager.admission_prefix_match(&mut req.kv_lease, pages)
+            kv_manager.admission_host_match(&mut req.kv_lease, pages)
         } else {
-            0
+            Default::default()
         };
-        let start = req.materialized_tokens.max(cached_prefix);
-        // SGLang `extend_input_len`: tokens left to compute beyond the matched/owned prefix.
-        let extend_input = req.current_sequence_len().saturating_sub(start);
-        if extend_input == 0 && req.materialized_tokens > 0 {
-            waiting.push_front(req);
-            break;
-        }
-
-        let capacity = if first_admission {
-            kv_manager.protected_admission_capacity(&req.kv_lease, cached_prefix)
-        } else {
-            kv_manager.cache().available_tokens() + kv_manager.cache().evictable_size
-        } + allocated_this_pass;
-        let remaining_total = capacity as f64 - total_offset;
-        let whole_request_tokens = extend_input as f64
-            + req
-                .remaining_output_tokens()
-                .min(config.clip_max_new_tokens) as f64
-            + config.block_size as f64;
-        if first_admission && whole_request_tokens >= remaining_total {
-            batch_is_full = !can_run.is_empty() || !running.is_empty();
-            waiting.push_front(req);
-            break;
-        }
-
-        let chunk_tokens = if !first_admission {
-            // Unlike a new chunk, a continuation uses the remaining budget
-            // without page-flooring and may proceed even with no headroom.
-            let limit = rem_chunk_tokens.min(remaining_total) as usize;
-            let limit = if limit > 0 {
-                limit
-            } else {
-                rem_chunk_tokens as usize
-            };
-            extend_input.min(limit)
-        } else if ceil_to_block(extend_input, config.block_size) as f64 <= rem_chunk_tokens {
-            extend_input
-        } else {
-            let chunk = (rem_chunk_tokens as usize / config.block_size) * config.block_size;
-            if chunk == 0 {
+        let mut host_tokens = matched.host_tokens;
+        let (start, chunk_tokens, output_reserve) = loop {
+            let cached_prefix = matched.device_tokens + host_tokens;
+            let start = req.materialized_tokens.max(cached_prefix);
+            // SGLang `extend_input_len`: tokens left to compute beyond the matched/owned prefix.
+            let extend_input = req.current_sequence_len().saturating_sub(start);
+            if extend_input == 0 && req.materialized_tokens > 0 {
                 waiting.push_front(req);
-                break;
+                break 'requests;
             }
-            chunk.min(extend_input)
-        };
 
-        let charged_input_tokens = ceil_to_block(chunk_tokens, config.block_size) as f64;
-        let output_reserve = if chunk_tokens < extend_input {
-            0
-        } else {
-            req.max_output_tokens.min(config.clip_max_new_tokens)
+            let capacity = if first_admission {
+                kv_manager.protected_admission_capacity(&req.kv_lease, matched.device_tokens)
+            } else {
+                kv_manager.cache().available_tokens() + kv_manager.cache().evictable_size
+            } + allocated_this_pass;
+            let remaining_total = capacity as f64 - total_offset;
+            let whole_request_tokens = (extend_input + host_tokens) as f64
+                + req
+                    .remaining_output_tokens()
+                    .min(config.clip_max_new_tokens) as f64
+                + config.block_size as f64;
+            if first_admission && whole_request_tokens >= remaining_total {
+                batch_is_full = !can_run.is_empty() || !running.is_empty();
+                waiting.push_front(req);
+                break 'requests;
+            }
+
+            let chunk_tokens = if !first_admission {
+                // Unlike a new chunk, a continuation uses the remaining budget
+                // without page-flooring and may proceed even with no headroom.
+                let limit = rem_chunk_tokens.min(remaining_total) as usize;
+                let limit = if limit > 0 {
+                    limit
+                } else {
+                    rem_chunk_tokens as usize
+                };
+                extend_input.min(limit)
+            } else if ceil_to_block(extend_input, config.block_size) as f64 <= rem_chunk_tokens {
+                extend_input
+            } else {
+                let chunk = (rem_chunk_tokens as usize / config.block_size) * config.block_size;
+                if chunk == 0 {
+                    waiting.push_front(req);
+                    break 'requests;
+                }
+                chunk.min(extend_input)
+            };
+
+            let output_reserve = if chunk_tokens < extend_input {
+                0
+            } else {
+                req.max_output_tokens.min(config.clip_max_new_tokens)
+            };
+
+            if host_tokens > 0 {
+                let required = host_tokens
+                    + ceil_to_block(chunk_tokens, config.block_size)
+                    + output_reserve
+                    + config.block_size;
+                match kv_manager.load_host_prefix(
+                    &req.kv_lease,
+                    &req.sequence_tokens,
+                    cached_prefix,
+                    required,
+                ) {
+                    Some(0) => {
+                        host_tokens = 0;
+                        continue;
+                    }
+                    Some(loaded) => assert_eq!(
+                        loaded, host_tokens,
+                        "HiCache must load the promised prefix in full"
+                    ),
+                    None => {
+                        batch_is_full = !can_run.is_empty() || !running.is_empty();
+                        waiting.push_front(req);
+                        break 'requests;
+                    }
+                }
+            }
+            break (start, chunk_tokens, output_reserve);
         };
+        let charged_input_tokens = ceil_to_block(chunk_tokens, config.block_size) as f64;
 
         let chunk_end = start + chunk_tokens;
         let previously_allocated = req.allocated_tokens;
@@ -190,7 +223,12 @@ pub(super) fn get_new_batch_prefill(
             admissions.push(AdmissionEvent {
                 uuid: req.uuid,
                 reused_input_tokens: admission_reused_tokens,
-                cache_tier_attribution: None,
+                cache_tier_attribution: kv_manager.hicache_enabled().then_some(
+                    CacheTierAttribution {
+                        g1_reused_input_tokens: admission_reused_tokens - host_tokens,
+                        host_reused_input_tokens: host_tokens,
+                    },
+                ),
             });
         }
         prefill_fpm.push(PrefillFpmItem {
@@ -202,8 +240,12 @@ pub(super) fn get_new_batch_prefill(
 
         allocated_this_pass += req.allocated_tokens
             - previously_allocated
-            - if first_admission { prefix_len } else { 0 };
-        let immediate = charged_input_tokens + config.block_size as f64;
+            - if first_admission {
+                prefix_len - host_tokens
+            } else {
+                0
+            };
+        let immediate = charged_input_tokens + host_tokens as f64 + config.block_size as f64;
         total_offset += immediate + output_reserve as f64;
         current_offset += immediate;
         rem_input_tokens -= charged_input_tokens;

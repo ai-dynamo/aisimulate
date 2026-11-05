@@ -206,7 +206,13 @@ pub(super) fn cache_materialized_prefix(
     kv_manager: &mut SglangKvManager,
     config: &SglangConfig,
 ) {
-    cache_prefix_through(req, kv_manager, config, req.materialized_tokens);
+    cache_prefix_through_ready(
+        req,
+        kv_manager,
+        config,
+        req.materialized_tokens,
+        !config.host_loop,
+    );
 }
 
 /// Cache the page-aligned prefix through `tokens`, bounded by what the request
@@ -217,7 +223,20 @@ pub(super) fn cache_prefix_through(
     config: &SglangConfig,
     tokens: usize,
 ) {
+    cache_prefix_through_ready(req, kv_manager, config, tokens, true);
+}
+
+fn cache_prefix_through_ready(
+    req: &mut SglangRequest,
+    kv_manager: &mut SglangKvManager,
+    config: &SglangConfig,
+    tokens: usize,
+    backup_ready: bool,
+) {
     let Some(aligned_tokens) = uncached_aligned_prefix(req, config, tokens) else {
+        if backup_ready {
+            kv_manager.backup_cached_prefix(&req.kv_lease, tokens);
+        }
         return;
     };
 
@@ -230,6 +249,9 @@ pub(super) fn cache_prefix_through(
 
     let sequence = &req.sequence_tokens[..aligned_tokens];
     kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
+    if backup_ready {
+        kv_manager.backup_cached_prefix(&req.kv_lease, aligned_tokens);
+    }
     req.debug_assert_invariants(config.block_size);
 }
 

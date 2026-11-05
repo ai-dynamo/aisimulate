@@ -13,6 +13,27 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 HiCache residency and merged backups
+
+The merged backup submission in repository-root
+`crates/core/src/engine/host_offload/tier.rs`, host-backed radix residency in
+`crates/core/src/engine/cache/{radix_cache.rs,radix_cache/hicache.rs}`,
+the controller in `crates/core/src/engine/kv_manager/{sglang_backend.rs,sglang_backend/hicache.rs}`,
+admission and transfer timing in `crates/core/src/engine/scheduler/sglang/{core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the descriptions in `docs/replay/engine/kv-cache.md`, and their
+regression tests are modified behavioral adaptations of
+`python/sglang/srt/mem_cache/l2_transfer.py` and
+`python/sglang/srt/mem_cache/unified_radix_cache.py` and
+`python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py`, and
+`python/sglang/srt/managers/schedule_policy.py` in SGLang
+v0.5.22 at commit `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's private FIFO transfer lane
+and discrete-event acknowledgements. No serving implementation is vendored.
+
 ## SGLang v0.5.22 prefill admission and ratio lifecycle
 
 The admission budget, arrival limits, continuation priority, and ratio

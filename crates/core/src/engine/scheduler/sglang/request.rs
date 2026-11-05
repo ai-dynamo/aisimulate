@@ -46,12 +46,14 @@ impl SglangRequest {
             .expect("SGLang request completion length overflow")
             / block_size;
         let mut kv_lease = RadixRequestLease::default();
+        let uuid = req.uuid.unwrap_or_else(Uuid::new_v4);
+        kv_lease.request_id = uuid;
         kv_lease.session_id = req.session_id;
         kv_lease.reserve_page_hashes(completion_pages);
         kv_lease.ensure_page_hashes(&sequence_tokens, block_size);
 
         Self {
-            uuid: req.uuid.unwrap_or_else(Uuid::new_v4),
+            uuid,
             is_decode_handoff: false,
             sequence_tokens,
             prompt_len,

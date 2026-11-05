@@ -80,6 +80,196 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
     }
 }
 
+mod hicache_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::engine::{CacheTierAttribution, KvEventTier, SglangHiCacheConfig};
+
+    struct FixedTiming(f64);
+
+    impl crate::engine::TimingModel for FixedTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.0)
+        }
+    }
+
+    fn core(compute_ms: f64) -> SglangCore {
+        core_with_loop(compute_ms, false, 64)
+    }
+
+    fn core_with_loop(compute_ms: f64, host_loop: bool, chunk: usize) -> SglangCore {
+        let mut args = test_args(16, 4, chunk);
+        args.sglang.as_mut().unwrap().host_loop = host_loop;
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FixedTiming(compute_ms)),
+        }
+        .into();
+        args.kv_cache_bytes_per_token = Some(250_000);
+        args.sglang.as_mut().unwrap().hicache = Some(SglangHiCacheConfig {
+            d2h_bandwidth_gbps: 1.0,
+            h2d_bandwidth_gbps: 1.0,
+            ..SglangHiCacheConfig::new(32)
+        });
+        SglangCore::new_with_kv_capture(args, 0)
+    }
+
+    #[rstest::rstest]
+    #[case(1.0)]
+    #[case(8.0)]
+    fn hicache_idle_drain_and_same_pass_load_back_follow_transfer_deadlines(
+        #[case] compute_ms: f64,
+    ) {
+        let mut core = core(compute_ms);
+        let prompt = (0..16).collect::<Vec<_>>();
+        core.receive(direct_request(prompt.clone(), 1));
+        let warm = core.execute_pass_internal(None, 0.0);
+        assert_eq!(warm.end_ms, compute_ms);
+        assert!(!core.is_ready());
+        assert!(!core.is_drained());
+        let backup_end = warm.end_ms + 4.0;
+        assert_eq!(core.next_internal_deadline_ms(), Some(backup_end));
+        core.process_internal_work(backup_end - 1.0);
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 0);
+        core.process_internal_work(backup_end);
+        assert!(core.is_drained());
+        assert!(
+            core.drain_kv_events()
+                .iter()
+                .any(|event| event.tier == KvEventTier::HostPinned)
+        );
+
+        core.kv_manager.evict(16);
+        core.receive(direct_request(prompt, 1));
+        let reused = core.execute_pass_internal(None, backup_end);
+        assert_eq!(reused.end_ms, backup_end + compute_ms.max(3.0));
+        assert_eq!(reused.admissions[0].reused_input_tokens, 12);
+        assert_eq!(
+            reused.admissions[0].cache_tier_attribution,
+            Some(CacheTierAttribution {
+                g1_reused_input_tokens: 0,
+                host_reused_input_tokens: 12,
+            })
+        );
+        assert!(reused.output_signals.iter().any(|output| output.completed));
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn hicache_rejected_candidate_does_not_load_or_publish_device_pages() {
+        let mut core = core(1.0);
+        core.config.max_running_requests = 1;
+        let prompt = (0..16).collect::<Vec<_>>();
+        core.receive(direct_request(prompt.clone(), 1));
+        let warm = core.execute_pass_internal(None, 0.0);
+        let backup_end = warm.end_ms + 4.0;
+        core.process_internal_work(backup_end);
+        core.kv_manager.evict(16);
+        core.receive(direct_request(vec![99; 8], 8));
+        let first = core.execute_pass_internal(None, backup_end);
+        core.receive(direct_request(prompt.clone(), 1));
+        let rejected = core.execute_pass_internal(None, first.end_ms);
+        assert!(rejected.admissions.is_empty());
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&prompt), 0);
+        assert_eq!(core.kv_manager.host_load_end_ms(), first.end_ms);
+    }
+
+    #[test]
+    fn hicache_overlap_chunk_backup_waits_for_its_producer() {
+        let mut core = core_with_loop(100.0, true, 8);
+        core.receive(direct_request((0..24).collect(), 1));
+        let first = core.execute_pass_internal(None, 0.0);
+        assert_eq!(first.end_ms, 0.0);
+        assert_eq!(core.next_internal_deadline_ms(), None);
+        let second = core.execute_pass_internal(None, first.end_ms);
+        assert_eq!(second.end_ms, 100.0);
+        assert_eq!(core.next_internal_deadline_ms(), Some(102.0));
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 0);
+        core.process_internal_work(102.0);
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 2);
+    }
+
+    #[test]
+    fn hicache_overlap_queued_forward_does_not_charge_an_elapsed_load_again() {
+        let mut core = core_with_loop(100.0, true, 64);
+        let prompt = (0..16).collect::<Vec<_>>();
+        let cached = core.kv_manager.allocate_for_request(&prompt).unwrap();
+        core.kv_manager.finish(&prompt, cached.lease);
+        core.complete_engine_boundary(0.0);
+        core.process_internal_work(4.0);
+        core.kv_manager.evict(16);
+        core.receive(direct_request(vec![99; 8], 1));
+        let first = core.execute_pass_internal(None, 4.0);
+        assert_eq!(first.end_ms, 4.0);
+        core.config.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FixedTiming(1.0)),
+        }
+        .into();
+        core.receive(direct_request(prompt, 1));
+        let second = core.execute_pass_internal(None, first.end_ms);
+        assert_eq!(second.end_ms, 104.0);
+        assert_eq!(core.last_forward_ms(), Some(1.0));
+        assert_eq!(
+            core.execute_pass_internal(None, second.end_ms).end_ms,
+            105.0
+        );
+    }
+
+    #[test]
+    fn hicache_lpm_ranks_host_and_device_prefixes_together() {
+        let mut core = core(1.0);
+        core.config.schedule_policy = SchedulePolicy::Lpm;
+        let mut host_prompt = (0..16).collect::<Vec<_>>();
+        core.receive(direct_request(host_prompt.clone(), 1));
+        let warm = core.execute_pass_internal(None, 0.0);
+        core.process_internal_work(warm.end_ms + 4.0);
+        core.kv_manager.evict(16);
+        let mut device_prompt = (100..108).collect::<Vec<_>>();
+        let cached = core
+            .kv_manager
+            .allocate_for_request(&device_prompt)
+            .unwrap();
+        core.kv_manager.finish(&device_prompt, cached.lease);
+        host_prompt.extend(16..20);
+        device_prompt.extend(108..112);
+        core.receive(direct_request(device_prompt, 1));
+        core.receive(direct_request(host_prompt.clone(), 1));
+        apply_schedule_policy(&mut core.waiting, &core.kv_manager, &core.config);
+        assert_eq!(core.waiting[0].sequence_tokens, host_prompt);
+    }
+
+    #[test]
+    fn hicache_small_host_hit_reselects_the_full_recompute_chunk() {
+        let args = test_args(16, 4, 8);
+        let config = SglangConfig::from_args(&args);
+        let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+        manager.enable_hicache(
+            SglangHiCacheConfig {
+                d2h_bandwidth_gbps: 0.0,
+                h2d_bandwidth_gbps: 1.0,
+                ..SglangHiCacheConfig::new(16)
+            },
+            1_000_000,
+        );
+        let tokens = (0..12).collect::<Vec<_>>();
+        let cached = manager.allocate_for_request(&tokens[..8]).unwrap();
+        manager.finish(&tokens[..8], cached.lease);
+        manager.complete_host_boundary(0.0);
+        manager.evict(8);
+        let mut waiting = WaitingQueue::from([SglangRequest::new(direct_request(tokens, 1), 4, 0)]);
+        let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false);
+        assert_eq!(admitted.can_run[0].materialized_tokens, 8);
+        assert_eq!(admitted.prefill_fpm[0].tokens_computed, 8);
+        assert_eq!(admitted.prefill_fpm[0].prefix_tokens, 0);
+        assert_eq!(admitted.admissions[0].reused_input_tokens, 0);
+        assert!(!manager.has_host_work());
+    }
+}
+
 mod admission_v0522 {
     use super::*;
 

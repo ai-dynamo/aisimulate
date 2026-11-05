@@ -44,10 +44,10 @@ pub(super) fn apply_schedule_policy(
                 }
                 let sequence_tokens = &req.sequence_tokens;
                 req.kv_lease.ensure_page_hashes(sequence_tokens, page_size);
-                let prefix_len = kv_manager
-                    .cache()
-                    .prefix_match_hashes_len(req.kv_lease.page_hashes());
-                let deprioritized = prefix_len <= IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD
+                let pages = req.kv_lease.page_hashes().len();
+                let matched = kv_manager.admission_host_match(&mut req.kv_lease, pages);
+                let deprioritized = matched.device_tokens
+                    <= IN_BATCH_PREFIX_CACHING_CHECK_THRESHOLD
                     && req.sequence_tokens().len() >= duplicate_prefix_len
                     && {
                         let duplicate_prefix =
@@ -60,7 +60,11 @@ pub(super) fn apply_schedule_policy(
                         !waiting_prefixes.insert(sequence_hash)
                     };
 
-                scored.push((prefix_len, deprioritized, req));
+                scored.push((
+                    matched.device_tokens + matched.host_tokens,
+                    deprioritized,
+                    req,
+                ));
             }
 
             scored.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
