@@ -150,6 +150,17 @@ where
             .map_err(placement_boundary)
     }
 
+    fn prefill_started(
+        &mut self,
+        request_id: Uuid,
+        reused_input_tokens: usize,
+        now_ms: f64,
+    ) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0
+            .prefill_started(request_id, reused_input_tokens, now_ms)
+            .map_err(placement_boundary)
+    }
+
     fn prefill_completed(
         &mut self,
         request_id: Uuid,
