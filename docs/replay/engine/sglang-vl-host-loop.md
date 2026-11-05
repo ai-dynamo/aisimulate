@@ -375,6 +375,11 @@ the worker.
 
 ## Behavior source and validation
 
+Finishing-row filtering and its overlap-loop handling follow SGLang v0.5.22 at
+immutable revision `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+[`filter_batch`](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_batch.py)
+and the [overlap scheduler](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/scheduler.py).
+
 The host loop, embedding cache, and frontend pools are independent
 implementations of the observed behavior of sgl-project/sglang v0.5.19 at
 immutable revision `0bcd822377da7b5718e674eaf9c870d349424dd1`:

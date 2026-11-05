@@ -117,6 +117,12 @@ worker always serves its waiting queue first-come first-served. This follows
 [SGLang v0.5.22](https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d)
 (`arg_groups/pd_disaggregation_hook.py`, `disaggregation/decode.py`).
 
+For raw Sweeper `SearchSpace` inputs, `decode_radix_cache: true` requires
+`decode_enable_prefix_caching: true` on SGLang decode samples; deployment
+lowering rejects the inconsistent pair. A sweep may include other backends,
+whose samples omit the SGLang-only radix flag. The recommendation path carries
+both controls from the worker's `kv_cache` configuration.
+
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
 
