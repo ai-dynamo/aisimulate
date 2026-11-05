@@ -48,6 +48,7 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    pub(super) conversation_lineage: Vec<Option<crate::replay::AgenticConversationLineage>>,
     /// Source hash for each graph-local hash ID in `AgenticNode::hash_ids`.
     pub(super) hash_values: Arc<[u64]>,
 }

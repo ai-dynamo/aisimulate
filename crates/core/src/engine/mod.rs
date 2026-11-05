@@ -15,7 +15,7 @@ mod kv_manager;
 pub(crate) mod kvcr;
 mod launch;
 mod offload_lru;
-mod offload_transfer;
+pub(crate) mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;
@@ -36,9 +36,9 @@ pub(crate) use common::hashing::{
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Scope, G3OffloadConfig, G3Scope,
-    KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy,
-    StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
+    G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
+    SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{
@@ -48,21 +48,25 @@ pub use handoff::{
 pub use kvcr::{KvcrPullCounts, KvcrStats};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, KvEventTier,
-    KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
-    PressureEvent, PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
+    EncoderShape, ForwardPassMetrics, HostCacheMetrics, ImageSpec, KvBlock, KvEvent, KvEventData,
+    KvEventTier, KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PrefixCacheLookupCounts, PressureEvent, PressureKind, PressureState, Request,
+    StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
-#[cfg(feature = "python")]
-pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
+#[cfg(all(test, feature = "python"))]
+pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
+    DecodeWork, IterationMs, MixedPassMs, PrefillTotals, PrefillWork, RankWork,
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
     TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
+#[cfg(feature = "python")]
+pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
-pub(in crate::engine) use timing::modeled_duration_ms;
+pub(in crate::engine) use timing::{modeled_duration_ms, predict_group_iteration_ms};
 #[doc(hidden)]
 pub use trace::g1_parent_chain_events;

@@ -30,7 +30,17 @@ def _write(path, value):
 
 
 def _campaign(
-    tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None, model=None
+    tmp_path,
+    *,
+    capacity_multiplier=1,
+    context_length=4096,
+    tp=2,
+    cpu_policy=True,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    page_bytes=128,
+    block_tokens=(16, 16),
 ):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
@@ -103,8 +113,22 @@ def _campaign(
                         allocation["size"] *= capacity_multiplier
                     for view in cache["layer_tensors"].values():
                         view["shape"][view["block_axis"]] *= capacity_multiplier
+                    if page_bytes != 128:
+                        # The fixture gives each pool block one 128-byte page, which both cache groups share.
+                        pool = cache["num_blocks"] * page_bytes
+                        cache.update(available_cache_bytes=pool + 256, allocated_cache_bytes=pool)
+                        cache["storages"][0]["size_bytes"] = cache["tensor_allocations"][0]["size"] = pool
+                        for view in cache["layer_tensors"].values():
+                            view["stride_bytes"][view["block_axis"]] = page_bytes
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
+                if block_tokens != (16, 16):
+                    # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
+                    for group, tokens in zip(cache["groups"], block_tokens, strict=True):
+                        group["block_size_tokens"] = tokens
+                        if value["kind"] == "worker":
+                            for name in group["layer_names"]:
+                                cache["layer_tensors"][name]["kernel_block_size_tokens"] = tokens
             _write(path, value)
             ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     _write(index, document)
@@ -137,7 +161,11 @@ def _campaign(
             "configurations": {
                 name: {
                     "draft_request": copy.deepcopy(draft),
-                    "inputs": {"precision": precision, "collection_deployment": launch["deployment"]},
+                    "inputs": {
+                        "precision": precision,
+                        "collection_deployment": launch["deployment"],
+                        **({"resource_overrides": resource_overrides} if resource_overrides else {}),
+                    },
                 }
                 for name in ("tp2", "incomplete")
             },
@@ -170,6 +198,8 @@ def test_import_keeps_partial_results_and_memory_is_independent_of_timing(tmp_pa
     result = json.loads(capsys.readouterr().out)
     assert result["configurations"]["tp2"]["status"] == "complete"
     assert result["configurations"]["incomplete"]["status"] == "incomplete"
+    # Without a cache layout claim, the result names no layout outcome.
+    assert "cache_layout_reason" not in result["configurations"]["tp2"]
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
@@ -674,15 +704,339 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None):
+def _imported(
+    tmp_path,
+    capsys,
+    *,
+    capacity_multiplier=1,
+    context_length=4096,
+    tp=2,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    page_bytes=128,
+    block_tokens=(16, 16),
+):
     checkpoint, index, _ = _campaign(
-        tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type, model=model
+        tmp_path,
+        capacity_multiplier=capacity_multiplier,
+        context_length=context_length,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
+        page_bytes=page_bytes,
+        block_tokens=block_tokens,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     return checkpoint, index, request, result["configurations"]["tp2"]
+
+
+# The dense probe fixture measures two full-attention groups of 128 bytes per 16-token block: 16 bytes per token.
+_LINEAR_CLAIM = {"kv_bytes_per_token": 16}
+
+
+def test_matching_linear_claim_is_imported_and_accepted_as_a_linear_profile(tmp_path, capsys):
+    from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, _, request, result = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 16 and not resources.cache_groups
+    # The import result names the layout outcome of the claim with the reason that the profile provenance keeps.
+    assert result["cache_layout_reason"] == (
+        "linear: import wrote the linear layout because the supplied kv_bytes_per_token matched the measured "
+        "full-attention groups"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == result["cache_layout_reason"]
+    # The probe manifest records the evidence, which stays grouped.
+    assert runtime_probe_manifest(request)["observed_resources"]["cache_layout"] == "grouped"
+    verify_runtime_profile(request)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_layout_claim_with_a_fractional_measurement_is_imported_as_grouped(tmp_path, capsys):
+    # The probe measures two full-attention groups of 100 bytes per 16-token block: 25/4 bytes per token each, as
+    # the 25-byte page per 4-token block in test_support_config_profile.py, and 25/2 in all. A linear profile needs
+    # a whole number.
+    _, _, request, result = _imported(tmp_path, capsys, page_bytes=100, resource_overrides={"cache_layout": "linear"})
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied cache_layout matched the measured full-attention groups, but the measured bytes per "
+        "token, 25/2, are not a whole number"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    # The command exits 0. Its result names the grouped outcome, and import.json holds the same result.
+    assert result["cache_layout_reason"] == reason
+    assert json.loads((tmp_path / "drafts" / "import.json").read_text())["configurations"]["tp2"] == result
+
+
+def test_grouped_layout_claim_with_kv_bytes_per_token_is_imported_as_incomplete(tmp_path, capsys):
+    # The campaign writes the overrides into the checkpoint without intake, as a hand-edited checkpoint does. The
+    # fixture measures 16 bytes per token, so each claim alone matches the probe.
+    overrides = {"cache_layout": "grouped", "kv_bytes_per_token": 16}
+    checkpoint, index, _ = _campaign(tmp_path, resource_overrides=overrides)
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 1
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    assert result["status"] == "incomplete"
+    assert "kv_bytes_per_token cannot be combined with grouped cache_layout" in result["diagnostics"]
+    assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
+
+
+def test_linear_claim_on_groups_with_different_block_sizes_is_imported_as_grouped(tmp_path, capsys):
+    # The two groups have 128-byte pages of 16 and 32 tokens: 8 + 4 = 12 bytes per token, so the claim matches. A
+    # linear profile replays one block size, so import keeps the measured groups.
+    checkpoint, _, request, result = _imported(
+        tmp_path, capsys, block_tokens=(16, 32), resource_overrides={"kv_bytes_per_token": 12}
+    )
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied kv_bytes_per_token matched the measured full-attention groups, but cache groups "
+        "runtime_group_0 and runtime_group_1 have different block sizes, 16 and 32 tokens"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    assert result["cache_layout_reason"] == reason
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["kv_bytes_per_token"] = 17
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    with pytest.raises(ValueError, match="runtime cache geometry or settings changed; a compatible fresh probe"):
+        save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+
+
+@pytest.mark.parametrize("claim", [False, True])
+def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, claim):
+    _, _, request, files = _imported(
+        tmp_path, capsys, capacity_multiplier=10, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prerequisite = json.loads((root / "support-plan.json").read_text())["prerequisites"][0]
+    # A linear profile has no cache groups. The grouped text stays as it was, so grouped outputs do not change.
+    geometry = "cache geometry" if claim else "grouped geometry"
+    assert prerequisite["status"] == "runtime_memory_resolved"
+    assert prerequisite["detail"] == (
+        f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
+    )
+
+
+@pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
+@pytest.mark.parametrize("block", [16, 256])
+def test_generated_configs_replay_a_linear_runtime_profile_with_the_measured_block_size(tmp_path, capsys, block, claim):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+    from aisimulate.support.validation import _prediction_config
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        block_tokens=(block, block),
+        resource_overrides={"cache_layout": "linear"} if claim else None,
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    replay = CorePredictionConfig.model_validate(_prediction_config(request, root, tmp_path / "trace.jsonl"))
+    # A grouped profile keeps its configuration: replay allocates from its measured groups.
+    for config in (prediction, recommendation, replay):
+        assert config.engine.workers.aggregated.kv_cache.block_size == (block if claim else None)
+    for config in (prediction, replay):
+        args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+        # 64 tokens is the vLLM default of replay.
+        assert args["block_size"] == args["timing_model"]["config"]["kv_block_size"] == (block if claim else 64)
+
+
+def test_role_config_of_a_linear_runtime_profile_has_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        worker_type="prefill",
+        block_tokens=(256, 256),
+        resource_overrides={"cache_layout": "linear"},
+    )
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    worker = yaml.safe_load((root / "worker.yaml").read_text())["engine"]["workers"]["prefill"]
+    assert worker["kv_cache"]["block_size"] == 256
+
+
+@pytest.mark.parametrize("extra_tokens", [-1, 0, 1], ids=["one-below", "exact-fit", "one-above"])
+def test_plan_accepts_an_exact_fit_of_observed_capacity_for_a_linear_profile(tmp_path, capsys, extra_tokens):
+    # Twice the probe's blocks give 24064 bytes: 94 blocks of 16 tokens, so 1504 tokens at 16 bytes per token.
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=2,
+        context_length=1504 + extra_tokens,
+        resource_overrides=_LINEAR_CLAIM,
+    )
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.runtime_memory.kv_cache_bytes == 24064
+    root = tmp_path / "collection"
+    command = ["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]
+    if extra_tokens > 0:
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        # vLLM starts when one full-context request fills the observed capacity exactly.
+        assert cli.main(command) == 0
+        assert json.loads((root / "support-plan.json").read_text())["resources"]["total_kv_size_tokens"] == 1504
+
+
+@pytest.mark.parametrize("memory_source", ["runtime", "declared"])
+def test_grouped_peak_refusal_names_the_memory_source(tmp_path, capsys, memory_source):
+    # Twice the probe's blocks give 24064 bytes, but a 1505-token request needs 95 blocks of 128 bytes in each of
+    # the two groups: 24320 bytes.
+    _, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=2, context_length=1505)
+    config = Path(files["request"])
+    if memory_source == "declared":
+        payload = request.model_dump(mode="json", exclude_none=True)
+        resources = payload["fpm_profile"]["deployments"][0]["resources"]
+        del resources["runtime_memory"]
+        resources.update(weights_bytes=0, activations_bytes=0, runtime_overhead_bytes=0, comm_overhead_bytes=0)
+        # Declared memory gets its KV budget from the GPU capacity, which these pages exceed.
+        for group in resources["cache_groups"]:
+            group["page_size_bytes"] = 2**40
+        config = tmp_path / "declared.yaml"
+        _write(config, payload)
+    assert SupportRequest.from_yaml(config).profile_deployment().resources.memory_source == memory_source
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")])
+    assert error.value.code == 2
+    word = "observed" if memory_source == "runtime" else "declared"
+    assert (
+        f"{word} FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
+
+
+def _capacity_campaign(tmp_path, capsys, resource_overrides=None):
+    """A 1500-token draft whose probe measured 378 pages of 128 bytes: 48384 bytes, shared by two groups."""
+    checkpoint, _, request, _ = _imported(
+        tmp_path, capsys, capacity_multiplier=4, context_length=1500, resource_overrides=resource_overrides
+    )
+    return checkpoint, request
+
+
+def _capacity_override(checkpoint, request, capacity):
+    """Register a capacity edit of the draft in its checkpoint, where it becomes a labeled user override."""
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]["kv_cache_bytes"] = capacity
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    return SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+
+
+def _plan_override(tmp_path, request):
+    config = tmp_path / "override.yaml"
+    _write(config, request.model_dump(mode="json", exclude_none=True))
+    return ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")]
+
+
+def test_measured_capacity_is_whole_linear_cache_blocks(tmp_path, capsys):
+    from aisimulate.support.config_profile import linear_block_bytes
+    from aisimulate.support.runtime import runtime_probe_manifest
+
+    _, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    observed = runtime_probe_manifest(request)["observed_resources"]
+    # 16 tokens fill one 128-byte page of each of the two groups, at 16 bytes per token.
+    assert linear_block_bytes(observed) == 256
+    assert observed["runtime_memory"]["kv_cache_bytes"] == 189 * 256
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 189 * 256
+
+
+@pytest.mark.parametrize("capacity", [24063, 24000])
+def test_linear_capacity_override_must_be_whole_measured_blocks(tmp_path, capsys, capacity):
+    from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, capacity)
+    assert runtime_probe_manifest(changed)["user_overrides"]["runtime_memory.kv_cache_bytes"]["value"] == capacity
+    # The plan counts 1503 or 1500 whole tokens, but 93 whole blocks in each group hold only 1488 tokens.
+    with pytest.raises(ValueError) as error:
+        verify_runtime_profile(changed)
+    assert str(error.value) == (
+        f"the runtime_memory.kv_cache_bytes override {capacity} is not a whole multiple of 256 bytes (16 tokens). "
+        "That is the smallest capacity that fills whole cache blocks in every measured group. A linear runtime "
+        "profile needs whole blocks. The nearest lower capacity of whole blocks is 23808 bytes"
+    )
+    # The refusal does not rewrite the draft.
+    assert changed.profile_deployment().resources.runtime_memory.kv_cache_bytes == capacity
+
+
+@pytest.mark.parametrize("blocks", [93, 94])
+def test_linear_capacity_override_of_whole_blocks_plans_whole_blocks(tmp_path, capsys, blocks):
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, blocks * 256)
+    verify_runtime_profile(changed)
+    command = _plan_override(tmp_path, changed)
+    if blocks == 93:
+        # 93 blocks hold 1488 tokens, fewer than the 1500-token context.
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        assert cli.main(command) == 0
+        plan = json.loads((tmp_path / "collection" / "support-plan.json").read_text())
+        assert plan["resources"]["total_kv_size_tokens"] == 1504
+
+
+def test_grouped_capacity_override_keeps_its_whole_block_plan_check(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys)
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    changed = _capacity_override(checkpoint, request, 24063)
+    # The grouped estimate already counts whole blocks, so acceptance takes the override.
+    verify_runtime_profile(changed)
+    with pytest.raises(SystemExit) as error:
+        cli.main(_plan_override(tmp_path, changed))
+    assert error.value.code == 2
+    # A 1500-token request needs 94 pages of 128 bytes in each group: 24064 bytes.
+    assert (
+        "observed FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
 
 
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
@@ -803,7 +1157,9 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None):
+def _completed_runtime_collection(
+    tmp_path, capsys, *, tp=2, worker_type=None, model=None, resource_overrides=None, block_tokens=(16, 16)
+):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -816,7 +1172,14 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
     from .test_onboard_finalization import _native
 
     checkpoint, _, request, files = _imported(
-        tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type, model=model
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
+        block_tokens=block_tokens,
     )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
@@ -888,6 +1251,253 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
         },
     )
     return checkpoint, request, files, root
+
+
+def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linear_layout(tmp_path, capsys, monkeypatch):
+    from aisimulate.support import finalization
+
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    merge = finalization._merge_resources
+
+    def windowed(*args, **kwargs):
+        resources = merge(*args, **kwargs)
+        resources["cache_groups"][1]["sliding_window"] = 128
+        return resources
+
+    monkeypatch.setattr(finalization, "_merge_resources", windowed)
+    target = tmp_path / "finalized"
+    with pytest.raises(ValueError) as error:
+        finalization.finalize(request, root, target)
+    assert str(error.value) == (
+        "the accepted profile is linear, but the collection's measured cache groups have no linear layout: "
+        "cache group runtime_group_1 has sliding_window=128"
+    )
+    assert not target.exists()
+
+
+def test_finalized_linear_runtime_profile_keeps_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.plan import check_plan
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == "linear"
+    # The finalization manifest keeps the runtime probe evidence that gives the block size.
+    for name in ("predict/pilot.yaml", "recommend/pilot.yaml"):
+        worker = yaml.safe_load((target / name).read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+    check_plan(resolved, target)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing-observed-resources", "probe-not-a-dict", "observed-resources-not-a-dict", "missing-cache-groups"],
+)
+def test_plan_refuses_finalized_probe_evidence_without_observed_cache_groups(tmp_path, capsys, corruption):
+    from aisimulate.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # A hand edit of the finalized request: its finalization manifest is the runtime memory provenance.
+    runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    manifest = json.loads(runtime["provenance"])
+    probe = manifest["runtime_probe"]
+    if corruption == "missing-observed-resources":
+        del probe["observed_resources"]
+    elif corruption == "probe-not-a-dict":
+        manifest["runtime_probe"] = "x"
+    elif corruption == "observed-resources-not-a-dict":
+        probe["observed_resources"] = ["x"]
+    else:
+        del probe["observed_resources"]["cache_groups"]
+    runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert error.value.code == 2
+    assert (
+        "invalid onboarding runtime probe provenance: the probe evidence has no observed_resources with cache_groups"
+        in capsys.readouterr().err
+    )
+
+
+_DIFFERS = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
+_GROUPS_DIFFER = _DIFFERS + "differ from measured_cache_groups in the profile provenance"
+
+
+def _set_block_sizes(groups, block_tokens, *, scale_pages=False):
+    for group, tokens in zip(groups, block_tokens, strict=True):
+        if scale_pages:
+            group["page_size_bytes"] = group["page_size_bytes"] * tokens // group["block_size_tokens"]
+        group["block_size_tokens"] = tokens
+
+
+@pytest.mark.parametrize(
+    "edit,error",
+    [
+        ("none", None),
+        ("every-group", _GROUPS_DIFFER),
+        ("one-group", _GROUPS_DIFFER),
+        ("every-group-with-scaled-pages", _GROUPS_DIFFER),
+        ("profile-kv-bytes", _DIFFERS + "give kv_bytes_per_token=1, and the profile has kv_bytes_per_token=2"),
+        ("evidence-and-measured-groups", _DIFFERS + "have no linear layout, and the profile is linear"),
+    ],
+    ids=[
+        "unedited",
+        "every-group",
+        "one-group",
+        "every-group-with-scaled-pages",
+        "profile-kv-bytes",
+        "evidence-and-measured-groups",
+    ],
+)
+def test_plan_checks_finalized_probe_evidence_against_the_profile(tmp_path, capsys, edit, error):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Hand edits of the finalized request. The profile says linear, 1 byte per token, and 256-token measured groups.
+    resources = payload["fpm_profile"]["deployments"][0]["resources"]
+    manifest = json.loads(resources["runtime_memory"]["provenance"])
+    groups = manifest["runtime_probe"]["observed_resources"]["cache_groups"]
+    if edit == "every-group":
+        _set_block_sizes(groups, (16, 16))
+    elif edit == "one-group":
+        _set_block_sizes(groups, (16, 256))
+    elif edit == "every-group-with-scaled-pages":
+        # The evidence then still gives the profile's 1 byte per token.
+        _set_block_sizes(groups, (16, 16), scale_pages=True)
+    elif edit == "profile-kv-bytes":
+        resources["kv_bytes_per_token"] = 2
+    elif edit == "evidence-and-measured-groups":
+        # Both copies of the groups agree, but groups with different block sizes have no linear layout.
+        _set_block_sizes(groups, (16, 256))
+        provenance = json.loads(payload["fpm_profile"]["provenance"])
+        provenance["measured_cache_groups"] = copy.deepcopy(groups)
+        payload["fpm_profile"]["provenance"] = json.dumps(provenance)
+    resources["runtime_memory"]["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if error is None:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert error in capsys.readouterr().err
+
+
+_NO_PROBE_EVIDENCE = (
+    "the profile provenance records measured_cache_groups, but the request has no runtime probe evidence"
+)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["unedited", "runtime-probe-removed"])
+def test_plan_refuses_a_finalized_linear_profile_without_its_runtime_probe(tmp_path, capsys, remove):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.plan import _probe_observed_resources
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Finalization records the measured groups of a linear profile from the probe in the profile provenance.
+    assert "measured_cache_groups" in json.loads(payload["fpm_profile"]["provenance"])
+    if remove:
+        # A hand edit removes the probe evidence from the finalization manifest.
+        runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+        manifest = json.loads(runtime["provenance"])
+        del manifest["runtime_probe"]
+        runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if not remove:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(SupportRequest.from_yaml(config))
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+def test_plan_refuses_a_linear_draft_from_the_probe_without_its_runtime_memory(tmp_path, capsys):
+    from aisimulate.support.finalization import finalization_manifest
+    from aisimulate.support.plan import _probe_observed_resources
+    from aisimulate.support.runtime import runtime_probe_manifest
+
+    _, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    # A hand edit removes the runtime memory of the draft, and with it the probe evidence. The profile provenance
+    # still records the measured groups of the probe.
+    del payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    edited = SupportRequest.model_validate(payload)
+    assert edited.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" in json.loads(edited.fpm_profile.provenance)
+    assert runtime_probe_manifest(edited) is None and finalization_manifest(edited) is None
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(edited)
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as failure:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "provenance", [None, "Declared synthetic rank-local bounds."], ids=["onboard-init", "free-text"]
+)
+def test_plan_of_a_linear_profile_without_measured_cache_groups_has_no_block_size(tmp_path, provenance):
+    import yaml
+
+    from aisimulate.support.plan import _probe_observed_resources
+
+    from .test_onboard_finalization import _prepare_collection
+
+    # onboard init declares kv_bytes_per_token from the model config. The linear profile has no probe evidence and
+    # records no measured_cache_groups, so its configs keep the default block size, as on main.
+    request, _ = _prepare_collection(tmp_path)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    if provenance is not None:
+        payload["fpm_profile"]["provenance"] = provenance
+    request = SupportRequest.model_validate(payload)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" not in request.fpm_profile.provenance
+    assert _probe_observed_resources(request) is None
+    config = tmp_path / "declared.yaml"
+    _write(config, payload)
+    assert cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]) == 0
+    worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+    assert "block_size" not in worker.get("kv_cache", {})
 
 
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
@@ -971,8 +1581,10 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
     check_plan(resolved, target)
 
 
-def _reviewed_capacity_revision(tmp_path, capsys):
-    checkpoint, original, files, root = _completed_runtime_collection(tmp_path, capsys)
+def _reviewed_capacity_revision(tmp_path, capsys, resource_overrides=None):
+    checkpoint, original, files, root = _completed_runtime_collection(
+        tmp_path, capsys, resource_overrides=resource_overrides
+    )
     collection = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
     index = Path(collection["runtime_observations"])
     document = json.loads(index.read_text())
@@ -994,13 +1606,20 @@ def _reviewed_capacity_revision(tmp_path, capsys):
     return checkpoint, original, files, root, revised
 
 
-def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys):
+@pytest.mark.parametrize("claim", [False, True])
+def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys, claim):
     from aisimulate.support.finalization import finalization_manifest, finalize
     from aisimulate.support.plan import check_plan, request_id
     from aisimulate.support.runtime import verify_runtime_profile
 
-    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(
+        tmp_path, capsys, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
     revised = SupportRequest.from_yaml(memory_config)
+    # The capacity revision imports the formal observations with the same checkpoint claim, so its layout matches.
+    layout = "linear" if claim else "grouped"
+    assert original.profile_deployment().resources.cache_layout == layout
+    assert revised.profile_deployment().resources.cache_layout == layout
     before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
     accepted = checkpoint.read_bytes()
     with pytest.raises(ValueError, match="smaller than the accepted bound"):
@@ -1027,6 +1646,7 @@ def test_finalization_reuses_original_collection_with_accepted_observed_capacity
     )
     capsys.readouterr()
     resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == layout
     manifest = finalization_manifest(resolved)
     assert manifest["source_request_id"] == request_id(original)
     assert manifest["memory_revision"]["request_id"] == request_id(revised)

@@ -5,6 +5,7 @@ mod arrival;
 mod driver;
 mod dynamo;
 mod generated;
+mod lineage;
 mod phase;
 mod profile;
 mod snapshot;
@@ -52,7 +53,7 @@ pub use types::{
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
+    WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
     WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
     load_weka_agentic_rows, stream_weka_agentic_rows,
 };

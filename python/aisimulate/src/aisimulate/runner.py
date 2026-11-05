@@ -19,10 +19,11 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import numpy as np
 
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
-from .capacity import materialize_aic_num_gpu_blocks
+from .capacity import materialize_aic_num_gpu_blocks, reject_pipeline_parallelism
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
+from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -64,6 +65,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "trace_format",
         "trace_block_size",
         "weka_nested_timestamp_basis",
+        "weka_client",
         "arrival_speedup_ratio",
         "replay_concurrency",
         "isl",
@@ -384,6 +386,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_deferred_encoder_overlay=True,
             supports_native_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
@@ -392,6 +395,7 @@ class EngineReplayRunnerFactory:
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
+            supports_detokenization=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
@@ -405,6 +409,8 @@ class EngineReplayRunnerFactory:
             supports_agentic_snapshots=True,
             supports_agentic_warmup=True,
             supports_agentic_live_warmup=True,
+            supports_agentic_primers_only=True,
+            supports_weka_client=True,
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
@@ -474,8 +480,16 @@ class EngineReplayRunner:
             spec.backend_deployment.deployment_mode in {"afd", "afd+pd"} or spec.backend_deployment.encoder is not None
         ):
             raise InvalidRunnerError("canonical determinism requires native text replay")
-        if output_requirements.capture_telemetry:
-            raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if output_requirements.capture_telemetry and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.backend not in {"vllm", "sglang"}
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or spec.backend_deployment.encoder is not None
+        ):
+            raise InvalidRunnerError(
+                "telemetry capture requires offline native vLLM/SGLang aggregated or disaggregated replay "
+                "without an encoder pool"
+            )
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
@@ -513,6 +527,8 @@ class EngineReplayRunner:
             if encoder.mode == "analytical":
                 if output_requirements.capture_per_request or output_requirements.include_raw_report:
                     raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+                if output_requirements.defer_encoder_overlay and output_requirements.capture_memory_diagnostics:
+                    raise InvalidRunnerError("a deferred encoder overlay cannot carry memory diagnostics")
                 goal = OptimizationGoal.model_validate(spec.goal)
                 if (
                     goal.min_goodput_rps is not None
@@ -577,6 +593,11 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["capture_performance_diagnostics"] = True
+        if output_requirements.capture_telemetry:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_telemetry"] = True
+            execution_spec["telemetry_sample_interval_ms"] = output_requirements.telemetry_sample_interval_ms
         if self.determinism != "random":
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
@@ -587,6 +608,10 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
+        if spec.backend_deployment.detokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["detokenization"] = dict(spec.backend_deployment.detokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -616,6 +641,8 @@ class EngineReplayRunner:
         del report_json
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
+        if output_requirements.capture_telemetry and not isinstance(report.get("telemetry"), Mapping):
+            raise InvalidRunnerError("AISimulate engine replay runtime did not provide requested telemetry")
         resolved_basis = report.get("weka_nested_timestamp_basis")
         if isinstance(resolved_basis, str):
             logger.info(
@@ -637,13 +664,15 @@ class EngineReplayRunner:
             include_native_report=(
                 output_requirements.include_raw_report
                 or output_requirements.capture_per_request
+                or output_requirements.capture_telemetry
                 or output_requirements.capture_memory_diagnostics
                 or output_requirements.capture_performance_diagnostics
             ),
         )
         if encoder is not None:
             if encoder.mode == "analytical":
-                normalized = apply_encoder_overlay(normalized, original_spec)
+                if not output_requirements.defer_encoder_overlay:
+                    normalized = apply_encoder_overlay(normalized, original_spec)
             else:
                 from .sweeper.epd import language_gpus
 
@@ -1064,6 +1093,9 @@ def _materialize_engine_execution_spec(
     elif deployment_mode == "disagg":
         raw_prefill = _required_engine_args(deployment.prefill_engine_args, "prefill")
         raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
+        # Check both roles before either one estimates capacity.
+        for raw, role in ((raw_prefill, "prefill"), (raw_decode, "decode")):
+            _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role)
         prefill = _materialize_engine_role(
             deployment.backend,
             deployment.backend_version,
@@ -1495,6 +1527,33 @@ def materialize_engine_launch_config(
     )
 
 
+def _reject_role_pipeline_parallelism(
+    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str
+) -> None:
+    # `rank: null` falls back to the flat role fields during materialization.
+    rank = role_config.get("rank")
+    if rank is None:
+        rank = role_config
+    if not isinstance(rank, Mapping):
+        return
+    timing = rank.get("timing_model")
+    timing_config = timing.get("config") if isinstance(timing, Mapping) else None
+    if not isinstance(timing_config, Mapping):
+        timing_config = {}
+    # A pipeline width the timing identity records as unknown is the role's.
+    reject_pipeline_parallelism(
+        role,
+        parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
+        role_config.get("aic_pp_size", 1),
+        rank.get("aic_pp_size", 1),
+        *(
+            value
+            for value in (timing_config.get("pp", 1), timing_config.get("pp_size", 1))
+            if value != UNKNOWN_IDENTITY
+        ),
+    )
+
+
 def _materialize_engine_role(
     deployment_backend: str,
     deployment_backend_version: str,
@@ -1510,19 +1569,10 @@ def _materialize_engine_role(
     # New generic schemes use caller-authored capacity; leave the existing
     # Ngram/NextN capacity paths unchanged.
     requested_rank = role_config.get("rank", role_config)
+    _reject_role_pipeline_parallelism(parallel_config, role_config, role)
     if isinstance(requested_rank, Mapping):
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
-        if (
-            isinstance(timing, Mapping)
-            and timing.get("type") == "external"
-            and timing.get("provider") == "aic"
-            and isinstance(timing_config, Mapping)
-        ):
-            # Capacity materialization also constructs the canonical estimator,
-            # including with explicit KV blocks. Reject unsupported replay modes
-            # before it opens a learned source.
-            _validate_replay_estimation_mode(timing_config.get("estimation_mode"))
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
         selections = (requested_rank.get("speculation"), canonical)
         for spec in selections:
@@ -1636,7 +1686,8 @@ def _materialize_engine_role(
             (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
         ):
             expected = canonical.get(fields[0], canonical.get(fields[1]))
-            if expected is not None:
+            # An unknown width leaves the role's own topology.
+            if expected is not None and expected != UNKNOWN_IDENTITY:
                 for alias in aliases:
                     if alias in role_config and role_config[alias] != expected:
                         raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
@@ -1809,14 +1860,19 @@ def _materialize_engine_role(
             if timing_backend_version is not None:
                 timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
                 rank["timing_model"] = timing_model
-            if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
+            # A regression or learned identity may not know the version, which
+            # then cannot conflict with the deployment's.
+            if timing_backend_version not in (None, UNKNOWN_IDENTITY) and (
+                timing_backend_version != deployment_backend_version
+            ):
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="
                     f"{timing_backend_version!r} conflicts with "
                     "BackendDeploymentSpec backend_version="
                     f"{deployment_backend_version!r}"
                 )
-            aic_timing_overrides["backend_version"] = deployment_backend_version
+            if timing_backend_version != UNKNOWN_IDENTITY:
+                aic_timing_overrides["backend_version"] = deployment_backend_version
 
     # Identity and capacity inputs may coexist with a fixed/polynomial timing
     # model. They have already served their non-timing purposes and must not be
@@ -1867,6 +1923,19 @@ def _materialize_engine_role(
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
         if backend not in supported or rank.get("native_host_offload") is not None:
             raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+    if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
+        raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
+    if kind == "ngram":
+        # vLLM turns async scheduling off for ngram drafts and rejects it when
+        # requested. Resolve that here, where the speculation kind is still
+        # known: later stages see only generic draft settings, whatever timing
+        # model prices the replay.
+        if rank.get("async_scheduling") is True:
+            raise ValueError(
+                f"engine provider {role} async_scheduling: vLLM does not support async scheduling "
+                "with ngram speculative decoding"
+            )
+        rank["async_scheduling"] = False
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:

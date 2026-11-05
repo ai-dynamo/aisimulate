@@ -156,3 +156,38 @@ Overrides and accepted observation membership restrict which runs enter public
 summary/detail v2 assets. Missing metadata in historical evaluations remains
 Unknown. Request metrics are separate Parquet evidence; only compact chart JSON
 is served publicly. No source request IDs or prompt text enter chart assets.
+
+## Scenario comparison
+
+`run_fpm_accuracy.py --scenarios` evaluates the five data populations exposed by
+[Scenario Comparison](../../pages/fpm-accuracy/README.md#scenario-comparison):
+self-benchmark A, distributed holdout B, strict online C, A+C and temporal B+C.
+The nine B/B+C training shares use deterministic, target-blind splits. Every
+cell owns fresh predictor state and retains all test observations in its
+coverage denominator; MAPE averages successful predictions only.
+
+Protocol v13 admits the first observation at or after each five-second event-time
+tick, after prediction and scoring. The first tick is five seconds after the
+first test timestamp. Cold start uses the same admission schedule. Missing
+chronology is reported explicitly; file order is never converted to a clock.
+
+The adapters construct models through `RustForwardPassPerfModel.best_available`
+and prepare GBDT seeds with the AISim SDK trainer. The native API owns tree
+updates, hybrid calibration, causal selection and PR #639 mixed composition.
+Original-A source hashes bind fallback eligibility; B and C cannot acquire an
+A prior. Standalone A+C enables the native quality checker with its defaults.
+Frozen hybrid A+C never bootstraps a missing mixed forest. GBDT and selector
+append a native mixed checkpoint only after 20 causally admitted observations.
+
+Pure C has no original-A model: initial forests are prepared separately per
+worker and native workload store from admitted feedback. Existing store state
+survives when another store becomes ready. Offline hybrid/selector retain the
+native model's per-worker pools. Cold-start construction contributes to update
+time, while initial A/B fitting contributes to preparation time. Native
+configuration and aggregate diagnostics accompany each learned result; local
+artifact paths are removed from public evidence.
+
+The campaign publishes scenarios only in a complete, checksummed v3 artifact
+alongside the exact summary and details. Partial `--configuration` runs remain
+smoke evidence and cannot qualify for Pages. Historical paged-C protocols are
+not accepted as strict-C results.

@@ -48,21 +48,16 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# Serve-parity `metadata=` argument validated on the 0.27.0 release image
-# (Kimi-K3 landed upstream there). The manifest kda family pin stays on the
-# kimi-k3 preview build until the SDK consumer routes 0.27.0's split decode
-# (see collector/framework_manifest.yaml), so this module exactly pins the
-# preview version; it runs on either image — the DS-layout probe
-# (is_fused_kda_decode_supported) yields fused_kda_decode rows on the
-# preview and the packed conv-update + recurrence pair on 0.27.0.
-# The file-level range spans the two audited routes (PEP 440 clauses are
-# conjunctive, so it cannot name the two releases alone). Each KDA
-# architecture is additionally gated at runtime to its own audited release by
-# _KDA_ARCHITECTURE_COMPAT: Kimi-K3 only on the 0.1.dev19262 preview, GLM-5.3-
-# Flash only on stock 0.31.0 (no overlay); every release in between
-# (including 0.30.0, where the GLM layer lived under glm5next/nvidia/) raises
-# KdaRuntimeNotAuditedError.
-__compat__ = "vllm>=0.1.dev19262,<=0.31.0"
+# The kda family runs on 0.31.0 (framework_manifest.yaml family pin)
+# for both architectures. For Kimi-K3, the DS-layout probe
+# (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
+# fused_kda_decode for the non-spec decode, and the packed conv-update +
+# recurrence pair is measured alongside as the spec-decode serving path.
+# GLM-5.3-Flash runs on stock 0.31.0 (no overlay). Each KDA architecture is
+# additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
+# KdaRuntimeNotAuditedError otherwise.
+# One release per file; earlier code is `git log -- <this file>` away.
+__compat__ = "vllm==0.31.0"
 
 import gc
 import os
@@ -70,7 +65,6 @@ import os
 import torch
 
 try:
-    from collector.case_generator import get_common_kda_test_cases
     from collector.helper import (
         WORKER_RESTART,
         benchmark_with_power,
@@ -82,7 +76,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_kda_test_cases
     from version_resolver import _check_compat
 
     from helper import (
@@ -92,35 +85,34 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_kda_debug", "0"))  # noqa: SIM112
 
 # KDA safe-gate lower bound: fixed model constant for Kimi-K3
 # (config.json linear_attn_config.gate_lower_bound).
 KDA_LOWER_BOUND = -5.0
 
+
+def _decode_paths() -> set[str]:
+    """Which decode paths the generation benchmark measures. Default: both the
+    fused CUDA decode kernel (serving's non-spec path) and the packed
+    conv-update + Triton recurrence pair (serving's path under speculative
+    decoding). The opharness kda decode gate captures serving WITHOUT spec
+    decoding, so it sets AIS_KDA_DECODE_PATHS=fused to compare like with like
+    (recorded in the capture's env). Collection runs never set it."""
+    paths = {p.strip() for p in os.environ.get("AIS_KDA_DECODE_PATHS", "fused,packed").split(",") if p.strip()}
+    if not paths or not paths <= {"fused", "packed"}:
+        raise ValueError(f"AIS_KDA_DECODE_PATHS must name fused and/or packed, got {sorted(paths)}")
+    return paths
+
+
 NUM_WARMUPS = 3
 NUM_RUNS = 10
 
 
 def get_kda_test_cases():
-    """Test cases for KDA kernel benchmarking (context/generation/verify)."""
-    test_cases = []
-    for c in get_common_kda_test_cases():
-        test_cases.append(
-            [
-                c.phase,
-                c.d_model,
-                c.d_conv,
-                c.num_k_heads,
-                c.head_k_dim,
-                c.num_v_heads,
-                c.head_v_dim,
-                c.batch_size_list,
-                c.seq_len_list,
-                c.model_name,
-            ]
-        )
-    return test_cases
+    return plan_cases("kda", "vllm", get_sm_version())
 
 
 def _cleanup(tag: str):
@@ -151,10 +143,16 @@ def _log(common, latency_ms, kernel_source, perf_filename, vllm_version, device,
 def _resolve_prefill_kernel(dtype: torch.dtype):
     """Mirror serving's resolve_kda_prefill_backend on this device: FlashKDA
     when supported AND importable, else the Triton chunk kernel
-    (vllm/models/kimi_k3/nvidia/kda.py resolve_kda_prefill_backend)."""
+    (vllm/models/kimi_k3/nvidia/kda.py:455-495 resolve_kda_prefill_backend;
+    backend "auto" never selects FlashInfer, so on SM90 the choice is FlashKDA
+    or Triton). 0.30 added the recurrent-state dtype to the probe: serving
+    passes get_state_dtype()[1] (kda.py:665), which
+    MambaStateDtypeCalculator.kda_state_dtype resolves to float32 for the
+    default mamba_ssm_cache_dtype "auto" — the dtype this collector's
+    init_state uses below."""
     from vllm.models.kimi_k3.nvidia.kda import is_flashkda_supported
 
-    if is_flashkda_supported(128, dtype, KDA_LOWER_BOUND):
+    if is_flashkda_supported(128, dtype, torch.float32, KDA_LOWER_BOUND):
         try:
             import vllm._flashkda_C  # noqa: F401
             from vllm.models.kimi_k3.nvidia.kda import _flashkda_prefill
@@ -259,7 +257,7 @@ def run_kda_context_benchmark(
                 # Serving precomputes the conv metadata once per step in the
                 # KDA attention-metadata builder (KimiK3KDAMetadata subclasses
                 # GDNAttentionMetadata;
-                # vllm/models/kimi_k3/nvidia/kda_metadata.py @0.27.0 image era)
+                # vllm/models/kimi_k3/nvidia/kda_metadata.py image era)
                 # and passes it into every layer's prefill conv call
                 # (vllm/models/kimi_k3/nvidia/kda.py::_prefill_conv passes
                 # metadata=m). Omitting metadata takes the non-serving branch:
@@ -343,20 +341,57 @@ def run_kda_context_benchmark(
                 init_state = torch.zeros(batch_size, nh, hd, hd, dtype=torch.float32, device=device)
 
                 if prefill_source == "flashkda_fwd":
+                    import inspect
 
-                    def run_prefill():
-                        flashkda_prefill(
-                            q,
-                            k,
-                            v,
-                            raw_g,
-                            raw_beta,
-                            a_log,
-                            dt_bias,
-                            KDA_LOWER_BOUND,
-                            init_state,
-                            cu,
+                    # vLLM 0.29.0 FlashKDA writes into caller-owned buffers taken
+                    # from the engine workspace (kda.py:536-547 sizes them:
+                    # out (1,T,H,D) model dtype, final_state (N,H,D,D) fp32,
+                    # workspace uint8 of _flashkda_C.get_workspace_size(T,H,N);
+                    # the non-checkpoint prefill call is kda.py:939-953). The
+                    # kimi-k3 preview build returned them instead — dispatch on
+                    # the signature so both builds run the same kernel.
+                    if "out" in inspect.signature(flashkda_prefill).parameters:
+                        import vllm._flashkda_C  # noqa: F401
+
+                        fk_out = torch.empty_like(q)
+                        fk_final = torch.zeros(batch_size, nh, hd, hd, dtype=torch.float32, device=device)
+                        fk_ws = torch.empty(
+                            int(torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size)),
+                            dtype=torch.uint8,
+                            device=device,
                         )
+
+                        def run_prefill():
+                            flashkda_prefill(
+                                q,
+                                k,
+                                v,
+                                raw_g,
+                                raw_beta,
+                                a_log,
+                                dt_bias,
+                                KDA_LOWER_BOUND,
+                                init_state,
+                                cu,
+                                out=fk_out,
+                                final_state=fk_final,
+                                workspace=fk_ws,
+                            )
+                    else:
+
+                        def run_prefill():
+                            flashkda_prefill(
+                                q,
+                                k,
+                                v,
+                                raw_g,
+                                raw_beta,
+                                a_log,
+                                dt_bias,
+                                KDA_LOWER_BOUND,
+                                init_state,
+                                cu,
+                            )
 
                 else:
 
@@ -447,7 +482,17 @@ def run_kda_generation_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     dim = nh * hd
 
-    fused_ok = is_fused_kda_decode_supported(nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype)
+    # 0.30 added the recurrent-state dtype to the decode probe as well: serving
+    # resolves it from get_state_dtype()[1] (vllm/models/kimi_k3/nvidia/kda.py
+    # 665-680, resolve_kda_decode_backend -> is_fused_kda_decode_supported
+    # :157-178), float32 for the default mamba_ssm_cache_dtype "auto" — the dtype
+    # of this collector's recurrent state below.
+    decode_paths = _decode_paths()
+    fused_ok = is_fused_kda_decode_supported(
+        nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype, recurrent_state_dtype=torch.float32
+    )
+    if decode_paths == {"fused"} and not fused_ok:
+        raise RuntimeError("AIS_KDA_DECODE_PATHS=fused, but the fused KDA decode kernel does not support this shard")
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     fused_weight = conv_weight.reshape(3, dim, cw).transpose(1, 2).contiguous()
     norm_weight = torch.randn(hd, dtype=torch.float32, device=device)
@@ -483,7 +528,7 @@ def run_kda_generation_benchmark(
                 "model_name": model_name,
             }
 
-            if fused_ok:
+            if fused_ok and "fused" in decode_paths:
 
                 def run_fused_decode():
                     ops.fused_kda_decode(
@@ -520,55 +565,57 @@ def run_kda_generation_benchmark(
                         results["power_stats"],
                     )
 
-            def run_conv_update():
-                causal_conv1d_update(
-                    x,
-                    conv_state,
-                    conv_weight,
-                    None,
-                    activation="silu",
-                    conv_state_indices=idx,
-                    validate_data=True,
-                    out=conv_out,
-                )
+            if "packed" in decode_paths:
 
-            with benchmark_with_power(
-                device=device, kernel_func=run_conv_update, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
-            ) as results:
-                _log(
-                    common,
-                    results["latency_ms"],
-                    "causal_conv1d_update",
-                    perf_filename,
-                    vllm_version,
-                    device,
-                    results["power_stats"],
-                )
+                def run_conv_update():
+                    causal_conv1d_update(
+                        x,
+                        conv_state,
+                        conv_weight,
+                        None,
+                        activation="silu",
+                        conv_state_indices=idx,
+                        validate_data=True,
+                        out=conv_out,
+                    )
 
-            def run_packed_decode():
-                fused_recurrent_kda_packed_decode(
-                    mixed_qkv=x,
-                    raw_g=raw_g,
-                    raw_beta=raw_beta,
-                    A_log=a_log,
-                    dt_bias=dt_bias_hd,
-                    lower_bound=KDA_LOWER_BOUND,
-                    initial_state=state,
-                    state_indices=idx,
-                )
+                with benchmark_with_power(
+                    device=device, kernel_func=run_conv_update, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        "causal_conv1d_update",
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
 
-            with benchmark_with_power(
-                device=device, kernel_func=run_packed_decode, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
-            ) as results:
-                _log(
-                    common,
-                    results["latency_ms"],
-                    "fused_recurrent_kda_packed_decode",
-                    perf_filename,
-                    vllm_version,
-                    device,
-                    results["power_stats"],
-                )
+                def run_packed_decode():
+                    fused_recurrent_kda_packed_decode(
+                        mixed_qkv=x,
+                        raw_g=raw_g,
+                        raw_beta=raw_beta,
+                        A_log=a_log,
+                        dt_bias=dt_bias_hd,
+                        lower_bound=KDA_LOWER_BOUND,
+                        initial_state=state,
+                        state_indices=idx,
+                    )
+
+                with benchmark_with_power(
+                    device=device, kernel_func=run_packed_decode, num_warmups=NUM_WARMUPS, num_runs=NUM_RUNS, repeat_n=1
+                ) as results:
+                    _log(
+                        common,
+                        results["latency_ms"],
+                        "fused_recurrent_kda_packed_decode",
+                        perf_filename,
+                        vllm_version,
+                        device,
+                        results["power_stats"],
+                    )
             ok += 1
         except Exception as e:
             err += 1
@@ -749,7 +796,7 @@ def run_kda_verify_benchmark(
 # vllm/models/glm5next/nvidia/ops/third_party/kda (common/kda.py:42-51).
 # Serving routing: model_executor/models/registry.py:428-431 ->
 # glm5next/__init__.py -> common/model.py:88,303-308 (KDA layers).
-# Below, "kda.py" = vllm/models/glm5next/common/kda.py @v0.31.0 (db9527a4);
+# Below, "kda.py" = vllm/models/glm5next/common/kda.py (db9527a4);
 # gdn_attn.py / mamba_utils.py are under vllm/v1/attention/backends/ and
 # vllm/model_executor/layers/mamba/ @v0.31.0.
 #   - kda.py:127-150  _resolve_kda_prefill_backend: FlashKDA on CUDA SM9x/10x/12x
@@ -784,8 +831,8 @@ def run_kda_verify_benchmark(
 #                     (mamba_ssm_cache_dtype auto), shapes (3P/tp, d_conv-1) /
 #                     (H/tp, D, D).
 #
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a). glm5next/nvidia/kda.py@v0.30.0 moved to glm5next/common/kda.py
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# ced6857a). glm5next/nvidia/kda.py moved to glm5next/common/kda.py
 # byte-identical (sha256 37745b45..., so every kda.py line above is unchanged);
 # nvidia/ops/third_party/kda/{kernels,fused_recurrent}.py differ only in
 # docstrings; causal_conv1d.py (docstrings only), gather_initial_states.py,
@@ -823,7 +870,7 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.1.dev19262",
+    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.31.0",
     GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.31.0",
 }
 
@@ -834,7 +881,7 @@ class KdaRuntimeNotAuditedError(RuntimeError):
 
 def _kda_architecture(model_name: str) -> str:
     """GLM-5.3-Flash paths run the glm5next layer; every other KDA row runs the
-    (unchanged) Kimi-K3 layer path of this module."""
+    Kimi-K3 layer path of this module."""
     return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
 
 
@@ -1172,7 +1219,7 @@ def run_glm5_next_kda_decode(
                 # (TP1 shard, 64 local heads): batch 1024 fails with
                 # "Triton Error [CUDA]: invalid argument". fused_recurrent_kda
                 # launches grid (NK, NV, N * HV)
-                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98 @v0.31.0),
+                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98),
                 # so N * HV = 65536 exceeds the CUDA grid z limit (65535);
                 # the packed-decode sibling splits its grid for this case
                 # (fused_recurrent.py:510-511) and this one does not. Serving

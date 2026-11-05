@@ -42,6 +42,7 @@ from scripts.e2e_accuracy.hf_measurements import POLICY as HF_POLICY
 from scripts.e2e_accuracy.source.cohort import select_points as select_resolved_points
 from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime_evidence
 from scripts.pages.build_pages_site import _accuracy_summary
+from scripts.release.package_identity import installed_distribution
 
 REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
 
@@ -217,7 +218,7 @@ def predictor_module_names(files) -> tuple[str, str]:
 
 def wheel_identity(wheel: Path) -> dict:
     """Check installed runtime AND legacy CLI bytes against the single wheel."""
-    dist = importlib.metadata.distribution("aisimulate")
+    dist = installed_distribution()
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
         api, adapter = predictor_module_names(archive.namelist())
@@ -331,7 +332,7 @@ def predict_point(point: dict) -> dict:
         return predict_resolved_point(point)
     from aisimulate.runner import EngineReplayRunnerFactory
 
-    api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
+    api_name, adapter_name = predictor_module_names(installed_distribution().files or ())
     cli_estimate = importlib.import_module(api_name).cli_estimate
     adapter = importlib.import_module(adapter_name)
 
@@ -518,7 +519,7 @@ def predict_resolved_point(point):
 
     deployment = point["deployment"]
     config, bench = point["config"], point["benchmark"]
-    api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())
+    api_name, adapter_name = predictor_module_names(installed_distribution().files or ())
     namespace = "aiconfigurator" if api_name.startswith("aiconfigurator.") else "aisimulate"
     try:
         version = importlib.import_module(namespace + ".sdk.perf_database").get_latest_database_version(

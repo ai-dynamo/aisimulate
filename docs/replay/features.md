@@ -21,15 +21,15 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | Sessions | Native token replay | Synthetic or compatible trace sessions | Concurrency counts sessions through think time; see trace-format restrictions |
 | Prefix reuse | Native backend cache | G1 with prefix caching enabled | Actual reuse differs from Router overlap; complete block and backend admission rules apply |
 | Grouped FPM cache | vLLM | Cold aggregated, PP1/CP1 | HBM only, no speculation, prefix caching off, no scalar block capacity, no P/D |
-| G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool |
-| Agentic G2 | vLLM | One aggregated worker or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; each role may omit G2 or use local/shared scope |
+| G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool; an aggregated worker's local pool can follow vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR) |
+| Agentic G2 | vLLM | One aggregated worker, several aggregated workers each with local G2, or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; with one worker per role, each role may omit G2 or use local/shared scope |
 | G3 offload | vLLM | Aggregated, attention DP1; fixed or scaled pools | Requires G2; no speculation, AgentX, P/D, recommendation or hardware integration |
 | KVCR peer fetch | vLLM | Aggregated with any attention-DP size, or P/D prefill ranks; fixed or scaled pools | Requires private G2 and hints from a placement policy or ReplaySpec requests (CLI traffic has none); no G3, decode-role KVCR or recommendation; idle under AgentX |
 | Best-effort Belady | All three native backends | Fixed aggregated, DP1, complete open-loop input trace | Native descriptor; prefix caching required; rejects closed-loop/generated/agentic/delta inputs, scaling and offload |
 | Agentic dependency graph | vLLM, SGLang | Offline aggregated or P/D; Weka, Agentic Mooncake and agentic Dynamo traces | One target model for P/D; speculation requires HBM-only; no agentic TensorRT-LLM; HBM or qualified vLLM G2 |
 | Seeded snapshots and warmup | Same agentic boundary | Timestamp load, positive lanes, unsigned 64-bit seed | Request-boundary history, not a physical engine checkpoint; warmup preserves snapshot frontier |
 | Continuous agentic profiles | Same agentic boundary | Snapshots plus profile duration; warmup optional | No simultaneous virtual-time cap; grace can finish with unsettled server work; live host-memory supervision required |
-| Native telemetry observer | Rust Replayer | Settled virtual-time samples | Engine Python JSON runner rejects telemetry capture; consumer stacks have separate adapters |
+| Replay telemetry | Rust Replayer, Engine Python runner, CLI | Settled virtual-time samples; opt-in all-phase request/lifecycle capture | Offline vLLM/SGLang aggregated or P/D; consumer stacks have separate adapters |
 | Detailed native artifacts | RoundRobin Replayer | Fixed single aggregated worker with attention DP1 | No multiworker/scaling/P/D or shared G2 artifact claim; normal reports have broader scope |
 | Router and Planner | Optional Dynamo stack | Consumer-supported topologies/workloads | Separate installation, configuration ABI and downstream qualification |
 | Analytical AFD | vLLM, SGLang, TensorRT-LLM model paths | `afd` or `afd+pd`; fixed-length synthetic requests | No traces, random lengths, KV-relative load or native deployment renderer |

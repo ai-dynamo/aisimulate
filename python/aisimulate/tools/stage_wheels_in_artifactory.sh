@@ -28,8 +28,8 @@ fi
 
 wheel="${wheel_files[0]}"
 filename="$(basename "${wheel}")"
-if [[ "${filename}" != aisimulate-*.whl ]]; then
-    echo "::error::Expected an aisimulate wheel, found ${filename}"
+if [[ "${filename}" != aisim-*.whl && "${filename}" != aisimulate-*.whl ]]; then
+    echo "::error::Expected an AISim wheel, found ${filename}"
     exit 1
 fi
 

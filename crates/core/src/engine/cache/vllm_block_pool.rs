@@ -54,6 +54,16 @@ impl SourceReuseDependency {
     }
 }
 
+/// The order in which a satisfied transfer returns the copies it held.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceReleaseOrder {
+    /// Like Mooncake Store: the request's shared prefix is evicted last.
+    TailFirst,
+    /// Like vLLM's SimpleCPU connector, which frees copied blocks in block
+    /// order (`_process_store_completion`).
+    HeadFirst,
+}
+
 #[derive(Debug)]
 enum CopyState {
     Private,
@@ -354,6 +364,7 @@ pub(crate) struct VllmBlockPool {
     source_reuse: Option<Box<SourceReuseTracker>>,
     /// See [`Self::hold_pending_sources`].
     hold_sources: bool,
+    source_release: SourceReleaseOrder,
     belady: Option<Box<BeladyCandidates>>,
 }
 
@@ -373,6 +384,7 @@ impl VllmBlockPool {
             free: FreshCapacity::Untracked(capacity),
             source_reuse: None,
             hold_sources: false,
+            source_release: SourceReleaseOrder::TailFirst,
             belady: None,
         }
     }
@@ -382,13 +394,14 @@ impl VllmBlockPool {
     ///
     /// A released source then stays out of the free capacity and the inactive
     /// LRU, although it remains a prefix-cache hit, so no reservation inherits
-    /// a pending dependency. Satisfaction returns the capacity tail first.
-    pub(crate) fn hold_pending_sources(&mut self) {
+    /// a pending dependency. Satisfaction returns the capacity in `order`.
+    pub(crate) fn hold_pending_sources(&mut self, order: SourceReleaseOrder) {
         assert!(
             self.source_reuse.is_none(),
             "source holding must be configured before any transfer reads G1"
         );
         self.hold_sources = true;
+        self.source_release = order;
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
@@ -1002,10 +1015,12 @@ impl VllmBlockPool {
         true
     }
 
-    /// Return a satisfied transfer's held capacity. Like Mooncake Store's
-    /// tail-first release, the request's shared prefix is evicted last.
-    fn release_held_sources(&mut self, sources: Vec<BlockCopyId>) {
-        for id in sources.into_iter().rev() {
+    /// Return a satisfied transfer's held capacity in its release order.
+    fn release_held_sources(&mut self, mut sources: Vec<BlockCopyId>) {
+        if self.source_release == SourceReleaseOrder::TailFirst {
+            sources.reverse();
+        }
+        for id in sources {
             let tracker = self
                 .source_reuse
                 .as_deref_mut()
@@ -2396,7 +2411,7 @@ mod tests {
     #[test]
     fn held_sources_keep_their_capacity_but_stay_prefix_hits() {
         let mut pool = VllmBlockPool::new(3);
-        pool.hold_pending_sources();
+        pool.hold_pending_sources(SourceReleaseOrder::TailFirst);
         let mut source = reserve(&mut pool, &[], 2).reservation;
         let cached = pool.allocate_private(&mut source);
         assert!(pool.cache_private(cached, 7));
@@ -2426,24 +2441,29 @@ mod tests {
     }
 
     #[test]
-    fn a_satisfied_hold_releases_sources_tail_first_at_satisfaction() {
-        let mut pool = VllmBlockPool::new(4);
-        pool.hold_pending_sources();
-        let parent = cache_copy(&mut pool, 7);
-        let child = cache_copy(&mut pool, 8);
-        let owned = cache_copy(&mut pool, 9);
-        let dependency = SourceReuseDependency::from_adapter_id(41);
-        pool.attach_source_reuse_dependency(&[parent, child, owned], dependency);
-        pool.release(child);
-        pool.release(parent);
-        let unrelated = cache_copy(&mut pool, 10);
-        pool.release(unrelated);
+    fn a_satisfied_hold_releases_sources_in_its_order_at_satisfaction() {
+        for (order, removed) in [
+            (SourceReleaseOrder::TailFirst, [10, 8, 7, 9]),
+            (SourceReleaseOrder::HeadFirst, [10, 7, 8, 9]),
+        ] {
+            let mut pool = VllmBlockPool::new(4);
+            pool.hold_pending_sources(order);
+            let parent = cache_copy(&mut pool, 7);
+            let child = cache_copy(&mut pool, 8);
+            let owned = cache_copy(&mut pool, 9);
+            let dependency = SourceReuseDependency::from_adapter_id(41);
+            pool.attach_source_reuse_dependency(&[parent, child, owned], dependency);
+            pool.release(child);
+            pool.release(parent);
+            let unrelated = cache_copy(&mut pool, 10);
+            pool.release(unrelated);
 
-        // A copy still referenced at satisfaction later returns as usual.
-        assert!(pool.satisfy_source_reuse_dependency(dependency));
-        pool.release(owned);
-        pool.assert_lru_consistent();
-        assert_eq!(reserve(&mut pool, &[], 4).removed, vec![10, 8, 7, 9]);
+            // A copy still referenced at satisfaction later returns as usual.
+            assert!(pool.satisfy_source_reuse_dependency(dependency));
+            pool.release(owned);
+            pool.assert_lru_consistent();
+            assert_eq!(reserve(&mut pool, &[], 4).removed, removed, "{order:?}");
+        }
     }
 
     #[test]

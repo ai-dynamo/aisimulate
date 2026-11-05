@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Run from the repository root; see docs/replay/dynamo.md#simulate-kvcr-peer-reuse.
+traffic:
+  source:
+    type: trace
+    format: mooncake
+    paths: [mooncake_trace_1000.jsonl]
+    block_size: 512
+  load: {type: trace_timestamps, speedup: 1.0}
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: b200_sxm
+  backend: vllm
+  backend_version: "0.24.0"
+  context_length: 131072
+  workers:
+    aggregated:
+      parallelism:
+        replicas: 2
+        tensor: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler: {max_batched_tokens: 8192, max_sequences: 128}
+      kv_cache:
+        block_size: 32
+        prefix_caching: true
+        bytes_per_token: 131072
+        capacity: {type: fixed, blocks: 4096}
+        host_offload:
+          scope: dp_rank_local
+          num_host_blocks: 25600
+          d2h_bandwidth_gbps: 32
+          h2d_bandwidth_gbps: 32
+        kvcr: {latency_to_first_byte_ms: 1, bandwidth_gbps: 50}
+      timing: {type: default}
+router:
+  policy: kv_router
+  overlap_score_credit: 1.0
+  prefill_load_model: {type: none}

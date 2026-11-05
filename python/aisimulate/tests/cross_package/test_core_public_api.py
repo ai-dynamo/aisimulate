@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.unit.sdk import test_fpm_phase_readiness as phase_fixtures
 
 import aisimulate_core
 import aisimulate_core.sdk as sdk
@@ -22,6 +23,8 @@ from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
 from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+phase_roots = phase_fixtures.phase_roots
 
 EXPECTED_FACADE = {
     "AttentionBackend",
@@ -121,7 +124,9 @@ def test_stable_function_signatures() -> None:
     assert {"model_path", "backend", "tp_size", "pp_size", "kv_bytes_per_token"}.issubset(
         inspect.signature(estimate_state_cache).parameters
     )
-    assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
+    best_available = inspect.signature(RustForwardPassPerfModel.best_available).parameters
+    assert list(best_available) == ["config", "state_snapshot"]
+    assert best_available["state_snapshot"].kind is inspect.Parameter.KEYWORD_ONLY
     assert not hasattr(RustForwardPassPerfModel, "from_regression")
     assert not hasattr(RustForwardPassPerfModel, "from_native")
 
@@ -486,6 +491,7 @@ def test_distribution_carries_typing_contract() -> None:
         ("learned_identity", {"config_json": "str"}, "str"),
         ("learned_online_diagnostics", {}, "str | None"),
         ("learned_selector_diagnostics", {}, "str | None"),
+        ("learned_expert_artifacts", {}, "str"),
         ("flush_updates", {}, "None"),
         ("export_learned_artifact", {}, "str"),
         ("save_online_checkpoint", {"path": "str"}, "None"),
@@ -507,6 +513,39 @@ def test_learned_model_stubs_match_native_contract(method_name, annotations, ret
     assert {
         argument.arg: ast.unparse(argument.annotation) for argument in method.args.args if argument.arg != "self"
     } == (annotations)
+    assert ast.unparse(method.returns) == return_type
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "method_name,return_type",
+    [("estimate_forward_pass_time_ms", "float | None"), ("estimate_forward_pass_detailed", "str")],
+)
+def test_forward_query_stubs_match_native_contract(method_name: str, return_type: str) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
+    arguments = method.args
+    native_class = importlib.import_module("aisimulate_core._native").RustForwardPassPerfModel
+    parameters = list(inspect.signature(getattr(native_class, method_name)).parameters.values())
+    stub_parameters = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    assert [argument.arg for argument in stub_parameters] == [parameter.name for parameter in parameters]
+    assert [parameter.kind for parameter in parameters] == [
+        *[inspect.Parameter.POSITIONAL_ONLY] * len(arguments.posonlyargs),
+        *[inspect.Parameter.POSITIONAL_OR_KEYWORD] * len(arguments.args),
+        *[inspect.Parameter.KEYWORD_ONLY] * len(arguments.kwonlyargs),
+    ]
+    assert arguments.vararg is None and arguments.kwarg is None
+    assert not arguments.defaults
+    assert all(parameter.default is inspect.Parameter.empty for parameter in parameters[:-1])
+    assert [ast.literal_eval(default) for default in arguments.kw_defaults] == [parameters[-1].default] == [None]
+    assert {argument.arg: ast.unparse(argument.annotation) for argument in stub_parameters[1:]} == {
+        "fpm_json": "str",
+        "draft_length": "int | None",
+    }
     assert ast.unparse(method.returns) == return_type
 
 
@@ -534,6 +573,43 @@ def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: s
         {"workload_kind": kind, "ready": False, "retained_observations": 0}
         for kind in ("pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill")
     ]
+
+
+@pytest.mark.unit
+def test_seed_target_normalization_stub_and_json_match_native_contract(phase_roots, monkeypatch) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        node
+        for node in model.body
+        if isinstance(node, ast.FunctionDef) and node.name == "fpm_seed_target_normalization"
+    )
+    assert [arg.arg for arg in method.args.args] == ["self"]
+    assert ast.unparse(method.returns) == "str"
+    native_class = importlib.import_module("aisimulate_core._native").RustForwardPassPerfModel
+    assert str(inspect.signature(native_class.fpm_seed_target_normalization)) == "(self, /)"
+    monkeypatch.delenv("AIC_FPM_FAKE_FALLBACK_RAW", raising=False)
+    config, make_root = phase_roots
+    config["systems_paths"] = [make_root("seed-target-report")]
+    native_model = native_class.best_available(json.dumps(config))
+    result = native_model.fpm_seed_target_normalization()
+    assert isinstance(result, str)
+    assert json.loads(result) == {
+        "policy": "same_cell_batch_real_kv_extrapolation_v1",
+        "row_count": 2,
+        "replacement_enabled": True,
+        "replaced_count": 0,
+        "kept_count": 0,
+        "rows": [],
+    }
+    ergonomic_model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert ergonomic_model.fpm_seed_target_normalization() == json.loads(result)
+    finally:
+        ergonomic_model.close()
 
 
 @pytest.mark.unit
@@ -610,6 +686,59 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     result = model.static_phase_diagnostics(0, 128, 0, True)
     assert isinstance(result, str)
     assert json.loads(result) == []
+
+
+@pytest.mark.unit
+def test_canonical_context_attention_keeps_included_rope_and_kv_write_inside_table_timing(tmp_path) -> None:
+    # One layer matches issue #551's exact H200 BF16 attention row. Other
+    # operations still follow the normal canonical model construction path.
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "num_hidden_layers": 1,
+                "hidden_size": 4096,
+                "intermediate_size": 14336,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 4,
+                "head_dim": 128,
+                "vocab_size": 32000,
+                "max_position_embeddings": 4096,
+                "torch_dtype": "bfloat16",
+                "rms_norm_eps": 1e-5,
+                "rope_theta": 10000.0,
+                "tie_word_embeddings": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = RustForwardPassPerfModel.best_available(
+        sdk.ForwardPassPerfModelConfig(
+            model=str(tmp_path),
+            system="h200_sxm",
+            backend="trtllm",
+            backend_version="1.3.0rc20",
+            worker_type="aggregated",
+            tp=1,
+            estimation_mode="op_level",
+            database_mode="SILICON",
+            gemm_quant_mode="bfloat16",
+            fmha_quant_mode="bfloat16",
+            kvcache_quant_mode="bfloat16",
+        )
+    )
+    try:
+        operations = model.static_phase_diagnostics(batch_size=1, context_length=256, prefix=0, prefill=True)
+        [attention] = [op for op in operations if op["name"] == "context_attention"]
+        assert attention["latency_ms"] == pytest.approx(0.0191040001809597, rel=1e-12)
+        assert attention["source"] == "silicon"
+        # This shipped row has no power measurement; zero is the existing
+        # energy representation, not a measured claim about GPU energy.
+        assert attention["energy_wms"] == 0.0
+        assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
+    finally:
+        model.close()
 
 
 def test_state_memory_api_is_standalone_in_a_fresh_interpreter() -> None:

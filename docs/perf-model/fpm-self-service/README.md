@@ -35,6 +35,32 @@ artifacts: the table alone does not establish serving memory capacity. The
 [examples](examples.md) cover both importing an existing Kimi profile and
 collecting a new MiniMax profile.
 
+### Choose a learned-model workflow
+
+A learned forward-pass model can use three sources of measurements:
+**A: self-benchmark**, **B: End-to-end offline profiling**, and **C: online
+observations**. A and B supply initial training data; C supplies measured
+feedback during operation. Choose the guide that matches your starting data:
+
+| Starting data | Guide | Initial prediction |
+| --- | --- | --- |
+| Self-benchmark only (A) | [Train an A seed and configure mixed fallback](online-gbdt.md#3-start-with-a-self-benchmark-seed) | A-trained forests and a qualified prior for eligible missing mixed classes. |
+| End-to-end offline profiling (B) | [Collect, train and use a GBDT](e2e-gbdt.md) | Frozen predictions from the accepted offline seed. |
+| Online observations only (C) | [Buffer observations and fit the first model](online-gbdt.md#2-start-with-c-only) | Unavailable until fitting succeeds, unless the application supplies a qualified prior. |
+| Self-benchmark plus online observations (A+C) | [Calibrate fallback, fit missing stores and compare experts](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest) | Existing A stores and the qualified mixed prior while online forests warm up. |
+| End-to-end offline profiling plus online observations (B+C) | [Adapt the accepted seed](e2e-gbdt.md#5-optional-adapt-and-save) | Seeded predictions followed by updates from later measurements. |
+
+The guided `onboard` commands collect and validate self-benchmark tables. The
+learned-model tutorials use the trainer and canonical prediction APIs; they do
+not add automated collection or cold-start training to those commands. Reuse
+the six-stage workflow below to review identity, resources and validation.
+
+The [online GBDT guide](online-gbdt.md) distinguishes fitting readiness, query
+coverage and expert selection, and explains the persistence limits of mixed
+fallback. The [accuracy review guide](../../../benchmarks/evidence/fpm_gbdt_documentation_review_20261103/README.md)
+explains how to report coverage, fallback usage and prediction error separately
+from matched serving accuracy.
+
 ### Performance within an iteration
 
 Self-service captures performance changes within a forward iteration, including
@@ -61,8 +87,9 @@ cannot represent those changes.
 It also does not qualify end-to-end latency or throughput by itself. TTFT,
 ITL/TPOT and throughput depend on scheduling, traffic, cache behavior and transfers
 as well as forward time. Validate them separately against matched serving runs.
-For online learning from per-iteration telemetry, use the separate
-[regression workflow](../methods/online-regression.md).
+For learning from per-iteration telemetry, use the
+[online GBDT tutorial](online-gbdt.md) or the
+[regression reference](../methods/online-regression.md).
 
 ## Support
 
@@ -73,7 +100,7 @@ For online learning from per-iteration telemetry, use the separate
 | Parallelism | Whole-forward timing can capture intra-iteration computation and communication. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
 | Serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
 | GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
-| KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. |
+| KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Some configs leave the cache geometry to the [runtime probe](implementation.md#cache-geometry-pending-the-runtime-probe): linear-attention and recurrent-state configs, and architectures that intake does not recognize. For them, `onboard init --model-config` stops with guidance to run the probe, which measures the geometry. A cache geometry override for these configs is a claim that `onboard import-observations` checks against that measurement. Importing cache groups other than full or sliding attention (for example recurrent state) is planned. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. |
 | Multimodality | For multimodal models, this workflow covers text generation only; image/audio processing time is excluded. |
 
 Use a source revision containing the required CLI and consumer features; a

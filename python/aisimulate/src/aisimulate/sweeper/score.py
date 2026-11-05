@@ -68,6 +68,7 @@ _METRIC_KEYS = (
     "power_coverage",
     "planner_total_ticks",
     "mean_handoff_to_first_token_ms",
+    "mean_detokenization_ms",
     "total_gpus",
     "encoder_latency_ms",
     "encoder_gpus",

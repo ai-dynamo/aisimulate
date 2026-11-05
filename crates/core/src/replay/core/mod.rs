@@ -141,7 +141,26 @@ pub trait PlacementPolicy<Request> {
         now_ms: f64,
     ) -> Result<PlacementEffects>;
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
+    /// Engine ownership was accepted: aggregated/prefill submission after
+    /// tokenization, or decode destination reservation in P/D mode.
+    /// Commit tentative policy state here. Failure aborts the consuming replay
+    /// run, calls `dispatch_aborted`, and produces no report.
+    fn dispatch_committed(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// Discard tentative state after rejected ownership or a failed commit.
+    fn dispatch_aborted(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// Advance policy time and release work at an existing replay timestamp.
+    /// Pending work must be unlocked by an engine event or another callback;
+    /// this hook does not create independent timers or advance replay time.
+    fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
+    /// Discard all request state, including tentative placement state when
+    /// cancellation precedes engine dispatch.
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn pending_count(&self) -> usize;

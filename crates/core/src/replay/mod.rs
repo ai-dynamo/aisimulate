@@ -153,7 +153,8 @@ pub use handoff::{
 };
 #[doc(hidden)]
 pub use protocol::{
-    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+    AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1, AgenticConversationLineage, AgenticRuntimeIdentity,
+    DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
 };
 pub use protocol::{AuthoredKvHints, ForwardPassSnapshot};
 #[doc(hidden)]
@@ -177,8 +178,11 @@ pub use spec::{
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
 };
 pub use telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplayPromptSourceCounters, ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot,
+    ReplayTelemetryCapture, ReplayTelemetryHostCache, ReplayTelemetryLifecycle,
+    ReplayTelemetryObserver, ReplayTelemetryPhaseBoundary, ReplayTelemetryRequest,
+    ReplayTelemetrySample, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
+    ReplayTelemetryUnits, ReplayTrafficMetricsSnapshot,
 };
 
 // Typed power diagnostics are exported by the native Replay/PyO3 engine path.

@@ -56,6 +56,16 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
 | `prefix_match_unit` | Unset | Rejected | Prefix-matching granularity with `state_cache`. |
 
+The block-size defaults above are simulation defaults. When a Sweeper candidate's
+role block size is absent or `null`, the deployment generator omits `--block-size`
+(vLLM), `--page-size` (SGLang), or `kv_cache_config.tokens_per_block`
+(TensorRT-LLM), allowing the engine to choose its runtime default. Explicit values
+are preserved. For SGLang and TensorRT-LLM, generating a fixed `capacity.blocks`
+requires an explicit `block_size` matching the runtime: the generator must
+convert the block count to a token capacity and cannot infer runtime geometry
+from a simulation default. vLLM accepts the block count directly. Set
+`block_size` explicitly when simulation and deployment must use the same value.
+
 ## GPU cache (G1)
 
 Each attention-DP rank has its own G1 cache and its own running requests.
@@ -156,6 +166,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 | `latency_to_first_byte_ms` | `0.0` | Fixed delay before each transfer starts moving bytes. |
 | `shared_d2h_bandwidth_gbps` | `80.0` | Total GPU→host bandwidth of the pool. `cluster_shared` only. |
 | `shared_h2d_bandwidth_gbps` | `80.0` | Total host→GPU bandwidth of the pool. `cluster_shared` only. |
+| `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_v0_32`. The last two need the aggregated worker, `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
 
 `recommend` keeps `host_offload` fixed; its size and bandwidth are not searched.
 
@@ -171,6 +182,35 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 - A decode rank with G2 admits requests whose P/D handoff has arrived before
   other waiting requests, as vLLM's FCFS scheduler does.
 
+<a id="g2-connector-profiles"></a>
+
+### Connector profiles
+
+`connector` picks the vLLM CPU-offload connector whose store, lookup and
+eviction rules G2 follows:
+
+| | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_v0_32` |
+| --- | --- | --- | --- |
+| vLLM connector | `OffloadingConnector`, vLLM 0.24 | `OffloadingConnector` with the CPU backend, vLLM v0.32.0 | `SimpleCPUOffloadConnector` in eager mode, vLLM v0.32.0 |
+| Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, decode blocks included, scanned from block 0 at each admission; blocks already in G2, such as those just loaded, are skipped. A finishing request stores the rest. |
+| Eviction order | Least recently used. Each lookup and store makes the prompt's resident blocks the newest, its first block newest of all. | Least recently used by rank. A block is ranked when its store starts; a finishing request re-ranks every block it stored, offered or loaded, its first block newest. | First in, first out by store completion. A completed load or a dropped lookup pin makes its blocks the newest; a block already in G2 is not refreshed. |
+| A hit whose store is in flight | Defers the request | Defers the request | Misses |
+| A hit another request is loading | Defers the request | Defers the request | Both requests load it |
+| The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
+| A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
+| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes, then freed first block first |
+| A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
+
+vLLM main has changed some of these rules since v0.32.0. Each profile models the
+rules of the version it names; none was compared with a running vLLM. The model
+also differs from vLLM v0.32.0 here:
+
+- `offloading_v0_32` offers and re-ranks a finishing request's blocks when the
+  request finishes. vLLM does both in its next step, after that step's other
+  stores.
+- After a preemption, `simple_cpu_v0_32` loads only prompt blocks from G2 and
+  recomputes the request's output blocks, which vLLM reloads.
+
 <a id="g2-scope"></a>
 <a id="g2-ownership"></a>
 
@@ -184,8 +224,12 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth equally: four ranks at 32 GB/s under an 80 GB/s pool each move
-at 20 GB/s while all four transfer.
+share bandwidth max-min fairly per transfer, not per rank: four ranks at
+32 GB/s, each running one transfer under an 80 GB/s pool, each move at 20 GB/s.
+Pool bandwidth a rank cannot use because its own limit binds goes to the other
+ranks: with one rank running nine transfers and another running one, both at
+32 GB/s, each rank moves 32 GB/s in total. Under a 20 GB/s pool the same ten
+transfers each get 2 GB/s, so the busier rank moves 18 GB/s.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
@@ -237,7 +281,8 @@ These defaults are modeling assumptions, not measured values.
   `worker_local`, workers cannot read each other's blocks.
 - G3 evicts least recently used blocks that are not being transferred.
 - With `worker_local`, total bandwidth grows with the worker count (16 workers
-  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits.
+  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits and
+  divides them max-min fairly, as in a [shared G2 pool](#g2-scope).
 
 To compare scopes at equal total capacity with `N` workers, use
 `num_g3_blocks: C` for `worker_local` and `N × C` for `cluster_shared`. Set the
@@ -248,8 +293,8 @@ read/write jobs and bytes, evictions, resident blocks and
 `cross_worker_read_blocks` (blocks read by a worker other than the writer).
 
 Supported: aggregated vLLM with `attention_data: 1`, prefix caching, and either
-G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D, and
-native MTP.
+G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D,
+native MTP, and a `host_offload.connector` other than `offloading_v0_24`.
 
 When a request's prefix is larger than G2 can hold, restores can keep evicting
 each other. If the rank makes no progress for 1,024 consecutive restore rounds,
@@ -335,13 +380,18 @@ A run stopped by `traffic.stop.max_virtual_time_seconds` (native
 `max_sim_time_ms`) can miss pulls that landed during a pass still running at
 the cutoff; a run that completes counts every pull.
 
+Ranks without incoming pulls skip shared KVCR deadline lookups. Other KVCR
+bookkeeping still queries shared pool state from per-rank calls. Large worker
+or attention-DP pools can substantially increase replay wall time. Further
+overhead reductions are deferred; they must preserve CanonicalV1 replay output bytes.
+
 ### Supported
 
 KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
 between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
 draining worker is removed only after every pull from or into it has landed and
 been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
-`g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
+a `host_offload.connector` other than `offloading_v0_24`, `g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
 `parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
 Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.
 
@@ -352,6 +402,11 @@ from `kv_hints` on native ReplaySpec requests (see
 the receiving rank. CLI traffic carries no hints, so
 `aisimulate predict --stack engine` runs KVCR idle: apart from the `kvcr`
 section, the results equal G2 alone.
+
+For a complete CLI example with router-generated hints, follow
+[Simulate KVCR peer reuse](../dynamo.md#simulate-kvcr-peer-reuse). It uses
+`--stack dynamo`, two workers with private G2, and a Mooncake trace, and compares
+KVCR-enabled replay against a G2-only baseline.
 
 <a id="state-cache"></a>
 <a id="manual-state-cache-sizing"></a>
@@ -451,10 +506,11 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 ## Agentic traffic with G2
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
-one aggregated worker, or one prefill and one decode worker, all with
-`attention_data: 1`, static workers and no speculative decoding. Either G2 scope
-works; G3 is not supported. `kvcr` is accepted, but with one rank per role there
-is no peer, so it stays idle. Results are qualified `functional_only`.
+one aggregated worker, one prefill and one decode worker, or several aggregated
+workers that each own a `dp_rank_local` G2. All need `attention_data: 1`, static
+workers and no speculative decoding. Either G2 scope works with one worker per
+role; G3 is not supported. `kvcr` is accepted but never pulls, because agentic
+traffic carries no router hint. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 

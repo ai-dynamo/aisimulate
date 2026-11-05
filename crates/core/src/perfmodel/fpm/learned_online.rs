@@ -289,8 +289,34 @@ impl OnlineLearner {
         checkpoint::load(path, learned, config, identity)
     }
 
+    /// Load the adaptive expert of a causal selector from the runtime
+    /// checkpoint inside a state snapshot.
+    pub(crate) fn load_combined_runtime(
+        path: &Path,
+        learned: &mut LearnedForwardPassModel,
+        config: &FpmLearnedConfig,
+        identity: &ForwardPassPerfModelConfig,
+    ) -> Result<Self, AicError> {
+        checkpoint::load_with(path, learned, config, identity, true)
+    }
+
+    /// Validate the complete incoming training checkpoint before adding one
+    /// absent online store. Existing forest and history allocations stay put.
+    pub(crate) fn append_mixed_training_checkpoint(
+        &mut self,
+        path: &Path,
+        learned: &mut LearnedForwardPassModel,
+        eligible: &[Kind],
+    ) -> Result<(Kind, serde_json::Value), AicError> {
+        checkpoint::append_mixed_training_checkpoint(path, self, learned, eligible)
+    }
+
     pub(crate) fn restored_correction_json(&self) -> Option<&str> {
         self.restored_corrections.as_deref()
+    }
+
+    pub(crate) fn anchor_manifest_sha256(&self) -> &str {
+        &self.anchor_manifest_sha256
     }
 
     /// Count public tuning inputs rejected before an updater row is constructed.
@@ -305,6 +331,16 @@ impl OnlineLearner {
         correction_json: &str,
     ) -> Result<(), AicError> {
         checkpoint::save(path, learned, self, correction_json)
+    }
+
+    /// Save into a state snapshot: like [`Self::save`], with source
+    /// locations cleared so identical state writes identical bytes.
+    pub(crate) fn save_source_free(
+        &self,
+        path: &Path,
+        learned: &LearnedForwardPassModel,
+    ) -> Result<(), AicError> {
+        checkpoint::save_with(path, learned, self, "{}", true)
     }
 
     pub(crate) fn observe(

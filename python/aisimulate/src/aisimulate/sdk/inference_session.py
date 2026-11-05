@@ -4,7 +4,6 @@
 import copy
 import functools
 import logging
-import warnings
 from collections import defaultdict, namedtuple
 
 import pandas as pd
@@ -13,7 +12,7 @@ from aisimulate.sdk import common, config, models, perf_database
 from aisimulate.sdk.backends.base_backend import BaseBackend
 from aisimulate.sdk.errors import NoFeasibleConfigError
 from aisimulate.sdk.inference_summary import InferenceSummary
-from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute, resolve_trtllm_mla_compute
 from aisimulate.sdk.performance_result import merge_moe_comm_fallbacks
 from aisimulate.sdk.picking import (
     _AUTOSCALE_TTFT_CORRECTION_FACTOR,
@@ -26,7 +25,6 @@ from aisimulate.sdk.step_estimate import MixedStepInput, StepEstimate
 from aisimulate.sdk.utils import enumerate_ttft_tpot_constraints
 
 logger = logging.getLogger(__name__)
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class InferenceSession:
@@ -345,6 +343,12 @@ class DisaggInferenceSession:
             getattr(self._prefill_database, "version", None),
             getattr(self._prefill_database, "system_spec", {}),
         )
+        resolve_trtllm_mla_compute(
+            prefill_model_config,
+            model_path,
+            self._prefill_backend.name.value,
+            getattr(self._prefill_database, "system_spec", {}),
+        )
         prefill_model = models.get_model(model_path, prefill_model_config, self._prefill_backend.name.value)
         decode_model = models.get_model(model_path, decode_model_config, self._decode_backend.name.value)
         prefill_sess = InferenceSession(
@@ -518,6 +522,12 @@ class DisaggInferenceSession:
                         model_path,
                         self._prefill_backend.name.value,
                         getattr(self._prefill_database, "version", None),
+                        getattr(self._prefill_database, "system_spec", {}),
+                    )
+                    resolve_trtllm_mla_compute(
+                        overwritten_model_config,
+                        model_path,
+                        self._prefill_backend.name.value,
                         getattr(self._prefill_database, "system_spec", {}),
                     )
                 model = models.get_model(

@@ -21,9 +21,9 @@ const STORES: [Store; 4] = [
     Store::PurePrefill,
 ];
 const QUERIES: [Query; 3] = [Query::Prefill, Query::Decode, Query::Mixed];
-const KEY_COUNT: usize = STORES.len() * QUERIES.len();
+pub(crate) const KEY_COUNT: usize = STORES.len() * QUERIES.len();
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SelectedExpert {
     #[default]
     Stable,
@@ -31,7 +31,7 @@ pub(crate) enum SelectedExpert {
 }
 
 impl SelectedExpert {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Stable => "stable",
             Self::Online => "online",
@@ -46,8 +46,8 @@ impl SelectedExpert {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Evidence {
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Evidence {
     observations: u64,
     stable_ewma: f64,
     online_ewma: f64,
@@ -174,6 +174,58 @@ impl CausalSelector {
         Ok(())
     }
 
+    /// Every per-(store, query) evidence key, in the fixed key order.
+    pub(crate) fn states(&self) -> &[Evidence; KEY_COUNT] {
+        &self.states
+    }
+
+    /// Validate saved evidence against this selector's configuration and the
+    /// forest stores that can receive feedback.
+    pub(crate) fn validate_states(
+        &self,
+        states: &[Evidence; KEY_COUNT],
+        stores: &[Store],
+    ) -> Result<(), String> {
+        for store in STORES {
+            for query in QUERIES {
+                let evidence = states[index(store, query)];
+                if evidence.observations == 0 || !stores.contains(&store) {
+                    if evidence != Evidence::default() {
+                        return Err(
+                            "selector evidence exists for a key without admitted feedback".into(),
+                        );
+                    }
+                    continue;
+                }
+                let switched = evidence.switches % 2 == 1;
+                if !evidence.stable_ewma.is_finite()
+                    || !evidence.online_ewma.is_finite()
+                    || evidence.stable_ewma < 0.0
+                    || evidence.online_ewma < 0.0
+                    || evidence.streak >= self.config.persistence as u64
+                    || evidence.switches > evidence.observations
+                    || (evidence.active == SelectedExpert::Online) != switched
+                {
+                    return Err("selector evidence is inconsistent".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_states(&mut self, states: [Evidence; KEY_COUNT]) {
+        self.states = states;
+    }
+
+    /// Bounded evidence for the one queried key; avoids allocating all twelve
+    /// diagnostic states when a caller asks for prediction route metadata.
+    pub(crate) fn query_diagnostics(&self, store: Store, query: Query) -> serde_json::Value {
+        let evidence = &self.states[index(store, query)];
+        serde_json::json!({"query_type":query_name(query),"paired_comparisons":evidence.observations,
+            "warmup":self.config.warmup,"warmup_complete":evidence.observations >= self.config.warmup as u64,
+            "switches":evidence.switches,"streak":evidence.streak})
+    }
+
     /// Diagnostics allocate only on request, never while selecting or updating.
     pub(crate) fn diagnostics(&self) -> serde_json::Value {
         let states: Vec<_> = STORES
@@ -208,7 +260,7 @@ fn invalid(message: &str) -> AicError {
     AicError::InvalidForwardPassMetrics(format!("causal selector: {message}"))
 }
 
-fn index(store: Store, query: Query) -> usize {
+pub(super) fn index(store: Store, query: Query) -> usize {
     let store = match store {
         Store::PureDecode => 0,
         Store::ContainsLocallyMixed => 1,
@@ -223,7 +275,7 @@ fn index(store: Store, query: Query) -> usize {
     store * QUERIES.len() + query
 }
 
-fn query_name(query: Query) -> &'static str {
+pub(super) fn query_name(query: Query) -> &'static str {
     match query {
         Query::Prefill => "prefill",
         Query::Decode => "decode",

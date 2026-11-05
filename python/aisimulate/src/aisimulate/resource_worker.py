@@ -48,11 +48,10 @@ def main() -> int:
                 multiprocessing.spawn.prepare(preparation)
             finally:
                 del process._inheriting
-            raw_config, kwargs = pickle.load(source)
-        from .config import CoreRecommendationConfig
+            raw_config, kwargs, unset = pickle.load(source)
+        from .recommend import _run_recommendation, recommendation_from_payload
 
-        config = CoreRecommendationConfig.model_validate(raw_config)
-        from .recommend import _run_recommendation
+        config = recommendation_from_payload(raw_config, unset)
 
         result = _run_recommendation(config, **kwargs)
         (root / "result.json").write_text(result.to_json(), encoding="utf-8")

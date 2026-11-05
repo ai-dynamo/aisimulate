@@ -226,6 +226,67 @@ def test_hopper_mla_mapping_preserves_explicit_modes_and_unaudited_paths(fake_mo
     assert mc.fmha_quant_mode == override.get("fmha")
 
 
+@pytest.mark.parametrize("sm", [90, 100, 103, 120])
+@pytest.mark.parametrize("architecture", ["DeepseekV3ForCausalLM", "KimiK25ForConditionalGeneration"])
+def test_trtllm_mla_bf16_fmha_on_fp8_kv_resolves_to_fp8(fake_model_info, sm, architecture, caplog):
+    """TRT-LLM runs FP8 context MLA on an FP8 KV cache there, so even an explicit bf16 means fp8."""
+    fake_model_info(architecture, _V3_FP8_RAW)
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    mc.kvcache_quant_mode = common.KVCacheQuantMode.fp8
+    with caplog.at_level("WARNING"):
+        helpers.resolve_trtllm_mla_compute(mc, "local-mla", "trtllm", {"gpu": {"sm_version": sm}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert "TRT-LLM runs MLA attention in FP8" in caplog.text
+
+
+def test_trtllm_mla_uses_the_checkpoint_kv_when_unset(fake_model_info):
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)  # fp8_block checkpoint: FP8 KV
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    helpers.resolve_trtllm_mla_compute(mc, "local-mla", "trtllm", {"gpu": {"sm_version": 100}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"backend": "sglang"},
+        {"backend": "vllm"},
+        {"sm": 80},
+        {"sm": 89},
+        {"kv": common.KVCacheQuantMode.bfloat16},
+        {"fmha": None},
+        {"fmha": common.FMHAQuantMode.fp8},
+        {"forward_model": "fpm"},
+        {"architecture": "Qwen3ForCausalLM"},
+        {"architecture": "DeepseekV32ForCausalLM"},
+        {"from_data": True},
+    ],
+)
+def test_trtllm_mla_mapping_leaves_other_paths(fake_model_info, override):
+    fake_model_info(override.get("architecture", "DeepseekV3ForCausalLM"), _V3_FP8_RAW)
+    fmha = override.get("fmha", common.FMHAQuantMode.bfloat16)
+    mc = _mc(fmha, forward_model=override.get("forward_model", "op_level"))
+    mc.kvcache_quant_mode = override.get("kv", common.KVCacheQuantMode.fp8)
+    # A bfloat16 the Task's data fallback chose stays: the tables it consulted have no fp8 slice.
+    mc._fmha_quant_mode_from_data = override.get("from_data")
+    helpers.resolve_trtllm_mla_compute(
+        mc, "local-mla", override.get("backend", "trtllm"), {"gpu": {"sm_version": override.get("sm", 100)}}
+    )
+    assert mc.fmha_quant_mode == fmha
+
+
+def test_trtllm_explicit_bf16_fmha_on_fp8_kv_reads_the_fp8_slice(fake_model_info):
+    """The estimate-path guard resolves before consulting the table, so an fp8-only table serves it."""
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    mc.kvcache_quant_mode = common.KVCacheQuantMode.fp8
+    db = _db(context_mla=["fp8"])
+    db.version = "1.3.0rc29"
+    db.system_spec = {"gpu": {"sm_version": 90}}
+    resolve_context_fmha_by_data(mc, "local-mla", db, "trtllm", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+
+
 def test_context_role_inferred_fp8_downgrades_to_bf16(fake_model_info, caplog):
     """Auto-inferred fp8 FMHA with a bf16-only context table falls back to bf16."""
     fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
@@ -234,6 +295,63 @@ def test_context_role_inferred_fp8_downgrades_to_bf16(fake_model_info, caplog):
         resolve_context_fmha_by_data(mc, "deepseek-ai/DeepSeek-V3", _BF16_ONLY_DB, "trtllm", is_context_role=True)
     assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
     assert any("falling back to bfloat16" in r.message for r in caplog.records)
+
+
+def test_estimate_path_data_fallback_survives_the_disagg_resolver(fake_model_info):
+    """The bfloat16 the estimate-path fallback chose is marked data-driven, so the
+    second MLA resolution the disaggregated and static estimates run before
+    get_model does not promote it back to fp8 and read rows the table lacks."""
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
+    mc = _mc(fmha=None)
+    resolve_context_fmha_by_data(mc, "deepseek-ai/DeepSeek-V3", _BF16_ONLY_DB, "trtllm", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    assert mc._fmha_quant_mode_from_data is True
+    helpers.resolve_trtllm_mla_compute(mc, "deepseek-ai/DeepSeek-V3", "trtllm", {"gpu": {"sm_version": 100}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+
+@pytest.mark.parametrize("entry", ["run_disagg", "static_ctx"])
+def test_estimate_path_data_fallback_reaches_the_built_context_ops(monkeypatch, entry):
+    """The disaggregated and static estimates build their context ops with the
+    bfloat16 the data fallback chose, after their own MLA resolution."""
+
+    class ModelBuilt(BaseException):
+        pass
+
+    captured = []
+    real_get_model = models.get_model
+
+    def capture(model_path, model_config, backend_name):
+        captured.append(real_get_model(model_path, model_config, backend_name))
+        raise ModelBuilt
+
+    monkeypatch.setattr(models, "get_model", capture)
+    db = SimpleNamespace(
+        version="1.3.0rc29",
+        system_spec={"gpu": {"sm_version": 100}},
+        supported_quant_mode={"context_mla": ["bfloat16"]},
+    )
+    backend = SimpleNamespace(name=SimpleNamespace(value="trtllm"))
+    path = "deepseek-ai/DeepSeek-V3"
+    mc = config.ModelConfig(tp_size=8, moe_tp_size=8)
+    rt = config.RuntimeConfig(isl=1024, osl=1, ttft=1000, tpot=50)
+    # The legacy estimate resolves against the data before the session runs.
+    resolve_context_fmha_by_data(mc, path, db, "trtllm", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    session = inference_session.DisaggInferenceSession(db, backend, db, backend)
+    with pytest.raises(ModelBuilt):
+        if entry == "run_disagg":
+            session.run_disagg(path, rt, mc, 1, 1, mc, 1, 1)
+        else:
+            session.get_worker_candidates(path, mc, [(8, 1, 1, 8, 1, 1)], [1], rt, entry)
+
+    built = captured[0]
+    assert built.config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    block = next(op for op in built.context_ops if op._name == "context_mla_block")
+    specs = json.loads(block._spec_json())["Fallback"]
+    assert specs["primary"]["MlaModuleContext"]["fmha_quant_mode"] == "bfloat16"
+    attention = next(spec["ContextMla"] for spec in specs["fallback"] if "ContextMla" in spec)
+    assert attention["fmha_quant_mode"] == "bfloat16"
 
 
 def test_context_role_inferred_fp8_kept_when_data_exists(fake_model_info):

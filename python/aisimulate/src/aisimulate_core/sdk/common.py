@@ -707,8 +707,16 @@ DefaultHFModels = {
     "zai-org/GLM-5.2",
     "zai-org/GLM-5.2-FP8",
     "nvidia/GLM-5.2-NVFP4",
+    # GLM-5.3: Z.AI ships the FP8-block weights under the plain repository
+    # and the BF16 weights under -BF16 (the reverse of the GLM-5.2 naming;
+    # no zai-org/GLM-5.3-FP8 repository exists). The zai-org bundles are
+    # unmodified copies of zai-org/GLM-5.3@ba32f8c1 and
+    # zai-org/GLM-5.3-BF16@abf42e6c (see THIRD_PARTY_NOTICES.md).
     "zai-org/GLM-5.3",
-    "zai-org/GLM-5.3-FP8",
+    "zai-org/GLM-5.3-BF16",
+    # Unmodified copy of nvidia/GLM-5.3-NVFP4@e3b8f9f2 (ModelOpt
+    # MIXED_PRECISION; unlisted attention and shared experts run BF16).
+    # See model_configs/GLM53_NVFP4_PROVENANCE.md.
     "nvidia/GLM-5.3-NVFP4",
     # GLM-5.3-Flash: bundled configs are byte-identical to the pinned
     # checkpoint revisions in aisimulate_core.sdk.glm53flash.MODEL_REVISIONS.
@@ -757,6 +765,11 @@ DefaultHFModels = {
     "Qwen/Qwen3.5-397B-A17B",
     "nvidia/Qwen3.5-122B-A10B-NVFP4",
     "nvidia/Qwen3.5-397B-A17B-NVFP4",
+    # Unmodified copy of nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae (ModelOpt
+    # MIXED_PRECISION: static FP8 GDN, full-attention and shared-expert
+    # projections, NVFP4 routed experts). See
+    # model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md.
+    "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
@@ -769,6 +782,10 @@ DefaultHFModels = {
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    # Unmodified copy of nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650
+    # (ModelOpt MIXED_PRECISION, text path only). See
+    # model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md.
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -1400,14 +1417,13 @@ class PerfDataFilename(Enum):
     # DeepSeek-V4 sparse-op family — all share one column schema, served by
     # the engine table view (``_dsv4_sparse_kernel_data.*`` /
     # ``_dsv4_csa_topk_calib_data``):
-    #   csa_attn / hca_attn / paged_mqa_logits : FMLA & indexer kernel latency,
-    #     keyed ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
-    #     queried by ``_lookup_sparse_kernel``).
+    #   paged_mqa_logits : indexer kernel latency, keyed
+    #     ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
+    #     queried by ``_lookup_sparse_kernel``). The csa_attn / hca_attn FMLA
+    #     sidecars were removed 2026-10-15 (retired placeholders, no query path).
     #   csa_topk_calib : two rows/shape (score_mode=flat|top_last); the topK
     #     DELTA (flat-top_last) correction applied to CSA module latency.
     dsv4_paged_mqa_logits_module = "dsv4_paged_mqa_logits_module_perf.parquet"
-    dsv4_hca_attn_module = "dsv4_hca_attn_module_perf.parquet"
-    dsv4_csa_attn_module = "dsv4_csa_attn_module_perf.parquet"
     dsv4_csa_topk_calib = "dsv4_csa_topk_calib_perf.parquet"
     dsv4_megamoe_module = "dsv4_megamoe_module_perf.parquet"
     # Whole-model forward-pass data (forward_model="fpm"). Paired with a

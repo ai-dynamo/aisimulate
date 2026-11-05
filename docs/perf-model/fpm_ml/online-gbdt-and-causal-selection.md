@@ -16,8 +16,9 @@ with explicit `estimation_mode: fpm_learned`. Frozen adaptation preserves the
 forest and can apply hybrid calibration; online adaptation updates the binned
 trees from feedback. The combined selector keeps both experts independent
 and selects using their earlier errors. All three use complete iteration
-telemetry. The current engine replay, engine CLI and Sweeper phase interfaces
-cannot supply those metrics and reject learned execution.
+telemetry. Engine replay, engine CLI and Sweeper build those metrics per pass
+from the scheduled requests and price the pass with the restored model without
+tuning it.
 
 For setup and usage, see the [learned-model workflow](learned-forward-pass-model.md).
 The [configuration reference](configuration.md#learned-forest-and-online-fitting-controls)
@@ -325,6 +326,19 @@ changes its trees. Calibration receives ratios against $F_{0,s}$ for its
 entire lifetime, so publishing an adaptive forest cannot invalidate or reset
 those ratios. The adaptive prediction has no correction multiplier.
 
+The temporary mixed-workload policy has one scoped exception: in A+C, a mixed
+class missing sufficient original-A training data uses calibrated interpolation
+as its stable expert, $C_s(x)=c_s(\phi(x))T_{\mathrm{interp}}(x)$, with isolated
+attention/MoE calibration coordinates. Callers can train and append that class's
+online checkpoint after at least 20 admitted C observations. Until it is ready, only the
+interpolation expert can predict. Subsequent observations with both expert
+predictions supply paired losses to the same selector recurrence below; the
+first 20 labels supply no retrospective losses. Warmup remains per store/query
+key. Interpolation calibration continues after online selection, and C never
+creates a frozen seed forest or changes the original-A support decision. See
+[temporary mixed composition](configuration.md#temporary-mixed-composition-for-self-benchmark-seeds)
+for configuration and availability behavior.
+
 ### The stable expert's hybrid factor
 
 For admitted latency $y>0$, calibration stores the absolute ratio
@@ -493,10 +507,22 @@ Combined construction accepts a training seed and starts fresh stable
 calibration, online recent state and selector evidence. A standalone online
 runtime checkpoint does not contain the combined histories and is rejected.
 `save_online_checkpoint()` and `export_learned_artifact()` reject combined
-models until a format can preserve both experts, every correction store and
-every selector key together. `learned_selector_diagnostics()` exposes selection
-state; `learned_online_diagnostics()` exposes the adaptive fitting state. Neither
+models because neither format preserves both experts, every correction store
+and every selector key together. A
+[state snapshot](../configuration.md#state-snapshots) does:
+`save_state_snapshot()` saves the frozen expert, the adaptive expert with its runtime checkpoint (including
+pending rows), every calibration store and all twelve selector keys, and
+`best_available` restores them together. Restoration validates the evidence
+against the selector configuration and the forest stores. Restored models
+predict bit-identically and continue with byte-identical state.
+`learned_selector_diagnostics()` exposes selection state;
+`learned_online_diagnostics()` exposes the adaptive fitting state. Neither
 diagnostic snapshot is a resumable model.
+
+The [temporary mixed-workload policy](mixed-workload-fallback.md) does not yet
+support portable state snapshots or full mixed-selector continuation. Its
+partial mixed-state API saves calibration and standalone quality evidence only;
+the constructor and snapshot writer reject combinations that would lose state.
 
 The selector adds constant-size error state per key, while the stable forest
 and its correction stores add their own memory and update costs. Feedback

@@ -17,6 +17,7 @@ ENGINE_FIELDS = (
     "max_model_len",
     "prefill_schedule_interval",
     "prefill_decode_interval",
+    "async_scheduling",
 )
 
 

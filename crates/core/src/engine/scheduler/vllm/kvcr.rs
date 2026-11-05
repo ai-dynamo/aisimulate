@@ -213,6 +213,10 @@ impl VllmKvcrAdapter {
     }
 
     pub(super) fn next_deadline(&self) -> Option<f64> {
+        // Detached pulls retain their stages until their blocks are taken.
+        if self.stages.is_empty() {
+            return None;
+        }
         self.registry.lock().unwrap().next_deadline(self.rank)
     }
 
@@ -240,7 +244,7 @@ mod tests {
     use super::*;
     use crate::engine::KvcrConfig;
     use crate::engine::host_offload::StoreOutcome;
-    use crate::engine::host_offload::{C, HostTierHandle, private};
+    use crate::engine::host_offload::{C, HostTierHandle, per_rank};
     use crate::engine::kvcr::{KvcrPullCounts, KvcrRegistry, KvcrStats};
 
     /// Worker 0 is the source and worker 1 the target, one rank each.
@@ -282,8 +286,8 @@ mod tests {
                 latency_to_first_byte_ms: latency_ms,
                 bandwidth_gbps: gbps,
             });
-            let source_g2 = HostTierHandle::new(private(8, 0.0, 0.0));
-            let target = HostTierHandle::new(private(target_blocks, 0.0, 0.0));
+            let source_g2 = HostTierHandle::new(per_rank(8, 0.0, 0.0));
+            let target = HostTierHandle::new(per_rank(target_blocks, 0.0, 0.0));
             make_resident(&source_g2, source_keys);
             make_resident(&target, target_keys);
             {
@@ -506,6 +510,50 @@ mod tests {
         assert!(adapter.release(f.owner));
         assert!(adapter.advance(&mut target, 10.0));
         assert!(matches!(target.lookup(keys[0]), Lookup::Hit));
+    }
+
+    #[test]
+    fn deadlines_follow_detached_pulls_until_their_blocks_are_taken() {
+        let f = Fixture::new(&[0], &[]);
+        let (mut adapter, mut restore) = (f.adapter(), RestoreRounds::default());
+        let source = VllmKvcrAdapter::new(f.registry.clone(), f.source);
+        let keys = f.keys(&[0]);
+        let mut target = f.target.lock();
+        assert_eq!(adapter.next_deadline(), None);
+        assert!(adapter.stage(
+            &mut target,
+            C,
+            f.owner,
+            f.source,
+            &mut restore,
+            &keys,
+            None,
+            0.0,
+        ));
+        assert_eq!(adapter.next_deadline(), None);
+        f.registry.lock().unwrap().start_parked();
+        assert_eq!(adapter.next_deadline(), Some(1.0));
+        assert!(adapter.release(f.owner));
+        assert!(!adapter.is_pulling(f.owner));
+        assert_eq!(adapter.next_deadline(), Some(1.0));
+        assert!(source.has_work());
+        assert_eq!(source.next_deadline(), None);
+
+        assert!(!adapter.advance(&mut target, 1.0));
+        assert_eq!(adapter.next_deadline(), Some(2.0));
+        // Another rank can advance the shared registry before this target takes its pull.
+        assert!(
+            f.registry
+                .lock()
+                .unwrap()
+                .take_landed(f.source, 2.0)
+                .is_empty()
+        );
+        assert_eq!(adapter.next_deadline(), Some(2.0));
+        assert!(adapter.advance(&mut target, 2.0));
+        assert_eq!(adapter.next_deadline(), None);
+        assert_eq!(f.source_pins(&keys), vec![0]);
+        assert_eq!(target.lookup(keys[0]), Lookup::Hit);
     }
 
     #[test]

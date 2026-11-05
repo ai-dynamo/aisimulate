@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -873,6 +874,17 @@ class HfDataset:
         result: list[MeasurementObservation] = []
         seen: set[str] = set()
         for order, parsed in enumerate(observations):
+            event_time_ms = None
+            if parsed.chronology_key is not None:
+                if not parsed.chronology_key:
+                    raise DataError("measurement chronology requires a normalized event timestamp")
+                event_time_ms = parsed.chronology_key[0]
+                if (
+                    type(event_time_ms) not in (int, float)
+                    or event_time_ms < 0
+                    or (isinstance(event_time_ms, float) and not math.isfinite(event_time_ms))
+                ):
+                    raise DataError("normalized measurement event_time_ms must be finite and non-negative")
             identity = {
                 "configuration_id": configuration_id,
                 "source_file_id": parsed.source_file.measurement_file_id,
@@ -905,6 +917,7 @@ class HfDataset:
                     source_row=parsed.source_row,
                     iteration=parsed.iteration,
                     event_time=parsed.event_time,
+                    event_time_ms=event_time_ms,
                 )
             )
         return tuple(result)

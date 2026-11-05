@@ -67,7 +67,8 @@ Python objects inside adapter payloads.
 formats and hook identities. Pair/trace declarations may use `"*"` where the
 contract allows it. More specific flags cover disaggregated attention-DP,
 AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
-analytical EPD, cached-prefix tokens, state/grouped cache and model controls.
+analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
+cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
@@ -79,8 +80,9 @@ schemes' draft costs. A stack must explicitly declare generic speculation
 support and retain those costs through its timing provider.
 
 `require_compatible(spec)` checks versions and coarse combinations before
-execution. AgentX G2 additionally requires offline vLLM, a static single
-aggregated worker or 1P1D, and DP1 on every role. G3 and speculation cannot be
+execution. AgentX G2 additionally requires offline vLLM, static workers (one
+aggregated worker, 1P1D, or several aggregated workers with a `dp_rank_local`
+G2 each), and DP1 on every role. G3 and speculation cannot be
 combined with AgentX G2. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.
 
@@ -100,8 +102,20 @@ and limitations rather than substituting zero for unavailable measurements.
 
 `ReplayOutputRequirements` defaults to summary output and can request raw,
 per-request, telemetry, memory or timing diagnostics. A runner must reject
-unsupported capture combinations. The Engine JSON runner rejects telemetry
-capture even though native Rust observers support it.
+unsupported capture combinations. The Engine JSON runner supports telemetry for
+offline vLLM/SGLang aggregated and separate prefill/decode replay without encoder
+pools. `capture_telemetry` retains all-phase detail under
+`metadata["native_report"]["telemetry"]`; it does not change scoring metrics.
+See the [telemetry contract](../getting-started/understand-results.md#replay-telemetry).
+
+A factory that sets `supports_deferred_encoder_overlay` accepts
+`defer_encoder_overlay=True`. For an analytical EPD spec, the runner then
+returns the normalized language report, which carries the metrics
+`apply_encoder_overlay` reads, without applying the overlay, and rejects the
+flag together with memory diagnostics. Sweeper fails a report that already
+carries the overlay as a runner contract violation. It reuses a returned
+language report for every encoder pool that shares it and applies the overlay
+per pool; a failed, timed-out or refused replay is not reused.
 
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).

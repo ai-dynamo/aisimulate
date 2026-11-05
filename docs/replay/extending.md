@@ -82,8 +82,8 @@ identity, snapshots, warm/cold cache, barrier failure, cutoff/grace and late
 cleanup after lane reuse. Representative source-built checks include:
 
 ```bash
-cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
-cargo test --locked -p aisimulate-core --lib agentic_pd_qualification
+cargo test --locked -p aisim-core --test agentx_qualification --example qualify_weka
+cargo test --locked -p aisim-core --lib agentic_pd_qualification
 python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay or agentic_snapshot or agentic_warmup'
 ```
 

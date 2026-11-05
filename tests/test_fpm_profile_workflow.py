@@ -206,6 +206,67 @@ def test_prediction_materializes_rank_local_capacity_without_a_model(profile, ti
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
+@pytest.mark.parametrize(
+    "policy",
+    ["vllm_native_ar_model_step_cuda_v1", "vllm_native_fpm_model_step_cuda_v1"],
+)
+def test_ar_native_cuda_policy_keeps_ar_and_speculative_measurements_separate(profile, timing_systems, policy):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+
+    path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row.update(
+            **dict(zip(EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, strict=True)),
+            measurement_policy=policy,
+            timing_scope="model_step_cuda",
+            measurement_reduction="single_sample",
+            source_sample_count=1,
+        )
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(
+        schema_version=7,
+        measurement_policy=policy,
+        timing_scope="model_step_cuda",
+        parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    config = dict(
+        model=profile["model"],
+        fpm_profile=profile,
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        worker_type="aggregated",
+        tp=2,
+        moe_tp_size=2,
+        moe_ep_size=1,
+        systems_paths=[timing_systems],
+        estimation_mode="fpm_interpolation",
+        fallback_policy="deny",
+        estimator_config={"fpm_interpolation": {"method": "direct"}},
+    )
+    if policy == "vllm_native_fpm_model_step_cuda_v1":
+        with pytest.raises((ValueError, RuntimeError), match="speculative-round identity"):
+            RustForwardPassPerfModel.best_available(config)
+    else:
+        model = RustForwardPassPerfModel.best_available(config)
+        # The AR fixture declares 1 ms at every measured decode coordinate.
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 1,
+                }
+            }
+        ) == pytest.approx(1.0)
+
+
 def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(profile, timing_systems):
     import pyarrow as pa
     import pyarrow.parquet as pq

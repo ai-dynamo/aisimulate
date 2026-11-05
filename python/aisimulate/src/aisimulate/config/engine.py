@@ -11,7 +11,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
-    BeforeValidator,
     Field,
     PrivateAttr,
     StrictBool,
@@ -55,21 +54,10 @@ def resolve_block_size(backend: str, configured: int | None) -> int:
     return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
 
 
-def _validate_replay_estimation_mode(mode: str | None) -> str | None:
-    if mode == "fpm_learned":
-        raise ValueError(
-            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing "
-            "interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
-        )
-    return mode
-
-
-# Advertise only phase-only timing modes, while retaining the capability error
-# for learned input before Literal validation would turn it into a generic error.
-ReplayEstimationMode = Annotated[
-    Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"],
-    BeforeValidator(_validate_replay_estimation_mode),
-]
+# Replay prices native estimators per phase or iteration and regression and
+# learned estimators per iteration (see "Engine replay timing" in
+# docs/perf-model/configuration.md).
+ReplayEstimationMode = Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"]
 
 
 class AFDTopologyPredictionConfig(StrictModel):
@@ -146,6 +134,13 @@ class SchedulerPredictionConfig(StrictModel):
             "Rounds may be idle and do not count output tokens; zero disables the interval."
         ),
     )
+    async_scheduling: StrictBool | None = Field(
+        default=None,
+        description=(
+            "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
@@ -182,6 +177,8 @@ class HostOffloadConfig(StrictModel):
     shared_d2h_bandwidth_gbps: NonNegativeFloat = 80.0
     shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
     latency_to_first_byte_ms: NonNegativeFloat = 0.0
+    # vLLM connector whose store, lookup and eviction rules G2 follows.
+    connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_v0_32"] = "offloading_v0_24"
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -192,11 +189,23 @@ class HostOffloadConfig(StrictModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _validate_connector(self) -> HostOffloadConfig:
+        if self.connector != "offloading_v0_24" and self.scope != "dp_rank_local":
+            raise ValueError("host_offload.connector other than offloading_v0_24 requires scope dp_rank_local")
+        return self
+
     @model_serializer(mode="wrap")
     def _omit_default_scope_controls(self, handler: Any) -> dict[str, Any]:
         # Keep the pre-scope descriptor shape unless these controls are used.
         payload = handler(self)
-        for name in ("scope", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps", "latency_to_first_byte_ms"):
+        for name in (
+            "scope",
+            "shared_d2h_bandwidth_gbps",
+            "shared_h2d_bandwidth_gbps",
+            "latency_to_first_byte_ms",
+            "connector",
+        ):
             if payload.get(name) == type(self).model_fields[name].default:
                 payload.pop(name)
         return payload
@@ -283,8 +292,12 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_g3(self):
-        if self.g3_offload is not None and self.host_offload is None:
+        if self.g3_offload is None:
+            return self
+        if self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("g3_offload requires host_offload.connector=offloading_v0_24")
         return self
 
     @model_validator(mode="after")
@@ -293,6 +306,8 @@ class KvCachePredictionConfig(StrictModel):
             return self
         if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
             raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("kvcr requires host_offload.connector=offloading_v0_24")
         if self.g3_offload is not None:
             raise ValueError("kvcr cannot be combined with g3_offload")
         return self
@@ -740,6 +755,16 @@ class TokenizationConfig(StrictModel):
     per_input_token_us: NonNegativeFloat = 0.0
 
 
+class DetokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_output_us: NonNegativeFloat = 0.0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.base_ms or self.per_output_us)
+
+
 class EstimatorPolicyConfig(StrictModel):
     nextn: NonNegativeInt = Field(default=0, le=5)
     nextn_accepted: NonNegativeFloat | None = None
@@ -873,6 +898,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     tokenization: TokenizationConfig | None = None
+    detokenization: DetokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -903,6 +929,12 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
             raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
+        if (
+            self.detokenization is not None
+            and self.detokenization.active
+            and (self.mode == "afd" or self.workers.encoder is not None)
+        ):
+            raise ValueError("engine.detokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.tokenization is not None and any(
             worker is not None and (worker.frontend is not None or worker.host_profile is not None)
             for worker in (self.workers.aggregated, self.workers.prefill)
@@ -1297,6 +1329,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("async_scheduling", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
@@ -1364,6 +1397,10 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
         companion = "decode" if afd.phase == "prefill" else "prefill"
         if configured != {companion}:
             raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+        # The AFD replay prices its companion from the companion model, which
+        # does not model async-scheduling admission.
+        if getattr(engine.workers, companion).scheduler.async_scheduling:
+            raise ValueError(f"AFD companion workers.{companion}.scheduler.async_scheduling=true is not modeled")
     else:
         if afd.phase != "both":
             raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")
@@ -1405,6 +1442,10 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     for role, worker in configured:
         if not worker.kv_cache.prefix_caching:
             raise ValueError("host_offload requires prefix_caching=true")
+        if worker.kv_cache.host_offload.connector != "offloading_v0_24" and role != "aggregated":
+            raise ValueError(
+                "host_offload.connector other than offloading_v0_24 is supported only for the aggregated worker"
+            )
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
         if worker.kv_cache.kvcr is not None and role == "decode":
