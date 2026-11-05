@@ -433,6 +433,7 @@ class RunnerCapabilities:
     supports_tokenization: bool = False
     supports_detokenization: bool = False
     supports_deferred_encoder_overlay: bool = False
+    supports_agentic_primers_only: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -665,7 +666,11 @@ class RunnerCapabilities:
             if not self.supports_agentic_warmup:
                 raise ValueError("runner does not support agentic warmup")
         warmup_policy = spec.workload.get("agentic_warmup_policy", "repeated_prefixes")
-        if not isinstance(warmup_policy, str) or warmup_policy not in {"repeated_prefixes", "live_trajectory_v1"}:
+        if not isinstance(warmup_policy, str) or warmup_policy not in {
+            "repeated_prefixes",
+            "live_trajectory_v1",
+            "primers_only",
+        }:
             raise ValueError("unknown agentic_warmup_policy")
         if warmup_policy == "live_trajectory_v1":
             if not agentic_warmup or agentic_profile is None:
@@ -674,6 +679,14 @@ class RunnerCapabilities:
                 raise ValueError(
                     "runner does not support live agentic warmup; "
                     "update the adapter before selecting live_trajectory_v1"
+                )
+        if warmup_policy == "primers_only":
+            if not agentic_warmup:
+                raise ValueError("primers_only requires agentic_warmup")
+            if not self.supports_agentic_primers_only:
+                raise ValueError(
+                    "runner does not support primers-only agentic warmup; "
+                    "update the adapter before selecting primers_only"
                 )
         if agentic_snapshot is not None:
             try:

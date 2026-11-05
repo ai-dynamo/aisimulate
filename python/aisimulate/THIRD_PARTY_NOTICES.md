@@ -44,6 +44,16 @@ native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
 
+The primers-only warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs`, its regression test there, and its
+descriptions in `docs/replay/agentic/warmup.md` and `docs/replay/workloads.md`
+model the snapshot warmup of NVIDIA AIPerf without a cache-pressure warmup
+(https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py,
+`_execute_warmup` and `_capped_warmup_lead_ms`): one primer per stream, leads
+capped at the idle cap and aligned on the cut, and no further warmup request.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
+Licensed under Apache-2.0; no upstream implementation is vendored.
+
 The continuous-profile release rules in the same `driver.rs`, their regression
 tests there, and the release descriptions in
 `docs/replay/agentic/continuous-profiles.md` and `docs/replay/workloads.md` are

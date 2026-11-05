@@ -3482,6 +3482,10 @@ fn build_runtime_input(
             || (traffic.agentic_warmup && traffic.agentic_profile.is_some()),
         "live_trajectory_v1 requires agentic_warmup and agentic_profile"
     );
+    ensure!(
+        traffic.agentic_warmup_policy != AgenticWarmupPolicy::PrimersOnly || traffic.agentic_warmup,
+        "primers_only requires agentic_warmup"
+    );
     if let Some(profile) = &traffic.agentic_profile {
         profile.validate()?;
         ensure!(
@@ -5358,6 +5362,76 @@ mod tests {
                     execute_json(&invalid.to_string(), false).unwrap_err()
                 )
                 .contains("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+            );
+        }
+    }
+
+    #[test]
+    fn public_primers_only_warmup_sends_only_primers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("primers-weka.jsonl");
+        // One conversation: each request extends the previous prompt by a block.
+        let rows = (1..=3)
+            .map(|turn| {
+                serde_json::json!({
+                    "t": (turn - 1) as f64 * 0.1, "type": "s", "model": "model",
+                    "in": 4 * turn, "out": 3, "hash_ids": (1..=turn).collect::<Vec<_>>(),
+                    "api_time": 0.001
+                })
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "id": "play", "models": ["model"], "block_size": 4,
+                "hash_id_scope": "local", "requests": rows
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for backend in ["vllm", "sglang"] {
+            let mut payload = serde_json::json!({
+                "spec": {
+                    "version": 1, "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                    "engine": {"rank": {"backend": backend, "block_size": 4, "num_gpu_blocks": 64,
+                        "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}}},
+                    "requests": []
+                },
+                "traffic": {"source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                    "trace_path": path, "trace_block_size": 4, "execution_model": "model",
+                    "agentic_lanes": 1, "agentic_warmup": true, "agentic_warmup_policy": "primers_only",
+                    "agentic_snapshot": {"seed": 42}}
+            });
+            let sampled: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+            let play = sampled["agentic_snapshots"][0]["source_play_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            payload["traffic"]["agentic_snapshot"] = serde_json::json!({
+                "seed": 42, "corpus_cursor": 1,
+                "initial_selections": [{"source_play_id": play, "t_star_ms": 150.0}]
+            });
+            let report: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+            let phases = &report["agentic_phases"];
+            assert_eq!(phases["phase"], "profile", "{backend}: {report}");
+            assert_eq!(phases["warmup_policy"], "primers_only");
+            // The cut at 150 ms leaves requests at 0 and 100 ms behind it; the one
+            // at 100 ms is the conversation's primer.
+            let lane = &phases["lanes"][0];
+            assert_eq!(lane["primers_expected"], 1, "{backend}: {lane}");
+            assert_eq!(lane["primers_completed"], 1);
+            assert_eq!(lane["warmup_expected"], 0);
+            assert_eq!(lane["warmup_completed"], 0);
+            assert!(report["completed_requests"].as_u64().unwrap() > 0);
+            payload["traffic"]["agentic_warmup"] = false.into();
+            assert!(
+                format!(
+                    "{:#}",
+                    execute_json(&payload.to_string(), false).unwrap_err()
+                )
+                .contains("primers_only requires agentic_warmup")
             );
         }
     }
