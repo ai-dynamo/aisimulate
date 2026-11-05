@@ -182,7 +182,7 @@ impl BatchSubmitError {
 }
 
 impl std::fmt::Display for BatchSubmitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Display::fmt(&self.0, f) }
 }
 
 impl std::error::Error for BatchSubmitError {}
@@ -744,6 +744,47 @@ mod tests {
     }
 
     #[test]
+    fn deferred_hash_scratch_is_bounded_and_byte_exact_for_large_blocks() {
+        for (input_length, ids, trace_block_size) in [
+            (8194, vec![7], usize::MAX),
+            (10013, vec![7, 9], 7000),
+            (12310, vec![7, 7, 9], 5000),
+        ] {
+            let compact = CompactDirectRequest::new(DirectRequest::default(), input_length, ids, trace_block_size).unwrap();
+            let tokens = compact.payload.prompt_tokens();
+            for block_size in [1, 16, 4096, 4097, u32::MAX] {
+                assert_eq!(compact.payload.replay_hashes(block_size), super::super::types::ReplayRequestHashes::from_tokens(&tokens, block_size));
+            }
+        }
+    }
+
+    #[test]
+    fn same_allocation_has_independent_concurrent_request_owners() {
+        let mut engine = SteppableEngine::new(ReplayEngineConfig::default(), &ReplayEngineFactory::new()).unwrap();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner = Arc::new(TestLease { ids: vec![7], accepted: Arc::clone(&accepted) });
+        let weak = Arc::downgrade(&owner);
+        let first = engine.submit_compact(CompactDirectRequest::from_hash_ids_lease(request(750, 0, 1), 8, owner.clone(), 8).unwrap()).unwrap();
+        engine.submit_compact(CompactDirectRequest::from_hash_ids_lease(request(751, 0, 1), 8, owner, 8).unwrap()).unwrap();
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+        engine.cancel(first).unwrap();
+        assert!(weak.upgrade().is_some());
+        drain(&mut engine);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn compact_metadata_preserves_explicit_empty_output_plan() {
+        let metadata = DirectRequest { output_token_ids: Some(Vec::new()), priority: 7, strict_priority: 3, policy_class: Some("interactive".into()), ..request(752, 0, 99) };
+        let compact = CompactDirectRequest::new(metadata, 8, vec![7], 8).unwrap();
+        assert_eq!(compact.payload.metadata().output_token_ids, Some(Vec::new()));
+        assert_eq!(compact.payload.metadata().effective_max_output_tokens(), 0);
+        assert_eq!(compact.payload.metadata().priority, 7);
+        assert_eq!(compact.payload.metadata().strict_priority, 3);
+        assert_eq!(compact.payload.metadata().policy_class.as_deref(), Some("interactive"));
+    }
+
+    #[test]
     fn compact_lease_is_retained_until_terminal_cancel_or_destruction() {
         for mode in 0..3 {
             let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -794,6 +835,7 @@ mod tests {
             let owner = Arc::new(TestLease { ids: vec![7], accepted: Arc::clone(&accepted) });
             let weak = Arc::downgrade(&owner);
             let uuid = engine.submit_compact(CompactDirectRequest::from_hash_ids_lease(request(710, 0, 1), 8, owner, 8).unwrap()).unwrap();
+            engine.step_until(0.0).unwrap();
             let error = engine.submit_batch(vec![request(711, 8, 1), request(710, 8, 1)]).unwrap_err();
             assert!(!error.is_poisoned());
             assert_eq!(engine.in_flight(), 1);
@@ -806,6 +848,7 @@ mod tests {
             assert!(engine.submit_batch(vec![request(713, 8, 1), invalid]).is_err());
             assert_eq!(engine.in_flight(), 1);
             engine.cancel(uuid).unwrap();
+            drain(engine.as_mut());
             assert!(weak.upgrade().is_none());
             assert!(engine.is_idle());
             assert_eq!(engine.take_report(0.0).unwrap().request_counts.num_requests, 1);
