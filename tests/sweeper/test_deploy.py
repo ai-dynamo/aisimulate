@@ -131,14 +131,16 @@ def test_disagg_backend_deployment_preserves_both_roles():
 
 
 @pytest.mark.parametrize(
-    ("backend", "enabled", "expected"),
+    ("backend", "enabled", "prefix_caching", "expected"),
     [
-        ("sglang", False, None),
-        ("sglang", True, {"disaggregation_decode_enable_radix_cache": True}),
-        ("vllm", True, None),
+        ("sglang", False, False, None),
+        ("sglang", False, True, None),
+        ("sglang", True, True, {"disaggregation_decode_enable_radix_cache": True}),
+        ("sglang", True, False, None),
+        ("vllm", True, False, None),
     ],
 )
-def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, enabled, expected):
+def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, enabled, prefix_caching, expected):
     shape = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1)
     parallel = DisaggParallelConfig(
         prefill=ReplicaParallelConfig(shape, 1),
@@ -153,12 +155,20 @@ def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, en
         decode_max_num_seqs=256,
     )
     sample = unroll_sample(
-        search_space=_space(decode_radix_cache=enabled), selection=selection, parallel_config=parallel
+        search_space=_space(decode_radix_cache=enabled, decode_enable_prefix_caching=prefix_caching),
+        selection=selection,
+        parallel_config=parallel,
     )
+
+    if backend == "sglang" and enabled and not prefix_caching:
+        with pytest.raises(ValueError, match="decode_radix_cache requires decode_enable_prefix_caching=true"):
+            build_backend_deployment(sample, backend_version=BACKEND_VERSION)
+        return
 
     deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
     assert deployment.decode_engine_args.get("sglang") == expected
+    assert deployment.decode_engine_args["enable_prefix_caching"] is prefix_caching
     assert "sglang" not in deployment.prefill_engine_args
 
 

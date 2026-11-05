@@ -1833,7 +1833,9 @@ def test_recommendation_carries_the_sglang_decode_radix_cache_to_the_sweeper() -
         }
     )
 
-    assert recommendation_to_sweeper(config).search_space.decode_radix_cache is True
+    space = recommendation_to_sweeper(config).search_space
+    assert space.decode_radix_cache is True
+    assert space.decode_enable_prefix_caching is True
 
 
 @pytest.mark.parametrize(

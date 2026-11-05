@@ -1831,13 +1831,12 @@ impl SglangCore {
         }
     }
 
-    /// SGLang v0.5.20 `get_new_prebuilt_batch`: transferred requests fill the free
+    /// SGLang v0.5.22 `get_new_prebuilt_batch`: transferred requests fill the free
     /// running slots, and `process_prebuilt` caches each selected prompt, so it
     /// becomes reusable only once its request runs.
     fn promote_prebuilt_ready(&mut self) -> Vec<crate::engine::scheduler::AdmissionEvent> {
-        if self.waiting.iter().any(|request| request.retracted) {
-            return Vec::new();
-        }
+        // Restored rows already own KV and must run to release it even when
+        // another retraction cannot fit. Only fresh allocations wait for it.
         let mut admissions = Vec::new();
         let mut published = false;
         while self.running.len() < self.config.max_running_requests {
