@@ -1148,7 +1148,7 @@ impl EngineConfig {
                 .ok_or_else(|| anyhow::anyhow!("state_cache minimum capacity overflowed"))?;
             ensure!(
                 self.num_gpu_blocks >= minimum,
-                "state_cache capacity must fit one token block and one working state"
+                "state_cache capacity must fit one token block and one working state plus its num_speculative_states scratch copies"
             );
         }
         Ok(())
@@ -1691,10 +1691,15 @@ mod tests {
         }
         let mut input = state_cache_config_json();
         input["num_gpu_blocks"] = serde_json::json!(3);
-        serde_json::from_value::<EngineConfig>(input)
+        serde_json::from_value::<EngineConfig>(input.clone())
             .unwrap()
             .validate()
             .unwrap();
+        // One scratch copy doubles the two state blocks: 5 blocks.
+        input["aic_nextn"] = serde_json::json!(1);
+        input["state_cache"]["num_speculative_states"] = serde_json::json!(1);
+        let error = serde_json::from_value::<EngineConfig>(input).unwrap_err();
+        assert!(error.to_string().contains("scratch copies"), "{error}");
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,

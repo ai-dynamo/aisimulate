@@ -135,26 +135,34 @@ impl FpmMambaCache {
                 "mamba_align requires state_storage=full_state; use cache_layout=unmodeled for ReplaySSM or RecoverSSM",
             ));
         }
-        if self.block_size_tokens < 2
-            || self.page_size_bytes == 0
-            || self.page_size_bytes > MAX_EXACT_BYTES
-            || self.state_groups == 0
-            || self.prefix_match_unit == 0
+        let error = if self.block_size_tokens < 2 {
+            "mamba_cache.block_size_tokens must be at least 2"
+        } else if self.state_groups == 0 {
+            "mamba_cache.state_groups must be positive"
+        } else if self.prefix_match_unit == 0
             || !self
                 .block_size_tokens
                 .is_multiple_of(self.prefix_match_unit)
+        {
+            "mamba_cache.prefix_match_unit must divide block_size_tokens"
+        } else if self.page_size_bytes == 0
             || !self
                 .page_size_bytes
                 .is_multiple_of(u64::from(self.block_size_tokens))
-            || self.num_speculative_states > 5
-            || self
-                .page_size_bytes
-                .checked_mul(u64::from(self.state_groups))
-                .is_none_or(|bytes| bytes > MAX_EXACT_BYTES)
         {
-            return Err(invalid("invalid observed Mamba shared-pool geometry"));
-        }
-        Ok(())
+            "mamba_cache.page_size_bytes must be a positive multiple of block_size_tokens"
+        } else if self
+            .page_size_bytes
+            .checked_mul(u64::from(self.state_groups))
+            .is_none_or(|bytes| bytes > MAX_EXACT_BYTES)
+        {
+            "mamba_cache.page_size_bytes times state_groups must not exceed 2**53"
+        } else if self.num_speculative_states > 5 {
+            "mamba_cache.num_speculative_states must be at most 5"
+        } else {
+            return Ok(());
+        };
+        Err(invalid(error))
     }
 }
 
@@ -251,12 +259,21 @@ impl FpmResourceConfig {
         if self.mamba_cache.is_some() != (self.cache_layout == FpmCacheLayout::MambaAlign) {
             return Err(invalid("mamba_cache requires cache_layout=mamba_align"));
         }
+        let observed_pool = self.runtime_memory.is_some()
+            && self.kv_bytes_per_token.is_none()
+            && self.cache_groups.is_empty();
         match self.cache_layout {
-            FpmCacheLayout::MambaAlign
-                if self.runtime_memory.is_some()
-                    && self.kv_bytes_per_token.is_none()
-                    && self.cache_groups.is_empty() =>
-            {
+            FpmCacheLayout::MambaAlign if !observed_pool => {
+                return Err(invalid(
+                    "Mamba shared pool requires runtime_memory without scalar or grouped geometry",
+                ));
+            }
+            FpmCacheLayout::Unmodeled if !observed_pool => {
+                return Err(invalid(
+                    "unmodeled cache requires runtime_memory without scalar or grouped cache geometry",
+                ));
+            }
+            FpmCacheLayout::MambaAlign => {
                 let cache = self.mamba_cache.as_ref().unwrap();
                 cache.validate()?;
                 let bytes = self.runtime_memory.as_ref().unwrap().kv_cache_bytes;
@@ -266,10 +283,7 @@ impl FpmResourceConfig {
                     ));
                 }
             }
-            FpmCacheLayout::Unmodeled
-                if self.runtime_memory.is_some()
-                    && self.kv_bytes_per_token.is_none()
-                    && self.cache_groups.is_empty() => {}
+            FpmCacheLayout::Unmodeled => {}
             FpmCacheLayout::Linear
                 if self.cache_groups.is_empty()
                     && self
@@ -867,6 +881,25 @@ mod tests {
         assert!(serde_json::from_value::<FpmResourceConfig>(missing_policy).is_err());
         resources.runtime_memory.as_mut().unwrap().kv_cache_bytes = 641;
         assert!(resources.validate().is_err());
+        resources.runtime_memory.as_mut().unwrap().kv_cache_bytes = 640;
+        let mut scalar = resources.clone();
+        scalar.kv_bytes_per_token = Some(8);
+        assert!(
+            scalar
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("Mamba shared pool requires runtime_memory")
+        );
+        let cache = resources.mamba_cache.as_mut().unwrap();
+        cache.prefix_match_unit = 3;
+        assert!(
+            resources
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefix_match_unit must divide block_size_tokens")
+        );
     }
 
     fn role_config() -> ForwardPassPerfModelConfig {
@@ -973,10 +1006,24 @@ mod tests {
         );
         let mut invalid = resources.clone();
         invalid.kv_bytes_per_token = Some(10);
-        assert!(invalid.validate().is_err());
+        let geometry =
+            "unmodeled cache requires runtime_memory without scalar or grouped cache geometry";
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains(geometry)
+        );
         invalid.kv_bytes_per_token = None;
         invalid.runtime_memory = None;
-        assert!(invalid.validate().is_err());
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains(geometry)
+        );
     }
 
     #[test]

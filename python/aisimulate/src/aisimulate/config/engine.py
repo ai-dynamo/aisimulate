@@ -386,7 +386,10 @@ class KvCachePredictionConfig(StrictModel):
                     * (1 + (self.state_cache.num_speculative_states or 0))
                     + 1
                 ):
-                    raise ValueError("state_cache capacity must fit one token block and one request state")
+                    raise ValueError(
+                        "state_cache capacity must fit one token block and one request state "
+                        "plus its num_speculative_states scratch copies"
+                    )
         return self
 
 
