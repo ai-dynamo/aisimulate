@@ -1,3 +1,12 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+<!-- Documentation corrections adapted and modified from AIConfigurator PR #1613:
+https://github.com/ai-dynamo/aiconfigurator/blob/d1fe4661bca3af24daab50300f196f6d9ff75d1f/docs/add_a_new_model.md
+-->
+
 # Operations package
 
 This package holds every op class the SDK uses to DESCRIBE a model's work
@@ -53,11 +62,18 @@ loop — not a public per-call query API.)
    add must be declared in its frozen per-file inventory
    (`OPERATIONS_DEF_INVENTORY`) — that edit is the deliberate, reviewable
    declaration of the new function.
-3. **Wire the spec conversion**: a `_to_opspec` branch in
-   `python/aisimulate/src/aisimulate_core/sdk/engine.py` and an `Op` variant in
-   `crates/core/src/perfmodel/operators/op.rs` — **append at the enum tail**
-   (bincode variant indices are positional; a mid-enum insertion requires
-   an `ENGINE_SPEC_SCHEMA_VERSION` bump on BOTH sides) — plus the
+3. **Wire native serialization**: extend the Rust operation family and its
+   Python bindings so the Python shell inherits a Rust `Operation` subclass.
+   It serializes itself through `_spec_json` / `ops_json_from_ops`; the old
+   Python `_to_opspec` dispatcher has been removed. The existing whole-forward
+   FPM wrapper is adapted by `sdk/engine.py::_as_engine_op`. Add the corresponding
+   `Op` variant in `crates/core/src/perfmodel/operators/op.rs` — **append at the enum tail**
+   to preserve existing bincode variant indices. Assess compatibility even
+   for tail appends; a compatible append need not bump the version.
+   Incompatible serialized changes, including positional payload or field
+   changes, require an `ENGINE_SPEC_SCHEMA_VERSION` bump coordinated with
+   serialized-spec consumers. Rust owns that version; Python reads it
+   through the native binding. Keep the
    `crates/core/src/perfmodel/engine/spec.rs` round-trip fixture.
    `tests/unit/sdk/test_opspec_coverage.py` fails until the op converts or
    carries a justified `EXEMPT` entry.

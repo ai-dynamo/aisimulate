@@ -3,6 +3,10 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<!-- Documentation corrections adapted and modified from AIConfigurator PR #1613:
+https://github.com/ai-dynamo/aiconfigurator/blob/d1fe4661bca3af24daab50300f196f6d9ff75d1f/docs/add_a_new_model.md
+-->
+
 # Extend performance models
 
 AISimulate owns the application, model definitions, performance data, and native
@@ -38,6 +42,13 @@ resolves the architecture to a family, then selects the `@register_model`
 class. `models/blocks/` contains reusable composition helpers and must not
 register model classes.
 
+Edit implementations under `python/aisimulate/src/aisimulate_core/sdk/models/`
+and `sdk/operations/`. Their counterparts under
+`python/aisimulate/src/aisimulate/sdk/` are compatibility aliases to those
+canonical modules; adding a class only to an alias does not extend the canonical
+registry. Use the model and operation packages, rather than the retired
+`models.py` or `operations.py` layout.
+
 For an existing family, inspect
 [`common.py`](../../python/aisimulate/src/aisimulate_core/sdk/common.py) and the selected model
 class before adding `ARCHITECTURE_TO_MODEL_FAMILY` entries. Verify layer counts,
@@ -72,12 +83,17 @@ and SOL values. Keep that single-oracle boundary when adding an operation:
    [`sdk/operations/`](../../python/aisimulate/src/aisimulate_core/sdk/operations). Follow its
    existing construction, weight-sizing, and engine-backed table-view
    conventions. Do not add a Python interpolation or performance-query oracle.
-3. Extend `_to_opspec` in
-   [`sdk/engine.py`](../../python/aisimulate/src/aisimulate_core/sdk/engine.py), the native
-   [`Op` representation](../../crates/core/src/perfmodel/operators/op.rs),
-   and the [`engine specification`](../../crates/core/src/perfmodel/engine/spec.rs).
-   Preserve positional enum compatibility; a schema-breaking change requires
-   coordinated versioning and consumer updates.
+3. Extend the native [`Op` representation](../../crates/core/src/perfmodel/operators/op.rs),
+   its Python bindings, and the
+   [`engine specification`](../../crates/core/src/perfmodel/engine/spec.rs).
+   Ordinary Python operation shells inherit a Rust `Operation` subclass and
+   serialize through `_spec_json` / `ops_json_from_ops`; there is no Python
+   `_to_opspec` branch to add. Inspect `_as_engine_op` in
+   [`sdk/engine.py`](../../python/aisimulate/src/aisimulate_core/sdk/engine.py)
+   for the existing whole-forward FPM adapter, rather than introducing a second
+   serialization or performance oracle. Append new enum variants at the tail;
+   changing existing positional indices requires coordinated schema versioning
+   and consumer updates.
 4. Wire the operation into the model pipeline and validate its parameter
    conversion. Run the existing
    [OpSpec coverage test](../../python/aisimulate/tests/unit/sdk/test_opspec_coverage.py) and
