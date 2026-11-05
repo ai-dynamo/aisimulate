@@ -46,46 +46,31 @@ patches, 9 embeddings, and 12 context tokens.
 
 ## Per-layer checkpoint precision
 
-For Nemotron-H, the SDK reads the precision of each GEMM projection and of the
-routed experts from the checkpoint's per-layer metadata (`quantized_layers`,
-`config_groups`, exclusions). The result depends on the checkpoint and not on
-the model name. Other model families keep one precision per op kind, with
-family-specific BF16 exclusions.
-
-Nemotron-H prices these projections per layer: Mamba `in_proj` and `out_proj`,
-attention QKV and output, dense MLP, shared experts, and the `fc1`/`fc2` latent
-projections. It also prices its routed experts per layer.
+For Nemotron-H, the SDK reads the precision of each GEMM projection (Mamba,
+attention, dense MLP, shared experts, latent projections) and of the routed
+experts from the checkpoint's per-layer metadata (`quantized_layers`,
+`config_groups`, exclusions). Each precision is priced for its own count of
+layers, and the MoE dispatch ops follow the routed-expert split. Other model
+families keep one precision per op kind.
 
 - A projection that a MIXED_PRECISION listing leaves out is BF16, the rule
-  vLLM and SGLang apply. Metadata that is not a MIXED_PRECISION listing leaves
-  it on the global mode.
-- An excluded projection or routed-expert layer is BF16 in every metadata
-  format. An exclusion of a parent module, such as one decoder layer, also
-  excludes every projection inside it.
-- On non-Blackwell systems, an NVFP4 projection or expert runs weight-only
-  (`nvfp4_wo`), as the global NVFP4 mode does.
+  vLLM and SGLang apply. Other metadata leaves it on the global mode.
+- An excluded module, or a module inside an excluded parent, is BF16.
+- On non-Blackwell systems, NVFP4 runs weight-only (`nvfp4_wo`).
+- An explicit `gemm_quant_mode` or `moe_quant_mode` prices every projection
+  or routed expert with that one mode.
+- Loading fails when a module has conflicting or unsupported algorithms, or
+  when the modules of one fused op, such as Q, K and V, resolve to different
+  modes.
+
+Known limits:
+
+- The routed-expert precision of a layer comes from expert 0.
+- An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
 - A checkpoint that lists `W4A16_NVFP4` layers, such as Nemotron 3.5
   Lightning, keeps the global modes. No packaged table has `w4a16_nvfp4` MoE
   rows yet. Only the vLLM 0.30.0 b200 and gb200 tables and the vLLM 0.31.0
   b200 table have `w4a16_nvfp4` GEMM rows.
-
-If layers give a projection or the routed experts different precisions, the
-SDK prices each precision for its own count of layers. The MoE dispatch ops
-follow the routed-expert split. Loading fails when one module path has
-conflicting or unsupported algorithms, or when the checkpoint modules that one
-op fuses resolve to different modes. The MTP layers use the decoder layers'
-precision.
-
-Known limits:
-
-- The routed-expert precision of a layer comes from expert 0. Different
-  precisions for experts of one layer are not modeled.
-- An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
-  Otherwise it is static FP8.
-
-An explicit `gemm_quant_mode` prices all projections with one mode. An
-explicit `moe_quant_mode` prices all routed experts with one mode. Metadata
-without per-layer information keeps the global modes.
 
 ## Other scoped boundaries
 

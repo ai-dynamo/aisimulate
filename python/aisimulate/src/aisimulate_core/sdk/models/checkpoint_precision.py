@@ -19,7 +19,6 @@ from collections.abc import Callable, Mapping, Sequence
 from fnmatch import translate
 from functools import cached_property
 
-import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.helpers import (
     _iter_mixed_precision_layer_algos,
@@ -183,55 +182,10 @@ def checkpoint_precision(raw: dict) -> CheckpointPrecision:
     return checkpoint
 
 
-def _gemm_modes(default: common.GEMMQuantMode, system: str | None) -> dict:
+def _nvfp4_lane(system: str | None, native, weight_only):
     # Non-Blackwell systems have no native FP4 tensor cores: NVFP4 runs weight-only, as
     # resolve_nvfp4_for_system does for the global mode. Without a system, keep native NVFP4.
-    nvfp4 = common.GEMMQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.GEMMQuantMode.nvfp4
-    # shortcut: FP8 is dynamic only when the global mode already is; per-layer activation
-    # scaling is not read from the checkpoint. Upgrade if an export mixes static and dynamic FP8.
-    return {
-        "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
-        # MXFP8 takes the fp8_block lane, as the global mode does (helpers._mixed_precision_algo_gemm_mode).
-        "mxfp8": common.GEMMQuantMode.fp8_block,
-        "fp8_block": common.GEMMQuantMode.fp8_block,
-        "nvfp4": nvfp4,
-        # vLLM runs W4A16_NVFP4 linears weight-only (FP4 Marlin or CuTe-DSL W4A16, BF16 activations).
-        "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
-    }
-
-
-def layer_projection_modes(
-    checkpoint: CheckpointPrecision,
-    layer_kinds: Sequence,
-    kinds_to_modules: Mapping,
-    layer_paths: LayerPaths,
-    default: common.GEMMQuantMode,
-    system: str | None = None,
-) -> list:
-    """``[(layer, kind, {key: mode})]``: every modeled GEMM projection of every decoder layer.
-
-    A projection that a listing leaves out is BF16 only for a targets-only ModelOpt
-    MIXED_PRECISION export, the contract vLLM and SGLang implement (see
-    ``modelopt_mixed_precision_targets``). Any other metadata keeps ``default`` for an
-    unlisted projection instead of guessing a mode. An excluded module is always BF16.
-    Unsupported algorithms are rejected.
-    """
-    modes = _gemm_modes(default, system)
-    unlisted = common.GEMMQuantMode.bfloat16 if checkpoint.targets_only else default
-
-    def resolve(algo, excluded):
-        if excluded:
-            return common.GEMMQuantMode.bfloat16
-        if algo is None:
-            return unlisted
-        if algo not in modes:
-            raise ValueError(f"Unsupported mixed precision for a projection: {algo}")
-        return modes[algo]
-
-    layers: dict[int, tuple] = {}
-    for layer, kind, key, mode in checkpoint.rows(layer_kinds, kinds_to_modules, layer_paths, resolve):
-        layers.setdefault(layer, (kind, {}))[1][key] = mode
-    return [(layer, kind, keys) for layer, (kind, keys) in sorted(layers.items())]
+    return weight_only if system and not is_blackwell_system(system) else native
 
 
 def projection_modes(
@@ -242,61 +196,39 @@ def projection_modes(
     default: common.GEMMQuantMode,
     system: str | None = None,
 ) -> dict:
-    """``{key: {mode: number of layers}}`` over every decoder layer (see ``layer_projection_modes``).
+    """``{key: {mode: number of layers}}`` for every modeled GEMM projection of every decoder layer.
 
-    Layers with different precisions get one bucket each, so per-layer precision is kept
-    exactly. Metadata without per-layer information leaves every projection on ``default``.
+    Layers with different precisions get one bucket each. A projection that a listing leaves
+    out is BF16 only for a targets-only ModelOpt MIXED_PRECISION export, the contract vLLM and
+    SGLang implement (see ``modelopt_mixed_precision_targets``); other metadata keeps
+    ``default``. An excluded module is always BF16. Unsupported algorithms are rejected.
     """
-    resolved = {}
-    for _, _, keys in layer_projection_modes(checkpoint, layer_kinds, kinds_to_modules, layer_paths, default, system):
-        for key, mode in keys.items():
-            resolved.setdefault(key, Counter())[mode] += 1
-    return {key: dict(counts) for key, counts in resolved.items()}
-
-
-def layer_moe_modes(
-    checkpoint: CheckpointPrecision,
-    layer_kinds: Sequence,
-    expert_modules: Mapping,
-    layer_paths: LayerPaths,
-    default: common.MoEQuantMode,
-    system: str | None = None,
-    execution_mode: Callable = lambda mode: mode,
-) -> list:
-    """``[(layer, kind, mode)]``: the routed-expert precision of every MoE layer.
-
-    ``expert_modules[kind]`` lists the checkpoint modules that carry a MoE layer's routed-expert
-    precision. ``execution_mode`` applies the same backend lane mapping as the global mode.
-    NVFP4 layers then take the system's lane (weight-only below Blackwell) even when
-    ``default`` is still the unresolved native mode, as on the canonical API path.
-
-    shortcut: a layer's precision is read from the declared expert modules (expert 0 or the
-    experts block); per-expert precision within one layer is not modeled. Upgrade if an
-    export quantizes experts of a layer differently.
-    """
-    nvfp4 = common.MoEQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.MoEQuantMode.nvfp4
+    gemm = common.GEMMQuantMode
     modes = {
-        "fp8": common.MoEQuantMode.fp8,
-        "mxfp8": common.MoEQuantMode.fp8_block,
-        "fp8_block": common.MoEQuantMode.fp8_block,
-        "nvfp4": nvfp4,
-        "w4a16_nvfp4": common.MoEQuantMode.w4a16_nvfp4,
+        # shortcut: FP8 is dynamic only when the global mode already is; per-layer activation
+        # scaling is not read from the checkpoint. Upgrade if an export mixes static and dynamic FP8.
+        "fp8": gemm.fp8 if default == gemm.fp8 else gemm.fp8_static,
+        # MXFP8 takes the fp8_block lane, as the global mode does (helpers._mixed_precision_algo_gemm_mode).
+        "mxfp8": gemm.fp8_block,
+        "fp8_block": gemm.fp8_block,
+        "nvfp4": _nvfp4_lane(system, gemm.nvfp4, gemm.nvfp4_wo),
+        "w4a16_nvfp4": gemm.w4a16_nvfp4,
     }
-    # Unlisted experts are BF16 only in a targets-only export; otherwise they keep the global mode.
-    unlisted = common.MoEQuantMode.bfloat16 if checkpoint.targets_only else default
-    nvfp4_family = (common.MoEQuantMode.nvfp4, common.MoEQuantMode.nvfp4_wo)
+    unlisted = gemm.bfloat16 if checkpoint.targets_only else default
 
     def resolve(algo, excluded):
-        # An explicit exclusion is BF16 in every metadata format.
         if excluded:
-            return common.MoEQuantMode.bfloat16
-        if algo is not None and algo not in modes:
-            raise ValueError(f"Unsupported routed-expert precision: {algo}")
-        mode = execution_mode(modes[algo]) if algo else unlisted
-        return nvfp4 if mode in nvfp4_family else mode
+            return gemm.bfloat16
+        if algo is None:
+            return unlisted
+        if algo not in modes:
+            raise ValueError(f"Unsupported mixed precision for a projection: {algo}")
+        return modes[algo]
 
-    experts = {kind: {"experts": modules} for kind, modules in expert_modules.items()}
-    return [(layer, kind, mode) for layer, kind, _, mode in checkpoint.rows(layer_kinds, experts, layer_paths, resolve)]
+    resolved = {}
+    for _, _, key, mode in checkpoint.rows(layer_kinds, kinds_to_modules, layer_paths, resolve):
+        resolved.setdefault(key, Counter())[mode] += 1
+    return {key: dict(counts) for key, counts in resolved.items()}
 
 
 def moe_modes(
@@ -308,34 +240,37 @@ def moe_modes(
     system: str | None = None,
     execution_mode: Callable = lambda mode: mode,
 ) -> dict:
-    """``{mode: number of MoE layers}`` unless every MoE layer resolves to ``default`` (see ``layer_moe_modes``)."""
-    resolved = Counter(
-        mode
-        for _, _, mode in layer_moe_modes(
-            checkpoint, layer_kinds, expert_modules, layer_paths, default, system, execution_mode
-        )
-    )
-    return {} if set(resolved) <= {default} else dict(resolved)
+    """``{mode: number of MoE layers}`` of the routed experts, or ``{}`` when every layer is ``default``.
 
+    ``expert_modules[kind]`` lists the checkpoint modules that carry a MoE layer's routed-expert
+    precision. ``execution_mode`` applies the same backend lane mapping as the global mode.
+    NVFP4 layers then take the system's lane even when ``default`` is still the unresolved
+    native mode, as on the canonical API path. Unlisted experts are BF16 only in a targets-only
+    export; an excluded layer is always BF16.
 
-def bucket_gemms(name: str, count, n: int, k: int, quant_mode, buckets: Mapping | None, **kwargs) -> list:
-    """One GEMM per checkpoint precision of a projection, each priced for its own layers.
-
-    Ops that share a name fold additively, so the buckets sum to the per-layer cost. Without
-    buckets the projection is one GEMM in ``quant_mode``.
+    shortcut: a layer's precision is read from the declared expert modules (expert 0);
+    per-expert precision within one layer is not modeled. Upgrade if an export quantizes
+    experts of a layer differently.
     """
-    if not buckets:
-        return [ops.GEMM(name, count, n, k, quant_mode, **kwargs)]
-    total = sum(buckets.values())
-    return [
-        ops.GEMM(name, count if layers == total else count * layers / total, n, k, mode, **kwargs)
-        for mode, layers in buckets.items()
-    ]
+    moe = common.MoEQuantMode
+    nvfp4 = _nvfp4_lane(system, moe.nvfp4, moe.nvfp4_wo)
+    modes = {
+        "fp8": moe.fp8,
+        "mxfp8": moe.fp8_block,
+        "fp8_block": moe.fp8_block,
+        "nvfp4": nvfp4,
+        "w4a16_nvfp4": moe.w4a16_nvfp4,
+    }
+    unlisted = moe.bfloat16 if checkpoint.targets_only else default
 
+    def resolve(algo, excluded):
+        if excluded:
+            return moe.bfloat16
+        if algo is not None and algo not in modes:
+            raise ValueError(f"Unsupported routed-expert precision: {algo}")
+        mode = execution_mode(modes[algo]) if algo else unlisted
+        return nvfp4 if mode in (moe.nvfp4, moe.nvfp4_wo) else mode
 
-def moe_buckets(count, moe_quant_mode, buckets: Mapping | None) -> list:
-    """``(mode, count)`` per routed-expert precision; no buckets keeps the global mode."""
-    if not buckets:
-        return [(moe_quant_mode, count)]
-    total = sum(buckets.values())
-    return [(mode, count * layers / total) for mode, layers in buckets.items()]
+    experts = {kind: {"experts": modules} for kind, modules in expert_modules.items()}
+    resolved = Counter(mode for *_, mode in checkpoint.rows(layer_kinds, experts, layer_paths, resolve))
+    return {} if set(resolved) <= {default} else dict(resolved)
