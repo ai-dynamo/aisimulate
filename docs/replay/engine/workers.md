@@ -183,6 +183,28 @@ re-estimates it from the survivors. Fully idle workers reset it; queued or
 transfer-held work does not. A skipped decode waiting for an in-flight
 completion neither retracts requests nor decays the ratio.
 
+### SGLang computed KV at completion
+
+Sampling an output token does not compute that token's KV. Prefill commits
+the prompt, and a later decode forward consumes the sampled token. For a
+prompt of `P` tokens and `N` outputs, serial decoding and aggregated overlap
+length stops commit `P + N - 1` tokens. PD overlap can run the final token
+through another forward before observing completion, committing `P + N`.
+Cached prefixes are rounded down to whole pages.
+
+Speculative decoding commits accepted drafts but leaves the sampled bonus
+token uncomputed. A length stop at the bonus commits `P + N - 1`; a stop
+inside an accepted draft run commits `P + N`. An already-finished speculative
+row does not commit more KV while awaiting result observation. These are
+computed-token boundaries using existing token-page keys; EAGLE bigram
+identity and EOS-based stops are separate from this model.
+
+These boundaries apply to the simulator's emitted token stream. The existing
+P/D replay regenerates the first output on the decode worker instead of carrying
+the prefill worker's sampled token, so speculative burst alignment can differ
+from SGLang's transferred-token path. Speculative decode radix caching and decode
+overlap are not supported by the public configuration.
+
 ### SGLang disaggregated capacity
 
 SGLang decode preallocation reserves **512 tokens per active request** by

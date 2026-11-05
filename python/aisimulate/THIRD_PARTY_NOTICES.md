@@ -13,6 +13,25 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## SGLang v0.5.22 computed KV and finish boundaries
+
+The output/committed-KV bookkeeping and regression cases in repository-root
+`crates/core/src/engine/scheduler/sglang/{decode.rs,request.rs,tests.rs}` and
+the descriptions in `docs/replay/engine/workers.md` are modified behavioral
+adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/managers/{schedule_batch.py,scheduler.py}`,
+`python/sglang/srt/managers/scheduler_components/batch_result_processor.py`,
+`python/sglang/srt/mem_cache/{allocation.py,common.py}`, and
+`python/sglang/srt/disaggregation/decode.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's page leases, deterministic length stops, and sampled
+speculative acceptance. Tests use synthetic requests; no upstream fixture is vendored.
+
 ## SGLang v0.5.22 disaggregated admission and retraction recovery
 
 The native controls and scheduler wiring in repository-root
