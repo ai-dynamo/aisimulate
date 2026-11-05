@@ -84,7 +84,7 @@ identities must be quoted to preserve their exact spelling:
 | --- | --- | --- |
 | `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
 | `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
-| `attention_backend` | absent | Runtime attention selector. Kimi K3.1 accepts `flashmla` or `trtllm_mla`; FP8 KV requires one of these explicit physical cache layouts. BF16 KV also permits the default. |
+| `attention_backend` | absent | Runtime attention selector. Kimi K3.1 accepts `flashmla` or `trtllm_mla`; FP8 KV requires one of these explicit physical cache layouts. The theoretical BF16 mode also permits the default; the pinned native runtime requires FP8 KV. |
 | `system`, `backend_version`, `tp`, `pp`, `attention_dp`, `moe_tp_size`, `moe_ep_size`, `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` | As above | With `estimation_mode` `fpm_regression` or `fpm_learned`, each may be the literal `"unknown"` for a fact the saver did not know. Every other mode, a `fallback_policy` other than `deny` and an `fpm_profile` reject it. The integer fields accept only the string spelling. |
 | `deployment_limits` | absent | Optional mapping of the calibrated deployment's `num_gpus` (GPUs of one worker, `tp * pp * attention_dp`), `max_num_batched_tokens`, `max_num_seqs`, `max_kv_tokens` (KV capacity of one attention-DP rank, in tokens) and `context_length`. Each is a positive integer or `"unknown"`; an omitted entry is `"unknown"`. Absent, it is omitted from the serialized configuration. Accepted in every mode. |
 
@@ -1061,7 +1061,9 @@ does not prevent FP8 KV inference. For regular language roles using default timi
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;
 this does not make an `int8` checkpoint KV declaration valid.
-Kimi K3.1 accepts BF16 or FP8 KV only. Its FP8 cache requires
+Kimi K3.1 modeling accepts BF16 or FP8 KV only. BF16 is a theoretical
+analytic option: the pinned native SGLang runtime requires FP8 KV and defaults
+to FlashMLA for both phases. Its FP8 cache requires
 `attention_backend: flashmla` (656 bytes per sparse-layer latent entry) or
 `attention_backend: trtllm_mla` (576 bytes). Both retain a separate 132-byte
 indexer entry per token per sparse layer; the sparse top-k does not truncate

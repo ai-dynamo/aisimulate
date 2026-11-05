@@ -237,7 +237,7 @@ impl DsaModuleOp {
         }
     }
 
-    fn context_table_backend(&self) -> &'static str {
+    pub(crate) fn context_table_backend(&self) -> &'static str {
         if self.architecture == "KimiK31ForConditionalGeneration" {
             return self.generation_table_backend();
         }
@@ -248,7 +248,7 @@ impl DsaModuleOp {
         }
     }
 
-    fn generation_table_backend(&self) -> &'static str {
+    pub(crate) fn generation_table_backend(&self) -> &'static str {
         if self.architecture == "KimiK31ForConditionalGeneration"
             && self.attention_backend.as_deref() == Some("flashmla")
         {
@@ -258,7 +258,7 @@ impl DsaModuleOp {
         }
     }
 
-    fn validate_kimi_backend(&self) -> Result<(), AicError> {
+    pub(crate) fn validate_kimi_backend(&self) -> Result<(), AicError> {
         if self.architecture != "KimiK31ForConditionalGeneration" {
             return Ok(());
         }
@@ -279,7 +279,7 @@ impl DsaModuleOp {
         }
     }
 
-    fn validate_kimi_geometry(&self) -> Result<(), AicError> {
+    pub(crate) fn validate_kimi_geometry(&self) -> Result<(), AicError> {
         if self.architecture == "KimiK31ForConditionalGeneration"
             && (self.cp_size != 1 || self.dcp_size != 1 || self.full_frac != 1.0)
         {

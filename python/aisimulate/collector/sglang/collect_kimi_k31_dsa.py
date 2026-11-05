@@ -60,8 +60,9 @@ def validate_case(case: ModuleCase) -> int:
         raise ValueError(f"unsupported native Kimi K3.1 case: {case}")
     if case.compute_dtype != "bfloat16" or case.gemm_type != "bfloat16":
         raise ValueError("Kimi K3.1's released attention projections are BF16")
-    if case.kv_cache_dtype not in ("bfloat16", "fp8"):
-        raise ValueError(f"unsupported KV precision {case.kv_cache_dtype}")
+    # afcd arg_groups/overrides.py::_kimi_k31_kv_cache_dtype rejects BF16.
+    if case.kv_cache_dtype != "fp8":
+        raise ValueError(f"native Kimi K3.1 requires FP8 KV; got {case.kv_cache_dtype}")
     if min(case.seq_len, case.batch_size) <= 0 or case.prefix_len < 0:
         raise ValueError(f"invalid workload: {case}")
     if case.seq_len + case.prefix_len > 1048576:
@@ -133,16 +134,27 @@ def perf_item(case: ModuleCase, phase: str, latency: float) -> dict:
     }
 
 
-def executed_kernel_source(backend, phase: str) -> str:
+def executed_kernel_source(backend, pool, phase: str) -> str:
     # HybridLinearAttnBackend delegates full attention to this native member.
     backend = getattr(backend, "full_attn_backend", backend)
+    pool = getattr(pool, "full_kv_pool", pool)
+    packed = pool.dsa_kv_cache_store_fp8
+    cast_on_write = pool.fp8_cast_on_write
+    if packed and pool.kv_cache_dim == 656 and not cast_on_write:
+        layout = "kv_flashmla_packed"
+    elif not packed and pool.kv_cache_dim == 576 and cast_on_write:
+        layout = "kv_raw_fp8"
+    else:
+        raise RuntimeError("native K31 KV pool does not match a supported physical layout")
+    # Dense-prefill kernel choice does not identify the KV write format. Keep
+    # the actual pool identity even when short prefill bypasses sparse reads.
     if phase == "context" and backend.use_mha:
         leaf = "trtllm_ragged" if backend.device_sm_major >= 10 else "fa3"
-        return f"sglang_dsa_dense_mha_{leaf}_eager"
+        return f"sglang_dsa_dense_mha_{leaf}_{layout}_eager"
     leaf = backend.dsa_prefill_impl if phase == "context" else backend.dsa_decode_impl
     if not isinstance(leaf, str) or not leaf:
         raise RuntimeError("native DSA backend did not report its executed implementation")
-    return f"sglang_dsa_indexer_{leaf}_eager"
+    return f"sglang_dsa_indexer_{leaf}_{layout}_eager"
 
 
 def run_kimi_k31_dsa_worker(*args, device="cuda:0", perf_filename=None):
@@ -284,7 +296,7 @@ def _rank_main(rank, server_args, port_args, case_values, phase, output, first_g
         if len(starts) != 10 or len(ends) != 10:
             raise RuntimeError("native serving bypassed the declared attention measurement boundary")
         latency = statistics.median(start.elapsed_time(end) for start, end in zip(starts, ends, strict=True))
-        source = executed_kernel_source(runner.attn_backend, phase)
+        source = executed_kernel_source(runner.attn_backend, runner.token_to_kv_pool, phase)
         # Every rank executes, while the physical key is one local shard. Use
         # the slowest rank's local module duration; TP reduction stays outside.
         duration = torch.tensor(latency, device=f"cuda:{gpu}")
@@ -351,7 +363,7 @@ def main() -> None:
             chunked_prefill_size=max(16384, case.batch_size * full_length),
             context_length=max(full_length, 4096),
             mem_fraction_static=0.8,
-            kv_cache_dtype="fp8_e4m3" if case.kv_cache_dtype == "fp8" else "bf16",
+            kv_cache_dtype="fp8_e4m3",
         )
         server_args.resolve_once()
         _set_envs_and_config(server_args)

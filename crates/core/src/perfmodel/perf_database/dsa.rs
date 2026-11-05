@@ -284,18 +284,34 @@ const KIMI_K31_FLASHMLA_DIMS: DsaDims = DsaDims {
 };
 
 /// Configured-backend bucket(s) a DSA perf row supports — the single home
-/// for the serving rule (Python `_dsa_kernel_source_buckets`), shared by the
-/// query loader and the table view so a kernel rename lands once. BF16-KV
-/// rows back BOTH buckets (one real execution path per shape); FP8 rows
-/// bucket by the executed kernel, legacy names keep the substring rule.
+/// for the serving rule, shared by the query loader and Python table view.
+/// Kimi K3.1 rows identify their physical cache layout independently of the
+/// executed kernel: dense TRT-LLM prefill can read a FlashMLA packed cache.
+/// Legacy BF16 rows back both buckets; legacy FP8 rows retain kernel keying.
 pub(crate) fn dsa_kernel_source_buckets(
     kernel_source: &str,
     kv_quant: &str,
-) -> &'static [&'static str] {
-    if kv_quant == "bfloat16" {
-        return &["trtllm", "flashmla_kv"];
+    architecture: &str,
+) -> Result<&'static [&'static str], AicError> {
+    if architecture == "KimiK31ForConditionalGeneration" {
+        let packed = kernel_source.contains("_kv_flashmla_packed");
+        let raw = kernel_source.contains("_kv_raw_fp8");
+        return match (kv_quant, packed, raw) {
+            ("fp8", true, false) if kernel_source.ends_with("_kv_flashmla_packed_eager") => {
+                Ok(&["flashmla_kv"])
+            }
+            ("fp8", false, true) if kernel_source.ends_with("_kv_raw_fp8_eager") => Ok(&["trtllm"]),
+            _ => Err(AicError::PerfDatabase(format!(
+                "Kimi K3.1 DSA rows require FP8 KV and one explicit native cache-layout \
+                 kernel_source suffix (_kv_flashmla_packed_eager or _kv_raw_fp8_eager); \
+                 got kv_cache_dtype={kv_quant:?}, kernel_source={kernel_source:?}"
+            ))),
+        };
     }
-    match kernel_source {
+    if kv_quant == "bfloat16" {
+        return Ok(&["trtllm", "flashmla_kv"]);
+    }
+    Ok(match kernel_source {
         "sglang_dsa_indexer_trtllm" | "sglang_dsa_skip_indexer_trtllm" => &["trtllm"],
         "sglang_dsa_indexer_flashmla_sparse" | "sglang_dsa_skip_indexer_flashmla_sparse" => {
             &["flashmla_kv"]
@@ -303,7 +319,7 @@ pub(crate) fn dsa_kernel_source_buckets(
         "sglang_dsa_dense_mha_trtllm_ragged" => &["trtllm", "flashmla_kv"],
         ks if ks.contains("trtllm") => &["trtllm"],
         _ => &["flashmla_kv"],
-    }
+    })
 }
 
 pub(crate) fn dsa_dims(architecture: &str) -> &'static DsaDims {
@@ -1327,19 +1343,11 @@ pub(crate) fn load_dsa_parquet(
                 kv_quant: row.str_owned(kv_cache_dtype_col)?,
                 gemm_quant: row.str_owned(gemm_type_col)?,
             };
-            // Configured-backend bucket(s) for the row — mirrors Python
-            // `_dsa_kernel_source_buckets` (operations/dsa.py). The
-            // trtllm/flashmla_kv split is an FP8-KV serving rule; with a BF16
-            // KV cache there is exactly ONE real execution path per shape, so
-            // every bf16 row backs BOTH buckets (a bare substring test split
-            // one measured sweep across the buckets and left the default
-            // query bucket with nothing beyond 2048 tokens). FP8 rows bucket
-            // by executed-kernel name; dense ragged prefill is selected by
-            // SHAPE (isl <= 2048) under either configured backend, so it
-            // backs both. Legacy (pre-0.5.14) names keep the old substring
-            // rule.
+            // The query loader and Python table view share this classifier.
+            // Kimi's cache-layout marker takes precedence over the executed
+            // kernel name; legacy architectures keep their established rules.
             let ks_name = row.str_optional(ks_col)?.unwrap_or("").to_string();
-            let buckets = dsa_kernel_source_buckets(&ks_name, &key.kv_quant);
+            let buckets = dsa_kernel_source_buckets(&ks_name, &key.kv_quant, &key.architecture)?;
             let (step, isl) = if collapse_isl_step_to_seq {
                 // Generation: canonical coordinate is s = isl + step (see fn
                 // doc); same-`s` rows overwrite in file order below.
@@ -1590,6 +1598,70 @@ mod tests {
             select_architecture_backend(&rows, "flashmla_kv", "DeepseekV32ForCausalLM"),
             Some(&7.0)
         );
+    }
+
+    #[test]
+    fn kimi_k31_rows_use_cache_layout_before_executed_kernel() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let architecture = "KimiK31ForConditionalGeneration";
+        let rows = [
+            (
+                "dsa_context_module",
+                "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager",
+                "fp8",
+                1024,
+                7.0,
+            ),
+            (
+                "dsa_context_module",
+                "sglang_dsa_dense_mha_trtllm_ragged_kv_raw_fp8_eager",
+                "fp8",
+                1024,
+                3.0,
+            ),
+        ];
+        for file in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows_for_arch(&tmp.path().join(file), &rows, architecture);
+        }
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let key = DsaKey {
+            architecture: architecture.into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "fp8".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        for (backend, expected) in [("flashmla_kv", 7.0), ("trtllm", 3.0)] {
+            let context = table
+                .context_raw_slice(&key, backend, false)
+                .expect("context slice");
+            let generation = table
+                .generation_raw_slice(&key, backend, false)
+                .expect("decode slice");
+            assert_eq!(context[&128][&0][&1024][&1].latency, expected);
+            assert_eq!(generation[&128][&0][&1024][&1].latency, expected);
+        }
+    }
+
+    #[test]
+    fn kimi_k31_rows_require_unambiguous_fp8_cache_layout() {
+        let architecture = "KimiK31ForConditionalGeneration";
+        for (kv, source) in [
+            ("fp8", "sglang_dsa_dense_mha_trtllm_ragged_eager"),
+            ("fp8", "sglang_dsa_indexer_flashmla_kv_eager"),
+            ("fp8", "sglang_dsa_kv_raw_fp8_kv_flashmla_packed_eager"),
+            (
+                "bfloat16",
+                "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager",
+            ),
+        ] {
+            assert!(matches!(
+                dsa_kernel_source_buckets(source, kv, architecture),
+                Err(AicError::PerfDatabase(_))
+            ));
+        }
     }
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
@@ -2218,6 +2290,14 @@ mod tests {
 
     /// Row tuple: `(op_name, kernel_source, kv_cache_dtype, isl, latency)`.
     fn write_dsa_module_parquet_rows(path: &Path, rows: &[(&str, &str, &str, i64, f64)]) {
+        write_dsa_module_parquet_rows_for_arch(path, rows, "DeepseekV32ForCausalLM");
+    }
+
+    fn write_dsa_module_parquet_rows_for_arch(
+        path: &Path,
+        rows: &[(&str, &str, &str, i64, f64)],
+        architecture: &str,
+    ) {
         use parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type};
         use parquet::file::properties::WriterProperties;
         use parquet::file::writer::SerializedFileWriter;
@@ -2245,9 +2325,7 @@ mod tests {
         let str_cols: [Vec<ByteArray>; 6] = [
             rows.iter().map(|r| ByteArray::from(r.0)).collect(),
             rows.iter().map(|r| ByteArray::from(r.1)).collect(),
-            rows.iter()
-                .map(|_| ByteArray::from("DeepseekV32ForCausalLM"))
-                .collect(),
+            rows.iter().map(|_| ByteArray::from(architecture)).collect(),
             rows.iter().map(|_| ByteArray::from("bfloat16")).collect(),
             rows.iter().map(|r| ByteArray::from(r.2)).collect(),
             rows.iter().map(|_| ByteArray::from("bfloat16")).collect(),

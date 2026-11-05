@@ -29,7 +29,9 @@ extension, decode, and parameter residency.
 
 Top-k limits sparse attention reads, not resident history. Each sparse layer
 keeps its full latent KV history and a separate 132-byte FP8 index entry per
-token. BF16 latent entries occupy 1152 bytes. For FP8 KV, an explicit
+token. The analytic model also permits hypothetical BF16 latent entries of
+1152 bytes; the pinned SGLang runtime rejects BF16 KV, so this mode does not
+claim serving support or measured coverage. For FP8 KV, an explicit
 `flashmla` or `trtllm_mla` attention backend identifies the physical layout:
 FlashMLA uses 656 bytes (FP8 latent, FP32 scales, BF16 RoPE), while TRTLLM
 uses 576 raw FP8 bytes. Index storage is additional in both cases. KDA state
@@ -39,6 +41,14 @@ Initial modeling covers ordinary decoding (`nextn=0`) with CP=1 and DCP=1.
 K3's DSPARK contract does not establish K3.1 speculative support. Automatic
 vLLM physical state-cache sizing also needs a K3.1-specific runtime contract;
 use measured/manual state capacity for that path.
+
+The pinned native runtime requires FP8 KV and defaults both prefill and decode
+to FlashMLA. Its TRTLLM option changes the physical cache format and uses raw
+FP8 values; both phases must use the same layout. Collector rows record the
+observed native pool layout in `kernel_source`, independently of the executed
+attention kernel. In particular, a dense TRTLLM prefill kernel can consume a
+FlashMLA packed cache. Rows with missing or ambiguous K3.1 layout markers are
+rejected instead of being assigned by a kernel-name substring.
 
 Op-based coverage is keyed by the Pro architecture and actual backend. K3,
 DeepSeek, or GLM attention observations do not supply Pro DSA coverage. The
