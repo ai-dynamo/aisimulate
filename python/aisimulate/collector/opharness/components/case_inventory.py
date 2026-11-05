@@ -21,22 +21,21 @@ entry is counted under `removed` with its reason. A loss the growth of
 Output (the probe workspace on the control machine, never committed): results/<sm>/cases/<fw>-<version>.yaml
   _meta : fw / version (the pin under test, a label) / sm / revisions / counts
   ops   : per planned op — cases, by_dtype, by_dispatch, removed {region: cases},
-          plan_hash (the case_plan_hash of a run that attempts every case), and
-          fields: per plan-table column, the value set when small (categorical)
-          or min/max when numeric
-  diff  : regressions / explained / additions against the base plan
+          plan_hash (the case_plan_hash of a run that attempts every case)
+  diff  : regressions / explained / additions against the base plan, case by case: a case
+          of the base plan that the new plan lacks is explained only by a skips.py region
+          of the new plan whose every key=value it carries
 
 Usage (CPU, no framework image):
   python3 case_inventory.py --fw vllm --version 0.33.0 --sm sm90 --base <rev>|none [--ops a,b]
-  python3 case_inventory.py --diff PREV.yaml NEW.yaml
   python3 case_inventory.py --fw vllm --skips [--ops a,b]   # rule-7 recheck skeleton for a pin bump
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
-import hashlib
 import io
 import json
 import subprocess
@@ -52,40 +51,6 @@ HERE = Path(__file__).resolve().parent
 HARNESS = HERE.parent
 COLLECTOR = HARNESS.parent
 PKG_ROOT = COLLECTOR.parent
-CATEGORICAL_MAX = 64
-
-
-def _repr(v) -> str:
-    s = str(v)
-    return s if len(s) <= 200 else hashlib.sha256(s.encode()).hexdigest()[:16]
-
-
-def summarize_cases(cases: list[dict]) -> dict:
-    """Per-column summary of plan-table rows: value sets for categorical columns,
-    ranges for numeric ones."""
-    fields: dict = {}
-    for case in cases:
-        for key, raw in case.items():
-            slot = fields.setdefault(key, {"values": set(), "numeric": True, "min": None, "max": None})
-            try:
-                value = float(raw) if "." in str(raw) else int(raw)
-            except (TypeError, ValueError):
-                value = None
-                slot["numeric"] = False
-            if value is not None:
-                slot["min"] = value if slot["min"] is None else min(slot["min"], value)
-                slot["max"] = value if slot["max"] is None else max(slot["max"], value)
-            if len(slot["values"]) <= CATEGORICAL_MAX:
-                slot["values"].add(_repr(raw))
-    out = {}
-    for key, slot in fields.items():
-        if len(slot["values"]) <= CATEGORICAL_MAX:
-            out[key] = {"kind": "categorical", "values": sorted(slot["values"])}
-        elif slot["numeric"]:
-            out[key] = {"kind": "numeric", "min": slot["min"], "max": slot["max"], "distinct": f">{CATEGORICAL_MAX}"}
-        else:
-            out[key] = {"kind": "wide", "distinct": f">{CATEGORICAL_MAX}"}
-    return out
 
 
 def plan_report(fw: str, sm: str, pkg_root: Path, table_dir: Path, *, python: str, ops: list[str] | None) -> dict:
@@ -96,10 +61,6 @@ def plan_report(fw: str, sm: str, pkg_root: Path, table_dir: Path, *, python: st
     if ops:
         cmd += ["--ops", *ops]
     cp = subprocess.run(cmd, cwd=str(pkg_root), capture_output=True, text=True)
-    if cp.returncode != 0 and "unrecognized arguments: --plan-table" in cp.stderr:
-        # A collector from before the op plans: it lists the planned ops, not their cases.
-        cmd = cmd[: cmd.index("--plan-table")] + cmd[cmd.index("--plan-table") + 2 :]
-        cp = subprocess.run(cmd, cwd=str(pkg_root), capture_output=True, text=True)
     if cp.returncode != 0:
         raise SystemExit(f"--plan-only failed at {pkg_root} (exit {cp.returncode}):\n{cp.stderr[-2000:]}")
     start = cp.stdout.find("{")
@@ -107,11 +68,9 @@ def plan_report(fw: str, sm: str, pkg_root: Path, table_dir: Path, *, python: st
 
 
 def build_inventory(report: dict) -> dict:
-    """The per-op plan record from a --plan-only report and the tables it wrote."""
+    """The per-op plan record from a --plan-only report."""
     ops = {}
     for op, plan in (report.get("plans") or {}).items():
-        table = Path(plan["table"]) if plan.get("table") else None
-        rows = list(csv.DictReader(table.open(newline=""))) if table and table.exists() else []
         ops[op] = {
             "cases": plan.get("cases"),
             "by_dtype": plan.get("by_dtype") or {},
@@ -119,54 +78,138 @@ def build_inventory(report: dict) -> dict:
             "removed": {r["region"]: r["cases"] for r in plan.get("removed") or []},
             "removed_runs": {r["region"]: r["cases"] for r in plan.get("removed_runs") or []},
             "plan_hash": plan.get("plan_hash"),
-            "fields": summarize_cases(rows),
         }
     for op in report.get("ops") or []:
         ops.setdefault(op, {"cases": None, "note": "no op plan: the collector builds its own population (moe_a2a)"})
     return ops
 
 
-def diff_inventories(prev: dict, new: dict) -> dict:
-    """Regressions = an op that left the plan, or cases and categorical values that
-    left it without a collector/skips.py entry accounting for them. Additions and
-    explained losses are reported but never fail."""
+def read_tables(report: dict) -> dict:
+    """op -> (header, rows) of the case tables a --plan-only --plan-table report wrote."""
+    tables = {}
+    for op, plan in (report.get("plans") or {}).items():
+        path = Path(plan["table"]) if plan.get("table") else None
+        if path and path.exists():
+            with path.open(newline="") as fh:
+                rows = list(csv.reader(fh))
+            tables[op] = (rows[0], rows[1:]) if rows else ([], [])
+    return tables
+
+
+def _pairs(region: str) -> list[tuple[str, str]]:
+    """``"dispatch=a,kv_cache_dtype=fp8"`` -> [("dispatch", "a"), ("kv_cache_dtype", "fp8")]; a piece
+    without ``=`` continues the previous value (a value holding a comma)."""
+    pairs: list[list[str]] = []
+    for piece in region.split(","):
+        key, sep, value = piece.partition("=")
+        if sep and key.isidentifier():
+            pairs.append([key, value])
+        elif pairs:
+            pairs[-1][1] += "," + piece
+    return [(k, v) for k, v in pairs]
+
+
+def _region_holds(pairs: list[tuple[str, str]], case: dict) -> bool:
+    """Does a skips.py region (skips._first_match: the entry's key=value pairs on a case) name
+    this case? ``dtype`` is one of the case's dtype fields; ``op=`` names the whole op."""
+    for key, value in pairs:
+        if key == "op":
+            continue
+        if key == "dtype":
+            if value not in case.values():
+                return False
+        elif case.get(key) != value:
+            return False
+    return True
+
+
+def _sweep(value: str) -> frozenset | None:
+    """A sweep field's values (``"(1, 2, 4)"``), or None for a scalar."""
+    if not (value.startswith("(") or value.startswith("[")):
+        return None
+    try:
+        parsed = ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return None
+    return frozenset(parsed) if isinstance(parsed, (tuple, list)) else None
+
+
+def _widened(lost: set, after: set) -> set:
+    """The lost cases a new case still covers: the same scalar fields, and every sweep field
+    of the new case a superset of the old one (a sweep that gained points)."""
+    by_scalars: dict[tuple, list[tuple]] = {}
+    for case in after:
+        sweeps = tuple(_sweep(v) for v in case)
+        if any(sweeps):
+            key = tuple(v for v, w in zip(case, sweeps, strict=True) if w is None)
+            by_scalars.setdefault(key, []).append(sweeps)
+    covered = set()
+    for case in lost:
+        sweeps = tuple(_sweep(v) for v in case)
+        if not any(sweeps):
+            continue
+        key = tuple(v for v, w in zip(case, sweeps, strict=True) if w is None)
+        if any(all(w is None or w <= nw for w, nw in zip(sweeps, new, strict=True)) for new in by_scalars.get(key, [])):
+            covered.add(case)
+    return covered
+
+
+def diff_plans(prev_ops: dict, new_ops: dict, prev_tables: dict, new_tables: dict) -> dict:
+    """Regressions = an op that left the plan, or a case of the base plan that the new plan
+    lacks and no skips.py region of the new plan names. Cases are compared on the columns
+    both tables share, without the dispatch (a case moving to another kernel is not a loss).
+    A sweep field (a tuple such as moe ``num_tokens``) may gain points: the old case is still
+    covered. Model entries (``model=``) remove whole model rows and are credited by count.
+    Additions and explained losses are reported but never fail, and never offset a loss."""
     regressions, explained, additions = [], [], []
-    pops, nops = prev.get("ops") or {}, new.get("ops") or {}
-    for op, p in pops.items():
-        n = nops.get(op)
+    for op, p in prev_ops.items():
+        n = new_ops.get(op)
         if n is None:
             regressions.append(f"{op}: op left the plan")
             continue
-        if p.get("cases") is None or n.get("cases") is None:
+        if op not in prev_tables or op not in new_tables:
+            continue  # no op plan (moe_a2a): nothing to compare case by case
+        (ph, prows), (nh, nrows) = prev_tables[op], new_tables[op]
+        shared = [c for c in ph if c in nh and c != "dispatch"]
+        pi, ni = [ph.index(c) for c in shared], [nh.index(c) for c in shared]
+        before = {tuple(r[i] for i in pi) for r in prows}
+        after = {tuple(r[i] for i in ni) for r in nrows}
+        lost, added = before - after, after - before
+        widened = _widened(lost, after)
+        lost -= widened
+        if widened:
+            additions.append(f"{op}: {len(widened)} cases whose sweep gained points")
+        if len(added) > len(widened):
+            additions.append(f"{op}: +{len(added) - len(widened)} cases")
+        if not lost:
             continue
-        grown = {
-            region: count - (p.get("removed") or {}).get(region, 0)
-            for region, count in (n.get("removed") or {}).items()
-            if count > (p.get("removed") or {}).get(region, 0)
-        }
-        lost = p["cases"] - n["cases"]
-        if lost > 0:
-            if sum(grown.values()) >= lost:
-                explained.append(f"{op}: cases {p['cases']} -> {n['cases']}, skips.py {sorted(grown)}")
+        regions = [(region, _pairs(region)) for region in n.get("removed") or {} if not region.startswith("model=")]
+        by_region: dict[str, int] = {}
+        unexplained = []
+        for case in sorted(lost):
+            fields = dict(zip(shared, case, strict=True))
+            region = next((r for r, pairs in regions if _region_holds(pairs, fields)), None)
+            if region is None:
+                unexplained.append(fields)
             else:
-                regressions.append(f"{op}: cases {p['cases']} -> {n['cases']} ({sum(grown.values())} under skips.py)")
-        elif lost < 0:
-            additions.append(f"{op}: cases {p['cases']} -> {n['cases']}")
-        for field, pf in (p.get("fields") or {}).items():
-            nf = (n.get("fields") or {}).get(field)
-            if pf.get("kind") != "categorical" or nf is None or nf.get("kind") != "categorical":
-                continue
-            gone = sorted(set(pf.get("values") or []) - set(nf.get("values") or []))
-            if not gone:
-                continue
-            accounted = [v for v in gone if any(f"{field}={v}" in region or v in region for region in grown)]
-            if accounted:
-                explained.append(f"{op}[{field}] lost {accounted[:4]} under skips.py")
-            rest = [v for v in gone if v not in accounted]
-            if rest:
-                regressions.append(f"{op}[{field}] lost values {rest[:6]}")
-    for op, n in nops.items():
-        if op not in pops:
+                by_region[region] = by_region.get(region, 0) + 1
+        model_growth = sum(
+            max(0, count - (p.get("removed") or {}).get(region, 0))
+            for region, count in (n.get("removed") or {}).items()
+            if region.startswith("model=")
+        )
+        credited = min(model_growth, len(unexplained))
+        if credited:
+            by_region["model entries"] = credited
+            unexplained = unexplained[credited:]
+        if by_region:
+            explained.append(f"{op}: {sum(by_region.values())} cases left under skips.py {sorted(by_region)}")
+        if unexplained:
+            regressions.append(
+                f"{op}: {len(unexplained)} cases left the plan without a skips.py entry, e.g. {unexplained[0]}"
+            )
+    for op, n in new_ops.items():
+        if op not in prev_ops:
             additions.append(f"{op}: new op ({n.get('cases')} cases)")
     return {"regressions": regressions, "explained": explained, "additions": additions}
 
@@ -244,20 +287,12 @@ def main() -> int:
     )
     ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--diff", nargs=2, metavar=("PREV", "NEW"), help="diff two inventory files and exit")
     ap.add_argument(
         "--skips",
         action="store_true",
         help="print the recheck-record skeleton of the collector/skips.py entries in scope for --fw and exit",
     )
-    ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
-
-    if args.diff:
-        prev, new = (yaml.safe_load(Path(p).read_text()) for p in args.diff)
-        d = diff_inventories(prev, new)
-        print(json.dumps(d, indent=1) if args.json else _format_diff(d))
-        return 0 if not d["regressions"] else 1
 
     if args.skips:
         if not args.fw:
@@ -267,7 +302,7 @@ def main() -> int:
         print(yaml.safe_dump({"skips": items}, sort_keys=False, allow_unicode=True, width=200))
         return 0
     if not (args.fw and args.version and args.sm and args.base):
-        ap.error("--fw --version --sm --base are required (or --diff PREV NEW)")
+        ap.error("--fw --version --sm --base are required")
     ops = args.ops.split(",") if args.ops else None
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -289,7 +324,9 @@ def main() -> int:
             base_root = extract_collector(args.base, tmp / "base")
             base_report = plan_report(args.fw, args.sm, base_root, tmp / "old", python=args.python, ops=ops)
             doc["_meta"]["base"] = {"rev": args.base, "commit": _git("rev-parse", "--short", args.base)}
-            doc["diff"] = diff_inventories({"ops": build_inventory(base_report)}, doc)
+            doc["diff"] = diff_plans(
+                build_inventory(base_report), doc["ops"], read_tables(base_report), read_tables(report)
+            )
     out = Path(args.out) if args.out else inventory_path(args.sm, args.fw, args.version)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))

@@ -25,15 +25,7 @@ def ci():
     return mod
 
 
-def test_summarize_cases_separates_categorical_from_shape_columns(ci):
-    rows = [{"seq_len": str(n), "dtype": "bf16" if n % 2 else "fp8", "model_path": "m"} for n in range(200)]
-    f = ci.summarize_cases(rows)
-    assert f["seq_len"] == {"kind": "numeric", "min": 0, "max": 199, "distinct": ">64"}
-    assert f["dtype"] == {"kind": "categorical", "values": ["bf16", "fp8"]}
-    assert f["model_path"]["values"] == ["m"]
-
-
-def test_build_inventory_reads_the_plan_report_and_its_table(ci, tmp_path):
+def test_build_inventory_and_tables_read_the_plan_report(ci, tmp_path):
     table = tmp_path / "vllm_sm90_moe.csv"
     with table.open("w", newline="") as fh:
         writer = csv.writer(fh)
@@ -53,67 +45,82 @@ def test_build_inventory_reads_the_plan_report_and_its_table(ci, tmp_path):
     }
     ops = ci.build_inventory(report)
     assert ops["moe"]["removed"] == {"dtype=nvfp4": 5} and ops["moe"]["plan_hash"] == "sha256:x"
-    assert ops["moe"]["fields"]["moe_type"]["values"] == ["bfloat16", "fp8"]
     assert ops["moe_a2a"]["cases"] is None and "no op plan" in ops["moe_a2a"]["note"]
+    assert ci.read_tables(report) == {"moe": (["moe_type", "num_tokens"], [["fp8", "1"], ["bfloat16", "2"]])}
 
 
-def _inv(ops):
-    return {"_meta": {"framework": "sglang", "version": "x"}, "ops": ops}
+H = ["tp_size", "kv_cache_dtype", "seq_len"]
 
 
-def test_diff_fails_losses_no_skips_entry_accounts_for(ci):
-    cat = {"kind": "categorical"}
-    prev = _inv(
-        {
-            "dsv4_paged_mqa_logits_module": {"cases": 22, "removed": {}, "fields": {}},
-            "dsv4_csa_topk_calib": {
-                "cases": 22,
-                "removed": {},
-                "fields": {"model_path": {**cat, "values": ["Flash", "Pro"]}},
-            },
-            "gemm": {"cases": 100, "removed": {}, "fields": {"n": {"kind": "numeric", "min": 1, "max": 9}}},
-        }
-    )
-    new = _inv(
-        {
-            "dsv4_csa_topk_calib": {"cases": 11, "removed": {}, "fields": {"model_path": {**cat, "values": ["Flash"]}}},
-            "gemm": {"cases": 120, "removed": {}, "fields": {"n": {"kind": "numeric", "min": 1, "max": 12}}},
-            "new_op": {"cases": 5, "removed": {}, "fields": {}},
-        }
-    )
-    d = ci.diff_inventories(prev, new)
-    assert "dsv4_paged_mqa_logits_module: op left the plan" in d["regressions"]
-    assert any("topk_calib: cases 22 -> 11 (0 under skips.py)" in r for r in d["regressions"])
-    assert any("topk_calib[model_path] lost values ['Pro']" in r for r in d["regressions"])
-    assert d["additions"] == ["gemm: cases 100 -> 120", "new_op: new op (5 cases)"]
-    # numeric range changes are never regressions (shape grids move; the SDK interpolates)
-    assert not any("gemm" in r for r in d["regressions"])
+def _rows(tps=("1", "8"), kvs=("bfloat16", "fp8"), seqs=("1", "16")):
+    return [[t, k, q] for t in tps for k in kvs for q in seqs]
 
 
-def test_diff_explains_losses_under_a_new_skips_entry(ci):
-    prev = _inv(
-        {"moe": {"cases": 10, "removed": {}, "fields": {"dtype": {"kind": "categorical", "values": ["fp8", "nvfp4"]}}}}
-    )
-    new = _inv(
-        {
-            "moe": {
-                "cases": 6,
-                "removed": {"dtype=nvfp4": 4},
-                "fields": {"dtype": {"kind": "categorical", "values": ["fp8"]}},
-            }
-        }
-    )
-    d = ci.diff_inventories(prev, new)
-    assert d["regressions"] == []
-    assert d["explained"] == [
-        "moe: cases 10 -> 6, skips.py ['dtype=nvfp4']",
-        "moe[dtype] lost ['nvfp4'] under skips.py",
+def _diff(ci, prev_rows, new_rows, new_removed=None, prev_removed=None, header=H, new_header=None):
+    prev = {"attn": {"cases": len(prev_rows), "removed": prev_removed or {}}}
+    new = {"attn": {"cases": len(new_rows), "removed": new_removed or {}}}
+    return ci.diff_plans(prev, new, {"attn": (header, prev_rows)}, {"attn": (new_header or header, new_rows)})
+
+
+def test_a_lost_value_is_not_explained_by_a_region_that_merely_contains_it(ci):
+    """A bug drops every tp_size=8 case while an unrelated skip removes fp8-KV cases: the
+    substring rule credited '8' to 'kv_cache_dtype=fp8'; each lost case must carry the region."""
+    new = [r for r in _rows(tps=("1",)) if r[1] != "fp8"]
+    d = _diff(ci, _rows(), new, {"kv_cache_dtype=fp8": 4})
+    # the fp8-KV cases (tp 1 and 8) carry the region; the tp_size=8 bf16 cases do not
+    assert d["explained"] == ["attn: 4 cases left under skips.py ['kv_cache_dtype=fp8']"]
+    (reg,) = d["regressions"]
+    assert reg.startswith("attn: 2 cases left the plan without a skips.py entry")
+    assert "'tp_size': '8', 'kv_cache_dtype': 'bfloat16'" in reg
+
+
+def test_a_region_must_match_every_pair_exactly(ci):
+    # seq_len=1 names seq_len 1, never 16; dtype=<v> names a case carrying v in any dtype field
+    new = [r for r in _rows() if r[2] != "1"]
+    assert _diff(ci, _rows(), new, {"seq_len=1": 4})["regressions"] == []
+    new = [r for r in _rows() if r[2] != "16"]
+    assert _diff(ci, _rows(), new, {"seq_len=1": 4})["regressions"]
+    new = [r for r in _rows() if r[1] != "fp8"]
+    assert _diff(ci, _rows(), new, {"dtype=fp8": 4})["regressions"] == []
+
+
+def test_additions_never_offset_a_loss(ci):
+    new = [r for r in _rows() if r[0] != "8"] + [
+        ["4", "bfloat16", "1"],
+        ["4", "fp8", "1"],
+        ["4", "fp8", "16"],
+        ["4", "bfloat16", "16"],
     ]
+    d = _diff(ci, _rows(), new)
+    assert d["additions"] == ["attn: +4 cases"] and d["regressions"]
 
 
-def test_ops_without_an_op_plan_are_not_diffed(ci):
-    d = ci.diff_inventories(_inv({"moe_a2a": {"cases": None}}), _inv({"moe_a2a": {"cases": None}}))
+def test_a_sweep_that_gains_points_still_covers_the_old_case(ci):
+    """moe num_tokens gained 32768 and 65536 (a widened sweep, not a loss); a sweep that drops a
+    point loses the case."""
+    h = ["moe_type", "num_tokens"]
+    prev = [["fp8", "(1, 2, 4)"], ["bf16", "(1, 2, 4)"]]
+    d = _diff(ci, prev, [["fp8", "(1, 2, 4, 32768)"], ["bf16", "(1, 2, 4, 32768)"]], header=h)
+    assert d["regressions"] == [] and d["additions"] == ["attn: 2 cases whose sweep gained points"]
+    d = _diff(ci, prev, [["fp8", "(1, 4)"], ["bf16", "(1, 2, 4)"]], header=h)
+    assert len(d["regressions"]) == 1 and "'moe_type': 'fp8'" in d["regressions"][0]
+
+
+def test_cases_compare_on_shared_columns_without_the_dispatch(ci):
+    new = [[*r, "flashinfer"] for r in _rows()]
+    d = _diff(ci, [[*r, "fa3"] for r in _rows()], new, header=[*H, "dispatch"])
     assert d == {"regressions": [], "explained": [], "additions": []}
+    d = _diff(ci, _rows(), [[*r, "x"] for r in _rows()], new_header=[*H, "new_field"])
+    assert d == {"regressions": [], "explained": [], "additions": []}
+
+
+def test_model_entries_are_credited_by_count_and_lost_ops_are_regressions(ci):
+    new = [r for r in _rows() if r[0] != "8"]
+    d = _diff(ci, _rows(), new, {"model=DeepseekV4ForCausalLM": 4})
+    assert d["regressions"] == [] and d["explained"] == ["attn: 4 cases left under skips.py ['model entries']"]
+    d = ci.diff_plans({"paged": {"cases": 2}}, {}, {}, {})
+    assert d["regressions"] == ["paged: op left the plan"]
+    assert ci.diff_plans({"a2a": {"cases": None}}, {"a2a": {"cases": None}}, {}, {})["regressions"] == []
 
 
 def test_the_base_extract_carries_every_plan_input(ci):
