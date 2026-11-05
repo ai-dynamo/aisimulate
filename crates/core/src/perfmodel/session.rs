@@ -59,32 +59,27 @@ impl OpQueryCache {
         self.results.lock().map_or(0, |results| results.len())
     }
 
-    /// The entry key of the op at `index` of `list` with `field` at `value`.
-    fn key(list: OpList, index: usize, value: u32) -> Option<u64> {
-        let index = u32::try_from(index).ok().filter(|index| *index < 1 << 31)?;
-        Some((list as u64) << 63 | u64::from(index) << 32 | u64::from(value))
+    /// The entry key of the op at `index` of `list` with its field at `value`.
+    fn key(list: OpList, index: usize, value: u32) -> u64 {
+        debug_assert!(index < 1 << 31, "op index {index}");
+        (list as u64) << 63 | (index as u64) << 32 | u64::from(value)
     }
 
-    /// `op`'s result at `ctx`, where `op` is the op at `index` of `list`:
-    /// `query`'s result, or the one an earlier walk stored for the same value
-    /// of the field it reads.
+    /// The result at `ctx` of the op at `index` of `list`: `query`'s, or the
+    /// one an earlier walk stored for the same value of the field it reads.
     pub(crate) fn query(
         &self,
         db: &PerfDatabase,
         list: OpList,
         index: usize,
-        op: &Op,
         ctx: &RuntimeContext,
         query: impl FnOnce() -> Result<PerformanceResult, AicError>,
     ) -> Result<PerformanceResult, AicError> {
         let Some(field) = self.fields[list as usize].get(index).copied().flatten() else {
             return query();
         };
-        debug_assert_eq!(op.memo_field(), Some(field), "op {index} of {list:?}");
         let value = field.of(ctx);
-        let Some(key) = Self::key(list, index, value) else {
-            return query();
-        };
+        let key = Self::key(list, index, value);
         let cached = self
             .results
             .lock()
@@ -131,7 +126,7 @@ fn shared_query(
     ctx: &RuntimeContext,
 ) -> Result<PerformanceResult, AicError> {
     match cache {
-        Some(cache) => cache.query(db, list, index, op, ctx, || op.query(db, ctx)),
+        Some(cache) => cache.query(db, list, index, ctx, || op.query(db, ctx)),
         None => op.query(db, ctx),
     }
 }

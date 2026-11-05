@@ -5611,7 +5611,10 @@ pub(crate) mod tests {
     #[test]
     fn single_field_ops_price_by_their_field_alone() {
         use crate::operators::op::MemoField;
+        use crate::operators::{FallbackOp, OverlapOp};
         let engine = build_engine(None);
+        let silicon: &PerfDatabase = engine.database();
+        let sol = silicon.sol_full_view();
         let base = RuntimeContext {
             batch_size: 2,
             beam_width: 1,
@@ -5645,41 +5648,60 @@ pub(crate) mod tests {
                 num_image_tokens: 3,
             },
         };
-        let ops = || engine.context_ops.iter().chain(&engine.generation_ops);
-        let attention = ops().find(|op| op.memo_field().is_none()).unwrap().clone();
-        let leaves: Vec<Op> = ops()
-            .filter(|op| op.memo_field().is_some())
-            .cloned()
-            .collect();
-        // The fixture's GEMM and elementwise ops.
-        assert!(leaves.len() >= 2, "{}", leaves.len());
-        // Composites of them read their field too; one with attention reads
-        // several.
-        let overlap = Op::Overlap(crate::operators::OverlapOp::new(
+        // One sample of every op variant. Its overlap and fallback hold MLA
+        // attention, so they read several fields.
+        let samples = crate::perfmodel::engine::spec::tests::all_op_variants();
+        let sample = |pick: fn(&Op) -> bool| samples.iter().find(|op| pick(op)).unwrap().clone();
+        for op in samples
+            .iter()
+            .filter(|op| matches!(op, Op::Overlap(_) | Op::Fallback(_)))
+        {
+            assert_eq!(op.memo_field(), None, "{}", op.name());
+        }
+        // Composites of token-count ops read the token count; one that also
+        // holds a batch-size op reads two fields.
+        let moe = vec![
+            sample(|op| matches!(op, Op::Gemm(_))),
+            sample(|op| matches!(op, Op::Moe(_))),
+            sample(|op| matches!(op, Op::MoeDispatch(_))),
+            sample(|op| matches!(op, Op::Nccl(_))),
+        ];
+        let overlap = Op::Overlap(OverlapOp::new(
             "overlap",
-            leaves[..1].to_vec(),
-            leaves[1..].to_vec(),
+            moe[..1].to_vec(),
+            moe[1..].to_vec(),
         ));
-        let fallback = Op::Fallback(crate::operators::FallbackOp::new(
+        let fallback = Op::Fallback(FallbackOp::new(
             "fallback",
-            leaves[0].clone(),
-            leaves[1..].to_vec(),
+            moe[0].clone(),
+            moe[1..].to_vec(),
         ));
-        let mixed = Op::Overlap(crate::operators::OverlapOp::new(
+        let mixed = Op::Overlap(OverlapOp::new(
             "mixed",
-            leaves.clone(),
-            vec![attention],
+            moe.clone(),
+            vec![sample(|op| matches!(op, Op::MlaBmm(_)))],
         ));
         assert_eq!(mixed.memo_field(), None);
-        for op in leaves.iter().chain([&overlap, &fallback]) {
-            let field = op.memo_field().unwrap();
+        for op in samples.iter().chain([&overlap, &fallback]) {
+            let Some(field) = op.memo_field() else {
+                continue;
+            };
             assert_eq!(field.of(&other(field)), field.of(&base));
-            assert_eq!(
-                op.query(engine.database(), &base).unwrap(),
-                op.query(engine.database(), &other(field)).unwrap(),
-                "{}",
-                op.name()
-            );
+            // Results, errors included, match in each mode, and at least one
+            // mode prices the op.
+            let mut priced = false;
+            for db in [silicon, &sol] {
+                let at_base = op.query(db, &base);
+                let at_other = op.query(db, &other(field));
+                assert_eq!(
+                    format!("{at_base:?}"),
+                    format!("{at_other:?}"),
+                    "{}",
+                    op.name()
+                );
+                priced |= at_base.is_ok();
+            }
+            assert!(priced, "{} prices in neither mode", op.name());
         }
     }
 
@@ -5723,37 +5745,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn op_cache_notes_the_provenance_its_lookups_fired() {
+    fn op_cache_hits_note_the_tier_their_miss_fired() {
+        use crate::session::OpList;
         let engine = build_engine(None);
-        let mut cold = build_engine(None);
-        let first = rank_fpm(2, 1024, 256, 0, 0);
-        let second = rank_fpm(2, 1024, 4096, 0, 0);
-        engine
-            .price_rank(&first, Some(RankDetail::Values), None)
-            .unwrap();
-        // `second` reuses `first`'s cached ops: it notes the tiers a cold
-        // dispatch fires, and keeps an earlier worse tier.
-        for metrics in [&first, &second] {
-            cold.op_cache = OnceLock::new();
-            cold.reset_provenance();
-            cold.price_rank(metrics, Some(RankDetail::Values), None)
-                .unwrap();
-            let fired = cold.database().worst_provenance();
-            engine.reset_provenance();
-            engine
-                .price_rank(metrics, Some(RankDetail::Values), None)
-                .unwrap();
-            assert_eq!(engine.database().worst_provenance(), fired);
-            engine.reset_provenance();
-            engine.database().note_provenance(ProvenanceTier::XQuant);
-            engine
-                .price_rank(metrics, Some(RankDetail::Values), None)
-                .unwrap();
-            assert_eq!(
-                engine.database().worst_provenance(),
-                fired.max(ProvenanceTier::XQuant)
-            );
-        }
+        let db = engine.database();
+        let cache = OpQueryCache::new(16, &engine.context_ops, &engine.generation_ops);
+        // The fixture's leading rmsnorm reads only the token count.
+        let op = &engine.context_ops[0];
+        assert!(op.memo_field().is_some());
+        let ctx = context_op_runtime(op, 1, 512, 0, 1.0, None);
+        let result = op.query(db, &ctx).unwrap();
+        db.reset_provenance();
+        // A miss keeps the caller's tier and stores only the one it fired.
+        db.note_provenance(ProvenanceTier::XQuant);
+        let miss = cache.query(db, OpList::Context, 0, &ctx, || {
+            db.note_provenance(ProvenanceTier::XShape);
+            Ok(result.clone())
+        });
+        assert_eq!(miss.unwrap(), result);
+        assert_eq!(db.take_provenance(), ProvenanceTier::XQuant);
+        // A hit notes that stored tier although its query, which debug builds
+        // re-run, fires none.
+        let hit = cache.query(db, OpList::Context, 0, &ctx, || Ok(result.clone()));
+        assert_eq!(hit.unwrap(), result);
+        assert_eq!(db.take_provenance(), ProvenanceTier::XShape);
     }
 
     #[test]
