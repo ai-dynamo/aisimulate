@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Import-surface smoke tests for the three sglang collector modules
-(AIC-1762 Task 4c/4d follow-up, 2026-08-18).
+(AIC-1762 Task 4c/4d follow-up).
 
 First real-GPU 0.5.17 run: ``collect_moe.py`` died at MODULE IMPORT on every
 system with ``AttributeError: module 'sglang.srt.server_args' has no
@@ -53,7 +53,7 @@ def _build_module_tree(specs: dict[str, dict]) -> dict[str, types.ModuleType]:
     """Build a strict fake module tree: every dotted path in `specs`, plus
     every implied parent prefix, becomes a plain ``types.ModuleType``
     (raises ``AttributeError`` on anything not explicitly set below).
-    Verified empirically (2026-08-18) that pure ``sys.modules`` injection --
+    Verified empirically that pure ``sys.modules`` injection --
     no ``__path__``, no parent-attribute wiring -- is sufficient for both
     ``import a.b.c as x`` and ``from a.b.c import y`` to resolve.
     """
@@ -161,7 +161,7 @@ _MOE_COMMON_SURFACE = {
 # sglang.srt.server_args: 0.5.14 has a bare `_global_server_args` module
 # global; 0.5.17 replaces it with get_global_server_args()/
 # set_global_server_args_for_scheduler()/ServerArgs (server_args.py:
-# 9294-9316 @0.5.17) and drops the bare global entirely.
+# 9294-9316) and drops the bare global entirely.
 # sglang.srt.runtime_context: 0.5.14's 227-line file exposes only
 # get_context/get_parallel (no _server_args slot on the RuntimeContext it
 # returns -- confirmed by reading the whole file, not just grepping, after

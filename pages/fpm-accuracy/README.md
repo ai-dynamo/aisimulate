@@ -186,7 +186,15 @@ and small workloads can differ from the requested ratio. Model, GPU, framework,
 workload, metric, scenario, ratio, and configuration selections persist in the URL.
 Costs cover all workloads even when the metric filter selects one workload.
 
-Public assets use `fpm-scenarios-v13`. Strict C has zero offline inputs and admits
+New public assets use `fpm-scenarios-v14`. Publication and the viewer also support
+historical `fpm-scenarios-v13` results; publication validates each version against
+its own protocol metadata. For A/A+C, Gym seed preparation consumes the native
+loader's effective targets for `fake_fallback` rows and records source hashes and
+replacement counts in affected results. Offline spline seeds use canonical feature
+ordering followed by a fixed shuffle independently for each worker. These v14
+normalization and ordering declarations do not apply to historical v13 results.
+
+Strict C has zero offline inputs and admits
 only the first scored observation at or after each five-second event-time tick,
 including during cold-start warmup. The first tick is five seconds after the first
 scored timestamp. Prediction and scoring always precede the update. Intervening

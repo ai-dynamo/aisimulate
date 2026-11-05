@@ -17,7 +17,11 @@ description: >
 
 model_case_values:
   mla_module:
-    - model_path: deepseek-ai/DeepSeek-V3.2
+    # The NVFP4 checkpoint keeps o_proj in NVFP4, so its DSA module runs NVFP4
+    # projections; the FP8 checkpoint runs block-FP8 ones.
+    - model_paths:
+        - deepseek-ai/DeepSeek-V3.2
+        - nvidia/DeepSeek-V3.2-NVFP4
       attention_type: dsa
       native_num_heads: 128
       # Real tensor-parallel shards (case_authoring model-correlated narrowing):

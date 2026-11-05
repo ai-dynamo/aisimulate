@@ -133,6 +133,92 @@ trace that has the deployment's prefix structure. On this stack, later turns of 
 `synthetic-session` do not yet include the earlier turns, so synthetic sessions reuse only their
 `session.shared_prefix_ratio` group prefixes, and independent synthetic requests reuse none.
 
+## Simulate KVCR peer reuse
+
+Use this example to compare private G2 host offload with and without
+[KVCR peer fetch](engine/kv-cache.md#kvcr-peer-fetch). It models two vLLM workers
+serving Qwen3-32B-FP8 on B200, with KV-aware routing and a Mooncake trace.
+The simulation runs on the CPU; no GPU or model weights are required. The first
+run may download model metadata from Hugging Face.
+
+### Check the Dynamo version
+
+Use Linux with Python 3.12 and a compatible AISimulate/Dynamo environment
+following the [installation guide](../getting-started/installation.md#optional-dynamo-integration).
+The Dynamo Python adapter **and native runtime** must include
+[Dynamo #17856](https://github.com/ai-dynamo/dynamo/pull/17856), which supplies
+router fetch hints. The older validated pair in the installation guide predates
+this change. Installing that pair is not enough for this example.
+
+Validation used Dynamo source commit
+`147b78a8aa6ffc8d11baa06c1f589bbfa46b7523` with its pinned
+`aisimulate==0.13.0.dev202610290000000087`. Use matching artifacts containing
+the change, or build Dynamo's Python package and runtime from that revision
+using its [source-build guide](https://github.com/ai-dynamo/dynamo/blob/147b78a8aa6ffc8d11baa06c1f589bbfa46b7523/docs/fern/pages/developer-guide/advanced-customizations/building-from-source.md).
+Include the `ais-forward-pass` feature when building the native Python bindings
+(for example, `maturin develop --uv --features ais-forward-pass` from
+`lib/bindings/python` after preparing the build dependencies).
+Keep this environment separate from a current AISim source installation, and
+run `python -m pip check` before continuing. The tested November 3 public
+nightly completed requests but produced no peer pulls; a successful exit alone
+does not verify KVCR.
+
+### Download the trace and run
+
+From the AISim repository root, download the 1,000-request fixture from a pinned
+Dynamo revision. The download is about 183 KiB; the existing 16-request tiny
+fixture does not trigger peer pulls with this configuration.
+
+```bash
+curl --fail --location --output mooncake_trace_1000.jsonl \
+  https://raw.githubusercontent.com/ai-dynamo/dynamo/280df2a1e4166917a293f3c50d28e54b3ab348ab/lib/bench/testdata/mooncake_trace_1000.jsonl
+
+aisimulate predict --stack dynamo \
+  --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-on
+
+aisimulate predict --stack dynamo \
+  --config examples/cli/dynamo-kvcr-predict.yaml --output-dir kvcr-off \
+  --set engine.workers.aggregated.kv_cache.kvcr=null
+```
+
+Keep this working directory: the trace path in the
+[complete YAML](../../examples/cli/dynamo-kvcr-predict.yaml) is relative to it.
+For reruns, choose new output directories or pass `--overwrite`.
+The off run retains G2 and the same routing settings; it disables only KVCR.
+
+Each worker has private G2 (`host_offload.scope: dp_rank_local`). With
+`router.policy: kv_router` and positive `overlap_score_credit`, the Dynamo
+adapter can provide a fetch hint when another worker holds a reusable prefix.
+`--stack dynamo` is required: the engine-only CLI does not generate these hints.
+The capacity and transfer settings are explicit modeling assumptions, not
+measured hardware parameters.
+
+### Verify peer pulls
+
+Inspect the summaries with `jq`:
+
+```bash
+jq '.summary | {completed_requests, kvcr, mean_ttft_ms}' kvcr-on/prediction.json
+jq '.summary | {completed_requests, kvcr, mean_ttft_ms}' kvcr-off/prediction.json
+
+jq -e '.summary | .completed_requests == 1000 and
+  (((.kvcr.pulls.success // 0) + (.kvcr.pulls.partial // 0)) > 0) and
+  (.kvcr.loaded_blocks > 0)' kvcr-on/prediction.json
+```
+
+Both runs should complete 1,000 requests. The enabled run should report landed
+peer pulls and loaded blocks; the disabled run may omit `kvcr` entirely.
+Exact counts can change with routing or engine versions. See the
+[validation record](../../benchmarks/evidence/kvcr-quickstart-20261104.md)
+for the tested versions and results. This is a functional example, not a
+GPU-validated performance claim.
+
+If all counters are zero, first check that both Dynamo packages contain the
+router-hint change and that the command selects `--stack dynamo`. Then check
+the trace and the YAML's worker count, private G2, and router settings. Repeated
+prefixes alone do not guarantee a peer pull: the router must select a destination
+that can reuse blocks held by another worker.
+
 <a id="planner-dynamo-adapter"></a>
 
 ## Planner configuration

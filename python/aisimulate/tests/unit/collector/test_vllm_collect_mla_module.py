@@ -1,25 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generation-time memory-feasibility filter of the vLLM MLA module collector.
+"""Device-capacity refusals of the vLLM MLA/DSA module collector.
 
-The filter is the one sanctioned in-collector case filter
-(.claude/rules/collector/layer_permissions.md): size vs capacity, applied
-inside get_generation_test_cases, drops counted and logged. These tests load
-the real function bodies from source (vLLM itself is not importable in CI)
+The module op plans do not depend on the device (collector/op_plans.py), so
+run_mla_module refuses a generation point whose KV cache cannot fit the device
+before allocating it, with a classified FIXME(kernel-limit) reason. These tests
+load the real function bodies from source (vLLM itself is not importable in CI)
 and pin the two properties that matter:
 
-- a case whose KV lower bound exceeds the device budget is never queued, and
-  the drop is logged in the canonical format;
-- on >= 90 GB devices (H20/B200/RTX PRO 6000) the filter keeps the full
-  declared sweep, i.e. it cannot change SM90/SM100/SM120 behavior.
+- a point whose KV lower bound exceeds the device budget is refused;
+- on >= 90 GB devices (H20/B200/RTX PRO 6000) no point of the decode grid is
+  refused, i.e. the refusal cannot change SM90/SM100/SM120 behavior.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -54,78 +52,45 @@ def _load_assignment(path: Path, name: str):
 L40S_TOTAL_MEMORY = 47_669_248_000  # 44.39 GiB usable, as reported by torch
 H20_TOTAL_MEMORY = 102_600_000_000  # ~96 GB class devices (H20 / RTX PRO 6000)
 
-SWEEP = SimpleNamespace(
-    inner_sweep_head_counts=[128],
-    generation_batch_sizes=[256, 512, 1024],
-    generation_sequence_lengths=[16384, 32768, 65536, 131072],
-    generation_max_tokens=2**25,
-)
+GENERATION_BATCH_SIZES = [256, 512, 1024]
+GENERATION_SEQUENCE_LENGTHS = [16384, 32768, 65536, 131072]
+GENERATION_MAX_TOKENS = 2**25
 
 
-def _build_get_generation_test_cases(total_memory, combos):
+def _build_kv_does_not_fit():
     namespace = {
-        "get_mla_module_sweep_spec": lambda backend: SWEEP,
-        "_get_precision_combos": lambda phase, attn_type: combos,
-        "_device_total_memory_bytes": lambda: total_memory,
         "_MLA_KV_ENTRY_ELEMS": _load_assignment(MLA_MODULE_SOURCE, "_MLA_KV_ENTRY_ELEMS"),
         "_MEMORY_BUDGET_SAFETY_FACTOR": _load_assignment(MLA_MODULE_SOURCE, "_MEMORY_BUDGET_SAFETY_FACTOR"),
     }
     _load_function(MLA_MODULE_SOURCE, "_generation_kv_footprint_bytes", namespace)
-    return _load_function(MLA_MODULE_SOURCE, "get_generation_test_cases", namespace)
+    return _load_function(MLA_MODULE_SOURCE, "_kv_does_not_fit", namespace)
 
 
-BF16_COMBO = [("bfloat16", "bfloat16", "bfloat16")]
+def _refused(total_memory, kv_cache_dtype):
+    does_not_fit = _build_kv_does_not_fit()
+    return {
+        (s, b): reason
+        for b in GENERATION_BATCH_SIZES
+        for s in GENERATION_SEQUENCE_LENGTHS
+        if b * s <= GENERATION_MAX_TOKENS and (reason := does_not_fit(b * s, kv_cache_dtype, total_memory)) is not None
+    }
 
 
-def test_memory_filter_drops_infeasible_cases_and_logs(capsys):
-    get_cases = _build_get_generation_test_cases(L40S_TOTAL_MEMORY, BF16_COMBO)
-    cases = get_cases("mla")
-    shapes = {(s, b) for s, b, *_ in cases}
+def test_points_the_device_cannot_hold_are_refused_with_their_reason():
+    refused = _refused(L40S_TOTAL_MEMORY, "bfloat16")
     # 2 x 33.5M tokens x 576 x 2B = 77.3 GB cannot fit on a 46 GB device...
-    assert (32768, 1024) not in shapes
-    assert (65536, 512) not in shapes
-    assert (131072, 256) not in shapes
-    # ...while the 16.7M-token points (2 x 19.3 GB) stay queued.
-    assert (16384, 1024) in shapes
-    assert (65536, 256) in shapes
-    out = capsys.readouterr().out
-    assert "mla_generation_module: dropped 3/" in out
-    assert "(memory budget, device=44GiB)" in out
-
-
-def test_memory_filter_uses_dsa_op_name_in_log(capsys):
-    get_cases = _build_get_generation_test_cases(L40S_TOTAL_MEMORY, BF16_COMBO)
-    get_cases("dsa")
-    assert "dsa_generation_module: dropped" in capsys.readouterr().out
-
-
-def test_memory_filter_keeps_full_sweep_on_90gb_class_devices(capsys):
-    get_cases = _build_get_generation_test_cases(H20_TOTAL_MEMORY, BF16_COMBO)
-    cases = get_cases("mla")
-    # Every token-feasible point of the declared sweep must stay queued:
-    # the filter cannot change H20/B200/RTX PRO 6000 collection behavior.
-    expected = sum(
-        1
-        for b in SWEEP.generation_batch_sizes
-        for s in SWEEP.generation_sequence_lengths
-        if b * s <= SWEEP.generation_max_tokens
+    assert set(refused) == {(32768, 1024), (65536, 512), (131072, 256)}
+    # ...while the 16.7M-token points (2 x 19.3 GB) still run.
+    assert all(
+        reason.startswith("FIXME(kernel-limit): does not fit: the KV cache needs 72.0 GiB")
+        for reason in refused.values()
     )
-    assert len(cases) == expected
-    assert (32768, 1024) in {(s, b) for s, b, *_ in cases}
-    assert "dropped" not in capsys.readouterr().out
 
 
-def test_memory_filter_inactive_without_cuda(capsys):
-    get_cases = _build_get_generation_test_cases(None, BF16_COMBO)
-    cases = get_cases("mla")
-    assert (32768, 1024) in {(s, b) for s, b, *_ in cases}
-    assert "dropped" not in capsys.readouterr().out
+def test_no_point_is_refused_on_90gb_class_devices():
+    assert _refused(H20_TOTAL_MEMORY, "bfloat16") == {}
 
 
-def test_memory_filter_fp8_kv_halves_the_bound(capsys):
-    fp8_combo = [("bfloat16", "fp8", "bfloat16")]
-    get_cases = _build_get_generation_test_cases(L40S_TOTAL_MEMORY, fp8_combo)
-    cases = get_cases("mla")
+def test_fp8_kv_halves_the_bound():
     # 2 x 33.5M x 576 x 1B = 38.7 GB fits the 42.9 GB budget.
-    assert (32768, 1024) in {(s, b) for s, b, *_ in cases}
-    assert "dropped" not in capsys.readouterr().out
+    assert _refused(L40S_TOTAL_MEMORY, "fp8") == {}

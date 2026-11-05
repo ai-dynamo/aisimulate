@@ -790,10 +790,16 @@ def test_large_integer_log_ranges_lower_as_compact_bounds() -> None:
     ]
 
 
-def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
+@pytest.mark.parametrize("pinned_role,independent_role", [("prefill", "decode"), ("decode", "prefill")])
+@pytest.mark.parametrize("gpu_budget", [2, 3])
+@pytest.mark.model("Qwen/Qwen3-32B-FP8")
+def test_disagg_mixed_parallel_presets_preserve_each_role_semantics(pinned_role, independent_role, gpu_budget) -> None:
+    from aisimulate.sweeper.model_hw import NoViableParallelConfig
+    from aisimulate.sweeper.search_space import enumerate_branches
+
     mapping = {
         "replicas": 1,
-        "tensor": 1,
+        "tensor": 2,
         "pipeline": 1,
         "attention_data": 1,
         "moe_tensor": 1,
@@ -803,41 +809,58 @@ def test_disagg_mixed_parallel_presets_preserve_each_role_semantics() -> None:
         {
             "engine": {
                 "mode": "disaggregated",
-                "model": "example/model",
+                "model": "Qwen/Qwen3-32B-FP8",
                 "hardware": "h200_sxm",
                 "backend": "vllm",
                 "context_length": 4096,
                 "workers": {
-                    "prefill": {"parallelism": {"preset": [mapping]}},
-                    "decode": {
+                    pinned_role: {"parallelism": {"preset": [mapping]}},
+                    independent_role: {
                         "parallelism": {
                             "preset": False,
+                            "tensor": 1,
                             "replicas": {"choices": [1, 2]},
                         }
                     },
                 },
             },
-            "optimization": {},
+            "optimization": {"constraints": {"max_candidate_gpus": gpu_budget}},
         }
     )
 
     lowered = recommendation_to_sweeper(config)
 
-    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"]["prefill"] == [
+    assert lowered.search_space.parallel_custom_configs_by_mode["disagg"][pinned_role] == [
         {
             "replicas": 1,
-            "tp": 1,
+            "tp": 2,
             "pp": 1,
             "attention_dp": 1,
             "moe_tp": 1,
             "moe_ep": 1,
         }
     ]
-    assert lowered.search_space.parallel_independent_by_mode["disagg"]["decode_replicas"] == [
+    assert lowered.search_space.parallel_independent_by_mode["disagg"][f"{independent_role}_replicas"] == [
         1,
         2,
     ]
-    assert not any(name.startswith("prefill_") for name in lowered.search_space.parallel_independent_by_mode["disagg"])
+    assert not any(
+        name.startswith(f"{pinned_role}_") for name in lowered.search_space.parallel_independent_by_mode["disagg"]
+    )
+
+    if gpu_budget == 2:
+        with pytest.raises(NoViableParallelConfig, match="used_gpus=3 exceeds gpu_budget=2"):
+            enumerate_branches(lowered, max_seq_len=4096)
+    else:
+        (branch,) = enumerate_branches(lowered, max_seq_len=4096)
+        expected = DisaggParallelConfig(
+            **{
+                pinned_role: ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+                independent_role: ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+            }
+        )
+        assert branch.parallel_configs == (expected,)
+        assert expected.total_gpus == 3
 
 
 def test_backend_specific_block_size_validation() -> None:
@@ -1028,6 +1051,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                     "paths": ["weka-corpus"],
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
+                    "client": "agentx",
                 },
                 "load": {"type": "trace_timestamps"},
             },
@@ -1035,6 +1059,7 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
         }
     )
     assert configured_weka.traffic.source.nested_timestamp_basis == "relative"
+    assert configured_weka.traffic.source.client == "agentx"
 
     with pytest.raises(ValidationError, match="only valid for trace format 'weka'"):
         CorePredictionConfig.model_validate(
@@ -1046,6 +1071,16 @@ def test_trace_block_default_and_finite_rate_contract() -> None:
                         "format": "mooncake",
                         "nested_timestamp_basis": "absolute",
                     },
+                    "load": {"type": "trace_timestamps"},
+                },
+                "engine": _engine(),
+            }
+        )
+    with pytest.raises(ValidationError, match="client is only valid for trace format 'weka'"):
+        CorePredictionConfig.model_validate(
+            {
+                "traffic": {
+                    "source": {"type": "trace", "paths": ["trace.jsonl"], "format": "mooncake", "client": "agentx"},
                     "load": {"type": "trace_timestamps"},
                 },
                 "engine": _engine(),
@@ -2024,6 +2059,31 @@ def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, 
     recommended = Workload.model_validate(_recommendation_workload(traffic))
     assert recommended.model_dump(mode="json")["agentic_profile"] == expected
     assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy: str) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 2,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_warmup_policy": policy,
+    }
+    if policy == "live_trajectory_v1":
+        load["agentic_profile"] = {}
+    traffic = {"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load}
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_warmup_policy"] == policy
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_warmup_policy"] == policy
+    assert Workload.model_validate(recommended).agentic_warmup_policy == policy
 
 
 @pytest.mark.parametrize(

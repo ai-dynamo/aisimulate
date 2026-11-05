@@ -8,15 +8,20 @@ SPDX-License-Identifier: Apache-2.0
 This chapter implements the end-to-end offline profiling route in
 [FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
 forward-pass metrics (FPM) on your cluster, train a gradient-boosted decision tree
-(GBDT) model, and use it in AISimulate Replay. FPM describe the scheduled batch
-work and its measured duration.
+(GBDT) model, and use it in AISimulate Replay. These metrics describe the
+scheduled batch work and its measured duration.
 
 Start with **end-to-end offline profiling**: run a workload, collect its native
 forward-pass measurements, and train a GBDT for frozen prediction. You can then
 apply **online updates** using later measured feedback.
 **Native FPM capture** is the collection mechanism used for both the initial
 profiling run and later **online observations**, which supply measured feedback
-for online adaptation. Per-request data hooks are a future extension.
+for online adaptation. This guide uses aggregate batch features, so per-request
+length lists are not required. Per-request data hooks are a future extension.
+
+For initialization from online observations alone, or self-benchmark seeds with
+online feedback, follow
+[Start and adapt a GBDT with online observations](online-gbdt.md).
 
 Follow [Collect](#1-collect) → [Check](#2-check-and-prepare-the-data) →
 [Train](#3-train-and-qualify-accuracy) → [Replay](#4-use-the-model-in-replay) →
@@ -26,8 +31,8 @@ Follow [Collect](#1-collect) → [Check](#2-check-and-prepare-the-data) →
 
 You need a serving deployment with native FPM instrumentation, access to its
 worker traces, and a client that can run your workload. Use your own cluster and
-deployment tools. An existing completed capture can start at step 2 after reviewing its identity
-and provenance through onboarding stages 1–3.
+deployment tools. An existing completed capture can start at step 2 after
+reviewing its identity and provenance through onboarding stages 1–3.
 
 In an AISimulate source checkout, prepare Python 3.11–3.13 and the training extra:
 
@@ -54,6 +59,17 @@ run directory. Replace the model, packaged system, backend/version, role and
 parallelism. Add the actual precision, KV block size and kernel settings from
 the [configuration reference](../configuration.md#choosing-a-forward-pass-api).
 The template's TP4/EP4 values are examples, not inferred deployment settings.
+Leave learned source paths out of this identity; training creates the source.
+
+For Replay, omit both `moe_tp_size` and `moe_ep_size` from the training identity
+when `moe_tp_size * moe_ep_size == 1`. The Replay YAML can still use
+`parallelism.moe_tensor: 1` and `parallelism.moe_expert: 1`; its compiler represents
+those unsharded dimensions as `None` in the canonical identity. Training with
+explicit `1, 1` preserves a different identity and fails the exact identity check
+when Replay loads the artifact. For a sharded topology, retain both fields,
+including a dimension equal to 1 as in the template. Use the same reviewed
+identity for training and subsequent SDK construction.
+
 Review and save this identity, the runtime/model/tokenizer pins, launch settings
 and expected worker IDs before capture. Keep unresolved resource facts explicit;
 measured KV geometry and usable capacity are required before Replay. In an
@@ -121,7 +137,11 @@ during the pilot and completion checks.
 For SGLang, affected producers need the [native counter correction](examples.md#d1-pin-the-aggregated-sglang-runtime)
 or an equivalent verified fix. The qualified capture configuration also disables
 mixed chunks, speculation, attention DP and prefill CP. Changing these settings
-needs new counter/timer checks.
+needs new counter/timer checks. The
+[capture reference](../fpm_ml/learned-forward-pass-model.md#1-collect-the-fpm-stream)
+explains why overlap scheduling can merge or omit timing intervals; verify that
+prefill counters describe the tokens scheduled in each pass, including partial
+chunks.
 
 Native labels are forward-pass durations in **seconds**. Keep them unchanged:
 vLLM and SGLang have different timer and decode-context conventions. Keep all
@@ -251,12 +271,25 @@ decode-admission/mixed rows under their original role and account for any traine
 exclusions. Retain the original selection, capture report and both exports;
 the optional online-selection step uses them to exclude offline observations.
 
+The trainer's reader can skip malformed JSON and unrecognized records, and
+training can exclude incompatible rows. Its iteration/store counts do not
+account for every source record or establish capture completeness. Retain the
+validation and selection reports, reconcile accepted/excluded counts, and check
+trainer exclusions separately. See the
+[training reference](../fpm_ml/learned-forward-pass-model.md#2-train) for supported
+input and split options.
+
 ## 3. Train and qualify accuracy
 
 Use the deployment identity reviewed before collection. Confirm it still
 matches the selected native files and role; resolve mismatches before fitting.
 
-Train one AISimulate-compatible GBDT per role:
+Train one AISimulate-compatible GBDT per role. These CLI commands support
+attention DP=1: `--join-ranks none` treats each record independently, while
+`--join-ranks counter` refuses cross-rank joins. For higher attention DP, the
+Python `train` and `evaluate` APIs accept complete iteration groups established
+using a trustworthy shared iteration identity. Producing and validating those
+synchronized groups is outside this walkthrough.
 
 ```bash
 python -m aisimulate_core.sdk.fpm_learned train \
@@ -275,7 +308,10 @@ python -m aisimulate_core.sdk.fpm_learned evaluate \
 Check each command's status and retain its output. The learned JSON is the
 inference model; the fresh `online-seed` directory supports later adaptation.
 Do not create that directory ahead of training. Keep early stopping disabled
-for seed export. Repeat with separate identities/data for P/D.
+for seed export. `--holdout-frac 0` fits all accepted training observations;
+the evaluation command reads only the separate held-out file. Repeat with
+separate identities/data for P/D. Each `--fpm` option also accepts multiple
+paths when the accepted population spans several files.
 
 ### What training produces
 
@@ -328,7 +364,13 @@ Copy the [Replay template](../../../scripts/fpm_self_service/replay-aggregated.y
 replace every placeholder. It starts with aggregated vLLM, attention DP=1,
 PP=1 and no context parallelism. Set the captured topology, precision and
 scheduler limits, plus **measured** KV block geometry and usable capacity.
-Point `traffic.source` at your request trace, not the FPM training data.
+Include additional precision and kernel controls from the reviewed identity
+using the [engine configuration fields](../configuration.md#flat-engine-precision-and-execution-controls).
+Point `traffic.source` at your request trace, not the FPM training data. Its hash
+block size describes the trace's prefix hashes; the worker's KV block size
+describes the serving cache. Set each from its own source. The
+[KV-cache reference](../../replay/engine/kv-cache.md) explains the units for
+`bytes_per_token` and capacity.
 
 The worker's timing block selects the trained GBDT explicitly:
 
@@ -346,7 +388,7 @@ timing:
 ```
 
 ```bash
-aisimulate predict --config replay.yaml --output-dir replay-result
+aisimulate predict --stack engine --config replay.yaml --output-dir replay-result
 ```
 
 For P/D, use `engine.mode: disaggregated`, separate prefill/decode worker blocks
@@ -431,8 +473,8 @@ Online selection verifies the original offline receipts and exports, rejects
 reused offline source/export files, and requires feedback observation timestamps
 to be strictly later than every offline train/test row. Within the feedback,
 timestamps must not go backward and counters must increase. A continuing worker
-stream must also advance beyond the original capture's last counter. A timestamp tied
-with the offline boundary is rejected; choose a distinct later capture instead
+stream must also advance beyond the original capture's last counter. A timestamp
+tied with the offline boundary is rejected; choose a distinct later capture instead
 of relabeling records. These checks establish selection boundaries, not native
 timer alignment or deployment identity. Do not rename or concatenate the
 offline train/test files into feedback.
@@ -450,7 +492,9 @@ before admitting each label with `tune_with_fpms`, and saves an updated checkpoi
 and inference ensemble. It also restores the checkpoint to check prediction
 consistency. Use the exported ensemble with frozen adaptation in Replay.
 The output directory contains `model.json`, `checkpoint/`, a restore
-configuration and an adaptation receipt.
+configuration and an adaptation receipt. The public
+[online fitting and persistence APIs](../fpm_ml/learned-forward-pass-model.md#online-tree-adaptation)
+provide these operations; a restore check does not qualify prediction accuracy.
 
 Saving retains pending fitting rows. Add `--flush-updates` only when you intend
 to fit a partial update batch. Preserve the model trained offline for comparison.
@@ -473,9 +517,10 @@ for row in iter_fpm_records([feedback_path]):
 ```
 
 This excerpt shows ordering; the linked runnable example also checks role,
-coverage, input integrity and persistence. Let $s$ identify the workload class
-and $F_{s,t}$ its GBDT prediction in milliseconds, using the fitted state
-available before pass $t$'s label is admitted:
+coverage, input integrity and persistence. Let $M_t$ be the scheduled workload
+for pass $t$, $x_t=\phi(M_t)$ its feature vector, and $\theta_t$ the model state
+before that pass's label is admitted. For workload class $s$, $F_{s,t}$ predicts
+milliseconds using this state:
 
 $$
 \begin{array}{rl}
@@ -487,8 +532,11 @@ $$
 `tune_with_fpms` then admits the label. Predictions change only after a
 successful fitting update. `estimator_config.fpm_learned.update_every` counts
 admitted observations, while
-your application controls how often feedback is sampled. The standalone default
-fits after each admission; larger batches can reduce update frequency.
+your application controls how often feedback is sampled. The example admits
+every supplied row. A five-second feedback interval requires the caller to
+select at most one observation every five seconds after initialization;
+`update_every` does not establish a wall-clock sampling interval. The standalone
+default fits after each admission; larger batches can reduce update frequency.
 
 Online fitting retains the seed history and a bounded recent window. It can
 change leaf values and eligible splits, while preserving the seed's feature
@@ -515,14 +563,29 @@ do not reuse the standalone save loop as a complete state export for them.
 ### Calibration and fallback with sparse feedback
 
 Let $F_{0,s}(x)$ be the frozen GBDT prediction for workload class $s$.
-Calibration uses coordinates $z$: $(Q_p)$ for prefill, $(B_d,K_d)$ for decode,
-and $(Q_p,K_d)$ for mixed batches. For multiple attention-DP ranks, it selects
-the rank-local vector with the largest coordinate sum. These coordinates need
-not match the GBDT feature vector $x$.
+Calibration of this fitted GBDT builds one vector per active rank: $(Q_p)$ for
+pure prefill, $(B_d,K_d)$ for pure decode, and $(Q_p,K_d)$ for locally mixed
+work. With multiple attention-DP ranks, it selects the vector with the highest
+load score, currently the sum of its coordinates. These calibration coordinates
+$z$ need not match the GBDT feature vector $x$.
 
-For an earlier measurement $y_i>0$ and uncorrected prediction
-$p_i=F_{0,s}(x_i)>0$, hybrid calibration records a bounded ratio. The factor
-$c_t$ used for pass $t$ depends only on previously admitted feedback:
+Eligible mixed-interpolation fallback maintains its own calibration history.
+Its key aggregates the complete attention-DP group:
+
+$$
+z^I=\left[\max_r A_r,\ \gamma\sum_r(Q_{p,r}+B_{d,r})\right].
+$$
+
+Here $A_r$ is rank $r$'s weighted attention term, $Q_{p,r}$ is its prefill-token
+count, $B_{d,r}$ is its decode-request count, and $\gamma$ is the FFN token
+weight. This fallback uses the group key rather than selecting one rank's
+vector. See the [self-benchmark and online fallback walkthrough](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest)
+for its source requirements and update workflow.
+
+For calibration of the frozen GBDT, let $y_i>0$ be an earlier measurement and
+$p_i=F_{0,s}(x_i)>0$ its uncorrected prediction. Hybrid calibration records a
+bounded ratio. The factor $c_t$ used for pass $t$ depends only on previously
+admitted feedback:
 
 $$
 \begin{array}{rl}

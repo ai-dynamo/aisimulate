@@ -73,7 +73,7 @@ RUN cd /workspace/python/aisimulate && \
     mkdir -p /workspace/unrepaired-dist && \
     MATURIN_PEP517_ARGS="--auditwheel skip" \
         uv build --wheel --out-dir /workspace/unrepaired-dist && \
-    set -- /workspace/unrepaired-dist/aisimulate-*.whl && \
+    set -- /workspace/unrepaired-dist/*.whl && \
     [ "$#" -eq 1 ] && [ -f "$1" ] && \
     case "$(uname -m)" in \
         x86_64) manylinux_policy=manylinux_2_28_x86_64 ;; \
@@ -84,13 +84,13 @@ RUN cd /workspace/python/aisimulate && \
         --plat "${manylinux_policy}" \
         --wheel-dir /workspace/dist \
         "$1" && \
-    auditwheel show /workspace/dist/aisimulate-*.whl && \
+    auditwheel show /workspace/dist/*.whl && \
     "${UV_PYTHON}" tools/verify_release_wheels.py /workspace/dist
 
 # Exercise the one-wheel boundary outside the checkout, including all
 # compatibility imports, bundled data, and the native estimator.
 RUN uv venv --python 3.13 /tmp/aisimulate-wheel-test && \
-    AISIMULATE_WHL=$(ls /workspace/dist/aisimulate-*.whl) && \
+    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
     uv pip install --python /tmp/aisimulate-wheel-test/bin/python "${AISIMULATE_WHL}" && \
     uv pip check --python /tmp/aisimulate-wheel-test/bin/python && \
     cd /tmp && /tmp/aisimulate-wheel-test/bin/python \
@@ -101,7 +101,7 @@ RUN uv venv --python 3.13 /tmp/aisimulate-wheel-test && \
 # delete a compatibility file now owned by the unified distribution.
 RUN "${UV_PYTHON}" /workspace/python/aisimulate/tools/build_legacy_monolith_fixture.py /tmp/legacy-dist && \
     LEGACY_WHL=$(ls /tmp/legacy-dist/aiconfigurator-0.9.0-*.whl) && \
-    AISIMULATE_WHL=$(ls /workspace/dist/aisimulate-*.whl) && \
+    AISIMULATE_WHL=$(ls /workspace/dist/*.whl) && \
     "${UV_PYTHON}" -m venv /tmp/aic-pip-migration && \
     /tmp/aic-pip-migration/bin/pip install "${LEGACY_WHL}" && \
     /tmp/aic-pip-migration/bin/pip uninstall -y aiconfigurator aiconfigurator-core && \
@@ -115,12 +115,12 @@ COPY --from=build /workspace/dist/ /
 
 FROM base AS runtime
 COPY --from=build /workspace/dist /wheelhouse
-RUN uv pip install /wheelhouse/aisimulate-*.whl && \
+RUN uv pip install /wheelhouse/*.whl && \
     rm -rf /wheelhouse
 
 FROM runtime AS test
 
-# The perf-database tool tests shell out to git (changed_ops revision diffing,
+# The perf-database tool tests shell out to git (parquet_diff revision reads,
 # migrate_* execute paths use git mv/rm/add). Test stage only — the shipped
 # runtime image stays git-free.
 RUN apt-get update && \
@@ -130,7 +130,7 @@ RUN apt-get update && \
 # Runtime already installed the unified wheel. Add its development extras
 # before copying the test sources.
 COPY --from=build /workspace/dist /wheelhouse
-RUN AISIMULATE_WHL=$(ls /wheelhouse/aisimulate-*.whl) && \
+RUN AISIMULATE_WHL=$(ls /wheelhouse/*.whl) && \
     uv pip install "${AISIMULATE_WHL}[dev]" && \
     rm -rf /wheelhouse
 

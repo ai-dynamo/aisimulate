@@ -4,8 +4,9 @@
 """GPU-free contract tests for the trtllm unified ``moe_ep`` collector.
 
 ``collector/wideep/trtllm/collect_moe_compute.py`` imports torch and
-tensorrt_llm at module scope, so it cannot be imported here. The population/
-writer helpers are pure and are AST-extracted from the source (same pattern as
+tensorrt_llm at module scope, so it cannot be imported here. Its getter queues the ``moe_ep``
+op plan's rows (``collector/op_plans.py``); the writer helpers are pure and are
+AST-extracted from the source (same pattern as
 ``tests/unit/collector/sglang/test_collect_moe_ep.py`` — the sglang twin whose
 ``MOE_EP_HEADER`` literal this file repeats verbatim: one consumer contract,
 one frozen header); the remaining guarantees are asserted against the module
@@ -55,16 +56,15 @@ def _load_symbols(*names: str) -> dict:
     return loaded
 
 
-def _getter(sm_version: int):
-    """The extracted getter with its module-scope dependencies injected."""
-    from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model
+def _plan(sm_version: int):
+    """The moe_ep op plan for TRT-LLM on an SM; its rows are what the getter queues."""
+    from collector.op_plans import plan
 
-    symbols = _load_symbols("get_moe_ep_test_cases")
-    symbols["get_common_moe_test_cases"] = get_common_moe_test_cases
-    symbols["is_wideep_moe_model"] = is_wideep_moe_model
-    symbols["get_sm_version"] = lambda: sm_version
-    symbols["aic_accurate_wideep_sim"] = True
-    return symbols["get_moe_ep_test_cases"]
+    return plan("moe_ep", "trtllm", sm_version)
+
+
+def _getter(sm_version: int):
+    return lambda: _plan(sm_version).rows
 
 
 @pytest.fixture
@@ -95,7 +95,7 @@ def _retired_case_set(sm_version: int) -> set[tuple]:
         if recipe.tp != 1 or recipe.ep <= 1:
             continue
         moe_list = []
-        # rc20 chain (#1356): fp8_block floor moved to min_sm 90 (SM87-89 lost
+        # rc20 chain: fp8_block floor moved to min_sm 90 (SM87-89 lost
         # it, SM100+ gained it alongside nvfp4) and the two rc5-era SM120
         # nvfp4 kernel-limit skips were removed (hardware-verified clean).
         if sm_version >= 90:
@@ -156,12 +156,11 @@ def test_deepseek_v3_population_counts_per_stage(monkeypatch):
     assert {case[0] for case in cases} == {"fp8_block"}
     # EPLB axis preserved exactly: baseline and redundant slot counts.
     assert {(case[13], case[14]) for case in cases} == {(False, 256), (True, 256), (True, 288)}
-    # Blackwell collects BOTH quant modes since rc20 (#1356 moved the
-    # fp8_block floor to min_sm 90, so SM100 gains it alongside nvfp4):
-    # 16 recipes x 2 modes x 3 EPLB configs = 96, minus 2x6 slot drops.
+    # Blackwell times nvfp4 only: the fp8_block grouped GEMM is DeepGEMM-backed,
+    # which compiles for SM90 only (skips.py).
     sm100_cases = _getter(100)()
-    assert len(sm100_cases) == 84
-    assert {case[0] for case in sm100_cases} == {"fp8_block", "nvfp4"}
+    assert len(sm100_cases) == 42
+    assert {case[0] for case in sm100_cases} == {"nvfp4"}
 
 
 def test_population_is_identical_to_the_retired_getter(monkeypatch):
@@ -171,69 +170,61 @@ def test_population_is_identical_to_the_retired_getter(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
     for sm_version in (80, 90, 100, 120):
         new = {(case[0], case[10], case[8], case[12], case[13], case[14]) for case in _getter(sm_version)()}
-        assert new == _retired_case_set(sm_version), f"coverage drift at SM{sm_version}"
+        # skips.py leaves fp8_block out off Hopper, where every case failed in DeepGEMM's JIT.
+        retired = {case for case in _retired_case_set(sm_version) if case[0] != "fp8_block" or sm_version == 90}
+        assert new == retired, f"coverage drift at SM{sm_version}"
 
 
-def test_pre_hopper_sm_expands_to_zero_with_an_explained_drop(monkeypatch, capsys):
-    # No quant-mode axis exists below SM87 (the SM-gated moe_list is empty) —
-    # zero cases, explainable from the logged population line.
+def test_pre_hopper_sm_plans_nothing_under_the_quant_floors(monkeypatch):
+    # FP8 starts at SM89 and FP4 at SM100 (skips.py floors); on SM89 the wide-EP
+    # fp8_block grouped GEMM fails in the DeepGEMM compiler.
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    assert _getter(80)() == []
-    out = capsys.readouterr().out
-    assert "0 cases from 117 moe recipes" in out
-    assert "x 0 quant mode(s) x 2-3 EPLB configs" in out
-    assert "= 0 expanded" in out
+    for sm_version in (80, 86, 89):
+        op_plan = _plan(sm_version)
+        assert op_plan.rows == []
+        assert {region.region for region in op_plan.removed} == {"dtype=fp8_block", "dtype=nvfp4"}
 
 
-def test_sm90_42_case_reconciliation_is_log_pinned(monkeypatch, capsys):
-    # The SM90 twin of the SM80/SM120 capsys pins: the 42-case population must
-    # reconcile arithmetically in the getter's logged drop accounting, not
-    # just in the returned count (117 recipes -> 16 kept x 1 mode x 3 EPLB
-    # configs = 48, minus 6 slot-alignment drops, zero kernel-limit drops;
-    # a single-model plan has no cross-model duplicates to deduplicate).
+def test_sm90_plans_21_fp8_block_builds_timed_as_42_tasks(monkeypatch):
+    # 8 EP sizes x 3 EPLB layouts = 24 builds, minus the 3 (True, 288) layouts
+    # whose slots do not shard over EP 64, 128 and 256. Each build runs one task
+    # per power-law draw of the shared grid (1.01 and 1.2).
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    cases = _getter(90)()
-    out = capsys.readouterr().out
-    assert len(cases) == 42
-    assert "moe_ep: 42 cases from 117 moe recipes" in out
-    assert "-> 16 recipes kept) x 1 quant mode(s) x 2-3 EPLB configs" in out
-    assert "= 48 expanded - 6 num_slots%ep!=0 - 0 deduplicated onto the runtime identity" in out
+    op_plan = _plan(90)
+    assert len(op_plan.cases) == 21
+    assert len(op_plan.rows) == 42
+    assert {case.moe_type for case in op_plan.cases} == {"fp8_block"}
+    assert {(region.region, region.cases) for region in op_plan.removed} == {("dtype=nvfp4", 21)}
 
 
-def test_sm120_collects_both_quants_with_no_kernel_limit_drops(monkeypatch, capsys):
-    # The rc5-era SM120 nvfp4 kernel-limit drops are gone (rc20,
-    # hardware-verified on RTX PRO 6000 2026-07-26 — see the getter's note),
-    # and rc20's min_sm 90 floor gives SM120 fp8_block alongside nvfp4:
-    # 16 recipes x 2 modes x 3 EPLB configs = 96, minus 2x6 slot drops.
+def test_sm120_collects_nvfp4_and_every_eplb_layout(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    cases = _getter(120)()
-    out = capsys.readouterr().out
-    assert len(cases) == 84
-    assert {case[0] for case in cases} == {"fp8_block", "nvfp4"}
-    assert "= 96 expanded - 12 num_slots%ep!=0" in out
-    # The EPLB axis survives in full on SM120 now.
-    assert {case[13] for case in cases} == {False, True}
+    rows = _getter(120)()
+    assert len(rows) == 42
+    assert {row[0] for row in rows} == {"nvfp4"}
+    assert {(row[13], row[14]) for row in rows} == {(False, 256), (True, 256), (True, 288)}
 
 
-def test_full_population_covers_every_declared_wideep_model(monkeypatch, capsys):
+def test_full_population_times_each_build_once_across_models(monkeypatch):
+    # model_name is provenance only for this synthetic runner (run_moe_ep builds
+    # the simulator from the shape arguments; the persisted key has no model
+    # column), so models whose builds write the same key share one case, owned
+    # by the first checkpoint that plans the quant mode.
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    cases = _getter(90)()
-    out = capsys.readouterr().out
-    # F20: model_name is provenance-only for this synthetic runner (run_moe_ep
-    # builds the simulator from the shape arguments; the persisted key has no
-    # model column), so the plan is deduplicated onto the runtime identity —
-    # the same-shape entries the model families share collapse to one task,
-    # and every contributing family stays auditable in the population log.
+    from collector.op_plans import OP_PLANS
+
+    op_plan = _plan(90)
+    rows = op_plan.rows
     runtime_identities = [
-        tuple(tuple(value) if isinstance(value, list) else value for i, value in enumerate(case) if i != 10)
-        for case in cases
+        tuple(tuple(value) if isinstance(value, list) else value for i, value in enumerate(row) if i != 10)
+        for row in rows
     ]
     assert len(runtime_identities) == len(set(runtime_identities))
-    assert "deduplicated onto the runtime identity" in out
-    assert "deepseek-ai/DeepSeek-V3" in out
-    assert "moonshotai/Kimi-K2-Instruct" in out  # the 384-expert family
-    for case in cases:
-        moe_type, num_experts, tp, ep, dist, slots = (case[0], case[6], case[7], case[8], case[11], case[14])
+    assert {region.region for region in op_plan.removed} == {"dtype=nvfp4"}
+    planned = {case.model_name for case in OP_PLANS["moe_ep"].expand()}
+    assert {"deepseek-ai/DeepSeek-V3", "moonshotai/Kimi-K2-Instruct"} <= planned  # incl. the 384-expert family
+    for row in rows:
+        moe_type, num_experts, tp, ep, dist, slots = (row[0], row[6], row[7], row[8], row[11], row[14])
         assert moe_type == "fp8_block"
         assert tp == 1 and ep > 1
         assert dist == "power_law"
@@ -241,10 +232,10 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch, capsys)
         assert slots in (num_experts, 288)
 
 
-def test_sorted_emission_is_deterministic(monkeypatch):
+def test_tasks_run_in_model_quant_ep_layout_then_draw_order(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    cases = _getter(90)()
-    keys = [(case[10], case[0], case[8], case[12], case[13], case[14]) for case in cases]
+    rows = _getter(100)()
+    keys = [(row[10], row[0], row[8], row[13], row[14], row[12]) for row in rows]
     assert keys == sorted(keys)
 
 
@@ -417,7 +408,7 @@ def test_moe_ep_alone_resolves_to_the_wideep_trtllm_pin():
 
 def test_mixing_stock_and_wideep_trtllm_ops_fail_closes_on_different_pins():
     # Stock trtllm (1.3.0rc29 default) and wideep_trtllm (1.3.0rc20) no longer
-    # share a pin (framework_manifest.yaml, 2026-10-04): a mixed stock+wideep
+    # share a pin (framework_manifest.yaml): a mixed stock+wideep
     # request is a multi-runtime request and must be split, exactly like
     # wideep_sglang (0.5.10) vs stock sglang. moe_ep alone still resolves to
     # the WideEP pin (test above); the stock op alone resolves to rc29.
@@ -439,15 +430,6 @@ def test_moe_ep_is_requested_independently_of_the_default_trtllm_plan():
     assert "trtllm_moe_wideep" not in plan.selected_ops
     sglang_plan = build_collection_case_plan(backend="sglang", model_path="deepseek-ai/DeepSeek-V3")
     assert "moe_ep" not in sglang_plan.selected_ops
-
-
-def test_hash_closures_declare_the_case_yaml_the_module_reads():
-    from collector.provenance import load_closures
-
-    closures = load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    entry = closures["collector.wideep.trtllm.collect_moe_compute"]
-    assert "collector/cases/base_ops/moe.yaml" in entry
-    assert "__model_cases__" in entry
 
 
 def test_retired_extras_are_not_persisted_columns():
@@ -475,10 +457,13 @@ def test_no_silent_case_skipping_and_the_dry_run_raises():
     assert "largest declared token count" in SOURCE_TEXT
 
 
-def test_sm120_drops_are_parked_as_a_kernel_limit():
-    # layer_permissions.md: an unverified framework kernel limit lives as a
-    # FIXME(kernel-limit) note at its site, re-audited on every version bump.
-    assert "FIXME(kernel-limit)" in SOURCE_TEXT
+def test_fp8_block_off_hopper_is_a_commented_skip(monkeypatch):
+    # DeepGEMM's JIT compiles the fp8_block grouped GEMM for SM90 only; skips.py
+    # leaves those cases out instead of the runner raising on every one.
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
+    for sm_version in (100, 103, 120):
+        assert "dtype=fp8_block" in {region.region for region in _plan(sm_version).removed}
+    assert "get_sm_version() != 90" not in SOURCE_TEXT
 
 
 def test_power_is_measured_or_absent_never_zero():

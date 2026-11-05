@@ -3,7 +3,7 @@
 """``helper.flashinfer_autotuned`` times FlashInfer-backed kernels on the autotuned
 tactic (serving truth) instead of FlashInfer's untuned fallback, whose default kernel
 moved between FlashInfer 0.6.12 and 0.6.18 and broke the SM100 nvfp4 MoE EP sweeps of
-the vLLM 0.30.0 / SGLang 0.5.21 campaign tables (2026-10-27)."""
+the vLLM 0.30.0 / SGLang 0.5.21 campaign tables."""
 
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ def test_both_moe_collectors_wrap_their_timing_in_the_tuning_context():
 
 
 def test_poisoned_context_after_the_tuning_pass_is_reported_as_the_autotune_failure(fake_flashinfer, monkeypatch):
-    """gb200 job 512476645 (2026-10-27): a Llama-4 (topk=1) nvfp4 case faulted inside a
+    """gb200 job 512476645: a Llama-4 (topk=1) nvfp4 case faulted inside a
     candidate tactic; FlashInfer swallowed it, the chosen tactic then failed with an opaque
     'Got CUDA error', and the next case on the worker inherited the dead context."""
     tuner = fake_flashinfer.tuner.get()

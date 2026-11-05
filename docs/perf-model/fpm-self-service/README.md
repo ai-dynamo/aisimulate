@@ -52,6 +52,32 @@ identity and resource metadata: timing data alone does not establish serving
 memory capacity. The [examples](examples.md) cover importing an existing Kimi
 profile, collecting a new MiniMax profile, and native FPM capture for GBDT training.
 
+### Choose a learned-model workflow
+
+A learned forward-pass model can use three sources of measurements:
+**A: self-benchmark**, **B: End-to-end offline profiling**, and **C: online
+observations**. A and B supply initial training data; C supplies measured
+feedback during operation. Choose the guide that matches your starting data:
+
+| Starting data | Guide | Initial prediction |
+| --- | --- | --- |
+| Self-benchmark only (A) | [Train an A seed and configure mixed fallback](online-gbdt.md#3-start-with-a-self-benchmark-seed) | A-trained forests and a qualified prior for eligible missing mixed classes. |
+| End-to-end offline profiling (B) | [Collect, train and use a GBDT](e2e-gbdt.md) | Frozen predictions from the accepted offline seed. |
+| Online observations only (C) | [Buffer observations and fit the first model](online-gbdt.md#2-start-with-c-only) | Unavailable until fitting succeeds, unless the application supplies a qualified prior. |
+| Self-benchmark plus online observations (A+C) | [Calibrate fallback, fit missing stores and compare experts](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest) | Existing A stores and the qualified mixed prior while online forests warm up. |
+| End-to-end offline profiling plus online observations (B+C) | [Adapt the accepted seed](e2e-gbdt.md#5-optional-adapt-and-save) | Seeded predictions followed by updates from later measurements. |
+
+The guided `onboard` commands collect and validate self-benchmark tables. The
+learned-model tutorials use the trainer and canonical prediction APIs; they do
+not add automated collection or cold-start training to those commands. Reuse
+the six-stage workflow below to review identity, resources and validation.
+
+The [online GBDT guide](online-gbdt.md) distinguishes fitting readiness, query
+coverage and expert selection, and explains the persistence limits of mixed
+fallback. The [accuracy review guide](../../../benchmarks/evidence/fpm_gbdt_documentation_review_20261103/README.md)
+explains how to report coverage, fallback usage and prediction error separately
+from matched serving accuracy.
+
 ### Performance within an iteration
 
 Self-service captures performance changes within a forward iteration, including
@@ -79,7 +105,8 @@ It also does not qualify end-to-end latency or throughput by itself. TTFT,
 ITL/TPOT and throughput depend on scheduling, traffic, cache behavior and transfers
 as well as forward time. Validate them separately against matched serving runs.
 For online learning from per-iteration telemetry, continue with
-[optional online updates](e2e-gbdt.md#5-optional-adapt-and-save) and the
+[optional updates to an offline seed](e2e-gbdt.md#5-optional-adapt-and-save), the
+[online GBDT tutorial](online-gbdt.md), or the
 [regression reference](../methods/online-regression.md).
 
 ## Support

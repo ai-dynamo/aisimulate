@@ -765,6 +765,11 @@ DefaultHFModels = {
     "Qwen/Qwen3.5-397B-A17B",
     "nvidia/Qwen3.5-122B-A10B-NVFP4",
     "nvidia/Qwen3.5-397B-A17B-NVFP4",
+    # Unmodified copy of nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae (ModelOpt
+    # MIXED_PRECISION: static FP8 GDN, full-attention and shared-expert
+    # projections, NVFP4 routed experts). See
+    # model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md.
+    "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
@@ -777,6 +782,10 @@ DefaultHFModels = {
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    # Unmodified copy of nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650
+    # (ModelOpt MIXED_PRECISION, text path only). See
+    # model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md.
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",

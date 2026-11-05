@@ -213,8 +213,8 @@ def benchmark_trtllm_allreduce(
         input_shape = get_input_shape_and_comm_size(size)
         input_tensor = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
 
-        # dtype enables MNNVL for multi-node TP (issue #1416):
-        # _torch/distributed/ops.py @v1.3.0rc20 builds
+        # dtype enables MNNVL for multi-node TP:
+        # _torch/distributed/ops.py builds
         # `MNNVLAllReduce(mapping, dtype) if dtype else None`.
         first_allreduce = trtllm_mods["AllReduce"](mapping=mapping, dtype=torch_dtype).cuda()
         kernel_source = _trtllm_mnnvl_kernel_source(
@@ -600,13 +600,13 @@ def benchmark_vllm_allreduce(
                     # capture. vLLM creates the FlashInfer all-reduce workspace
                     # lazily on the first eligible 2-D call
                     # (flashinfer_all_reduce.py:414-463 via cuda_communicator.py:
-                    # 335-369 @v0.31.0; byte-identical to :403-452 / :327-361
-                    # @v0.30.0); doing that inside capture fails with
+                    # 335-369; byte-identical to :403-452 / :327-361);
+                    # doing that inside capture fails with
                     # CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. One eager call per
                     # shape reproduces serving's order; it changes when state is
                     # initialized, not which all-reduce implementation runs.
                     # 0.31.0 memoizes a failed creation
-                    # (flashinfer_all_reduce.py:186-187,229 @v0.31.0): the eager
+                    # (flashinfer_all_reduce.py:186-187,229): the eager
                     # call then disables FlashInfer AR for the process exactly as
                     # serving's first call would, and dispatch falls through to
                     # the next backend in cuda_communicator.py:335-400.
@@ -616,11 +616,10 @@ def benchmark_vllm_allreduce(
                     del warm
                     # Serving captures into the platform graph pool and publishes
                     # it to the NCCL symmetric-memory allocator first
-                    # (compilation/cuda_graph.py:305-318 @v0.31.0, byte-identical
-                    # to @v0.30.0); the symm-mem all-reduce asserts it under
-                    # capture (pynccl_allocator.py:169-174 @v0.31.0, :168-173
-                    # @v0.30.0). Older vLLM has no such hook.
-                    # Dispatch order and size thresholds are unchanged at 0.31.0:
+                    # (compilation/cuda_graph.py:305-318); the symm-mem
+                    # all-reduce asserts it under capture
+                    # (pynccl_allocator.py:169-174).
+                    # Dispatch order and size thresholds:
                     # CudaCommunicator.all_reduce (cuda_communicator.py:335-400),
                     # FlashInferAllReduce.should_use_fi_ar
                     # (flashinfer_all_reduce.py:432-483), CustomAllreduce
@@ -847,7 +846,7 @@ def benchmark_sglang_allreduce(
         # SGLang 0.5.20 publishes through runtime_context, which resolves the
         # real ServerArgs (publish -> resolve_once); a bare mock is rejected.
         # model_path="dummy" returns early from resolution
-        # (arg_groups/pipeline.py:121 @v0.5.20); enable_symm_mem stays False.
+        # (arg_groups/pipeline.py:121); enable_symm_mem stays False.
         set_global_server_args_for_scheduler(ServerArgs(model_path="dummy", enable_symm_mem=False))
     else:
         set_global_server_args_for_scheduler(MockServerArgs())

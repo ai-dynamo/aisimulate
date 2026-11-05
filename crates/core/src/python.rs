@@ -24,7 +24,7 @@ use crate::replay::{
     loadgen::{
         AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
-        ValidatedAgenticGraph, WekaImportOptions, WekaNestedTimestampBasis,
+        ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
         WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
         load_weka_agentic_graph_cached,
     },
@@ -123,6 +123,8 @@ struct RuntimeTraffic {
     trace_block_size: Option<usize>,
     #[serde(default)]
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    #[serde(default)]
+    weka_client: Option<WekaClient>,
     /// Keep the loaded Weka graph for later runs in this process (sweeps).
     #[serde(default)]
     trace_graph_cache: bool,
@@ -255,15 +257,25 @@ fn validate_public_agentic_engine(
         .iter()
         .any(|role| role.rank.native_host_offload.is_some())
     {
-        let single_worker_per_role = match &spec.topology {
-            ReplayTopology::Aggregated { workers } => workers.initial_workers == 1,
+        let qualified_workers = match &spec.topology {
+            // Each aggregated worker owns a private G2, and the warm-up
+            // barrier waits on every worker's G2 work. A shared pool and P/D
+            // keep one worker per role.
+            ReplayTopology::Aggregated { workers } => {
+                workers.initial_workers == 1
+                    || roles[0]
+                        .rank
+                        .native_host_offload
+                        .as_ref()
+                        .is_some_and(|host| host.scope == crate::engine::G2Scope::DpRankLocal)
+            }
             ReplayTopology::Disaggregated {
                 prefill, decode, ..
             } => prefill.initial_workers == 1 && decode.initial_workers == 1,
         };
         ensure!(
-            single_worker_per_role,
-            "agentic host offload requires one aggregated worker or one prefill and one decode worker"
+            qualified_workers,
+            "agentic host offload requires one aggregated worker or one prefill and one decode worker, or static aggregated workers with scope=dp_rank_local"
         );
         ensure!(
             spec.adapters.scaling.provider == "none",
@@ -3470,6 +3482,10 @@ fn build_runtime_input(
             || (traffic.agentic_warmup && traffic.agentic_profile.is_some()),
         "live_trajectory_v1 requires agentic_warmup and agentic_profile"
     );
+    ensure!(
+        traffic.agentic_warmup_policy != AgenticWarmupPolicy::PrimersOnly || traffic.agentic_warmup,
+        "primers_only requires agentic_warmup"
+    );
     if let Some(profile) = &traffic.agentic_profile {
         profile.validate()?;
         ensure!(
@@ -3501,6 +3517,11 @@ fn build_runtime_input(
     ensure!(
         traffic.source_type == "trace" || traffic.weka_nested_timestamp_basis.is_none(),
         "weka_nested_timestamp_basis requires Weka trace input"
+    );
+    ensure!(
+        traffic.weka_client.is_none()
+            || (traffic.source_type == "trace" && traffic.trace_format.as_deref() == Some("weka")),
+        "weka_client requires Weka trace input"
     );
     if traffic.source_type == "trace" {
         let paths = runtime_paths(&traffic)?;
@@ -3570,6 +3591,7 @@ fn build_runtime_input(
                 traffic.trace_block_size,
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
+                    client: traffic.weka_client.unwrap_or_default(),
                 },
                 traffic.trace_graph_cache,
             )?;
@@ -5340,6 +5362,76 @@ mod tests {
                     execute_json(&invalid.to_string(), false).unwrap_err()
                 )
                 .contains("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+            );
+        }
+    }
+
+    #[test]
+    fn public_primers_only_warmup_sends_only_primers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("primers-weka.jsonl");
+        // One conversation: each request extends the previous prompt by a block.
+        let rows = (1..=3)
+            .map(|turn| {
+                serde_json::json!({
+                    "t": (turn - 1) as f64 * 0.1, "type": "s", "model": "model",
+                    "in": 4 * turn, "out": 3, "hash_ids": (1..=turn).collect::<Vec<_>>(),
+                    "api_time": 0.001
+                })
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "id": "play", "models": ["model"], "block_size": 4,
+                "hash_id_scope": "local", "requests": rows
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for backend in ["vllm", "sglang"] {
+            let mut payload = serde_json::json!({
+                "spec": {
+                    "version": 1, "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                    "engine": {"rank": {"backend": backend, "block_size": 4, "num_gpu_blocks": 64,
+                        "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}}},
+                    "requests": []
+                },
+                "traffic": {"source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                    "trace_path": path, "trace_block_size": 4, "execution_model": "model",
+                    "agentic_lanes": 1, "agentic_warmup": true, "agentic_warmup_policy": "primers_only",
+                    "agentic_snapshot": {"seed": 42}}
+            });
+            let sampled: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+            let play = sampled["agentic_snapshots"][0]["source_play_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            payload["traffic"]["agentic_snapshot"] = serde_json::json!({
+                "seed": 42, "corpus_cursor": 1,
+                "initial_selections": [{"source_play_id": play, "t_star_ms": 150.0}]
+            });
+            let report: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+            let phases = &report["agentic_phases"];
+            assert_eq!(phases["phase"], "profile", "{backend}: {report}");
+            assert_eq!(phases["warmup_policy"], "primers_only");
+            // The cut at 150 ms leaves requests at 0 and 100 ms behind it; the one
+            // at 100 ms is the conversation's primer.
+            let lane = &phases["lanes"][0];
+            assert_eq!(lane["primers_expected"], 1, "{backend}: {lane}");
+            assert_eq!(lane["primers_completed"], 1);
+            assert_eq!(lane["warmup_expected"], 0);
+            assert_eq!(lane["warmup_completed"], 0);
+            assert!(report["completed_requests"].as_u64().unwrap() > 0);
+            payload["traffic"]["agentic_warmup"] = false.into();
+            assert!(
+                format!(
+                    "{:#}",
+                    execute_json(&payload.to_string(), false).unwrap_err()
+                )
+                .contains("primers_only requires agentic_warmup")
             );
         }
     }

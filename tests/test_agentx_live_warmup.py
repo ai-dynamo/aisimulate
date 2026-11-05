@@ -171,6 +171,27 @@ def test_live_warmup_requires_preparation_and_continuous_profile(missing):
         TrafficPredictionConfig.model_validate(source)
 
 
+def test_primers_only_requires_preparation_but_not_a_profile():
+    source = traffic()
+    source["load"]["agentic_warmup_policy"] = "primers_only"
+    source["load"].pop("agentic_profile")
+    assert TrafficPredictionConfig.model_validate(source).load.agentic_warmup_policy == "primers_only"
+    source["load"].pop("agentic_warmup")
+    with pytest.raises(ValidationError, match="primers_only requires agentic_warmup"):
+        TrafficPredictionConfig.model_validate(source)
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 2,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup_policy": "primers_only",
+    }
+    with pytest.raises(ValidationError, match="primers_only requires agentic_warmup"):
+        Workload.model_validate(workload)
+
+
 @pytest.mark.parametrize("policy", [True, "live", {}, None])
 def test_live_warmup_rejects_unknown_policy(policy):
     source = traffic()
@@ -195,8 +216,11 @@ def test_live_warmup_workload_serialization_keeps_the_policy_explicit():
     assert Workload.model_validate(data).model_dump()["agentic_warmup_policy"] == "live_trajectory_v1"
 
 
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
 @pytest.mark.parametrize("stack,online", [("legacy", False), ("engine", True)])
-def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(tmp_path, monkeypatch, capsys, stack, online):
+def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(
+    tmp_path, monkeypatch, capsys, stack, online, policy
+):
     from aisimulate import cli_args, supervision
 
     prior = tmp_path / "prediction.json"
@@ -209,6 +233,7 @@ def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(tmp_path, m
         },
         "traffic": traffic(),
     }
+    raw["traffic"]["load"]["agentic_warmup_policy"] = policy
     monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
     monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
     calls = []
@@ -233,7 +258,7 @@ def test_supervisor_rejects_unsupported_live_warmup_before_overwrite(tmp_path, m
     with pytest.raises(SystemExit) as exc:
         supervision.main(arguments)
     assert exc.value.code == 2
-    assert "live_trajectory_v1 CLI requires offline --stack engine" in capsys.readouterr().err
+    assert f"{policy} CLI requires offline --stack engine" in capsys.readouterr().err
     assert not calls
     assert prior.read_bytes() == b"previous valid results\n"
 

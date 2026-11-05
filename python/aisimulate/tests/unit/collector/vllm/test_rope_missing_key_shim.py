@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """vLLM 0.30/0.31 rope q_pe alone (key=None) in the DSV3.2 dense-MHA FP8 branch
-(models/deepseek_v32/attention.py:534 @0.30.0). Only DeepseekScalingRotaryEmbedding
+(models/deepseek_v32/attention.py:534). Only DeepseekScalingRotaryEmbedding
 rejects that; the collector wraps THAT class's forward so the call ropes the query
 against a throwaway key that shares the query's strides and returns (query, None).
 Rotary classes that accept key=None (GLM-5.x's RotaryEmbedding) stay on serving's call:
 wrapping them handed vLLM's own rope kernel — one head stride for query and key — a
 contiguous key with the wrong head stride, i.e. out-of-bounds in-place writes (the
-GLM-5.2 fp8-KV dsa_context illegal-address / stall family, 2026-10-14)."""
+GLM-5.2 fp8-KV dsa_context illegal-address / stall family)."""
 
 import ast
 import math
@@ -99,7 +99,7 @@ def test_missing_key_is_replaced_by_a_throwaway_copy_and_dropped():
 
 def test_throwaway_key_shares_the_query_strides_not_a_contiguous_clone():
     # vLLM's rope kernel addresses the key with the QUERY's head stride
-    # (csrc/libtorch_stable/pos_encoding_kernels.cu:57,68,164-165 @0.30.0). A contiguous clone of
+    # (csrc/libtorch_stable/pos_encoding_kernels.cu:57,68,164-165). A contiguous clone of
     # the q_pe slice (head stride 64 vs 256) is written past its end by 192*(heads-1) elements.
     seen = []
 
