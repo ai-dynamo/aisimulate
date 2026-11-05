@@ -709,7 +709,9 @@ mod tests {
                     .to_string()
                     .contains("conflicts")
             );
-            assert_eq!(place(&mut policy, None, None).unwrap(), 20);
+            // Rank-preferring placements advance their own cursor, so the
+            // rank-agnostic rotation still starts at the head of the pool.
+            assert_eq!(place(&mut policy, None, None).unwrap(), 10);
             if draining {
                 PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
                     .unwrap();

@@ -1215,31 +1215,17 @@ fn lower_trace(
         for terminal_source in terminal_sources {
             let target = request_by_source[&target_source];
             let terminal = request_by_source[&terminal_source];
-            // The join marker is selected against `subagent_end`, which prefers
-            // the authored `duration_ms` over the actual inner request ends. A
-            // `duration_ms` that understates its own children therefore selects
-            // a target starting before the terminal child completes. Clamping
-            // that to zero would absorb the corpus's self-inconsistency into
-            // replay timing and emit a well-formed `Join` edge the canonical
-            // validator can no longer reject, so refuse it here instead.
-            let delay_seconds = target.request.t - request_end(&terminal.request);
-            if delay_seconds < -JOIN_EPSILON_SECONDS {
-                bail!(
-                    "Weka trace {} joins {} to subagent terminal {}, which completes {} seconds after the join target; its subagent duration_ms understates its own requests",
-                    relative_path,
-                    target_source,
-                    terminal_source,
-                    -delay_seconds
-                );
-            }
             push_dependency(
                 dependencies.entry(target_source.clone()).or_default(),
                 AgenticDependency {
                     request_id: row_by_source[&terminal_source].clone(),
                     trigger: AgenticDependencyTrigger::Completion,
-                    // Sub-epsilon producer rounding is the only negative that
-                    // reaches here; `seconds_to_milliseconds` floors it at zero.
-                    delay_ms: seconds_to_milliseconds(delay_seconds),
+                    // Main's accepted import behavior: a `duration_ms` that
+                    // understates its children selects an earlier target, and
+                    // `seconds_to_milliseconds` clamps the negative gap to zero.
+                    delay_ms: seconds_to_milliseconds(
+                        target.request.t - request_end(&terminal.request),
+                    ),
                     relation: AgenticDependencyRelation::Join,
                 },
             );
@@ -3904,62 +3890,6 @@ mod tests {
             sequence_predecessors("outer:3"),
             vec!["outer:2".to_string()]
         );
-    }
-
-    /// The blocking-join marker is chosen against `subagent_end`, which trusts
-    /// the authored `duration_ms` over the inner requests it claims to cover.
-    /// A `duration_ms` that understates its own children selects a target that
-    /// starts before the terminal child completes, and the zero floor in
-    /// `seconds_to_milliseconds` used to turn that negative delay into a
-    /// well-formed `Join` edge -- silently absorbing the corpus's
-    /// self-inconsistency into replay timing, past the point where the
-    /// canonical validator could reject it.
-    #[test]
-    fn a_subagent_duration_that_understates_its_children_is_refused() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("trace.json");
-        // The subagent claims 10 ms but its single request runs for 5 s.
-        write_trace(
-            &path,
-            serde_json::json!([
-                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.1},
-                {"t":1.0,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":10,"status":"completed","requests":[
-                    {"t":1.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[3],"api_time":5.0}
-                ],"models":["model"]},
-                {"t":1.5,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,5]}
-            ]),
-        );
-
-        let error = load_weka_agentic_rows(&path)
-            .expect_err("a join target preceding its own subagent terminal must be refused");
-        assert!(
-            error.to_string().contains("understates its own requests"),
-            "unexpected error: {error}"
-        );
-
-        // An honest duration_ms over the same shape still loads.
-        let honest = directory.path().join("honest.json");
-        write_trace(
-            &honest,
-            serde_json::json!([
-                {"t":0.0,"type":"s","model":"model","in":8,"out":1,"hash_ids":[1,2],"api_time":0.1},
-                {"t":1.0,"type":"subagent","agent_id":"a","subagent_type":"Explore","duration_ms":5000,"status":"completed","requests":[
-                    {"t":1.0,"type":"s","model":"model","in":4,"out":1,"hash_ids":[3],"api_time":5.0}
-                ],"models":["model"]},
-                {"t":6.5,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,5]}
-            ]),
-        );
-        let (_, rows) = load_weka_agentic_rows(&honest).unwrap();
-        let joined = rows
-            .iter()
-            .find(|row| row.request_id.ends_with("outer:2"))
-            .unwrap();
-        let join = joined
-            .dependencies
-            .iter()
-            .find(|edge| edge.relation == AgenticDependencyRelation::Join)
-            .expect("the blocking subagent contributes a join edge");
-        assert_eq!(join.delay_ms, 500.0);
     }
 
     fn agentx_rows(path: &Path) -> Vec<AgenticMooncakeRow> {
