@@ -3262,7 +3262,10 @@ mod tests {
             assert_eq!(row.itl_ms, Some(7.5)); // Native TPOT keeps its existing definition.
             // One request sample, 1000 / 7.5, not the per-gap mean of 1000 / 10.
             let user_tps = &report.latency.output_token_throughput_per_user;
-            assert!((user_tps.mean_ms - 1000.0 / 7.5).abs() < 1e-9, "{user_tps:?}");
+            assert!(
+                (user_tps.mean_ms - 1000.0 / 7.5).abs() < 1e-9,
+                "{user_tps:?}"
+            );
         }
     }
 
