@@ -51,7 +51,8 @@ _FPM_ROLES = frozenset({"primary", "comparator", "reference", "historical", "qua
 _FPM_PHASES = frozenset({"prefill", "decode"})
 _SNAPSHOT_STATUSES = frozenset({"current", "historical"})
 _FPM_SCHEMA_NAMES = frozenset({"aic_fpm_forward_perf", "fpm_forward_perf"})
-_FPM_SCHEMA_VERSIONS = frozenset({6, 7})
+# Schema 8 adds per-row power_w and keeps the v7 execution identity.
+_FPM_SCHEMA_VERSIONS = frozenset({6, 7, 8})
 _FPM_V7_SELECTOR_FIELDS = frozenset(
     {
         "gemm_quant_mode",
@@ -725,7 +726,7 @@ class HfDataset:
         selector = {"dcp": 1, **selector}
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
-        if metadata["schema_version"] == 7:
+        if metadata["schema_version"] >= 7:
             expected_fields |= _FPM_V7_SELECTOR_FIELDS | (_FPM_V7_OPTIONAL_SELECTOR_FIELDS & selector_fields)
         if selector_fields != expected_fields:
             missing = sorted(expected_fields - selector_fields)
@@ -742,7 +743,7 @@ class HfDataset:
         if mismatches:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
         parquet_identity = dict(expected_identity)
-        if metadata["schema_version"] == 7:
+        if metadata["schema_version"] >= 7:
             execution_fields = expected_fields - set(expected_identity)
             for field in execution_fields:
                 value = selector[field]

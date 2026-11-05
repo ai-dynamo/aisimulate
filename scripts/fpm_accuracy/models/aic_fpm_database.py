@@ -49,8 +49,12 @@ def prepare_aic_fpm_database(
     if not parquet_path.is_file() or not metadata_path.is_file():
         raise ConfigurationError(f"FPM artifact {artifact.artifact_id!r} is not materialized locally")
     metadata = _read_metadata(metadata_path)
-    if metadata.get("schema_version") == 7:
-        raise DependencyError("FPM schema v7 execution identity is not yet supported by the Gym worker adapter.")
+    schema_version = metadata.get("schema_version")
+    # Schema 8 carries the same execution identity as schema 7.
+    if type(schema_version) is int and schema_version >= 7:
+        raise DependencyError(
+            f"FPM schema v{schema_version} execution identity is not yet supported by the Gym worker adapter."
+        )
 
     temporary = TemporaryDirectory(prefix="aisim-fpm-")
     systems_root = Path(temporary.name)

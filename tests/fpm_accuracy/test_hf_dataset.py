@@ -113,7 +113,7 @@ def _build_dataset(
         }
         if dcp is not None:
             configuration_selector["dcp"] = dcp
-        if fpm_schema_version == 7:
+        if fpm_schema_version >= 7:
             configuration_selector.update(
                 gemm_quant_mode="bfloat16",
                 moe_quant_mode="bfloat16",
@@ -1467,7 +1467,7 @@ def test_fpm_physical_row_count_is_verified(tmp_path: Path) -> None:
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
-@pytest.mark.parametrize("fpm_schema_version", [6, 7])
+@pytest.mark.parametrize("fpm_schema_version", [6, 7, 8])
 def test_fpm_sidecar_selector_must_match_selected_configuration(tmp_path: Path, fpm_schema_version) -> None:
     content = f"{json.dumps(_fpm_payload())}\n".encode()
     dataset = _build_dataset(
@@ -1485,8 +1485,11 @@ def test_fpm_sidecar_selector_must_match_selected_configuration(tmp_path: Path, 
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
-def test_v7_execution_identity_must_match_parquet(tmp_path):
-    dataset = _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=7)
+@pytest.mark.parametrize("fpm_schema_version", [7, 8])
+def test_v7_execution_identity_must_match_parquet(tmp_path, fpm_schema_version):
+    dataset = _build_dataset(
+        tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=fpm_schema_version
+    )
     metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
     metadata = json.loads(metadata_path.read_text())
     metadata["configuration_selector"]["execution_profile"] = "full"
@@ -1506,13 +1509,14 @@ V7_COLLECTION_FIELDS = {
 }
 
 
+@pytest.mark.parametrize("fpm_schema_version", [7, 8])
 @pytest.mark.parametrize("extensions", [V7_COLLECTION_FIELDS, {"warmup_repeats": 0}])
-def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions):
+def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions, fpm_schema_version):
     dataset = _build_dataset(
         tmp_path,
         protocol_id="forward-pass-record-v1",
         files=[],
-        fpm_schema_version=7,
+        fpm_schema_version=fpm_schema_version,
         selector_extensions=extensions,
     )
     case = dataset.measurement_case(CONFIGURATION_PATH)
@@ -1583,7 +1587,10 @@ def test_malformed_v7_collection_selector_fails_even_when_parquet_agrees(tmp_pat
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
-@pytest.mark.parametrize("version,extensions", [(6, V7_COLLECTION_FIELDS), (7, {"unknown_policy": "value"})])
+@pytest.mark.parametrize(
+    "version,extensions",
+    [(6, V7_COLLECTION_FIELDS), (7, {"unknown_policy": "value"}), (8, {"unknown_policy": "value"})],
+)
 def test_selector_extensions_remain_closed_to_unknown_fields(tmp_path, version, extensions):
     dataset = _build_dataset(
         tmp_path,
@@ -1639,7 +1646,7 @@ def test_malformed_v7_selector_fails_even_when_parquet_agrees(tmp_path, field, v
         dataset.measurement_case(CONFIGURATION_PATH)
 
 
-@pytest.mark.parametrize("version", [8, "7", 7.0, {"version": 7}])
+@pytest.mark.parametrize("version", [9, "7", 7.0, {"version": 7}])
 def test_unknown_or_malformed_fpm_schema_fails_closed(tmp_path, version):
     dataset = _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[])
     metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"

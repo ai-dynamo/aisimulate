@@ -50,12 +50,15 @@ use std::sync::{Mutex, OnceLock};
 use sha2::{Digest, Sha256};
 
 use super::parquet_loader::PerfReader;
-use super::perf_interp::{Node, SiteIndex};
+use super::perf_interp::{LeafValue, Node, SiteIndex};
 use crate::common::error::AicError;
 
 pub const FPM_FORWARD_BASENAME: &str = "fpm_forward_perf.parquet";
 pub const FPM_FORWARD_SCHEMA_NAME: &str = "aic_fpm_forward_perf";
 pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 7;
+/// Schema 8 adds the required nullable per-row `power_w` column (W per GPU)
+/// and admits only [`FPM_FORWARD_POWER_MEASUREMENT_POLICY`].
+pub const FPM_FORWARD_POWER_SCHEMA_VERSION: u64 = 8;
 pub const FPM_FORWARD_COORDINATE_SYSTEM: &str = "iteration_totals_balanced_v1";
 pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// Legacy single-sample policy. Schema 7 also admits the per-row self-benchmark
@@ -64,6 +67,9 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
 pub const FPM_NATIVE_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_fpm_model_step_cuda_v1";
 pub const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
+/// Single-sample latency plus a separate >= 1 s power window (schema 8, vLLM).
+pub const FPM_FORWARD_POWER_MEASUREMENT_POLICY: &str =
+    "dynamo_native_single_sample_power_window_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
@@ -84,6 +90,8 @@ enum MeasurementPolicy {
     /// Full text autoregressive execution: the complete native vLLM model
     /// step CUDA time, including sampling, with the same sample selection.
     NativeArCudaActualSample,
+    /// Schema 8: single-sample latency with a per-row `power_w` column.
+    SingleSamplePowerWindow,
 }
 
 impl MeasurementPolicy {
@@ -96,6 +104,7 @@ impl MeasurementPolicy {
             Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
             Self::NativeCudaActualSample => FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
             Self::NativeArCudaActualSample => FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+            Self::SingleSamplePowerWindow => FPM_FORWARD_POWER_MEASUREMENT_POLICY,
         }
     }
 
@@ -107,7 +116,8 @@ impl MeasurementPolicy {
             | Self::VllmNativeFpmMedian
             | Self::SglangNativeFpmMedian
             | Self::NativeCudaActualSample
-            | Self::NativeArCudaActualSample => None,
+            | Self::NativeArCudaActualSample
+            | Self::SingleSamplePowerWindow => None,
         }
     }
 
@@ -117,7 +127,8 @@ impl MeasurementPolicy {
             | Self::PerRow
             | Self::PerRowFullGrid
             | Self::NativeCudaActualSample
-            | Self::NativeArCudaActualSample => None,
+            | Self::NativeArCudaActualSample
+            | Self::SingleSamplePowerWindow => None,
             Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
             Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
@@ -129,7 +140,8 @@ impl MeasurementPolicy {
             | Self::PerRow
             | Self::PerRowFullGrid
             | Self::NativeCudaActualSample
-            | Self::NativeArCudaActualSample => None,
+            | Self::NativeArCudaActualSample
+            | Self::SingleSamplePowerWindow => None,
             Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
             Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
@@ -560,9 +572,13 @@ fn validate_sidecar(
         )));
     }
     let schema_version = json_uint(metadata.get("schema_version"));
-    if !matches!(schema_version, Some(6 | FPM_FORWARD_SCHEMA_VERSION)) {
+    if !matches!(
+        schema_version,
+        Some(6 | FPM_FORWARD_SCHEMA_VERSION | FPM_FORWARD_POWER_SCHEMA_VERSION)
+    ) {
         return Err(structural(format!(
-            "unsupported FPM schema_version={:?} (expected {FPM_FORWARD_SCHEMA_VERSION}): {}",
+            "unsupported FPM schema_version={:?} (expected 6, {FPM_FORWARD_SCHEMA_VERSION} or \
+             {FPM_FORWARD_POWER_SCHEMA_VERSION}): {}",
             metadata.get("schema_version"),
             metadata_path.display()
         )));
@@ -581,9 +597,17 @@ fn validate_sidecar(
         schema_version,
         backend,
     ) {
-        (Some(FPM_FORWARD_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::SingleSample,
-        (Some(FPM_ROW_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRow,
-        (Some(FPM_FULL_GRID_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRowFullGrid,
+        (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(6 | 7), _) => MeasurementPolicy::SingleSample,
+        (Some(FPM_ROW_MEASUREMENT_POLICY), Some(6 | 7), _) => MeasurementPolicy::PerRow,
+        (Some(FPM_FULL_GRID_MEASUREMENT_POLICY), Some(6 | 7), _) => {
+            MeasurementPolicy::PerRowFullGrid
+        }
+        // V1 power is produced by the Dynamo vLLM self-benchmark only.
+        (
+            Some(FPM_FORWARD_POWER_MEASUREMENT_POLICY),
+            Some(FPM_FORWARD_POWER_SCHEMA_VERSION),
+            "vllm",
+        ) => MeasurementPolicy::SingleSamplePowerWindow,
         (Some("vllm_native_fpm_prefix_seed_median_v1"), Some(7), "vllm") => {
             MeasurementPolicy::VllmNativeFpmMedian
         }
@@ -704,6 +728,8 @@ struct FpmRow {
     total_prefill_tokens: u32,
     total_kv_read_tokens: u32,
     latency_ms: f64,
+    /// Schema-8 `power_w` (W per GPU); `None` for a null cell and for v6/v7.
+    power_w: Option<f64>,
     /// `kv_seed_regime == "fake_fallback"`: latency is a fabricated-seed
     /// measurement, healed by the replacement pass.
     fake_fallback: bool,
@@ -787,6 +813,19 @@ fn load_pair(
         int_idx.insert(name, reader.col(name)?);
     }
     let latency_col = reader.col("latency_ms")?;
+    // Schema 8 requires a nullable DOUBLE `power_w`; v6/v7 never read it.
+    let power_col = (sidecar.schema_version == FPM_FORWARD_POWER_SCHEMA_VERSION)
+        .then(|| reader.col("power_w"))
+        .transpose()?;
+    if let Some(col) = power_col {
+        let physical = reader.physical_type(col);
+        if physical != parquet::basic::Type::DOUBLE {
+            return Err(structural(format!(
+                "FPM power_w column must be DOUBLE, got {physical}: {}",
+                parquet_path.display()
+            )));
+        }
+    }
     // KV-seed provenance column (additive; absent in pairs that predate it).
     // Resolved once here; per-row reads treat null the same as absence.
     let kv_seed_col = reader.col_optional("kv_seed_regime");
@@ -985,6 +1024,15 @@ fn load_pair(
                 "FPM row {index} has non-finite/non-positive latency_ms={latency_ms:?}"
             )));
         }
+        let power_w = power_col
+            .map(|col| row.f64_nullable_strict(col))
+            .transpose()?
+            .flatten();
+        if power_w.is_some_and(|w| !w.is_finite() || w <= 0.0) {
+            return Err(structural(format!(
+                "FPM row {index} has non-finite/non-positive power_w={power_w:?}"
+            )));
+        }
         // Coordinates: `PerfRow::u32` already rejects negatives loudly, which
         // subsumes Python's `batch >= 1 / totals >= 0` sign checks.
         let batch_size = get_int("batch_size")?;
@@ -1162,6 +1210,7 @@ fn load_pair(
             total_prefill_tokens,
             total_kv_read_tokens,
             latency_ms,
+            power_w,
             fake_fallback,
             real_kv_anchor,
         });
@@ -1228,20 +1277,21 @@ fn load_pair(
     if !replace_fake_fallback {
         kept_fake_fallback = rows.iter().filter(|r| r.fake_fallback).count() as u64;
     } else if rows.iter().any(|r| r.fake_fallback) {
-        // (cell key, batch rung) -> real_kv anchors as (kv, latency).
-        let mut anchors: BTreeMap<(Vec<String>, u32), Vec<(u32, f64)>> = BTreeMap::new();
+        // (cell key, batch rung) -> real_kv anchors as (kv, latency, power).
+        type Anchor = (u32, f64, Option<f64>);
+        let mut anchors: BTreeMap<(Vec<String>, u32), Vec<Anchor>> = BTreeMap::new();
         for row in &rows {
             if row.workload_kind == "decode" && row.real_kv_anchor {
                 anchors
                     .entry((row.cell_key(), row.batch_size))
                     .or_default()
-                    .push((row.total_kv_read_tokens, row.latency_ms));
+                    .push((row.total_kv_read_tokens, row.latency_ms, row.power_w));
             }
         }
         for list in anchors.values_mut() {
             // Distinct kvs guaranteed: the coordinate-collision check above
             // already rejected same-(cell, phase, batch, kv) row pairs.
-            list.sort_unstable_by_key(|&(kv, _)| kv);
+            list.sort_unstable_by_key(|&(kv, _, _)| kv);
         }
         for row in &mut rows {
             if !row.fake_fallback {
@@ -1253,22 +1303,25 @@ fn load_pair(
                     // Anchors strictly below the fake rung (the list is
                     // kv-sorted; the collision check above guarantees no
                     // anchor shares the fake row's kv coordinate).
-                    let below = list.partition_point(|&(kv, _)| kv < row.total_kv_read_tokens);
+                    let below = list.partition_point(|&(kv, _, _)| kv < row.total_kv_read_tokens);
                     if below >= 2 {
-                        let (k1, l1) = list[below - 2];
-                        let (k2, l2) = list[below - 1];
+                        let (k1, l1, _) = list[below - 2];
+                        let (k2, l2, p2) = list[below - 1];
                         let slope = (l2 - l1) / (f64::from(k2) - f64::from(k1));
                         let value =
                             l2 + (f64::from(row.total_kv_read_tokens) - f64::from(k2)) * slope;
                         if value.is_finite() && value > 0.0 {
-                            healed = Some(value);
+                            healed = Some((value, p2));
                         }
                     }
                 }
             }
             match healed {
-                Some(value) => {
+                Some((value, power_w)) => {
                     row.latency_ms = value;
+                    // Power is held from the nearest real anchor below (missing
+                    // stays missing), not extrapolated like latency.
+                    row.power_w = power_w;
                     replaced_fake_fallback += 1;
                 }
                 None => kept_fake_fallback += 1,
@@ -1308,6 +1361,14 @@ fn load_pair(
         if !building.cell.cell_ids.contains(&row.cell_id) {
             building.cell.cell_ids.push(row.cell_id.clone());
         }
+        // v8 rows always carry power: NaN means "measured latency, unknown
+        // power". Never `latency_only` there, whose 0.0 power would blend into
+        // neighbours as a real value. v6/v7 rows stay latency-only.
+        let leaf = if power_col.is_some() {
+            LeafValue::with_power(row.latency_ms, row.power_w.unwrap_or(f64::NAN))
+        } else {
+            LeafValue::latency_only(row.latency_ms)
+        };
         if row.workload_kind == "prefill" {
             if !row.fake_fallback {
                 building
@@ -1317,13 +1378,13 @@ fn load_pair(
                     .or_default()
                     .insert(row.total_prefill_tokens, row.latency_ms);
             }
-            building.cell.prefill.insert(
+            building.cell.prefill.insert_value(
                 &[
                     row.batch_size,
                     row.total_prefill_tokens,
                     row.total_kv_read_tokens,
                 ],
-                row.latency_ms,
+                leaf,
             );
         } else {
             if !row.fake_fallback {
@@ -1337,7 +1398,7 @@ fn load_pair(
             building
                 .cell
                 .decode
-                .insert(&[row.batch_size, row.total_kv_read_tokens], row.latency_ms);
+                .insert_value(&[row.batch_size, row.total_kv_read_tokens], leaf);
         }
     }
 
@@ -1586,6 +1647,21 @@ pub(crate) mod tests {
         pub execution: Option<[&'static str; 4]>,
         pub median: Option<MeasurementSpec>,
         pub native_cuda: Option<NativeCudaSampleSpec>,
+        /// `power_w` cell. When any row sets it, the writer emits an OPTIONAL
+        /// column of that variant's physical type (rows with `None` are
+        /// null), forces the execution columns, and writes a schema-8 power
+        /// sidecar.
+        pub power_w: Option<PowerCell>,
+    }
+
+    /// Typed `power_w` cell. Every row that sets one must use the same
+    /// variant; non-`Double` variants exist to test the physical-type gate.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum PowerCell {
+        Double(Option<f64>),
+        Float(f32),
+        Int64(i64),
+        Utf8(&'static str),
     }
 
     pub(crate) struct NativeCudaSampleSpec {
@@ -1630,6 +1706,7 @@ pub(crate) mod tests {
                 execution: None,
                 median: None,
                 native_cuda: None,
+                power_w: None,
             }
         }
     }
@@ -1674,7 +1751,7 @@ pub(crate) mod tests {
         ]
     }
 
-    /// Write the legacy-v6 or execution-bound-v7 parquet + sha256'd sidecar pair into `dir`.
+    /// Write the legacy-v6, execution-bound-v7 or powered-v8 parquet + sha256'd sidecar pair into `dir`.
     pub(crate) fn write_pair(dir: &Path, rows: &[RowSpec]) -> PathBuf {
         write_pair_with(dir, rows, |_| {})
     }
@@ -1696,7 +1773,9 @@ pub(crate) mod tests {
         let has_kv_seed = rows.iter().any(|r| r.kv_seed_regime.is_some());
         let has_dcp = rows.iter().any(|r| r.dcp.is_some());
         let has_measurement = rows.iter().any(|r| r.measurement.is_some());
-        let has_execution = rows.iter().any(|r| r.execution.is_some());
+        let power_kind = rows.iter().find_map(|r| r.power_w);
+        // Schema 8 carries the schema-7 execution identity.
+        let has_execution = rows.iter().any(|r| r.execution.is_some()) || power_kind.is_some();
         let has_median = rows.iter().any(|r| r.median.is_some());
         let has_native_cuda = rows.iter().any(|r| r.native_cuda.is_some());
         let schema = "message schema {
@@ -1777,6 +1856,18 @@ pub(crate) mod tests {
             schema.replace('}', "REQUIRED BINARY measurement_policy (UTF8);\nREQUIRED BINARY timing_scope (UTF8);\nREQUIRED BINARY measurement_reduction (UTF8);\nREQUIRED INT64 source_sample_count;\n}")
         } else {
             schema
+        };
+        let schema = match power_kind {
+            None => schema,
+            Some(kind) => {
+                let column = match kind {
+                    PowerCell::Double(_) => "OPTIONAL DOUBLE power_w;",
+                    PowerCell::Float(_) => "OPTIONAL FLOAT power_w;",
+                    PowerCell::Int64(_) => "OPTIONAL INT64 power_w;",
+                    PowerCell::Utf8(_) => "OPTIONAL BINARY power_w (UTF8);",
+                };
+                schema.replace('}', &format!("{column}\n}}"))
+            }
         };
         let schema = Arc::new(parse_message_type(&schema).expect("schema must parse"));
         let file = std::fs::File::create(&parquet_path).expect("create parquet");
@@ -2011,6 +2102,50 @@ pub(crate) mod tests {
                 .unwrap();
             col.close().unwrap();
         }
+        if let Some(kind) = power_kind {
+            // OPTIONAL column: a row whose cell maps to `None` is a null.
+            fn write_power<T: parquet::data_type::DataType>(
+                col: &mut parquet::file::writer::SerializedColumnWriter<'_>,
+                rows: &[RowSpec],
+                value: impl Fn(PowerCell) -> Option<T::T>,
+            ) {
+                let cells: Vec<Option<T::T>> =
+                    rows.iter().map(|r| r.power_w.and_then(&value)).collect();
+                let def_levels: Vec<i16> = cells.iter().map(|c| i16::from(c.is_some())).collect();
+                let values: Vec<T::T> = cells.into_iter().flatten().collect();
+                col.typed::<T>()
+                    .write_batch(&values, Some(&def_levels), None)
+                    .unwrap();
+            }
+            assert!(
+                rows.iter()
+                    .filter_map(|r| r.power_w)
+                    .all(|c| std::mem::discriminant(&c) == std::mem::discriminant(&kind)),
+                "mixed power_w cell types"
+            );
+            let mut col = rg.next_column().unwrap().unwrap();
+            match kind {
+                PowerCell::Double(_) => write_power::<DoubleType>(&mut col, rows, |c| match c {
+                    PowerCell::Double(v) => v,
+                    _ => None,
+                }),
+                PowerCell::Float(_) => {
+                    write_power::<parquet::data_type::FloatType>(&mut col, rows, |c| match c {
+                        PowerCell::Float(v) => Some(v),
+                        _ => None,
+                    })
+                }
+                PowerCell::Int64(_) => write_power::<Int64Type>(&mut col, rows, |c| match c {
+                    PowerCell::Int64(v) => Some(v),
+                    _ => None,
+                }),
+                PowerCell::Utf8(_) => write_power::<ByteArrayType>(&mut col, rows, |c| match c {
+                    PowerCell::Utf8(v) => Some(v.into()),
+                    _ => None,
+                }),
+            }
+            col.close().unwrap();
+        }
         rg.close().expect("close row group");
         writer.close().expect("close writer");
 
@@ -2018,7 +2153,9 @@ pub(crate) mod tests {
         sidecar.insert("schema_name".into(), FPM_FORWARD_SCHEMA_NAME.into());
         sidecar.insert(
             "schema_version".into(),
-            serde_json::Value::from(if has_execution {
+            serde_json::Value::from(if power_kind.is_some() {
+                FPM_FORWARD_POWER_SCHEMA_VERSION
+            } else if has_execution {
                 FPM_FORWARD_SCHEMA_VERSION
             } else {
                 6
@@ -2043,6 +2180,12 @@ pub(crate) mod tests {
         sidecar.insert("system".into(), "b200_sxm".into());
         sidecar.insert("backend".into(), "vllm".into());
         sidecar.insert("backend_version".into(), "0.25.1".into());
+        if power_kind.is_some() {
+            sidecar.insert(
+                "measurement_policy".into(),
+                FPM_FORWARD_POWER_MEASUREMENT_POLICY.into(),
+            );
+        }
         if has_native_cuda {
             sidecar.insert(
                 "measurement_policy".into(),
@@ -3526,5 +3669,326 @@ pub(crate) mod tests {
             .select_cell(&default_identity(4), "org/model-a", None)
             .unwrap_err();
         assert!(err.to_string().contains("No FPM cell matches"), "{err}");
+    }
+
+    // ---- schema 8: per-row power_w (AISIM-1973 D8) ----
+
+    fn leaves(node: &Node) -> BTreeMap<Vec<u32>, LeafValue> {
+        let mut out = BTreeMap::new();
+        super::super::perf_interp::visit_leaves(node, &mut Vec::new(), &mut |path, leaf| {
+            out.insert(path.to_vec(), leaf);
+        });
+        out
+    }
+
+    /// Default rows with a distinct written power per row: 300 W + 10 W * index.
+    fn powered_rows() -> Vec<RowSpec> {
+        default_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| RowSpec {
+                power_w: Some(PowerCell::Double(Some(300.0 + 10.0 * index as f64))),
+                ..row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn schema_six_and_seven_leaves_stay_latency_only() {
+        for execution in [None, Some(LEGACY_EXECUTION_IDENTITY)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows: Vec<RowSpec> = default_rows()
+                .into_iter()
+                .map(|row| RowSpec { execution, ..row })
+                .collect();
+            write_pair(tmp.path(), &rows);
+            let table = loaded_table(tmp.path());
+            let cell = &table.cells().unwrap()[0];
+            let all: Vec<LeafValue> = leaves(&cell.prefill)
+                .into_values()
+                .chain(leaves(&cell.decode).into_values())
+                .collect();
+            assert_eq!(all.len(), DEFAULT_ROWS.len());
+            for leaf in all {
+                // Bit-identical to the pre-v8 `Node::insert(path, latency)`.
+                assert_eq!(leaf, LeafValue::latency_only(leaf.latency));
+                assert_eq!(leaf.power, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn schema_eight_full_power_leaves_compose_energy_exactly() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &powered_rows());
+        let table = loaded_table(tmp.path());
+        let cell = &table.cells().unwrap()[0];
+        let (prefill, decode) = (leaves(&cell.prefill), leaves(&cell.decode));
+        for (index, &(kind, batch, prefill_tokens, kv, latency)) in DEFAULT_ROWS.iter().enumerate()
+        {
+            let leaf = if kind == "prefill" {
+                prefill[&vec![batch, prefill_tokens, kv]]
+            } else {
+                decode[&vec![batch, kv]]
+            };
+            // Expected values are the fixture's written cells: W and ms.
+            let power = 300.0 + 10.0 * index as f64;
+            assert_eq!(leaf.latency, latency);
+            assert_eq!(leaf.power, power);
+            assert_eq!(leaf.energy, power * latency);
+        }
+        // Spot check by hand: decode (8, 4096) is row 6, 360 W * 7 ms.
+        assert_eq!(decode[&vec![8, 4096]].energy, 2520.0);
+        // Latency answers are unchanged against the v6 pair.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        write_pair(legacy_dir.path(), &default_rows());
+        let legacy = loaded_table(legacy_dir.path());
+        let legacy = &legacy.cells().unwrap()[0];
+        assert_eq!(decode_curves(&cell.decode), decode_curves(&legacy.decode));
+        assert_eq!(cell.direct_decode, legacy.direct_decode);
+        assert_eq!(cell.direct_prefill, legacy.direct_prefill);
+        assert_eq!(cell.prefill_domain, legacy.prefill_domain);
+        assert_eq!(cell.decode_domain, legacy.decode_domain);
+    }
+
+    #[test]
+    fn schema_eight_null_power_is_a_nan_leaf_with_unchanged_latency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rows = powered_rows();
+        rows[6].power_w = Some(PowerCell::Double(None)); // decode (8, 4096)
+        // A second cell (tp 8) in the same file keeps its measured power.
+        rows.extend(
+            powered_rows()
+                .into_iter()
+                .map(|row| RowSpec { tp: 8, ..row }),
+        );
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let cells = table.cells().unwrap();
+        assert_eq!(cells.len(), 2);
+        for cell in cells {
+            let unpowered = cell.match_identity[5] == "4";
+            let decode = leaves(&cell.decode);
+            let leaf = decode[&vec![8, 4096]];
+            assert_eq!(leaf.latency, 7.0);
+            if unpowered {
+                assert!(leaf.power.is_nan() && leaf.energy.is_nan(), "{leaf:?}");
+            } else {
+                assert_eq!(leaf.power, 360.0);
+            }
+            for (path, leaf) in leaves(&cell.prefill).into_iter().chain(decode) {
+                if !(unpowered && path == [8, 4096]) {
+                    assert!(leaf.power >= 300.0, "{path:?} {leaf:?}");
+                    assert_eq!(leaf.energy, leaf.power * leaf.latency);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn schema_eight_requires_a_valid_power_column() {
+        // Missing column: a v7 layout under a v8 power sidecar.
+        let tmp = tempfile::tempdir().unwrap();
+        let rows: Vec<RowSpec> = default_rows()
+            .into_iter()
+            .map(|row| RowSpec {
+                execution: Some(LEGACY_EXECUTION_IDENTITY),
+                ..row
+            })
+            .collect();
+        write_pair_with(tmp.path(), &rows, |m| {
+            m.insert("schema_version".into(), 8.into());
+            m.insert(
+                "measurement_policy".into(),
+                FPM_FORWARD_POWER_MEASUREMENT_POLICY.into(),
+            );
+        });
+        let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+        assert!(err.contains("\"power_w\" missing"), "{err}");
+        // Present but not null or finite > 0.
+        for bad in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = powered_rows();
+            rows[7].power_w = Some(PowerCell::Double(Some(bad)));
+            write_pair(tmp.path(), &rows);
+            let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+            assert!(err.contains("non-positive power_w"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn schema_eight_wrong_typed_power_is_structural_not_latency_only() {
+        for (cell, physical) in [
+            (PowerCell::Utf8("400"), "BYTE_ARRAY"),
+            (PowerCell::Int64(400), "INT64"),
+            (PowerCell::Float(400.0), "FLOAT"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows: Vec<RowSpec> = default_rows()
+                .into_iter()
+                .map(|row| RowSpec {
+                    power_w: Some(cell),
+                    ..row
+                })
+                .collect();
+            let path = write_pair(tmp.path(), &rows);
+            let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("power_w column must be DOUBLE, got {physical}")),
+                "{err}"
+            );
+            // The per-row reader is strict on its own as well.
+            let reader = PerfReader::open(&path).unwrap();
+            let col = reader.col("power_w").unwrap();
+            let row = reader.rows().unwrap().next().unwrap().unwrap();
+            assert!(row.f64_nullable_strict(col).is_err(), "{cell:?}");
+        }
+        // An all-null DOUBLE column loads with every leaf's power NaN.
+        let tmp = tempfile::tempdir().unwrap();
+        let rows: Vec<RowSpec> = default_rows()
+            .into_iter()
+            .map(|row| RowSpec {
+                power_w: Some(PowerCell::Double(None)),
+                ..row
+            })
+            .collect();
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let cell = &table.cells().unwrap()[0];
+        for leaf in leaves(&cell.prefill)
+            .into_values()
+            .chain(leaves(&cell.decode).into_values())
+        {
+            assert!(leaf.power.is_nan() && leaf.latency > 0.0, "{leaf:?}");
+        }
+        // A DOUBLE column mixing nulls and values: NaN only on the null rows.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rows = powered_rows();
+        rows[0].power_w = Some(PowerCell::Double(None)); // prefill (1, 1024, 0)
+        rows[8].power_w = Some(PowerCell::Double(None)); // decode (16, 65536)
+        let path = write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let cell = &table.cells().unwrap()[0];
+        let nulls = [vec![1, 1024, 0], vec![16, 65536]];
+        for (path, leaf) in leaves(&cell.prefill)
+            .into_iter()
+            .chain(leaves(&cell.decode))
+        {
+            assert_eq!(leaf.power.is_nan(), nulls.contains(&path), "{path:?}");
+        }
+        let reader = PerfReader::open(&path).unwrap();
+        let col = reader.col("power_w").unwrap();
+        let read: Vec<Option<f64>> = reader
+            .rows()
+            .unwrap()
+            .map(|row| row.unwrap().f64_nullable_strict(col).unwrap())
+            .collect();
+        assert_eq!(read[0], None);
+        assert_eq!(read[1], Some(310.0));
+    }
+
+    #[test]
+    fn power_policy_and_schema_eight_only_pair_with_each_other() {
+        let old_policies = [
+            FPM_FORWARD_MEASUREMENT_POLICY,
+            FPM_ROW_MEASUREMENT_POLICY,
+            FPM_FULL_GRID_MEASUREMENT_POLICY,
+            "vllm_native_fpm_prefix_seed_median_v1",
+            "sglang_native_fpm_radix_seed_median_v1",
+            FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+            FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+        ];
+        // (8, old policy).
+        for policy in old_policies {
+            let tmp = tempfile::tempdir().unwrap();
+            write_pair_with(tmp.path(), &powered_rows(), |m| {
+                m.insert("measurement_policy".into(), policy.into());
+                m.insert("timing_scope".into(), "model_step_cuda".into());
+            });
+            let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+            assert!(
+                err.contains("unsupported FPM measurement_policy"),
+                "{policy}: {err}"
+            );
+        }
+        // (6 or 7, power policy).
+        for execution in [None, Some(LEGACY_EXECUTION_IDENTITY)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows: Vec<RowSpec> = default_rows()
+                .into_iter()
+                .map(|row| RowSpec { execution, ..row })
+                .collect();
+            write_pair_with(tmp.path(), &rows, |m| {
+                m.insert(
+                    "measurement_policy".into(),
+                    FPM_FORWARD_POWER_MEASUREMENT_POLICY.into(),
+                );
+            });
+            let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+            assert!(err.contains("unsupported FPM measurement_policy"), "{err}");
+        }
+        // (8, power policy) is vLLM-only in V1.
+        let tmp = tempfile::tempdir().unwrap();
+        let rows: Vec<RowSpec> = powered_rows()
+            .into_iter()
+            .map(|row| RowSpec {
+                backend: "sglang",
+                ..row
+            })
+            .collect();
+        write_pair_with(tmp.path(), &rows, |m| {
+            m.insert("backend".into(), "sglang".into());
+        });
+        let table = FpmForwardTable::new_with_replacement(
+            tmp.path().to_path_buf(),
+            "b200_sxm",
+            "sglang",
+            "0.25.1",
+            true,
+        );
+        let err = table.cells().unwrap_err().to_string();
+        assert!(err.contains("unsupported FPM measurement_policy"), "{err}");
+    }
+
+    #[test]
+    fn healed_rows_hold_their_anchor_power_and_kept_rows_keep_their_own() {
+        let mk = |batch: u32, kv: u32, lat: f64, seed: &'static str, power: Option<f64>| RowSpec {
+            workload_kind: "decode",
+            batch_size: batch,
+            total_prefill_tokens: 0,
+            total_kv_read_tokens: kv,
+            latency_ms: lat,
+            kv_seed_regime: Some(seed),
+            power_w: Some(PowerCell::Double(power)),
+            ..RowSpec::default()
+        };
+        let (real, fake) = (FPM_KV_SEED_REAL_KV, FPM_KV_SEED_FAKE_FALLBACK);
+        let rows = vec![
+            // b=2 heals from (1024, 2048); power held from the 2048 anchor.
+            mk(2, 1024, 5.0, real, Some(500.0)),
+            mk(2, 2048, 8.0, real, Some(520.0)),
+            mk(2, 3072, 99.0, fake, Some(900.0)),
+            // b=4 heals, but its nearest anchor below has no power.
+            mk(4, 1024, 5.0, real, Some(500.0)),
+            mk(4, 2048, 8.0, real, None),
+            mk(4, 3072, 99.0, fake, Some(900.0)),
+            // b=8 has one anchor only: kept, with its own power.
+            mk(8, 1024, 5.0, real, Some(500.0)),
+            mk(8, 2048, 6.6, fake, Some(610.0)),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let table = loaded_table(tmp.path());
+        let decode = leaves(&table.cells().unwrap()[0].decode);
+        // 8 + (3072 - 2048) * (8 - 5) / (2048 - 1024) = 11 ms (hand-derived).
+        assert_eq!(decode[&vec![2, 3072]].latency, 11.0);
+        assert_eq!(decode[&vec![2, 3072]].power, 520.0);
+        assert_eq!(decode[&vec![2, 3072]].energy, 520.0 * 11.0);
+        assert_eq!(decode[&vec![4, 3072]].latency, 11.0);
+        assert!(decode[&vec![4, 3072]].power.is_nan());
+        assert_eq!(decode[&vec![8, 2048]].latency, 6.6);
+        assert_eq!(decode[&vec![8, 2048]].power, 610.0);
+        assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 2);
+        assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
     }
 }
