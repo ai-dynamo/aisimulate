@@ -1,16 +1,27 @@
 # NVIDIA Nemotron 3 Super and Ultra configuration provenance
 
-The following files are unmodified copies of `config.json` and
-`hf_quant_config.json` at the immutable Hugging Face revisions shown.
+The following files come from `config.json` and `hf_quant_config.json` at the
+immutable Hugging Face revisions shown.
 
-| Local file | Upstream file | sha256 |
-| --- | --- | --- |
-| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/config.json | `14a1ad3ab6ec49e09e9c30f8686c8e3ca5b5338ee0eb0c79dff4f285fc29778d` |
-| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/hf_quant_config.json | `dbabb3970ad65a6cca51488db15d66d976c2486ff5448c4aee906389a02df316` |
-| `nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/config.json | `0c939f324c8910f5ebdafbe2a56d7e4e074c50042a3b4f26326bf71a3fe33929` |
-| `nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/hf_quant_config.json | `68f0c66d927e5e9115ad475a7c1dbfe40f7e7e72d9ab9c3b6a33d8c52da2c596` |
-| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/config.json | `ff5d6d643b288d4149b0bf820ecb5fe87dd9bbc08b6b811241c57840e11e30e3` |
-| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/hf_quant_config.json | `827209265a15cc7161e96773c4538da60f0980288dc0b86dd5dc2f906a5cfb4f` |
+| Local file | Upstream file | Upstream sha256 | Packaged sha256 |
+| --- | --- | --- | --- |
+| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/config.json | `14a1ad3ab6ec49e09e9c30f8686c8e3ca5b5338ee0eb0c79dff4f285fc29778d` | `44a9f90390cc2b588a1882e12cacef3e4b283ce371a6f52839dfd0128b44188f` |
+| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/blob/ff433f5493e25d631c9f12b5d55c674229923d02/hf_quant_config.json | `dbabb3970ad65a6cca51488db15d66d976c2486ff5448c4aee906389a02df316` | `984a861c893811720ae1770256db20f1acf9a5646ad5420fc5162221795f4ec5` |
+| `nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/config.json | `0c939f324c8910f5ebdafbe2a56d7e4e074c50042a3b4f26326bf71a3fe33929` | `2801b4e45a90242f757b2ea57e7741d0577ddf374b87cc439c30eee9ead6a263` |
+| `nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/blob/02462641f13d3af838b904f48195b9bb8a1e4ebc/hf_quant_config.json | `68f0c66d927e5e9115ad475a7c1dbfe40f7e7e72d9ab9c3b6a33d8c52da2c596` | `13b72036de36419afadf588717f99fe4ab94e76a9f2289dec1a13d8d62ed4d9a` |
+| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/config.json | `ff5d6d643b288d4149b0bf820ecb5fe87dd9bbc08b6b811241c57840e11e30e3` | unmodified |
+| `nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_hf_quant_config.json` | https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/blob/744b1880a37996c5d56bf454ae164dfd74d77c4e/hf_quant_config.json | `827209265a15cc7161e96773c4538da60f0980288dc0b86dd5dc2f906a5cfb4f` | unmodified |
+
+The two FP8 files are unmodified copies. The four NVFP4 files are modified
+copies, trimmed by this transformation and nothing else:
+
+- In every `quantized_layers` map and every `config_groups` `targets` list,
+  entries whose name contains `.experts.<i>.` with `<i>` other than `0` are
+  removed. Each routed-expert layer keeps its expert 0 entries, which carry
+  the same algorithm as every other expert of that layer.
+- The result is written with Python `json.dumps` in the upstream layout:
+  indent 2 for the Super `config.json`, indent 4 for both
+  `hf_quant_config.json` files, and one line for the Ultra `config.json`.
 
 The NVFP4 files describe NVIDIA ModelOpt MIXED_PRECISION exports. The routed
 experts are NVFP4 with group size 16. The listed Mamba projections and shared
@@ -18,8 +29,8 @@ experts are FP8. The KV cache is FP8. Modules absent from `quantized_layers`,
 or listed in `exclude_modules`, stay BF16. The FP8 files describe a ModelOpt
 FP8 export with an FP8 KV cache. Its 130 `exclude_modules` stay BF16.
 
-Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
-unmodified. No upstream repository ships a NOTICE file at these revisions.
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. No upstream repository ships
+a NOTICE file at these revisions.
 
 Licenses, as declared by the upstream model cards at these revisions:
 

@@ -1509,8 +1509,10 @@ preserved in the adjacent distributed
 
 ## NVIDIA Nemotron 3 Super and Ultra model configuration files
 
-The following files are unmodified copies of the named Hugging Face
-configuration files at the immutable revisions shown:
+The following files come from the named Hugging Face configuration files at
+the immutable revisions shown. The FP8 files are unmodified. The NVFP4 files
+are modified: their routed-expert entries other than expert 0 are removed, as
+`src/aisimulate_core/model_configs/NEMOTRON3_PROVENANCE.md` describes.
 
 | Packaged file | Upstream file and revision |
 | --- | --- |
@@ -1526,8 +1528,7 @@ https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/tree/ff433
 https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8/tree/744b1880a37996c5d56bf454ae164dfd74d77c4e
 https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/tree/02462641f13d3af838b904f48195b9bb8a1e4ebc
 
-Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
-unmodified.
+Copyright owner: NVIDIA CORPORATION & AFFILIATES.
 
 Licenses, as declared by the upstream model cards at those revisions: Super
 NVFP4 and Super FP8 use the NVIDIA Nemotron Open Model License,
