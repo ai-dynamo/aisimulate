@@ -185,7 +185,7 @@ def _dsa_skip_indexer_enabled(attn_type: str, model_path: str) -> bool:
     )
 
 
-def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> bool:
+def _generation_cuda_graph_batch_size(model_runner, num_tokens: int) -> int | None:
     """Match SGLang decode CUDA graph coverage for the decode microbench.
 
     SGLang captures decode CUDA graphs for batch sizes up to
@@ -195,12 +195,55 @@ def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> 
     """
     decode_config = resolved_arg(model_runner.server_args, "cuda_graph_config").decode
     if decode_config.backend == "disabled":
-        return False
+        return None
     capture_bs = decode_config.bs
     if capture_bs:
-        return int(num_tokens) in set(capture_bs)
+        # DecodeCudaGraphRunner.can_run_graph/load_batch: padding selects the
+        # smallest captured batch at least as large as the real request batch.
+        if resolved_arg(model_runner.server_args, "disable_cuda_graph_padding", False):
+            return int(num_tokens) if int(num_tokens) in capture_bs else None
+        return next((int(batch) for batch in sorted(capture_bs) if int(batch) >= num_tokens > 0), None)
     max_bs = decode_config.max_bs or 256
-    return 0 < int(num_tokens) <= int(max_bs)
+    return int(num_tokens) if 0 < int(num_tokens) <= int(max_bs) else None
+
+
+def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> bool:
+    return _generation_cuda_graph_batch_size(model_runner, num_tokens) is not None
+
+
+def _padded_dsa_decode_batch(model_runner, forward_batch, padded_batch_size: int):
+    """Use serving's buffer registry to populate dummy graph slots, keeping the real row key.
+
+    SGLang DecodeCudaGraphRunner.load_batch fills this registry before replay.
+    Native seq-length sentinels and cache/request-slot padding are essential:
+    padding with extra full-history requests would measure a different batch.
+    """
+    from sglang.srt.model_executor.cuda_graph_buffer_registry import build_decode_registry
+
+    real_batch_size = forward_batch.batch_size
+    fill_value = model_runner.attn_backend.get_cuda_graph_seq_len_fill_value()
+    registry = build_decode_registry(
+        device=forward_batch.input_ids.device,
+        max_bs=padded_batch_size,
+        max_num_token=padded_batch_size,
+        seq_len_fill_value=fill_value,
+        cache_loc_dtype=forward_batch.out_cache_loc.dtype,
+        register_global_num_tokens=False,
+    )
+    registry.fill_from(
+        forward_batch,
+        raw_bs=real_batch_size,
+        padded_bs=padded_batch_size,
+        raw_num_tokens=real_batch_size,
+        padded_num_tokens=padded_batch_size,
+    )
+    padded = registry.extract_buffer(
+        padded_bs=padded_batch_size,
+        padded_num_tokens=padded_batch_size,
+        forward_batch_template=forward_batch,
+    )
+    padded.seq_lens_sum = forward_batch.seq_lens_sum + (padded_batch_size - real_batch_size) * fill_value
+    return padded
 
 
 def _initialize_dsa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
@@ -2270,13 +2313,25 @@ def _run_decode(
             _initialize_dsa_history(model_runner, attention_module, forward_batch_decode, seq_length)
             point_clock.mark("history")
 
+        graph_batch_size = (
+            _generation_cuda_graph_batch_size(model_runner, batch_size) if attn_type == "dsa" else batch_size
+        )
+        if graph_batch_size is not None and graph_batch_size != batch_size:
+            forward_batch_decode = _padded_dsa_decode_batch(model_runner, forward_batch_decode, graph_batch_size)
+            model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
+        execution_batch_size = forward_batch_decode.batch_size
+
         decode_hidden = torch.randn(
-            batch_size,
+            execution_batch_size,
             model_runner.model.config.hidden_size,
             dtype=torch.bfloat16,
             device="cuda",
         )
-        decode_positions = torch.full((batch_size,), seq_length, device="cuda")
+        decode_positions = (
+            forward_batch_decode.positions
+            if attn_type == "dsa"
+            else torch.full((batch_size,), seq_length, device="cuda")
+        )
         zero_allocator = BumpAllocator(buffer_size=2048, dtype=torch.float32, device="cuda")
 
         attn_inputs_decode = AttentionInputs(decode_hidden, forward_batch_decode, dummy_qkv_latent_func)
@@ -2285,9 +2340,7 @@ def _run_decode(
         if use_module_cuda_graph or _env_flag("AIC_ENABLE_MODULE_CUDA_GRAPH"):
             _patch_nsa_indexer_compile_for_module_cuda_graph(attention_module)
 
-        use_benchmark_cuda_graph = not (
-            attn_type == "dsa" and not _generation_cuda_graph_enabled_for_tokens(model_runner, batch_size)
-        )
+        use_benchmark_cuda_graph = graph_batch_size is not None
 
         # skip_indexer (see _run_prefill): obtain the real producer-layer topk
         # through SGLang's next_skip_topk return contract, then reuse it so the
@@ -2369,7 +2422,10 @@ def _run_decode(
                 attention_module.next_skip_topk = original_next_skip_topk
 
         point_clock.mark("prewarm")
-        print(f"  Decode module CUDA graph: {use_benchmark_cuda_graph} (tokens={batch_size})")
+        print(
+            f"  Decode module CUDA graph: {use_benchmark_cuda_graph} "
+            f"(real_tokens={batch_size}, graph_tokens={execution_batch_size})"
+        )
 
         with benchmark_with_power(
             device=device,

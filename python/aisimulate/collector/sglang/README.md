@@ -14,6 +14,28 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Overview
 
+DSA decode collection uses the resolved serving graph buckets. With padding
+enabled, a real batch of 52 executes the captured 56-slot shape using
+SGLang's native decode-buffer registry and backend-provided sequence-length
+sentinels. Padded slots do not become extra full-history requests. Rows remain
+keyed by the 52 real requests. With padding disabled, only exact captured
+batches use graphs; other batches are timed eagerly. Native QKV projection and
+fresh `AttentionInputs` are included in every timed DSA forward; history
+initialization is measured separately as collection overhead.
+
+Current SGLang 0.5.21 DSA prefill collection disables prefill CUDA graphs and
+measures the eager path. Serving uses the newer native breakable-prefill graph,
+whose attention-only adapter is not yet ported; enabling that path currently
+raises `ValueError` rather than producing a graph measurement. This is an
+explicit serving-parity deviation, not graph qualification.
+
+The historical TC graph path's per-model Dynamo entry can raise
+`MeasurementBoundaryError` inside the per-layer timing boundary. That guard
+writes no performance row, but it is not the current eager-prefill path.
+
+This corrects future collection. Historical exact-shape batch-52 rows must
+not be relabeled as padded-serving measurements.
+
 - **collect_mla_module.py**: Collects performance data for MLA and DSA attention module operators
 - Large-EP expert compute is measured by
   `../wideep/sglang/collect_deepep_moe.py` into the `moe_ep` table; measured
@@ -23,14 +45,14 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Requirements
 
-- Stock SGLang collectors: v0.5.14
+- Stock SGLang collectors: v0.5.21
 
 ```bash
-docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.14-cu130
+docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.21-cu130
 ```
 
 - WideEP MoE collector: the independent v0.5.10 image declared in
-  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.14.
+  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.21.
 - DeepSeek model config (or use dummy weights)
 
 ## Execution Modes
@@ -40,7 +62,7 @@ Stock diagnostics and the independent WideEP MoE collector use these modes:
 ### Mode 1: Direct Diagnostic Execution
 
 Run scripts directly with command-line arguments for single GPU diagnostics.
-The MLA command exercises the stock 0.5.14 module implementation; it is not a
+The MLA command exercises the stock 0.5.21 module implementation; it is not a
 registered or accepted WideEP MLA collector:
 
 ```bash
@@ -63,7 +85,7 @@ cd /path/to/collector/
 # Run all stock SGLang operators
 python collect.py --backend sglang
 
-# Run stock DSA module operators in the v0.5.14 container
+# Run stock DSA module operators in the v0.5.21 container
 python collect.py --backend sglang --ops dsa_context_module dsa_generation_module
 
 # Run the large-EP MoE compute operator separately in the v0.5.10 container
@@ -103,7 +125,7 @@ files as parquet, and each file is then published to the family selected by
 
 Modify `output_path` in each direct script to your desired staging location:
 ```python
-output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.14/"
+output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.21/"
 ```
 
 

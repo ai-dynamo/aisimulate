@@ -59,6 +59,7 @@ class CollectionCasePlan:
     base_cases_path: Path
     model_cases_paths: list[Path] = field(default_factory=list)
     requested_model_path: str | None = None
+    include_long_context: bool = False
 
     @property
     def ops(self) -> list[str]:
@@ -73,6 +74,7 @@ class CollectionCasePlan:
             "model_path": self.model_path,
             "model_architecture": self.model_architecture,
             "requested_model_path": self.requested_model_path,
+            "include_long_context": self.include_long_context,
             "gpu_type": self.gpu_type,
             "sm_version": self.sm_version,
             "ops": self.ops,
@@ -399,6 +401,7 @@ def build_collection_case_plan(
     base_cases_path: str | None = None,
     model_cases_path: str | None = None,
     full: bool = False,
+    include_long_context: bool = False,
 ) -> CollectionCasePlan:
     """Build a model-aware op plan for one backend."""
     base_path = Path(base_cases_path).expanduser().resolve() if base_cases_path else BASE_OP_CASES_DIR
@@ -446,4 +449,5 @@ def build_collection_case_plan(
         base_cases_path=base_path,
         model_cases_paths=model_paths,
         requested_model_path=requested_model_path,
+        include_long_context=include_long_context,
     )

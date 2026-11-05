@@ -34,6 +34,8 @@ common_case_values:
     - 8192
     - 12288
     - 16384
+    - 32768
+    - 65536
     tensor_parallel_sizes:
     - 1
     - 2
