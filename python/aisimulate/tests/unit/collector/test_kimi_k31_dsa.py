@@ -76,14 +76,14 @@ def test_changed_upstream_indexer_contract_fails_closed(config, field, wrong):
         single_layer_config(config)
 
 
-def test_case_plan_uses_native_tp_shards_and_both_cache_precisions(monkeypatch):
+def test_case_plan_uses_native_tp_shards_and_supported_cache_precision(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL)
     for phase in ("context", "generation"):
         op = f"kimi_k31_dsa_{phase}_module"
         cases = plan(op, "sglang", 103).cases
         assert cases
         assert {case.num_heads for case in cases} == {96, 48, 24, 12}
-        assert {case.kv_cache_dtype for case in cases} == {"bfloat16", "fp8"}
+        assert {case.kv_cache_dtype for case in cases} == {"fp8"}
         assert {case.gemm_type for case in cases} == {"bfloat16"}
         assert {validate_case(case) for case in cases} == {1, 2, 4, 8}
         assert all(case.seq_len + case.prefix_len <= 1048576 for case in cases)
@@ -118,13 +118,31 @@ def test_stock_runtime_cannot_select_native_preview_collector():
 
 
 def test_kernel_source_reports_executed_native_backend_and_eager_mode():
-    backend = SimpleNamespace(use_mha=False, dsa_prefill_impl="flashmla_sparse", dsa_decode_impl="trtllm")
+    backend = SimpleNamespace(use_mha=False, dsa_prefill_impl="flashmla_kv", dsa_decode_impl="flashmla_kv")
     hybrid = SimpleNamespace(full_attn_backend=backend)
-    assert executed_kernel_source(hybrid, "context") == "sglang_dsa_indexer_flashmla_sparse_eager"
-    assert executed_kernel_source(hybrid, "generation") == "sglang_dsa_indexer_trtllm_eager"
+    pool = SimpleNamespace(dsa_kv_cache_store_fp8=True, fp8_cast_on_write=False, kv_cache_dim=656)
+    assert (
+        executed_kernel_source(hybrid, pool, "context") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
+    )
+    assert executed_kernel_source(hybrid, pool, "generation") == "sglang_dsa_indexer_flashmla_kv_kv_flashmla_packed_eager"
     backend.use_mha = True
     backend.device_sm_major = 10
-    assert executed_kernel_source(hybrid, "context") == "sglang_dsa_dense_mha_trtllm_ragged_eager"
+    assert (
+        executed_kernel_source(hybrid, pool, "context") == "sglang_dsa_dense_mha_trtllm_ragged_kv_flashmla_packed_eager"
+    )
+    pool.dsa_kv_cache_store_fp8 = False
+    pool.fp8_cast_on_write = True
+    pool.kv_cache_dim = 576
+    assert executed_kernel_source(hybrid, pool, "context") == "sglang_dsa_dense_mha_trtllm_ragged_kv_raw_fp8_eager"
+    pool.kv_cache_dim = 656
+    with pytest.raises(RuntimeError, match="physical layout"):
+        executed_kernel_source(hybrid, pool, "context")
+
+
+def test_native_runtime_rejects_bf16_cache():
+    case = ModuleCase(4096, 1, 96, "bfloat16", "bfloat16", "bfloat16", MODEL, 0)
+    with pytest.raises(ValueError, match="requires FP8 KV"):
+        validate_case(case)
 
 
 def test_collector_rejects_fabricated_local_head_geometry():

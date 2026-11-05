@@ -1633,12 +1633,11 @@ class TestParseCompressedTensorsQuant:
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["re:.*self_attn.*"]))
         assert "attention" in ignored
 
-    def test_routing_experts_pattern_detected(self):
+    @pytest.mark.parametrize("pattern", [r"re:.*mlp\.experts\..*", r"re:.*routed_expert_.*"])
+    def test_routing_experts_pattern_detected(self, pattern):
         from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
-        _, ignored = parse_compressed_tensors_quant(
-            self._make_quant_config(4, "int", ignore=["re:.*mlp\\.experts\\..*"])
-        )
+        _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=[pattern]))
         assert "routing_experts" in ignored
 
     def test_shared_experts_pattern_detected_not_routing(self):

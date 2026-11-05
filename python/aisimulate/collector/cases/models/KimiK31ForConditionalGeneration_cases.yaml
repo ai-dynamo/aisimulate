@@ -19,7 +19,8 @@ model_case_values:
       max_position_embeddings: 1048576
       gemm_type: bfloat16
       compute_dtype: bfloat16
-      kv_cache_dtypes: [bfloat16, fp8]
+      # The pinned native K31 override rejects BF16 KV; auto resolves FP8.
+      kv_cache_dtypes: [fp8]
 
 framework_specific_op_cases:
   sglang:

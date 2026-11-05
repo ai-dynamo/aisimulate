@@ -27,8 +27,9 @@ whose `.k31-source-commit` records that revision. The model implementation
 is byte-identical to the public SGLang file at
 https://github.com/sgl-project/sglang/blob/e086da8aa1b675a61e08cc09c9aa940a7f66f490/python/sglang/srt/models/kimi_k3.py.
 
-Copyright 2023-2024 SGLang Team and contributors. Apache-2.0; the license
-text is included at repository root as `LICENSE`. No applicable upstream
+Copyright 2023-2024 SGLang Team; Copyright 2023-2026 SGLang Team and
+contributors (runtime overrides). Apache-2.0; the license text is included
+at repository root as `LICENSE`. No applicable upstream
 NOTICE file was present in the inspected source. Modified by NVIDIA: retain
 the native model/batch builders, reduce the untimed model to one layer,
 observe gated attention with CUDA events, and emit AISimulate DSA rows.
@@ -40,7 +41,8 @@ The gated-module and physical KV-layout accounting in
 `crates/core/src/perfmodel/perf_database/dsa.rs`,
 `docs/perf-model/configuration.md`, and `docs/perf-model/models/kimi-k31.md`
 describes and independently models the same native attention boundary and
-`python/sglang/srt/mem_cache/memory_pool.py` layout at that revision.
+`python/sglang/srt/mem_cache/memory_pool.py` layout and
+`python/sglang/srt/arg_groups/overrides.py` runtime restrictions at that revision.
 The analytical equations and hand-derived regression vectors are original
 AISimulate work. No Kimi K3.1 checkpoint config, weights, or checkpoint Python
 source is redistributed by this change.
