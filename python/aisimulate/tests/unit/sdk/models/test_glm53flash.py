@@ -588,12 +588,17 @@ def test_silicon_requires_exact_runtime_glm_tables():
     [("nvidia/GLM-5.3-Flash-NVFP4", "gb300", 4, None), ("zai-org/GLM-5.3-Flash", "h200_sxm", 8, "bfloat16")],
 )
 def test_packaged_silicon_prices_each_sparse_attention_layer_from_its_table(path, system, tp, kv):
-    config = _config("SILICON", backend_version="0.31.0", enable_shared_layer=False).to_dict()
-    config.update(model=path, system=system, tp=tp, moe_tp_size=1, moe_ep_size=tp)
-    if kv:
-        config["kvcache_quant_mode"] = kv
+    config = replace(
+        _config("SILICON", backend_version="0.31.0", enable_shared_layer=False),
+        model=path,
+        system=system,
+        tp=tp,
+        moe_tp_size=1,
+        moe_ep_size=tp,
+        kvcache_quant_mode=kv,
+    )
     # Construction requires table rows for every sparse layer's geometry.
-    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    model = RustForwardPassPerfModel.best_available(config)
     try:
         for prefill in (True, False):
             ops = model.static_phase_diagnostics(batch_size=2, context_length=4096, prefix=0, prefill=prefill)

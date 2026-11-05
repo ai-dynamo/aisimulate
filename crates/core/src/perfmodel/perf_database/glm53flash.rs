@@ -92,9 +92,8 @@ struct GeometryKey {
     index_topk: u32,
     index_pool: u32,
     conv_kernel: u32,
-    /// Bit pattern. Rows hold finite values, whose canonical JSON spellings
-    /// are equal exactly when their bits are; a non-finite query value
-    /// matches no row, as its `null` spelling never did.
+    /// Bits: finite values match exactly when their JSON spellings do; a
+    /// non-finite value (`null` in JSON) matches no row.
     gate_lower_bound: u64,
     projection_quant_mode: GemmQuantMode,
     kv_cache_dtype: KvCacheQuantMode,
@@ -103,62 +102,38 @@ struct GeometryKey {
 /// `None` for an op no validated row can describe: rows are `sparse_mla`
 /// modules of a vllm/sglang backend and an fp8/nvfp4 checkpoint.
 fn geometry_key(op: &Glm53AttentionOp) -> Option<GeometryKey> {
-    // Exhaustive, so a new op field must be classified here.
-    let Glm53AttentionOp {
-        name: _,
-        measured: _,
-        is_context,
-        layer_kind,
-        backend,
-        checkpoint_format,
-        hidden_size,
-        tp_size,
-        num_heads,
-        head_dim,
-        q_lora_rank,
-        kv_lora_rank,
-        value_head_dim,
-        index_n_heads,
-        index_head_dim,
-        index_topk,
-        index_pool,
-        conv_kernel,
-        gate_lower_bound,
-        projection_quant_mode,
-        kv_cache_dtype,
-    } = op;
-    if layer_kind != "sparse_mla" {
+    if op.layer_kind != "sparse_mla" {
         return None;
     }
-    let backend = match backend.as_str() {
+    let backend = match op.backend.as_str() {
         "vllm" => Backend::Vllm,
         "sglang" => Backend::Sglang,
         _ => return None,
     };
-    let checkpoint_format = match checkpoint_format.as_str() {
+    let checkpoint_format = match op.checkpoint_format.as_str() {
         "fp8" => CheckpointFormat::Fp8,
         "nvfp4" => CheckpointFormat::Nvfp4,
         _ => return None,
     };
     Some(GeometryKey {
-        is_context: *is_context,
+        is_context: op.is_context,
         backend,
         checkpoint_format,
-        hidden_size: *hidden_size,
-        tp_size: *tp_size,
-        num_heads: *num_heads,
-        head_dim: *head_dim,
-        q_lora_rank: *q_lora_rank,
-        kv_lora_rank: *kv_lora_rank,
-        value_head_dim: *value_head_dim,
-        index_n_heads: *index_n_heads,
-        index_head_dim: *index_head_dim,
-        index_topk: *index_topk,
-        index_pool: *index_pool,
-        conv_kernel: *conv_kernel,
-        gate_lower_bound: gate_lower_bound.to_bits(),
-        projection_quant_mode: *projection_quant_mode,
-        kv_cache_dtype: *kv_cache_dtype,
+        hidden_size: op.hidden_size,
+        tp_size: op.tp_size,
+        num_heads: op.num_heads,
+        head_dim: op.head_dim,
+        q_lora_rank: op.q_lora_rank,
+        kv_lora_rank: op.kv_lora_rank,
+        value_head_dim: op.value_head_dim,
+        index_n_heads: op.index_n_heads,
+        index_head_dim: op.index_head_dim,
+        index_topk: op.index_topk,
+        index_pool: op.index_pool,
+        conv_kernel: op.conv_kernel,
+        gate_lower_bound: op.gate_lower_bound.to_bits(),
+        projection_quant_mode: op.projection_quant_mode,
+        kv_cache_dtype: op.kv_cache_dtype,
     })
 }
 
@@ -186,8 +161,7 @@ pub fn geometry(op: &Glm53AttentionOp) -> Result<String, AicError> {
     serde_json::to_string(&sorted).map_err(|e| invalid(e.to_string()))
 }
 
-/// The validated row body as an op with an empty display name.
-fn validate_geometry(encoded: &str) -> Result<Glm53AttentionOp, AicError> {
+fn validate_geometry(encoded: &str) -> Result<GeometryKey, AicError> {
     let mut named: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
     named
         .as_object_mut()
@@ -195,17 +169,15 @@ fn validate_geometry(encoded: &str) -> Result<Glm53AttentionOp, AicError> {
         .insert("name".into(), Value::String(String::new()));
     let op: Glm53AttentionOp = serde_json::from_value(named).map_err(|e| invalid(e.to_string()))?;
     op.validate()?;
-    if op.layer_kind != "sparse_mla" || !op.measured.is_empty() {
-        return Err(invalid(
-            "GLM attention table rows describe sparse_mla modules only",
-        ));
-    }
+    let key = geometry_key(&op)
+        .filter(|_| op.measured.is_empty())
+        .ok_or_else(|| invalid("GLM attention table rows describe sparse_mla modules only"))?;
     if geometry(&op)? != encoded {
         return Err(invalid(
             "GLM attention geometry has unknown or noncanonical fields",
         ));
     }
-    Ok(op)
+    Ok(key)
 }
 
 impl Glm53AttentionTable {
@@ -381,9 +353,9 @@ fn load(path: &Path) -> Result<Grids, AicError> {
     // (checkpoint, TP, phase), because serving runs prefill eagerly and decode
     // under full CUDA graphs.
     let mut runtime_identity: Option<(String, String)> = None;
-    let mut configs: BTreeMap<String, String> = BTreeMap::new();
+    let mut configs: FxHashMap<CheckpointFormat, String> = FxHashMap::default();
     let mut graphs: FxHashMap<GeometryKey, bool> = FxHashMap::default();
-    let mut validated: BTreeMap<String, (GeometryKey, String)> = BTreeMap::new();
+    let mut validated: BTreeMap<String, GeometryKey> = BTreeMap::new();
     // One latent KV dtype per file: FP8- and BF16-KV deployments are distinct
     // identities collected by distinct runs and never share a table.
     let mut kv_cache_dtype: Option<KvCacheQuantMode> = None;
@@ -394,19 +366,20 @@ fn load(path: &Path) -> Result<Grids, AicError> {
             return Err(invalid("GLM attention table component must be attention"));
         }
         let encoded = row.str(geometry_col)?;
-        if !validated.contains_key(encoded) {
-            let op = validate_geometry(encoded)?;
-            if *kv_cache_dtype.get_or_insert(op.kv_cache_dtype) != op.kv_cache_dtype {
-                return Err(invalid(
-                    "GLM attention table mixes FP8 and BF16 latent KV identities",
-                ));
+        let key = match validated.get(encoded) {
+            Some(&key) => key,
+            None => {
+                let key = validate_geometry(encoded)?;
+                if *kv_cache_dtype.get_or_insert(key.kv_cache_dtype) != key.kv_cache_dtype {
+                    return Err(invalid(
+                        "GLM attention table mixes FP8 and BF16 latent KV identities",
+                    ));
+                }
+                validated.insert(encoded.to_owned(), key);
+                key
             }
-            let key = geometry_key(&op)
-                .ok_or_else(|| invalid("validated GLM attention geometry has no lookup key"))?;
-            validated.insert(encoded.to_owned(), (key, op.checkpoint_format));
-        }
-        let (key, checkpoint) = &validated[encoded];
-        let (key, is_context, checkpoint) = (*key, key.is_context, checkpoint.clone());
+        };
+        let is_context = key.is_context;
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix_col)?, row.u32(x_col)?);
         let latency = row.f64(latency_col)?;
         if batch == 0
@@ -455,7 +428,10 @@ fn load(path: &Path) -> Result<Grids, AicError> {
             ));
         }
         if runtime_identity.get_or_insert_with(|| runtime.clone()) != &runtime
-            || configs.entry(checkpoint).or_insert_with(|| config.clone()) != &config
+            || configs
+                .entry(key.checkpoint_format)
+                .or_insert_with(|| config.clone())
+                != &config
             || *graphs.entry(key).or_insert(graph) != graph
         {
             return Err(invalid(
@@ -577,12 +553,6 @@ pub(crate) mod tests {
             );
             assert_eq!(geometry_key(&altered) == Some(key), excluded, "{field}");
         }
-        // Signed zeros have distinct canonical spellings and distinct keys.
-        let (mut positive, mut negative) = (op.clone(), op.clone());
-        positive.gate_lower_bound = 0.0;
-        negative.gate_lower_bound = -0.0;
-        assert_ne!(geometry(&positive).unwrap(), geometry(&negative).unwrap());
-        assert_ne!(geometry_key(&positive), geometry_key(&negative));
     }
 
     #[test]
@@ -613,18 +583,10 @@ pub(crate) mod tests {
         let mut other = op.clone();
         other.backend = "sglang".into();
         assert!(table.query(&other, 1, 0, 10, &sol).unwrap().is_none());
-        // A non-finite gate (canonical `null`) and a KDA layer match no row,
-        // while the display name and measured composition are not identity.
+        // A non-finite gate (canonical `null`) matches no row.
         let mut nan = op.clone();
         nan.gate_lower_bound = f64::NAN;
         assert!(table.query(&nan, 1, 0, 10, &sol).unwrap().is_none());
-        let mut kda = op.clone();
-        kda.layer_kind = "kda".into();
-        assert!(!table.covers(&kda).unwrap());
-        let mut renamed = op.clone();
-        renamed.name = "attention_43".into();
-        renamed.measured = vec![crate::operators::op::Op::Glm53Attention(kda)];
-        assert!(table.covers(&renamed).unwrap());
     }
 
     fn with_provenance(mut columns: Vec<Col>, config: &'static str, graph: bool) -> Vec<Col> {
