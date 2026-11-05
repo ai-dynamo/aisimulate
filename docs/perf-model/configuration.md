@@ -834,9 +834,10 @@ reports them whatever chunk of a prompt the pass computes, and of the decode
 requests' past KV; those passes are not reused from the iteration cache. Each
 rank's metrics carry its position in the group as `dp_rank`.
 
-A vLLM regression fitted at `nextn > 0` was trained on measured MTP rounds, so its
-estimate already includes drafting and verification, as a measured
-speculative-round profile's does. Replay times such a role only at that depth:
+A vLLM regression fitted at `nextn > 0` gives a valid estimate only when its
+training timings cover complete MTP rounds, drafting and verification, as a
+measured speculative-round profile's do; `nextn` records the depth, not how
+the timings were obtained. Replay times such a role only at that depth:
 the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
 decode request counts once in the totals with its past KV, as in the
 telemetry; only its `extend_lengths` entry carries the tokens it verifies: one
