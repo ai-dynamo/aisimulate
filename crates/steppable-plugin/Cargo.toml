@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "aisimulate-steppable-plugin"
+description = "AISimulate as a dynamically loaded AIPerf Steppable-ABI simulation provider"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+# `cdylib` is the published artifact AIPerf loads; `rlib` lets the manifest
+# writer and this crate's tests link the same descriptor.
+name = "aisimulate_steppable_plugin"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "aisimulate-steppable-plugin-manifest"
+path = "src/bin/manifest.rs"
+
+# Capability variants. AIPerf negotiates by descriptor capability bits, and its
+# tests select providers by capability, so every variant is a supported build:
+#   --no-default-features                       materialized-only provider
+#   --no-default-features --features compact    compact requests, host-copied hash ids
+#   (default) leases                            compact requests over host buffer leases
+#   --features without-timestamped-events       negative control: real engine,
+#                                               descriptor without timestamped events
+[features]
+default = ["leases"]
+compact = []
+leases = ["compact"]
+without-timestamped-events = []
+
+[dependencies]
+# The Steppable ABI is owned by AIPerf; this plugin compiles against those
+# canonical C-layout definitions and never carries a copy of them.
+# TRANSITIONAL: this exact-revision git pin becomes a registry requirement
+# (`aiperf-steppable-abi = "0.x"`) once AIPerf publishes the crate. The pin is
+# the pushed `feat/compact-hash-leases` head that defines `CAPABILITY_NAMES_V1`.
+aiperf-steppable-abi = { git = "https://github.com/NVIDIA-dev/aiperf-rs.git", rev = "539e4819f440cce0773fe6288341c7dc815425c3", package = "aiperf-steppable-abi" }
+aisimulate-core = { path = "../core", package = "aisim-core", default-features = false }
+anyhow = { workspace = true }
+libloading = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+uuid = { workspace = true }
