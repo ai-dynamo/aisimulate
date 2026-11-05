@@ -5,15 +5,22 @@
 
 import hashlib
 import json
+import os
 import sys
 from copy import deepcopy
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from aisimulate_core import sdk
 from scripts.fpm_self_service import adapt_gbdt
+
+# Pages has no SDK; the wheel contracts shard must exercise these caller tests.
+if "AISIMULATE_TEST_WHEEL" in os.environ:
+    sdk = import_module("aisimulate_core.sdk")
+else:
+    sdk = pytest.importorskip("aisimulate_core.sdk")
 
 
 @pytest.fixture

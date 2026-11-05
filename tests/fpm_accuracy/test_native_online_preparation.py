@@ -6,10 +6,13 @@ import contextlib
 import gzip
 import io
 import json
+import os
 import unittest
+from importlib import import_module
 from pathlib import Path
 
-from aisimulate_core.sdk.fpm_learned import iter_fpm_records
+import pytest
+
 from scripts.fpm_accuracy import test_prepare_native_training as training_tests
 from scripts.fpm_accuracy.prepare_native_training import main, prepare
 from scripts.fpm_accuracy.test_validate_native_capture import expectation, record
@@ -78,9 +81,6 @@ class NativeOnlineTests(unittest.TestCase):
         receipt = prepare(self.run, "aggregated", "online")
         output = self.run / "selected/aggregated.online.jsonl"
         self.assertEqual(output.read_bytes(), lines[0] + b"".join(lines[2:]))
-        events = [json.loads(line)["event"] for line in (lines[0], *lines[2:])]
-        expected = [{**event["fpm"], "observed_at_unix_ms": event["observed_at_unix_ms"]} for event in events]
-        self.assertEqual(list(iter_fpm_records([output])), expected)
         self.assertEqual(receipt["counts"], {"online:decode": 2, "online:prefill": 1, "online:mixed": 1})
         self.assertEqual(receipt["excluded"], {"idle_in_selected_ranges": 1})
         self.assertEqual(receipt["split"], "chronological_feedback")
@@ -91,6 +91,19 @@ class NativeOnlineTests(unittest.TestCase):
         self.assertEqual(receipt["offline_latest_observed_at_unix_ms"], 1003)
         self.assertEqual(json.loads(self.online_receipt_path.read_text()), receipt)
         self.assertEqual({path: path.read_bytes() for path in offline_paths}, before)
+
+    def test_online_output_roundtrips_through_canonical_parser(self):
+        # Keep helper coverage active in Pages, which does not install the SDK.
+        if "AISIMULATE_TEST_WHEEL" in os.environ:
+            trainer = import_module("aisimulate_core.sdk.fpm_learned")
+        else:
+            trainer = pytest.importorskip("aisimulate_core.sdk.fpm_learned")
+        self.prepare_offline()
+        lines = self.prepare_feedback(("decode", "idle", "prefill", "mixed", "decode"))
+        prepare(self.run, "aggregated", "online")
+        events = [json.loads(line)["event"] for line in (lines[0], *lines[2:])]
+        expected = [{**event["fpm"], "observed_at_unix_ms": event["observed_at_unix_ms"]} for event in events]
+        self.assertEqual(list(trainer.iter_fpm_records([self.run / "selected/aggregated.online.jsonl"])), expected)
 
     def test_online_filters_work_incompatible_with_dedicated_role(self):
         for role, selected in (("prefill", [0, 4]), ("decode", [1])):
