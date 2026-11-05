@@ -105,6 +105,7 @@ frameworks:
       moe: *vllm_0310_runtime
       kda: *vllm_0310_runtime
       mhc: *vllm_0310_runtime
+      attention: *vllm_0310_runtime
     # kda family pin RETIRED: the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path.

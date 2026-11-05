@@ -67,6 +67,9 @@ class BatchSpec:
     seq_lens: list[int]
     query_lens: list[int]
 
+    def compute_num_tokens(self):
+        return sum(self.query_lens)
+
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
 def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache):
