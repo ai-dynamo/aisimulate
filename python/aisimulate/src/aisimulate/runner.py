@@ -2165,7 +2165,10 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
         * (1 + (state_cache.num_speculative_states or 0))
         + 1
     ):
-        raise ValueError("state_cache capacity must fit one token block and one request state")
+        raise ValueError(
+            "state_cache capacity must fit one token block and one request state "
+            "plus its num_speculative_states scratch copies"
+        )
     return state_cache
 
 

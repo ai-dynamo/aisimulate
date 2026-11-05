@@ -1644,15 +1644,62 @@ def test_observed_mamba_pool_reaches_native_replay(profile, timing_systems):
         CoreRecommendationConfig.model_validate({"engine": recommendation, "optimization": {}})
 
 
+@pytest.mark.parametrize("layout", ["mamba_align", "unmodeled"])
+def test_onboarding_rejects_observed_pools_it_cannot_plan(profile, layout):
+    resources = {
+        "cache_layout": layout,
+        "runtime_memory": {
+            "kv_cache_bytes": 6400,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 4096,
+            "provenance": "synthetic shared pool",
+        },
+        "max_num_tokens": 1024,
+        "max_batch_size": 4,
+        "provenance": "synthetic shared pool",
+    }
+    if layout == "mamba_align":
+        resources["mamba_cache"] = {
+            "state_storage": "full_state",
+            "block_size_tokens": 8,
+            "page_size_bytes": 64,
+            "state_groups": 5,
+            "prefix_match_unit": 2,
+            "num_speculative_states": 0,
+        }
+    profile["deployments"] = profile["deployments"][:1]
+    profile["deployments"][0]["resources"] = resources
+    request = {
+        "identity": {
+            "model": profile["model"],
+            "model_revision": profile["model_revision"],
+            "model_kind": "moe",
+            "framework_version": "0.25.1",
+            "gpu": "h200_sxm",
+            "interconnect": "NVLink",
+        },
+        "search": {
+            "tensor_parallel": 2,
+            "attention_data_parallel": 1,
+            "moe_tensor_parallel": 2,
+            "moe_expert_parallel": 1,
+            "context_length": 4096,
+        },
+        "fpm_profile": profile,
+    }
+    with pytest.raises(ValidationError, match=f"onboarding does not support {layout} FPM caches"):
+        SupportRequest.model_validate(request)
+
+
 @pytest.mark.parametrize(
-    "geometry",
+    "geometry, message",
     [
-        {"state_storage": "replayssm"},
-        {"prefix_match_unit": 3},
-        {"page_size_bytes": 65},
+        ({"state_storage": "replayssm"}, "full_state"),
+        ({"prefix_match_unit": 3}, "prefix_match_unit must divide block_size_tokens"),
+        ({"page_size_bytes": 65}, "page_size_bytes must be a positive multiple of block_size_tokens"),
     ],
 )
-def test_mamba_profile_rejects_inconsistent_physical_geometry(profile, geometry):
+def test_mamba_profile_rejects_inconsistent_physical_geometry(profile, geometry, message):
     from aisimulate_core.fpm_profile import FpmModelProfile
 
     resources = profile["deployments"][0]["resources"]
@@ -1678,5 +1725,5 @@ def test_mamba_profile_rejects_inconsistent_physical_geometry(profile, geometry)
         max_batch_size=4,
         provenance="synthetic shared pool",
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=message):
         FpmModelProfile.model_validate(profile)

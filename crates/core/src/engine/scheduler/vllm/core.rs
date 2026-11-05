@@ -1192,6 +1192,12 @@ impl VllmCore {
                 if policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len) {
                     anyhow::bail!("destination prompt must be shorter than max_model_len");
                 }
+                if !self
+                    .kv_manager
+                    .accepts_sequence_length(request.sequence.len())
+                {
+                    anyhow::bail!("state_cache destination prompt must not be empty");
+                }
                 if let Some(message) = policy::destination_capacity_error(
                     self.args.scheduling_policy(),
                     &request.sequence,
@@ -4964,6 +4970,26 @@ mod state_cache_tests {
                     .contains("destination prompt and state exceed the KV pool capacity")
             );
         }
+    }
+
+    #[test]
+    fn pd_destination_rejects_an_empty_prompt_with_a_state_cache() {
+        // Activation would place the state before the prompt's last token.
+        let mut destination = VllmCore::new(pd_args(64, WorkerType::Decode));
+        let error = destination
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(94_151)),
+                    request: pd_request(94_150, 0, 3),
+                },
+                true,
+            )
+            .expect_err("an empty prompt has no state position");
+        assert!(
+            error
+                .to_string()
+                .contains("destination prompt must not be empty")
+        );
     }
 
     #[test]

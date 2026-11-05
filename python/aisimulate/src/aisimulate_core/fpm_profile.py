@@ -73,12 +73,12 @@ class FpmMambaCache(_ProfileModel):
 
     @model_validator(mode="after")
     def _geometry(self):
-        if (
-            self.block_size_tokens % self.prefix_match_unit
-            or self.page_size_bytes % self.block_size_tokens
-            or self.page_size_bytes * self.state_groups > 2**53
-        ):
-            raise ValueError("invalid observed Mamba shared-pool geometry")
+        if self.block_size_tokens % self.prefix_match_unit:
+            raise ValueError("mamba_cache.prefix_match_unit must divide block_size_tokens")
+        if self.page_size_bytes % self.block_size_tokens:
+            raise ValueError("mamba_cache.page_size_bytes must be a positive multiple of block_size_tokens")
+        if self.page_size_bytes * self.state_groups > 2**53:
+            raise ValueError("mamba_cache.page_size_bytes times state_groups must not exceed 2**53")
         return self
 
 
