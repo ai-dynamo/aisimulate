@@ -809,7 +809,9 @@ estimate is included in this eight-SKU budget.
 
 The supporting planning calculations, unrounded per-framework values, case
 counts, native/proxy distinctions, source hashes and scratch calculations are
-retained as local campaign artifacts outside this PR. The separate strict audit
+retained as local campaign artifacts outside this PR, together with the six
+collection-cost audit scripts and their tests. These audit-only scripts are not
+shipped under `tools/perf_database/`. The separate strict audit
 keeps unqualified full totals unknown; these planning figures do not change its
 validation results. Deferred native Kimi coverage is not priced as zero or counted
 as equivalent-coverage savings.
