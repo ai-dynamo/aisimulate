@@ -246,7 +246,7 @@ impl EngineSpec {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
@@ -767,7 +767,7 @@ mod tests {
     /// Every `Op` variant, constructed once. The exhaustive `match` below the
     /// `Vec` build forces the compiler to flag any newly added variant that
     /// this round-trip suite forgot to cover.
-    fn all_op_variants() -> Vec<OpSpec> {
+    pub(crate) fn all_op_variants() -> Vec<OpSpec> {
         let ops = vec![
             OpSpec::Gemm(gemm()),
             OpSpec::Embedding(embedding()),
