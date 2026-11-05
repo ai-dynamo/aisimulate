@@ -3819,6 +3819,35 @@ def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypat
         assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("client_type", [None, "WekaClient", "OtherClient"])
+def test_simulation_dynamo_weka_client_preserves_default(tmp_path, monkeypatch, client_type):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "WekaImportOptions")
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api, adapter = core / site.api, dynamo / site.path
+    api.parent.mkdir(parents=True)
+    adapter.parent.mkdir(parents=True)
+    fields = f"pub client: {client_type}," if client_type else ""
+    api.write_text(f"pub struct WekaImportOptions {{pub nested_timestamp_basis: WekaNestedTimestampBasis, {fields}}}")
+    source = "fn parse_weka_import_options() {\n    WekaImportOptions {\n        nested_timestamp_basis,\n    }\n}\n"
+    adapter.write_text(source)
+    monkeypatch.setattr(
+        builder, "OPTIONAL_FIELD_LITERALS", (site._replace(sha256=hashlib.sha256(source.encode()).hexdigest()),)
+    )
+    if client_type == "OtherClient":
+        with pytest.raises(ValueError, match="unreviewed AISimulate WekaImportOptions"):
+            builder.patch_optional_literal_fields(core, dynamo)
+        assert adapter.read_text() == source
+    else:
+        [record] = builder.patch_optional_literal_fields(core, dynamo)
+        assert record["inserted_fields"] == (["client"] if client_type else [])
+        if client_type:
+            assert "client: WekaImportOptions::default().client," in adapter.read_text()
+        else:
+            assert adapter.read_text() == source
+
+
 @pytest.mark.parametrize("fields", ["", "pub host_loop: bool, pub vlm_cache_bytes: u64,"])
 @pytest.mark.parametrize("drift", [None, "type", "new_field"])
 def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monkeypatch, fields, drift):
