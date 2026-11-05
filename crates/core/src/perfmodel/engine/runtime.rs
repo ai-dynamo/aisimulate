@@ -33,9 +33,9 @@ use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
-    ContextOpFilter, OpListPlan, QueryMemo, context_op_runtime, generation_op_runtime,
-    get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
-    run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
+    ContextOpFilter, OpListPlan, OpQueryCache, QueryMemo, context_op_runtime,
+    generation_op_runtime, get_mix_step_ops, query_context_op, query_generation_op,
+    run_context_ops, run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
     run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
@@ -482,6 +482,11 @@ impl RankKey {
 /// function of its key, so a hit returns exactly what the dispatch would.
 const RANK_MEMO_CAPACITY: usize = 4096;
 
+/// Single-coordinate op results an [`OpQueryCache`] keeps: one entry per op
+/// and token count (or batch size) its rank walks reached. A vLLM DP32 replay
+/// with 8192-token chunks reached about 56,000.
+const OP_CACHE_CAPACITY: usize = 131_072;
+
 /// Name lists of walks without name slots (DSv4.1 stages) that
 /// [`Engine::shared_names`] keeps shared.
 const SHARED_NAME_LISTS: usize = 16;
@@ -792,6 +797,9 @@ pub struct Engine {
     /// Ranks priced without diagnostics or lookup coverage, by workload;
     /// allocated on first use. See [`Self::rank_pricing`].
     rank_memo: OnceLock<quick_cache::sync::Cache<RankKey, Arc<RankPricing>>>,
+    /// Single-coordinate op results shared by the rank memo's misses;
+    /// allocated on first use. See [`Self::operation_rank_latency_ms`].
+    op_cache: OnceLock<OpQueryCache>,
     /// Name lists of walks without name slots, shared across ranks.
     shared_names: Mutex<Vec<Arc<[String]>>>,
 }
@@ -938,6 +946,7 @@ impl Engine {
             spec_sha256,
             mix_plan: MixStepPlan::new(&spec.context_ops, &spec.generation_ops),
             rank_memo: OnceLock::new(),
+            op_cache: OnceLock::new(),
             shared_names: Mutex::default(),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
@@ -1573,6 +1582,7 @@ impl Engine {
         run_context_ops_planned(
             &self.context_ops,
             Some(&self.context_plan),
+            None,
             &self.db,
             runtime.batch_size,
             effective_isl,
@@ -1647,6 +1657,7 @@ impl Engine {
             let step = run_generation_ops_step_planned(
                 &self.generation_ops,
                 Some(plan),
+                None,
                 &self.db,
                 bs,
                 runtime.beam_width,
@@ -2777,6 +2788,7 @@ impl Engine {
             run_context_ops_planned(
                 &self.context_ops,
                 Some(&self.context_plan),
+                None,
                 &self.db,
                 runtime.batch_size,
                 runtime.isl - runtime.prefix,
@@ -3616,6 +3628,9 @@ impl Engine {
         has_decode: bool,
         operations: &mut OperationObserver,
     ) -> Result<f64, AicError> {
+        let cache = self.op_cache.get_or_init(|| {
+            OpQueryCache::new(OP_CACHE_CAPACITY, &self.context_ops, &self.generation_ops)
+        });
         if self.has_dsv41_stages() {
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
@@ -3679,6 +3694,7 @@ impl Engine {
             return get_mix_step_ops(
                 &self.context_ops,
                 &self.generation_ops,
+                Some(cache),
                 &self.db,
                 ctx_tokens,
                 gen_tokens,
@@ -3722,6 +3738,7 @@ impl Engine {
                     run_context_ops_planned(
                         &self.context_ops,
                         None,
+                        Some(cache),
                         &self.db,
                         n_prefill,
                         new_tokens_per_req,
@@ -3754,6 +3771,7 @@ impl Engine {
             total += run_generation_ops_step_planned(
                 &self.generation_ops,
                 None,
+                Some(cache),
                 &self.db,
                 n_decode,
                 1,
@@ -5463,6 +5481,154 @@ pub(crate) mod tests {
                 .get(&RankKey::of(rank, RankDetail::Values))
                 .unwrap();
             assert!(stored.provenance <= fired);
+        }
+    }
+
+    #[test]
+    fn single_field_ops_price_by_their_field_alone() {
+        use crate::operators::op::MemoField;
+        let engine = build_engine(None);
+        let base = RuntimeContext {
+            batch_size: 2,
+            beam_width: 1,
+            s: 300,
+            prefix: 100,
+            num_tokens: 512,
+            seq_imbalance_correction_scale: 1.0,
+            gen_seq_imbalance_correction_scale: 1.0,
+            num_image_tokens: 0,
+        };
+        // Every field but the one an op reads differs.
+        let other = |field: MemoField| match field {
+            MemoField::NumTokens => RuntimeContext {
+                batch_size: 7,
+                beam_width: 2,
+                s: 9000,
+                prefix: 0,
+                num_tokens: 512,
+                seq_imbalance_correction_scale: 1.25,
+                gen_seq_imbalance_correction_scale: 1.5,
+                num_image_tokens: 3,
+            },
+            MemoField::BatchSize => RuntimeContext {
+                batch_size: 2,
+                beam_width: 2,
+                s: 9000,
+                prefix: 0,
+                num_tokens: 4096,
+                seq_imbalance_correction_scale: 1.25,
+                gen_seq_imbalance_correction_scale: 1.5,
+                num_image_tokens: 3,
+            },
+        };
+        let ops = || engine.context_ops.iter().chain(&engine.generation_ops);
+        let attention = ops().find(|op| op.memo_field().is_none()).unwrap().clone();
+        let leaves: Vec<Op> = ops()
+            .filter(|op| op.memo_field().is_some())
+            .cloned()
+            .collect();
+        // The fixture's GEMM and elementwise ops.
+        assert!(leaves.len() >= 2, "{}", leaves.len());
+        // Composites of them read their field too; one with attention reads
+        // several.
+        let overlap = Op::Overlap(crate::operators::OverlapOp::new(
+            "overlap",
+            leaves[..1].to_vec(),
+            leaves[1..].to_vec(),
+        ));
+        let fallback = Op::Fallback(crate::operators::FallbackOp::new(
+            "fallback",
+            leaves[0].clone(),
+            leaves[1..].to_vec(),
+        ));
+        let mixed = Op::Overlap(crate::operators::OverlapOp::new(
+            "mixed",
+            leaves.clone(),
+            vec![attention],
+        ));
+        assert_eq!(mixed.memo_field(), None);
+        for op in leaves.iter().chain([&overlap, &fallback]) {
+            let field = op.memo_field().unwrap();
+            assert_eq!(field.of(&other(field)), field.of(&base));
+            assert_eq!(
+                op.query(engine.database(), &base).unwrap(),
+                op.query(engine.database(), &other(field)).unwrap(),
+                "{}",
+                op.name()
+            );
+        }
+    }
+
+    #[test]
+    fn op_cache_answers_kv_independent_ops_with_the_dispatch_result() {
+        // Each pair keeps a rank's token counts and changes only its KV: the
+        // second walk reuses the first's GEMM and elementwise results and
+        // re-prices only attention, yet matches a cold engine's dispatch.
+        let engine = build_engine(None);
+        let mut cold = build_engine(None);
+        let cache_len = |engine: &Engine| engine.op_cache.get().map_or(0, OpQueryCache::len);
+        let pairs = [
+            (rank_fpm(2, 1024, 256, 0, 0), rank_fpm(2, 1024, 4096, 0, 0)),
+            (
+                rank_fpm(0, 0, 0, 4, 4 * 513),
+                rank_fpm(0, 0, 0, 4, 4 * 2049),
+            ),
+            (
+                rank_fpm(1, 256, 0, 4, 4 * 513),
+                rank_fpm(1, 256, 1024, 4, 4 * 1025),
+            ),
+        ];
+        for (first, second) in &pairs {
+            let mut entries = None;
+            for metrics in [first, second] {
+                let warm = engine
+                    .price_rank(metrics, Some(RankDetail::Values), None)
+                    .unwrap();
+                cold.op_cache = OnceLock::new();
+                let fresh = cold
+                    .price_rank(metrics, Some(RankDetail::Values), None)
+                    .unwrap();
+                assert_eq!(warm.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+                assert_eq!(warm.operations, fresh.operations);
+                let len = cache_len(&engine);
+                assert!(len > 0);
+                // The KV-only change adds no entry.
+                assert_eq!(*entries.get_or_insert(len), len);
+            }
+        }
+    }
+
+    #[test]
+    fn op_cache_notes_the_provenance_its_lookups_fired() {
+        let engine = build_engine(None);
+        let mut cold = build_engine(None);
+        let first = rank_fpm(2, 1024, 256, 0, 0);
+        let second = rank_fpm(2, 1024, 4096, 0, 0);
+        engine
+            .price_rank(&first, Some(RankDetail::Values), None)
+            .unwrap();
+        // `second` reuses `first`'s cached ops: it notes the tiers a cold
+        // dispatch fires, and keeps an earlier worse tier.
+        for metrics in [&first, &second] {
+            cold.op_cache = OnceLock::new();
+            cold.reset_provenance();
+            cold.price_rank(metrics, Some(RankDetail::Values), None)
+                .unwrap();
+            let fired = cold.database().worst_provenance();
+            engine.reset_provenance();
+            engine
+                .price_rank(metrics, Some(RankDetail::Values), None)
+                .unwrap();
+            assert_eq!(engine.database().worst_provenance(), fired);
+            engine.reset_provenance();
+            engine.database().note_provenance(ProvenanceTier::XQuant);
+            engine
+                .price_rank(metrics, Some(RankDetail::Values), None)
+                .unwrap();
+            assert_eq!(
+                engine.database().worst_provenance(),
+                fired.max(ProvenanceTier::XQuant)
+            );
         }
     }
 
@@ -8243,6 +8409,7 @@ pub(crate) mod tests {
             let got = crate::session::get_mix_step_ops(
                 &ctx_ops,
                 &gen_ops,
+                None,
                 &db,
                 requests * new_tokens + remainder,
                 generation,
