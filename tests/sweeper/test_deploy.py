@@ -159,13 +159,17 @@ def test_disagg_deployment_lowers_only_the_sglang_decode_radix_cache(backend, en
     sample = unroll_sample(
         search_space=_space(
             backend=["vllm", "sglang"],
-            decode_radix_cache=enabled,
-            decode_enable_prefix_caching=prefix_caching,
-            aic_nextn=nextn,
-            nextn_accepted=1.0 if nextn else None,
+            decode_enable_prefix_caching=True,
         ),
         selection=selection,
         parallel_config=parallel,
+    )
+    # Direct sample consumers still need validation when bypassing SearchSpace.
+    sample.update(
+        decode_radix_cache=enabled,
+        decode_enable_prefix_caching=prefix_caching,
+        aic_nextn=nextn,
+        nextn_accepted=1.0 if nextn else None,
     )
 
     if isinstance(expected, str):
