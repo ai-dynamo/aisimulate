@@ -259,7 +259,10 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     defaults = {
         "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
         "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
-        "WekaImportOptions": {"client": ((True, "WekaClient"), "WekaImportOptions::default().client")},
+        "WekaImportOptions": {
+            "client": ((True, "WekaClient"), "WekaImportOptions::default().client"),
+            "chat_template": ((True, "Option<WekaChatTemplate>"), "None"),
+        },
         "SglangConfig": {
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),

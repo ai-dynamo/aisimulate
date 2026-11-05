@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from ..config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
+from ..config.traffic import AgenticProfileOptions, AgenticSnapshotOptions, WekaChatTemplate
 from ..fpm_profile import load_fpm_profile
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
@@ -422,6 +422,7 @@ class RunnerCapabilities:
     supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
     supports_weka_client: bool = False
+    supports_weka_chat_template: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
     supports_detokenization: bool = False
@@ -631,6 +632,13 @@ class RunnerCapabilities:
                 raise ValueError("weka_client must be 'recorded' or 'agentx'")
             if weka_client == "agentx" and not self.supports_weka_client:
                 raise ValueError("runner does not support weka_client 'agentx'; use --stack engine")
+        weka_chat_template = spec.workload.get("weka_chat_template")
+        if weka_chat_template is not None:
+            if trace_format != "weka":
+                raise ValueError("weka_chat_template requires Weka input")
+            WekaChatTemplate.model_validate(weka_chat_template)
+            if not self.supports_weka_chat_template:
+                raise ValueError("runner does not support weka_chat_template; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

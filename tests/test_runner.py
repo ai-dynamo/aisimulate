@@ -806,6 +806,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
                     "format": "weka",
                     "nested_timestamp_basis": "relative",
                     "client": "agentx",
+                    "chat_template": {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8},
                 },
                 "load": {
                     "type": "trace_timestamps",
@@ -829,6 +830,7 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["agentic_lanes"] == 3
     assert workload["weka_nested_timestamp_basis"] == "relative"
     assert workload["weka_client"] == "agentx"
+    assert workload["weka_chat_template"] == {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -977,6 +979,22 @@ def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role
         (
             {"source_type": "trace", "trace_format": "weka", "weka_client": "aiperf"},
             "must be 'recorded' or 'agentx'",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "mooncake",
+                "weka_chat_template": {"request_tokens": 1, "turn_tokens": 1, "tail_tokens": 1},
+            },
+            "weka_chat_template requires Weka input",
+        ),
+        (
+            {
+                "source_type": "trace",
+                "trace_format": "weka",
+                "weka_chat_template": {"request_tokens": -1, "turn_tokens": 1, "tail_tokens": 1},
+            },
+            "greater than or equal to 0",
         ),
     ],
 )
@@ -2738,6 +2756,25 @@ def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
     assert runtime.execution_spec["traffic"]["weka_client"] == "agentx"
+
+
+def test_weka_chat_template_requires_explicit_runner_capability_and_reaches_native():
+    template = {"request_tokens": 16, "turn_tokens": 13, "tail_tokens": 8}
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "weka_chat_template": template,
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_weka_chat_template
+    with pytest.raises(ValueError, match="does not support weka_chat_template"):
+        replace(capabilities, supports_weka_chat_template=False).require_compatible(_spec(workload=workload))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["weka_chat_template"] == template
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])

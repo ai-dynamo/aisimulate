@@ -849,6 +849,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             result["weka_nested_timestamp_basis"] = source["nested_timestamp_basis"]
         if source.get("client") is not None:
             result["weka_client"] = source["client"]
+        if source.get("chat_template") is not None:
+            result["weka_chat_template"] = source["chat_template"]
         if load_type == "concurrency":
             _configure_load_domain(
                 result,
