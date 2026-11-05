@@ -1794,3 +1794,25 @@ counts in performance keys while staging sentinel slots for native graph
 buckets. The evidence harness calls the installed native runner; it does not
 vendor its implementation. This source attribution does not assert separate
 OSRB approval.
+
+## NVIDIA AIPerf Steppable plugin provider
+
+Repository-root `crates/steppable-plugin/src/lib.rs` and
+`crates/steppable-plugin/src/tests.rs` are adapted and modified from NVIDIA
+AIPerf's provider fixture
+`crates/engine/simulate/tests/support/aisimulate-provider/src/lib.rs` and
+`.../src/tests.rs` in NVIDIA-dev/aiperf-rs at commit
+`539e4819f440cce0773fe6288341c7dc815425c3`:
+https://github.com/NVIDIA-dev/aiperf-rs/tree/539e4819f440cce0773fe6288341c7dc815425c3/crates/engine/simulate/tests/support/aisimulate-provider
+That fixture was itself adapted from AISimulate's own
+`crates/steppable-plugin/src/lib.rs` at
+`547ccf24f9b49a9b94d39c73609a1abdd8125c69`.
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Modified by NVIDIA: the module documentation states the published artifact
+and its provenance, and the crate exports its entry symbol and provider ID
+with a compile-time check of the entry signature against the ABI. The
+Steppable ABI types are not copied; the crate depends on AIPerf's
+`aiperf-steppable-abi` crate at the same revision. This source attribution
+does not assert separate OSRB approval.
