@@ -49,7 +49,7 @@ Use a fresh run directory. Training runs on CPU; serving data collection needs
 your GPUs. The online-seed exporter requires scikit-learn 1.9.1. Source-build
 prerequisites are in the [installation guide](../../getting-started/installation.md#use-current-source).
 
-Copy the [identity template](assets/identity.json) to `ROLE.identity.json` in the
+Copy the [identity template](../../../scripts/fpm_self_service/identity.json) to `ROLE.identity.json` in the
 run directory. Replace the model, packaged system, backend/version, role and
 parallelism. Add the actual precision, KV block size and kernel settings from
 the [configuration reference](../configuration.md#choosing-a-forward-pass-api).
@@ -323,7 +323,7 @@ generalization and Replay TTFT/TPOT accuracy need separate validation.
 
 ## 4. Use the model in Replay
 
-Copy the [Replay template](assets/replay-aggregated.yaml) to `replay.yaml` and
+Copy the [Replay template](../../../scripts/fpm_self_service/replay-aggregated.yaml) to `replay.yaml` and
 replace every placeholder. It starts with aggregated vLLM, attention DP=1,
 PP=1 and no context parallelism. Set the captured topology, precision and
 scheduler limits, plus **measured** KV block geometry and usable capacity.
@@ -397,10 +397,10 @@ Supply later measured observations from the same deployment as
 from the frozen test set, and retain their order. Only role-compatible busy rows
 belong in this feedback file.
 
-Run the [online update example](assets/adapt_gbdt.py):
+Run the [online update example](../../../scripts/fpm_self_service/adapt_gbdt.py):
 
 ```bash
-python "$AIS_REPO/docs/perf-model/fpm-self-service/assets/adapt_gbdt.py" \
+python "$AIS_REPO/scripts/fpm_self_service/adapt_gbdt.py" \
   --run-dir "$FPM_RUN" --role "$FPM_ROLE" \
   --output-dir "$FPM_RUN/models/$FPM_ROLE.adapted"
 ```
