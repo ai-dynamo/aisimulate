@@ -104,6 +104,21 @@ license is at the pinned repository's `LICENSE`, and the full license is
 included here as `LICENSE`. Modified for AISim's synchronous request leases
 and discrete-event scheduling. No serving implementation is vendored.
 
+## SGLang v0.5.22 semantic comparison probes
+
+The synthetic probes in repository-root
+`crates/core/src/engine/scheduler/sglang/semantic_evidence.rs` and their inputs,
+expected contracts and measured reports in
+`benchmarks/evidence/sglang-semantics-20261105/` are modified behavioral
+adaptations of the pinned SGLang v0.5.22 sources identified in the three
+preceding sections and the decode radix-cache section below.
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Apache-2.0; the upstream license is at the
+pinned repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISimulate's synchronous leases, synthetic token IDs and fixed
+timing model. No upstream implementation or production request is vendored.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root

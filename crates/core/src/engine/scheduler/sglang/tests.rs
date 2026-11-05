@@ -415,6 +415,46 @@ mod pd_admission_v0522 {
             8
         );
     }
+
+    #[test]
+    fn partially_restored_decode_requests_make_progress() {
+        let mut args = decode_args(256, 8);
+        args.sglang.as_mut().unwrap().num_reserved_decode_tokens = Some(16);
+        let mut core = SglangCore::new(args);
+        for id in 1..=4 {
+            assert!(reserve(&mut core, id, 8, 176));
+            activate(&mut core, id);
+        }
+
+        let mut now = 0.0;
+        let mut outputs = [0; 4];
+        let mut terminals = [0; 4];
+        let mut saw_partial_restoration = false;
+        for _ in 0..1000 {
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            saw_partial_restoration |=
+                !pass.admissions.is_empty() && core.waiting.iter().any(|request| request.retracted);
+            for signal in pass.output_signals {
+                let index = signal.uuid.as_u128() as usize - 1;
+                outputs[index] += usize::from(signal.token_id.is_some());
+                terminals[index] += usize::from(signal.completed);
+            }
+            assert_eq!(pass.fpm.as_ref().unwrap().num_prefill_requests, 0);
+            if core.is_drained() {
+                break;
+            }
+        }
+
+        assert!(
+            core.is_drained(),
+            "partially restored rows must release their KV"
+        );
+        assert!(saw_partial_restoration);
+        assert_eq!(outputs, [176; 4]);
+        assert_eq!(terminals, [1; 4]);
+        assert_eq!(core.kv_manager.cache().available_tokens(), 256);
+    }
 }
 
 mod admission_v0522 {
