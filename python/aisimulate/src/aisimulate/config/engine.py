@@ -170,6 +170,7 @@ class HiCacheConfig(StrictModel):
     """Private SGLang host KV capacity and transfer links per attention-DP rank."""
 
     num_host_blocks: PositiveInt
+    write_policy: Literal["write_through", "write_through_selective", "write_back"] = "write_through"
     d2h_bandwidth_gbps: NonNegativeFloat = 32.0
     h2d_bandwidth_gbps: NonNegativeFloat = 32.0
     latency_to_first_byte_ms: NonNegativeFloat = 0.0

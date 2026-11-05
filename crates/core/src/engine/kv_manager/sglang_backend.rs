@@ -38,6 +38,8 @@ pub(crate) struct RadixRequestLease {
     pages: Vec<KvPageId>,
     materialized_tokens: usize,
     cached_tokens: usize,
+    /// Coverage already observed as an insertion by this request, including its initial cache hit.
+    host_inserted_tokens: usize,
     /// Radix-cache prefix matched when the request was admitted from the waiting queue. Unlike
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
@@ -129,6 +131,7 @@ impl RadixRequestLease {
             pages,
             materialized_tokens,
             cached_tokens,
+            host_inserted_tokens: 0,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
             admission_match_hint: None,
@@ -329,6 +332,9 @@ impl SglangKvManager {
     pub(crate) fn enable_hicache(&mut self, config: SglangHiCacheConfig, block_bytes: usize) {
         assert!(self.enable_prefix_caching);
         self.cache.enable_hicache();
+        if config.write_policy == crate::engine::SglangHiCacheWritePolicy::WriteBack {
+            self.cache.enable_host_duplicate_tracking();
+        }
         self.hicache = Some(HiCache::new(
             config,
             block_bytes,
@@ -392,6 +398,10 @@ impl SglangKvManager {
             .is_some_and(HiCache::has_prepared_stores)
     }
 
+    pub(crate) fn host_clock_ms(&self) -> f64 {
+        self.hicache.as_ref().map_or(0.0, HiCache::clock_ms)
+    }
+
     pub(crate) fn host_load_end_ms(&self) -> f64 {
         self.hicache.as_ref().map_or(0.0, HiCache::pass_load_end_ms)
     }
@@ -410,11 +420,22 @@ impl SglangKvManager {
         }
     }
 
-    fn backup_prefix(&mut self, anchor: NodeId, owner: Uuid, session: Option<&str>) {
+    fn backup_prefix(
+        &mut self,
+        anchor: NodeId,
+        inserted_tokens: usize,
+        owner: Uuid,
+        session: Option<&str>,
+    ) {
         if let Some(host) = &mut self.hicache {
-            host.backup(&mut self.cache, anchor, owner, session);
+            host.on_insert(&mut self.cache, anchor, inserted_tokens, owner, session);
         }
         self.collect_host_events();
+    }
+
+    pub(crate) fn needs_host_insert(&self, lease: &RadixRequestLease, tokens: usize) -> bool {
+        self.hicache.is_some()
+            && tokens / self.cache.page_size() * self.cache.page_size() > lease.host_inserted_tokens
     }
 
     pub(crate) fn admission_host_match(
@@ -449,6 +470,7 @@ impl SglangKvManager {
             lease.request_id,
             required_free_tokens,
         );
+        self.collect_host_events();
         self.publish_removed_pages(&result.evicted_pages);
         let loaded = match result.outcome {
             HostLoad::Loaded(tokens) => tokens,
@@ -696,17 +718,21 @@ impl SglangKvManager {
     }
 
     /// Start a backup only after the forward that produced these pages is observed.
-    pub(crate) fn backup_cached_prefix(&mut self, lease: &RadixRequestLease, tokens: usize) {
+    pub(crate) fn backup_cached_prefix(&mut self, lease: &mut RadixRequestLease, tokens: usize) {
         if self.hicache.is_none() || !lease.is_active() {
             return;
         }
         let pages = tokens.min(lease.cached_tokens) / self.cache.page_size();
-        if pages == 0 {
+        let complete_tokens = pages * self.cache.page_size();
+        if complete_tokens <= lease.host_inserted_tokens {
             return;
         }
-        if pages * self.cache.page_size() == lease.cached_tokens {
+        let inserted_tokens = lease.host_inserted_tokens;
+        lease.host_inserted_tokens = complete_tokens;
+        if complete_tokens == lease.cached_tokens {
             self.backup_prefix(
                 lease.last_node(),
+                inserted_tokens,
                 lease.request_id,
                 lease.session_id.as_deref(),
             );
@@ -715,7 +741,12 @@ impl SglangKvManager {
         let (_, anchor) = self
             .cache
             .match_prefix_hashes_and_lock(&lease.page_hashes[..pages]);
-        self.backup_prefix(anchor, lease.request_id, lease.session_id.as_deref());
+        self.backup_prefix(
+            anchor,
+            inserted_tokens,
+            lease.request_id,
+            lease.session_id.as_deref(),
+        );
         self.cache.dec_lock_ref(anchor);
     }
 
@@ -771,6 +802,7 @@ impl SglangKvManager {
             token_ids,
             lease.session_id.as_deref(),
             lease.request_id,
+            lease.host_inserted_tokens,
         );
     }
 
@@ -800,6 +832,7 @@ impl SglangKvManager {
         token_ids: &[u32],
         session_id: Option<&str>,
         owner: Uuid,
+        inserted_tokens: usize,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
         self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
@@ -807,7 +840,7 @@ impl SglangKvManager {
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
         self.release_unretained_finished_pages(pages, new_last_node, first_new_token, complete_len);
-        self.backup_prefix(new_last_node, owner, session_id);
+        self.backup_prefix(new_last_node, inserted_tokens, owner, session_id);
         self.cache.dec_lock_ref(last_node);
     }
 
@@ -976,6 +1009,7 @@ impl SglangKvManager {
         lease.pages.clear();
         lease.materialized_tokens = 0;
         lease.cached_tokens = 0;
+        lease.host_inserted_tokens = 0;
         capacity_improved
     }
 
@@ -1172,7 +1206,11 @@ impl SglangKvManager {
 
     /// Evict tokens from the cache, publish BlockRemoved events, and log a trace.
     pub fn evict(&mut self, num_tokens: usize) {
-        let (evicted, evicted_pages) = self.cache.evict(num_tokens);
+        let (evicted, evicted_pages) = match &mut self.hicache {
+            Some(host) => host.evict(&mut self.cache, num_tokens, Uuid::nil()),
+            None => self.cache.evict(num_tokens),
+        };
+        self.collect_host_events();
         if !evicted_pages.is_empty() {
             self.publish_removed_pages(&evicted_pages);
         }
@@ -1417,6 +1455,20 @@ mod tests {
     }
 
     fn hicache_manager(host_pages: usize, d2h: f64, h2d: f64) -> (SglangKvManager, Arc<MockSink>) {
+        hicache_policy_manager(
+            host_pages,
+            d2h,
+            h2d,
+            crate::engine::SglangHiCacheWritePolicy::WriteThrough,
+        )
+    }
+
+    fn hicache_policy_manager(
+        host_pages: usize,
+        d2h: f64,
+        h2d: f64,
+        policy: crate::engine::SglangHiCacheWritePolicy,
+    ) -> (SglangKvManager, Arc<MockSink>) {
         let sink = Arc::new(MockSink::new());
         let mut manager =
             SglangKvManager::new(64, 4, KvEventPublishers::new(Some(sink.clone())), 0);
@@ -1424,11 +1476,122 @@ mod tests {
             SglangHiCacheConfig {
                 d2h_bandwidth_gbps: d2h,
                 h2d_bandwidth_gbps: h2d,
+                write_policy: policy,
                 ..SglangHiCacheConfig::new(host_pages)
             },
             1_000_000,
         );
         (manager, sink)
+    }
+
+    #[test]
+    fn hicache_selective_counts_each_requests_observed_insert_once() {
+        let (mut manager, _) = hicache_policy_manager(
+            16,
+            0.0,
+            0.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteThroughSelective,
+        );
+        let tokens = (0..16).collect::<Vec<_>>();
+        let mut first = manager.allocate_for_request(&tokens).unwrap().lease;
+        manager.extend_cached_prefix(&tokens[..8], &mut first);
+        manager.backup_cached_prefix(&mut first, 8);
+        manager.backup_cached_prefix(&mut first, 8);
+        manager.extend_cached_prefix(&tokens, &mut first);
+        manager.backup_cached_prefix(&mut first, 16);
+        manager.finish(&tokens, first);
+        manager.complete_host_boundary(0.0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 0);
+        let mut second = manager.allocate_for_request(&tokens[..12]).unwrap().lease;
+        manager.backup_cached_prefix(&mut second, 12);
+        manager.complete_host_boundary(0.0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 3);
+        manager.abort(second);
+    }
+
+    #[test]
+    fn hicache_write_back_copies_only_the_evicted_leaf_and_waits_for_ack() {
+        let (mut manager, sink) = hicache_policy_manager(
+            8,
+            1.0,
+            1.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        let tokens = (0..16).collect::<Vec<_>>();
+        let first = manager.allocate_for_request(&tokens[..8]).unwrap();
+        manager.finish(&tokens[..8], first.lease);
+        let second = manager.allocate_for_request(&tokens).unwrap();
+        manager.finish(&tokens, second.lease);
+        manager.complete_host_boundary(0.0);
+        assert!(!manager.has_host_work());
+        manager.evict(1);
+        assert_eq!(manager.host_clock_ms(), 2.0);
+        assert_eq!(manager.cache.prefix_match_len(&tokens), 8);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 2);
+        manager.flush_events();
+        let events = sink.clone_events();
+        let host_store = events
+            .iter()
+            .position(|event| {
+                event.tier == KvEventTier::HostPinned
+                    && matches!(event.data, KvEventData::Stored(_))
+            })
+            .unwrap();
+        let gpu_remove = events
+            .iter()
+            .position(|event| {
+                event.tier == KvEventTier::Device
+                    && matches!(event.data, KvEventData::Removed { .. })
+            })
+            .unwrap();
+        assert!(host_store < gpu_remove);
+        manager.evict(1);
+        assert_eq!(manager.host_clock_ms(), 4.0);
+        assert_eq!(manager.cache.prefix_match_len(&tokens), 0);
+        assert_eq!(manager.host_cache_metrics().unwrap().resident_blocks, 4);
+    }
+
+    #[test]
+    fn hicache_write_back_reclaims_a_gpu_locked_duplicate_before_a_host_only_leaf() {
+        let (mut manager, _) = hicache_policy_manager(
+            8,
+            0.0,
+            0.0,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        let a = (0..16).collect::<Vec<_>>();
+        let b = (100..116).collect::<Vec<_>>();
+        let c = (200..216).collect::<Vec<_>>();
+        for tokens in [&a, &b] {
+            let lease = manager.allocate_for_request(tokens).unwrap().lease;
+            manager.finish(tokens, lease);
+            manager.evict(16);
+        }
+        let mut held = lease_with_hashes(&a, 4);
+        assert_eq!(manager.load_host_prefix(&held, &a, 16, 16), Some(16));
+        manager.complete_host_boundary(0.0);
+        manager.allocate_for_request_lease(&a, &mut held).unwrap();
+        let a_anchor = held.last_node();
+        let lease = manager.allocate_for_request(&c).unwrap().lease;
+        manager.finish(&c, lease);
+        manager.evict(16);
+        assert_eq!(manager.cache.host_backup(a_anchor), None);
+        assert_eq!(manager.cache.prefix_match_len(&a), 16);
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&b))
+                .host_tokens,
+            16
+        );
+        assert_eq!(
+            manager
+                .cache
+                .host_prefix_match(&manager.cache.page_hashes(&c))
+                .host_tokens,
+            16
+        );
+        manager.abort(held);
     }
 
     #[test]

@@ -103,6 +103,20 @@ mod hicache_tests {
     }
 
     fn core_with_loop(compute_ms: f64, host_loop: bool, chunk: usize) -> SglangCore {
+        core_with_policy(
+            compute_ms,
+            host_loop,
+            chunk,
+            crate::engine::SglangHiCacheWritePolicy::WriteThrough,
+        )
+    }
+
+    fn core_with_policy(
+        compute_ms: f64,
+        host_loop: bool,
+        chunk: usize,
+        policy: crate::engine::SglangHiCacheWritePolicy,
+    ) -> SglangCore {
         let mut args = test_args(16, 4, chunk);
         args.sglang.as_mut().unwrap().host_loop = host_loop;
         args.perf_model = crate::engine::common::perf_model::PerfModel::External {
@@ -111,6 +125,7 @@ mod hicache_tests {
         .into();
         args.kv_cache_bytes_per_token = Some(250_000);
         args.sglang.as_mut().unwrap().hicache = Some(SglangHiCacheConfig {
+            write_policy: policy,
             d2h_bandwidth_gbps: 1.0,
             h2d_bandwidth_gbps: 1.0,
             ..SglangHiCacheConfig::new(32)
@@ -176,6 +191,101 @@ mod hicache_tests {
         assert!(rejected.admissions.is_empty());
         assert_eq!(core.kv_manager.cache().prefix_match_len(&prompt), 0);
         assert_eq!(core.kv_manager.host_load_end_ms(), first.end_ms);
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn hicache_write_back_stall_delays_admission_and_forward(#[case] host_loop: bool) {
+        let mut core = core_with_policy(
+            1.0,
+            host_loop,
+            64,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        for first in [0, 100, 200, 300] {
+            let tokens = (first..first + 16).collect::<Vec<_>>();
+            let lease = core.kv_manager.allocate_for_request(&tokens).unwrap().lease;
+            core.kv_manager.finish(&tokens, lease);
+        }
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 0);
+        core.receive(direct_request((400..416).collect(), 1));
+        let first = core.execute_pass_internal(None, 0.0);
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 4);
+        assert_eq!(first.end_ms, if host_loop { 4.0 } else { 5.0 });
+        if host_loop {
+            let observed = core.execute_pass_internal(None, first.end_ms);
+            assert_eq!(observed.end_ms, 5.0);
+            assert!(
+                observed
+                    .output_signals
+                    .iter()
+                    .any(|signal| signal.completed)
+            );
+        } else {
+            assert!(first.output_signals.iter().any(|signal| signal.completed));
+        }
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn hicache_selective_observes_reused_pages_before_long_decode_finishes() {
+        let mut core = core_with_policy(
+            1.0,
+            true,
+            64,
+            crate::engine::SglangHiCacheWritePolicy::WriteThroughSelective,
+        );
+        let tokens = (0..18).collect::<Vec<_>>();
+        let first = core.kv_manager.allocate_for_request(&tokens[..16]).unwrap();
+        core.kv_manager.finish(&tokens[..16], first.lease);
+        core.receive(direct_request(tokens, 20));
+        let launched = core.execute_pass_internal(None, 0.0);
+        assert_eq!(core.next_internal_deadline_ms(), None);
+        let observed = core.execute_pass_internal(None, launched.end_ms);
+        assert_eq!(observed.end_ms, 1.0);
+        assert_eq!(core.next_internal_deadline_ms(), Some(5.0));
+        assert!(
+            !observed
+                .output_signals
+                .iter()
+                .any(|signal| signal.completed)
+        );
+    }
+
+    #[test]
+    fn hicache_cancelled_chunk_keeps_its_producer_pages_until_observation() {
+        let mut core = core_with_policy(
+            100.0,
+            true,
+            24,
+            crate::engine::SglangHiCacheWritePolicy::WriteBack,
+        );
+        let id = core.receive(direct_request((0..52).collect(), 1));
+        assert_eq!(core.execute_pass_internal(None, 0.0).end_ms, 0.0);
+        assert_eq!(core.execute_pass_internal(None, 0.0).end_ms, 100.0);
+        core.apply_command_effects_at(
+            SchedulerCommand::CancelRequest { request_id: id },
+            true,
+            Some(101.0),
+        )
+        .unwrap();
+        core.receive(direct_request((100..120).collect(), 1));
+        let observed = core.execute_pass_internal(None, 101.0);
+        assert_eq!(observed.end_ms, 200.0);
+        assert_eq!(core.host_cache_metrics().unwrap().resident_blocks, 0);
+        assert_eq!(core.waiting.len(), 1);
+        let launched = core.execute_pass_internal(None, observed.end_ms);
+        assert!(launched.end_ms >= 206.0);
+        assert!(core.host_cache_metrics().unwrap().resident_blocks > 0);
+        let finished = core.execute_pass_internal(None, launched.end_ms);
+        assert!(
+            finished
+                .output_signals
+                .iter()
+                .any(|signal| signal.completed)
+        );
+        assert!(core.is_drained());
     }
 
     #[test]

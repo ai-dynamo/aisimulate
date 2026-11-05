@@ -38,8 +38,8 @@ pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
     G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangHiCacheConfig, SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy,
-    TrtllmConfig, WorkerType,
+    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangSchedulePolicy, StateCacheConfig,
+    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{

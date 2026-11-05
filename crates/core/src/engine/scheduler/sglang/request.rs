@@ -278,6 +278,11 @@ impl WaitingQueue {
         Some(request)
     }
 
+    pub(super) fn insert(&mut self, index: usize, request: SglangRequest) {
+        self.stats.add(request.queued_length());
+        self.requests.insert(index, request);
+    }
+
     pub(super) fn remove(&mut self, index: usize) -> Option<SglangRequest> {
         let request = self.requests.remove(index)?;
         self.stats.remove(request.queued_length());

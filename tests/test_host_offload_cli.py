@@ -709,13 +709,15 @@ def test_kvcr_docs_example_validates(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("host_loop", [False, True])
-def test_hicache_saved_config_reaches_native_rank_with_host_loop(tmp_path, host_loop) -> None:
+@pytest.mark.parametrize("write_policy", ["write_through", "write_through_selective", "write_back"])
+def test_hicache_saved_config_reaches_native_rank_with_host_loop(tmp_path, host_loop, write_policy) -> None:
     engine = _prediction_engine()
     engine["backend"] = "sglang"
     worker = engine["workers"]["aggregated"]
     worker["host_loop"] = host_loop
     host = {
         "num_host_blocks": 32,
+        "write_policy": write_policy,
         "d2h_bandwidth_gbps": 0.0,
         "h2d_bandwidth_gbps": 7.0,
         "latency_to_first_byte_ms": 2.0,

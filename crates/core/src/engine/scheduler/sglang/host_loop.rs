@@ -138,6 +138,17 @@ impl HostLoop {
             .map_or(0, |batch| batch.outputs.discard_request(uuid))
     }
 
+    pub(super) fn contains_request(&self, uuid: Uuid) -> bool {
+        self.in_flight.as_ref().is_some_and(|batch| {
+            batch.outputs.output_signals.iter().any(|s| s.uuid == uuid)
+                || batch
+                    .outputs
+                    .cache_commits
+                    .iter()
+                    .any(|(id, _)| *id == uuid)
+        })
+    }
+
     /// Keep a cancelled request's KV until the current forward is observed.
     /// Return it for immediate cleanup when no forward is in flight.
     pub(super) fn defer_cancelled_request(

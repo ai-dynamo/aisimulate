@@ -958,6 +958,7 @@ impl RadixCache {
             && let Some(mut state) = host.nodes.get(&child_id).cloned()
         {
             state.identity = None;
+            state.duplicate_order = None;
             host.nodes.insert(inter_id, state);
         }
 
@@ -967,6 +968,8 @@ impl RadixCache {
         if let Some(parent_id) = child_parent {
             self.nodes[parent_id].children.insert(original_ck, inter_id);
         }
+
+        self.register_host_duplicate(inter_id);
 
         // Both size totals are unchanged: the intermediate and suffix split
         // the original edge without changing its lock state or token count.

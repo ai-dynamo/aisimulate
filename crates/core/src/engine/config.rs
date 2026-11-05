@@ -298,10 +298,22 @@ impl SglangConfig {
     }
 }
 
-/// Physical controls for SGLang's private, write-through host cache.
+/// SGLang host backup trigger.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SglangHiCacheWritePolicy {
+    #[default]
+    WriteThrough,
+    WriteThroughSelective,
+    WriteBack,
+}
+
+/// Physical controls for SGLang's private host cache.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SglangHiCacheConfig {
+    #[serde(default)]
+    pub write_policy: SglangHiCacheWritePolicy,
     /// Host capacity in pages per attention-DP rank, with the GPU page geometry.
     pub num_host_blocks: usize,
     /// Decimal GB/s; zero models instantaneous byte transfer.
@@ -318,6 +330,7 @@ impl SglangHiCacheConfig {
     pub const fn new(num_host_blocks: usize) -> Self {
         Self {
             num_host_blocks,
+            write_policy: SglangHiCacheWritePolicy::WriteThrough,
             d2h_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
             h2d_bandwidth_gbps: DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS,
             latency_to_first_byte_ms: 0.0,

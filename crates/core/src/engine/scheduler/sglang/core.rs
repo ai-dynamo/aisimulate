@@ -829,6 +829,8 @@ impl SglangCore {
         };
         self.active_request_ids.remove(&request_id);
         if let Some(host) = &mut self.host {
+            // A chunk continuation waits in the queue while its producer still owns KV.
+            was_running |= host.contains_request(request_id);
             // The forward in flight may have produced this request's outputs and
             // prefix commits; the scheduler never observes them now.
             host.discard_request(request_id);
@@ -1302,7 +1304,7 @@ impl SglangCore {
         self.vision_cache.store(&vision_misses);
 
         // Ghost members still form a batch: `filter_batch` has not seen them finish.
-        let selected_ms = now_ms;
+        let selected_ms = now_ms.max(self.kv_manager.host_clock_ms());
 
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
@@ -1430,6 +1432,10 @@ impl SglangCore {
                 decode_start_ms,
             )
         }?;
+        // Write-back may synchronously wait while decode reclaims a cache leaf.
+        let after_reclaim_ms = selected_ms.max(self.kv_manager.host_clock_ms());
+        decode.end_ms += after_reclaim_ms - selected_ms;
+        let selected_ms = after_reclaim_ms;
         if !prefill_pass {
             // The decode step can retract requests before executing the batch.
             for signal in &decode.output_signals {
@@ -1512,9 +1518,12 @@ impl SglangCore {
                         .chain(0..cursor)
                         .find(|&index| self.running[index].uuid == request_id)
                     else {
-                        if let Some(request) = self.waiting.iter().find(|r| r.uuid == request_id) {
+                        if let Some(index) = self.waiting.iter().position(|r| r.uuid == request_id)
+                        {
+                            let mut request = self.waiting.remove(index).unwrap();
                             self.kv_manager
-                                .backup_cached_prefix(&request.kv_lease, tokens);
+                                .backup_cached_prefix(&mut request.kv_lease, tokens);
+                            self.waiting.insert(index, request);
                         }
                         continue;
                     };

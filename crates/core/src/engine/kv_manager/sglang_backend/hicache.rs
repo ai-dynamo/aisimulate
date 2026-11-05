@@ -9,7 +9,9 @@ use crate::engine::host_offload::{
     CompletedTransfer, HostBlockKey, HostBlockMeta, HostEviction, HostLink, HostOffloadObserver,
     HostPolicy, HostTier, HostTierConfig, LoadOutcome, StoreOutcome, TransferId,
 };
-use crate::engine::{G2Scope, HostCacheMetrics, KvEventData, SglangHiCacheConfig};
+use crate::engine::{
+    G2Scope, HostCacheMetrics, KvEventData, SglangHiCacheConfig, SglangHiCacheWritePolicy,
+};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -36,7 +38,8 @@ struct NodeBlocks {
 pub(super) struct HiCache {
     tier: HostTier,
     backups: FxHashMap<TransferId, NodeId>,
-    loads: FxHashMap<TransferId, NodeId>,
+    loads: FxHashMap<TransferId, (NodeId, usize)>,
+    write_policy: SglangHiCacheWritePolicy,
     pass_load_end_ms: f64,
 }
 
@@ -66,6 +69,7 @@ impl HiCache {
             tier,
             backups: FxHashMap::default(),
             loads: FxHashMap::default(),
+            write_policy: config.write_policy,
             pass_load_end_ms: 0.0,
         }
     }
@@ -96,11 +100,11 @@ impl HiCache {
                     cache.complete_host_backup(anchor, transfer_id.get());
                 }
                 CompletedTransfer::Load { transfer_id, .. } => {
-                    let anchor = self
+                    let (anchor, device_tokens) = self
                         .loads
                         .remove(&transfer_id)
                         .expect("load owns its source and destination");
-                    cache.complete_host_load(anchor, transfer_id.get());
+                    cache.complete_host_load(anchor, transfer_id.get(), device_tokens);
                 }
             }
         }
@@ -143,6 +147,24 @@ impl HiCache {
         }
     }
 
+    pub(super) fn on_insert(
+        &mut self,
+        cache: &mut RadixCache,
+        anchor: NodeId,
+        inserted_tokens: usize,
+        owner: Uuid,
+        session: Option<&str>,
+    ) {
+        let threshold = match self.write_policy {
+            SglangHiCacheWritePolicy::WriteThrough => 1,
+            SglangHiCacheWritePolicy::WriteThroughSelective => 2,
+            SglangHiCacheWritePolicy::WriteBack => return,
+        };
+        for node in cache.record_host_insert(anchor, inserted_tokens, threshold) {
+            self.backup(cache, node, owner, session);
+        }
+    }
+
     /// Back up ancestors first; a failed node stops the chain without undoing earlier admissions.
     pub(super) fn backup(
         &mut self,
@@ -152,24 +174,17 @@ impl HiCache {
         session: Option<&str>,
     ) {
         let now_ms = self.tier.current_time_ms();
-        for node in cache.path_nodes(anchor) {
+        let nodes = if self.write_policy == SglangHiCacheWritePolicy::WriteBack {
+            vec![anchor]
+        } else {
+            cache.path_nodes(anchor)
+        };
+        for node in nodes {
             if cache.host_backup(node).is_some() {
                 continue;
             }
             let blocks = node_blocks(cache, node, session);
-            while self.tier.empty_blocks() < blocks.keys.len() {
-                let Some(victim) = cache.host_eviction_candidate() else {
-                    break;
-                };
-                let victim_blocks = node_blocks(cache, victim, None);
-                for key in victim_blocks.keys {
-                    assert!(
-                        self.tier.evict_resident(owner, key, now_ms),
-                        "eligible host leaf is resident and unpinned"
-                    );
-                }
-                cache.remove_host_leaf(victim);
-            }
+            self.reclaim_host(cache, blocks.keys.len(), owner);
             let StoreOutcome::Prepared { transfer_id, .. } =
                 self.tier
                     .prepare_store(CLIENT, owner, &blocks.keys, Some(&blocks.meta), now_ms)
@@ -179,6 +194,89 @@ impl HiCache {
             cache.begin_host_backup(blocks.node, &[blocks.node], transfer_id.get());
             self.backups.insert(transfer_id, blocks.node);
         }
+    }
+
+    pub(super) fn clock_ms(&self) -> f64 {
+        self.tier.current_time_ms()
+    }
+
+    fn release_host_node(&mut self, cache: &mut RadixCache, node: NodeId, owner: Uuid) {
+        for key in node_blocks(cache, node, None).keys {
+            assert!(
+                self.tier
+                    .evict_resident(owner, key, self.tier.current_time_ms()),
+                "host victim must be resident and unpinned"
+            );
+        }
+    }
+
+    fn reclaim_host(&mut self, cache: &mut RadixCache, needed: usize, owner: Uuid) {
+        if self.write_policy == SglangHiCacheWritePolicy::WriteBack {
+            for spare_demotions in [true, false] {
+                for node in cache.host_duplicates() {
+                    if self.tier.empty_blocks() >= needed {
+                        break;
+                    }
+                    if !cache.has_host_duplicate(node) {
+                        cache.forget_host_duplicate(node);
+                        continue;
+                    }
+                    if !cache.can_reclaim_host_duplicate(node, spare_demotions) {
+                        continue;
+                    }
+                    self.release_host_node(cache, node, owner);
+                    cache.remove_host_duplicate(node);
+                }
+            }
+        }
+        while self.tier.empty_blocks() < needed {
+            let Some(node) = cache.host_eviction_candidate() else {
+                break;
+            };
+            self.release_host_node(cache, node, owner);
+            cache.remove_host_leaf(node);
+        }
+    }
+
+    pub(super) fn evict(
+        &mut self,
+        cache: &mut RadixCache,
+        tokens: usize,
+        owner: Uuid,
+    ) -> (usize, Vec<KvPageId>) {
+        if self.write_policy != SglangHiCacheWritePolicy::WriteBack {
+            return cache.evict(tokens);
+        }
+        let mut freed = Vec::new();
+        let mut skipped = Vec::new();
+        while freed.len() * cache.page_size() < tokens {
+            let Some(node) = cache.device_eviction_candidate(&skipped) else {
+                break;
+            };
+            if cache.host_backup(node).is_none() {
+                self.backup(cache, node, owner, None);
+                self.complete_boundary(cache, self.tier.current_time_ms());
+                while !self.backups.is_empty() {
+                    let deadline = self
+                        .tier
+                        .next_deadline(CLIENT)
+                        .expect("submitted backup has a deadline");
+                    self.advance(cache, deadline);
+                }
+            }
+            if cache.host_backup(node).is_none() {
+                let Some(descendants) = cache.host_subtree_for_drop(node) else {
+                    skipped.push(node);
+                    continue;
+                };
+                for descendant in descendants {
+                    self.release_host_node(cache, descendant, owner);
+                    cache.remove_host_leaf(descendant);
+                }
+            }
+            freed.extend(cache.evict_hicache_leaf(node));
+        }
+        (freed.len() * cache.page_size(), freed)
     }
 
     /// Reclaim the complete selected shape before committing any of its host prefix.
@@ -202,14 +300,17 @@ impl HiCache {
         let capacity = cache.available_tokens() + cache.evictable_size;
         if required_free_tokens > capacity {
             cache.dec_lock_ref(device_anchor);
-            cache.unlock_host_prefix(anchor);
+            cache.unlock_host_prefix(anchor, matched.device_tokens);
             return LoadResult {
                 outcome: HostLoad::CapacityBlocked,
                 evicted_pages: Vec::new(),
             };
         }
-        let (_, evicted_pages) =
-            cache.evict(required_free_tokens.saturating_sub(cache.available_tokens()));
+        let (_, evicted_pages) = self.evict(
+            cache,
+            required_free_tokens.saturating_sub(cache.available_tokens()),
+            owner,
+        );
         let host_nodes = cache
             .path_nodes(anchor)
             .into_iter()
@@ -226,7 +327,7 @@ impl HiCache {
         assert_eq!(host_keys.len() * cache.page_size(), matched.host_tokens);
         let Some(pages) = cache.page_pool.allocate_pages(host_keys.len()) else {
             cache.dec_lock_ref(device_anchor);
-            cache.unlock_host_prefix(anchor);
+            cache.unlock_host_prefix(anchor, matched.device_tokens);
             return LoadResult {
                 outcome: HostLoad::CapacityBlocked,
                 evicted_pages,
@@ -239,7 +340,7 @@ impl HiCache {
         else {
             cache.page_pool.free_pages(&pages);
             cache.dec_lock_ref(device_anchor);
-            cache.unlock_host_prefix(anchor);
+            cache.unlock_host_prefix(anchor, matched.device_tokens);
             return LoadResult {
                 outcome: HostLoad::Recompute,
                 evicted_pages,
@@ -254,7 +355,7 @@ impl HiCache {
             );
         }
         cache.begin_host_load(anchor, &loaded_nodes, transfer.get());
-        self.loads.insert(transfer, anchor);
+        self.loads.insert(transfer, (anchor, matched.device_tokens));
         self.depend_on_prefix(cache, anchor);
         cache.dec_lock_ref(device_anchor);
         LoadResult {

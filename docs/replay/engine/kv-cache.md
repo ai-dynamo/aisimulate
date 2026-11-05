@@ -140,7 +140,7 @@ request itself computed, which raises `reused_input_tokens` but not
 ## SGLang HiCache
 
 Set `engine.workers.aggregated.kv_cache.hicache` to model SGLang v0.5.22
-write-through caching on a private host pool for each attention-DP rank.
+caching on a private host pool for each attention-DP rank.
 Prefix caching must be enabled. This is supported for aggregated prediction
 and native offline replay; disaggregated roles, recommendation, Belady eviction,
 external storage, and peer KVCR fetch are not supported by this option.
@@ -148,6 +148,7 @@ external storage, and peer KVCR fetch are not supported by this option.
 | Field under `hicache` | Default | Meaning |
 |---|---|---|
 | `num_host_blocks` | Required | Positive host capacity per attention-DP rank. |
+| `write_policy` | `write_through` | `write_through`, `write_through_selective`, or `write_back`; see below. |
 | `d2h_bandwidth_gbps` | `32` | Device-to-host bandwidth in decimal GB/s; zero is unlimited. |
 | `h2d_bandwidth_gbps` | `32` | Host-to-device bandwidth in decimal GB/s; zero is unlimited. |
 | `latency_to_first_byte_ms` | `0` | Non-negative latency per transfer operation. |
@@ -157,12 +158,23 @@ The compiler resolves `bytes_per_token: auto` from the model and rank layout.
 Native engine configurations place these fields under `sglang.hicache` and
 require `kv_cache_bytes_per_token`.
 
-Completed chunk and request inserts back up their canonical radix pages,
-including materialized output pages. Each step submits one merged D2H operation;
+With `write_through`, completed chunk and request inserts back up their canonical
+radix pages, including materialized output pages. `write_through_selective` waits
+for a node's second insertion observation; each request counts newly covered
+prefixes once, including reused pages. These policies back up ancestors first.
+Each step submits one merged D2H operation;
 its acknowledgement publishes host residency and releases the independent GPU
 page locks. GPU eviction preserves backed-up radix nodes. Host eviction removes
 only unlocked, host-only leaves in last-access order and may reclaim old entries
 even when the new node ultimately cannot fit.
+
+`write_back` instead backs up the selected GPU eviction leaf and waits for its
+D2H acknowledgement before releasing the device pages. This wait delays batch
+selection and forward execution. Host pressure first reclaims redundant copies
+that remain on the GPU, sparing evictable GPU leaves on the first pass, then
+reclaims host-only leaves. In-flight transfers and host source locks protect
+their copies. If a backup cannot fit, eviction drops the selected device leaf
+and its eligible host-only descendants together.
 
 Admission selects the prefill shape before queuing H2D and budgets both the host
 prefix and new GPU work. Load-back restores the entire promised host prefix or

@@ -167,7 +167,9 @@ fn commit_materialized_prefix(
     deferred: &mut Vec<(Uuid, usize)>,
 ) {
     if config.host_loop {
-        if uncached_aligned_prefix(req, config, req.materialized_tokens).is_some() {
+        if uncached_aligned_prefix(req, config, req.materialized_tokens).is_some()
+            || kv_manager.needs_host_insert(&req.kv_lease, req.materialized_tokens)
+        {
             deferred.push((req.uuid, req.materialized_tokens));
         }
     } else {
@@ -235,7 +237,7 @@ fn cache_prefix_through_ready(
 ) {
     let Some(aligned_tokens) = uncached_aligned_prefix(req, config, tokens) else {
         if backup_ready {
-            kv_manager.backup_cached_prefix(&req.kv_lease, tokens);
+            kv_manager.backup_cached_prefix(&mut req.kv_lease, tokens);
         }
         return;
     };
@@ -250,7 +252,7 @@ fn cache_prefix_through_ready(
     let sequence = &req.sequence_tokens[..aligned_tokens];
     kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
     if backup_ready {
-        kv_manager.backup_cached_prefix(&req.kv_lease, aligned_tokens);
+        kv_manager.backup_cached_prefix(&mut req.kv_lease, aligned_tokens);
     }
     req.debug_assert_invariants(config.block_size);
 }
