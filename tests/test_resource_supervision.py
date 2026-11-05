@@ -34,6 +34,37 @@ def _run_script(tmp_path, source, *, policy=None, timeout=5):
     return run_process([sys.executable, str(script)], policy=policy or _policy(), timeout=timeout)
 
 
+def test_large_calibration_checkpoint_survives_supervised_export(tmp_path):
+    output = tmp_path / "events.jsonl"
+    script = tmp_path / "worker.py"
+    script.write_text(
+        "from aisimulate.supervision import checkpoint\n"
+        "checkpoint('candidate_completed', {'calibration': 'x' * (2 * 1024 * 1024)})\n"
+    )
+    report = run_process(
+        [sys.executable, str(script)], policy=_policy(extra_mib=160), timeout=10, events_output=str(output)
+    )
+    assert report["status"] == "completed"
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    assert records == [{"event": "candidate_completed", "value": {"calibration": "x" * (2 * 1024 * 1024)}}]
+
+
+def test_calibration_checkpoint_keeps_record_and_total_bounds(tmp_path, monkeypatch):
+    from aisimulate import supervision
+    from aisimulate.resources import ResourceLimitError
+
+    path = tmp_path / "events.jsonl"
+    monkeypatch.setattr(supervision, "runtime_budget", lambda: {"events_path": str(path)})
+    with pytest.raises(ResourceLimitError, match="checkpoint budget"):
+        supervision.checkpoint("candidate_completed", {"calibration": "x" * supervision._CHECKPOINT_RECORD_BYTES})
+    assert not path.exists()
+    with path.open("wb") as stream:
+        stream.truncate(supervision._CHECKPOINT_TOTAL_BYTES)
+    with pytest.raises(ResourceLimitError, match="checkpoint budget"):
+        supervision.checkpoint("candidate_completed", {"score": 1})
+    assert path.stat().st_size == supervision._CHECKPOINT_TOTAL_BYTES
+
+
 def test_watchdog_stops_small_allocation_and_reaps_child(tmp_path):
     pidfile = tmp_path / "pid"
     result = _run_script(

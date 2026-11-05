@@ -46,6 +46,10 @@ _THREAD_VARIABLES = (
 )
 _POLL_SECONDS = 0.05
 _GRACE_SECONDS = 2.0
+# A candidate retains the complete calibrated estimator identity in several
+# public fields. Layer-wise routing profiles can exceed 1 MiB per candidate.
+_CHECKPOINT_RECORD_BYTES = 8 * 1024 * 1024
+_CHECKPOINT_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 def in_supervised_process() -> bool:
@@ -63,7 +67,9 @@ def checkpoint(event: str, value: dict[str, Any]) -> None:
         return
     record = json.dumps({"event": event, "value": value}, allow_nan=False) + "\n"
     path = Path(budget["events_path"])
-    if len(record) > 1024 * 1024 or (path.exists() and path.stat().st_size + len(record) > 64 * 1024 * 1024):
+    if len(record) > _CHECKPOINT_RECORD_BYTES or (
+        path.exists() and path.stat().st_size + len(record) > _CHECKPOINT_TOTAL_BYTES
+    ):
         raise ResourceLimitError("execution evidence exceeds the bounded checkpoint budget")
     with path.open("a", encoding="utf-8") as target:
         target.write(record)
@@ -308,8 +314,8 @@ def _run_process(
         target_path = Path(events_output)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with target_path.open("x", encoding="utf-8") as target, events_path.open(encoding="utf-8") as source:
-            while line := source.readline(1024 * 1024 + 1):
-                if not line.endswith("\n") or len(line) > 1024 * 1024:
+            while line := source.readline(_CHECKPOINT_RECORD_BYTES + 1):
+                if not line.endswith("\n") or len(line) > _CHECKPOINT_RECORD_BYTES:
                     break
                 target.write(line)
     code = process.returncode
