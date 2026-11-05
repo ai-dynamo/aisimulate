@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{KvBlock, KvEvent, KvEventData, StoredBlocks};
+use aisimulate_core::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 use aisimulate_core::replay::DynamicPlacementPlugin;
 use std::sync::{LazyLock, Mutex};
 
@@ -338,6 +338,7 @@ fn neutral_adapter_translates_admission_pending_and_lifecycle_mutations() {
     policy
         .worker_ready(
             WorkerTopology {
+                router_hint: false,
                 worker_id: 4,
                 scheduler_ids: vec![9],
             },
@@ -347,6 +348,7 @@ fn neutral_adapter_translates_admission_pending_and_lifecycle_mutations() {
     policy
         .worker_draining(
             WorkerTopology {
+                router_hint: false,
                 worker_id: 4,
                 scheduler_ids: vec![9],
             },
@@ -356,6 +358,7 @@ fn neutral_adapter_translates_admission_pending_and_lifecycle_mutations() {
     policy
         .worker_removed(
             WorkerTopology {
+                router_hint: false,
                 worker_id: 4,
                 scheduler_ids: vec![9],
             },
@@ -394,6 +397,7 @@ fn neutral_adapter_preserves_routing_identity_and_typed_replay_metadata() {
         uuid: Some(Uuid::from_u128(8)),
         tokens: vec![10, 20, 30],
         replay_context: Some(ReplayRequestContext {
+            agentic: None,
             authored_id: "trace-request-8".into(),
             session_id: Some("session-a".into()),
             turn_index: Some(4),
@@ -447,15 +451,17 @@ fn neutral_adapter_preserves_routing_identity_and_typed_replay_metadata() {
 fn neutral_adapter_distinguishes_omitted_identity_and_metadata_from_known_empty() {
     let _test_lock = TEST_LOCK.lock().expect("test lock");
     let mut omitted_policy = policy();
-    let deferred = ReplayRequestPayload::deferred(
-        DirectRequest {
+    // `ReplayRequestPayload::deferred` is crate-private; an integration test
+    // builds the public variant directly.
+    let deferred = ReplayRequestPayload::Deferred {
+        request_metadata: DirectRequest {
             uuid: Some(Uuid::from_u128(9)),
             ..Default::default()
         },
-        3,
-        vec![1, 2],
-        2,
-    );
+        input_length: 3,
+        hash_ids: vec![1, 2].into(),
+        trace_block_size: 2,
+    };
 
     omitted_policy
         .place(
@@ -527,9 +533,11 @@ fn dynamic_adapter_forwards_each_kv_event_as_one_lossless_packet() {
         3,
         vec![
             KvEvent {
+                tier: KvEventTier::Device,
                 event_id: 11,
                 dp_rank: 3,
                 data: KvEventData::Stored(StoredBlocks {
+                    session_id: None,
                     parent_hash: Some(31),
                     start_position: Some(5),
                     blocks: vec![KvBlock {
@@ -540,6 +548,7 @@ fn dynamic_adapter_forwards_each_kv_event_as_one_lossless_packet() {
                 }),
             },
             KvEvent {
+                tier: KvEventTier::Device,
                 event_id: 12,
                 dp_rank: 3,
                 data: KvEventData::Removed {

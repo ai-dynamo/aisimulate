@@ -412,11 +412,14 @@ unsafe fn direct_request(request: DirectRequestV1) -> Result<DirectRequest, Stat
         dp_rank: request.dp_rank,
         preferred_dp_rank: None,
         preferred_prefill_dp_rank: None,
+        // The steppable ABI carries neither peer-fetch hints nor images.
+        kv_hints: None,
         arrival_timestamp_ms: None,
         priority: request.priority,
         strict_priority: request.strict_priority,
         policy_class: None,
         replay_context: None,
+        images: Vec::new(),
     })
 }
 
@@ -2893,15 +2896,18 @@ mod tests {
             ..Default::default()
         });
         let prefill_topology = vec![WorkerTopology {
+            router_hint: false,
             worker_id: 4,
             scheduler_ids: vec![10],
         }];
         let decode_topology = vec![
             WorkerTopology {
+                router_hint: false,
                 worker_id: 9,
                 scheduler_ids: vec![20],
             },
             WorkerTopology {
+                router_hint: false,
                 worker_id: 12,
                 scheduler_ids: vec![21],
             },
