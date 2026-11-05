@@ -2200,7 +2200,7 @@ mod destination_lifecycle {
             .filter(|admission| admission.uuid == logical_uuid)
             .collect::<Vec<_>>();
         assert_eq!(logical_admissions.len(), 1);
-        assert_eq!(logical_admissions[0].reused_input_tokens, 0);
+        assert_eq!(logical_admissions[0].reused_input_tokens, 4);
         let running = destination
             .running
             .iter()
