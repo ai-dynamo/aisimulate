@@ -276,17 +276,27 @@ traffic:
 - A stream's first request is `in + request_tokens` long. A stream is a
   conversation, a detected chain or a subagent thread. Each later request of
   the stream adds `turn_tokens` for one more assistant and one more user
-  message.
+  message. A request that shares no hash block with its predecessor starts the
+  conversation over, like a stream's first request.
 - A request repeats its stream predecessor's prompt up to the trace content the
   two share. It does not repeat the rest of that content or the predecessor's
   last `tail_tokens`, so the shared prefix ends between hash blocks rather than
   on them. Its remaining blocks are private. A stream's first request keeps the
   trace's blocks.
 - A forked chain or subagent thread starts a new stream, so its first request
-  is one message, as in AIPerf 0.13. AIPerf versions that include
+  is one message, as AIPerf 0.13 and the AgentX client send it. AIPerf versions
+  that include
   [ai-dynamo/aiperf#1555](https://github.com/ai-dynamo/aiperf/pull/1555) keep
   the parent's messages in a child's first request, so there a child shares
   more of its parent's prompt than this models.
+- The blocks a later request adds are its own, so with either
+  [client](#weka-client) another stream shares at most the blocks of a stream's
+  first request. With `recorded`, streams then no longer share their whole
+  common hash prefix.
+- The values approximate the template. Each later request is taken to add one
+  assistant and one user message, and to repeat its predecessor's template
+  tokens up to the shared content. A client that merges messages or drops them
+  at a cut sends a somewhat different prompt.
 
 Where the shared prefix ends matters for hybrid models whose prefix cache keeps
 recurrent state only at block ends: it decides whether a turn reaches the
@@ -313,7 +323,8 @@ A Weka corpus can name several source models. Replay runs every request on
 `traffic.source.client` chooses whose replay of the corpus AISimulate follows.
 With `recorded` (the default), a subagent starts at its recorded offset from
 the request before it, a joining turn waits its recorded gap after each child,
-and the streams of a play share their whole common hash prefix. `agentx`
+and the streams of a play share their whole common hash prefix, unless a
+[chat template](#weka-chat-template) is set. `agentx`
 follows the AgentX client, the AIPerf fork in the
 [behavioral reference](agentic/continuous-profiles.md#behavioral-reference):
 
@@ -335,7 +346,9 @@ follows the AgentX client, the AIPerf fork in the
   message, and a later request cuts the message list where its hash prefix
   diverges from the previous request's. Streams therefore share prompt blocks
   only inside their first user message, at block granularity and without
-  chat-template header tokens. Corpora that declare tool or system tokens are
+  chat-template header tokens. A [chat template](#weka-chat-template) adds the
+  template's tokens to each prompt's length and to the prefix it shares with
+  the stream's previous request. Corpora that declare tool or system tokens are
   rejected.
 
 Every runner accepts `recorded`. A runner accepts `agentx` only if it

@@ -155,7 +155,10 @@ pub struct WekaImportOptions {
 /// Tokens a chat template adds around the message content that a Weka `in`
 /// counts. A turn is one request of a stream (a conversation, a detected chain
 /// or a subagent thread); each later turn's history adds one assistant and one
-/// user message.
+/// user message, and a request that shares no block with its predecessor
+/// starts the conversation over. A later turn repeats only its predecessor's
+/// prompt, and the blocks it adds are its own, so with either client another
+/// stream shares at most the blocks of a conversation's first request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WekaChatTemplate {
@@ -1218,13 +1221,23 @@ fn lower_trace(
             agentx.then(|| first_user_message_blocks(&stream.requests, trace.block_size));
         let mut stream_hashes = HashMap::new();
         // With a chat template: the stream's previous request, as its row and
-        // its trace content.
+        // its trace content, and the request's turn in its conversation.
         let mut previous: Option<(usize, usize, Vec<u64>)> = None;
+        let mut turn = 0;
         for (position, mut request) in stream.requests.into_iter().enumerate() {
             let request_id = row_by_source[&request.source_id].clone();
             let content_tokens = request.request.input_length;
+            // A request that shares no block with its predecessor starts the
+            // conversation over, as a chat client cuts its whole message list.
+            if previous
+                .as_ref()
+                .is_some_and(|(_, _, hashes)| lcp(hashes, &request.request.hash_ids) == 0)
+            {
+                previous = None;
+            }
+            turn = if previous.is_some() { turn + 1 } else { 0 };
             if let Some(template) = chat_template {
-                request.request.input_length = template.prompt_length(content_tokens, position);
+                request.request.input_length = template.prompt_length(content_tokens, turn);
             }
             let hash_ids = match (chat_template, &previous) {
                 (Some(template), Some((row, previous_content, previous_trace_hashes))) => {
@@ -4119,5 +4132,78 @@ mod tests {
             .err()
             .expect("agentx rejects declared system tokens");
         assert!(error.to_string().contains("tool or system tokens"));
+    }
+
+    #[test]
+    fn chat_template_restarts_at_a_cut_at_block_0_and_keeps_added_blocks_in_their_stream() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // As in the AgentX sharing test: outer 1 shares no block with outer 0,
+        // and the chain at outer 4 forks from outer 3 four blocks deep.
+        write_trace(
+            &path,
+            serde_json::json!([
+                request(0.0, 4, 1, &[90]),
+                request(1.0, 16, 1, &[1, 2, 3, 4]),
+                request(2.0, 16, 1, &[1, 2, 9, 10]),
+                request(3.0, 20, 1, &[1, 2, 9, 10, 11]),
+                request(4.0, 24, 1, &[1, 2, 9, 10, 12, 13]),
+                request(5.0, 24, 1, &[1, 2, 9, 10, 11, 14])
+            ]),
+        );
+        let recorded = load_weka_agentic_rows(&path).unwrap().1;
+        let chat_template = Some(WekaChatTemplate {
+            request_tokens: 3,
+            turn_tokens: 2,
+            tail_tokens: 1,
+        });
+        for client in [WekaClient::Recorded, WekaClient::Agentx] {
+            let options = WekaImportOptions {
+                client,
+                chat_template,
+                ..Default::default()
+            };
+            let rows = WekaImporter::open_with_options(&path, options)
+                .unwrap()
+                .collect_rows()
+                .unwrap()
+                .1;
+            let length = |source| row(&rows, source).input_length.unwrap();
+            let shared = |left, right| {
+                lcp(
+                    row(&rows, left).hash_ids.as_ref().unwrap(),
+                    row(&rows, right).hash_ids.as_ref().unwrap(),
+                )
+            };
+            // Outer 1 restarts the conversation: 16 + 3, on the trace's blocks.
+            assert_eq!(length("outer:0"), 4 + 3);
+            assert_eq!(length("outer:1"), 16 + 3);
+            assert_eq!(
+                row(&rows, "outer:1").hash_ids.as_ref().unwrap()[..4],
+                row(&recorded, "outer:1").hash_ids.as_ref().unwrap()[..4]
+            );
+            // Turns 1 to 3 after the restart.
+            assert_eq!(length("outer:2"), 16 + 3 + 2);
+            assert_eq!(length("outer:3"), 20 + 3 + 4);
+            assert_eq!(length("outer:5"), 24 + 3 + 6);
+            // Shared trace content 8, 16 and 20 tokens; not repeated 16 - 8 + 1,
+            // 1 and 1: shared prompts of 19 - 9 = 10, 21 - 1 = 20 and
+            // 27 - 1 = 26 tokens, so 2, 5 and 6 blocks.
+            assert_eq!(shared("outer:2", "outer:1"), 2);
+            assert_eq!(shared("outer:3", "outer:2"), 5);
+            assert_eq!(shared("outer:5", "outer:3"), 6);
+            // The chain's first request is one message: 24 + 3. It shares the
+            // root's blocks only where they came from a first request.
+            assert_eq!(length("outer:4"), 24 + 3);
+            assert_eq!(shared("outer:4", "outer:1"), 2);
+            assert_eq!(shared("outer:4", "outer:3"), 2);
+        }
+        let shared = |left, right| {
+            lcp(
+                row(&recorded, left).hash_ids.as_ref().unwrap(),
+                row(&recorded, right).hash_ids.as_ref().unwrap(),
+            )
+        };
+        assert_eq!(shared("outer:4", "outer:3"), 4);
     }
 }
