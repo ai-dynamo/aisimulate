@@ -28,6 +28,12 @@ use aisimulate_core::replay::{
 use anyhow::Result;
 use uuid::Uuid;
 
+#[test]
+fn engine_is_send_and_sync_for_async_actors() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Engine>();
+}
+
 fn assert_deterministic(first: &ReplayReport, second: &ReplayReport) {
     let mut first = first.clone();
     let mut second = second.clone();

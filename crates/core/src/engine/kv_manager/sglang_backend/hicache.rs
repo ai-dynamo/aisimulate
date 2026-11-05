@@ -13,7 +13,7 @@ use crate::engine::{
     G2Scope, HostCacheMetrics, KvEventData, SglangHiCacheConfig, SglangHiCacheWritePolicy,
 };
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 const CLIENT: u64 = 0;
@@ -36,7 +36,9 @@ struct NodeBlocks {
 }
 
 pub(super) struct HiCache {
-    tier: HostTier,
+    // HostTier's transfer queries cache derived state. Keep Engine Sync for async
+    // consumers; exclusive scheduler updates use get_mut without taking a lock.
+    tier: Mutex<HostTier>,
     backups: FxHashMap<TransferId, NodeId>,
     loads: FxHashMap<TransferId, (NodeId, usize)>,
     write_policy: SglangHiCacheWritePolicy,
@@ -66,7 +68,7 @@ impl HiCache {
             tier.subscribe(CLIENT);
         }
         Self {
-            tier,
+            tier: Mutex::new(tier),
             backups: FxHashMap::default(),
             loads: FxHashMap::default(),
             write_policy: config.write_policy,
@@ -75,11 +77,11 @@ impl HiCache {
     }
 
     pub(super) fn set_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        self.tier.set_observer(observer);
+        self.tier.get_mut().unwrap().set_observer(observer);
     }
 
     pub(super) fn metrics(&self) -> HostCacheMetrics {
-        self.tier.metrics(G2Scope::DpRankLocal)
+        self.tier.lock().unwrap().metrics(G2Scope::DpRankLocal)
     }
 
     pub(super) fn begin_pass(&mut self, cache: &mut RadixCache, now_ms: f64) -> bool {
@@ -89,7 +91,7 @@ impl HiCache {
     }
 
     pub(super) fn advance(&mut self, cache: &mut RadixCache, now_ms: f64) -> bool {
-        let (completed, progressed) = self.tier.tick(CLIENT, now_ms);
+        let (completed, progressed) = self.tier.get_mut().unwrap().tick(CLIENT, now_ms);
         for completion in completed {
             match completion {
                 CompletedTransfer::Store { transfer_id, .. } => {
@@ -113,24 +115,27 @@ impl HiCache {
 
     pub(super) fn complete_boundary(&mut self, cache: &mut RadixCache, now_ms: f64) -> bool {
         let progressed = self.advance(cache, now_ms);
-        self.tier.submit_prepared_stores_merged(CLIENT, now_ms);
+        self.tier
+            .get_mut()
+            .unwrap()
+            .submit_prepared_stores_merged(CLIENT, now_ms);
         self.advance(cache, now_ms) || progressed
     }
 
     pub(super) fn next_deadline_ms(&self) -> Option<f64> {
-        self.tier.next_deadline(CLIENT)
+        self.tier.lock().unwrap().next_deadline(CLIENT)
     }
 
     pub(super) fn has_pending_work(&self) -> bool {
-        self.tier.has_pending_work(CLIENT)
+        self.tier.lock().unwrap().has_pending_work(CLIENT)
     }
 
     pub(super) fn has_prepared_stores(&self) -> bool {
-        self.tier.has_prepared_stores(CLIENT)
+        self.tier.lock().unwrap().has_prepared_stores(CLIENT)
     }
 
     pub(super) fn take_events(&mut self) -> Vec<KvEventData> {
-        self.tier.take_events(CLIENT)
+        self.tier.get_mut().unwrap().take_events(CLIENT)
     }
 
     pub(super) fn pass_load_end_ms(&self) -> f64 {
@@ -141,6 +146,8 @@ impl HiCache {
         for transfer in cache.pending_host_loads(anchor) {
             let deadline = self
                 .tier
+                .get_mut()
+                .unwrap()
                 .transfer_deadline(TransferId::new(transfer))
                 .expect("pending host load has a deadline");
             self.pass_load_end_ms = self.pass_load_end_ms.max(deadline);
@@ -174,7 +181,7 @@ impl HiCache {
         owner: Uuid,
         session: Option<&str>,
     ) {
-        let now_ms = self.tier.current_time_ms();
+        let now_ms = self.tier.get_mut().unwrap().current_time_ms();
         let nodes = if self.write_policy == SglangHiCacheWritePolicy::WriteBack {
             vec![anchor]
         } else {
@@ -186,9 +193,11 @@ impl HiCache {
             }
             let blocks = node_blocks(cache, node, session);
             self.reclaim_host(cache, blocks.keys.len(), owner);
-            let StoreOutcome::Prepared { transfer_id, .. } =
-                self.tier
-                    .prepare_store(CLIENT, owner, &blocks.keys, Some(&blocks.meta), now_ms)
+            let StoreOutcome::Prepared { transfer_id, .. } = self
+                .tier
+                .get_mut()
+                .unwrap()
+                .prepare_store(CLIENT, owner, &blocks.keys, Some(&blocks.meta), now_ms)
             else {
                 break;
             };
@@ -198,14 +207,14 @@ impl HiCache {
     }
 
     pub(super) fn clock_ms(&self) -> f64 {
-        self.tier.current_time_ms()
+        self.tier.lock().unwrap().current_time_ms()
     }
 
     fn release_host_node(&mut self, cache: &mut RadixCache, node: NodeId, owner: Uuid) {
+        let tier = self.tier.get_mut().unwrap();
         for key in node_blocks(cache, node, None).keys {
             assert!(
-                self.tier
-                    .evict_resident(owner, key, self.tier.current_time_ms()),
+                tier.evict_resident(owner, key, tier.current_time_ms()),
                 "host victim must be resident and unpinned"
             );
         }
@@ -215,7 +224,7 @@ impl HiCache {
         if self.write_policy == SglangHiCacheWritePolicy::WriteBack {
             for spare_demotions in [true, false] {
                 for node in cache.host_duplicates() {
-                    if self.tier.empty_blocks() >= needed {
+                    if self.tier.get_mut().unwrap().empty_blocks() >= needed {
                         break;
                     }
                     if !cache.has_host_duplicate(node) {
@@ -230,7 +239,7 @@ impl HiCache {
                 }
             }
         }
-        while self.tier.empty_blocks() < needed {
+        while self.tier.get_mut().unwrap().empty_blocks() < needed {
             let Some(node) = cache.host_eviction_candidate() else {
                 break;
             };
@@ -256,12 +265,14 @@ impl HiCache {
             };
             if cache.host_backup(node).is_none() {
                 self.backup(cache, node, owner, None);
-                self.complete_boundary(cache, self.tier.current_time_ms());
+                let now_ms = self.tier.get_mut().unwrap().current_time_ms();
+                self.complete_boundary(cache, now_ms);
                 while !self.backups.is_empty() {
+                    let tier = self.tier.get_mut().unwrap();
                     let deadline = self
                         .backups
                         .keys()
-                        .filter_map(|id| self.tier.transfer_deadline(*id))
+                        .filter_map(|id| tier.transfer_deadline(*id))
                         .min_by(f64::total_cmp)
                         .expect("submitted backup has a deadline");
                     self.advance(cache, deadline);
@@ -336,10 +347,10 @@ impl HiCache {
                 evicted_pages,
             };
         };
-        let now_ms = self.tier.current_time_ms();
-        let LoadOutcome::Queued(transfer) = self
-            .tier
-            .schedule_load(CLIENT, owner, &host_keys, now_ms, now_ms)
+        let tier = self.tier.get_mut().unwrap();
+        let now_ms = tier.current_time_ms();
+        let LoadOutcome::Queued(transfer) =
+            tier.schedule_load(CLIENT, owner, &host_keys, now_ms, now_ms)
         else {
             cache.page_pool.free_pages(&pages);
             cache.dec_lock_ref(device_anchor);
