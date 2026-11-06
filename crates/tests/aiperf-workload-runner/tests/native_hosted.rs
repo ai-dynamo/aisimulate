@@ -230,7 +230,12 @@ fn assert_exact(actual: &Value, expected: &Value, path: &str) -> usize {
     }
 }
 
-fn assert_tie_parity(frame: &str, label: &str) {
+fn assert_tie_parity(
+    frame: &str,
+    label: &str,
+    expected_requests: usize,
+    expected_float_pairs: usize,
+) {
     let run = native_run(frame);
     let old = aisim_aiperf_workload_runner::execute_with_identity_seed(
         &run,
@@ -251,7 +256,12 @@ fn assert_tie_parity(frame: &str, label: &str) {
         "{label} NATIVE_BACKEND_REQUESTS {}",
         serde_json::to_value(&backend.per_request).unwrap()
     );
-    assert!(!native["requests"].as_array().unwrap().is_empty());
+    assert_eq!(
+        native["requests"].as_array().unwrap().len(),
+        expected_requests
+    );
+    assert_eq!(old["requests"].as_array().unwrap().len(), expected_requests);
+    assert_eq!(backend.per_request.len(), expected_requests);
     assert_exact(
         &native["requests"],
         &old["requests"],
@@ -292,9 +302,9 @@ fn assert_tie_parity(frame: &str, label: &str) {
         &old["backend_per_request"],
         &format!("{label}/backend_per_request"),
     );
-    assert!(
-        float_pairs > 0,
-        "physical comparison must consume actual floats"
+    assert_eq!(
+        float_pairs, expected_float_pairs,
+        "physical float population must not shrink"
     );
     println!("{label} EXACT_PHYSICAL_FLOAT_PAIRS {float_pairs}");
 }
@@ -305,6 +315,8 @@ fn tie_parity_four_request_branch_before_completion() {
     assert_tie_parity(
         &run_fixture::branch_request(directory.path()),
         "4-request branch",
+        4,
+        108,
     );
 }
 
@@ -314,6 +326,8 @@ fn tie_parity_ten_request_equal_instant_arrivals() {
     assert_tie_parity(
         &ten_request_frame(directory.path()),
         "10-request equal-instant",
+        10,
+        174,
     );
 }
 
