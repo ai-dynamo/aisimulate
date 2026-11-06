@@ -223,6 +223,24 @@ def test_profile_architecture_matches_collector_llm_config_view(profile_dict, ch
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+def test_profile_that_names_the_wrapper_mismatches_an_llm_config_decoder(profile_dict, checkpoint_configs):
+    # The collector and config intake read the decoder under llm_config, so a profile written with the wrapper name
+    # does not describe that checkpoint.
+    wrapper = "NemotronH_Omni_Reasoning_V3"
+    profile_dict["architecture"] = wrapper
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": [wrapper],
+        "llm_config": {"architectures": ["NemotronHForCausalLM"]},
+    }
+    identity = f"{profile_dict['model']!r} at model_revision={profile_dict['model_revision']!r}"
+    with pytest.raises(ValueError) as error:
+        _normalize(_request(profile_dict))
+    # The Rust bridge prefixes the error of the check with "invalid engine config: fpm_profile: ValueError: ".
+    assert str(error.value).endswith(
+        f"FPM profile architecture mismatch for {identity}: checkpoint='NemotronHForCausalLM', profile={wrapper!r}"
+    )
+
+
 @pytest.mark.parametrize("key", ["text_config", "llm_config"])
 @pytest.mark.parametrize("declared", ["absent", "null"])
 def test_profile_architecture_keeps_the_wrapper_for_a_decoder_without_architectures(
