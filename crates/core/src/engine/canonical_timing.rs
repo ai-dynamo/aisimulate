@@ -128,6 +128,8 @@ fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()
 }
 
 fn validate_memory_topology(memory: &crate::KvCacheEstimateRequest) -> Result<()> {
+    ensure!(memory.engine.extra.get("worker_type").is_none_or(|role| role == "aggregated"),
+        "canonical native memory geometry supports aggregated worker role only");
     let parallel = &memory.engine.parallel;
     ensure!(parallel.cp_size.unwrap_or(1) == 1 && parallel.dcp_size.unwrap_or(1) == 1,
         "canonical native memory geometry does not support CP or DCP");
@@ -248,6 +250,14 @@ mod tests {
         });
         let memory: crate::KvCacheEstimateRequest = serde_json::from_value(base.clone()).unwrap();
         assert!(validate_memory_topology(&memory).is_ok());
+        for role in ["prefill", "decode", "unknown"] {
+            let mut altered = memory.clone();
+            altered.engine.extra.insert("worker_type".into(), role.into());
+            assert!(validate_memory_topology(&altered).is_err());
+        }
+        let mut aggregated = memory.clone();
+        aggregated.engine.extra.insert("worker_type".into(), "aggregated".into());
+        assert!(validate_memory_topology(&aggregated).is_ok());
         for (field, value) in [("cp_size", serde_json::json!(2)), ("dcp_size", serde_json::json!(2)),
             ("moe_tp_size", serde_json::json!(2)), ("moe_ep_size", serde_json::json!(2)),
             ("moe_dtype", serde_json::json!("fp8"))] {
