@@ -21,7 +21,9 @@
 use std::path::Path;
 
 use aiperf_config::model::BenchmarkRun;
-use aiperf_engine_input::execution_input::{export_for_run, scenario_locks_satisfied};
+use aiperf_engine_input::execution_input::{
+    attach_submission_inputs, export_for_run, scenario_locks_satisfied,
+};
 use aiperf_engine_kernel::profile_metric_coverage::profile_metric_coverage_failures;
 use aiperf_export::genai_perf::GenaiPerfV1Exporter;
 use aiperf_metrics::MetricsAccumulator;
@@ -147,30 +149,13 @@ pub fn finalize_hosted_run_report(
     // Bypass-free verdict: the normal submission is only comparable when the
     // locks hold without `unsafe_override`. Invalidate the owner-carried static
     // verdict rather than inventing a replacement submission block.
-    if !scenario_locks_satisfied(&run.cfg)
-        && let Some(submission) = export.genai_perf.envelope.submission.as_mut()
-    {
-        submission.invalidate("unsafe_override");
-    }
-    if run.cfg.agentx_fast
-        && let Some(submission) = export.genai_perf.envelope.submission.as_mut()
-    {
-        submission.invalidate("agentx_fast");
-        submission.invalidate("non_comparable");
-    }
-    if !coverage.is_empty() {
-        export.genai_perf.envelope.metadata.insert(
-            "metric_duration_coverage".into(),
-            serde_json::to_value(&coverage)?,
-        );
-    }
-    if coverage_failures.is_some() {
-        export
-            .genai_perf
-            .envelope
-            .runtime_submission_invalid_reasons
-            .push(aiperf_report_model::report_view::INSUFFICIENT_PROFILE_METRIC_COVERAGE.into());
-    }
+    attach_submission_inputs(
+        &mut export,
+        run.cfg.agentx_fast,
+        scenario_locks_satisfied(&run.cfg),
+        &coverage,
+        coverage_failures.is_some(),
+    )?;
     if !coverage_errors.is_empty() {
         export
             .genai_perf
