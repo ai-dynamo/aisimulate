@@ -48,6 +48,7 @@ fn spec(topology: ReplayTopology, enable_prefix_caching: bool) -> ReplaySpec {
                     decode_ms: 1.0,
                 },
                 max_num_seqs: 64,
+                block_size: 8,
                 enable_prefix_caching,
                 enable_chunked_prefill: false,
                 async_scheduling: Some(false),
@@ -107,10 +108,23 @@ fn warmup_frame(directory: &Path) -> String {
 
 /// The existing branch fixture, with the production marker policy enabled.
 fn cache_bust_frame(directory: &Path) -> String {
-    let mut native: Value = serde_json::from_str(&run_fixture::branch_request(directory)).unwrap();
-    native["run"]["cfg"]["datasets"][0]["synthesis"]["cache_bust_target"] =
-        json!("first_turn_prefix");
-    serde_json::to_string(&native).unwrap()
+    // Keep the branch's wide signed hash IDs in RawValue; Value would round
+    // them through f64 and produce invalid WEKA integer source text.
+    let mut native = native_run(&run_fixture::branch_request(directory));
+    let Some(aiperf_config::model::dataset::Dataset::File(dataset)) = native
+        .cfg
+        .datasets
+        .as_mut()
+        .and_then(|datasets| datasets.first_mut())
+    else {
+        panic!("file fixture")
+    };
+    dataset.synthesis.as_mut().unwrap()["cache_bust_target"] = json!("first_turn_prefix");
+    serde_json::to_string(&aiperf_protocol::runner_v2::RunRequestV2 {
+        protocol_version: 2,
+        run: native,
+    })
+    .unwrap()
 }
 
 /// Forwarding participant that retains the prompt-cache-read facts AIPerf's
