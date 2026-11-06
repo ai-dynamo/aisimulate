@@ -56,7 +56,7 @@ from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate.sdk.models.vit_ops import EncoderOnlyModel, build_encoder_ops
 from aisimulate.sdk.perf_database import PerfDatabase, has_perf_data_not_available_cause
 from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, merge_moe_comm_fallbacks
-from aisimulate.sdk.picking import parallel_dim, worker_gpus
+from aisimulate.sdk.picking import disagg_power_w, parallel_dim, worker_gpus
 from aisimulate.sdk.predict import predict_agg_worker, predict_disagg_worker
 from aisimulate.sdk.speculative import SpeculativeDecodingProfile
 from aisimulate.sdk.utils import (
@@ -176,10 +176,7 @@ def _rate_match_dict(
     ttft = p["ttft"]
     tpot = d["tpot"]
     decode_time = tpot * max(osl - 1, 0)
-    total_time = ttft + decode_time
-    prefill_power = p.get("power_w", 0.0)
-    decode_power = d.get("power_w", 0.0)
-    disagg_power_avg = (prefill_power * ttft + decode_power * decode_time) / total_time if total_time > 0 else 0.0
+    disagg_power_avg = disagg_power_w(p.get("power_w", 0.0), d.get("power_w", 0.0), ttft, decode_time)
 
     return {
         "model": p["model"],
@@ -1015,8 +1012,8 @@ def _overlay_encoder_stage(
     disagg_dict: dict,
     encoder_worker: dict,
     encoder_num_worker: int,
-    prefill_power: float = 0.0,
-    decode_power: float = 0.0,
+    prefill_power: float | None = 0.0,
+    decode_power: float | None = 0.0,
     ttft_scale: float = 1.0,
     encoder_degradation: float = _RATE_MATCH_ENCODER_DEGRADATION,
 ) -> dict:
@@ -1029,7 +1026,8 @@ def _overlay_encoder_stage(
     When the degraded encode pool capacity is below the row throughput,
     ``seq/s`` is capped and the rate-derived columns rescale with it;
     ``power_w`` (and ``power_coverage``, when the row carries it) is
-    re-weighted over the encode + prefill + decode timeline.
+    re-weighted over the encode + prefill + decode timeline. A withheld
+    (``None``/NaN) prefill or decode power keeps ``power_w`` ``None``.
     """
     row = dict(disagg_dict)
     encoder_latency = encoder_worker["encoder_latency"]
@@ -1037,18 +1035,24 @@ def _overlay_encoder_stage(
     prefill_ttft = row["ttft"]
     decode_time = row["tpot"] * max(row["osl"] - 1, 0)
     total_time = encoder_ttft_share + prefill_ttft + decode_time
+    lm_power_withheld = pd.isna(prefill_power) or pd.isna(decode_power)
     if total_time > 0:
         row["power_w"] = (
-            encoder_worker.get("power_w", 0.0) * encoder_ttft_share
-            + prefill_power * prefill_ttft
-            + decode_power * decode_time
-        ) / total_time
+            None
+            if lm_power_withheld
+            else (
+                encoder_worker.get("power_w", 0.0) * encoder_ttft_share
+                + prefill_power * prefill_ttft
+                + decode_power * decode_time
+            )
+            / total_time
+        )
         if "power_coverage" in row:
             row["power_coverage"] = (
                 encoder_worker.get("power_coverage", 0.0) * encoder_ttft_share
                 + row["power_coverage"] * (prefill_ttft + decode_time)
             ) / total_time
-        elif not encoder_worker.get("power_coverage", 0.0) >= 1.0:
+        elif not lm_power_withheld and not encoder_worker.get("power_coverage", 0.0) >= 1.0:
             # Sweep rows carry no coverage channel to express a partially
             # covered encoder, so anything short of full encoder energy data
             # fails closed to the no-data sentinel instead of silently

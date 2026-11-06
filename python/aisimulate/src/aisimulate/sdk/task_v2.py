@@ -2844,8 +2844,8 @@ class Task:
         encoder_tp: int,
         encoder_batch_size: int,
         encoder_num_workers: int,
-        prefill_power: float,
-        decode_power: float,
+        prefill_power: float | None,
+        decode_power: float | None,
     ) -> dict:
         """Overlay one fixed encode worker onto a single-point row.
 

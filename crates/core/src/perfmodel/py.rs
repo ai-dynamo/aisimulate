@@ -40,7 +40,7 @@ use crate::common::error::AicError;
 use crate::perfmodel::EngineConfig;
 use crate::perfmodel::engine::runtime::{
     DEFAULT_STATIC_STRIDE, Engine, PerOpSolValue, PerOpValue, PerOpValueWithMetadata,
-    RuntimeConfig, StaticMode, StaticResult,
+    RuntimeConfig, StaticMode, StaticPerOpValuesWithCoverage, StaticResult,
 };
 use crate::{BackendKind, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION};
 
@@ -594,6 +594,53 @@ impl AicEngine {
         py.allow_threads(|| {
             self.inner
                 .run_static_per_op_with_metadata(&rt, mode, stride)
+        })
+        .map_err(aic_to_py)
+    }
+
+    /// Internal `_run_static_per_op_with_metadata` from the same walk, plus
+    /// each phase's power-covered latency: returns ``(context, generation,
+    /// context_covered_ms, generation_covered_ms)``. A query result counts as
+    /// covered when its own energy is positive, decided before the name fold.
+    #[pyo3(signature = (
+        batch_size,
+        beam_width,
+        isl,
+        osl,
+        prefix,
+        seq_imbalance_correction_scale,
+        gen_seq_imbalance_correction_scale,
+        mode="static",
+        stride=DEFAULT_STATIC_STRIDE,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn _run_static_per_op_with_coverage(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        beam_width: u32,
+        isl: u32,
+        osl: u32,
+        prefix: u32,
+        seq_imbalance_correction_scale: f64,
+        gen_seq_imbalance_correction_scale: f64,
+        mode: &str,
+        stride: u32,
+    ) -> PyResult<StaticPerOpValuesWithCoverage> {
+        let rt = RuntimeConfig {
+            batch_size,
+            beam_width,
+            isl,
+            osl,
+            prefix,
+            seq_imbalance_correction_scale,
+            gen_seq_imbalance_correction_scale,
+        };
+        let mode = parse_mode(mode)?;
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner
+                .run_static_per_op_with_coverage(&rt, mode, stride)
         })
         .map_err(aic_to_py)
     }

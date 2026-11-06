@@ -155,8 +155,8 @@ def _plot_worker_setup_table(
 
     def _power_cell(row) -> str:
         # power_w == 0.0 on an EPD row is the no-data sentinel (incomplete
-        # encoder energy data), not a real 0 W estimate.
-        if (row.get("(e)workers") or 0) > 0 and row["power_w"] < 1.0:
+        # encoder energy data), not a real 0 W estimate; None is withheld.
+        if (row.get("(e)workers") or 0) > 0 and (pd.isna(row["power_w"]) or row["power_w"] < 1.0):
             return "n/a"
         return _format_power(row["power_w"])
 
