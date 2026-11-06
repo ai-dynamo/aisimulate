@@ -45,14 +45,15 @@ impl CanonicalTimingModel {
 
     /// Construct canonical timing and obtain the existing backend-native memory
     /// model's geometry. No guessed cache reservation or HF download is allowed.
-    /// The memory request must name the same hardware/model/backend/topology.
+    /// The memory request must name the same hardware/model/backend/precision/
+    /// topology and the same worker role.
     #[cfg(feature = "python")]
     pub fn new_with_geometry(
         config: ForwardPassPerfModelConfig,
         memory: crate::KvCacheEstimateRequest,
     ) -> Result<(Arc<Self>, crate::KvCacheEstimate)> {
         validate_supported_identity(&config)?;
-        validate_memory_topology(&memory)?;
+        validate_memory_topology(&memory, config.worker_type)?;
         ensure!(
             memory.engine.model_name == config.model
                 && memory.engine.system_name == config.system
@@ -165,10 +166,8 @@ impl CanonicalTimingModel {
 }
 
 fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()> {
-    ensure!(
-        config.worker_type == crate::ForwardPassWorkerType::Aggregated,
-        "canonical Engine timing bridge supports aggregated worker role only"
-    );
+    // Prefill and Decode bind their immutable worker role into the canonical
+    // estimator; Aggregated remains the colocated execution role.
     ensure!(config.pp == 1, "canonical Engine timing supports pp=1 only");
     ensure!(
         config.cp_size.unwrap_or(1) == 1 && config.dcp.unwrap_or(1) == 1,
@@ -200,14 +199,38 @@ fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()
 }
 
 #[cfg(any(test, feature = "python"))]
-fn validate_memory_topology(memory: &crate::KvCacheEstimateRequest) -> Result<()> {
+fn worker_role_name(role: crate::ForwardPassWorkerType) -> &'static str {
+    match role {
+        crate::ForwardPassWorkerType::Prefill => "prefill",
+        crate::ForwardPassWorkerType::Decode => "decode",
+        crate::ForwardPassWorkerType::Aggregated => "aggregated",
+    }
+}
+
+#[cfg(any(test, feature = "python"))]
+fn validate_memory_topology(
+    memory: &crate::KvCacheEstimateRequest,
+    timing_role: crate::ForwardPassWorkerType,
+) -> Result<()> {
+    // `estimate_kwargs` forwards `engine.extra["worker_type"]` to the native
+    // memory estimator, defaulting to `"aggregated"` when absent. Validate that
+    // effective role so the estimator's per-role resources match the timing
+    // identity, and require Prefill/Decode requests to name their role rather
+    // than silently inheriting the aggregate default.
+    let memory_role = memory
+        .engine
+        .extra
+        .get("worker_type")
+        .map(String::as_str)
+        .unwrap_or("aggregated");
     ensure!(
-        memory
-            .engine
-            .extra
-            .get("worker_type")
-            .is_none_or(|role| role == "aggregated"),
-        "canonical native memory geometry supports aggregated worker role only"
+        matches!(memory_role, "prefill" | "decode" | "aggregated"),
+        "canonical native memory geometry received unknown worker role {memory_role:?}"
+    );
+    let timing_role = worker_role_name(timing_role);
+    ensure!(
+        memory_role == timing_role,
+        "canonical native memory geometry worker role {memory_role:?} conflicts with canonical timing role {timing_role:?}"
     );
     let parallel = &memory.engine.parallel;
     ensure!(
@@ -396,17 +419,24 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_timing_topologies_reject_without_python_construction() {
-        assert!(validate_supported_identity(&config()).is_ok());
-        for change in 0..7 {
+    fn supported_timing_roles_are_admitted_and_topology_refusals_remain() {
+        for role in [
+            crate::ForwardPassWorkerType::Prefill,
+            crate::ForwardPassWorkerType::Decode,
+            crate::ForwardPassWorkerType::Aggregated,
+        ] {
+            let mut value = config();
+            value.worker_type = role;
+            assert!(validate_supported_identity(&value).is_ok());
+        }
+        for change in 0..6 {
             let mut value = config();
             match change {
-                0 => value.worker_type = crate::ForwardPassWorkerType::Prefill,
-                1 => value.cp_size = Some(2),
-                2 => value.dcp = Some(2),
-                3 => value.moe_tp_size = Some(2),
-                4 => value.moe_ep_size = Some(2),
-                5 => value.moe_quant_mode = Some("fp8".into()),
+                0 => value.cp_size = Some(2),
+                1 => value.dcp = Some(2),
+                2 => value.moe_tp_size = Some(2),
+                3 => value.moe_ep_size = Some(2),
+                4 => value.moe_quant_mode = Some("fp8".into()),
                 _ => value.pp = 2,
             }
             assert!(validate_supported_identity(&value).is_err());
@@ -415,7 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_memory_topologies_reject_without_python_construction() {
+    fn memory_worker_role_must_match_timing_role_and_topology_refusals_remain() {
+        use crate::ForwardPassWorkerType::{Aggregated, Decode, Prefill};
+
         let base = serde_json::json!({
             "engine": {"schema_version":1,"model_name":"model","system_name":"system",
                 "backend":"vllm","backend_version":"0.24.0","tp_size":1,"pp_size":1,
@@ -425,21 +457,41 @@ mod tests {
             "options":{"allow_naive_fallback":false,"allow_hf_config_download":false}
         });
         let memory: crate::KvCacheEstimateRequest = serde_json::from_value(base.clone()).unwrap();
-        assert!(validate_memory_topology(&memory).is_ok());
-        for role in ["prefill", "decode", "unknown"] {
-            let mut altered = memory.clone();
-            altered
-                .engine
-                .extra
-                .insert("worker_type".into(), role.into());
-            assert!(validate_memory_topology(&altered).is_err());
+        for (timing_role, memory_role) in [
+            (Aggregated, None),
+            (Aggregated, Some("aggregated")),
+            (Prefill, Some("prefill")),
+            (Decode, Some("decode")),
+        ] {
+            let mut candidate = memory.clone();
+            if let Some(role) = memory_role {
+                candidate
+                    .engine
+                    .extra
+                    .insert("worker_type".into(), role.into());
+            }
+            assert!(validate_memory_topology(&candidate, timing_role).is_ok());
         }
-        let mut aggregated = memory.clone();
-        aggregated
-            .engine
-            .extra
-            .insert("worker_type".into(), "aggregated".into());
-        assert!(validate_memory_topology(&aggregated).is_ok());
+        for (timing_role, memory_role) in [
+            (Aggregated, Some("prefill")),
+            (Aggregated, Some("decode")),
+            (Prefill, None),
+            (Prefill, Some("aggregated")),
+            (Prefill, Some("decode")),
+            (Decode, None),
+            (Decode, Some("prefill")),
+            (Decode, Some("aggregated")),
+            (Decode, Some("unknown")),
+        ] {
+            let mut candidate = memory.clone();
+            if let Some(role) = memory_role {
+                candidate
+                    .engine
+                    .extra
+                    .insert("worker_type".into(), role.into());
+            }
+            assert!(validate_memory_topology(&candidate, timing_role).is_err());
+        }
         for (field, value) in [
             ("cp_size", serde_json::json!(2)),
             ("dcp_size", serde_json::json!(2)),
@@ -450,7 +502,7 @@ mod tests {
             let mut wire = base.clone();
             wire["engine"][field] = value;
             let memory = serde_json::from_value(wire).unwrap();
-            assert!(validate_memory_topology(&memory).is_err());
+            assert!(validate_memory_topology(&memory, Aggregated).is_err());
         }
     }
 }
