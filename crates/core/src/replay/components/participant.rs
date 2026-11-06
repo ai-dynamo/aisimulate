@@ -34,9 +34,10 @@
 //!   delivered). A request submitted in this same step cannot be canceled by
 //!   it. Canceling delivers exactly one `on_terminal(Canceled)`.
 //! - `on_terminal` is the client-visible end of a request; `on_quiescent` is
-//!   the later point at which the physical servers released it (in a
-//!   disaggregated run this follows real transfer/cleanup deadlines; in an
-//!   aggregated run it coincides with the terminal). Each fires once.
+//!   the point at which the physical servers released it. Encoder batches,
+//!   committed passes and disaggregated transfer/cleanup can outlive client
+//!   cancellation. Each callback fires once. Submitted UUIDs identify one
+//!   occurrence and must not be reused within a run, including after quiescence.
 //! - The trait is deliberately not `Send`: a participant may hold
 //!   thread-local (`Rc`, local executor) state and is constructed and run on
 //!   the thread that calls `Replayer::run`.

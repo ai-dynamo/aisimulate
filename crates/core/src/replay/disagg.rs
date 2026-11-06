@@ -1094,7 +1094,7 @@ where
     /// Canceled clients whose encoder batch or transfer must finish physically.
     encoder_canceled: HashSet<Uuid>,
     /// Decode cancels whose committed pass still owns physical work.
-    decode_cancel_pending: HashMap<Uuid, usize>,
+    decode_cancel_pending: Vec<(Uuid, usize)>,
     prefill_engine: EngineComponent<Observation>,
     decode_engine: EngineComponent<Observation>,
     prefill_placement: PlacementPolicyImpl,
@@ -1302,7 +1302,7 @@ where
             step_quiescent: Vec::new(),
             encoder: None,
             encoder_canceled: HashSet::new(),
-            decode_cancel_pending: HashMap::new(),
+            decode_cancel_pending: Vec::new(),
         })
     }
 
@@ -2664,25 +2664,19 @@ where
             }
             changed = true;
         }
-        let mut released = self
-            .decode_cancel_pending
-            .iter()
-            .filter_map(|(uuid, scheduler)| {
-                match self
-                    .decode_engine
-                    .request_has_committed_pass(*scheduler, *uuid)
-                {
-                    Ok(false) => Some(Ok(*uuid)),
-                    Ok(true) => None,
-                    Err(error) => Some(Err(error)),
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-        released.sort_unstable();
-        for uuid in released {
-            self.decode_cancel_pending.remove(&uuid);
-            self.finish_logical_request(uuid, true)?;
-            changed = true;
+        // Preserve cancellation-command order, not random UUID order, when
+        // several physical releases become visible at one timestamp.
+        let pending = std::mem::take(&mut self.decode_cancel_pending);
+        for (uuid, scheduler) in pending {
+            if self
+                .decode_engine
+                .request_has_committed_pass(scheduler, uuid)?
+            {
+                self.decode_cancel_pending.push((uuid, scheduler));
+            } else {
+                self.finish_logical_request(uuid, true)?;
+                changed = true;
+            }
         }
         Ok(changed)
     }
@@ -2763,7 +2757,7 @@ where
     /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> Result<bool> {
         let mut released_any = false;
-        for _ in 0..100_000 {
+        loop {
             let cluster_in_flight = self.cluster_in_flight();
             let arrivals = CoreAdmissionSource::drain_ready(
                 &mut self.admission,
@@ -2791,7 +2785,6 @@ where
                 return Ok(released_any);
             }
         }
-        bail!("external workload did not park at {} ms", self.now_ms)
     }
 
     /// A request entering the encoder pool has arrived: the collector and the
@@ -2836,7 +2829,7 @@ where
             if let Some(uuid) = arrival.request.metadata().uuid
                 && self.encoder_canceled.remove(&uuid)
             {
-                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
                 continue;
             }
             let uuid = self.admit_ready(arrival, true)?;
@@ -4328,13 +4321,16 @@ where
             }
             self.collector
                 .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
-            self.admission.on_request_causal_terminal(
+            self.admission.defer_causal_terminal(
                 uuid,
                 self.now_ms,
                 ReplayTerminalStatus::Canceled,
             )?;
             if !self.admission.knows_preparation_request(uuid) {
                 self.progress.inc_completed();
+            }
+            if self.defer_drive {
+                self.drive_pending = !self.is_workload_done();
             }
             return Ok(Some(ReplayTerminalStatus::Canceled));
         }
@@ -4345,13 +4341,16 @@ where
         {
             self.collector
                 .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
-            self.admission.on_request_causal_terminal(
+            self.admission.defer_causal_terminal(
                 uuid,
                 self.now_ms,
                 ReplayTerminalStatus::Canceled,
             )?;
             if self.awaiting_receipt.remove(&uuid) == Some(true) {
-                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
+            }
+            if self.defer_drive {
+                self.drive_pending = !self.is_workload_done();
             }
             return Ok(Some(ReplayTerminalStatus::Canceled));
         }
@@ -4409,7 +4408,7 @@ where
         self.process_lifecycle_events(effects.lifecycle_events)?;
         self.cancel_decode_route(uuid)?;
         if committed {
-            self.decode_cancel_pending.insert(uuid, worker_idx);
+            self.decode_cancel_pending.push((uuid, worker_idx));
             Ok(())
         } else {
             self.finish_logical_request(uuid, true)

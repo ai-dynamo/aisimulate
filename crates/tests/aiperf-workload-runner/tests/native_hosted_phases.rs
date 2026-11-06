@@ -95,7 +95,7 @@ fn host(
 /// ratio selects the turn at 5 ms, leaving turn 0 as the warmup primer and
 /// turn 1 as the profiling resume point.
 fn warmup_frame(directory: &Path) -> String {
-    let mut native: Value = serde_json::from_str(&run_fixture::request(directory)).unwrap();
+    let mut native = run_fixture::request(directory);
     native["run"]["cfg"]["finite_replay"] = json!(false);
     native["run"]["cfg"]["trajectory_start_min_ratio"] = json!(0.5);
     native["run"]["cfg"]["trajectory_start_max_ratio"] = json!(0.5);
@@ -287,7 +287,7 @@ fn native_cache_bust_marker_is_byte_exact_and_sticky_across_the_tree() {
 #[test]
 fn native_prompt_cache_reuse_reaches_the_hosted_participant() {
     let directory = tempfile::tempdir().unwrap();
-    let run = native_run(&run_fixture::request(directory.path()));
+    let run = native_run(&serde_json::to_string(&run_fixture::request(directory.path())).unwrap());
     let reads = Rc::new(RefCell::new(Vec::new()));
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         &run,

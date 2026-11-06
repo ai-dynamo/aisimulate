@@ -885,7 +885,7 @@ where
     /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> anyhow::Result<bool> {
         let mut released_any = false;
-        for _ in 0..100_000 {
+        loop {
             let cluster_in_flight = self.cluster_in_flight();
             let arrivals = self.admission.drain_ready_compact(
                 self.now_ms,
@@ -913,7 +913,6 @@ where
                 return Ok(released_any);
             }
         }
-        bail!("external workload did not park at {} ms", self.now_ms)
     }
 
     /// A request entering the encoder pool has arrived: the collector and the
@@ -958,7 +957,7 @@ where
             if let Some(uuid) = arrival.request.metadata().uuid
                 && self.encoder_canceled.remove(&uuid)
             {
-                self.admission.on_request_quiescent(uuid, self.now_ms)?;
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
                 continue;
             }
             let uuid = self.admit_ready(arrival, true)?;
@@ -3592,7 +3591,7 @@ where
             }
             self.collector
                 .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
-            self.admission.on_request_causal_terminal(
+            self.admission.defer_causal_terminal(
                 uuid,
                 self.now_ms,
                 ReplayTerminalStatus::Canceled,
@@ -3609,11 +3608,8 @@ where
         {
             self.collector
                 .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
-            self.admission.on_request_terminal(
-                uuid,
-                self.now_ms,
-                ReplayTerminalStatus::Canceled,
-            )?;
+            self.admission
+                .defer_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled)?;
             return Ok(Some(ReplayTerminalStatus::Canceled));
         }
         let Some((phase, scheduler_id)) = self
