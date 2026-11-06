@@ -269,5 +269,10 @@ fn framed_cancel_interrupts_committed_model_virtual_wait() {
     let report: Value = serde_json::from_slice(&std::fs::read(directory.path().join("aisim-library-proof.json")).unwrap()).unwrap();
     assert_eq!(report["engine_drained"],true);
     assert_eq!(report["proof_rendezvous_entered"],true);
+    assert_eq!(report["model_submitted_count"],1,"the suspended native turn was actually submitted");
+    assert_eq!(report["model_cancelled_count"],1,"actual Engine ownership must be cancelled");
+    let model = report["model_trace"].as_array().unwrap();
+    assert!(model.iter().any(|event|event["event"] == "pass_started"));
+    assert!(!model.iter().any(|event|event["event"] == "observed"),"suspended model output must not cross the cancelled replay frontier");
     assert!(report["requests"].as_array().unwrap().len() < 2,"cancel advanced past the replay frontier");
 }

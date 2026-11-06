@@ -64,7 +64,17 @@ pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation
     })?;
     let report = result.context("driver returned without a report")??;
     ensure!(engine.is_drained(), "simulator retained request/pass ownership after run");
-    Ok(serde_json::json!({"format":"aisim-aiperf-library-proof-v1","native_phase_report":report,"requests":dispatcher.records.borrow().as_slice(),"virtual_end_ns":clock.now_ns(),"engine_drained":true,"proof_rendezvous_entered":rendezvous.as_ref().is_some_and(|source|source.entered.get())}))
+    let model_trace:Vec<serde_json::Value> = engine.trace().into_iter().map(|event| match event {
+        crate::model::ModelEvent::CapacityWait {request_id,at_ns} => serde_json::json!({"event":"capacity_wait","request_id":request_id.to_string(),"at_ns":at_ns}),
+        crate::model::ModelEvent::Submitted {request_id,at_ns} => serde_json::json!({"event":"submitted","request_id":request_id.to_string(),"at_ns":at_ns}),
+        crate::model::ModelEvent::PassStarted {pass_id,at_ns,request_ids} => serde_json::json!({"event":"pass_started","pass_id":pass_id,"at_ns":at_ns,"request_ids":request_ids.iter().map(u128::to_string).collect::<Vec<_>>()}),
+        crate::model::ModelEvent::PassCompleted {pass_id,at_ns} => serde_json::json!({"event":"pass_completed","pass_id":pass_id,"at_ns":at_ns}),
+        crate::model::ModelEvent::Observed {request_id,at_ns,is_final} => serde_json::json!({"event":"observed","request_id":request_id.to_string(),"at_ns":at_ns,"is_final":is_final}),
+        crate::model::ModelEvent::Cancelled {request_id,at_ns} => serde_json::json!({"event":"cancelled","request_id":request_id.to_string(),"at_ns":at_ns}),
+    }).collect();
+    let submitted_count = model_trace.iter().filter(|event|event["event"] == "submitted").count();
+    let cancelled_count = model_trace.iter().filter(|event|event["event"] == "cancelled").count();
+    Ok(serde_json::json!({"format":"aisim-aiperf-library-proof-v1","native_phase_report":report,"requests":dispatcher.records.borrow().as_slice(),"requests_coverage":"settled outcomes only; cancelled ownership is retained in model_trace","model_trace":model_trace,"model_submitted_count":submitted_count,"model_cancelled_count":cancelled_count,"virtual_end_ns":clock.now_ns(),"engine_drained":true,"proof_rendezvous_entered":rendezvous.as_ref().is_some_and(|source|source.entered.get())}))
 }
 
 fn acquire(dataset: &serde_json::Value,records:&serde_json::value::RawValue) -> Result<Vec<(String,aiperf_agentx::trace::WekaTrace)>> {
