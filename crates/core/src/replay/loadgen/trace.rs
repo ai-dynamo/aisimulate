@@ -1431,6 +1431,15 @@ impl AgenticGraphBuilder {
         }
         self.inner.finish()
     }
+
+    /// Applies every check `finish` applies without compiling the graph, so
+    /// callers that only validate skip hash renumbering, the digest and lineage.
+    pub(crate) fn validate(mut self) -> Result<()> {
+        if self.inner.is_empty() {
+            bail!("agentic Mooncake rows did not contain any requests");
+        }
+        self.inner.validate().map(drop)
+    }
 }
 
 impl AgenticTraceBuilder {
@@ -1611,6 +1620,27 @@ impl AgenticTraceBuilder {
     }
 
     fn finish(mut self) -> Result<AgenticTrace> {
+        let plays = self.validate()?;
+        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
+        let graph_digest =
+            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
+        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
+
+        Ok(AgenticTrace {
+            block_size: self.header.block_size,
+            source: self.header.source,
+            graph_digest,
+            nodes: self.nodes,
+            plays,
+            conversation_lineage,
+            hash_values,
+        })
+    }
+
+    /// Sorts nodes into graph order and checks the graph contract: dependency
+    /// targets, acyclicity, roots and source play ordinals. Returns the plays
+    /// in replay order.
+    fn validate(&mut self) -> Result<Vec<AgenticPlay>> {
         self.nodes
             .sort_by(|left, right| left.request_id.cmp(&right.request_id));
         let index_by_id: HashMap<&str, usize> = self
@@ -1715,20 +1745,7 @@ impl AgenticTraceBuilder {
         } else {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
-        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
-        let graph_digest =
-            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
-        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
-
-        Ok(AgenticTrace {
-            block_size: self.header.block_size,
-            source: self.header.source,
-            graph_digest,
-            nodes: self.nodes,
-            plays,
-            conversation_lineage,
-            hash_values,
-        })
+        Ok(plays)
     }
 }
 
