@@ -605,6 +605,88 @@ impl StateSpaceTable {
             Err(_) => false,
         }
     }
+
+    /// Whether the Mamba2 table holds rows for the logical `(kernel_source, phase)` under the
+    /// label `query_mamba2` would read: the physical aliases of this backend version or the
+    /// logical name. Shape coverage stays a query-time matter. A missing, empty, unreadable or
+    /// malformed table reads as `Ok(false)`: the loaders report all of those as missing
+    /// performance data.
+    pub fn mamba2_has_kernel(&self, kernel_source: &str, phase: &str) -> Result<bool, AicError> {
+        let Some(grids) = loaded(self.load_mamba2())? else {
+            return Ok(false);
+        };
+        let aliases = self.gdn_alias_profile.mamba2_aliases(kernel_source, phase);
+        Ok(grids.by_keys.keys().any(|k| {
+            k.phase == phase
+                && (k.kernel_source == kernel_source || aliases.contains(&k.kernel_source.as_str()))
+        }))
+    }
+
+    /// GDN twin of [`Self::mamba2_has_kernel`], resolved like `query_gdn`: the profile aliases
+    /// plus the logical name, except the SGLang SM-major-10 BF16 decode recurrence, which only
+    /// its own FlashInfer rows cover. The state dtype is otherwise ignored here.
+    pub fn gdn_has_kernel(
+        &self,
+        kernel_source: &str,
+        phase: &str,
+        mamba_ssm_dtype: &str,
+    ) -> Result<bool, AicError> {
+        let Some(grids) = loaded(self.load_gdn())? else {
+            return Ok(false);
+        };
+        let aliases = self.gdn_alias_profile.aliases(kernel_source, phase);
+        let requires_flashinfer_alias = aliases.is_empty()
+            && self.sglang_sm100_gdn_flashinfer_lane
+            && mamba_ssm_dtype == "bfloat16"
+            && phase == "generation"
+            && kernel_source == "fused_sigmoid_gating_delta_rule_update";
+        let covers = |label: &str| {
+            if requires_flashinfer_alias {
+                label == "flashinfer_gated_delta_rule_decode"
+            } else {
+                label == kernel_source || aliases.contains(&label)
+            }
+        };
+        Ok(grids
+            .by_keys
+            .keys()
+            .any(|k| k.phase == phase && covers(k.kernel_source.as_str())))
+    }
+
+    /// KDA twin of [`Self::mamba2_has_kernel`], resolved like `KdaOp::query`: the logical name,
+    /// plus the fused DSPARK verify row for the verify-phase recurrence and conv update, plus the
+    /// fused decode row for the generation-phase packed recurrence and conv update.
+    pub fn kda_has_kernel(&self, kernel_source: &str, phase: &str) -> Result<bool, AicError> {
+        let Some(grids) = loaded(self.load_kda())? else {
+            return Ok(false);
+        };
+        let fused = match (phase, kernel_source) {
+            ("verify", "fused_sigmoid_gating_delta_rule_update" | "causal_conv1d_update") => {
+                Some("fused_kda_decode_mtp_dspark")
+            }
+            ("generation", "fused_recurrent_kda_packed_decode" | "causal_conv1d_update") => {
+                Some("kda_fused_decode")
+            }
+            _ => None,
+        };
+        Ok(grids.by_keys.keys().any(|k| {
+            k.phase == phase
+                && (k.kernel_source == kernel_source || fused == Some(k.kernel_source.as_str()))
+        }))
+    }
+}
+
+/// The `*_has_kernel` probes' view of a loaded table: `None` when the loaders reported missing
+/// performance data. The loaders flatten every failure (no file, no rows, an unreadable or
+/// malformed parquet) into `PerfDatabase`, and `clone_err` keeps it there, so
+/// `is_missing_perf_data` covers every error that reaches this point.
+fn loaded<T>(table: Result<&T, AicError>) -> Result<Option<&T>, AicError> {
+    match table {
+        Ok(grids) => Ok(Some(grids)),
+        Err(e) if e.is_missing_perf_data() => Ok(None),
+        // Unreachable today; kept so a future typed load error propagates instead of reading as "no rows".
+        Err(e) => Err(e),
+    }
 }
 
 /// One perf_interp engine query per phase, mirroring Python v2's
@@ -2233,5 +2315,217 @@ mod tests {
             query("causal_conv1d_update", "generation", 1024).unwrap(),
             0.25
         );
+    }
+
+    #[test]
+    fn mamba2_has_kernel_resolves_the_rc29_decode_alias_and_reports_empty_tables() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[("selective_state_update_flashinfer", 2.0)],
+        );
+        assert!(
+            table
+                .mamba2_has_kernel("selective_state_update", "generation")
+                .unwrap()
+        );
+        assert!(
+            !table
+                .mamba2_has_kernel("causal_conv1d_update", "generation")
+                .unwrap()
+        );
+        assert!(
+            !table
+                .mamba2_has_kernel("selective_state_update", "context")
+                .unwrap()
+        );
+        // rc20 has no decode alias: the physical label alone does not cover the logical kernel.
+        let table = in_memory_mamba2_decode_table(
+            "trtllm",
+            "1.3.0rc20",
+            &[("selective_state_update_flashinfer", 2.0)],
+        );
+        assert!(
+            !table
+                .mamba2_has_kernel("selective_state_update", "generation")
+                .unwrap()
+        );
+        // An absent table and an empty table both answer `false`, not an error.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let table = StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.24.0");
+        assert!(
+            !table
+                .mamba2_has_kernel("causal_conv1d_fn", "context")
+                .unwrap()
+        );
+        write_parquet(
+            &tmp.path().join("mamba2_perf.parquet"),
+            &[
+                Col::Str("kernel_source", vec![]),
+                Col::Str("phase", vec![]),
+                Col::I64("batch_size", vec![]),
+                Col::I64("seq_len", vec![]),
+                Col::I64("d_model", vec![]),
+                Col::I64("d_state", vec![]),
+                Col::I64("d_conv", vec![]),
+                Col::I64("nheads", vec![]),
+                Col::I64("head_dim", vec![]),
+                Col::I64("n_groups", vec![]),
+                Col::I64("chunk_size", vec![]),
+                Col::F64("latency", vec![]),
+            ],
+        );
+        let table = StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.24.0");
+        assert!(
+            !table
+                .mamba2_has_kernel("causal_conv1d_fn", "context")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn gdn_has_kernel_resolves_profile_aliases_and_the_bf16_flashinfer_lane() {
+        // vLLM >= 0.24.0 persists the context scan under physical labels.
+        let table = in_memory_gdn_table(
+            "vllm",
+            "0.24.0",
+            &[("chunk_gated_delta_rule_triton", "context", 32, 1.0)],
+        );
+        assert!(
+            table
+                .gdn_has_kernel("chunk_gated_delta_rule", "context", "float32")
+                .unwrap()
+        );
+        assert!(
+            !table
+                .gdn_has_kernel("causal_conv1d_fn", "context", "float32")
+                .unwrap()
+        );
+        assert!(
+            !table
+                .gdn_has_kernel("chunk_gated_delta_rule", "generation", "float32")
+                .unwrap()
+        );
+        // Readiness ignores the state dtype outside the SGLang SM-major-10 BF16 decode lane.
+        assert!(
+            table
+                .gdn_has_kernel("chunk_gated_delta_rule", "context", "bfloat16")
+                .unwrap()
+        );
+        // On that lane the BF16 decode recurrence needs its own FlashInfer rows; FP32 and the
+        // other versions keep the logical row.
+        let fla_only = in_memory_gdn_table_with_sm(
+            "sglang",
+            "0.5.14",
+            Some(103),
+            &[(
+                "fused_sigmoid_gating_delta_rule_update",
+                "generation",
+                48,
+                4.0,
+            )],
+        );
+        let kernel = "fused_sigmoid_gating_delta_rule_update";
+        assert!(
+            !fla_only
+                .gdn_has_kernel(kernel, "generation", "bfloat16")
+                .unwrap()
+        );
+        assert!(
+            fla_only
+                .gdn_has_kernel(kernel, "generation", "float32")
+                .unwrap()
+        );
+        let flashinfer_only = in_memory_gdn_table_with_sm(
+            "sglang",
+            "0.5.14",
+            Some(103),
+            &[("flashinfer_gated_delta_rule_decode", "generation", 48, 2.1)],
+        );
+        assert!(
+            flashinfer_only
+                .gdn_has_kernel(kernel, "generation", "bfloat16")
+                .unwrap()
+        );
+        assert!(
+            !flashinfer_only
+                .gdn_has_kernel(kernel, "generation", "float32")
+                .unwrap()
+        );
+        let sm120 = in_memory_gdn_table_with_sm(
+            "sglang",
+            "0.5.14",
+            Some(120),
+            &[(
+                "fused_sigmoid_gating_delta_rule_update",
+                "generation",
+                48,
+                4.0,
+            )],
+        );
+        assert!(
+            sm120
+                .gdn_has_kernel(kernel, "generation", "bfloat16")
+                .unwrap()
+        );
+        // No table at all answers `false`.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let absent = StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.24.0");
+        assert!(
+            !absent
+                .gdn_has_kernel("causal_conv1d_fn", "context", "float32")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn kda_has_kernel_accepts_fused_verify_and_fused_decode_routes() {
+        let table = in_memory_kda_table(&[("chunk_kda", "context", 16, 1.0)]);
+        assert!(table.kda_has_kernel("chunk_kda", "context").unwrap());
+        assert!(
+            !table
+                .kda_has_kernel("causal_conv1d_fn_qkv3", "context")
+                .unwrap()
+        );
+        assert!(!table.kda_has_kernel("chunk_kda", "generation").unwrap());
+        // Fused DSPARK verify rows cover the recurrence and the conv update, verify phase only.
+        let fused_verify =
+            in_memory_kda_table(&[("fused_kda_decode_mtp_dspark", "verify", 16, 2.5)]);
+        for kernel in [
+            "fused_sigmoid_gating_delta_rule_update",
+            "causal_conv1d_update",
+        ] {
+            assert!(
+                fused_verify.kda_has_kernel(kernel, "verify").unwrap(),
+                "{kernel}"
+            );
+            assert!(
+                !fused_verify.kda_has_kernel(kernel, "generation").unwrap(),
+                "{kernel}"
+            );
+        }
+        assert!(!fused_verify.kda_has_kernel("chunk_kda", "verify").unwrap());
+        // Fused decode rows cover the packed decode recurrence and the conv update, generation only.
+        let fused_decode = in_memory_kda_table(&[("kda_fused_decode", "generation", 12, 1.5)]);
+        for kernel in ["fused_recurrent_kda_packed_decode", "causal_conv1d_update"] {
+            assert!(
+                fused_decode.kda_has_kernel(kernel, "generation").unwrap(),
+                "{kernel}"
+            );
+            assert!(
+                !fused_decode.kda_has_kernel(kernel, "verify").unwrap(),
+                "{kernel}"
+            );
+        }
+        assert!(
+            !fused_decode
+                .kda_has_kernel("fused_kda_decode", "generation")
+                .unwrap()
+        );
+        // No table at all answers `false`.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let absent = StateSpaceTable::new(tmp.path().to_path_buf(), "sglang", "0.5.14");
+        assert!(!absent.kda_has_kernel("chunk_kda", "context").unwrap());
     }
 }

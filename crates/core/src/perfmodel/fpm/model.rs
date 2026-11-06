@@ -3112,6 +3112,7 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::PerfDatabase(_)
             | AicError::FpmQueryUnsupported(_)
             | AicError::InterpolationCoverage(_)
+            | AicError::LinearAttentionDataMissing(_)
             | AicError::Io { .. }
     )
 }
