@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import enum
 import importlib.util
 import json
 import sys
@@ -159,6 +160,38 @@ def _initialized(*, blocks=100, free=98, packed=False):
     return worker, scheduler, cache_config
 
 
+_Role = enum.Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"})
+
+
+def _initialized_layer_strided(*, blocks=100, free=98, layout="layer_outer"):
+    """The groups and layers of _initialized in one buffer, as vLLM 0.32.0 places them.
+
+    v1/core/kv_cache_utils.py:1622-1687 sizes the buffer at bytes_per_block * num_blocks,
+    here 128 * blocks, and gives each group one tensor record from byte 0.
+    """
+    worker, scheduler, cache_config = _initialized(blocks=blocks, free=free)
+    storage = _Storage(100, blocks * 128)
+    layers = worker.vllm_config.compilation_config.static_forward_context
+    for layer in layers.values():
+        layer.kv_cache = _Tensor(storage)
+    worker.model_runner.kv_caches = [layer.kv_cache for layer in layers.values()]
+    layer_stride, block_stride = {"layer_outer": (64 * blocks, 64), "block_outer": (64, 128)}[layout]
+    cache_config.kv_cache_tensors = [
+        SimpleNamespace(
+            size=blocks * 128,
+            layers=list(group.layer_names),
+            layer_stride=layer_stride,
+            block_stride=block_stride,
+            offset=0,
+            host_resident=False,
+        )
+        for group in cache_config.kv_cache_groups
+    ]
+    for group in cache_config.kv_cache_groups:
+        group.host_resident, group.role = False, _Role.DEFAULT
+    return worker, scheduler, cache_config
+
+
 def _evidence(tmp_path, monkeypatch):
     cell = replace(
         _cell(dp=2),
@@ -209,6 +242,70 @@ def test_physical_grouped_capacity_deduplicates_aliases_and_charges_padding(pack
     assert pool["reserved_blocks"] == 2
     assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
     assert [group["sliding_window"] for group in observed["groups"]] == [None, 32, 4]
+
+
+@pytest.mark.parametrize("layout", ["layer_outer", "block_outer"])
+def test_layer_strided_allocation_charges_one_backing_pool(layout):
+    worker, scheduler, config = _initialized_layer_strided(layout=layout)
+    observed = observer.worker_memory(worker)
+    assert observed["allocated_cache_bytes"] == 12_800
+    assert len(observed["storages"]) == 1
+    assert [item["layers"] for item in observed["tensor_allocations"]] == [
+        ["full.0", "full.1"],
+        ["slide.0", "slide.1"],
+        ["conv.0"],
+    ]
+    assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
+    assert observer.scheduler_memory(scheduler, config)["reserved_blocks"] == 2
+
+
+def _break_layer_strided(worker, change):
+    """Make one unsupported change to the first cache group or the first tensor record."""
+    config = worker.model_runner.kv_cache_config
+    group, record = config.kv_cache_groups[0], config.kv_cache_tensors[0]
+    if change == "host_resident_tensor":
+        record.host_resident = True
+    elif change == "host_resident_group":
+        group.host_resident = True
+    elif change == "hisparse_role":
+        group.role = _Role.HISPARSE_SOURCE
+    elif change == "offset_beyond_allocation":
+        record.offset = 64
+    elif change == "block_stride_below_page":
+        record.block_stride = 32
+    elif change == "second_storage":
+        layer = worker.vllm_config.compilation_config.static_forward_context["conv.0"]
+        layer.kv_cache = _Tensor(_Storage(300, 100 * 128))
+        worker.model_runner.kv_caches.append(layer.kv_cache)
+    elif change == "mixed_record":
+        record.shared_by = vars(record).pop("layers")
+    elif change == "unknown_layer":
+        record.layers = ["full.0", "ghost"]
+    elif change == "uniform_wrapper":
+        spec = _typed("vllm.v1.kv_cache_interface", "UniformTypeKVCacheSpecs")
+        vars(spec).update(vars(group.kv_cache_spec))
+        group.kv_cache_spec = spec
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ("host_resident_tensor", "host-resident cache tensors"),
+        ("host_resident_group", "host-resident cache groups"),
+        ("hisparse_role", "unsupported cache group role"),
+        ("offset_beyond_allocation", "exceed their backing allocation"),
+        ("block_stride_below_page", "page exceeds its block stride"),
+        ("second_storage", "multiple backing allocations"),
+        ("mixed_record", "unsupported runtime cache tensor record"),
+        ("unknown_layer", "missing or duplicate cache layers"),
+        ("uniform_wrapper", "unsupported runtime cache spec"),
+    ],
+)
+def test_layer_strided_allocation_rejects_unsupported_records(change, match):
+    worker, _scheduler, _config = _initialized_layer_strided()
+    _break_layer_strided(worker, change)
+    with pytest.raises(ValueError, match=match):
+        observer.worker_memory(worker)
 
 
 def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_evidence(tmp_path, monkeypatch):

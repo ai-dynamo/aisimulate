@@ -402,6 +402,13 @@ def cache_groups(cache_config: Any) -> list[dict[str, Any]]:
             raise ValueError(f"unsupported runtime cache spec: {spec_type}")
         if getattr(group, "is_eagle_group", False):
             raise ValueError("speculative cache groups are unsupported")
+        # vLLM 0.32.0 KVCacheGroupSpec adds host_resident and role (v1/kv_cache_interface.py:1451, :1456;
+        # 0.33.0 :1517, :1522). A missing field means the 0.27.0 group: device-resident, role DEFAULT.
+        if getattr(group, "host_resident", False):
+            raise ValueError("host-resident cache groups are unsupported")
+        role = _json_value(getattr(group, "role", "DEFAULT"))
+        if role != "DEFAULT":
+            raise ValueError(f"unsupported cache group role: {role}")
         names = list(group.layer_names)
         if not names or any(not isinstance(name, str) or not name for name in names):
             raise ValueError("runtime cache groups require explicit layer names")
@@ -436,6 +443,17 @@ def _storage(tensor: Any) -> tuple[tuple[str, int], int]:
     return (device, _positive(storage.data_ptr(), "storage pointer")), _positive(storage.nbytes(), "storage bytes")
 
 
+def _layer_storages(kv_cache: Any) -> set[tuple[str, int]]:
+    """Storage keys of one cache tensor, or of every tensor of a tuple or list.
+
+    A vLLM 0.31.0 Mamba layer binds a tuple of state views of one page.
+    """
+    tensors = kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
+    if not tensors:
+        raise ValueError("cache layer binds no tensors")
+    return {_storage(tensor)[0] for tensor in tensors}
+
+
 def _tensor_storages(tensors: Any) -> dict[tuple[str, int], int]:
     result: dict[tuple[str, int], int] = {}
 
@@ -460,17 +478,10 @@ def _tensor_storages(tensors: Any) -> dict[tuple[str, int], int]:
     return result
 
 
-def worker_memory(worker: Any) -> dict[str, Any]:
-    if not getattr(worker, "_fpm_cache_initialized", False):
-        raise ValueError("worker cache initialization was not observed")
-    runner = worker.model_runner
-    if getattr(runner, "shared_kv_cache_layers", None):
-        raise ValueError("cross-layer KV sharing is not yet supported by memory finalization")
-    config = runner.kv_cache_config
-    groups = cache_groups(config)
-    storages = _tensor_storages(runner.kv_caches)
-    context = worker.vllm_config.compilation_config.static_forward_context
-    layers = {name: context[name] for group in groups for name in group["layer_names"]}
+def _shared_by_allocations(
+    config: Any, layers: dict[str, Any], storages: dict[tuple[str, int], int]
+) -> list[dict[str, Any]]:
+    """Check a vLLM 0.27.0 or 0.28.0 plan, where ``shared_by`` names the aliases of each tensor."""
     layer_storages = {name: _storage(layer.kv_cache) for name, layer in layers.items()}
     if dict(layer_storages.values()) != storages:
         raise ValueError("cache group layers do not account for every model-runner storage")
@@ -511,6 +522,93 @@ def worker_memory(worker: Any) -> dict[str, Any]:
         )
     if covered != set(layers) or expected != storages:
         raise ValueError("runtime allocation plan disagrees with physical cache storage")
+    return allocations
+
+
+def _layer_strided_allocations(
+    config: Any, groups: list[dict[str, Any]], layers: dict[str, Any], storages: dict[tuple[str, int], int]
+) -> list[dict[str, Any]]:
+    """Check a vLLM 0.32.0 or 0.33.0 plan, where every tensor places its ``layers`` in one buffer.
+
+    The page of layer l for block b starts at offset + l * layer_stride + b * block_stride
+    (v1/kv_cache_interface.py 0.32.0:1413-1415, 0.33.0:1479-1481), so the last page of the last
+    layer bounds the region in layer-outer and block-outer layouts. A layer's page is the spec
+    page of its group. Tensors whose regions overlap alias the same bytes: cache groups overlay
+    each other (0.32.0:1419-1421, 0.33.0:1485-1487).
+    """
+    num_blocks = _positive(config.num_blocks, "cache block count")
+    layer_storages = {name: _layer_storages(layer.kv_cache) for name, layer in layers.items()}
+    if set().union(*layer_storages.values()) != set(storages):
+        raise ValueError("cache group layers do not account for every model-runner storage")
+    pages = {name: group["spec_page_size_bytes"] for group in groups for name in group["layer_names"]}
+    expected: dict[tuple[str, int], int] = {}
+    covered: set[str] = set()
+    allocations = []
+    for tensor in config.kv_cache_tensors:
+        if getattr(tensor, "host_resident", False):
+            raise ValueError("host-resident cache tensors are unsupported")
+        names = list(tensor.layers)
+        if not names or covered.intersection(names) or any(name not in layers for name in names):
+            raise ValueError("runtime tensor allocation has missing or duplicate cache layers")
+        keys = set().union(*(layer_storages[name] for name in names))
+        if len(keys) != 1:
+            raise ValueError("runtime-declared shared tensor uses different physical storages")
+        key = next(iter(keys))
+        if expected and key not in expected:
+            raise ValueError("cache tensors with layer strides use multiple backing allocations")
+        size = _positive(tensor.size, "configured cache tensor bytes")
+        if key in expected and expected[key] != size:
+            raise ValueError("packed allocation sizes disagree")
+        layer_stride, block_stride, offset = (
+            getattr(tensor, field, None) for field in ("layer_stride", "block_stride", "offset")
+        )
+        if any(type(value) is not int or value < 0 for value in (layer_stride, block_stride, offset)):
+            raise ValueError("invalid cache tensor layer stride, block stride or offset")
+        page = max(pages[name] for name in names)
+        if page > block_stride:
+            raise ValueError("cache tensor page exceeds its block stride")
+        if offset + (len(names) - 1) * layer_stride + (num_blocks - 1) * block_stride + page > size:
+            raise ValueError("cache tensor layers exceed their backing allocation")
+        expected[key] = size
+        covered.update(names)
+        allocations.append(
+            {
+                "size": size,
+                "shared_by": names,
+                "layers": list(names),
+                "layer_stride": layer_stride,
+                "block_stride": block_stride,
+                "offset": offset,
+            }
+        )
+    if covered != set(layers) or expected != storages:
+        raise ValueError("runtime allocation plan disagrees with physical cache storage")
+    return allocations
+
+
+def worker_memory(worker: Any) -> dict[str, Any]:
+    if not getattr(worker, "_fpm_cache_initialized", False):
+        raise ValueError("worker cache initialization was not observed")
+    runner = worker.model_runner
+    if getattr(runner, "shared_kv_cache_layers", None):
+        raise ValueError("cross-layer KV sharing is not yet supported by memory finalization")
+    config = runner.kv_cache_config
+    groups = cache_groups(config)
+    storages = _tensor_storages(runner.kv_caches)
+    context = worker.vllm_config.compilation_config.static_forward_context
+    layers = {name: context[name] for group in groups for name in group["layer_names"]}
+    # The record shape selects the reader. vLLM 0.27.0 names the aliases of each tensor in shared_by
+    # (v1/kv_cache_interface.py:952); 0.32.0 and 0.33.0 place layers by stride and have no shared_by
+    # (0.32.0:1424-1429, 0.33.0:1490-1495). Every other shape stays unresolved.
+    tensors = config.kv_cache_tensors
+    if all(
+        hasattr(item, "layers") and hasattr(item, "layer_stride") and not hasattr(item, "shared_by") for item in tensors
+    ):
+        allocations = _layer_strided_allocations(config, groups, layers, storages)
+    elif all(hasattr(item, "shared_by") and not hasattr(item, "layers") for item in tensors):
+        allocations = _shared_by_allocations(config, layers, storages)
+    else:
+        raise ValueError("unsupported runtime cache tensor record")
     for group in groups:
         classes = {name: _class_name(layers[name]) for name in group["layer_names"]}
         conv = {value == _CONV_CLASS for value in classes.values()}
