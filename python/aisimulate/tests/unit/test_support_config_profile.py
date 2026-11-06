@@ -155,7 +155,6 @@ _UNRECOGNIZED = {
     "XiaomiMiMo--MiMo-7B-Base": "MiMoForCausalLM",
     "XiaomiMiMo--MiMo-V2-Flash": "MiMoV2FlashForCausalLM",
     "nvidia--Llama-3_3-Nemotron-Super-49B-v1": "DeciLMForCausalLM",
-    "nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": "NemotronH_Omni_Reasoning_V3",
 }
 # DeepSeek, Kimi K2 and GLM-5 MLA/DSA configs keep explicit cache accounting.
 _MLA = (
@@ -1495,6 +1494,20 @@ def test_nemotron_super_vl_reports_the_mamba_state_under_llm_config(tmp_path, si
     assert nested.suggestions == baseline.suggestions
     assert nested.decoder_architecture == "NemotronHForCausalLM"
     assert nested.notes["decoder_config"] == "config llm_config; outer model and encoder geometry are excluded"
+
+
+def test_bundled_nemotron_super_vl_reads_its_llm_config():
+    config = load_model_config(GLM.parent / "nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json")
+    assert config.runtime_layout == _NEMOTRON_MARKERS
+    assert config.decoder_architecture == "NemotronHForCausalLM"
+    assert config.notes["decoder_config"] == "config llm_config; outer model and encoder geometry are excluded"
+    assert config.notes["decoder_architecture"] == (
+        "llm_config decoder architecture=NemotronHForCausalLM; used for decoder validation/resource estimates"
+    )
+    draft = derive_profile(config, None)
+    assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
+    assert all(marker in draft.pending_runtime["cache_geometry"] for marker in _NEMOTRON_MARKERS)
+    assert {"cache_layout", "kv_bytes_per_token"}.isdisjoint(draft.missing)
 
 
 @pytest.mark.parametrize("key", ["text_config", "llm_config"])
