@@ -238,3 +238,30 @@ def test_startup_identity_requires_the_hit_unit_page_size(page_size):
 def test_startup_identity_accepts_the_hit_unit_page_size():
     checks, _ = drv.startup_identity(_args(), _server_args(page_size=drv.HIT_UNIT))
     assert checks["page_size"] and all(checks.values())
+
+
+def test_artifact_keeps_the_latency_only_envelope():
+    """The SGLang client writes the schema-2 envelope; the power window is vLLM-only."""
+    from types import SimpleNamespace
+
+    from aisimulate.fpm_contract import (
+        FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+        FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
+    )
+
+    point = {"phase": "decode", "benchmark_id": 1, "batch_size": 2, "total_kv_read_tokens": 256}
+    record = {
+        "rounds": [{"role": "measurement", "wall_time": 0.01, "scheduled_requests": drv.expected_scheduled(point)}]
+    }
+    output = drv.artifact(
+        SimpleNamespace(phase="decode"),
+        [point],
+        [(point, record, "d" * 64)],
+        {"worker_id": "worker", "run_id": "run", "artifact": {}},
+        "2026-11-06T00:00:00Z",
+        1.0,
+    )
+    assert output["schema_version"] == FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
+    assert output["schema_version"] in FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS
+    fpms = [fpm for row in output["results"] for fpm in row["fpms"]]
+    assert fpms and all("power" not in fpm for fpm in fpms)

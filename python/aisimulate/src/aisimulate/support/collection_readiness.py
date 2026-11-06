@@ -209,6 +209,7 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         )
         and plan.options.max_cudagraph_capture_size == request.collection.max_cudagraph_capture_size
         and (plan.options.gpu_memory_utilization or 0.9) == request.collection.memory_fraction
+        and plan.options.measure_power == request.collection.measure_power
         and all(
             cell.topology.tp == parallel["tensor"]
             and cell.topology.dp == parallel["attention_data"]

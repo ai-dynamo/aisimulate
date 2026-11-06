@@ -53,6 +53,10 @@ _SNAPSHOT_STATUSES = frozenset({"current", "historical"})
 _FPM_SCHEMA_NAMES = frozenset({"aic_fpm_forward_perf", "fpm_forward_perf"})
 # Schema 8 adds per-row power_w and keeps the v7 execution identity.
 _FPM_SCHEMA_VERSIONS = frozenset({6, 7, 8})
+# A v8 sidecar always declares the power-window policy. Its rows record the
+# policy of the run that produced them, so a merged v8 pair mixes them.
+_FPM_POWER_POLICY = "dynamo_native_single_sample_power_window_v1"
+_FPM_V8_ROW_POLICIES = frozenset({None, "dynamo_native_single_sample_v1", _FPM_POWER_POLICY})
 _FPM_V7_SELECTOR_FIELDS = frozenset(
     {
         "gemm_quant_mode",
@@ -765,6 +769,14 @@ class HfDataset:
             # configuration-to-execution binding. Native staging rejects every
             # v7 pair, even if all rows agree, until that binding is available.
             parquet_identity.update({field: selector[field] for field in execution_fields})
+        # In v8 the optional selector policy names the sidecar policy; rows are
+        # checked against the v8 row-policy rule below instead.
+        selected_policy = parquet_identity.pop("measurement_policy", None) if metadata["schema_version"] >= 8 else None
+        if selected_policy not in (None, _FPM_POWER_POLICY):
+            raise DataError(
+                f"FPM sidecar {artifact.metadata_path} selects measurement_policy "
+                f"{selected_policy!r}; schema 8 requires {_FPM_POWER_POLICY!r}"
+            )
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -797,6 +809,28 @@ class HfDataset:
             raise DataError(
                 f"selected FPM Parquet {artifact.path} contains rows for a different configuration: "
                 f"{parquet_mismatches}"
+            )
+        if metadata["schema_version"] >= 8 and "measurement_policy" in parquet_fields:
+            self._verify_v8_row_policies(artifact, parquet, parquet_fields)
+
+    @staticmethod
+    def _verify_v8_row_policies(artifact: FpmArtifact, parquet: pq.ParquetFile, parquet_fields: set[str]) -> None:
+        """Rows are latency-only or power-window rows; only the latter carry power."""
+        columns = ["measurement_policy", *(["power_w"] if "power_w" in parquet_fields else [])]
+        try:
+            table = parquet.read(columns=columns)
+        except (OSError, pa.ArrowException) as exc:
+            raise DataError(f"cannot read selected FPM Parquet row policies {artifact.path}: {exc}") from exc
+        policies = table["measurement_policy"].to_pylist()
+        powers = table["power_w"].to_pylist() if "power_w" in parquet_fields else [None] * len(policies)
+        invalid = sorted({repr(policy) for policy in policies if policy not in _FPM_V8_ROW_POLICIES})
+        if invalid:
+            raise DataError(f"selected FPM Parquet {artifact.path} has unsupported v8 row policies: {invalid}")
+        if any(
+            power is not None and policy != _FPM_POWER_POLICY for policy, power in zip(policies, powers, strict=True)
+        ):
+            raise DataError(
+                f"selected FPM Parquet {artifact.path} has power_w on rows without the {_FPM_POWER_POLICY!r} policy"
             )
 
     def _select_configuration(self, configuration_path: str, snapshot_id: str | None) -> ConfigurationSnapshot:

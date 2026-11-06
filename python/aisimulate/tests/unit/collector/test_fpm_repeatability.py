@@ -1067,6 +1067,24 @@ def test_saved_loader_roundtrips_without_model_or_hardware_resolution(campaign):
     assert repeatability.load_repeatability_deployment(source) == with_kv_warmup_defaults({})
 
 
+def test_repeat_plans_keep_the_source_power_window(campaign, tmp_path):
+    plan, _source, _checkpoint = campaign
+    selected = {"cell_id": plan.cells[0].cell_id, "benchmark_points": json.loads(plan.options.benchmark_points_json)}
+    powered = repeatability._subset_plan(replace(plan, options=replace(plan.options, measure_power=True)), selected)
+    unpowered = repeatability._subset_plan(replace(plan, options=replace(plan.options, measure_power=False)), selected)
+    source = tmp_path / "powered"
+    _write_campaign(source, tmp_path / "powered-checkpoint.json", powered)
+
+    loaded = repeatability.load_repeatability_source(source)
+    repeat = repeatability._subset_plan(loaded, selected)
+
+    assert loaded.sha256 == powered.sha256 != unpowered.sha256
+    assert repeat.options.measure_power is True
+    # Each repeat attempt runs its own window; repeats compare latency only.
+    args = runner._cell_generator_overrides(repeat, repeat.cells[0], {})["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--benchmark-power-window-s") + 1] == "1.0"
+
+
 def test_cli_preview_uses_saved_plan_without_model_or_gpu_arguments(campaign, tmp_path, monkeypatch, capsys):
     plan, source, checkpoint = campaign
     monkeypatch.setattr(cli, "build_collection_case_plan", lambda **kwargs: pytest.fail("re-resolved source plan"))

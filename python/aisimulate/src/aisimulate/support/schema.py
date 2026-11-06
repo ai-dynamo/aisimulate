@@ -141,6 +141,9 @@ class CollectionSpec(StrictModel):
     cudagraph_mode: Literal["NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"] | None = None
     cudagraph_capture_sizes: list[PositiveStrictInt] | None = None
     max_cudagraph_capture_size: PositiveStrictInt | None = None
+    # Collector power window (--fpm-measure-power). False opts out, for a
+    # Dynamo image whose self-benchmark predates the window.
+    measure_power: bool = Field(default=True, strict=True)
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -149,6 +152,8 @@ class CollectionSpec(StrictModel):
         # explicitly reviewed policy is always serialized, including explicit.
         if "prefill_cudagraph_policy" not in self.model_fields_set:
             values.pop("prefill_cudagraph_policy", None)
+        if self.measure_power:
+            values.pop("measure_power", None)
         for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
             if getattr(self, name) is None:
                 values.pop(name, None)

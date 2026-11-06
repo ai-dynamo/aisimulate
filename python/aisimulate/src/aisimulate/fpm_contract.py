@@ -53,10 +53,30 @@ import fnmatch
 from pathlib import PurePosixPath
 from typing import Any
 
-# Schema version of the native benchmark result envelope written by Dynamo's
-# InstrumentedScheduler (PR 11509). The collector's validator and the staged
-# runtime's completion checker accept exactly this version.
+# Schema versions of the native benchmark result envelope written by Dynamo's
+# InstrumentedScheduler (PR 11509). Schema 2 is the latency-only envelope.
+# Schema 3 adds a ``power`` block to every FPM and is written only when the
+# power window is enabled, including a window that reports ``unavailable``.
+# The collector's validator and the staged runtime's completion checker
+# accept exactly these versions; the Generator exports them comma-separated.
+FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS = frozenset({2, 3})
+FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION = 3
+# The latency-only envelope version, under its pre-power name.
 FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION = 2
+
+# Power-window contract shared with Dynamo's self-benchmark (AISIM-1973).
+# The engine flag that enables the window, and the shortest window that may be
+# reported as measured, in seconds. The collector requests exactly this
+# window; it must equal Dynamo's FPM_POWER_MIN_WINDOW_S. NVML counter
+# calibration (2026-11-06) found a 100 ms update period on H200 and B200, so
+# the minimum is max(1.0, 20 x 100 ms) = 2.0 s.
+FPM_POWER_WINDOW_FLAG = "--benchmark-power-window-s"
+FPM_POWER_MIN_WINDOW_S = 2.0
+# Relative agreement required between the ranks' measured window lengths.
+FPM_POWER_WINDOW_REL_TOL = 1e-3
+# A decode window may append at most this fraction of the point's
+# total_kv_read_tokens; beyond it the point keeps latency without power.
+FPM_POWER_MAX_KV_DRIFT_FRAC = 0.10
 
 # Artifact names the Generator FPM target emits and the collector stages into
 # every pod's working directory.
