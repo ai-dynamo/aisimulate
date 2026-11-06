@@ -39,6 +39,68 @@ mod run_fixture;
 use run_fixture::{branch_request, request};
 
 #[test]
+fn direct_library_executes_native_scheduled_synthetic_and_conversation_sources() {
+    let datasets = [
+        json!({
+            "type":"synthetic", "entries":1, "sampling":"sequential",
+            "turns":{"value":2},
+            "prompts":{"corpus":"sonnet","isl":{"value":16},"osl":{"value":2}}
+        }),
+        json!({
+            "type":"file", "format":"single_turn", "sampling":"sequential", "options":{},
+            "records":[{"text":"first scheduled prompt","output_length":2},
+                       {"text":"second scheduled prompt","output_length":2}]
+        }),
+        json!({
+            "type":"file", "format":"multi_turn", "sampling":"sequential", "options":{},
+            "records":[{"session_id":"authored-session","turns":[
+                {"text":"first conversation prompt","output_length":2},
+                {"text":"second conversation prompt","output_length":2,"delay":3.0}
+            ]}]
+        }),
+    ];
+    for dataset in datasets {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frame = request(directory.path());
+        frame["run"]["cfg"]["datasets"] = json!([dataset]);
+        frame["run"]["cfg"]["finite_replay"] = Value::Null;
+        frame["run"]["cfg"]["trajectory_start_min_ratio"] = Value::Null;
+        frame["run"]["cfg"]["trajectory_start_max_ratio"] = Value::Null;
+        frame["run"]["cfg"]["phases"] = json!([{
+            "type":"concurrency", "name":"profiling", "exclude_from_results":false,
+            "seamless":false, "concurrency":1, "requests":2, "grace_period":1.0
+        }]);
+        let native = aiperf_protocol::runner_v2::decode_run_request_v2(
+            &serde_json::to_vec(&frame).unwrap(),
+        ).unwrap();
+        let report = aisim_aiperf_workload_runner::execute_with_identity_seed(
+            &native.run,
+            aiperf_clock_runtime::cancellation::RunCancellation::new(),
+            std::rc::Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
+            [41; 32],
+            None,
+        ).expect("shared native scheduled lowering and actual model execution");
+        let rows = report["requests"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "one request cap governs shared scheduling");
+        assert_eq!(report["model_submitted_count"], 2);
+        assert_eq!(report["engine_drained"], true);
+        for row in rows {
+            assert_eq!(row["status"], "settled");
+            assert_eq!(row["request"]["body"]["model"], "model");
+            assert!(!row["wire"]["body_bytes"].as_array().unwrap().is_empty());
+            assert!(!row["input_token_ids"].as_array().unwrap().is_empty());
+            assert_eq!(row["output_token_ids"].as_array().unwrap().len(), 2);
+        }
+        if frame["run"]["cfg"]["datasets"][0]["format"] == "multi_turn" {
+            assert_eq!(rows[0]["request"]["correlation_id"], rows[1]["request"]["correlation_id"]);
+            assert_eq!(rows[1]["request"]["turn_index"], 1);
+            assert!(rows[1]["issue_ns"].as_i64().unwrap() >= rows[0]["end_ns"].as_i64().unwrap());
+            assert!(rows[1]["request"]["body"]["messages"].as_array().unwrap().len() > 1);
+        }
+    }
+}
+
+#[test]
 fn direct_library_executes_finite_branching_native_run_without_stdio_or_children() {
     let directory = tempfile::tempdir().unwrap();
     let frame = branch_request(directory.path());

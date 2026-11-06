@@ -184,10 +184,18 @@ pub fn execute(
     let root = aiperf_rng::RngRoot::new(run.random_seed);
     let dataset_root = aiperf_rng::RngRoot::new(prepared.random_seed.or(run.random_seed));
     let mut plans = Vec::new();
+    let mut profiling_index = 0;
     for (index, phase) in phases.iter().enumerate() {
+        let measured_index = if phase.common().exclude_from_results {
+            None
+        } else {
+            let current = profiling_index;
+            profiling_index += 1;
+            Some(current)
+        };
         plans.push(build_native_scheduled_phase_plan_with_source_factory(
             index,
-            Some(index),
+            measured_index,
             origins[index],
             phase,
             phase_seamless_to_next(&phases, index),
@@ -207,8 +215,8 @@ pub fn execute(
             &resources,
             None,
             aiperf_config::failure::OnFailure::scheduled_or_default(None),
-            prepared.marker_target(),
-            None,
+            prepared.agentic_cache_bust_target,
+            prepared.cache_bust_target,
             prepared.agentic_trees.clone(),
             prepared.agentic_lanes.clone(),
             prepared.warmup_handoff.clone(),

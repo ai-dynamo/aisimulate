@@ -21,7 +21,7 @@ pub(crate) fn prepare(
 ) -> Result<PreparedDatasetInput> {
     let authored: serde_json::Value = serde_json::from_str(dataset.get())?;
     ensure!(
-        ["image", "audio", "video", "rankings"]
+        ["images", "audio", "video", "rankings"]
             .iter()
             .all(|field| authored.get(*field).is_none_or(serde_json::Value::is_null)),
         "scheduled simulator proof currently requires text-only sources"
