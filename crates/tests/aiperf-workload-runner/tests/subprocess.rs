@@ -12,10 +12,50 @@ fn request(directory: &std::path::Path) -> Value {
     cfg.models = Some(serde_json::from_value(json!({"strategy":"round_robin","items":[{"name":"model"}]})).unwrap());
     cfg.tokenizer = Some(serde_json::from_value(json!({"name":"builtin"})).unwrap());
     cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"requests":2,"grace_period":1.0}])).unwrap());
+    cfg.finite_replay = Some(true);
     cfg.trajectory_start_min_ratio = Some(0.0);
     cfg.trajectory_start_max_ratio = Some(0.0);
     let run = aiperf_config::model::BenchmarkRun { benchmark_id:"independent-proof".into(),artifact_dir:directory.into(),cfg,cli_command:None,label:String::new(),random_seed:Some(42),planned_replay_traces:Default::default(),authored_corpus_bounds:None,sweep_id:None,trial:0,variation:None,variables:Default::default() };
     serde_json::to_value(aiperf_protocol::runner_v2::RunRequestV2 { protocol_version:2,run }).unwrap()
+}
+
+fn branch_request(directory:&std::path::Path) -> String {
+    let initial = request(directory);
+    let bytes = serde_json::to_vec(&initial).unwrap();
+    let mut native = aiperf_protocol::runner_v2::decode_run_request_v2(&bytes).unwrap();
+    native.run.cfg.phases = Some(serde_json::from_value(json!([{"type":"concurrency","name":"profiling","exclude_from_results":false,"seamless":false,"concurrency":1,"sessions":1,"grace_period":1.0}])).unwrap());
+    let Some(aiperf_config::model::dataset::Dataset::File(dataset)) = native.run.cfg.datasets.as_mut().and_then(|rows|rows.first_mut()) else { panic!("file dataset required"); };
+    // Wide signed hashes are exact raw source, not serde_json::Value numbers.
+    let raw = r#"{"id":"branch-root","models":["model"],"block_size":8,"hash_id_scope":"local","requests":[{"t":0.0,"type":"n","model":"model","in":16,"out":2,"hash_ids":[184467440737095516170,184467440737095516171],"api_time":0.001},{"t":0.002,"type":"subagent","agent_id":"child-proof","subagent_type":"Explore","duration_ms":5,"status":"completed","models":["model"],"requests":[{"t":0.002,"type":"n","model":"model","in":16,"out":2,"hash_ids":[-184467440737095516170,-184467440737095516171],"api_time":0.001},{"t":0.004,"type":"n","model":"model","in":24,"out":2,"hash_ids":[-184467440737095516170,-184467440737095516171,-184467440737095516172],"api_time":0.001}]},{"t":0.01,"type":"n","model":"model","in":24,"out":2,"hash_ids":[184467440737095516170,184467440737095516171,184467440737095516172],"api_time":0.001}]}"#;
+    dataset.records = Some(serde_json::value::RawValue::from_string(raw.into()).unwrap());
+    serde_json::to_string(&native).unwrap()
+}
+
+#[test]
+fn branching_finite_trace_keeps_native_child_body_and_join_frontier() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input,"{}",branch_request(directory.path())).unwrap();
+    input.flush().unwrap();
+    let output = child.stdout.take().unwrap();
+    let events:Vec<Value> = BufReader::new(output).lines().map(|line|serde_json::from_str(&line.unwrap()).unwrap()).collect();
+    assert!(child.wait().unwrap().success());
+    drop(input);
+    assert_eq!(events.last().unwrap()["outcome"],"succeeded","{events:#?}");
+    let report:Value = serde_json::from_slice(&std::fs::read(directory.path().join("aisim-library-proof.json")).unwrap()).unwrap();
+    let requests = report["requests"].as_array().unwrap();
+    assert_eq!(requests.len(),4,"finite branch must execute once, without recycling");
+    let children:Vec<&Value> = requests.iter().filter(|row|!row["request"]["parent_correlation_id"].is_null()).collect();
+    assert_eq!(children.len(),2,"actual native branch ancestry must survive the execution seam");
+    let parents:Vec<&Value> = requests.iter().filter(|row|row["request"]["parent_correlation_id"].is_null()).collect();
+    assert_eq!(parents.len(),2);
+    let child_end = children.iter().map(|row|row["end_ns"].as_i64().unwrap()).max().unwrap();
+    let parent_join = parents.iter().map(|row|row["start_ns"].as_i64().unwrap()).max().unwrap();
+    assert!(parent_join >= child_end,"parent join crossed an unsettled native child");
+    assert!(requests.iter().all(|row|row["request"]["body"]["messages"].as_array().is_some_and(|messages|!messages.is_empty())));
+    assert_ne!(parents[0]["request"]["body"],children[0]["request"]["body"],"distinct hash populations must retain distinct corpus prompts");
+    assert_eq!(report["engine_drained"],true);
 }
 
 #[test]
@@ -62,17 +102,33 @@ fn finite_native_workload_writes_body_bearing_proof_artifact() {
 }
 
 #[test]
-fn framed_cancel_uses_native_control_result() {
+fn framed_cancel_interrupts_committed_model_virtual_wait() {
     let directory = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_aisim-aiperf-workload-runner")).arg("--proof-wait-for-cancel").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut input = child.stdin.take().unwrap();
     writeln!(input,"{}",request(directory.path())).unwrap();
-    writeln!(input,"{}",json!({"protocol_version":2,"command_id":"stop-proof","command":{"type":"cancel"}})).unwrap();
     input.flush().unwrap();
     let output = child.stdout.take().unwrap();
-    let events: Vec<Value> = BufReader::new(output).lines().map(|line|serde_json::from_str(&line.unwrap()).unwrap()).collect();
+    let mut sent_cancel = false;
+    let mut events = Vec::new();
+    for line in BufReader::new(output).lines() {
+        let event: Value = serde_json::from_str(&line.unwrap()).unwrap();
+        if event["metrics"]["proof_rendezvous_waiting"] == 1.0 {
+            assert!(events.iter().any(|event:&Value|event["event"] == "run_started"));
+            assert!(event["metrics"]["proof_pending_model_deadline_ns"].as_f64().unwrap() > event["observed_at_ns"].as_f64().unwrap());
+            writeln!(input,"{}",json!({"protocol_version":2,"command_id":"stop-proof","command":{"type":"cancel"}})).unwrap();
+            input.flush().unwrap();
+            sent_cancel = true;
+        }
+        events.push(event);
+    }
     assert!(child.wait().unwrap().success());
     drop(input);
+    assert!(sent_cancel,"never observed a suspended committed model pass");
     assert!(events.iter().any(|event|event["event"] == "control_result" && event["command_id"] == "stop-proof"));
     assert_eq!(events.last().unwrap()["outcome"],"cancelled");
+    let report: Value = serde_json::from_slice(&std::fs::read(directory.path().join("aisim-library-proof.json")).unwrap()).unwrap();
+    assert_eq!(report["engine_drained"],true);
+    assert_eq!(report["proof_rendezvous_entered"],true);
+    assert!(report["requests"].as_array().unwrap().len() < 2,"cancel advanced past the replay frontier");
 }

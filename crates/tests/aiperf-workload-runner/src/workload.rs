@@ -5,14 +5,13 @@
 
 use std::{rc::Rc, sync::Arc, cell::RefCell};
 use anyhow::{Context, Result, ensure};
-use aiperf_clock::clock::Clock;
 use aiperf_clock_runtime::{clock::{SimClock, driver::drive_sim_with_source}, cancellation::RunCancellation};
 use aiperf_engine_phase::{agentic_replay::prepare::{prepare_legacy_agentic,prepare_legacy_agentic_phases}, execute::{dataset_build::{PreparedNativeConversationSourceFactory,build_native_scheduled_phase_plan_with_source_factory,phase_seamless_to_next,user_centric_phase_scope},plan::native_scheduled_resources}, phase_runtime::run_scheduled_phases_with_cancellation};
 use aiperf_exchange_model::TextTokenizer;
 use aiperf_protocol::protocol_dto::PhaseSpec;
 use crate::{dispatch::Dispatcher, model::ModelExecution};
 
-pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation, observer: Rc<dyn aiperf_timing::PhaseObserver>) -> Result<serde_json::Value> {
+pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation, observer: Rc<dyn aiperf_timing::PhaseObserver>, proof_wait: Option<(aiperf_engine_kernel::event_writer::EventWriterHandle,Arc<aiperf_engine_kernel::event_writer::Sequencer>)>) -> Result<serde_json::Value> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
     let dataset = input.get("dataset").context("dataset missing")?;
@@ -20,7 +19,9 @@ pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation
     ensure!(!phases.is_empty(), "explicit phases required");
     ensure!(input.pointer("/tokenizer/name").and_then(|v|v.as_str()) == Some("builtin"), "proof requires explicit builtin tokenizer");
     ensure!(dataset["format"] == "weka_trace", "proof supports explicit weka_trace format only");
-    let traces = acquire(dataset)?;
+    let raw_input: std::collections::BTreeMap<String,Box<serde_json::value::RawValue>> = serde_json::from_str(raw.get())?;
+    let raw_dataset: std::collections::BTreeMap<String,Box<serde_json::value::RawValue>> = serde_json::from_str(raw_input.get("dataset").context("raw dataset missing")?.get())?;
+    let traces = acquire(dataset,raw_dataset.get("records").context("inline records required")?)?;
     let tokenizer: Arc<dyn TextTokenizer> = Arc::new(aiperf_tokenizers::TiktokenTokenizer::builtin());
     let seed = run.random_seed.unwrap_or(0);
     let corpus = aiperf_dataset_synthesis::coding::build_coding_corpus(tokenizer.as_ref(), seed)?;
@@ -51,18 +52,22 @@ pub fn execute(run: &aiperf_config::model::BenchmarkRun, cancel: RunCancellation
         plans.push(build_native_scheduled_phase_plan_with_source_factory(index,Some(index),origins[index],phase,phase_seamless_to_next(&phases,index),&prepared.full_view(),model,prepared.default_output_tokens,dataset_root,root,root,&factory,tokenizer.clone(),clock.clone(),0,&run.benchmark_id,&run.artifact_dir,&[],&resources,None,aiperf_config::failure::OnFailure::scheduled_or_default(None),prepared.agentic_cache_bust_target,None,prepared.agentic_trees.clone(),prepared.agentic_lanes.clone(),prepared.warmup_handoff.clone(),false,0,aiperf_engine_kernel::request_rate::SlotDrawAddress::for_worker_group(0,0,1),None,aiperf_distributed_model::ModuloWorkerGroupPartition::direct(),user_centric_phase_scope(&phases,index))?);
     }
     let mut result = None;
-    drive_sim_with_source(clock.clone(), engine.clone(), |_| async {
+    let rendezvous = proof_wait.map(|(events,sequencer)|Rc::new(crate::rendezvous::Rendezvous { model:engine.clone(),clock:clock.clone(),cancellation:cancel.clone(),events,sequencer,benchmark_id:run.benchmark_id.clone(),entered:std::cell::Cell::new(false),resume_application:std::cell::Cell::new(false) }));
+    let event_source: Rc<dyn aiperf_clock_runtime::clock::driver::SimEventSource> = match &rendezvous { Some(source)=>source.clone(),None=>engine.clone() };
+    drive_sim_with_source(clock.clone(), event_source, |_| async {
         result = Some(run_scheduled_phases_with_cancellation(plans,clock.clone(),dispatcher.clone(),observer,Some(cancel),None).await);
     })?;
     let report = result.context("driver returned without a report")??;
     ensure!(engine.is_drained(), "simulator retained request/pass ownership after run");
-    Ok(serde_json::json!({"format":"aisim-aiperf-library-proof-v1","native_phase_report":report,"requests":dispatcher.records.borrow().as_slice(),"virtual_end_ns":clock.now_ns(),"engine_drained":true}))
+    Ok(serde_json::json!({"format":"aisim-aiperf-library-proof-v1","native_phase_report":report,"requests":dispatcher.records.borrow().as_slice(),"virtual_end_ns":clock.now_ns(),"engine_drained":true,"proof_rendezvous_entered":rendezvous.as_ref().is_some_and(|source|source.entered.get())}))
 }
 
-fn acquire(dataset: &serde_json::Value) -> Result<Vec<(String,aiperf_agentx::trace::WekaTrace)>> {
-    let records = dataset.get("records").context("proof supports inline WEKA records only")?;
-    let rows: Vec<&serde_json::Value> = match records.as_array() { Some(rows) => rows.iter().collect(), None => vec![records] };
-    let documents = rows.into_iter().map(|row| serde_json::value::RawValue::from_string(serde_json::to_string(row)?)).collect::<std::result::Result<Vec<_>,serde_json::Error>>()?;
+fn acquire(dataset: &serde_json::Value,records:&serde_json::value::RawValue) -> Result<Vec<(String,aiperf_agentx::trace::WekaTrace)>> {
+    // Source payload never round-trips through Value: WEKA hash IDs are i128.
+    let documents = match serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(records.get()) {
+        Ok(documents)=>documents,
+        Err(_)=>vec![records.to_owned()],
+    };
     let (traces, _) = aiperf_agentx::loader::load_weka_traces_from_documents(documents,"inline AISim proof",dataset["entries"].as_u64().map(|n|n as usize),dataset.pointer("/synthesis/max_context_length").and_then(|v|v.as_i64()),dataset.pointer("/synthesis/max_osl").and_then(|v|v.as_i64()),None).map_err(anyhow::Error::msg)?;
     Ok(traces)
 }

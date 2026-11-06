@@ -34,7 +34,7 @@ impl Dispatcher {
                 _ => anyhow::bail!("unsupported message content"),
             }
         }
-        let identity = serde_json::json!({"uuid":turn.uuid,"correlation_id":turn.x_correlation_id,"body":body});
+        let identity = serde_json::json!({"uuid":turn.uuid,"correlation_id":turn.x_correlation_id,"conversation_id":turn.conversation_id,"parent_correlation_id":turn.parent_correlation_id,"root_correlation_id":turn.root_correlation_id,"body":body});
         let mut callback = |event| match event {
             Observation::TransportStarted { at_ns } => started(at_ns),
             Observation::FirstToken { ttft_ns } => first(ttft_ns),

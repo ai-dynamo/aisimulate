@@ -11,6 +11,14 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[[bin]]
+name = "aisim-aiperf-workload-runner"
+path = "src/main.rs"
+
+[[test]]
+name = "subprocess"
+path = "tests/subprocess.rs"
+
 [dependencies]
 aisimulate-core = { package = "aisim-core", path = "../../core", default-features = false }
 anyhow = "1"

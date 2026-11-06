@@ -7,6 +7,7 @@ mod dispatch;
 #[allow(dead_code)]
 mod model;
 mod workload;
+mod rendezvous;
 
 use std::{io::{BufReader,Write},rc::Rc,sync::Arc};
 use anyhow::{Context,Result};
@@ -31,7 +32,7 @@ fn main() {
 
 fn run() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("capabilities") {
-        println!("{}",serde_json::json!({"protocol_version":2,"runner":"aisim-aiperf-library-proof","status":"experimental-unverified","workload":"native_agentic_replay","sources":["inline_weka"],"tokenizer":"explicit_builtin","model":"aisim_core_fixed_1ms","control":["cancel"],"artifacts":"proof_report_not_product_aiperf_v2","per_token_ipc":false}));
+        println!("{}",serde_json::json!({"protocol_version":2,"runner":"aisim-aiperf-library-proof","status":"experimental-unverified","workload":"native_agentic_replay","sources":["inline_weka"],"tokenizer":"explicit_builtin","model":"aisim_core_fixed_1ms","control":["cancel"],"artifacts":"proof_report_not_product_aiperf_v2","per_token_ipc":false,"proof_instrumentation":"--proof-wait-for-cancel: bounded pause before first committed model deadline; never default"}));
         return Ok(());
     }
     let mut input = BufReader::new(std::io::stdin());
@@ -56,10 +57,12 @@ fn run() -> Result<()> {
         result
     });
     let observer = Rc::new(Progress { events:events.clone(),seq:seq.clone(),id:run.benchmark_id.clone() });
-    let result = workload::execute(&run,cancel.clone(),observer);
+    let proof_wait = std::env::args().any(|argument|argument == "--proof-wait-for-cancel");
+    let result = workload::execute(&run,cancel.clone(),observer,proof_wait.then(||(events.clone(),seq.clone())));
     authority.begin_terminal();
     let malformed = if control.is_finished() { match control.join() { Ok(control_reader::ControlReaderOutcome::Malformed(_)|control_reader::ControlReaderOutcome::OverLimit) => true,_=>false } } else { false };
-    let mut metadata = std::collections::BTreeMap::from([("runner".into(),"aisim-owned-library-proof".into()),("report_contract".into(),"proof-only-not-aiperf-v2".into()),("aisim_source".into(),"223a8bf60fba92c17d10926c77ab8bf8693a02c2+owned-runner".into())]);
+    let mut metadata = std::collections::BTreeMap::from([("runner".into(),"aisim-owned-library-proof".into()),("report_contract".into(),"proof-only-not-aiperf-v2".into()),("aisim_source".into(),env!("AISIM_SOURCE_REVISION").into()),("aiperf_source".into(),env!("AIPERF_SOURCE_REVISION").into())]);
+    metadata.insert("proof_wait_for_cancel".into(),proof_wait.to_string());
     let success = result.is_ok() && !malformed && !cancel.is_cancelled();
     let mut diagnostics = Vec::new();
     if let Ok(report) = &result {
