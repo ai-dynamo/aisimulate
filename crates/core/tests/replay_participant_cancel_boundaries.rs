@@ -358,17 +358,20 @@ fn receipt_cancellation(disagg: bool) {
         engine_end_ms + 50.0
     );
     // The engine has finished, but the client has not received its terminal.
-    let cancel_at_ms = engine_end_ms + 1.0;
-    assert!(cancel_at_ms < record(&receipt_control).terminal_time_ms);
-    let (report, facts) = run(disagg, Scenario::Receipt, Some(cancel_at_ms));
-    assert!(record(&report).first_admit_ms.unwrap() < cancel_at_ms);
-    assert_canceled_once(&report, &facts, cancel_at_ms);
-    assert!(
-        facts.iter().all(|fact| !matches!(fact, Fact::Token(_))),
-        "unreceived tokens must not escape before cancellation: {facts:?}"
-    );
-    assert_eq!(record(&report).first_token_ms, None);
-    assert_eq!(record(&report).output_length, 0);
+    for cancel_at_ms in [
+        engine_end_ms + 1.0,
+        record(&receipt_control).terminal_time_ms,
+    ] {
+        let (report, facts) = run(disagg, Scenario::Receipt, Some(cancel_at_ms));
+        assert!(record(&report).first_admit_ms.unwrap() < cancel_at_ms);
+        assert_canceled_once(&report, &facts, cancel_at_ms);
+        assert!(
+            facts.iter().all(|fact| !matches!(fact, Fact::Token(_))),
+            "unreceived tokens must not escape before cancellation, including receipt ties: {facts:?}"
+        );
+        assert_eq!(record(&report).first_token_ms, None);
+        assert_eq!(record(&report).output_length, 0);
+    }
 }
 
 #[test]

@@ -98,7 +98,7 @@ pub(crate) struct DetokenizationStage {
     server_free_at_ms: FxHashMap<(usize, usize), f64>,
     terminals: BinaryHeap<Reverse<PendingTerminal>>,
     /// External participant token facts awaiting their actual client receipt.
-    tokens: Vec<(f64, u64, Uuid, u32)>,
+    tokens: BinaryHeap<Reverse<PendingToken>>,
     next_entry: u64,
 }
 
@@ -108,7 +108,7 @@ impl DetokenizationStage {
             detokenization,
             server_free_at_ms: FxHashMap::default(),
             terminals: BinaryHeap::new(),
-            tokens: Vec::new(),
+            tokens: BinaryHeap::new(),
             next_entry: 0,
         }
     }
@@ -193,30 +193,44 @@ impl DetokenizationStage {
 
     /// Hold a token fact until the modeled client receives it.
     pub(crate) fn defer_token(&mut self, at_ms: f64, uuid: Uuid, token: u32) {
-        self.tokens.push((at_ms, self.next_entry, uuid, token));
+        self.tokens.push(Reverse(PendingToken {
+            at_ms,
+            entry: self.next_entry,
+            uuid,
+            token,
+        }));
         self.next_entry += 1;
     }
 
     pub(crate) fn release_tokens_due(&mut self, now_ms: f64) -> Vec<(f64, Uuid, u32)> {
-        let (mut due, waiting): (Vec<_>, Vec<_>) = self
+        let mut due = Vec::new();
+        while self
             .tokens
-            .drain(..)
-            .partition(|(at, _, _, _)| *at <= now_ms);
-        self.tokens = waiting;
-        due.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        due.into_iter()
-            .map(|(at, _, uuid, token)| (at, uuid, token))
-            .collect()
+            .peek()
+            .is_some_and(|Reverse(pending)| pending.at_ms <= now_ms)
+        {
+            let Reverse(pending) = self.tokens.pop().expect("peeked client token");
+            due.push((pending.at_ms, pending.uuid, pending.token));
+        }
+        due
     }
 
-    pub(crate) fn cancel_tokens(&mut self, request_id: Uuid) {
-        self.tokens.retain(|(_, _, uuid, _)| *uuid != request_id);
+    pub(crate) fn cancel_tokens(&mut self, request_id: Uuid) -> Vec<f64> {
+        let mut removed = Vec::new();
+        self.tokens.retain(|Reverse(pending)| {
+            if pending.uuid == request_id {
+                removed.push(pending.at_ms);
+                false
+            } else {
+                true
+            }
+        });
+        removed
     }
 
     /// Cancel a response not yet received by its client. This only removes the
     /// pending client terminal; committed detokenizer service time is unchanged.
     pub(crate) fn cancel_terminal(&mut self, request_id: Uuid) -> bool {
-        self.cancel_tokens(request_id);
         let before = self.terminals.len();
         self.terminals
             .retain(|Reverse(pending)| pending.request_id != request_id);
@@ -225,7 +239,7 @@ impl DetokenizationStage {
 
     /// Finished requests the client has not received yet.
     pub(crate) fn len(&self) -> usize {
-        self.terminals.len() + self.tokens.len()
+        self.terminals.len()
     }
 
     pub(crate) fn next_release_ms(&self) -> Option<f64> {
@@ -233,7 +247,7 @@ impl DetokenizationStage {
             .peek()
             .map(|Reverse(pending)| pending.at_ms)
             .into_iter()
-            .chain(self.tokens.iter().map(|(at, _, _, _)| *at))
+            .chain(self.tokens.peek().map(|Reverse(pending)| pending.at_ms))
             .min_by(f64::total_cmp)
     }
 
@@ -250,6 +264,33 @@ impl DetokenizationStage {
             released.push((pending.at_ms, pending.request_id, pending.status));
         }
         released
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingToken {
+    at_ms: f64,
+    entry: u64,
+    uuid: Uuid,
+    token: u32,
+}
+
+impl PartialEq for PendingToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for PendingToken {}
+impl PartialOrd for PendingToken {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for PendingToken {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.at_ms
+            .total_cmp(&other.at_ms)
+            .then(self.entry.cmp(&other.entry))
     }
 }
 
@@ -295,6 +336,27 @@ mod tests {
 
     fn ids(range: std::ops::Range<u128>) -> impl Iterator<Item = Uuid> {
         range.map(Uuid::from_u128)
+    }
+
+    #[test]
+    fn queued_tokens_do_not_inflate_request_occupancy_and_cancel_exact_receipts() {
+        let mut path = path(1, 1.0, 0.5);
+        let id = Uuid::from_u128(1);
+        path.defer_token(60.0, id, 7);
+        path.defer_token(70.0, id, 8);
+        assert_eq!(path.len(), 0, "tokens are not requests");
+        path.defer_terminal(70.0, id, ReplayTerminalStatus::Completed);
+        assert_eq!(path.len(), 1);
+        assert_eq!(path.next_release_ms(), Some(60.0));
+        assert_eq!(path.release_tokens_due(60.0), vec![(60.0, id, 7)]);
+        assert_eq!(
+            path.cancel_tokens(id),
+            vec![70.0],
+            "delivered equal-time facts are not canceled"
+        );
+        assert!(path.cancel_terminal(id));
+        assert_eq!(path.len(), 0);
+        assert_eq!(path.next_release_ms(), None);
     }
 
     #[test]

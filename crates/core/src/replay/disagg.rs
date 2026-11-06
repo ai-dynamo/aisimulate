@@ -4327,11 +4327,11 @@ where
     }
 
     pub(crate) fn cancel_dynamic(&mut self, uuid: Uuid) -> Result<Option<ReplayTerminalStatus>> {
-        if self.admission.is_external() {
-            if let Some(stage) = &mut self.detokenization {
-                stage.cancel_tokens(uuid);
-            }
-            self.collector.discard_unreceived_tokens(uuid, self.now_ms);
+        if self.admission.is_external()
+            && let Some(stage) = &mut self.detokenization
+        {
+            let receipts = stage.cancel_tokens(uuid);
+            self.collector.discard_unreceived_tokens(uuid, &receipts);
         }
         if self.encoder.as_ref().is_some_and(|encoder| {
             encoder.contains(|arrival| arrival.request.metadata().uuid == Some(uuid))
