@@ -219,6 +219,15 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     assert not (root / "evidence.yaml").exists()
 
 
+def test_memory_observation_versions_mirror_the_collector_observer():
+    # The onboarding route keeps its own copy of the list because it must not import collector.
+    from collector.fpm_forward.runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS
+
+    from aisimulate.support.plan import MEMORY_OBSERVATION_VERSIONS
+
+    assert MEMORY_OBSERVATION_VERSIONS == MEMORY_SUPPORTED_VERSIONS
+
+
 @pytest.mark.parametrize("limit", [None, 512])
 def test_legacy_collection_policy_round_trip_retains_identity_and_launch_arguments(tmp_path, limit):
     request = _request(collection={} if limit is None else {"max_prefill_cudagraph_size": limit})

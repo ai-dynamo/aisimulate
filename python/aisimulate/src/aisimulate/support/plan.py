@@ -27,6 +27,8 @@ from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
 _LOCK_NAME = ".support.lock"
+# Mirrors collector.fpm_forward.runtime.fpm_memory_observer.MEMORY_SUPPORTED_VERSIONS; onboard init must not import it.
+MEMORY_OBSERVATION_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
 
 
 def request_id(request: SupportRequest) -> str:
@@ -388,7 +390,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             plan["fpm"]["scheduling_policy"] = (
                 "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
                 "This is a collection policy, not the default for arbitrary vLLM serving."
-                if request.identity.framework_version == "0.27.0"
+                if request.identity.framework_version in MEMORY_OBSERVATION_VERSIONS
                 else "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
             )
         elif deployment.resources.cache_layout == "grouped":
@@ -436,8 +438,10 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 status="runtime_memory_pending",
                 detail=(
                     "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
-                    "during worker initialization for supported vLLM 0.27.0 layouts; other versions can collect "
-                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
+                    "during worker initialization for supported layouts on vLLM "
+                    f"{', '.join(MEMORY_OBSERVATION_VERSIONS[:-1])} and {MEMORY_OBSERVATION_VERSIONS[-1]}; other "
+                    "versions can collect timings but leave memory unresolved. No activation or non-KV byte "
+                    "declaration is required. "
                     "Run onboard finalize after successful collection, then review the resolved profile."
                 ),
             )

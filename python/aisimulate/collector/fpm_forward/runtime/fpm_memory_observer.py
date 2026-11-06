@@ -10,6 +10,28 @@ vllm/v1/worker/gpu_model_runner.py (initialize_kv_cache_tensors), and
 vllm/v1/core/{kv_cache_manager,block_pool}.py. Cache specs are read, not rebuilt.
 https://github.com/vllm-project/vllm/tree/4bdc8a788d2e2ce9165d552b3d4d8b72604626bf/vllm/v1
 
+The same reads were audited against vLLM 0.32.0, commit
+5df63a7203cdb9328d824a27b682e77c7b9928be, and 0.33.0, commit
+4ba787ec9959e566d3b587a796dff07673324da5. Lines are given as 0.32.0/0.33.0:
+- vllm/v1/worker/gpu_worker.py: determine_available_memory 634/641,
+  initialize_from_config 853/866, compile_or_warm_up_model 908/933, and the
+  runner choice in _make_model_runner 563-579/570-586.
+- vllm/v1/worker/gpu/model_runner.py (Model Runner V2): initialize_kv_cache
+  605/623, kv_caches 791-793/812-814.
+- vllm/v1/worker/gpu_model_runner.py (Model Runner V1):
+  initialize_kv_cache_tensors 6979/6914, initialize_kv_cache 7055/6990.
+- vllm/v1/worker/utils.py (identical at both tags): allocate_kv_cache 564-627,
+  bind_kv_cache_to_layers 868-885.
+- vllm/v1/worker/gpu/attn_utils.py: init_kv_cache 396-443/397-444.
+- vllm/v1/kv_cache_interface.py: KVCacheTensor 1409-1429/1475-1495,
+  KVCacheGroupSpec 1439-1456/1505-1522, create_kv_cache_views 377-441/418-482.
+- Layout: vllm/v1/core/kv_cache_utils.py:1588-1687 at 0.32.0 and
+  vllm/v1/core/kv_cache_planning.py:642-741 at 0.33.0.
+- vllm/v1/core/kv_cache_manager.py: block_pool 197/199, watermark_blocks 208/210.
+- vllm/v1/core/block_pool.py: null_block 187-188/191-192, get_num_free_blocks 868/912.
+https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1
+https://github.com/vllm-project/vllm/tree/4ba787ec9959e566d3b587a796dff07673324da5/vllm/v1
+
 Unsupported observation APIs write unresolved evidence. Exceptions from the
 runtime itself are never caught by these observation helpers or wrappers.
 """
@@ -29,8 +51,8 @@ from typing import Any
 
 SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
-SUPPORTED_VERSION = "0.27.0"
-EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0")
+MEMORY_SUPPORTED_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
+EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.32.0", "0.33.0")
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
@@ -277,6 +299,15 @@ def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) 
     The same read-only interfaces were verified for vLLM 0.28.0 at:
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/gpu_model_runner.py#L7155
     https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/utils.py#L241
+    They were also verified for vLLM 0.32.0, commit 5df63a7203cdb9328d824a27b682e77c7b9928be,
+    and 0.33.0, commit 4ba787ec9959e566d3b587a796dff07673324da5. AttentionGroup keeps these
+    fields (vllm/v1/worker/utils.py:261-266, identical at both tags). Model Runner V1 fills
+    attn_groups in initialize_attn_backend (vllm/v1/worker/gpu_model_runner.py 0.32.0:6688,
+    0.33.0:6623). Model Runner V2 assigns them from init_attn_backend
+    (vllm/v1/worker/gpu/model_runner.py 0.32.0:665-674, 0.33.0:689-698;
+    vllm/v1/worker/gpu/attn_utils.py 0.32.0:196, 0.33.0:197), which appends an empty list
+    for a cache group without layer views (attn_utils.py 0.32.0:220-222, 0.33.0:221-223).
+    An empty list adds no group.
     It does not infer a backend from requested flags or trace per-point dispatch.
 
     Ordinary serving can use FpmExecutionWorker with absolute
@@ -690,9 +721,10 @@ def observe(
         "pp_rank": pp_rank,
     }
     try:
-        if payload["backend_version"] != SUPPORTED_VERSION:
+        if payload["backend_version"] not in MEMORY_SUPPORTED_VERSIONS:
             raise ValueError(
-                f"memory observation currently supports vLLM {SUPPORTED_VERSION}; found {payload['backend_version']}"
+                f"memory observation currently supports vLLM {', '.join(MEMORY_SUPPORTED_VERSIONS)}; "
+                f"found {payload['backend_version']}"
             )
         if (
             getattr(owner.vllm_config, "speculative_config", None) is not None

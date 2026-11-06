@@ -1056,6 +1056,35 @@ def test_execution_only_observation_does_not_enable_memory_conversion(version):
             assert "--worker-cls" not in args
 
 
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_new_runtime_versions_observe_execution(version):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
+    for cell in plan.cells:
+        assert runner._observe_runtime_execution(plan, cell) is True
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.32.0", True), ("0.31.0", False)])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_gate_inspects_new_runtime_collections(tmp_path, version, audited):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
+    _write_campaign(tmp_path / "source", tmp_path / "source-checkpoint.json", plan)
+    cell = plan.cells[0]
+    raw = tmp_path / "source" / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+    unaudited = f"execution configuration inspection is unaudited for {version}"
+    assert (unaudited in result["missing_evidence"]) is not audited
+
+
 def test_cli_exposes_bounded_repeatability_defaults():
     args = cli._parser().parse_args(["--gpu", "gb300"])
     assert (args.repeatability_samples, args.repeatability_max_points, args.repeatability_cv_threshold) == (5, 12, 0.05)

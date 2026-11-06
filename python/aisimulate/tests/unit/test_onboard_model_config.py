@@ -1092,6 +1092,35 @@ def test_guided_review_keeps_unavailable_activation_memory_pending(tmp_path, mon
     assert "No activation or non-KV byte estimate is required" in review
 
 
+@pytest.mark.parametrize(
+    ("version", "policy"),
+    [
+        (
+            "0.32.0",
+            "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+            "This is a collection policy, not the default for arbitrary vLLM serving.",
+        ),
+        ("0.31.0", "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."),
+    ],
+    ids=["0.32.0", "0.31.0"],
+)
+def test_pending_profile_plan_states_whether_the_runtime_version_observes_memory(tmp_path, version, policy):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, framework_version=version)) == 0
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.memory_source == "pending"
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    saved = json.loads((plan / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == policy
+    assert saved["prerequisites"][0]["status"] == "runtime_memory_pending"
+    assert (
+        "Runtime memory is collected during worker initialization for supported layouts on vLLM 0.27.0, 0.32.0 "
+        "and 0.33.0; other versions can collect timings but leave memory unresolved."
+    ) in saved["prerequisites"][0]["detail"]
+
+
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
     overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
     overrides["weights_bytes"] = (
