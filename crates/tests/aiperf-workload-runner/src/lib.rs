@@ -23,7 +23,7 @@ pub fn execute(
     cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run,cancellation,observer,None)
+    workload::execute(run, cancellation, observer, None)
 }
 
 /// Opt-in executable-boundary instrumentation, separate from ordinary execution.
@@ -38,5 +38,5 @@ pub fn execute_with_control_rendezvous(
     events: aiperf_engine_kernel::event_writer::EventWriterHandle,
     sequencer: std::sync::Arc<aiperf_engine_kernel::event_writer::Sequencer>,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run,cancellation,observer,Some((events,sequencer)))
+    workload::execute(run, cancellation, observer, Some((events, sequencer)))
 }

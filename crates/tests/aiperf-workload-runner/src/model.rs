@@ -21,7 +21,9 @@ use aiperf_exchange_model::TextTokenizer;
 use aiperf_exchange_model::dispatch::{ReplayTerminalStatus, RequestObserver};
 use aiperf_exchange_model::measure::observe::CompletionError;
 use aiperf_exchange_model::measure::{ModelResponseMetadata, TurnDispatchOutcome};
-use aiperf_request_execution::execution::{Execution, ExecutionError, Observation, Outcome, Request};
+use aiperf_request_execution::execution::{
+    Execution, ExecutionError, Observation, Outcome, Request,
+};
 use aisimulate_core::engine::{
     Command, Engine, EngineConfig, EngineFactory, Output, Request as ModelRequest,
     TimingModelConfig,
