@@ -126,6 +126,12 @@ impl<T> EncoderPool<T> {
         );
     }
 
+    /// Whether a parked arrival is still owned by the encoder. Canceling its
+    /// client does not preempt an already committed batch or embedding transfer.
+    pub(crate) fn contains(&self, mut matches: impl FnMut(&T) -> bool) -> bool {
+        self.joins.values().any(|join| matches(&join.item))
+    }
+
     /// Earliest instant at which `take_ready` has work: a forward ending or an
     /// embedding arriving. `None` while queued parts only wait for a call.
     pub(crate) fn next_deadline_ms(&self) -> Option<f64> {
