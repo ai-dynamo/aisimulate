@@ -36,7 +36,7 @@ fn runner_binary() -> std::path::PathBuf {
 
 #[path = "support/run_fixture.rs"]
 mod run_fixture;
-use run_fixture::{request,branch_request};
+use run_fixture::{branch_request, request};
 
 #[test]
 fn direct_library_executes_finite_branching_native_run_without_stdio_or_children() {

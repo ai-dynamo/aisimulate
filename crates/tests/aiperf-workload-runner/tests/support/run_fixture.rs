@@ -3,7 +3,7 @@
 
 //! Complete native run inputs shared by direct and stdio proofs.
 
-use serde_json::{Value,json};
+use serde_json::{Value, json};
 
 pub fn request(directory: &std::path::Path) -> Value {
     let mut cfg = aiperf_config::model::BenchmarkConfig::default();
@@ -99,4 +99,3 @@ pub fn branch_request(directory: &std::path::Path) -> String {
     dataset.records = Some(serde_json::value::RawValue::from_string(raw.into()).unwrap());
     serde_json::to_string(&native).unwrap()
 }
-

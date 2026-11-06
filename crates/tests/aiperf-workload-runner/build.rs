@@ -38,7 +38,11 @@ fn revision(path: &Path) -> String {
         && let Some(file) = git(path, &["rev-parse", "--git-path", &reference])
     {
         let file = PathBuf::from(file);
-        let file = if file.is_absolute() { file } else { path.join(file) };
+        let file = if file.is_absolute() {
+            file
+        } else {
+            path.join(file)
+        };
         println!("cargo:rerun-if-changed={}", file.display());
     }
     if let Some(root) = git(path, &["rev-parse", "--show-toplevel"]) {
@@ -69,23 +73,57 @@ fn main() {
         .find(|line| line.starts_with("aiperf-config ="))
         .and_then(|line| line.split('"').nth(1));
     let aiperf = dependency.map(|path| package.join(path));
-    let owner = aiperf.as_ref().expect("AIPerf source dependency is required").ancestors().nth(3).expect("config crate belongs to AIPerf root");
+    let owner = aiperf
+        .as_ref()
+        .expect("AIPerf source dependency is required")
+        .ancestors()
+        .nth(3)
+        .expect("config crate belongs to AIPerf root");
     let mut modules = String::new();
-    for name in ["simple_execution", "simple_execution_graph", "simple_execution_agentx", "simple_execution_cancel", "simple_execution_phases", "simple_execution_branches", "simple_execution_sources", "simple_execution_capture", "simple_execution_anchors", "simple_execution_credit", "simple_execution_multimodal"] {
-        let file = owner.join("crates/engine/simulate/tests/integration").join(format!("{name}.rs")).canonicalize().expect("shared semantic suite exists");
-        println!("cargo:rerun-if-changed={}",file.display());
-        modules.push_str(&format!("#[path = {file:?}]\nmod {name};\n"));
-    }
-    for (name,relative) in [
-        ("simple_execution_binding","crates/engine/simulate/tests/support/simple_execution_binding.rs"),
-        ("agentx_join_deadline_e2e","crates/engine/phase/tests/integration/agentx_join_deadline_e2e.rs"),
-        ("common","crates/engine/phase/tests/support/common.rs"),
+    for name in [
+        "simple_execution",
+        "simple_execution_graph",
+        "simple_execution_agentx",
+        "simple_execution_cancel",
+        "simple_execution_phases",
+        "simple_execution_branches",
+        "simple_execution_sources",
+        "simple_execution_capture",
+        "simple_execution_anchors",
+        "simple_execution_credit",
+        "simple_execution_multimodal",
     ] {
-        let file = owner.join(relative).canonicalize().expect("shared semantic support exists");
-        println!("cargo:rerun-if-changed={}",file.display());
+        let file = owner
+            .join("crates/engine/simulate/tests/integration")
+            .join(format!("{name}.rs"))
+            .canonicalize()
+            .expect("shared semantic suite exists");
+        println!("cargo:rerun-if-changed={}", file.display());
         modules.push_str(&format!("#[path = {file:?}]\nmod {name};\n"));
     }
-    std::fs::write(PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("agentx_semantics_modules.rs"),modules).expect("write semantic module attachment manifest");
+    for (name, relative) in [
+        (
+            "simple_execution_binding",
+            "crates/engine/simulate/tests/support/simple_execution_binding.rs",
+        ),
+        (
+            "agentx_join_deadline_e2e",
+            "crates/engine/phase/tests/integration/agentx_join_deadline_e2e.rs",
+        ),
+        ("common", "crates/engine/phase/tests/support/common.rs"),
+    ] {
+        let file = owner
+            .join(relative)
+            .canonicalize()
+            .expect("shared semantic support exists");
+        println!("cargo:rerun-if-changed={}", file.display());
+        modules.push_str(&format!("#[path = {file:?}]\nmod {name};\n"));
+    }
+    std::fs::write(
+        PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("agentx_semantics_modules.rs"),
+        modules,
+    )
+    .expect("write semantic module attachment manifest");
     let ais = revision(&package);
     let upstream = aiperf
         .as_ref()

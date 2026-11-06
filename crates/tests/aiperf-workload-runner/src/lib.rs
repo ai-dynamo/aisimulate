@@ -39,7 +39,13 @@ pub fn execute_with_engine_factory(
     factory: &aisimulate_core::engine::EngineFactory,
     admission_capacity: usize,
 ) -> anyhow::Result<serde_json::Value> {
-    workload::execute(run,cancellation,observer,None,Some((factory,admission_capacity)))
+    workload::execute(
+        run,
+        cancellation,
+        observer,
+        None,
+        Some((factory, admission_capacity)),
+    )
 }
 
 /// Opt-in executable-boundary instrumentation, separate from ordinary execution.

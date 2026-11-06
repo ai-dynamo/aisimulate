@@ -11,9 +11,11 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, ensure};
 
-use crate::{ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
-    ForwardPassPerfDiagnostics, ForwardPassPerfProvenance, ScheduledRequestMetrics};
 use super::{IterationMs, MixedPassMs, PrefillTotals, RankWork, TimingModel, VisionShape};
+use crate::{
+    ForwardPassMetrics, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassPerfProvenance, ScheduledRequestMetrics,
+};
 
 /// A pinned canonical estimator over actual scheduled rank work.
 ///
@@ -33,7 +35,11 @@ impl CanonicalTimingModel {
         #[cfg(feature = "python")]
         crate::python::register_embedded_runtime()?;
         let model = ForwardPassPerfModel::best_available(config)?;
-        let config = model.provenance().ok_or_else(|| anyhow!("canonical model omitted resolved provenance"))?.config.clone();
+        let config = model
+            .provenance()
+            .ok_or_else(|| anyhow!("canonical model omitted resolved provenance"))?
+            .config
+            .clone();
         Ok(Arc::new(Self { model, config }))
     }
 
@@ -47,56 +53,100 @@ impl CanonicalTimingModel {
     ) -> Result<(Arc<Self>, crate::KvCacheEstimate)> {
         validate_supported_identity(&config)?;
         validate_memory_topology(&memory)?;
-        ensure!(memory.engine.model_name == config.model
-            && memory.engine.system_name == config.system
-            && memory.engine.backend == config.backend
-            && memory.engine.backend_version == config.backend_version
-            && memory.engine.parallel.tp_size == config.tp
-            && memory.engine.parallel.pp_size == config.pp
-            && memory.engine.parallel.attention_dp_size.unwrap_or(1) == config.attention_dp,
-            "memory request conflicts with canonical timing identity");
-        ensure!(!memory.options.allow_naive_fallback && !memory.options.allow_hf_config_download,
-            "canonical GPU geometry requires native memory estimation without heuristic fallback or downloads");
+        ensure!(
+            memory.engine.model_name == config.model
+                && memory.engine.system_name == config.system
+                && memory.engine.backend == config.backend
+                && memory.engine.backend_version == config.backend_version
+                && memory.engine.parallel.tp_size == config.tp
+                && memory.engine.parallel.pp_size == config.pp
+                && memory.engine.parallel.attention_dp_size.unwrap_or(1) == config.attention_dp,
+            "memory request conflicts with canonical timing identity"
+        );
+        ensure!(
+            !memory.options.allow_naive_fallback && !memory.options.allow_hf_config_download,
+            "canonical GPU geometry requires native memory estimation without heuristic fallback or downloads"
+        );
         for (name, timing, memory_dtype) in [
-            ("weights", config.gemm_quant_mode.as_ref(), memory.engine.quantization.weight_dtype.as_ref()),
-            ("attention", config.fmha_quant_mode.as_ref(), memory.engine.quantization.activation_dtype.as_ref()),
-            ("KV cache", config.kvcache_quant_mode.as_ref(), memory.engine.quantization.kv_cache_dtype.as_ref()),
+            (
+                "weights",
+                config.gemm_quant_mode.as_ref(),
+                memory.engine.quantization.weight_dtype.as_ref(),
+            ),
+            (
+                "attention",
+                config.fmha_quant_mode.as_ref(),
+                memory.engine.quantization.activation_dtype.as_ref(),
+            ),
+            (
+                "KV cache",
+                config.kvcache_quant_mode.as_ref(),
+                memory.engine.quantization.kv_cache_dtype.as_ref(),
+            ),
         ] {
-            let timing = timing.ok_or_else(|| anyhow!("canonical GPU geometry requires explicit {name} precision"))?;
-            let memory_dtype = memory_dtype.ok_or_else(|| anyhow!("native memory request requires explicit {name} precision"))?;
-            ensure!(serde_json::to_value(memory_dtype)?.as_str() == Some(timing.as_str()),
-                "memory precision conflicts with canonical timing identity for {name}");
+            let timing = timing.ok_or_else(|| {
+                anyhow!("canonical GPU geometry requires explicit {name} precision")
+            })?;
+            let memory_dtype = memory_dtype.ok_or_else(|| {
+                anyhow!("native memory request requires explicit {name} precision")
+            })?;
+            ensure!(
+                serde_json::to_value(memory_dtype)?.as_str() == Some(timing.as_str()),
+                "memory precision conflicts with canonical timing identity for {name}"
+            );
         }
-        ensure!(config.systems_paths.len() == 1 && memory.engine.systems_path.as_ref() == config.systems_paths.first(),
-            "native memory and timing must share the same explicit systems root");
+        ensure!(
+            config.systems_paths.len() == 1
+                && memory.engine.systems_path.as_ref() == config.systems_paths.first(),
+            "native memory and timing must share the same explicit systems root"
+        );
         let model = Self::new(config)?;
         let geometry = crate::perfmodel::memory::estimate_kv_cache(memory)?;
-        ensure!(geometry.source == crate::EstimateSource::Native,
-            "canonical GPU geometry requires the native backend memory model");
+        ensure!(
+            geometry.source == crate::EstimateSource::Native,
+            "canonical GPU geometry requires the native backend memory model"
+        );
         Ok((model, geometry))
     }
 
     /// Immutable resolved estimator identity and source selection.
-    pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> { self.model.provenance() }
+    pub fn provenance(&self) -> Option<&ForwardPassPerfProvenance> {
+        self.model.provenance()
+    }
 
     /// Canonical readiness and estimator diagnostics, never synthetic evidence.
-    pub fn diagnostics(&self) -> ForwardPassPerfDiagnostics { self.model.diagnostics() }
+    pub fn diagnostics(&self) -> ForwardPassPerfDiagnostics {
+        self.model.diagnostics()
+    }
 
     /// Profile-backed cache budget when the canonical identity owns resource facts.
     /// Op-level-only identities without profile resource facts fail explicitly.
-    pub fn estimate_cache_budget(&self, request: &crate::perfmodel::FpmCacheBudgetRequest) -> Result<crate::perfmodel::FpmCacheBudget> {
+    pub fn estimate_cache_budget(
+        &self,
+        request: &crate::perfmodel::FpmCacheBudgetRequest,
+    ) -> Result<crate::perfmodel::FpmCacheBudget> {
         Ok(self.config.estimate_cache_budget(request)?)
     }
 
     fn query(&self, ranks: &[ForwardPassMetrics]) -> Result<f64> {
         let duration = self.model.estimate_forward_pass_time_ms(ranks)?
             .ok_or_else(|| anyhow!("canonical performance model has no ready calibrated estimate for this scheduled pass"))?;
-        ensure!(duration.is_finite() && duration >= 0.0, "canonical performance model returned invalid duration");
+        ensure!(
+            duration.is_finite() && duration >= 0.0,
+            "canonical performance model returned invalid duration"
+        );
         Ok(duration)
     }
 
-    fn single(&self, prefill: Option<PrefillTotals>, decode: Option<(usize, usize)>) -> Result<f64> {
-        ensure!(self.config.attention_dp == 1, "phase-only timing cannot represent an attention-DP group");
+    fn single(
+        &self,
+        prefill: Option<PrefillTotals>,
+        decode: Option<(usize, usize)>,
+    ) -> Result<f64> {
+        ensure!(
+            self.config.attention_dp == 1,
+            "phase-only timing cannot represent an attention-DP group"
+        );
         let mut scheduled = ScheduledRequestMetrics::default();
         if let Some(prefill) = prefill {
             scheduled.num_prefill_requests = u32::try_from(prefill.batch_size)?;
@@ -107,79 +157,182 @@ impl CanonicalTimingModel {
             scheduled.num_decode_requests = u32::try_from(batch)?;
             scheduled.sum_decode_kv_tokens = u32::try_from(kv)?;
         }
-        self.query(&[ForwardPassMetrics { scheduled_requests: scheduled, ..Default::default() }])
+        self.query(&[ForwardPassMetrics {
+            scheduled_requests: scheduled,
+            ..Default::default()
+        }])
     }
 }
 
 fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()> {
-    ensure!(config.worker_type == crate::ForwardPassWorkerType::Aggregated,
-        "canonical Engine timing bridge supports aggregated worker role only");
+    ensure!(
+        config.worker_type == crate::ForwardPassWorkerType::Aggregated,
+        "canonical Engine timing bridge supports aggregated worker role only"
+    );
     ensure!(config.pp == 1, "canonical Engine timing supports pp=1 only");
-    ensure!(config.cp_size.unwrap_or(1) == 1 && config.dcp.unwrap_or(1) == 1,
-        "canonical Engine timing bridge does not support CP or DCP");
-    ensure!(config.moe_tp_size.is_none() && config.moe_ep_size.is_none()
-        && config.moe_quant_mode.is_none() && config.moe_backend.is_none()
-        && config.moe_kernel_source.is_none() && !config.enable_eplb && config.wideep_num_slots.is_none(),
-        "canonical Engine timing bridge does not support explicit MoE topology or kernel controls");
-    ensure!(config.nextn == 0 && config.speculation.is_none(), "canonical Engine timing bridge does not support speculative decoding");
-    ensure!(config.encoder_parallel.is_none(), "canonical Engine timing bridge does not support vision; use the vision-aware provider");
-    ensure!(!config.decoder_replay, "canonical Engine timing bridge does not support decoder replay");
+    ensure!(
+        config.cp_size.unwrap_or(1) == 1 && config.dcp.unwrap_or(1) == 1,
+        "canonical Engine timing bridge does not support CP or DCP"
+    );
+    ensure!(
+        config.moe_tp_size.is_none()
+            && config.moe_ep_size.is_none()
+            && config.moe_quant_mode.is_none()
+            && config.moe_backend.is_none()
+            && config.moe_kernel_source.is_none()
+            && !config.enable_eplb
+            && config.wideep_num_slots.is_none(),
+        "canonical Engine timing bridge does not support explicit MoE topology or kernel controls"
+    );
+    ensure!(
+        config.nextn == 0 && config.speculation.is_none(),
+        "canonical Engine timing bridge does not support speculative decoding"
+    );
+    ensure!(
+        config.encoder_parallel.is_none(),
+        "canonical Engine timing bridge does not support vision; use the vision-aware provider"
+    );
+    ensure!(
+        !config.decoder_replay,
+        "canonical Engine timing bridge does not support decoder replay"
+    );
     Ok(())
 }
 
 fn validate_memory_topology(memory: &crate::KvCacheEstimateRequest) -> Result<()> {
-    ensure!(memory.engine.extra.get("worker_type").is_none_or(|role| role == "aggregated"),
-        "canonical native memory geometry supports aggregated worker role only");
+    ensure!(
+        memory
+            .engine
+            .extra
+            .get("worker_type")
+            .is_none_or(|role| role == "aggregated"),
+        "canonical native memory geometry supports aggregated worker role only"
+    );
     let parallel = &memory.engine.parallel;
-    ensure!(parallel.cp_size.unwrap_or(1) == 1 && parallel.dcp_size.unwrap_or(1) == 1,
-        "canonical native memory geometry does not support CP or DCP");
-    ensure!(parallel.moe_tp_size.is_none() && parallel.moe_ep_size.is_none()
-        && memory.engine.quantization.moe_dtype.is_none(),
-        "canonical native memory geometry does not support explicit MoE topology or precision");
-    ensure!(memory.engine.speculative.as_ref().is_none_or(|spec| spec.nextn.unwrap_or(0) == 0)
-        && !memory.engine.decoder_replay,
-        "canonical native memory geometry does not support speculation or decoder replay");
+    ensure!(
+        parallel.cp_size.unwrap_or(1) == 1 && parallel.dcp_size.unwrap_or(1) == 1,
+        "canonical native memory geometry does not support CP or DCP"
+    );
+    ensure!(
+        parallel.moe_tp_size.is_none()
+            && parallel.moe_ep_size.is_none()
+            && memory.engine.quantization.moe_dtype.is_none(),
+        "canonical native memory geometry does not support explicit MoE topology or precision"
+    );
+    ensure!(
+        memory
+            .engine
+            .speculative
+            .as_ref()
+            .is_none_or(|spec| spec.nextn.unwrap_or(0) == 0)
+            && !memory.engine.decoder_replay,
+        "canonical native memory geometry does not support speculation or decoder replay"
+    );
     Ok(())
 }
 
 impl TimingModel for CanonicalTimingModel {
-    fn predict_prefill_ms(&self, batch_size: usize, mean_isl: usize, mean_prefix: usize) -> Result<f64> {
-        let new = mean_isl.checked_sub(mean_prefix).ok_or_else(|| anyhow!("prefill prefix exceeds input"))?;
-        self.predict_prefill_totals_ms(batch_size,
-            batch_size.checked_mul(new).ok_or_else(|| anyhow!("prefill tokens overflow"))?,
-            batch_size.checked_mul(mean_prefix).ok_or_else(|| anyhow!("prefill prefix overflow"))?)
+    fn predict_prefill_ms(
+        &self,
+        batch_size: usize,
+        mean_isl: usize,
+        mean_prefix: usize,
+    ) -> Result<f64> {
+        let new = mean_isl
+            .checked_sub(mean_prefix)
+            .ok_or_else(|| anyhow!("prefill prefix exceeds input"))?;
+        self.predict_prefill_totals_ms(
+            batch_size,
+            batch_size
+                .checked_mul(new)
+                .ok_or_else(|| anyhow!("prefill tokens overflow"))?,
+            batch_size
+                .checked_mul(mean_prefix)
+                .ok_or_else(|| anyhow!("prefill prefix overflow"))?,
+        )
     }
 
-    fn predict_prefill_totals_ms(&self, batch_size: usize, new_tokens: usize, prefix_tokens: usize) -> Result<f64> {
-        self.single(Some(PrefillTotals { batch_size, new_tokens, prefix_tokens }), None)
+    fn predict_prefill_totals_ms(
+        &self,
+        batch_size: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
+    ) -> Result<f64> {
+        self.single(
+            Some(PrefillTotals {
+                batch_size,
+                new_tokens,
+                prefix_tokens,
+            }),
+            None,
+        )
     }
 
-    fn predict_decode_ms(&self, batch_size: usize, active_kv_tokens: usize, mean_context_length: usize, total_kv_tokens: usize) -> Result<f64> {
+    fn predict_decode_ms(
+        &self,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        mean_context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<f64> {
         let kv = if self.config.estimation_mode == crate::EstimationMode::FpmInterpolation {
-            active_kv_tokens.checked_sub(batch_size).ok_or_else(|| anyhow!("decode context excludes current input"))?.min(total_kv_tokens)
+            active_kv_tokens
+                .checked_sub(batch_size)
+                .ok_or_else(|| anyhow!("decode context excludes current input"))?
+                .min(total_kv_tokens)
         } else {
-            batch_size.checked_mul(mean_context_length).ok_or_else(|| anyhow!("decode KV overflow"))?
+            batch_size
+                .checked_mul(mean_context_length)
+                .ok_or_else(|| anyhow!("decode KV overflow"))?
         };
         self.single(None, Some((batch_size, kv)))
     }
 
-    fn predict_mixed_pass_ms(&self, prefill: PrefillTotals, batch_size: usize, active_kv_tokens: usize, mean_context_length: usize, total_kv_tokens: usize) -> Result<Option<MixedPassMs>> {
-        let prefill_ms = self.predict_prefill_totals_ms(prefill.batch_size, prefill.new_tokens, prefill.prefix_tokens)?;
+    fn predict_mixed_pass_ms(
+        &self,
+        prefill: PrefillTotals,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        mean_context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        let prefill_ms = self.predict_prefill_totals_ms(
+            prefill.batch_size,
+            prefill.new_tokens,
+            prefill.prefix_tokens,
+        )?;
         let kv = if self.config.estimation_mode == crate::EstimationMode::FpmInterpolation {
-            active_kv_tokens.checked_sub(batch_size).ok_or_else(|| anyhow!("decode context excludes current input"))?.min(total_kv_tokens)
+            active_kv_tokens
+                .checked_sub(batch_size)
+                .ok_or_else(|| anyhow!("decode context excludes current input"))?
+                .min(total_kv_tokens)
         } else {
-            batch_size.checked_mul(mean_context_length).ok_or_else(|| anyhow!("decode KV overflow"))?
+            batch_size
+                .checked_mul(mean_context_length)
+                .ok_or_else(|| anyhow!("decode KV overflow"))?
         };
         let total = self.single(Some(prefill), Some((batch_size, kv)))?;
-        ensure!(total >= prefill_ms, "canonical mixed timing is less than prefill timing");
-        Ok(Some(MixedPassMs { prefill_ms, decode_ms: total - prefill_ms }))
+        ensure!(
+            total >= prefill_ms,
+            "canonical mixed timing is less than prefill timing"
+        );
+        Ok(Some(MixedPassMs {
+            prefill_ms,
+            decode_ms: total - prefill_ms,
+        }))
     }
 
     fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
-        ensure!(ranks.len() == self.config.attention_dp as usize, "scheduled rank count conflicts with canonical attention_dp identity");
+        ensure!(
+            ranks.len() == self.config.attention_dp as usize,
+            "scheduled rank count conflicts with canonical attention_dp identity"
+        );
         let mut queries = Vec::with_capacity(ranks.len());
         for (position, rank) in ranks.iter().enumerate() {
-            ensure!(rank.dp_rank as usize == position, "scheduled ranks must be complete and ordered");
+            ensure!(
+                rank.dp_rank as usize == position,
+                "scheduled ranks must be complete and ordered"
+            );
             let mut scheduled = ScheduledRequestMetrics::default();
             if let Some(prefill) = &rank.prefill {
                 scheduled.num_prefill_requests = u32::try_from(prefill.totals.batch_size)?;
@@ -187,16 +340,30 @@ impl TimingModel for CanonicalTimingModel {
                 scheduled.sum_prefill_kv_tokens = u32::try_from(prefill.totals.prefix_tokens)?;
             }
             if let Some(decode) = &rank.decode {
-                ensure!(decode.verify_width == 1, "canonical timing bridge does not support speculative scheduled work");
+                ensure!(
+                    decode.verify_width == 1,
+                    "canonical timing bridge does not support speculative scheduled work"
+                );
                 scheduled.num_decode_requests = u32::try_from(decode.batch_size)?;
                 let kv = if self.config.estimation_mode == crate::EstimationMode::FpmInterpolation {
-                    decode.active_kv_tokens.checked_sub(decode.batch_size).ok_or_else(|| anyhow!("decode context excludes current input"))?.min(decode.kv_bound_tokens)
+                    decode
+                        .active_kv_tokens
+                        .checked_sub(decode.batch_size)
+                        .ok_or_else(|| anyhow!("decode context excludes current input"))?
+                        .min(decode.kv_bound_tokens)
                 } else {
-                    decode.batch_size.checked_mul(decode.mean_context_length).ok_or_else(|| anyhow!("decode KV overflow"))?
+                    decode
+                        .batch_size
+                        .checked_mul(decode.mean_context_length)
+                        .ok_or_else(|| anyhow!("decode KV overflow"))?
                 };
                 scheduled.sum_decode_kv_tokens = u32::try_from(kv)?;
             }
-            queries.push(ForwardPassMetrics { dp_rank: rank.dp_rank, scheduled_requests: scheduled, ..Default::default() });
+            queries.push(ForwardPassMetrics {
+                dp_rank: rank.dp_rank,
+                scheduled_requests: scheduled,
+                ..Default::default()
+            });
         }
         // Preserve the entire per-rank list: the canonical estimator owns DP
         // reduction and pricing. Never average or maximize before querying it.
@@ -204,10 +371,14 @@ impl TimingModel for CanonicalTimingModel {
     }
 
     fn predict_vision_ms(&self, _shapes: &[VisionShape]) -> Result<Option<f64>> {
-        Err(anyhow!("canonical text timing bridge cannot price vision work"))
+        Err(anyhow!(
+            "canonical text timing bridge cannot price vision work"
+        ))
     }
 
-    fn reset_evidence(&self) -> Result<()> { Ok(()) }
+    fn reset_evidence(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -215,8 +386,12 @@ mod tests {
     use super::*;
 
     fn config() -> ForwardPassPerfModelConfig {
-        ForwardPassPerfModelConfig::new("model", "system", crate::BackendKind::Vllm,
-            crate::ForwardPassWorkerType::Aggregated)
+        ForwardPassPerfModelConfig::new(
+            "model",
+            "system",
+            crate::BackendKind::Vllm,
+            crate::ForwardPassWorkerType::Aggregated,
+        )
     }
 
     #[test]
@@ -252,15 +427,25 @@ mod tests {
         assert!(validate_memory_topology(&memory).is_ok());
         for role in ["prefill", "decode", "unknown"] {
             let mut altered = memory.clone();
-            altered.engine.extra.insert("worker_type".into(), role.into());
+            altered
+                .engine
+                .extra
+                .insert("worker_type".into(), role.into());
             assert!(validate_memory_topology(&altered).is_err());
         }
         let mut aggregated = memory.clone();
-        aggregated.engine.extra.insert("worker_type".into(), "aggregated".into());
+        aggregated
+            .engine
+            .extra
+            .insert("worker_type".into(), "aggregated".into());
         assert!(validate_memory_topology(&aggregated).is_ok());
-        for (field, value) in [("cp_size", serde_json::json!(2)), ("dcp_size", serde_json::json!(2)),
-            ("moe_tp_size", serde_json::json!(2)), ("moe_ep_size", serde_json::json!(2)),
-            ("moe_dtype", serde_json::json!("fp8"))] {
+        for (field, value) in [
+            ("cp_size", serde_json::json!(2)),
+            ("dcp_size", serde_json::json!(2)),
+            ("moe_tp_size", serde_json::json!(2)),
+            ("moe_ep_size", serde_json::json!(2)),
+            ("moe_dtype", serde_json::json!("fp8")),
+        ] {
             let mut wire = base.clone();
             wire["engine"][field] = value;
             let memory = serde_json::from_value(wire).unwrap();

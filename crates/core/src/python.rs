@@ -4844,7 +4844,8 @@ pub(crate) fn register_embedded_runtime() -> anyhow::Result<()> {
         _runtime(&module)?;
         modules.set_item("aisimulate._runtime", module)?;
         Ok(())
-    }).map_err(|error| anyhow::anyhow!("registering embedded AISimulate native runtime: {error}"))
+    })
+    .map_err(|error| anyhow::anyhow!("registering embedded AISimulate native runtime: {error}"))
 }
 
 /// AISimulate native runtime module.

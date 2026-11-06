@@ -31,6 +31,7 @@ pub(crate) use host_offload::{
 pub use launch::EngineLaunchConfig;
 
 pub use belady::KvEvictionPolicy;
+pub use canonical_timing::CanonicalTimingModel;
 pub(crate) use common::hashing::{
     XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
 };
@@ -55,7 +56,6 @@ pub use protocol::{
     StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
-pub use canonical_timing::CanonicalTimingModel;
 pub use scheduler::SchedulerRank;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;

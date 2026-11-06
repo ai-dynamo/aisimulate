@@ -186,9 +186,10 @@ impl ModelExecution {
         if max_sequences == 0 || max_sequences > Semaphore::MAX_PERMITS {
             return Err(ExecutionError::Failed("invalid admission capacity".into()));
         }
-        let engine = factory.build(EngineIdentity::new(0), NonZeroU32::MIN)
-            .map_err(|error|ExecutionError::Failed(error.to_string()))?;
-        Ok(Self::with_capacity(clock,engine,max_sequences))
+        let engine = factory
+            .build(EngineIdentity::new(0), NonZeroU32::MIN)
+            .map_err(|error| ExecutionError::Failed(error.to_string()))?;
+        Ok(Self::with_capacity(clock, engine, max_sequences))
     }
 
     /// Bind a caller-built engine with capacity-one application admission.
