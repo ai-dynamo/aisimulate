@@ -66,12 +66,14 @@ quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
 projections and its shared-expert projections are static per-tensor FP8, and
 its KV cache is FP8. AISimulate prices those projections as `fp8_static`, the
 routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
-GEMMs in BF16, as the export stores them. Two lanes are approximations. The
-export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
-AISimulate prices them with the other GDN projections as `fp8_static`. The
-export also keeps its multi-token prediction (MTP) layer in BF16. With
-`nextn` above zero, AISimulate scales the decode graph by `(nextn + L) / L`
-for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
+GEMMs in BF16, as the export stores them. The export keeps the GDN
+`in_proj_a` and `in_proj_b` projections in BF16, and AISimulate prices their
+fused `in_proj_ba` GEMM in BF16 too. The bundled Qwen3.6 NVFP4 exports leave
+the same two projections out of their quantized layers, so that GEMM is BF16
+for them as well. One lane is an approximation. The export keeps its
+multi-token prediction (MTP) layer in BF16. With `nextn` above zero,
+AISimulate scales the decode graph by `(nextn + L) / L` for `L` decoder
+layers, so it prices that layer with the decoder-layer lanes.
 
 ## Published FPE matrix
 
