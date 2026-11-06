@@ -200,22 +200,36 @@ fn validate_memory_precision(
 ) -> Result<()> {
     let quant = &memory.engine.quantization;
     for (name, timing, memory_dtype) in [
-        ("weights", config.gemm_quant_mode.as_ref(), quant.weight_dtype.as_ref()),
-        ("attention", config.fmha_quant_mode.as_ref(), quant.activation_dtype.as_ref()),
-        ("KV cache", config.kvcache_quant_mode.as_ref(), quant.kv_cache_dtype.as_ref()),
-        ("MoE", config.moe_quant_mode.as_ref(), quant.moe_dtype.as_ref()),
+        (
+            "weights",
+            config.gemm_quant_mode.as_ref(),
+            quant.weight_dtype.as_ref(),
+        ),
+        (
+            "attention",
+            config.fmha_quant_mode.as_ref(),
+            quant.activation_dtype.as_ref(),
+        ),
+        (
+            "KV cache",
+            config.kvcache_quant_mode.as_ref(),
+            quant.kv_cache_dtype.as_ref(),
+        ),
+        (
+            "MoE",
+            config.moe_quant_mode.as_ref(),
+            quant.moe_dtype.as_ref(),
+        ),
     ] {
         // Both absent preserves the canonical owner's MoE default. An explicit
         // choice on either side must never silently inherit the other's default.
         if name == "MoE" && timing.is_none() && memory_dtype.is_none() {
             continue;
         }
-        let timing = timing.ok_or_else(|| {
-            anyhow!("canonical GPU geometry requires explicit {name} precision")
-        })?;
-        let memory_dtype = memory_dtype.ok_or_else(|| {
-            anyhow!("native memory request requires explicit {name} precision")
-        })?;
+        let timing = timing
+            .ok_or_else(|| anyhow!("canonical GPU geometry requires explicit {name} precision"))?;
+        let memory_dtype = memory_dtype
+            .ok_or_else(|| anyhow!("native memory request requires explicit {name} precision"))?;
         ensure!(
             serde_json::to_value(memory_dtype)?.as_str() == Some(timing.as_str()),
             "memory precision conflicts with canonical timing identity for {name}"
@@ -507,7 +521,8 @@ mod tests {
                 "weight_dtype":"fp8","activation_dtype":"bfloat16","kv_cache_dtype":"fp8"},
             "max_num_tokens":128,"max_batch_size":2,"kv_cache_memory_fraction":{"OfTotal":0.9},
             "options":{"allow_naive_fallback":false,"allow_hf_config_download":false}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut value = config();
         value.gemm_quant_mode = Some("fp8".into());
         value.fmha_quant_mode = Some("bfloat16".into());
@@ -516,9 +531,15 @@ mod tests {
         assert!(validate_memory_precision(&value, &memory).is_ok());
         for precision in [crate::DataType::Bfloat16, crate::DataType::Fp8] {
             let mut candidate = memory.clone();
-            candidate.engine.quantization.moe_dtype = Some(precision);
+            candidate.engine.quantization.moe_dtype = Some(precision.clone());
             assert!(validate_memory_precision(&value, &candidate).is_err());
-            value.moe_quant_mode = Some(serde_json::to_value(precision).unwrap().as_str().unwrap().into());
+            value.moe_quant_mode = Some(
+                serde_json::to_value(&precision)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .into(),
+            );
             assert!(validate_memory_precision(&value, &candidate).is_ok());
             assert!(validate_memory_precision(&value, &memory).is_err());
             candidate.engine.quantization.moe_dtype = Some(if precision == crate::DataType::Fp8 {
