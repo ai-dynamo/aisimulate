@@ -109,6 +109,12 @@ fn capture_finite_branch_runtime_values() {
     ).unwrap();
     assert_ne!(report["backend_report"], Value::Null);
     std::fs::write(output_root.join("backend-report.json"), backend_report_bytes).unwrap();
+    let mut per_request_bytes = Vec::new();
+    for record in report["backend_per_request"].as_array().expect("backend request population") {
+        serde_json::to_writer(&mut per_request_bytes, record).unwrap();
+        per_request_bytes.push(b'\n');
+    }
+    std::fs::write(output_root.join("backend-per-request.jsonl"), per_request_bytes).unwrap();
     std::fs::write(output_root.join("run-request.json"), raw.as_bytes()).unwrap();
     std::fs::write(output_root.join("model-manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     std::fs::write(output_root.join("aisim-runtime-values-raw.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
