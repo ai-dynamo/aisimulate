@@ -633,6 +633,63 @@ fn native_agentx_cancellation_timer_wins_first_output_tie() {
     assert_native_cancellation(10.0);
 }
 
+#[test]
+fn phase_grace_drop_retains_cancellation_in_typed_native_records() {
+    for topology in [ReplayTopology::aggregated(1), disaggregated()] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frame = run_fixture::request(directory.path());
+        frame["run"]["cfg"]["finite_replay"] = json!(false);
+        frame["run"]["cfg"]["phases"][0]["duration"] = json!(0.004);
+        frame["run"]["cfg"]["phases"][0]["grace_period"] = json!(0.001);
+        let run = native_run(&frame.to_string());
+        let (participant, handle) =
+            aisim_aiperf_workload_runner::participant_adapter::native_hosted(
+                &run,
+                aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::TraceHashes,
+                RunCancellation::new(),
+                Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
+                Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(IDENTITY_SEED)),
+            )
+            .unwrap();
+        let mut replay = spec(topology);
+        let mut engine: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+        engine.rank.timing_model = TimingModelConfig::Fixed {
+            prefill_ms: 10.0,
+            decode_ms: 10.0,
+        };
+        replay.engine = serde_json::to_value(engine).unwrap();
+        let backend = Replayer::new(replay, ReplayEngineFactory::new())
+            .unwrap()
+            .with_runtime_input(ReplayRuntimeInput::External(Box::new(participant)))
+            .with_capture_options(ReplayCaptureOptions {
+                capture_per_request: true,
+                ..Default::default()
+            })
+            .run()
+            .unwrap();
+        let hosted = handle.into_typed_report().unwrap();
+        assert_eq!(backend.per_request.len(), 1);
+        let physical = &backend.per_request[0];
+        assert_eq!(physical.terminal_status, ReplayTerminalStatus::Canceled);
+        assert_eq!(physical.terminal_time_ms, 5.0);
+        let records: Vec<_> = hosted
+            .records
+            .iter()
+            .flat_map(|phase| &phase.records)
+            .collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0.to_string(), physical.uuid);
+        let native = &records[0].1;
+        assert!(
+            native.canceled,
+            "phase task drop must not become an unknown failed record"
+        );
+        assert!(!native.errored);
+        assert_eq!(native.end_ns, 5_000_000);
+        assert_eq!(native.token_frame_count, 0);
+    }
+}
+
 /// The scheduler's typed cause, not the generic Rejected status, controls both
 /// AgentX's nonfinal-return stop and native records-side overflow accounting.
 #[test]

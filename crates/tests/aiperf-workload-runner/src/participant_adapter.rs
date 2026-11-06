@@ -147,11 +147,14 @@ impl ParticipantExecution {
     /// Cancel intent for a request whose AIPerf future is ending early. Only a
     /// still-live engine request needs a native cancel; facts that race it are
     /// tolerated through `retired`.
-    fn retire(&self, id: u128) {
+    fn retire(&self, id: u128) -> bool {
         let mut state = self.state.borrow_mut();
         if state.live.remove(&id).is_some() {
             state.retired.insert(id);
             state.cancels.push(Uuid::from_u128(id));
+            true
+        } else {
+            false
         }
     }
 
@@ -185,11 +188,29 @@ impl ParticipantExecution {
 /// Retires the engine request if the AIPerf future ends before its terminal.
 struct RequestGuard<'a> {
     execution: &'a ParticipantExecution,
+    observer: &'a dyn RequestObserver,
     id: u128,
+    start_ns: i64,
 }
 impl Drop for RequestGuard<'_> {
     fn drop(&mut self) {
-        self.execution.retire(self.id);
+        if self.execution.retire(self.id) {
+            // A phase can drop its dispatch task rather than poll the canceled
+            // future to Ok(None). Publish the actual client cancellation before
+            // its NativeMetricsObserver is sealed; late backend cleanup facts
+            // remain tolerated by the retired identity. A settled operation has
+            // already left live state and must never be reclassified here.
+            let uuid = Uuid::from_u128(self.id);
+            let end_ns = self.execution.now();
+            self.observer.on_operation_settled(
+                uuid,
+                AiperfTerminal::Canceled,
+                self.start_ns,
+                end_ns,
+            );
+            self.observer
+                .on_terminal_at(uuid, AiperfTerminal::Canceled, end_ns);
+        }
     }
 }
 
@@ -264,7 +285,9 @@ impl Execution for ParticipantExecution {
             }
             let _guard = RequestGuard {
                 execution: self,
+                observer,
                 id,
+                start_ns,
             };
             let mut tokens = Vec::new();
             let mut last_content_ns = None;
