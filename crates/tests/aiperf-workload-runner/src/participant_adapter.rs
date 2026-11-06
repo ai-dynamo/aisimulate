@@ -517,10 +517,22 @@ impl AgentXParticipant {
             if self.flag.load(Ordering::SeqCst) {
                 continue;
             }
-            // Parked. A sleeper registered for an already-due instant fires now;
-            // a later one is reported through `next_wakeup_ms`.
-            if self.shared.clock.next_event_time() == Some(self.shared.clock.now_ns()) {
-                self.shared.clock.advance_to(self.shared.clock.now_ns());
+            // Distinct integer deadlines can share one host f64 timestamp. Drain
+            // the actual registered deadlines in that bucket before parking; an
+            // inverse conversion must not strand a sleeper one nanosecond ahead.
+            if let Some(deadline_ns) = self
+                .shared
+                .clock
+                .next_event_time()
+                .filter(|&ns| ns as f64 / 1_000_000.0 <= self.last_now_ms)
+            {
+                tracing::trace!(
+                    host_ms = self.last_now_ms,
+                    clock_ns = self.shared.clock.now_ns(),
+                    deadline_ns,
+                    "draining exact participant clock deadline in host timestamp bucket"
+                );
+                self.shared.clock.advance_to(deadline_ns);
                 continue;
             }
             break;
@@ -532,6 +544,20 @@ impl AgentXParticipant {
 /// Least integer ns whose forward conversion reaches `ms` (never runs early).
 fn ns_from_ms(ms: f64) -> Result<i64> {
     crate::model::deployment_deadline_ns(ms).map_err(|error| anyhow!("{error}"))
+}
+
+/// Preserve the exact registered instant when the host reaches its projection.
+/// The physical-event inverse selects the first ns in a floating-point bucket,
+/// which need not be the participant's own advertised integer deadline.
+fn participant_deadline_ns(clock: &SimClock, now_ms: f64) -> Result<i64> {
+    let mut now_ns = ns_from_ms(now_ms)?.max(clock.now_ns());
+    if let Some(deadline_ns) = clock
+        .next_event_time()
+        .filter(|&ns| ns as f64 / 1_000_000.0 <= now_ms)
+    {
+        now_ns = now_ns.max(deadline_ns);
+    }
+    Ok(now_ns)
 }
 
 impl WorkloadParticipant for AgentXParticipant {
@@ -546,12 +572,36 @@ impl WorkloadParticipant for AgentXParticipant {
     }
 
     fn advance_to(&mut self, now_ms: f64, _cluster_in_flight: usize) -> Result<ParticipantStep> {
-        let now_ns = ns_from_ms(now_ms)?;
+        let now_ns = participant_deadline_ns(&self.shared.clock, now_ms)?;
+        let was_ready = self.shared.result.borrow().is_some();
+        let previous_total = self.shared.execution.state.borrow().total;
+        tracing::trace!(
+            host_ms = now_ms,
+            clock_ns = self.shared.clock.now_ns(),
+            advance_ns = now_ns,
+            next_ns = ?self.shared.clock.next_event_time(),
+            scheduled_count = self.shared.clock.scheduled_count(),
+            live = self.shared.execution.state.borrow().live.len(),
+            total = previous_total,
+            result_ready = was_ready,
+            dirty = self.dirty,
+            woken = self.flag.load(Ordering::SeqCst),
+            "advancing native workload participant"
+        );
         self.last_now_ms = now_ms;
         self.dirty = false;
         self.shared.clock.advance_to(now_ns);
         self.pump()?;
         if matches!(&*self.shared.result.borrow(), Some(Err(_))) {
+            tracing::debug!(
+                host_ms = now_ms,
+                clock_ns = self.shared.clock.now_ns(),
+                next_ns = ?self.shared.clock.next_event_time(),
+                scheduled_count = self.shared.clock.scheduled_count(),
+                live = self.shared.execution.state.borrow().live.len(),
+                total = self.shared.execution.state.borrow().total,
+                "native workload participant failed"
+            );
             return Err(self.shared.result.borrow_mut().take().unwrap().unwrap_err());
         }
         let mut state = self.shared.execution.state.borrow_mut();
@@ -564,6 +614,26 @@ impl WorkloadParticipant for AgentXParticipant {
             submits.retain(|submit| submit.uuid != Some(*id));
             submits.len() == before
         });
+        if state.total != previous_total
+            || !submits.is_empty()
+            || !cancels.is_empty()
+            || self.shared.result.borrow().is_some() != was_ready
+        {
+            tracing::debug!(
+                host_ms = now_ms,
+                clock_ns = self.shared.clock.now_ns(),
+                next_ns = ?self.shared.clock.next_event_time(),
+                scheduled_count = self.shared.clock.scheduled_count(),
+                live = state.live.len(),
+                total = state.total,
+                submits = submits.len(),
+                cancels = cancels.len(),
+                result_ready = self.shared.result.borrow().is_some(),
+                dirty = self.dirty,
+                woken = self.flag.load(Ordering::SeqCst),
+                "native workload participant state changed"
+            );
+        }
         Ok(ParticipantStep { submits, cancels })
     }
 
@@ -730,6 +800,14 @@ pub fn native_hosted(
                 None,
             )
             .await;
+            tracing::debug!(
+                clock_ns = shared.clock.now_ns(),
+                next_ns = ?shared.clock.next_event_time(),
+                live = shared.execution.state.borrow().live.len(),
+                total = shared.execution.state.borrow().total,
+                success = outcome.is_ok(),
+                "native hosted phase task completed"
+            );
             *shared.result.borrow_mut() = Some(outcome);
         });
     }
@@ -747,4 +825,110 @@ pub fn native_hosted(
         },
         HostedRunHandle { shared },
     ))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/support/run_fixture.rs"]
+mod clock_test_fixture;
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn host_wakeup_preserves_exact_ns_at_r8_horizon() {
+        let horizon = 9_007_200_000_000_000_i64;
+        for deadline_ns in [123, 1_800_000_000_000, horizon - 1, horizon, horizon + 1] {
+            let clock = Rc::new(SimClock::new());
+            let mut sleep = clock.clone().sleep_until(deadline_ns);
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(sleep.as_mut().poll(&mut cx).is_pending());
+            let host_ms = deadline_ns as f64 / 1_000_000.0;
+            let advance_ns = participant_deadline_ns(&clock, host_ms).unwrap();
+            assert_eq!(advance_ns, deadline_ns, "host deadline {host_ms}ms");
+            clock.advance_to(advance_ns);
+            assert!(sleep.as_mut().poll(&mut cx).is_ready());
+            assert_eq!(clock.next_event_time(), None);
+        }
+        assert!(ns_from_ms(horizon as f64 / 1_000_000.0).unwrap() < horizon);
+    }
+
+    fn warmup_participant(directory: &std::path::Path) -> (AgentXParticipant, HostedRunHandle) {
+        let mut frame = clock_test_fixture::request(directory);
+        frame["run"]["cfg"]["finite_replay"] = serde_json::json!(false);
+        frame["run"]["cfg"]["trajectory_start_min_ratio"] = serde_json::json!(0.5);
+        frame["run"]["cfg"]["trajectory_start_max_ratio"] = serde_json::json!(0.5);
+        frame["run"]["cfg"]["phases"][0]["duration"] = serde_json::json!(1800.0);
+        frame["run"]["cfg"]["scenario"] = serde_json::json!("inferencex-agentx-mvp");
+        frame["run"]["cfg"]["unsafe_override"] = serde_json::json!(true);
+        let run =
+            aiperf_protocol::runner_v2::decode_run_request_v2(&serde_json::to_vec(&frame).unwrap())
+                .unwrap()
+                .run;
+        native_hosted(
+            &run,
+            NativeInputProjection::Text,
+            RunCancellation::new(),
+            Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
+            Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
+                [41; 32],
+            )),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn rejected_warmup_primer_stops_without_a_far_future_heartbeat() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut participant, _handle) = warmup_participant(directory.path());
+        let step = participant.advance_to(0.0, 0).unwrap();
+        assert_eq!(step.submits.len(), 1, "one real warmup primer");
+        let id = step.submits[0].uuid.unwrap();
+        participant
+            .on_rejection_cause(id, RejectionCause::ContextOverflow, 1.0)
+            .unwrap();
+        participant
+            .on_terminal(id, 1.0, AisimTerminal::Rejected)
+            .unwrap();
+        let outcome = participant.advance_to(1.0, 0);
+        assert!(
+            outcome.is_err(),
+            "failed warmup must terminate: clock={}ns next={:?} live={} result_ready={}",
+            participant.shared.clock.now_ns(),
+            participant.next_wakeup_ms(),
+            participant.shared.execution.state.borrow().live.len(),
+            participant.shared.result.borrow().is_some(),
+        );
+        let error = outcome.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("warmup root turn"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn profile_duration_and_grace_retire_all_clock_deadlines() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut participant, handle) = warmup_participant(directory.path());
+        let warmup = participant.advance_to(0.0, 0).unwrap();
+        let id = warmup.submits[0].uuid.unwrap();
+        participant
+            .on_terminal(id, 1.0, AisimTerminal::Completed)
+            .unwrap();
+        participant.advance_to(1.0, 0).unwrap();
+        participant.advance_to(10.0, 0).unwrap();
+        participant.advance_to(1_800_001.0, 0).unwrap();
+        participant.advance_to(1_801_001.0, 0).unwrap();
+        assert!(
+            participant.is_drained(),
+            "phase must stop at 1800s plus grace: clock={}ns next={:?} live={} result_ready={}",
+            participant.shared.clock.now_ns(),
+            participant.next_wakeup_ms(),
+            participant.shared.execution.state.borrow().live.len(),
+            participant.shared.result.borrow().is_some(),
+        );
+        assert_eq!(participant.shared.clock.next_event_time(), None);
+        assert!(handle.into_typed_report().is_ok());
+    }
 }
