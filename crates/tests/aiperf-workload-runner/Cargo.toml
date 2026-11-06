@@ -24,13 +24,12 @@ aisimulate-core = { package = "aisim-core", path = "../../core", default-feature
 anyhow = "1"
 async-trait = "0.1"
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "sync", "macros", "io-util", "io-std"] }
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
 aiperf-agentx = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/agentx" }
 aiperf-timing = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/scheduling/timing" }
 aiperf-registry = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/registry" }
-aiperf-fsio = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/fsio" }
 aiperf-clock = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/clock" }
 aiperf-clock-runtime = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/clock-runtime" }
 aiperf-config = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/config/config" }
