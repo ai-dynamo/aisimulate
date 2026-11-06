@@ -199,6 +199,7 @@ fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()
     Ok(())
 }
 
+#[cfg(any(test, feature = "python"))]
 fn validate_memory_topology(memory: &crate::KvCacheEstimateRequest) -> Result<()> {
     ensure!(
         memory

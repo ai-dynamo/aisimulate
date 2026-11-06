@@ -1676,15 +1676,20 @@ mod generated_replay_tests {
                 // first request's terminal callback, exactly think_ms later.
                 let terminal = log
                     .iter()
-                    .position(|entry| entry.starts_with("terminal")
-                            && entry.contains(&ChainParticipant::id(0).to_string()))
+                    .position(|entry| {
+                        entry.starts_with("terminal")
+                            && entry.contains(&ChainParticipant::id(0).to_string())
+                    })
                     .unwrap_or_else(|| panic!("no first terminal: {label}"));
                 let submit1 = log.iter().position(|e| e.starts_with("submit1")).unwrap();
                 assert!(terminal < submit1, "{label}");
                 assert!(at(&log[terminal]) > 3.0, "{label}");
                 assert_eq!(at(&log[submit1]), at(&log[terminal]) + 50.0, "{label}");
                 assert!(log.iter().any(|e| e.starts_with("token")), "{label}");
-                assert!(report.throughput.duration_ms >= at(&log[submit1]), "{label}");
+                assert!(
+                    report.throughput.duration_ms >= at(&log[submit1]),
+                    "{label}"
+                );
             }
         }
     }
@@ -1699,7 +1704,10 @@ mod generated_replay_tests {
             decode_ms: 10.0,
         };
         engine.rank.timing_model = slow.clone();
-        for role in [&mut engine.prefill, &mut engine.decode].into_iter().flatten() {
+        for role in [&mut engine.prefill, &mut engine.decode]
+            .into_iter()
+            .flatten()
+        {
             role.rank.timing_model = slow.clone();
         }
         spec.engine = serde_json::to_value(engine).unwrap();
@@ -1754,7 +1762,10 @@ mod generated_replay_tests {
         }
 
         fn on_output_token(&mut self, id: Uuid, _token: u32, now_ms: f64) -> AnyResult<()> {
-            self.log.lock().unwrap().push(format!("token {id}@{now_ms}"));
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("token {id}@{now_ms}"));
             if id == ChainParticipant::id(0) {
                 self.token_seen = true;
             }
@@ -1810,8 +1821,7 @@ mod generated_replay_tests {
             })))
             .run()
             .unwrap();
-        let log = log.lock().unwrap().clone();
-        log
+        log.lock().unwrap().clone()
     }
 
     fn entries<'a>(log: &'a [String], prefix: &str, id: Uuid) -> Vec<&'a String> {
@@ -1873,11 +1883,17 @@ mod generated_replay_tests {
             assert_eq!(at(terminals[0]), token_at, "{label}");
             let terminal_index = log.iter().position(|e| e == terminals[0]).unwrap();
             assert!(
-                log[terminal_index..].iter().all(|e| !e.starts_with(&format!("token {first}"))),
+                log[terminal_index..]
+                    .iter()
+                    .all(|e| !e.starts_with(&format!("token {first}"))),
                 "{label}"
             );
             assert_eq!(entries(&log, "quiescent", first).len(), 1, "{label}");
-            assert_eq!(entries(&log, "terminal", ChainParticipant::id(1)).len(), 1, "{label}");
+            assert_eq!(
+                entries(&log, "terminal", ChainParticipant::id(1)).len(),
+                1,
+                "{label}"
+            );
         }
     }
 
