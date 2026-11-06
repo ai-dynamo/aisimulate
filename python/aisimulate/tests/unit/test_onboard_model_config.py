@@ -1182,6 +1182,35 @@ def test_observed_version_prerequisite_names_only_its_own_version(tmp_path, vers
     assert re.findall(r"\d+\.\d+\.\d+", saved["prerequisites"][0]["detail"]) == [version]
 
 
+def _guided_review_transcript(tmp_path, monkeypatch, capsys, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources, framework_version=version) + ["--interactive"]) == 0
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, monkeypatch, capsys, version):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert f"  Memory is observed during initialized vLLM {version} collection." in lines
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+def test_guided_review_states_that_an_unsupported_version_collects_timings_only(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.31.0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+    assert not any("Memory is observed during initialized vLLM" in line for line in lines)
+    assert not any(line.startswith("  Collection policy:") for line in lines)
+
+
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
     overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
     overrides["weights_bytes"] = (
