@@ -401,7 +401,8 @@ their decode work as a separate decode pass. The CLI also saves
 error stops replay; the Python exception retains a `fpm_query_coverage`
 attribute for that failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from
-operation/energy evidence, which whole-model FPM does not provide. See
+operation/energy evidence, which whole-model FPM does not provide to Replay
+(see [measured power](#measured-power-schema-8)). See
 [FPM replay validation](../fpm-self-service/implementation.md#validate-fpm-query-coverage-with-agentx-replay)
 for the stricter whole-corpus completion checks and saved onboarding artifacts.
 
@@ -457,6 +458,9 @@ boundary. Missing or inconsistent median metadata and `fake_fallback` KV rows
 are rejected before interpolation; the existing execution-identity and real-KV
 requirements still apply. The legacy `dynamo_native_single_sample_v1` contract
 is unchanged.
+
+Schema 8 adds measured per-row power under its own sidecar policy; see
+[measured power](#measured-power-schema-8).
 
 For a Kimi K3 text profile, an explicit configuration can be:
 
@@ -516,3 +520,94 @@ rejected before payload decoding. Configuration and profiles without DCP
 remain accepted as unrecorded DCP.
 
 Detailed per-query support and weights are described in the [Python API](../api/python.md#direct-fpm-query-evidence).
+
+## Measured power (schema 8)
+
+Schema 8 adds measured GPU power to vLLM self-benchmark tables. It is the only
+whole-forward table that supplies operation energy. Where V1 publishes that
+power, and where it does not, is described in
+[modeled power](../power.md#whole-forward-fpm-power).
+
+### Table contract
+
+- The sidecar declares `schema_version: 8` and `measurement_policy:
+  dynamo_native_single_sample_power_window_v1`; no other sidecar field is
+  added. Schema 8 pairs only with this policy. Every other policy stays at
+  schema 6 or 7 and is latency-only.
+- The Parquet file must have a `power_w` column (float64, nullable), even when
+  every value is null. It is the mean power of one GPU over the row's power
+  window, averaged across `topology.total_gpus`, in watts. `null` means that
+  the point has no power; the reason stays in the raw rank artifact.
+- The row-level `measurement_policy` records the run that produced the row, so
+  a merged file can hold single-sample rows without power next to power-window
+  rows. The sidecar is authoritative.
+- Units are ms, W and W-ms. Power is never derived from latency, TDP or power
+  limits.
+
+Schema 6 and 7 pairs load as before, without power, and their latency is
+unchanged. A loader that predates schema 8 rejects a schema-8 pair instead of
+dropping its power. The collector publishes schema 8 as soon as any row comes
+from a power-window run, even when every window was unavailable. Merging such
+a collection into an existing schema-6 or 7 pair republishes the whole pair as
+schema 8 with `power_w: null` on the older rows. That changes the pair's digests, so state snapshots and HF profile pins
+taken against the earlier pair no longer match.
+
+### Measurement method
+
+The latency sample is unchanged: one synchronized iteration defines
+`latency_ms`. Power comes from a separate window that follows it:
+
+1. Dynamo repeats the same point in synchronized iterations until the measured
+   window lasts at least `FPM_POWER_MIN_WINDOW_S`, 2 s. NVML counter
+   calibration found that the energy counter updates every 100 ms on H200 and
+   B200, and the window must span at least 20 updates. A single iteration
+   lasts milliseconds, which would mostly measure counter quantization.
+2. It reads the NVML cumulative energy counter
+   (`nvmlDeviceGetTotalEnergyConsumption`, mJ, which equals W-ms) on every GPU
+   at the window's group-barrier edges.
+3. `power_w = sum over GPUs of energy_wms / (total_gpus * window_ms)`. Because
+   the window consists of synchronized group iterations, it includes the time
+   ranks spend waiting, as the latency sample does.
+
+Prefill repeats use fresh suffix token IDs from the same generator, so they
+are not served from the prefix cache. The prefix tokens and `cache_salt` stay
+as staged. A repeat whose cached-token count differs from the latency sample's
+makes the point's power unavailable (`prefill_cache_mismatch`).
+
+Decode repeats append one token per request per iteration, so the KV read
+grows during the window. The artifact records this drift. When it exceeds 10%
+of the point's `total_kv_read_tokens`, the point keeps its latency and gets
+`power_w: null`. With roughly 100 to 1,000 iterations in a 2 s window, decode
+points with less than about ten times that many context tokens per request
+carry no power. The low-KV end of every decode curve is therefore unpowered.
+
+A point also keeps its latency with `power_w: null` when any rank reports the
+window unavailable, for example `nvml_error`, `nvml_permission`,
+`counter_wrap` or `window_below_minimum`. Decode points of hybrid,
+sliding-window and Mamba KV-warmup shadow layouts always report power
+unavailable (`kvwarm_shadow_headroom`). The DeepSeek-V4.1 real-KV and
+GLM-5.3-Flash prefix-seed adapters stay on their pinned runtime without the
+window, and the SGLang native-FPM client writes no power. Collection details
+and the opt-out are in the
+[onboarding guide](../fpm-self-service/implementation.md#how-the-collection-grid-is-determined).
+
+### From rows to operation energy
+
+The SOL method blends each row's power with the same weights as its latency:
+exact hits, curve interpolation, SOL transfer, decode brackets and the decode
+pass baseline. The FPM operation then returns
+`energy_wms = power_w * latency_ms` for the query. A prefill clamp scales
+latency and energy and leaves power unchanged.
+
+A query that touches a row without power, whether as an exact hit, an
+interpolation neighbour, a bracket side or a boundary-hold anchor, returns
+energy 0. Its latency is unchanged. Energy 0 is the missing-data sentinel, so
+the query counts as uncovered and coverage drops by exactly its latency.
+Queries whose rows all carry power stay covered.
+
+The following return latency only:
+
+- `method: direct` queries;
+- the FPM prefill and marginal-decode components of an aggregate mixed step;
+- `estimate_forward_pass_time_ms()` iteration queries, Replay pricing and
+  Replay's FPM evidence.
