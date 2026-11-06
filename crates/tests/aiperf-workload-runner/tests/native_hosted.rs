@@ -440,6 +440,14 @@ impl WorkloadParticipant for CancelAt {
         self.facts.borrow_mut().terminals.push((id, now_ms, status));
         self.inner.on_terminal(id, now_ms, status)
     }
+    fn on_prompt_cache_read_tokens(
+        &mut self,
+        id: Uuid,
+        tokens: usize,
+        now_ms: f64,
+    ) -> anyhow::Result<()> {
+        self.inner.on_prompt_cache_read_tokens(id, tokens, now_ms)
+    }
     fn on_quiescent(&mut self, id: Uuid, now_ms: f64) -> anyhow::Result<()> {
         self.facts.borrow_mut().quiescent.push((id, now_ms));
         self.inner.on_quiescent(id, now_ms)
@@ -548,8 +556,18 @@ fn assert_native_cancellation(at_ms: f64) {
         }
     }
     let phases = hosted["native_phase_report"]["phases"].as_array().unwrap();
-    assert_eq!(phases.len(), 1);
-    let phase = &phases[0];
+    assert_eq!(
+        phases.len(),
+        2,
+        "synthetic zero-work warmup and authored profiling"
+    );
+    assert_eq!(phases[0]["kind"], "warmup");
+    assert!(phases[0]["phase_index"].is_null());
+    assert_eq!(phases[0]["requests_sent"], 0);
+    let phase = &phases[1];
+    assert_eq!(phase["kind"], "profiling");
+    assert_eq!(phase["requests_sent"], 2);
+    assert_eq!(phase["requests_cancelled"], 2);
     assert_eq!(phase["was_cancelled"], true);
     for key in [
         "requests_completed",

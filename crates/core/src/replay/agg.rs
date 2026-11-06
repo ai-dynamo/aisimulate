@@ -647,6 +647,10 @@ where
             // including callbacks delivered after their quiescence barrier.
             return Ok(());
         }
+        if let Some(tokens) = signal.cached_tokens {
+            self.admission
+                .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
+        }
         if let Some(token_id) = signal.token_id {
             self.admission
                 .defer_output_token(signal.uuid, token_id, self.now_ms)?;

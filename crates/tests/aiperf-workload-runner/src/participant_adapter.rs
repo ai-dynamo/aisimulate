@@ -58,6 +58,7 @@ struct Mailbox {
     /// `(clock ns, token id)` facts delivered by the Replayer.
     outputs: RefCell<VecDeque<(i64, u32)>>,
     terminal: RefCell<Option<(i64, AisimTerminal)>>,
+    prompt_cache_read_tokens: RefCell<Option<usize>>,
     ready: Notify,
 }
 
@@ -80,7 +81,10 @@ pub struct ParticipantExecution {
 
 impl ParticipantExecution {
     fn new(clock: Rc<SimClock>) -> Rc<Self> {
-        Rc::new(Self { clock, state: RefCell::default() })
+        Rc::new(Self {
+            clock,
+            state: RefCell::default(),
+        })
     }
 
     /// Cancel intent for a request whose AIPerf future is ending early. Only a
@@ -170,10 +174,13 @@ impl Execution for ParticipantExecution {
             }
             if !request.images.is_empty() {
                 return Err(ExecutionError::Failed(
-                    "native-hosted AgentX proof is text-only; modeled image geometry unsupported".into(),
+                    "native-hosted AgentX proof is text-only; modeled image geometry unsupported"
+                        .into(),
                 ));
             }
-            if self.state.borrow().live.contains_key(&id) || self.state.borrow().retired.contains(&id) {
+            if self.state.borrow().live.contains_key(&id)
+                || self.state.borrow().retired.contains(&id)
+            {
                 return Err(ExecutionError::Failed("duplicate request identity".into()));
             }
             let start_ns = self.now();
@@ -198,7 +205,10 @@ impl Execution for ParticipantExecution {
                     ..Default::default()
                 });
             }
-            let _guard = RequestGuard { execution: self, id };
+            let _guard = RequestGuard {
+                execution: self,
+                id,
+            };
             let mut tokens = Vec::new();
             let mut last_content_ns = None;
             let (end_ns, status) = loop {
@@ -209,12 +219,17 @@ impl Execution for ParticipantExecution {
                 let output = mailbox.outputs.borrow_mut().pop_front();
                 if let Some((at_ns, token)) = output {
                     if tokens.is_empty() {
-                        callback(Observation::FirstToken { ttft_ns: at_ns.saturating_sub(start_ns) });
+                        callback(Observation::FirstToken {
+                            ttft_ns: at_ns.saturating_sub(start_ns),
+                        });
                     }
                     tokens.push(token);
                     last_content_ns = Some(at_ns);
                     observer.on_output_tokens(uuid, at_ns, 1);
-                    callback(Observation::OutputTokenIds { at_ns, ids: vec![token] });
+                    callback(Observation::OutputTokenIds {
+                        at_ns,
+                        ids: vec![token],
+                    });
                     continue;
                 }
                 if let Some(terminal) = *mailbox.terminal.borrow() {
@@ -245,6 +260,7 @@ impl Execution for ParticipantExecution {
                 aiperf_exchange_model::dispatch::ObservedUsage {
                     prompt_tokens: Some(input_tokens),
                     completion_tokens: Some(tokens.len()),
+                    prompt_cache_read_tokens: *mailbox.prompt_cache_read_tokens.borrow(),
                     ..Default::default()
                 },
             );
@@ -264,7 +280,10 @@ impl Execution for ParticipantExecution {
             observer.on_operation_settled(uuid, terminal, start_ns, end_ns);
             observer.on_response_settled(uuid);
             observer.on_terminal_at(uuid, terminal, end_ns);
-            Ok(Some(RequestOutcome { dispatch, output_token_ids: Some(tokens) }))
+            Ok(Some(RequestOutcome {
+                dispatch,
+                output_token_ids: Some(tokens),
+            }))
         })
     }
 }
@@ -329,7 +348,10 @@ impl AgentXParticipant {
     fn pump(&mut self) -> Result<()> {
         let _enter = self.runtime.enter();
         let mut stalled = 0_u32;
-        let mut mark = (self.shared.clock.now_ns(), self.shared.clock.scheduled_count());
+        let mut mark = (
+            self.shared.clock.now_ns(),
+            self.shared.clock.scheduled_count(),
+        );
         loop {
             self.flag.store(false, Ordering::SeqCst);
             let mut cx = Context::from_waker(&self.waker);
@@ -337,7 +359,10 @@ impl AgentXParticipant {
                 Poll::Ready(()) => break,
                 Poll::Pending => {}
             }
-            let now = (self.shared.clock.now_ns(), self.shared.clock.scheduled_count());
+            let now = (
+                self.shared.clock.now_ns(),
+                self.shared.clock.scheduled_count(),
+            );
             if now == mark {
                 stalled += 1;
                 ensure!(
@@ -374,7 +399,10 @@ impl WorkloadParticipant for AgentXParticipant {
         if self.dirty || self.flag.load(Ordering::SeqCst) {
             return Some(self.last_now_ms);
         }
-        self.shared.clock.next_event_time().map(|ns| ns as f64 / 1_000_000.0)
+        self.shared
+            .clock
+            .next_event_time()
+            .map(|ns| ns as f64 / 1_000_000.0)
     }
 
     fn advance_to(&mut self, now_ms: f64, _cluster_in_flight: usize) -> Result<ParticipantStep> {
@@ -402,13 +430,32 @@ impl WorkloadParticipant for AgentXParticipant {
     fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
         self.dirty = true;
         self.last_now_ms = now_ms;
-        self.shared.execution.token(request_id, ns_from_ms(now_ms)?, token_id)
+        self.shared
+            .execution
+            .token(request_id, ns_from_ms(now_ms)?, token_id)
+    }
+
+    fn on_prompt_cache_read_tokens(
+        &mut self,
+        request_id: Uuid,
+        tokens: usize,
+        _now_ms: f64,
+    ) -> Result<()> {
+        let state = self.shared.execution.state.borrow();
+        if let Some(mailbox) = state.live.get(&request_id.as_u128()) {
+            *mailbox.prompt_cache_read_tokens.borrow_mut() = Some(tokens);
+        } else if !state.retired.contains(&request_id.as_u128()) {
+            bail!("cache usage for unknown request {request_id}");
+        }
+        Ok(())
     }
 
     fn on_terminal(&mut self, request_id: Uuid, now_ms: f64, status: AisimTerminal) -> Result<()> {
         self.dirty = true;
         self.last_now_ms = now_ms;
-        self.shared.execution.terminal(request_id, ns_from_ms(now_ms)?, status)
+        self.shared
+            .execution
+            .terminal(request_id, ns_from_ms(now_ms)?, status)
     }
 
     fn is_drained(&self) -> bool {

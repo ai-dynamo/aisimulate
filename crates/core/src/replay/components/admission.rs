@@ -154,7 +154,10 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
     }
 
-    pub(crate) fn new_external(participant: Box<dyn WorkloadParticipant>, mode: ReplayMode) -> Self {
+    pub(crate) fn new_external(
+        participant: Box<dyn WorkloadParticipant>,
+        mode: ReplayMode,
+    ) -> Self {
         Self {
             source: AdmissionSource::External(participant),
             mode,
@@ -494,12 +497,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.on_quiescent(uuid, now_ms)
     }
 
-    pub(crate) fn on_output_token(
-        &mut self,
-        uuid: Uuid,
-        token_id: u32,
-        now_ms: f64,
-    ) -> Result<()> {
+    pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
         if let AdmissionSource::External(participant) = &mut self.source {
             return participant.on_output_token(uuid, token_id, now_ms);
         }
@@ -507,6 +505,20 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return Ok(());
         };
         driver.on_output_token(uuid, token_id)
+    }
+
+    /// Preserve engine-reported cache usage for externally hosted consumers;
+    /// the built-in workload driver does not consume this response metadata.
+    pub(crate) fn on_prompt_cache_read_tokens(
+        &mut self,
+        uuid: Uuid,
+        tokens: usize,
+        now_ms: f64,
+    ) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            participant.on_prompt_cache_read_tokens(uuid, tokens, now_ms)?;
+        }
+        Ok(())
     }
 
     fn is_agentic(&self) -> bool {

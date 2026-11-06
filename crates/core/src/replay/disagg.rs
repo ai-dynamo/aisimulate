@@ -2487,6 +2487,10 @@ where
         {
             return Ok(());
         }
+        if let Some(tokens) = signal.cached_tokens {
+            self.admission
+                .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
+        }
         if let Some(token_id) = signal.token_id {
             self.admission
                 .defer_output_token(signal.uuid, token_id, self.now_ms)?;
@@ -4311,10 +4315,7 @@ where
             },
             self.now_ms,
         )?;
-        if !matches!(
-            effects.result,
-            CommandResult::Applied | CommandResult::Noop
-        ) {
+        if !matches!(effects.result, CommandResult::Applied | CommandResult::Noop) {
             bail!("decode cancellation for {uuid} returned an unexpected scheduler result");
         }
         self.apply_auxiliary_decode_observations(

@@ -68,6 +68,17 @@ pub trait WorkloadParticipant {
     /// Mailbox fact: `request_id` emitted `token_id` at logical `now_ms`.
     fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()>;
 
+    /// Mailbox fact: the engine reported prompt cache-read usage. Absence of
+    /// this callback is unknown usage, not a measured zero.
+    fn on_prompt_cache_read_tokens(
+        &mut self,
+        _request_id: Uuid,
+        _tokens: usize,
+        _now_ms: f64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Mailbox fact: `request_id` reached a terminal state at `now_ms`.
     fn on_terminal(
         &mut self,
