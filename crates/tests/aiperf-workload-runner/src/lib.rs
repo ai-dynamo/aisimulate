@@ -11,7 +11,6 @@ mod dispatch;
 mod graph;
 /// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
 pub mod model;
-mod rendezvous;
 mod reporting;
 mod scheduled;
 mod workload;
@@ -27,7 +26,7 @@ pub fn execute(
     observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, None, None,
+        run, cancellation, observer, None,
         std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
         None,
     )
@@ -50,7 +49,6 @@ pub fn execute_with_engine_factory(
         run,
         cancellation,
         observer,
-        None,
         Some((factory, admission_capacity)),
         std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
         None,
@@ -71,7 +69,7 @@ pub fn execute_with_identity_seed(
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, None, model_factory,
+        run, cancellation, observer, model_factory,
         std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(identity_seed)),
         None,
     )
@@ -90,27 +88,8 @@ pub fn execute_with_deployment(
     identity_seed: [u8; 32],
 ) -> anyhow::Result<serde_json::Value> {
     workload::execute(
-        run, cancellation, observer, None, None,
+        run, cancellation, observer, None,
         std::rc::Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(identity_seed)),
         Some((deployment, admission_capacity)),
-    )
-}
-
-/// Opt-in executable-boundary instrumentation, separate from ordinary execution.
-///
-/// The stdio proof uses this only when explicitly asked to suspend at a
-/// committed model deadline until a framed cancellation arrives.
-#[doc(hidden)]
-pub fn execute_with_control_rendezvous(
-    run: &aiperf_config::model::BenchmarkRun,
-    cancellation: aiperf_clock_runtime::cancellation::RunCancellation,
-    observer: std::rc::Rc<dyn aiperf_timing::PhaseObserver>,
-    events: aiperf_engine_kernel::event_writer::EventWriterHandle,
-    sequencer: std::sync::Arc<aiperf_engine_kernel::event_writer::Sequencer>,
-) -> anyhow::Result<serde_json::Value> {
-    workload::execute(
-        run, cancellation, observer, Some((events, sequencer)), None,
-        std::rc::Rc::new(aiperf_rng::identity::OsIdentitySource),
-        None,
     )
 }

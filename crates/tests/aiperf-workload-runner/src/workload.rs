@@ -42,10 +42,6 @@ pub fn execute(
     run: &aiperf_config::model::BenchmarkRun,
     cancel: RunCancellation,
     observer: Rc<dyn aiperf_timing::PhaseObserver>,
-    proof_wait: Option<(
-        aiperf_engine_kernel::event_writer::EventWriterHandle,
-        Arc<aiperf_engine_kernel::event_writer::Sequencer>,
-    )>,
     model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
     identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
     deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
@@ -74,7 +70,6 @@ pub fn execute(
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
     if kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !legacy_weka {
-        ensure!(proof_wait.is_none(), "graph control rendezvous is not implemented");
         let prepared = crate::graph::prepare(
             run, raw_input.get("dataset").context("raw graph dataset missing")?,
             tokenizer.as_ref(), &phases,
@@ -248,23 +243,8 @@ pub fn execute(
         )?);
     }
     let mut result = None;
-    let rendezvous = proof_wait.map(|(events, sequencer)| {
-        Rc::new(crate::rendezvous::Rendezvous {
-            model: engine.clone(),
-            clock: clock.clone(),
-            cancellation: cancel.clone(),
-            events,
-            sequencer,
-            benchmark_id: run.benchmark_id.clone(),
-            entered: std::cell::Cell::new(false),
-            resume_application: std::cell::Cell::new(false),
-        })
-    });
     let event_source: Rc<dyn aiperf_clock_runtime::clock::driver::SimEventSource> =
-        match &rendezvous {
-            Some(source) => source.clone(),
-            None => engine.clone(),
-        };
+        engine.clone();
     drive_sim_with_source(clock.clone(), event_source, |_| async {
         result = Some(
             run_scheduled_phases_with_cancellation(
@@ -333,7 +313,6 @@ pub fn execute(
         "model_cancelled_count": cancelled_count,
         "virtual_end_ns": clock.now_ns(),
         "engine_drained": true,
-        "proof_rendezvous_entered": rendezvous.as_ref().is_some_and(|source|source.entered.get()),
     }))
 }
 

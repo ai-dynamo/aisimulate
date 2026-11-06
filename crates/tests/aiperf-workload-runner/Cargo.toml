@@ -9,6 +9,7 @@ name = "aisim-aiperf-workload-runner"
 version = "0.0.0"
 edition = "2024"
 publish = false
+autobins = false
 license = "Apache-2.0"
 
 [features]
@@ -17,14 +18,6 @@ real-gpu-proof = ["aisimulate-core/embed-python"]
 [lib]
 name = "aisim_aiperf_workload_runner"
 path = "src/lib.rs"
-
-[[bin]]
-name = "aisim-aiperf-workload-runner"
-path = "src/main.rs"
-
-[[test]]
-name = "subprocess"
-path = "tests/subprocess.rs"
 
 [dependencies]
 aisimulate-core = { package = "aisim-core", path = "../../core", default-features = false }
