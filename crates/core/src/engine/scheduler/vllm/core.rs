@@ -710,6 +710,8 @@ struct ForwardWork {
 struct DecodeBatch {
     /// Context length of each request priced as decode work.
     lengths: Vec<usize>,
+    /// Tokens each of those requests verifies: one plus its scheduled drafts.
+    widths: Vec<usize>,
 }
 
 impl DecodeBatch {
@@ -721,14 +723,16 @@ impl DecodeBatch {
         self.lengths.iter().sum()
     }
 
-    /// Add one request's context length. The first push reserves `max`, the
-    /// most the pass can add, so a pass allocates once, or not at all without
-    /// decode work.
-    fn push(&mut self, length: usize, max: usize) {
+    /// Add one request's context length and verification width. The first
+    /// push reserves `max`, the most the pass can add, so a pass allocates
+    /// once, or not at all without decode work.
+    fn push(&mut self, length: usize, width: usize, max: usize) {
         if self.lengths.capacity() == 0 {
             self.lengths.reserve_exact(max);
+            self.widths.reserve_exact(max);
         }
         self.lengths.push(length);
+        self.widths.push(width);
     }
 }
 
@@ -2603,6 +2607,7 @@ impl VllmCore {
                 mean_context_length: forward.total_length / forward.decode_count,
                 kv_bound_tokens: self.decode_kv_context_bound(forward.total_length),
                 lengths: decode.lengths,
+                widths: decode.widths,
                 verify_width,
             }),
         };
@@ -3280,7 +3285,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode.push(request.sequence.len(), self.state.running.len());
+                decode.push(request.sequence.len(), 1, self.state.running.len());
             }
         }
 
@@ -3524,8 +3529,11 @@ impl VllmCore {
         };
 
         let mut decode = DecodeBatch::default();
-        for length in bursts.iter().filter_map(|burst| burst.decode_length) {
-            decode.push(length, bursts.len());
+        // A burst's limit is the round's verification width.
+        for burst in &bursts {
+            if let Some(length) = burst.decode_length {
+                decode.push(length, burst.limit, bursts.len());
+            }
         }
 
         let sampler = self

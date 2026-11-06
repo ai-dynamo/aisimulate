@@ -34,6 +34,8 @@ pub(crate) use common::hashing::{
     block_hashes_with_salt, cache_salt_seed, compute_block_hash_for_tokens,
     compute_next_sequence_hash,
 };
+#[cfg(all(test, feature = "python"))]
+pub(crate) use common::protocols::{DirectRequest, MockEngineArgs};
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
@@ -57,6 +59,8 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(all(test, feature = "python"))]
+pub(crate) use scheduler::VllmCore;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
