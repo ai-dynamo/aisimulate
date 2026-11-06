@@ -4831,6 +4831,22 @@ fn engine_launch_from_replay_role_json(
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
+/// Install this binary's real native classes for embedded canonical model
+/// compilation. No separately installed extension wheel is required, and an
+/// already installed module keeps its existing ownership.
+pub(crate) fn register_embedded_runtime() -> anyhow::Result<()> {
+    Python::with_gil(|py| -> PyResult<()> {
+        let modules = py.import("sys")?.getattr("modules")?;
+        if modules.contains("aisimulate._runtime")? {
+            return Ok(());
+        }
+        let module = PyModule::new(py, "aisimulate._runtime")?;
+        _runtime(&module)?;
+        modules.set_item("aisimulate._runtime", module)?;
+        Ok(())
+    }).map_err(|error| anyhow::anyhow!("registering embedded AISimulate native runtime: {error}"))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {

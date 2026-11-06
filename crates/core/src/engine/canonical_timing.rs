@@ -29,10 +29,9 @@ impl CanonicalTimingModel {
     /// decoder replay and pipeline layouts fail explicitly rather than being
     /// silently priced with an ordinary text-only aggregate.
     pub fn new(config: ForwardPassPerfModelConfig) -> Result<Arc<Self>> {
-        ensure!(config.pp == 1, "canonical Engine timing supports pp=1 only");
-        ensure!(config.nextn == 0 && config.speculation.is_none(), "canonical Engine timing bridge does not support speculative decoding");
-        ensure!(config.encoder_parallel.is_none(), "canonical Engine timing bridge does not support vision; use the vision-aware provider");
-        ensure!(!config.decoder_replay, "canonical Engine timing bridge does not support decoder replay");
+        validate_supported_identity(&config)?;
+        #[cfg(feature = "python")]
+        crate::python::register_embedded_runtime()?;
         let model = ForwardPassPerfModel::best_available(config)?;
         let config = model.provenance().ok_or_else(|| anyhow!("canonical model omitted resolved provenance"))?.config.clone();
         Ok(Arc::new(Self { model, config }))
@@ -46,6 +45,8 @@ impl CanonicalTimingModel {
         config: ForwardPassPerfModelConfig,
         memory: crate::KvCacheEstimateRequest,
     ) -> Result<(Arc<Self>, crate::KvCacheEstimate)> {
+        validate_supported_identity(&config)?;
+        validate_memory_topology(&memory)?;
         ensure!(memory.engine.model_name == config.model
             && memory.engine.system_name == config.system
             && memory.engine.backend == config.backend
@@ -108,6 +109,35 @@ impl CanonicalTimingModel {
         }
         self.query(&[ForwardPassMetrics { scheduled_requests: scheduled, ..Default::default() }])
     }
+}
+
+fn validate_supported_identity(config: &ForwardPassPerfModelConfig) -> Result<()> {
+    ensure!(config.worker_type == crate::ForwardPassWorkerType::Aggregated,
+        "canonical Engine timing bridge supports aggregated worker role only");
+    ensure!(config.pp == 1, "canonical Engine timing supports pp=1 only");
+    ensure!(config.cp_size.unwrap_or(1) == 1 && config.dcp.unwrap_or(1) == 1,
+        "canonical Engine timing bridge does not support CP or DCP");
+    ensure!(config.moe_tp_size.is_none() && config.moe_ep_size.is_none()
+        && config.moe_quant_mode.is_none() && config.moe_backend.is_none()
+        && config.moe_kernel_source.is_none() && !config.enable_eplb && config.wideep_num_slots.is_none(),
+        "canonical Engine timing bridge does not support explicit MoE topology or kernel controls");
+    ensure!(config.nextn == 0 && config.speculation.is_none(), "canonical Engine timing bridge does not support speculative decoding");
+    ensure!(config.encoder_parallel.is_none(), "canonical Engine timing bridge does not support vision; use the vision-aware provider");
+    ensure!(!config.decoder_replay, "canonical Engine timing bridge does not support decoder replay");
+    Ok(())
+}
+
+fn validate_memory_topology(memory: &crate::KvCacheEstimateRequest) -> Result<()> {
+    let parallel = &memory.engine.parallel;
+    ensure!(parallel.cp_size.unwrap_or(1) == 1 && parallel.dcp_size.unwrap_or(1) == 1,
+        "canonical native memory geometry does not support CP or DCP");
+    ensure!(parallel.moe_tp_size.is_none() && parallel.moe_ep_size.is_none()
+        && memory.engine.quantization.moe_dtype.is_none(),
+        "canonical native memory geometry does not support explicit MoE topology or precision");
+    ensure!(memory.engine.speculative.as_ref().is_none_or(|spec| spec.nextn.unwrap_or(0) == 0)
+        && !memory.engine.decoder_replay,
+        "canonical native memory geometry does not support speculation or decoder replay");
+    Ok(())
 }
 
 impl TimingModel for CanonicalTimingModel {
@@ -176,4 +206,55 @@ impl TimingModel for CanonicalTimingModel {
     }
 
     fn reset_evidence(&self) -> Result<()> { Ok(()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> ForwardPassPerfModelConfig {
+        ForwardPassPerfModelConfig::new("model", "system", crate::BackendKind::Vllm,
+            crate::ForwardPassWorkerType::Aggregated)
+    }
+
+    #[test]
+    fn unsupported_timing_topologies_reject_without_python_construction() {
+        assert!(validate_supported_identity(&config()).is_ok());
+        for change in 0..7 {
+            let mut value = config();
+            match change {
+                0 => value.worker_type = crate::ForwardPassWorkerType::Prefill,
+                1 => value.cp_size = Some(2),
+                2 => value.dcp = Some(2),
+                3 => value.moe_tp_size = Some(2),
+                4 => value.moe_ep_size = Some(2),
+                5 => value.moe_quant_mode = Some("fp8".into()),
+                _ => value.pp = 2,
+            }
+            assert!(validate_supported_identity(&value).is_err());
+            assert!(CanonicalTimingModel::new(value).is_err());
+        }
+    }
+
+    #[test]
+    fn unsupported_memory_topologies_reject_without_python_construction() {
+        let base = serde_json::json!({
+            "engine": {"schema_version":1,"model_name":"model","system_name":"system",
+                "backend":"vllm","backend_version":"0.24.0","tp_size":1,"pp_size":1,
+                "weight_dtype":"bfloat16","activation_dtype":"bfloat16","kv_cache_dtype":"bfloat16"},
+            "max_num_tokens":128,"max_batch_size":2,"kv_cache_memory_fraction":{"OfTotal":0.9},
+            "gpu_memory_capacity_bytes_override":null,"tolerance_fraction":null,
+            "options":{"allow_naive_fallback":false,"allow_hf_config_download":false}
+        });
+        let memory: crate::KvCacheEstimateRequest = serde_json::from_value(base.clone()).unwrap();
+        assert!(validate_memory_topology(&memory).is_ok());
+        for (field, value) in [("cp_size", serde_json::json!(2)), ("dcp_size", serde_json::json!(2)),
+            ("moe_tp_size", serde_json::json!(2)), ("moe_ep_size", serde_json::json!(2)),
+            ("moe_dtype", serde_json::json!("fp8"))] {
+            let mut wire = base.clone();
+            wire["engine"][field] = value;
+            let memory = serde_json::from_value(wire).unwrap();
+            assert!(validate_memory_topology(&memory).is_err());
+        }
+    }
 }
