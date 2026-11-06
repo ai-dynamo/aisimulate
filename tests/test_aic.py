@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -350,3 +351,31 @@ _WRAPPER = "ExampleForConditionalGeneration"
 def test_context_length_max_reads_the_decoder_that_fpm_intake_reads(tmp_path, document, expected):
     (tmp_path / "config.json").write_text(json.dumps(document))
     assert aic.resolve_model_context_length(str(tmp_path)) == expected
+
+
+@pytest.mark.parametrize(
+    "document,problem",
+    [
+        (
+            {"architectures": ["NemotronH_Omni_Reasoning_V3"], "max_position_embeddings": 4096, "llm_config": None},
+            "llm_config must be a nonempty object describing one text decoder",
+        ),
+        (
+            {"architectures": [_WRAPPER], "max_position_embeddings": 4096, "text_config": None},
+            "text_config must be a nonempty object describing one text decoder",
+        ),
+        (
+            {
+                "architectures": [_WRAPPER],
+                "max_position_embeddings": 4096,
+                "text_config": {"max_position_embeddings": 32768, "llm_config": {"max_position_embeddings": 8192}},
+            },
+            "ambiguous nested llm_config in text_config",
+        ),
+    ],
+    ids=["null-llm-config-of-a-registered-wrapper", "null-text-config", "text-config-nesting-llm-config"],
+)
+def test_context_length_max_refuses_a_malformed_or_nested_decoder(tmp_path, document, problem):
+    (tmp_path / "config.json").write_text(json.dumps(document))
+    with pytest.raises(ValueError, match=re.escape(f"Hugging Face config for {str(tmp_path)!r}: {problem}")):
+        aic.resolve_model_context_length(str(tmp_path))

@@ -9,9 +9,13 @@ must also be a nonempty object.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+
 import pytest
 
-from aisimulate_core.decoder_config import decoder_config_problem, nested_decoder_ambiguity
+from aisimulate_core.decoder_config import LLM_CONFIG_WRAPPERS, decoder_config_problem, nested_decoder_ambiguity
 from aisimulate_core.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
 
@@ -29,23 +33,24 @@ _WRAPPER = "ExampleForConditionalGeneration"
     [
         ({"architectures": [_VL], "llm_config": _DECODER}, "llm_config"),
         ({"architectures": [_VL], "llm_config": _DECODER, "text_config": _DECODER}, "llm_config"),
-        ({"architectures": [_VL], "llm_config": None, "text_config": _DECODER}, "text_config"),
+        ({"architectures": [_VL], "llm_config": None, "text_config": _DECODER}, "llm_config"),
         ({"architectures": ["Qwen3_5ForConditionalGeneration"], "text_config": _DECODER}, "text_config"),
         ({"architectures": [_WRAPPER], "text_config": _DECODER, "llm_config": _DECODER}, "text_config"),
         # A malformed text_config is still chosen, so intake keeps reporting it.
         ({"architectures": [_WRAPPER], "text_config": None}, "text_config"),
         ({"architectures": ["InternVLChatModel"], "llm_config": _DECODER}, "llm_config"),
-        # Another key counts only as a nonempty object, so it adds no error.
-        ({"architectures": [_VL], "llm_config": None}, None),
-        ({"architectures": [_VL], "llm_config": {}}, None),
+        # A registered wrapper holds llm_config whenever the key is present, as the op-level parser does.
+        ({"architectures": [_VL], "llm_config": None}, "llm_config"),
+        ({"architectures": [_VL], "llm_config": {}}, "llm_config"),
+        # Without a registered wrapper, llm_config counts only as a nonempty object, so it adds no error.
         ({"llm_config": [_DECODER]}, None),
         ({"llm_config": "decoder"}, None),
         # A malformed wrapper architecture never raises here.
         ({"architectures": _VL, "llm_config": _DECODER}, "llm_config"),
         ({"architectures": [{"name": _VL}], "llm_config": _DECODER}, "llm_config"),
         ({"architectures": [], "text_config": _DECODER}, "text_config"),
-        # With both keys the helper reads the registry. A malformed architectures value must neither raise nor
-        # select llm_config, and a wrapper registered to text_config keeps text_config.
+        # With both keys, a malformed architectures value must neither raise nor select llm_config, and a wrapper
+        # registered to text_config keeps text_config.
         ({"architectures": _VL, **_BOTH_KEYS}, "text_config"),
         ({"architectures": [{"name": _VL}], **_BOTH_KEYS}, "text_config"),
         ({"architectures": [], **_BOTH_KEYS}, "text_config"),
@@ -62,8 +67,8 @@ _WRAPPER = "ExampleForConditionalGeneration"
         "text-config-before-llm-config",
         "malformed-text-config",
         "unregistered-llm-config",
-        "null-llm-config",
-        "empty-llm-config",
+        "registered-null-llm-config",
+        "registered-empty-llm-config",
         "list-llm-config",
         "string-llm-config",
         "string-architectures",
@@ -83,8 +88,24 @@ def test_decoder_config_key(document, key):
 
 
 def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
-    # The helper reads the registry only for a document that holds both keys, so a third key would go unseen.
+    # The helper orders only these two keys, so a third key would go unseen. It reads the llm_config wrappers from
+    # LLM_CONFIG_WRAPPERS, so the registry must map exactly those wrappers to llm_config.
     assert set(MULTIMODAL_TEXT_CONFIG_KEY.values()) <= {"text_config", "llm_config"}
+    assert {name for name, key in MULTIMODAL_TEXT_CONFIG_KEY.items() if key == "llm_config"} == LLM_CONFIG_WRAPPERS
+
+
+def test_the_decoder_key_of_a_registered_wrapper_loads_no_sdk_module():
+    # FPM config intake must stay usable in a process that does not import aisimulate_core.sdk.
+    probe = (
+        "import json, sys\n"
+        "from aisimulate_core.decoder_config import decoder_config_key\n"
+        "assert decoder_config_key(json.loads(sys.argv[1])) == 'llm_config'\n"
+        "loaded = [name for name in sys.modules if name.startswith('aisimulate_core.sdk')]\n"
+        "assert not loaded, loaded\n"
+    )
+    document = json.dumps({"architectures": [_VL], **_BOTH_KEYS})
+    result = subprocess.run([sys.executable, "-c", probe, document], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
