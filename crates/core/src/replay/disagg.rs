@@ -2879,7 +2879,7 @@ where
         &mut self,
         effects: EngineEffects<Observation::Batch>,
     ) -> Result<()> {
-        self.record_prefill_admissions(effects.admissions);
+        self.record_prefill_admissions(&effects.admissions);
         for pressure in effects.pressure_events {
             self.evidence.record_native_pressure(
                 &mut self.collector,
@@ -2890,6 +2890,9 @@ where
             );
         }
         self.apply_prefill_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }
@@ -2899,7 +2902,7 @@ where
         Ok(())
     }
 
-    fn record_prefill_admissions(&mut self, admissions: Vec<AdmissionEvent>) {
+    fn record_prefill_admissions(&mut self, admissions: &[AdmissionEvent]) {
         for admission in admissions {
             if let (Some(telemetry), Some(input)) = (
                 &mut self.telemetry,
@@ -2923,6 +2926,22 @@ where
                 self.now_ms,
             );
         }
+    }
+
+    /// Tell the prefill placement policy about a request's first prefill
+    /// admission. Later admissions re-run a preempted or retracted prefill.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> Result<()> {
+        let state = self.state_mut(admission.uuid)?;
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.prefill_placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_prefill_placements(placements)
     }
 
     fn record_decode_admissions(&mut self, admissions: Vec<AdmissionEvent>) -> Result<()> {
@@ -4487,6 +4506,7 @@ fn direct_to_native(
     kv_hint: Option<KvHintSource>,
 ) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
+        cache_salt: request.cache_salt,
         request_id: request
             .uuid
             .ok_or_else(|| anyhow!("offline replay request must have a UUID before dispatch"))?,

@@ -33,14 +33,16 @@ pub use launch::EngineLaunchConfig;
 pub use belady::KvEvictionPolicy;
 pub use canonical_timing::CanonicalTimingModel;
 pub(crate) use common::hashing::{
-    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+    block_hashes_with_salt, cache_salt_seed, compute_block_hash_for_tokens,
+    compute_next_sequence_hash,
 };
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Connector, G2Scope, G3OffloadConfig,
     G3Scope, KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    SglangHiCacheConfig, SglangHiCacheWritePolicy, SglangSchedulePolicy, StateCacheConfig,
+    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{
