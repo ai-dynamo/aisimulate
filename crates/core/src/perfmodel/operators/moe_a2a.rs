@@ -412,20 +412,23 @@ impl MoeAllToAllOp {
             // whose point happens to fall below the fitted OLS intercept.
             calibration.base_latency_ms
         } else {
-            let p50_variable_ms = moe_ll_monte_carlo::estimate(MonteCarloRequest {
-                phase,
-                calibration_mode,
-                per_rank_tokens: tokens,
-                num_ranks: self.moe_ep_size,
-                topk: self.topk,
-                num_experts: self.num_experts,
-                nvl_domain_size: topology.nvl_domain_size,
-                distribution,
-                payload_bytes,
-                fitted_variable_ms_bits: fitted_variable_ms.to_bits(),
-                nvl_bandwidth_bits: nvl_bandwidth.to_bits(),
-                ib_bandwidth_bits: ib_bandwidth.to_bits(),
-            })?;
+            let p50_variable_ms = moe_ll_monte_carlo::estimate(
+                db.moe_a2a.monte_carlo(),
+                MonteCarloRequest {
+                    phase,
+                    calibration_mode,
+                    per_rank_tokens: tokens,
+                    num_ranks: self.moe_ep_size,
+                    topk: self.topk,
+                    num_experts: self.num_experts,
+                    nvl_domain_size: topology.nvl_domain_size,
+                    distribution,
+                    payload_bytes,
+                    fitted_variable_ms_bits: fitted_variable_ms.to_bits(),
+                    nvl_bandwidth_bits: nvl_bandwidth.to_bits(),
+                    ib_bandwidth_bits: ib_bandwidth.to_bits(),
+                },
+            )?;
             deepep_ll_p50_latency(calibration.intercept_ms, p50_variable_ms)
         };
         let mut result =
