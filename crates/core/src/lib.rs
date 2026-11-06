@@ -85,7 +85,7 @@ pub use perfmodel::{
 // advanced APIs.
 #[allow(unused_imports)]
 pub(crate) use perfmodel::{
-    common, config, fpm, memory, operators, perf_database, repo_relative, session,
+    common, config, fpm, memo, memory, operators, perf_database, repo_relative, session,
     validate_forward_pass_metrics,
 };
 
