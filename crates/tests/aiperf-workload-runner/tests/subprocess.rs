@@ -79,6 +79,31 @@ fn branch_request(directory:&std::path::Path) -> String {
 }
 
 #[test]
+fn direct_library_executes_finite_branching_native_run_without_stdio_or_children() {
+    let directory = tempfile::tempdir().unwrap();
+    let frame = branch_request(directory.path());
+    let request = aiperf_protocol::runner_v2::decode_run_request_v2(frame.as_bytes()).unwrap();
+    let observer = std::rc::Rc::new(aiperf_timing::RecordingPhaseObserver::default());
+    let report = aisim_aiperf_workload_runner::execute(
+        &request.run,aiperf_clock_runtime::cancellation::RunCancellation::new(),observer.clone(),
+    ).expect("direct simulator-owned library composition");
+    let requests = report["requests"].as_array().unwrap();
+    assert_eq!(requests.len(),4,"finite native branch executes once");
+    let children:Vec<&Value> = requests.iter().filter(|row|!row["request"]["parent_correlation_id"].is_null()).collect();
+    let parents:Vec<&Value> = requests.iter().filter(|row|row["request"]["parent_correlation_id"].is_null()).collect();
+    assert_eq!(children.len(),2);
+    assert_eq!(parents.len(),2);
+    let child_end = children.iter().map(|row|row["end_ns"].as_i64().unwrap()).max().unwrap();
+    let join_start = parents.iter().map(|row|row["start_ns"].as_i64().unwrap()).max().unwrap();
+    assert!(join_start >= child_end,"shared native join cannot cross child settlement");
+    assert_ne!(parents[0]["request"]["body"],children[0]["request"]["body"]);
+    assert_eq!(report["engine_drained"],true);
+    assert_eq!(report["proof_rendezvous_entered"],false);
+    assert!(!observer.events().is_empty(),"native phase lifecycle must be observed directly");
+    assert!(!directory.path().join("aisim-library-proof.json").exists(),"direct composition leaves publication to the embedding simulator");
+}
+
+#[test]
 fn branching_finite_trace_keeps_native_child_body_and_join_frontier() {
     let directory = tempfile::tempdir().unwrap();
     let mut child = Command::new(runner_binary()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();

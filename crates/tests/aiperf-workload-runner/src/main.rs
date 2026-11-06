@@ -3,11 +3,7 @@
 
 //! Independently compiled simulator-owned stdio workload proof.
 
-mod dispatch;
-#[allow(dead_code)]
-mod model;
-mod workload;
-mod rendezvous;
+use aisim_aiperf_workload_runner::{execute,execute_with_control_rendezvous};
 
 use std::{io::{BufReader,Write},rc::Rc,sync::Arc};
 use anyhow::{Context,Result};
@@ -66,7 +62,11 @@ fn run() -> Result<()> {
     });
     let observer = Rc::new(Progress { events:events.clone(),seq:seq.clone(),id:run.benchmark_id.clone() });
     let proof_wait = std::env::args().any(|argument|argument == "--proof-wait-for-cancel");
-    let mut result = workload::execute(&run,cancel.clone(),observer,proof_wait.then(||(events.clone(),seq.clone())));
+    let mut result = if proof_wait {
+        execute_with_control_rendezvous(&run,cancel.clone(),observer,events.clone(),seq.clone())
+    } else {
+        execute(&run,cancel.clone(),observer)
+    };
     let mut metadata = std::collections::BTreeMap::from([("runner".into(),"aisim-owned-library-proof".into()),("report_contract".into(),"proof-only-not-aiperf-v2".into()),("aisim_source".into(),env!("AISIM_SOURCE_REVISION").into()),("aiperf_source".into(),env!("AIPERF_SOURCE_REVISION").into())]);
     metadata.insert("proof_wait_for_cancel".into(),proof_wait.to_string());
     let artifact = if let Ok(report) = &result {
