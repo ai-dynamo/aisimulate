@@ -25,6 +25,19 @@ use aiperf_protocol::protocol_dto::PhaseSpec;
 use anyhow::{Context, Result, ensure};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+/// Validate and retain the run's authored default endpoint policy.
+pub(crate) fn default_endpoint_profile(
+    run: &aiperf_config::model::BenchmarkRun,
+    registry: &aiperf_endpoints::EndpointRegistry,
+) -> Result<aiperf_endpoints::profile_validation::ValidatedEndpointProfileV2> {
+    let profiles = aiperf_endpoints::profile_validation::validate_endpoint_profiles_v2(run, registry)?;
+    let profile = profiles.into_iter().find(|profile| {
+        profile.profile_id == aiperf_engine_kernel::endpoint_plan::DEFAULT_ENDPOINT_PROFILE_ID
+    }).context("default endpoint profile missing")?;
+    ensure!(!profile.config.use_server_token_count, "offline simulation cannot supply server token counts");
+    Ok(profile)
+}
+
 pub fn execute(
     run: &aiperf_config::model::BenchmarkRun,
     cancel: RunCancellation,
@@ -136,15 +149,10 @@ pub fn execute(
         let origins = (0..phases.len()).map(Some).collect::<Vec<_>>();
         (prepared, phases, origins)
     };
-    let endpoint_id = aiperf_registry::registry_id::RegistryId::new("chat")?;
-    let endpoint = aiperf_endpoints::EndpointRegistry::builtin()?.prepare(
-        &endpoint_id,
-        aiperf_endpoints::RawEndpointConfig {
-            streaming: true,
-            use_server_token_count: false,
-            ..Default::default()
-        },
-    )?;
+    let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
+    let profile = default_endpoint_profile(run, &registry)?;
+    let endpoint_id = profile.endpoint_id;
+    let endpoint = registry.prepare(&endpoint_id, profile.config)?;
     let mut table = aiperf_endpoints::PreparedEndpointTable::new();
     let key = table.push(endpoint)?;
     let binding = aiperf_engine_input::dataset_input::ResidentDatasetEndpointBinding::new(
