@@ -161,7 +161,7 @@ def test_text_graph_compiles_in_sol_on_blackwell(backend, monkeypatch):
     }
 
 
-def _silicon(backend, version):
+def _explicit(backend, version, database_mode="SILICON"):
     return ForwardPassPerfModelConfig(
         model=MODEL,
         system="b200_sxm",
@@ -171,7 +171,7 @@ def _silicon(backend, version):
         tp=4,
         moe_tp_size=4,
         moe_ep_size=1,
-        database_mode="SILICON",
+        database_mode=database_mode,
         estimation_mode="op_level",
         fallback_policy="deny",
         enable_shared_layer=False,
@@ -183,8 +183,8 @@ def _sources(model, *, prefill):
     return {op["name"]: op["source"] for op in ops}
 
 
-def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
-    model = RustForwardPassPerfModel.best_available(_silicon("sglang", "0.5.14"))
+def test_sglang_hybrid_reads_the_packaged_moe_and_attention_tables():
+    model = RustForwardPassPerfModel.best_available(_explicit("sglang", "0.5.14", "HYBRID"))
     try:
         prefill, decode = _sources(model, prefill=True), _sources(model, prefill=False)
     finally:
@@ -199,15 +199,33 @@ def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
         "generation_moe": "silicon",
         "generation_attention": "silicon",
     }
-    # No SGLang Mamba2 table ships, and readiness accepts that today: both kernels price at SOL.
+    # No SGLang Mamba2 table ships. SILICON readiness reports that (AISIM-2194); HYBRID prices both kernels at SOL.
     assert {prefill["context_mamba_conv1d"], prefill["context_mamba_ssm"]} == {"sol"}
     assert {decode["generation_mamba_conv1d"], decode["generation_mamba_ssm"]} == {"sol"}
 
 
+def test_sglang_silicon_reports_the_missing_mamba2_table():
+    with pytest.raises(
+        PerfDataNotAvailableError,
+        match=r"Mamba2 SILICON data missing for kernel .* in linear_attention/sglang/\S+/mamba2_perf\.parquet",
+    ):
+        RustForwardPassPerfModel.best_available(_explicit("sglang", "0.5.14"))
+
+
 def test_vllm_silicon_has_no_nvfp4_moe_rows_at_top_k_22():
-    model = RustForwardPassPerfModel.best_available(_silicon("vllm", "0.24.0"))
-    try:
-        with pytest.raises(PerfDataNotAvailableError, match=r'MoE data missing for MoeKey \{ quant: "nvfp4".*topk: 22'):
-            model.static_phase_diagnostics(prefill=True, batch_size=1, context_length=1024)
-    finally:
-        model.close()
+    # The engine handle skips readiness, so the SILICON query reaches the MoE table despite the missing Mamba2 table.
+    handle = EngineHandle(
+        compile_engine(
+            MODEL,
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            tp_size=4,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            database_mode="SILICON",
+            shared_layer=False,
+        )
+    )
+    with pytest.raises(PerfDataNotAvailableError, match=r'MoE data missing for MoeKey \{ quant: "nvfp4".*topk: 22'):
+        handle.predict_prefill_latency(1, 1024)

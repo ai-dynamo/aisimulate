@@ -715,6 +715,8 @@ fn native_select(
             requested_estimation_mode: config.estimation_mode,
             selected_estimation_mode: config.estimation_mode,
             selection_failures: Vec::new(),
+            requested_database_mode: config.database_mode,
+            selected_database_mode: None,
             config,
         });
         Ok(model)

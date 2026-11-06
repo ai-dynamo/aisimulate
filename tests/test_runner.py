@@ -2955,6 +2955,7 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tm
         "estimator": "op_level",
         "timing_source": "aic",
         "data_version": expected,
+        "database_mode": "SILICON",
         "data_identity": None,
         "data_version_unavailable_reason": None,
     }

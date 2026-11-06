@@ -134,10 +134,15 @@ simulator workload assumption, supplied separately by the unified CLI as
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
 Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
-including when fallback is denied. For an explicit choice of one of those three
-modes, deny permits only that estimator; allow tries the requested estimator
-first, then the remaining estimators in the same global priority order. Each
-native mode tries the ordered `systems_paths` before moving to another estimator.
+including when fallback is denied. When the SILICON `op_level` candidate
+reports a missing linear-attention table or kernel (Mamba2, GDN, KDA), auto
+rebuilds that candidate in `HYBRID` before `fpm_interpolation`, and the
+provenance records the miss in `selection_failures` together with the
+requested and selected database modes. For an explicit choice of one of those
+three modes, deny permits only that estimator; allow tries the requested
+estimator first, then the remaining estimators in the same global priority
+order. Each native mode tries the ordered `systems_paths` before moving to
+another estimator.
 Omitted roots preserve configured SDK discovery (or the systems-path environment
 override when the SDK uses its packaged default); an explicit `default` entry
 selects the packaged root.
@@ -165,10 +170,11 @@ store has a usable fit. Offline prediction/recommendation reject an untrained
 regression instead of fabricating a latency. The current aggregated regression
 retains its four workload stores; dedicated roles retain one each.
 
-The returned provenance records the requested and selected modes, failed
-selection attempts, effective backend version, data policy, selected root,
-and complete estimator configuration. Its resolved config pins the selected
-mode with deny so saved replay input repeats that selection.
+The returned provenance records the requested and selected estimation and
+database modes, failed selection attempts, effective backend version, data
+policy, selected root, and complete estimator configuration. Its resolved
+config pins the selected mode with deny so saved replay input repeats that
+selection.
 
 ### Diagnostic source values
 
