@@ -157,7 +157,7 @@ impl Dispatcher {
                 }
                 row["capture"] = serde_json::json!({
                     "mode": "compact",
-                    "omitted": ["request_body", "wire_bytes", "input_token_ids", "output_token_ids", "per_token_observations"],
+                    "omitted": ["request_body", "wire_bytes", "input_token_ids", "output_token_ids", "per_token_observations", "response_content", "http_debug", "chat_capture_debug"],
                     "wire_bytes": wire.len(),
                     "wire_blake3": blake3::hash(&wire).to_hex().to_string(),
                     "input_token_count": ids.len(),
@@ -216,6 +216,9 @@ impl Dispatcher {
                 Observation::OutputTokenIds { .. } => {}
             }
         };
+        // The native request owns its prepared body. Diagnostic wire bytes are
+        // no longer needed across the response future, even in complete mode.
+        drop(wire);
         let outcome = self
             .execution
             .infer(
@@ -252,33 +255,44 @@ impl Dispatcher {
                         aiperf_exchange_model::measure::observe::CompletionError::Present =>
                             "present",
                     });
-                    row["response_text"] = serde_json::json!(dispatch.response_text);
+                    if !compact {
+                        row["response_text"] = serde_json::json!(dispatch.response_text);
+                    }
                     row["prompt_tokens"] = serde_json::json!(dispatch.prompt_tokens);
                     row["completion_tokens"] = serde_json::json!(dispatch.completion_tokens);
-                    row["model_response"] = serde_json::json!({
-                        "content": metadata.content,
-                        "client_output_tokens": metadata.client_output_tokens,
-                        "reasoning": metadata.reasoning,
-                        "cached_prompt_tokens": metadata.cached_prompt_tokens,
-                        "response_id": metadata.response_id,
-                        "finish_reason": metadata.finish_reason,
-                        "output_token_ids": metadata.output_token_ids,
-                        "prompt_token_ids": metadata.prompt_token_ids,
-                        "assistant_message": metadata.assistant_message,
-                        "error_kind": metadata.error_kind,
-                        "error_message": metadata.error_message,
-                        "context_overflow": metadata.context_overflow,
-                    });
-                    // These native types intentionally have no wire serializer.
-                    // Retain the complete Debug witness rather than omit fields
-                    // or invent absent HTTP/capture measurements.
-                    row["http_debug"] = serde_json::json!(format!("{:?}", dispatch.http));
-                    row["chat_capture_debug"] = serde_json::json!(
-                        dispatch
-                            .chat_capture
-                            .as_ref()
-                            .map(|capture| format!("{capture:?}"))
-                    );
+                    if compact {
+                        row["model_response"] = serde_json::json!({
+                            "cached_prompt_tokens": metadata.cached_prompt_tokens,
+                            "error_kind": metadata.error_kind,
+                            "context_overflow": metadata.context_overflow,
+                            "content_omitted": true,
+                        });
+                    } else {
+                        row["model_response"] = serde_json::json!({
+                            "content": metadata.content,
+                            "client_output_tokens": metadata.client_output_tokens,
+                            "reasoning": metadata.reasoning,
+                            "cached_prompt_tokens": metadata.cached_prompt_tokens,
+                            "response_id": metadata.response_id,
+                            "finish_reason": metadata.finish_reason,
+                            "output_token_ids": metadata.output_token_ids,
+                            "prompt_token_ids": metadata.prompt_token_ids,
+                            "assistant_message": metadata.assistant_message,
+                            "error_kind": metadata.error_kind,
+                            "error_message": metadata.error_message,
+                            "context_overflow": metadata.context_overflow,
+                        });
+                        // These native types intentionally have no wire serializer.
+                        // Retain the complete Debug witness rather than omit fields
+                        // or invent absent HTTP/capture measurements.
+                        row["http_debug"] = serde_json::json!(format!("{:?}", dispatch.http));
+                        row["chat_capture_debug"] = serde_json::json!(
+                            dispatch
+                                .chat_capture
+                                .as_ref()
+                                .map(|capture| format!("{capture:?}"))
+                        );
+                    }
                 }
                 Ok(None) => row["status"] = serde_json::json!("cancelled_none"),
                 Err(error) => {
