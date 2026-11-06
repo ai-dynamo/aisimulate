@@ -54,7 +54,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `g3_offload` | Unset (off) | Rejected | G3 block; see [G3 offload](#g3-offload). |
 | `kvcr` | Unset (off) | Rejected | KVCR block; see [KVCR peer fetch](#kvcr-peer-fetch). |
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
-| `prefix_match_unit` | Unset | Rejected | Prefix-matching granularity with `state_cache`. |
+| `prefix_match_unit` | Unset | Rejected | Prefix-matching granularity with `state_cache`. For a grouped cache with prefix caching, it is the probe's hash block: unset uses it, and a set value must equal it. |
 
 ## GPU cache (G1)
 
@@ -448,9 +448,85 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 - **Grouped caches.** Some whole-forward (FPM) profiles describe several KV
   groups, such as sliding-window and full attention, sharing one byte budget.
   Replay then allocates each group separately. A `state` group holds a fixed
-  number of blocks for each running request. Grouped caches require cold
-  aggregated vLLM with `prefix_caching: false`, no offload, no P/D and default
-  capacity. See [memory accounting](../../perf-model/memory.md).
+  number of blocks for each running request. Grouped caches require aggregated
+  vLLM, no offload, no P/D and default capacity. They run cold with
+  `prefix_caching: false`. See [memory accounting](../../perf-model/memory.md).
+
+  Grouped caches run with prefix caching on only under these conditions. The
+  profile's runtime probe recorded `enable_prefix_caching: true` and
+  `hash_block_size_tokens` on vLLM 0.31.0 or 0.32.0. Every group declares
+  `prefix_cacheable`. No group is a `convolution` group, because grouped
+  prefix caching does not support convolution groups yet. All groups have the
+  same `page_size_bytes`. A prefix-cacheable `state` group also needs the
+  probe's `mamba_cache_mode: align`. For GLM-5.3-Flash, the hash block and
+  `max_batched_tokens` are multiples of 4. Replay then follows the rules of
+  the vLLM version in `engine.backend_version`:
+
+  - Replay hashes prompts in blocks of the probe's `hash_block_size_tokens`.
+    vLLM allows hits inside a block under two conditions. A prefix-cacheable
+    `state` group has a block larger than the hash block. Every
+    prefix-cacheable sliding-window group has a block equal to the hash
+    block. A hit then ends on a multiple of the hash block. Otherwise it ends
+    on a multiple of the least common multiple of the group block sizes.
+  - State groups resume only at the boundaries that vLLM keeps under its
+    default `prefix_cache_retention_interval` of 0, such as the last block
+    boundary before the end of a prompt. A `state` group with
+    `prefix_cacheable: false` is a ring, such as an indexer tail. It holds one
+    block for the whole request and never hits.
+  - A request that resumes from a cached state holds the cached block and its
+    running block during its first step. It then releases the cached block,
+    which stays cached until eviction. A hit inside a state block copies the
+    cached block in that step, and the copy replaces the cached block.
+  - Prefill chunks end on block boundaries, so that the state there can be
+    cached. As in vLLM, this align split applies only to a rank with a
+    prefix-cacheable `state` group. A rank with only full-attention and
+    sliding-window groups is not split.
+  - On vLLM 0.32.0 a KDA state group can carry a FlashKDA checkpoint block.
+    The request takes that block in its final prefill chunk and releases it
+    at its next step. The block stays cached until eviction.
+
+  Replay differs from vLLM in these known ways:
+
+  - Replay holds the previous state block after a block boundary, the cached
+    block after a hit and the checkpoint block after the final prefill chunk
+    for one scheduler step. vLLM 0.31.0 and 0.32.0 turn async scheduling on
+    by default and then hold these blocks for two steps. So block counts and
+    admission can be optimistic by one block per state group and held block
+    for one step. Hit lengths do not change.
+  - Replay caches blocks of prompt tokens only. vLLM also caches the
+    full-attention blocks that output tokens fill. A request's hit is at most
+    the shortest hit over its prefix-cacheable groups. Under the default
+    retention, a state or sliding-window group keeps no output-token position.
+    So when every prefix-cacheable group is full attention, a next turn that
+    repeats recorded output tokens hits fewer tokens than in vLLM. With a state
+    or sliding-window group, the difference changes only which blocks are cached
+    and the eviction order.
+  - Replay does not let a waiting request hit a state block that another
+    request cached in the same scheduler step. The request gets the shorter
+    hit and can start in that step. vLLM keeps the request, and the requests
+    queued behind it, waiting for that step, and gives it the longer hit in
+    the next step.
+  - vLLM looks up prefix-cacheable groups together only when their cache specs
+    are equal in every field. The profile records only a group's kind, block
+    size, window and checkpoint setting, so replay looks up groups that agree
+    on these together, also when vLLM keeps them apart because another field
+    differs, such as the head size, the data type or the state shape. Replay
+    can then miss a prefill stop where vLLM saves an extra state, and with hits
+    inside a block it can give a shorter hit. The profile does not record which
+    groups share a spec.
+  - Three corners also differ. The first and the third apply only with hits
+    inside a block. The second needs a state group whose block is larger than
+    the hash block. First, replay does not give a full-attention block that is
+    already cached a second key at a hash boundary inside it. A later hit
+    there can then be lower than in vLLM. Second, a request can write past a
+    state that it published inside a block. vLLM then makes a copy, and replay
+    does not count it. So the block count can be lower by one block per state
+    group for that step. Third, a hit inside a full-attention block gets a
+    copy of the cached block. Replay releases the cached block in the
+    allocation that takes the copy. vLLM holds it for the rest of the step,
+    so that the step's copy can read it. So the block count can be lower by
+    one block per full-attention group for that step.
+
 - **Belady eviction.** The native ReplaySpec field
   `engine.kv_eviction_policy: belady` evicts the block whose next use in the
   trace is farthest away. It is not available in `predict` YAML. It requires an
