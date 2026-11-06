@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+resolver = "3"
+
+[package]
+name = "aisim-aiperf-workload-runner"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+aisimulate-core = { package = "aisim-core", path = "../../core", default-features = false }
+anyhow = "1"
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "sync", "macros", "io-util", "io-std"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
+aiperf-agentx = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/agentx" }
+aiperf-timing = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/scheduling/timing" }
+aiperf-registry = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/registry" }
+aiperf-fsio = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/fsio" }
+aiperf-clock = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/clock" }
+aiperf-clock-runtime = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/clock-runtime" }
+aiperf-config = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/config/config" }
+aiperf-dataset = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/dataset" }
+aiperf-dataset-synthesis = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/synthesis" }
+aiperf-dispatch = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/dispatch" }
+aiperf-distributed-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/distributed/model" }
+aiperf-endpoints = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/endpoints" }
+aiperf-engine-input = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/input" }
+aiperf-engine-kernel = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/kernel" }
+aiperf-engine-phase = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/phase" }
+aiperf-exchange-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/exchange-model" }
+aiperf-multiturn = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/multiturn" }
+aiperf-protocol = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/config/protocol" }
+aiperf-request-execution = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/request-execution" }
+aiperf-rng = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/rng" }
+aiperf-tokenizers = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/tokenizers" }
+
+[dev-dependencies]
+tempfile = "3"

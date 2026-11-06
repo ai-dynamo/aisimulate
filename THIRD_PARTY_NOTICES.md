@@ -44,6 +44,19 @@ beside it. The expected generated SHA256 is
 These notices also apply to generated source copies; materialization alone does
 not qualify a runtime or captured labels.
 
+## AIPerf independent workload-runner model binding
+
+Repository-root `crates/tests/aiperf-workload-runner/src/model.rs` is adapted
+from `crates/engine/simulate/src/simple_execution.rs` in NVIDIA-dev/aiperf-rs,
+immutable revision `d453b97b45c815f08776865498295b9fcd147cb5`:
+https://github.com/NVIDIA-dev/aiperf-rs/blob/d453b97b45c815f08776865498295b9fcd147cb5/crates/engine/simulate/src/simple_execution.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Apache-2.0; the full license is included in this repository as `LICENSE`.
+Modified by NVIDIA to consume the shared `aiperf-request-execution` contract
+and current AISim core directly, independently of the AIPerf application and
+simulation crates. No AgentX workload or scheduling policy is copied.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root
