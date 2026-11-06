@@ -459,7 +459,7 @@ def _checkpoint_manifest_record(checkpoint_path: Path, attempted: set[str]) -> d
         "done": sorted(checkpoint["done"]),
         "failed": sorted(checkpoint["failed"]),
         "attempted": sorted(attempted),
-        "identity": {field: checkpoint[field] for field in collect_mod._CHECKPOINT_IDENTITY_FIELDS},
+        "identity": collect_mod._checkpoint_identity_from_document(checkpoint),
     }
 
 
@@ -6271,10 +6271,9 @@ def test_recovery_rejects_unrelated_canonical_checkpoint_even_with_same_case_ids
     journal_path = output_root / collect_mod._SIDECAR_TRANSACTION_FILENAME
     transaction = json.loads(journal_path.read_text(encoding="utf-8"))
     transaction["checkpoints"][0]["path"] = str(unrelated_checkpoint)
-    transaction["checkpoints"][0]["identity"] = {
-        field: json.loads(unrelated_checkpoint.read_text(encoding="utf-8"))[field]
-        for field in collect_mod._CHECKPOINT_IDENTITY_FIELDS
-    }
+    transaction["checkpoints"][0]["identity"] = collect_mod._checkpoint_identity_from_document(
+        json.loads(unrelated_checkpoint.read_text(encoding="utf-8"))
+    )
     unrelated_document = json.loads(unrelated_checkpoint.read_text(encoding="utf-8"))
     transaction["checkpoints"][0]["done"] = unrelated_document["done"]
     transaction["checkpoints"][0]["failed"] = unrelated_document["failed"]

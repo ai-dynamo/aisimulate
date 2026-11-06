@@ -27,6 +27,7 @@ def _write(path: Path, content: str) -> None:
 # One file of every kind collector_hash covers, and one of every kind it leaves out.
 HASHED_FILES = (
     "collector/helper.py",
+    "collector/vllm/collect_gemm_npu.py",
     "collector/cases/base_ops/gemm.yaml",
     "collector/sglang/dsv4_megamoe/run_torchrun.sh",
     "collector/wideep/vllm/patches/deepep.patch",
@@ -87,6 +88,7 @@ def test_collector_hash_stable_across_repo_relocation(tmp_path_factory):
 
 
 def test_real_repo_is_hashable():
+    assert "collector/vllm/collect_gemm_npu.py" in provenance.hashed_files(REPO_ROOT)
     assert provenance.collector_hash(REPO_ROOT).startswith("sha256:")
 
 
