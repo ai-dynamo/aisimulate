@@ -310,6 +310,77 @@ def test_cache_groups_map_specs_by_class_and_record_state_evidence():
     assert {name: observer.spec_kind(_spec(name)) for name in kinds} == kinds
 
 
+_IMPORTED_PREFIX_FIELDS = {
+    "prefix_cacheable",
+    "transfer_bytes_per_block",
+    "prefill_checkpoint_blocks",
+    "prefill_checkpoint_alignment",
+}
+
+
+# Both vLLM 0.31.0 ring specs. KpoolTailSpec is a SlidingWindowSpec, CircularBufferSpec an AttentionSpec.
+@pytest.mark.parametrize(("ring_spec", "ring_window"), [("KpoolTailSpec", 4), ("CircularBufferSpec", None)])
+def test_import_marks_prefix_cacheable_groups_and_checkpoint_blocks(ring_spec, ring_window):
+    full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
+    tail = _spec(ring_spec, block_size=4, page_size_bytes=71_808, sliding_window=ring_window, dtype="torch.bfloat16")
+    config = SimpleNamespace(
+        kv_cache_groups=[_group(["attn.0"], full), _group(["tail.0"], tail), _group(["kda.0", "kda.1"], _mamba())]
+    )
+    # A vLLM 0.31.0 worker record: the observer's groups with their layer classes, and layer-strided allocations.
+    attention_class = "vllm.model_executor.layers.attention.Attention"
+    cache = {
+        "groups": [
+            {**group, "layer_classes": dict.fromkeys(group["layer_names"], attention_class)}
+            for group in observer.cache_groups(config, hybrid_evidence=True)
+        ],
+        "tensor_allocations": [{"layer_stride": 0}],
+    }
+    scheduled = {"groups": [runtime_memory._scheduler_copy(group) for group in cache["groups"]]}
+    attention, ring, kda = runtime_memory._normalized_groups(cache, scheduled, 1_114_112)
+    assert [group["prefix_cacheable"] for group in (attention, ring, kda)] == [True, False, True]
+    # Only the Mamba group records its checkpoint blocks: the count of its spec, without an alignment. Transfer bytes
+    # come only from validated layer views, and this record has none.
+    assert kda["prefill_checkpoint_blocks"] == 0
+    assert set(attention) & _IMPORTED_PREFIX_FIELDS == set(ring) & _IMPORTED_PREFIX_FIELDS == {"prefix_cacheable"}
+    assert set(kda) & _IMPORTED_PREFIX_FIELDS == {"prefix_cacheable", "prefill_checkpoint_blocks"}
+    # A vLLM 0.27.0 record has none of the new keys.
+    worker, scheduler, cache_config = _initialized()
+    legacy = observer.worker_memory(worker)
+    page = legacy["allocated_cache_bytes"] // legacy["num_blocks"]
+    groups = runtime_memory._normalized_groups(legacy, observer.scheduler_memory(scheduler, cache_config), page)
+    assert [group["kind"] for group in groups] == ["attention", "attention", "convolution"]
+    assert not any(set(group) & _IMPORTED_PREFIX_FIELDS for group in groups)
+
+
+def test_import_leaves_the_prefix_marker_of_a_sliding_window_mla_group_out():
+    # A SlidingWindowMLASpec group takes part in prefix caching unless it replays a bounded window
+    # (kv_cache_interface.py:949-951), and no record holds that.
+    full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
+    swa = _spec("SlidingWindowMLASpec", block_size=16, page_size_bytes=8192, sliding_window=128, dtype="torch.bfloat16")
+    tail = _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
+    config = SimpleNamespace(
+        kv_cache_groups=[
+            _group(["attn.0"], full),
+            _group(["swa.0"], swa),
+            _group(["tail.0"], tail),
+            _group(["kda.0"], _mamba()),
+        ]
+    )
+    attention_class = "vllm.model_executor.layers.attention.Attention"
+    cache = {
+        "groups": [
+            {**group, "layer_classes": dict.fromkeys(group["layer_names"], attention_class)}
+            for group in observer.cache_groups(config, hybrid_evidence=True)
+        ],
+        "tensor_allocations": [{"layer_stride": 0}],
+    }
+    scheduled = {"groups": [runtime_memory._scheduler_copy(group) for group in cache["groups"]]}
+    groups = runtime_memory._normalized_groups(cache, scheduled, 1_114_112)
+    assert [group["sliding_window"] for group in groups] == [None, 128, None, None]
+    assert "prefix_cacheable" not in groups[1]
+    assert [groups[index]["prefix_cacheable"] for index in (0, 2, 3)] == [True, False, True]
+
+
 def test_uniform_type_groups_record_their_inner_specs():
     role = Enum("SparseCacheRole", {"SPARSE": "sparse", "INDEXER": "indexer"}, type=str)
     latent, indexer = (
