@@ -330,7 +330,7 @@ impl ModelSink {
             row["end_ns"] = serde_json::json!(at_ns); row["response_text"] = serde_json::json!(text);
             row["output_token_ids"] = serde_json::json!(response.and_then(|outcome| outcome.output_token_ids.clone()));
         }
-        if let Some(error) = event_error.into_inner() { return Err(error.into()); }
+        if let Some(error) = event_error.borrow_mut().take() { return Err(error.into()); }
         Ok(match terminal { ReplayTerminalStatus::Completed => GraphReply::from_text(text), ReplayTerminalStatus::Canceled => GraphReply::cancelled(), _ => GraphReply::failed() })
     }
 }
