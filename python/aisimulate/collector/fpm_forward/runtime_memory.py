@@ -662,9 +662,13 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             # Grouped profiles hold no speculative state blocks, whatever the speculative marker says.
             if mamba and state["num_speculative_blocks"] != 0:
                 raise ValueError(f"mamba speculative blocks are not modeled: {names}")
-            # The spec gives the count. A MambaSpec holds one state block and its speculative
-            # blocks (kv_cache_interface.py:1048); a KpoolTailSpec or CircularBufferSpec holds one block
-            # (:1019-1025, :904-911). Without speculative blocks, every state spec class gives one block.
+            # blocks_per_request is the steady count, held between block boundaries. A MambaSpec holds one state
+            # block and its speculative blocks in both modes (kv_cache_interface.py:1093-1094), and a KpoolTailSpec
+            # or CircularBufferSpec holds one block (:1019-1025, :904-911). So without speculative blocks every state
+            # spec class gives one block. For a MambaSpec in align mode, the count leaves out the 2 + k + c blocks that
+            # vLLM's startup sizing counts (:1089-1092). It also leaves out the previous state block, held for one or
+            # two steps after a boundary, two with async scheduling (single_type_kv_cache_manager.py:1658-1675). The
+            # observation import checks the startup count against the recorded concurrency.
             if blocks != 1:
                 raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks

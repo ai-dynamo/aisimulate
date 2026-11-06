@@ -24,7 +24,7 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
-from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC, _SPEC_MODULE
+from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC, _SPEC_MODULE, _WINDOW_SPECS
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
     InstrumentationBundle,
@@ -1110,6 +1110,51 @@ def _phase_prefix_caching(
     }
 
 
+# The vLLM 0.31.0 spec classes that vLLM's startup sizing counts as one block per request: the tail and the ring
+# (kv_cache_interface.py:868-877, :1019-1022, :904-907).
+_ONE_BLOCK_SPECS = frozenset(_SPEC_MODULE + name for name in ("KpoolTailSpec", "CircularBufferSpec"))
+
+
+def _validate_startup_concurrency(record: dict[str, Any]) -> None:
+    """Check the kv_cache_max_concurrency of a vLLM 0.31.0 scheduler against its cache groups.
+
+    vLLM divides the pool blocks by the blocks that its startup sizing counts for one request at max_model_len in the
+    scheduler's groups (v1/core/kv_cache_utils.py:1105-1116, v1/engine/core.py:333-351). It counts 2 + k + c blocks
+    for a MambaSpec group in align mode and 1 + k in mode none (kv_cache_interface.py:1083-1094), so this check sees
+    the align count that the steady blocks_per_request leaves out. It counts one block for the tail and the ring.
+    Every other class of SPEC_KINDS but the windowed ones is FullAttentionSpec or a subclass of it. For these it counts
+    cdiv(max_model_len, block_size) blocks at the decode context parallel size of 1 that every accepted record has
+    (:578-583). vLLM's count for a windowed group also covers the tokens in flight (:840-877), which this check does
+    not model, so a layout with one keeps the other checks only.
+    """
+    cache = record["cache"]
+    context = record["resolved_config"]["model_config"]["max_model_len"]
+    blocks = 0
+    for group in cache["groups"]:
+        spec = group["spec_type"]
+        if spec == _MAMBA_SPEC:
+            state = group["state"]
+            blocks += state["num_speculative_blocks"] + (
+                2 + state["num_prefill_checkpoint_blocks"] if cache["mamba_cache_mode"] == "align" else 1
+            )
+        elif spec in _ONE_BLOCK_SPECS:
+            blocks += 1
+        elif spec.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS:
+            return
+        else:
+            blocks += -(-context // group["block_size_tokens"])
+    label = f"{record['phase']} scheduler of DP rank {record['dp_rank']}"
+    concurrency = cache.get("kv_cache_max_concurrency")
+    if isinstance(concurrency, bool) or not isinstance(concurrency, (int, float)) or not 0 < concurrency < math.inf:
+        raise ValueError(f"{label} lacks a positive kv_cache_max_concurrency")
+    # vLLM keeps the quotient as a float. The tolerance covers its rounding, far below the change of one block.
+    if not math.isclose(concurrency, cache["num_blocks"] / blocks, rel_tol=1e-9):
+        raise ValueError(
+            f"{label} records kv_cache_max_concurrency {concurrency!r}, which gives "
+            f"{cache['num_blocks'] / concurrency:.3f} blocks per request, but its cache groups reserve {blocks}"
+        )
+
+
 def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cache groups without the parts of a state group that follow the prefix-caching mode.
 
@@ -1291,6 +1336,10 @@ def _configuration(
                 }
             )
         prefix_caching[phase] = _phase_prefix_caching(phase, workers, schedulers)
+        # Only vLLM 0.31.0 records hold prefix-caching evidence and the startup concurrency.
+        if prefix_caching[phase] is not None:
+            for _, scheduler in sorted(schedulers.items()):
+                _validate_startup_concurrency(scheduler)
     if len({value is None for value in prefix_caching.values()}) > 1:
         raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
     # The record holds the prefix-caching values of the role's first collection phase that this validation covers.

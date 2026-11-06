@@ -148,6 +148,10 @@ def _campaign(
                             view["stride_bytes"][view["block_axis"]] = page_bytes
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
+                    if "kv_cache_max_concurrency" in cache:
+                        # A vLLM 0.31.0 scheduler divides its pool blocks by the blocks of one request
+                        # (kv_cache_utils.py:1105-1116), so its concurrency grows with the pool.
+                        cache["kv_cache_max_concurrency"] *= capacity_multiplier
                 if block_tokens != (16, 16):
                     # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
                     for group, tokens in zip(cache["groups"], block_tokens, strict=True):

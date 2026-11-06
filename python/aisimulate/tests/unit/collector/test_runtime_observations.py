@@ -355,6 +355,16 @@ def _v031_records(layout, *, prefix_caching, dp, max_model_len=4096):
         allocation["size"] = blocks * page
     scheduler_block = math.lcm(*(item["block_size_tokens"] for item in groups))
     hash_block = hash_block if prefix_caching else scheduler_block
+
+    def reserved(item):
+        # The startup count of one request at max_model_len in a group (kv_cache_interface.py:578-583, :1083-1094,
+        # :1019-1022): the context in attention blocks, 2 Mamba blocks in align mode and 1 in mode none, 1 tail block.
+        if item["kind"] == "attention":
+            return -(-max_model_len // item["block_size_tokens"])
+        return (2 if mode == "align" else 1) if "mamba_cache_mode" in item["state"] else 1
+
+    # The engine-core startup capacity (kv_cache_utils.py:1105-1116, :2444-2452). Import checks the concurrency.
+    concurrency = blocks / sum(reserved(item) for item in groups)
     worker = {
         "num_blocks": blocks,
         "available_cache_bytes": blocks * page + 256,
@@ -389,9 +399,8 @@ def _v031_records(layout, *, prefix_caching, dp, max_model_len=4096):
         "block_size": scheduler_block,
         "hash_block_size": hash_block,
         "mamba_cache_mode": mode,
-        # Engine-core startup capacity: it follows num_blocks and the Mamba mode, and nothing compares it.
-        "kv_cache_size_tokens": free * scheduler_block,
-        "kv_cache_max_concurrency": free * scheduler_block / max_model_len,
+        "kv_cache_size_tokens": int(concurrency * max_model_len),
+        "kv_cache_max_concurrency": concurrency,
         "prefix_caching": {
             "enable_prefix_caching": prefix_caching,
             "mamba_cache_mode": mode,
@@ -1252,6 +1261,121 @@ def test_glm_tp4_observations_import_state_groups(tmp_path):
     FpmResourceProfile.model_validate(resources)
 
 
+def _glm_tp4_at_probe_scale(tmp_path, concurrency):
+    """The glm_tp4 records at the size of the GB300 probes: 13,816 pool blocks and a 1,048,576-token context.
+
+    Every scheduler records ``concurrency`` as its kv_cache_max_concurrency.
+    """
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
+    launches["tp2"]["collection"]["max_model_len"] = 1_048_576
+    _replace_launch(path, launches)
+    factor = 13_816 // 8
+
+    def edit(record):
+        record["resolved_config"]["model_config"]["max_model_len"] = 1_048_576
+        cache = record["cache"]
+        cache["num_blocks"] *= factor
+        if record["kind"] == "scheduler":
+            cache.update(initial_free_blocks=cache["num_blocks"] - 1, kv_cache_max_concurrency=concurrency)
+            return
+        # The packaged GB300 memory holds the larger pool. Each layer region and each view grow with the pool.
+        record["hardware"]["total_memory_bytes"] = 298_013_687_808
+        for name in ("available_cache_bytes", "allocated_cache_bytes"):
+            cache[name] *= factor
+        cache["storages"][0]["size_bytes"] *= factor
+        for allocation in cache["tensor_allocations"]:
+            for position, name in enumerate(allocation["layers"]):
+                region = allocation["offset"] + position * allocation["layer_stride"]
+                for view in cache["layer_tensors"][name]:
+                    view["storage_offset_bytes"] += region * (factor - 1)
+            for name in ("size", "offset", "layer_stride"):
+                allocation[name] *= factor
+        for views in cache["layer_tensors"].values():
+            for view in views:
+                view["shape"][0] *= factor
+
+    _mutate(path, edit)
+    return path, launches
+
+
+_GLM_SCHEDULER = "prefill scheduler of DP rank 0"
+
+
+@pytest.mark.parametrize(
+    "concurrency,diagnostic",
+    [
+        # The value of the GB300 probes: 13,816 / 491. For one request at 1,048,576 tokens, vLLM counts 482 attention
+        # blocks, 2 blocks of each of the 4 KDA groups in align mode and 1 tail block (kv_cache_utils.py:1105-1116).
+        (28.138492871690428, None),
+        # One block per KDA group gives 487 blocks per request.
+        (
+            13_816 / 487,
+            f"{_GLM_SCHEDULER} records kv_cache_max_concurrency 28.369609856262834, which gives 487.000 blocks per "
+            "request, but its cache groups reserve 491",
+        ),
+        (None, f"{_GLM_SCHEDULER} lacks a positive kv_cache_max_concurrency"),
+    ],
+    ids=["vllm", "one_block_per_kda_group", "missing"],
+)
+def test_v031_glm_scheduler_concurrency_must_follow_its_cache_groups(tmp_path, concurrency, diagnostic):
+    path, launches = _glm_tp4_at_probe_scale(tmp_path, concurrency)
+    result = validate_observations(path, launches)["tp2"]
+    if diagnostic is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        # The kv_cache_bytes that the import of the GB300 probe gave, and the steady count of one block per state group.
+        assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == 13_815 * 13_045_120 == 180_218_332_800
+        assert result["resources"]["cache_groups"] == glm_tp4_cache_groups()
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+def _startup_record(mode, specs, concurrency):
+    """A vLLM 0.31.0 scheduler record of 13,816 blocks at 1,048,576 tokens, one group per (class, block)."""
+    groups = [
+        {"spec_type": _V031_SPEC + spec, "block_size_tokens": block}
+        | ({"state": {"num_speculative_blocks": 0, "num_prefill_checkpoint_blocks": 0}} if spec == "MambaSpec" else {})
+        for spec, block in specs
+    ]
+    return {
+        "phase": "decode",
+        "dp_rank": 1,
+        "cache": {
+            "num_blocks": 13_816,
+            "mamba_cache_mode": mode,
+            "groups": groups,
+            "kv_cache_max_concurrency": concurrency,
+        },
+        "resolved_config": {"model_config": {"max_model_len": 1_048_576}},
+    }
+
+
+_GLM_SPECS = [("MLAAttentionSpec", 2176), ("KpoolTailSpec", 4), *[("MambaSpec", 2176)] * 4]
+
+
+@pytest.mark.parametrize(
+    "mode,specs,concurrency,blocks",
+    [
+        # In mode none vLLM counts 1 + k blocks for a Mamba group (kv_cache_interface.py:1093-1094): 482 + 1 + 4 x 1.
+        ("none", _GLM_SPECS, 13_816 / 487, None),
+        ("none", _GLM_SPECS, 13_816 / 491, 487),
+        ("align", _GLM_SPECS, 13_816 / 491, None),
+        # vLLM counts one block for a ring (:904-907) and cdiv(1,048,576, 64) for a full-attention group (:578-583).
+        ("none", [("FullAttentionSpec", 64), ("CircularBufferSpec", 128)], 13_816 / 16_385, None),
+        # vLLM's count for a windowed group also covers the tokens in flight (:840-877), which the check does not model.
+        ("align", [("SlidingWindowSpec", 64), ("MambaSpec", 64)], 1.0, None),
+    ],
+    ids=["none", "none_with_the_align_count", "align", "ring", "windowed"],
+)
+def test_v031_startup_concurrency_follows_the_mamba_cache_mode(mode, specs, concurrency, blocks):
+    record = _startup_record(mode, specs, concurrency)
+    if blocks is None:
+        runtime_observations._validate_startup_concurrency(record)
+        return
+    with pytest.raises(ValueError, match=f"but its cache groups reserve {blocks}$"):
+        runtime_observations._validate_startup_concurrency(record)
+
+
 def test_mamba_hybrid_observations_import_state_groups(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
     result = validate_observations(path, launches)["tp2"]
@@ -1283,7 +1407,8 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
 
 def test_aggregated_phases_with_different_prefix_caching_import_the_prefill_values(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
-    # The engine core sets a different startup capacity in each phase; nothing compares it.
+    # The engine core sets a different startup capacity in each phase. Import checks each one against the Mamba cache
+    # mode of its own phase, and it does not compare the phases.
     capacity = {
         phase: _phase_records(path, phase, "scheduler")[0]["cache"]["kv_cache_size_tokens"]
         for phase in ("prefill", "decode")
@@ -2483,7 +2608,8 @@ def _make_layer_strided(record):
 
     The worker allocation places its layers with a layer stride, the views of a layer form a list, and the
     kernel blocks of the runner are recorded. A scheduler reserves only the null block. Every process records the
-    prefix-caching evidence of its resolved cache config, and the scheduler adds its block sizes.
+    prefix-caching evidence of its resolved cache config, and the scheduler adds its block sizes and its startup
+    concurrency.
     """
     cache, resolved = record["cache"], record["resolved_config"]["cache_config"]
     resolved["mamba_cache_mode"] = "none"
@@ -2505,6 +2631,8 @@ def _make_layer_strided(record):
             initial_free_blocks=cache["num_blocks"] - 1,
             permanent_reserved_block_ids=[0],
             mamba_cache_mode="none",
+            # For one request at 4,096 tokens, vLLM counts 256 blocks of each of the two 16-token groups.
+            kv_cache_max_concurrency=cache["num_blocks"] / 512,
             **sizes,
         )
         evidence.update(sizes)

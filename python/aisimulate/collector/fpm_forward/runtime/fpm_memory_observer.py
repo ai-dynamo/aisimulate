@@ -497,7 +497,10 @@ def _state(spec: Any) -> dict[str, Any]:
         "dtypes",
         "real_page_size_bytes",
     )
-    # One state block plus the speculative blocks (1048, 1094).
+    # The steady count: one state block plus the speculative blocks, held between block boundaries in both modes
+    # (1093-1094). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1089-1092). After a boundary, the
+    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.31.0
+    # default (v1/core/single_type_kv_cache_manager.py:1658-1675).
     return {
         **{key: _json_value(getattr(spec, key)) for key in fields},
         "blocks_per_request": 1 + spec.num_speculative_blocks,

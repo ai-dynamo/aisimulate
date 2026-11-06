@@ -483,11 +483,17 @@ def _fake_campaign(
             # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store.
             config.cache_config.cache_dtype = "fp8_e4m3"
         # The engine core sets the startup capacity in its own process, before it
-        # builds the scheduler (engine/core.py:346-351); workers keep None.
-        tokens = (blocks - 1) * block_size
+        # builds the scheduler (engine/core.py:346-351); workers keep None. One request at
+        # 4,096 tokens counts as 2 attention, 4 x 2 KDA and 1 tail blocks of GLM in align mode,
+        # or 256 blocks of the one attention group (kv_cache_utils.py:1105-1116).
+        concurrency = blocks / (11 if layout == "glm_tp4" else 256)
         scheduler_config = SimpleNamespace(**vars(config))
         scheduler_config.cache_config = SimpleNamespace(
-            **{**vars(config.cache_config), "kv_cache_size_tokens": tokens, "kv_cache_max_concurrency": tokens / 4096}
+            **{
+                **vars(config.cache_config),
+                "kv_cache_size_tokens": int(concurrency * 4096),
+                "kv_cache_max_concurrency": concurrency,
+            }
         )
         scheduler_fields = {"block_size": block_size, "hash_block_size": block_size}
     else:
@@ -1143,8 +1149,8 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
         }
         # The startup capacity is engine-core evidence of the scheduler record only.
         assert (scheduler["cache"]["kv_cache_size_tokens"], scheduler["cache"]["kv_cache_max_concurrency"]) == (
-            15_232,
-            3.71875,
+            2_978,
+            8 / 11,
         )
 
 
