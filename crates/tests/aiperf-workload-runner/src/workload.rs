@@ -215,10 +215,7 @@ pub fn execute(
             None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
         }
     };
-    let dispatcher = Rc::new(Dispatcher {
-        execution: engine.clone(),
-        records: RefCell::new(Vec::new()),
-    });
+    let dispatcher = Rc::new(Dispatcher::new(engine.clone()));
     let plans = build_plans(run, &prep, clock.clone())?;
     run_with_engine(plans, clock, engine, dispatcher, observer, cancel)
 }

@@ -9,12 +9,22 @@ use aiperf_exchange_model::{dispatch::RequestObserver, measure::TurnDispatchOutc
 use aiperf_request_execution::execution::{Execution, Observation, Request};
 use aiperf_request_execution::model_input::OpenAiRequestEncoder;
 use async_trait::async_trait;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    Complete,
+    Compact,
+}
 
 pub struct Dispatcher {
     pub execution: Rc<dyn Execution>,
     pub records: RefCell<Vec<serde_json::Value>>,
+    capture: Cell<CaptureMode>,
 }
 
 // A cancelled phase may drop dispatch rather than poll infer to Ok(None).
@@ -36,6 +46,20 @@ impl Drop for CaptureGuard<'_> {
 }
 
 impl Dispatcher {
+    pub(crate) fn new(execution: Rc<dyn Execution>) -> Self {
+        Self {
+            execution,
+            records: RefCell::new(Vec::new()),
+            capture: Cell::new(CaptureMode::Complete),
+        }
+    }
+
+    /// Retain identities, scalar outcomes and cryptographic input witnesses,
+    /// not repeated context bodies or per-token JSON. Observer delivery is unchanged.
+    pub(crate) fn set_compact_capture(&self) {
+        self.capture.set(CaptureMode::Compact);
+    }
+
     async fn execute(
         &self,
         turn: TurnToSend,
@@ -44,6 +68,7 @@ impl Dispatcher {
         started: &dyn Fn(i64),
         cancel: CancellationToken,
     ) -> anyhow::Result<Option<TurnDispatchOutcome>> {
+        let compact = self.capture.get() == CaptureMode::Compact;
         let index = self.records.borrow().len();
         let identity = serde_json::json!({
             "uuid": turn.uuid,
@@ -125,18 +150,33 @@ impl Dispatcher {
         {
             let mut records = self.records.borrow_mut();
             let row = &mut records[index];
-            row["request"]["body"] = body;
-            // Exact bytes are authoritative; UTF-8 is a convenience view only.
-            // FNV is explicitly labelled, not passed off as a cryptographic hash.
-            let hash = wire.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-            });
-            row["wire"] = serde_json::json!({
-                "body_bytes": wire.as_ref(),
-                "body_utf8": std::str::from_utf8(&wire).ok(),
-                "fnv1a64": format!("{hash:016x}"),
-            });
-            row["input_token_ids"] = serde_json::json!(ids);
+            if compact {
+                let mut tokens = blake3::Hasher::new();
+                for id in &ids {
+                    tokens.update(&id.to_le_bytes());
+                }
+                row["capture"] = serde_json::json!({
+                    "mode": "compact",
+                    "omitted": ["request_body", "wire_bytes", "input_token_ids", "output_token_ids", "per_token_observations"],
+                    "wire_bytes": wire.len(),
+                    "wire_blake3": blake3::hash(&wire).to_hex().to_string(),
+                    "input_token_count": ids.len(),
+                    "input_token_ids_le_u32_blake3": tokens.finalize().to_hex().to_string(),
+                });
+            } else {
+                row["request"]["body"] = body;
+                // Exact bytes are authoritative; UTF-8 is a convenience view only.
+                // FNV is explicitly labelled, not passed off as a cryptographic hash.
+                let hash = wire.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+                    (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+                });
+                row["wire"] = serde_json::json!({
+                    "body_bytes": wire.as_ref(),
+                    "body_utf8": std::str::from_utf8(&wire).ok(),
+                    "fnv1a64": format!("{hash:016x}"),
+                });
+                row["input_token_ids"] = serde_json::json!(ids);
+            }
             row["status"] = serde_json::json!("infer_pending");
         }
         let mut callback = |event| {
@@ -144,6 +184,8 @@ impl Dispatcher {
             {
                 let mut records = self.records.borrow_mut();
                 let row = &mut records[index];
+                let retain_observation =
+                    !compact || !matches!(&event, Observation::OutputTokenIds { .. });
                 let observation = match &event {
                     Observation::TransportStarted { at_ns } => {
                         row["start_ns"] = serde_json::json!(at_ns);
@@ -155,10 +197,15 @@ impl Dispatcher {
                         serde_json::json!({"event":"first_token","ttft_ns":ttft_ns,"callback_ns":observed_ns})
                     }
                     Observation::OutputTokenIds { at_ns, ids } => {
-                        serde_json::json!({"event":"output_token_ids","at_ns":at_ns,"ids":ids,"callback_ns":observed_ns})
+                        if compact {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::json!({"event":"output_token_ids","at_ns":at_ns,"ids":ids,"callback_ns":observed_ns})
+                        }
                     }
                 };
-                if let Some(observations) = row["observations"].as_array_mut() {
+                if retain_observation && let Some(observations) = row["observations"].as_array_mut()
+                {
                     observations.push(observation);
                 }
             }
@@ -190,7 +237,12 @@ impl Dispatcher {
                     row["start_ns"] = serde_json::json!(dispatch.start_ns);
                     row["end_ns"] = serde_json::json!(dispatch.end_ns);
                     row["last_content_ns"] = serde_json::json!(dispatch.last_content_ns);
-                    row["output_token_ids"] = serde_json::json!(outcome.output_token_ids);
+                    if compact {
+                        row["output_token_count"] =
+                            serde_json::json!(outcome.output_token_ids.as_ref().map(Vec::len));
+                    } else {
+                        row["output_token_ids"] = serde_json::json!(outcome.output_token_ids);
+                    }
                     row["terminal"] = serde_json::json!(dispatch.terminal);
                     row["completion_error"] = serde_json::json!(match dispatch.completion_error {
                         aiperf_exchange_model::measure::observe::CompletionError::Unknown =>
