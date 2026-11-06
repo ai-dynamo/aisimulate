@@ -724,27 +724,35 @@ def _scan_dynamo(events: Any, counters: _TraceCounters, state: dict[str, Any], l
             row[key] = event == "start_map"
 
 
-def _scan_weka(path: Path, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
+def _scan_weka(path: Path, counters: _TraceCounters, block_size: int, limit: int | None) -> None:
     """Count WekaEntry and WekaInnerEntry requests with generated hashes for each prompt.
 
-    The native scan skips hash arrays and returns each request's lengths in source order.
+    The native scan skips hash arrays and reports each request in source order;
+    a headroom stop ends it before more input is read.
     """
     from . import _runtime
 
-    block_size, packed, error = _runtime.weka_request_lengths(path, state.get("block_size"))
-    if block_size is None:
-        # Requests are counted only once the first play's block size is valid.
-        raise ValueError(error)
-    state["block_size"] = block_size
-    lengths = iter(memoryview(packed).cast("Q"))
-    for length, output in zip(lengths, lengths, strict=True):
+    def count(length: int, output: int) -> None:
         counters.hashes += (length + block_size - 1) // block_size
         counters.outputs += output
         counters.largest_input = max(counters.largest_input, length)
         counters.requests += 1
         _check_headroom(counters, limit)
-    if error is not None:
-        raise ValueError(error)
+
+    _runtime.scan_weka_requests(path, block_size, count)
+
+
+def _weka_block_size(path: Path) -> int:
+    # serde accepts any field order. Read the first play's block size before
+    # counting requests, without retaining preceding input lengths or arrays.
+    with path.open("rb") as stream:
+        for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+            if prefix == "block_size":
+                block_size = _token_length(value)
+                if block_size > 0:
+                    return block_size
+                break
+    raise ValueError("Weka trace requires a positive block_size")
 
 
 _TRACE_SCANNERS = {
@@ -788,7 +796,9 @@ def _scan_finite_trace(
     }
     for path in files:
         if format_name == "weka":
-            _scan_weka(path, counters, state, limit)
+            if "block_size" not in state:
+                state["block_size"] = _weka_block_size(path)
+            _scan_weka(path, counters, state["block_size"], limit)
             continue
         # Streaming holds individual scalars, never request or token arrays.
         with gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb") as stream:

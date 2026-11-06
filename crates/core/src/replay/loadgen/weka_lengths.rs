@@ -4,132 +4,79 @@
 //! Weka request lengths for host-resource admission.
 //!
 //! The Python resource planner bounds a Dynamo-stack Weka replay before the
-//! trace is loaded. It needs each request's input and output lengths and the
-//! corpus block size, so this scan skips hash arrays and every other field
-//! without materializing them. It keeps the planner's field rules, which are
-//! more lenient than the importer's: only `n` and `s` rows in a top-level
-//! `requests` array, or in such a row's own `requests` array, count, and only
-//! their lengths are validated.
+//! trace is loaded. It needs only each request's input and output lengths, so
+//! this scan skips hash arrays and every other field without materializing
+//! them. It reports each request as it is read, so the planner can stop at its
+//! headroom cutoff. It keeps the planner's field rules, which are more lenient
+//! than the importer's: only `n` and `s` rows in a top-level `requests` array,
+//! or in such a row's own `requests` array, count, and only their lengths and
+//! the top-level block size are validated.
 
 use std::fmt;
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{BufRead, BufReader};
+use std::ops::ControlFlow;
 use std::path::Path;
 
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 const TOKEN_LENGTH_ERROR: &str = "trace token lengths must be nonnegative integers";
-const POSITIVE_BLOCK_SIZE_ERROR: &str = "Weka trace requires a positive block_size";
 const MIXED_BLOCK_SIZE_ERROR: &str = "Weka corpus mixes block sizes";
 
-/// Request lengths read from one Weka source file.
-#[derive(Debug, PartialEq)]
-pub(crate) struct WekaLengthScan {
-    /// The supplied block size, or the file's first top-level `block_size`.
-    /// `None` only when no valid first block size exists; `error` says why.
-    pub(crate) block_size: Option<u64>,
-    /// `(input, output)` lengths of counted requests in source order, up to
-    /// the first error.
-    pub(crate) lengths: Vec<(u64, u64)>,
-    /// The first validation or JSON error.
-    pub(crate) error: Option<String>,
-}
-
-/// Read the request lengths of every JSON value in one Weka source file.
+/// Report each counted request's `(input, output)` lengths in source order.
 ///
-/// With no supplied block size, the file's first top-level `block_size` must
-/// be a positive integer; it is found even after a length error, as long as
-/// the JSON before it parses. Later numeric block sizes must match. A
-/// document with a JSON syntax error contributes none of its requests.
-pub(crate) fn scan_weka_request_lengths(
+/// Every top-level JSON value in the file is read, and values other than
+/// objects are skipped. A numeric top-level `block_size` must equal
+/// `block_size`. A request is reported when its object closes, so a request
+/// nested in another row precedes that row. When `on_request` breaks, the scan
+/// stops without reading further input and returns `Ok`.
+pub(crate) fn scan_weka_requests(
     path: &Path,
-    block_size: Option<u64>,
-) -> io::Result<WekaLengthScan> {
-    let reader = BufReader::with_capacity(1 << 20, File::open(path)?);
-    let mut scan = WekaLengthScan {
+    block_size: u64,
+    on_request: &mut dyn FnMut(u64, u64) -> ControlFlow<()>,
+) -> Result<()> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut scan = Scan {
         block_size,
-        lengths: Vec::new(),
-        error: None,
+        on_request,
+        stopped: false,
     };
-    let mut counting = true;
-    for document in serde_json::Deserializer::from_reader(reader).into_iter::<Document>() {
-        let events = match document {
-            Ok(Document(events)) => events,
-            Err(error) => {
-                if counting || scan.block_size.is_none() {
-                    scan.error = Some(error.to_string());
-                }
-                return Ok(scan);
-            }
-        };
-        for event in events {
-            match event {
-                Event::BlockSize(value) => match scan.block_size {
-                    None => match value {
-                        Scalar::Unsigned(size) if size > 0 => scan.block_size = Some(size),
-                        // The block size is read before any request is counted,
-                        // so its error replaces an earlier length error.
-                        Scalar::Unsigned(_) => {
-                            return Ok(block_size_error(POSITIVE_BLOCK_SIZE_ERROR));
-                        }
-                        _ => return Ok(block_size_error(TOKEN_LENGTH_ERROR)),
-                    },
-                    Some(expected) => {
-                        if counting && value.differs_from(expected) {
-                            scan.error = Some(MIXED_BLOCK_SIZE_ERROR.to_string());
-                            counting = false;
-                        }
-                    }
-                },
-                Event::Request(input, output) if counting => match (input, output) {
-                    (Some(input), Some(output)) => scan.lengths.push((input, output)),
-                    _ => {
-                        scan.error = Some(TOKEN_LENGTH_ERROR.to_string());
-                        counting = false;
-                    }
-                },
-                Event::Request(..) => {}
-            }
+    let mut values = 0;
+    loop {
+        // One deserializer per value carries the scan state; skip the
+        // whitespace between values.
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(());
         }
-        if !counting && scan.block_size.is_some() {
-            return Ok(scan);
+        let blank = buffer
+            .iter()
+            .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+            .count();
+        if blank > 0 {
+            reader.consume(blank);
+            continue;
         }
-    }
-    if scan.block_size.is_none() {
-        return Ok(block_size_error(POSITIVE_BLOCK_SIZE_ERROR));
-    }
-    Ok(scan)
-}
-
-fn block_size_error(message: &str) -> WekaLengthScan {
-    WekaLengthScan {
-        block_size: None,
-        lengths: Vec::new(),
-        error: Some(message.to_string()),
-    }
-}
-
-/// One top-level JSON value's block sizes and request rows, in source order.
-/// A row is recorded when its object closes, after any rows nested in it.
-struct Document(Vec<Event>);
-
-enum Event {
-    BlockSize(Scalar),
-    /// An `n` or `s` row's lengths; `None` is a missing or invalid length.
-    Request(Option<u64>, Option<u64>),
-}
-
-impl<'de> Deserialize<'de> for Document {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut events = Vec::new();
-        Walker {
+        values += 1;
+        let result = Walker {
             level: Level::Document,
-            events: &mut events,
+            scan: &mut scan,
         }
-        .deserialize(deserializer)?;
-        Ok(Self(events))
+        .deserialize(&mut serde_json::Deserializer::from_reader(&mut reader));
+        if scan.stopped {
+            return Ok(());
+        }
+        result.with_context(|| format!("JSON value {values}"))?;
     }
+}
+
+struct Scan<'a> {
+    block_size: u64,
+    on_request: &'a mut dyn FnMut(u64, u64) -> ControlFlow<()>,
+    stopped: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -140,12 +87,12 @@ enum Level {
 }
 
 /// Visits one value at a known depth; values of any other shape are skipped.
-struct Walker<'a> {
+struct Walker<'s, 'a> {
     level: Level,
-    events: &'a mut Vec<Event>,
+    scan: &'s mut Scan<'a>,
 }
 
-impl<'de> DeserializeSeed<'de> for Walker<'_> {
+impl<'de> DeserializeSeed<'de> for Walker<'_, '_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -153,7 +100,7 @@ impl<'de> DeserializeSeed<'de> for Walker<'_> {
     }
 }
 
-impl<'de> Visitor<'de> for Walker<'_> {
+impl<'de> Visitor<'de> for Walker<'_, '_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -189,11 +136,11 @@ impl<'de> Visitor<'de> for Walker<'_> {
             while seq.next_element::<IgnoredAny>()?.is_some() {}
             return Ok(());
         };
-        let events = self.events;
+        let scan = self.scan;
         while seq
             .next_element_seed(Walker {
                 level: Level::Row { nested },
-                events: &mut *events,
+                scan: &mut *scan,
             })?
             .is_some()
         {}
@@ -201,15 +148,19 @@ impl<'de> Visitor<'de> for Walker<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let events = self.events;
+        let scan = self.scan;
         match self.level {
             Level::Document => {
                 while let Some(key) = map.next_key::<Key>()? {
                     match key {
-                        Key::BlockSize => events.push(Event::BlockSize(map.next_value()?)),
+                        Key::BlockSize => {
+                            if map.next_value::<Scalar>()?.differs_from(scan.block_size) {
+                                return Err(de::Error::custom(MIXED_BLOCK_SIZE_ERROR));
+                            }
+                        }
                         Key::Requests => map.next_value_seed(Walker {
                             level: Level::Requests { nested: false },
-                            events: &mut *events,
+                            scan: &mut *scan,
                         })?,
                         _ => {
                             map.next_value::<IgnoredAny>()?;
@@ -229,7 +180,7 @@ impl<'de> Visitor<'de> for Walker<'_> {
                         Key::Out => output = map.next_value::<Scalar>()?.length(),
                         Key::Requests if !nested => map.next_value_seed(Walker {
                             level: Level::Requests { nested: true },
-                            events: &mut *events,
+                            scan: &mut *scan,
                         })?,
                         _ => {
                             map.next_value::<IgnoredAny>()?;
@@ -237,7 +188,14 @@ impl<'de> Visitor<'de> for Walker<'_> {
                     }
                 }
                 if request {
-                    events.push(Event::Request(input, output));
+                    let (Some(input), Some(output)) = (input, output) else {
+                        return Err(de::Error::custom(TOKEN_LENGTH_ERROR));
+                    };
+                    if (scan.on_request)(input, output).is_break() {
+                        // Abort the parse; the caller sees `stopped`, not this error.
+                        scan.stopped = true;
+                        return Err(de::Error::custom("scan stopped"));
+                    }
                 }
             }
             Level::Requests { .. } => {
@@ -303,7 +261,7 @@ impl Scalar {
         }
     }
 
-    /// Whether a later block size disagrees; non-numbers are not compared.
+    /// Whether a block size disagrees; non-numbers are not compared.
     fn differs_from(self, expected: u64) -> bool {
         match self {
             Self::Unsigned(value) => value != expected,
@@ -375,10 +333,29 @@ mod tests {
 
     use super::*;
 
-    fn scan(text: &str, block_size: Option<u64>) -> WekaLengthScan {
+    /// Every reported request, and the error if the scan failed.
+    fn scan(text: &str, block_size: u64) -> (Vec<(u64, u64)>, Option<String>) {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         file.write_all(text.as_bytes()).unwrap();
-        scan_weka_request_lengths(file.path(), block_size).unwrap()
+        let mut requests = Vec::new();
+        let result = scan_weka_requests(file.path(), block_size, &mut |input, output| {
+            requests.push((input, output));
+            ControlFlow::Continue(())
+        });
+        (requests, result.err().map(|error| format!("{error:#}")))
+    }
+
+    fn counted(text: &str, block_size: u64) -> Vec<(u64, u64)> {
+        let (requests, error) = scan(text, block_size);
+        assert_eq!(error, None);
+        requests
+    }
+
+    fn failed(text: &str, block_size: u64, expected: &str) -> Vec<(u64, u64)> {
+        let (requests, error) = scan(text, block_size);
+        let error = error.expect("scan should fail");
+        assert!(error.contains(expected), "{error}");
+        requests
     }
 
     fn lines(documents: &[serde_json::Value]) -> String {
@@ -386,22 +363,6 @@ mod tests {
             .iter()
             .map(|document| format!("{document}\n"))
             .collect()
-    }
-
-    fn counted(block_size: u64, lengths: &[(u64, u64)]) -> WekaLengthScan {
-        WekaLengthScan {
-            block_size: Some(block_size),
-            lengths: lengths.to_vec(),
-            error: None,
-        }
-    }
-
-    fn failed(block_size: Option<u64>, lengths: &[(u64, u64)], error: &str) -> WekaLengthScan {
-        WekaLengthScan {
-            block_size,
-            lengths: lengths.to_vec(),
-            error: Some(error.to_string()),
-        }
     }
 
     #[test]
@@ -421,7 +382,7 @@ mod tests {
             "totals": {"in": 1000000000000, "out": "ignored"},
             "block_size": 4
         }"#;
-        assert_eq!(scan(play, None), counted(4, &[(5, 2), (4, 0), (9, 3)]));
+        assert_eq!(counted(play, 4), [(5, 2), (4, 0), (9, 3)]);
     }
 
     #[test]
@@ -436,7 +397,7 @@ mod tests {
                 }],
             }],
         });
-        assert_eq!(scan(&lines(&[play]), None), counted(4, &[(1, 1), (2, 2)]));
+        assert_eq!(counted(&lines(&[play]), 4), [(1, 1), (2, 2)]);
     }
 
     #[test]
@@ -456,11 +417,11 @@ mod tests {
                 {"type": "s", "in": 3, "out": 1, "in": 4}
             ]
         }"#;
-        assert_eq!(scan(play, None), counted(4, &[(5, 1), (4, 1)]));
+        assert_eq!(counted(play, 4), [(5, 1), (4, 1)]);
     }
 
     #[test]
-    fn invalid_request_lengths_stop_counting() {
+    fn invalid_request_lengths_stop_the_scan() {
         for invalid in [
             json!(-1),
             json!(1.5),
@@ -476,21 +437,15 @@ mod tests {
                     json!({"block_size": 4, "requests": [{"type": "n", "in": 1, "out": 1}, row]}),
                     json!({"requests": [{"type": "s", "in": 3, "out": 3}]}),
                 ];
-                assert_eq!(
-                    scan(&lines(&documents), None),
-                    failed(Some(4), &[(1, 1)], TOKEN_LENGTH_ERROR)
-                );
+                assert_eq!(failed(&lines(&documents), 4, TOKEN_LENGTH_ERROR), [(1, 1)]);
             }
         }
         let missing = json!({"block_size": 4, "requests": [{"type": "s", "in": 2}]});
-        assert_eq!(
-            scan(&lines(&[missing]), None),
-            failed(Some(4), &[], TOKEN_LENGTH_ERROR)
-        );
+        assert!(failed(&lines(&[missing]), 4, TOKEN_LENGTH_ERROR).is_empty());
     }
 
     #[test]
-    fn later_numeric_block_sizes_must_match() {
+    fn numeric_block_sizes_must_match() {
         // Requests before a mismatched block size in the same play still count.
         let documents = [
             r#"{"block_size": 4, "requests": [{"type": "s", "in": 1, "out": 1}]}"#,
@@ -500,59 +455,19 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(
-            scan(&documents, None),
-            failed(Some(4), &[(1, 1), (2, 2), (3, 3)], MIXED_BLOCK_SIZE_ERROR)
+            failed(&documents, 4, MIXED_BLOCK_SIZE_ERROR),
+            [(1, 1), (2, 2), (3, 3)]
         );
-        // A supplied size comes from an earlier file of the same corpus.
-        assert_eq!(
-            scan(&documents, Some(8)),
-            failed(Some(8), &[], MIXED_BLOCK_SIZE_ERROR)
-        );
+        assert!(failed(&documents, 8, MIXED_BLOCK_SIZE_ERROR).is_empty());
         let float = json!({"block_size": 4.0, "requests": [{"type": "s", "in": 1, "out": 1}]});
-        assert_eq!(scan(&lines(&[float]), Some(4)), counted(4, &[(1, 1)]));
-    }
-
-    #[test]
-    fn the_first_block_size_must_be_positive() {
-        let row = json!({"type": "s", "in": 1, "out": 1});
-        for (block_size, error) in [
-            (Some(json!(0)), POSITIVE_BLOCK_SIZE_ERROR),
-            (Some(json!(-4)), TOKEN_LENGTH_ERROR),
-            (Some(json!("4")), TOKEN_LENGTH_ERROR),
-            (Some(json!(4.0)), TOKEN_LENGTH_ERROR),
-            (None, POSITIVE_BLOCK_SIZE_ERROR),
-        ] {
-            let mut play = json!({"requests": [row]});
-            if let Some(block_size) = block_size {
-                play["block_size"] = block_size;
-            }
-            assert_eq!(scan(&lines(&[play]), None), failed(None, &[], error));
-        }
-        // The first block size is found after a later document, and after a
-        // length error that stops counting.
-        let documents = [
-            json!({"requests": [row, {"type": "s", "in": -1, "out": 1}, row]}),
-            json!({"requests": [row], "block_size": 4}),
-        ];
-        assert_eq!(
-            scan(&lines(&documents), None),
-            failed(Some(4), &[(1, 1)], TOKEN_LENGTH_ERROR)
-        );
-        let documents = [
-            json!({"requests": [{"type": "s", "in": -1, "out": 1}]}),
-            json!({"block_size": 0}),
-        ];
-        assert_eq!(
-            scan(&lines(&documents), None),
-            failed(None, &[], POSITIVE_BLOCK_SIZE_ERROR)
-        );
+        assert_eq!(counted(&lines(&[float]), 4), [(1, 1)]);
     }
 
     #[test]
     fn reads_every_value_in_a_file() {
         let play = json!({"block_size": 4, "requests": [{"type": "s", "in": 1, "out": 1}]});
         let text = format!("{play}{play} 7 [{play}] \"x\"\n\n{play:#}");
-        assert_eq!(scan(&text, None), counted(4, &[(1, 1), (1, 1), (1, 1)]));
+        assert_eq!(counted(&text, 4), [(1, 1), (1, 1), (1, 1)]);
     }
 
     #[test]
@@ -564,28 +479,43 @@ mod tests {
             "hash_ids": [-1],
             "requests": [{"type": "s", "in": 100, "out": 2, "hash_ids": hashes}],
         });
-        assert_eq!(scan(&lines(&[play]), None), counted(64, &[(100, 2)]));
+        assert_eq!(counted(&lines(&[play]), 64), [(100, 2)]);
     }
 
     #[test]
-    fn syntax_errors_keep_earlier_documents() {
+    fn syntax_errors_follow_the_requests_before_them() {
         let play = json!({"block_size": 4, "requests": [{"type": "s", "in": 1, "out": 1}]});
+        assert_eq!(
+            failed(&format!("{play}\nnot JSON"), 4, "JSON value 2"),
+            [(1, 1)]
+        );
         let truncated = r#"{"block_size": 4, "requests": [{"type": "s", "in": 2, "out": 2}, {"#;
-        for tail in ["not JSON", truncated] {
-            let result = scan(&format!("{play}\n{tail}"), None);
-            assert_eq!((result.block_size, result.lengths), (Some(4), vec![(1, 1)]));
-            assert!(result.error.is_some());
-        }
-        // Without a block size, the syntax error is the reason.
-        let result = scan(&format!("{}\n{truncated}", json!({"requests": []})), None);
-        assert_eq!((result.block_size, result.lengths), (None, vec![]));
-        assert!(result.error.unwrap().contains("EOF"));
+        assert_eq!(
+            failed(&format!("{play}\n{truncated}"), 4, "EOF"),
+            [(1, 1), (2, 2)]
+        );
     }
 
     #[test]
-    fn missing_files_are_io_errors() {
+    fn breaking_stops_before_the_rest_of_the_input_is_read() {
+        let text = r#"{"block_size": 4, "requests": [{"type": "s", "in": 1, "out": 1}, not JSON"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(text.as_bytes()).unwrap();
+        let mut calls = 0;
+        let result = scan_weka_requests(file.path(), 4, &mut |_, _| {
+            calls += 1;
+            ControlFlow::Break(())
+        });
+        // Parsing the malformed tail would have failed the scan.
+        assert!(result.is_ok());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn missing_files_fail() {
         let directory = tempfile::tempdir().unwrap();
-        let error = scan_weka_request_lengths(&directory.path().join("missing.jsonl"), None);
-        assert_eq!(error.unwrap_err().kind(), io::ErrorKind::NotFound);
+        let path = directory.path().join("missing.jsonl");
+        let error = scan_weka_requests(&path, 4, &mut |_, _| ControlFlow::Continue(()));
+        assert!(format!("{:#}", error.unwrap_err()).contains("missing.jsonl"));
     }
 }

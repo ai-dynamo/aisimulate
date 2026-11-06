@@ -3,6 +3,7 @@
 
 //! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
 
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +27,7 @@ use crate::replay::{
         DynamoRequestTrace, LengthSpec, SyntheticImages, SyntheticTraceSpec, Trace,
         ValidatedAgenticGraph, WekaClient, WekaImportOptions, WekaNestedTimestampBasis,
         WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
-        load_weka_agentic_graph_cached, scan_weka_request_lengths,
+        load_weka_agentic_graph_cached,
     },
 };
 use crate::{
@@ -37,7 +38,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyDict, PyModule};
+use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -4831,26 +4832,33 @@ fn engine_launch_from_replay_role_json(
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
-/// Read one Weka source file's request lengths for host-resource admission.
+/// Report each counted Weka request's `(input, output)` lengths to `on_request`.
 ///
-/// Returns the block size (the supplied one, or the file's first), the
-/// `(input, output)` lengths of counted requests in source order as
-/// native-endian u64 pairs, and the first validation or JSON error.
+/// An exception from `on_request` stops the scan before more input is read
+/// and propagates unchanged.
 #[pyfunction]
-#[pyo3(signature = (path, block_size=None))]
-fn weka_request_lengths(
+fn scan_weka_requests(
     py: Python<'_>,
     path: PathBuf,
-    block_size: Option<u64>,
-) -> PyResult<(Option<u64>, Bound<'_, PyBytes>, Option<String>)> {
-    let scan = py.allow_threads(|| scan_weka_request_lengths(&path, block_size))?;
-    let lengths: Vec<u8> = scan
-        .lengths
-        .iter()
-        .flat_map(|&(input, output)| [input.to_ne_bytes(), output.to_ne_bytes()])
-        .flatten()
-        .collect();
-    Ok((scan.block_size, PyBytes::new(py, &lengths), scan.error))
+    block_size: u64,
+    on_request: Py<PyAny>,
+) -> PyResult<()> {
+    let mut raised = None;
+    let scanned = py.allow_threads(|| {
+        crate::replay::loadgen::scan_weka_requests(&path, block_size, &mut |input, output| {
+            Python::with_gil(|py| match on_request.call1(py, (input, output)) {
+                Ok(_) => ControlFlow::Continue(()),
+                Err(error) => {
+                    raised = Some(error);
+                    ControlFlow::Break(())
+                }
+            })
+        })
+    });
+    if let Some(error) = raised {
+        return Err(error);
+    }
+    scanned.map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
 /// AISimulate native runtime module.
@@ -4863,7 +4871,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
-    module.add_function(wrap_pyfunction!(weka_request_lengths, module)?)?;
+    module.add_function(wrap_pyfunction!(scan_weka_requests, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }

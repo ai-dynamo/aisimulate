@@ -1391,7 +1391,11 @@ def test_added_agentic_formats_reject_oversized_arrays(
     else:
         row = _dynamo_row(input_length=input_length, output_tokens=output_length)
     # A parser failure after this object would hide the bound if inspection continued.
-    source.write_text(json.dumps(row) + "\nnot JSON")
+    text = json.dumps(row) + "\nnot JSON"
+    if trace_format == "weka":
+        # Inside the same play, so the native scan must stop at the oversized request.
+        text = json.dumps(row).removesuffix("]}") + ", not JSON"
+    source.write_text(text)
     plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12

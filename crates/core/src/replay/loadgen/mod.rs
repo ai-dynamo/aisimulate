@@ -60,7 +60,7 @@ pub use weka::{
     load_weka_agentic_rows, stream_weka_agentic_rows,
 };
 #[cfg(feature = "python")]
-pub(crate) use weka_lengths::scan_weka_request_lengths;
+pub(crate) use weka_lengths::scan_weka_requests;
 
 pub(super) const SYNTHETIC_OUTPUT_SEED: u64 = 0xD37A_0A7E_5EED;
 
