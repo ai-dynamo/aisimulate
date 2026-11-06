@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -112,7 +113,15 @@ def grouped_case(tmp_path, monkeypatch):
     return profile, root
 
 
-def _write_timings(root, profile, *, decode_ceiling=8192, version="0.25.1"):
+def _write_timings(
+    root,
+    profile,
+    *,
+    decode_ceiling=8192,
+    version="0.25.1",
+    prefill_tokens=(128, 256, 512, 1024),
+    prefill_kvs=(0, 1, 512, 1024, 2048, 8192),
+):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -123,11 +132,7 @@ def _write_timings(root, profile, *, decode_ceiling=8192, version="0.25.1"):
         identity = deployment.model_dump(mode="json", exclude={"resources"})
         for batch in (1, 2, 4, 8):
             for phase, tokens, kvs in (
-                (
-                    "prefill",
-                    (batch, 128, 256, 512, 1024),
-                    (0, 1, 512, 1024, 2048, 8192),
-                ),
+                ("prefill", (batch, *prefill_tokens), prefill_kvs),
                 ("decode", (0,), (0, 1, 512, decode_ceiling)),
             ):
                 for new_tokens in sorted(set(tokens)):
@@ -1356,3 +1361,139 @@ def test_grouped_sweeper_checks_each_candidate_budget_before_replay(grouped_case
     )
     with pytest.raises(ValueError, match="max_batched_tokens that are multiples of 4"):
         build_backend_deployment(sample, backend_version="0.31.0")
+
+
+_GLM_PAGE = 13_045_120
+
+
+def _glm_shaped_profile(profile, version):
+    """The six cache groups of the GLM-5.3-Flash TP 4 probe on vLLM 0.31.0, with a pool of 64 blocks.
+
+    The 0.32.0 profile keeps prefill_checkpoint_blocks 0 on its state groups, because no vLLM 0.32.0 probe exists yet.
+    """
+    profile = deepcopy(profile)
+    profile["architecture"] = "Glm5NextForConditionalGeneration"
+    profile["context_length"] = 32768
+    groups = [
+        {
+            "name": "runtime_group_0",
+            "kind": "attention",
+            "num_layers": 22,
+            "block_size_tokens": 2176,
+            "page_size_bytes": _GLM_PAGE,
+            "prefix_cacheable": True,
+        },
+        {
+            "name": "runtime_group_1",
+            "kind": "state",
+            "num_layers": 11,
+            "block_size_tokens": 4,
+            "page_size_bytes": _GLM_PAGE,
+            "blocks_per_request": 1,
+            "prefix_cacheable": False,
+        },
+    ]
+    for index, layers in ((2, 9), (3, 9), (4, 8), (5, 8)):
+        groups.append(
+            {
+                "name": f"runtime_group_{index}",
+                "kind": "state",
+                "num_layers": layers,
+                "block_size_tokens": 2176,
+                "page_size_bytes": _GLM_PAGE,
+                "blocks_per_request": 1,
+                "prefix_cacheable": True,
+                "prefill_checkpoint_blocks": 0,
+            }
+        )
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = version
+        resources = deployment["resources"]
+        for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            resources.pop(name)
+        resources.update(cache_groups=deepcopy(groups), max_num_tokens=8192, max_batch_size=4)
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 64 * _GLM_PAGE,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 32768,
+            "provenance": "Synthetic pool of 64 GLM-5.3-Flash pages. Not a probe result.",
+            "enable_prefix_caching": True,
+            "mamba_cache_mode": "align",
+            "hash_block_size_tokens": 2176,
+        }
+    return profile
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.32.0"])
+def test_glm_shaped_grouped_profile_replays_a_multi_turn_trace_with_hits(grouped_case, tmp_path, monkeypatch, version):
+    # A trace has no known host memory peak, so the CLI replays it only in a supervised child. Model the
+    # supervisor context of that child, as test_unified_cli.py does.
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": 4_000_000_000,
+                "cpu_limit": 1,
+                "reserved_host_memory_bytes": 1_000_000_000,
+                "events_path": str(tmp_path / "events.jsonl"),
+                "ready_path": str(tmp_path / "ready"),
+            }
+        ),
+    )
+    profile, root = grouped_case
+    profile = _glm_shaped_profile(profile, version)
+    (Path(profile["model"]) / "config.json").write_text(json.dumps({"architectures": [profile["architecture"]]}))
+    import aisimulate_core
+
+    # The real H200 memory holds the 64 GLM pages that the tiny fake GPU of grouped_case cannot.
+    system = (Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml").read_text()
+    (root / "h200_sxm.yaml").write_text(system)
+    _write_timings(
+        root,
+        profile,
+        decode_ceiling=16384,
+        version=version,
+        prefill_tokens=(2048, 4096, 8192),
+        prefill_kvs=(0, 1, 8192, 16384),
+    )
+    # One conversation of three turns, each resending the earlier prompt. A trace block of 2,176 tokens fills
+    # block i with hash id i, so the turns share the blocks of the Rust test
+    # grouped_glm_shaped_multi_turn_replay_reports_hit_tokens_and_block_counts. A fourth turn shares only the
+    # first three blocks, so it branches below every state that the earlier turns keep.
+    trace = tmp_path / "turns.jsonl"
+    turns = [
+        (9000, [1, 2, 3, 4, 5]),
+        (13000, [1, 2, 3, 4, 5, 6]),
+        (13100, [1, 2, 3, 4, 5, 6, 7]),
+        (8704, [1, 2, 3, 8]),
+    ]
+    trace.write_text(
+        "".join(
+            json.dumps({"timestamp": 1000 * index, "input_length": length, "output_length": 4, "hash_ids": hashes})
+            + "\n"
+            for index, (length, hashes) in enumerate(turns)
+        )
+    )
+    raw = _prediction(profile, root)
+    raw["engine"]["backend_version"] = version
+    raw["engine"]["context_length"] = 32768
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["scheduler"] = {"max_batched_tokens": 8192, "max_sequences": 4}
+    worker["kv_cache"]["prefix_caching"] = True
+    raw["traffic"] = {
+        "source": {"type": "trace", "paths": [str(trace)], "format": "mooncake", "block_size": 2176},
+        "load": {"type": "concurrency", "concurrency": 1},
+    }
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "prediction"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--capture-per-request"]) == 0
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 4
+    # Turn two hits the state that turn one keeps at (9000 - 1) / 2176 * 2176 = 8704, and turn three the one that
+    # turn two keeps at (13000 - 1) / 2176 * 2176 = 10880. Both versions reuse 19,584 tokens. Turn four finds
+    # 6,528 tokens of cached full-attention blocks, which a linear pool would reuse. Under retention 0 no state is
+    # kept at 6,528 or below, so the grouped path reuses nothing.
+    assert [row["reused_input_tokens"] for row in report["per_request"]] == [0, 8704, 10880, 0]
+    assert report["prefix_cache_reused_ratio"] == pytest.approx((8704 + 10880) / (9000 + 13000 + 13100 + 8704))

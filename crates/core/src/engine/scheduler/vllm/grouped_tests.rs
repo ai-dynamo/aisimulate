@@ -1186,3 +1186,145 @@ fn grouped_prefix_eviction_frees_cached_blocks_oldest_first() {
     let seventh = submit_tokens(&mut core, 807, (0..16).collect(), 1);
     assert_eq!(drain(&mut core, &mut trace, &mut step), vec![(seventh, 0)]);
 }
+
+/// `(id, submit pass, prompt token ranges, output tokens)`.
+type PlannedRequest = (u128, usize, &'static [(u32, u32)], usize);
+
+/// Twelve requests with shared prefixes, chunked prefill and eviction.
+const SINGLE_GROUP_PLAN: [PlannedRequest; 12] = [
+    (901, 0, &[(0, 300)], 3),
+    (902, 0, &[(0, 300)], 3),
+    (903, 3, &[(0, 256)], 2),
+    (904, 6, &[(0, 100), (1000, 1150)], 4),
+    (905, 8, &[(5000, 6600)], 5),
+    (906, 9, &[(7000, 9000)], 6),
+    (907, 10, &[(10_000, 12_500)], 3),
+    (908, 30, &[(13_000, 14_600)], 2),
+    (909, 45, &[(5000, 6600), (30_000, 30_030)], 3),
+    (910, 60, &[(40_000, 40_192), (50_000, 50_040)], 2),
+    (911, 60, &[(40_000, 40_192), (51_000, 51_010)], 2),
+    (912, 70, &[(0, 300), (60_000, 60_500)], 4),
+];
+
+/// A linear core and a grouped core with one full-attention group of the
+/// same block and capacity, with every other setting equal.
+fn single_group_cores(version: &str) -> (VllmCore, VllmCore) {
+    let args = || {
+        MockEngineArgs::builder()
+            .block_size(64)
+            .max_num_batched_tokens(Some(256))
+            .max_num_seqs(Some(4))
+            .max_model_len(Some(4096))
+            .enable_prefix_caching(true)
+            .speedup_ratio(0.0)
+    };
+    let linear = VllmCore::new(args().num_gpu_blocks(128).build().unwrap());
+    let mut full = group("full", 64, 1, None);
+    full.prefix_cacheable = Some(true);
+    let grouped = VllmCore::new(
+        args()
+            .num_gpu_blocks(1)
+            .prefix_match_unit(Some(64))
+            .vllm_version(Some(version.to_string()))
+            .kv_cache_groups(vec![full])
+            .kv_cache_capacity_bytes(Some(128))
+            .build()
+            .unwrap(),
+    );
+    (linear, grouped)
+}
+
+#[test]
+fn single_full_attention_group_matches_the_linear_pool() {
+    // Both rule rows. One full-attention group at the hash block leaves every
+    // row difference inert (the last cacheable stop, the partial tail and the
+    // checkpoint block), so both rows match the linear pool.
+    for version in ["0.31.0", "0.32.0"] {
+        let (mut linear, mut grouped) = single_group_cores(version);
+        let mut linear_trace = TraceCollector::default();
+        let mut grouped_trace = TraceCollector::default();
+        let computed = |core: &VllmCore| {
+            let mut computed: Vec<(Uuid, usize)> = core
+                .state
+                .requests
+                .iter()
+                .map(|(id, request)| (*id, request.num_computed_tokens))
+                .collect();
+            computed.sort();
+            computed
+        };
+        let mut next = 0;
+        let mut hits = Vec::new();
+        for pass in 0..400 {
+            while let Some(&(id, at, ranges, output)) = SINGLE_GROUP_PLAN.get(next)
+                && at == pass
+            {
+                let tokens: Vec<u32> = ranges.iter().flat_map(|&(a, b)| a..b).collect();
+                submit_tokens(&mut linear, id, tokens.clone(), output);
+                submit_tokens(&mut grouped, id, tokens, output);
+                next += 1;
+            }
+            let expected = linear.execute_pass(&mut linear_trace, pass as f64);
+            let actual = grouped.execute_pass(&mut grouped_trace, pass as f64);
+            let reused = |admissions: &[crate::engine::scheduler::AdmissionEvent]| {
+                admissions
+                    .iter()
+                    .map(|admission| (admission.uuid, admission.reused_input_tokens))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                reused(&actual.admissions),
+                reused(&expected.admissions),
+                "{version} pass {pass}"
+            );
+            assert_eq!(
+                computed(&grouped),
+                computed(&linear),
+                "{version} pass {pass}"
+            );
+            assert_eq!(
+                grouped.kv_manager.num_active_blocks(),
+                linear.kv_manager.num_active_blocks(),
+                "{version} pass {pass}"
+            );
+            assert!(
+                expected
+                    .output_signals
+                    .iter()
+                    .chain(&actual.output_signals)
+                    .all(|output| !output.rejected)
+            );
+            hits.extend(reused(&actual.admissions));
+            if next == SINGLE_GROUP_PLAN.len() && linear.is_drained() && grouped.is_drained() {
+                break;
+            }
+        }
+        assert!(linear.is_drained() && grouped.is_drained(), "{version}");
+        // The linear cap is `known - 1` floored to the block
+        // (`apply_prefix_recompute`), the grouped one `num_tokens - 1` floored to
+        // the alignment (`mgr:289-295`). With one group both are the block.
+        let id = Uuid::from_u128;
+        assert_eq!(
+            hits,
+            vec![
+                (id(901), 0),
+                // The four blocks that request 901 holds.
+                (id(902), 256),
+                // Four cached blocks, capped below the prompt: (256 - 1) / 64 * 64.
+                (id(903), 192),
+                (id(904), 64),
+                (id(905), 0),
+                (id(906), 0),
+                (id(907), 0),
+                (id(908), 0),
+                (id(909), 1600),
+                (id(910), 0),
+                // Request 910's three blocks, in the pass that computes them.
+                (id(911), 192),
+                // Eviction left block 0 of request 901 only.
+                (id(912), 64),
+            ],
+            "{version}"
+        );
+    }
+}
