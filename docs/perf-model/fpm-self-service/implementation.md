@@ -8,13 +8,17 @@ SPDX-License-Identifier: Apache-2.0
 Start with the [overview](README.md) for motivation, support and the six-stage
 workflow. This page is the canonical reference for the agent procedure, CLI
 commands, artifact contracts, execution, validation and recovery. The
-[worked examples](examples.md) apply the procedure to an imported Kimi profile
-and a new MiniMax collection campaign.
+[worked examples](examples.md) cover imported profiles, self-benchmarking and
+native capture. Choose a [profiling route](README.md#choose-a-profiling-route)
+first; the six stages below cover both routes. The
+[end-to-end offline profiling and GBDT chapter](e2e-gbdt.md) holds its runnable
+commands, API explanations and online-update formulas.
 
 ## Reference map
 
 | Task | Reference |
 | --- | --- |
+| Collect serving observations and train a GBDT | [End-to-end offline profiling walkthrough](e2e-gbdt.md), [native collection examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers) |
 | Prepare a compatible source environment | [Environment](#prepare-the-environment) |
 | Guide an onboarding session and retain decisions | [Agent stages](#onboard-with-an-agent), [checkpoint and resume](#checkpoint-and-resume-an-onboarding-session) |
 | Declare model, topology, precision and resource inputs | [Request](#create-the-request), [local config](#start-from-a-local-model-config), [resource metadata](#provide-identity-and-resource-metadata) |
@@ -44,7 +48,7 @@ python -c 'import aisimulate; print(aisimulate.__version__)'
 aisimulate predict --help
 ```
 
-For the guided workflow and Example B, additionally verify:
+For self-benchmarking and agent session checkpoints, additionally verify:
 
 ```bash
 aisimulate onboard --help
@@ -59,7 +63,7 @@ subcommand's help before using it. Keep the same activated Bash or Zsh session f
 GPU or model weights are needed to query existing timings or run simulation.
 The Kimi example has [additional consumer-build prerequisites](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile).
 
-For **new GPU collection**, also check `python -m collector.fpm_forward --help`.
+For **new self-benchmark GPU collection**, also check `python -m collector.fpm_forward --help`.
 The host needs local model configuration metadata; the target runtime needs the
 pinned checkpoint, allocated GPUs, and matching engine/benchmark code. Kubernetes
 needs `kubectl`, an existing namespace, model-cache PVC and deployment permissions.
@@ -73,18 +77,25 @@ select templates, infer the backend version or qualify a runtime. See
 [executor prerequisites](#choose-the-collection-executor)
 and [recovery and cleanup](#recovery-and-cleanup).
 
+For **end-to-end offline profiling**, use the GBDT chapter's
+[training environment](e2e-gbdt.md#before-you-start) and native producer checks.
+Collection uses your serving deployment and workload client; Kubernetes, Slurm
+and internal services are not prerequisites. Completed captures need no cluster
+access. The standalone trainer and helpers handle native JSONL; the
+self-benchmark collector and `onboard finalize` do not.
+
 ## Onboard with an agent
 
-For a request such as "Help me onboard my model for FPM simulation on my target GPUs," follow these six stages. Claude Code reaches them through the root `CLAUDE.md` import of `AGENTS.md`; other agents use the same `AGENTS.md` entry point. Create one [session checkpoint](#checkpoint-and-resume-an-onboarding-session) during stage 1 and update it after meaningful findings and decisions, including unfinished investigation and partial profile review. The sections below remain the detailed CLI reference.
+For a request such as "Help me onboard my model for FPM simulation on my target GPUs," follow these six stages. Claude Code reaches them through the root `CLAUDE.md` import of `AGENTS.md`; other agents use the same `AGENTS.md` entry point. Create one [session checkpoint](#checkpoint-and-resume-an-onboarding-session) during stage 1 and update it after meaningful findings and decisions, including unfinished investigation and partial profile review. Record the selected [profiling route](README.md#choose-a-profiling-route) and reuse choices already supplied. Both routes require identity, resource and evidence review; commands labeled **self-benchmarking** apply only to that route. The GBDT route uses standalone collection helpers, training and model APIs. Session checkpointing records its progress but does not automate those steps.
 
 | Stage | Required result |
 | --- | --- |
-| 1. Inspect the model and target | Accessible config/profile and packaged hardware specification identified; supported metadata read and gaps recorded. |
-| 2. Choose the worker and collection limits | Sourced joint precision options and collector limitations reviewed; checkpoint identity/revision, runtime, interconnect, precision combination(s), worker configurations, memory fraction, context, scheduler bounds and capture policy selected. Minimum collection GPUs are derived for each; actual target-runtime compatibility remains unchecked. |
+| 1. Inspect the model and target | Profiling route, accessible model/config/capture identity and packaged hardware specification identified; metadata read and gaps recorded. |
+| 2. Choose the worker and collection limits | Runtime, topology, precision, roles, resource limits and capture settings selected with sources. Native profiling also identifies the workload and producer; self-benchmarking checks collector compatibility. Target-runtime qualification remains separate. |
 | 3. Derive, review and save collection inputs | Each configuration's identity, precision, topology, cache geometry and runtime settings reviewed and accepted. Memory may remain pending; planning estimates are identified separately. |
-| 4. Plan collection | Validated saved plan and collector preview for each configuration; execution resources, independent scheduling, prerequisites and recovery paths recorded. |
-| 5. Collect, verify and finalize | Existing evidence inspected and bounded prefill/decode readiness established before full collection. Formal timings and initialized-worker memory evidence verified. `onboard finalize` writes a fresh simulation plan; review and accept its resolved profile separately. |
-| 6. Validate replay and run predict/recommend | Cold aggregated trace replay checks direct-FPM query coverage; completed and incomplete results are distinguished. Ordinary prediction/recommendation examples remain available; accuracy is assessed separately. |
+| 4. Plan collection | Self-benchmark plan/preview, or reviewed native-capture and workload plan, saved per configuration with smoke checks, resources and recovery paths. |
+| 5. Collect and verify | Self-benchmark timing pair and memory finalization, or validated native files and selected training/test rows. Collection integrity and measured resource capacity remain separate results. |
+| 6. Validate and use the model | Validate interpolation or train/evaluate a GBDT; check consumer coverage, run compatible Replay and assess matched serving accuracy. GBDT online updates and saving are optional. |
 
 At each transition or blocker, give a short update: **Stage N/6 — name; result or blocker; next action.** Ask only for missing information needed for the current stage, using facts and decisions already supplied. Continue independent authorized work while an answer is pending. Move on when the required evidence is available; stage transitions do not require another approval. Honor prior authorization, including authorization to execute collection, while preserving the profile acceptance step below.
 
@@ -96,13 +107,33 @@ Start with only the missing **Hugging Face model ID** (`organization/model-name`
 
 Omit facts already supplied from this request. Accept a supplied local config, complete FPM profile or checkpoint path without requiring a Hub ID; do not ask for both an ID and a config upfront. With a Hugging Face ID, use available authorized Hub access to retrieve only `config.json` at this stage. Honor any supplied revision and record the repository ID and resolved commit. If no revision was supplied, report the resolved commit for the deployment choice in stage 2. If the config cannot be retrieved, explain the specific gap and ask for a local config. The agent retrieves the file; AISimulate's CLI consumes a local config/profile and does not download it or the checkpoint.
 
-Inspect the accessible config/profile before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. For CLI setup, `--model` identifies the selected Hugging Face repository or actual checkpoint path, `--model-config` names the local JSON file, and `--model-revision` pins the checkpoint separately. A config file hash is not a checkpoint revision. This route does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
+Inspect the accessible config/profile before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. For self-benchmark CLI setup, `--model` identifies the selected Hugging Face repository or actual checkpoint path, `--model-config` names the local JSON file, and `--model-revision` pins the checkpoint separately. A config file hash is not a checkpoint revision. Direct interpolation does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
 
 A natively multimodal checkpoint can be onboarded for its text decoder. Explain this scope during inspection and profile review: FPM timing models text-decoder execution and excludes encoder, projector and preprocessing latency. Config-derived estimates describe the decoder only. Observed cache capacity reflects every component actually loaded by the collection worker, including resident non-text components; do not subtract guessed encoder memory from that observation. This does not qualify full multimodal workloads.
 
-The agent handles checkout and environment checks: record the branch/commit, follow [development setup](../../../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help` and `aisimulate onboard init --help`. Check later subcommands before using them. Report missing commands/options as a version mismatch, rather than asking the user to supply unsupported inputs.
+The agent handles checkout and environment checks: record the source revision, follow [development setup](../../../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help`. For self-benchmarking, also inspect `onboard init --help`; for GBDT, inspect the chapter's [training commands](e2e-gbdt.md#before-you-start). Check each later command's help before use. A missing documented command may indicate a version mismatch; native JSONL collection/training is intentionally outside the `onboard` collection commands.
 
 ### 2. Choose the worker and collection limits
+
+For either route, select aggregated or separate prefill/decode workers and
+record each configuration's model/runtime pins, topology, precision, scheduler
+settings and resource limits. Preserve existing choices and inspect source and
+runtime evidence before asking for unresolved facts. Apply the
+[runtime investigation](#investigate-runtime-constraints-and-precision-options)
+to each selected configuration; a version label is not runtime qualification.
+
+**End-to-end offline profiling.** Record the actual serving configuration and
+native producer identity, plus the user's workload and client semantics. Choose
+representative context lengths, arrival rate or concurrency, and capture
+retention for that workload. These are relevant profiling inputs; the
+self-benchmark defaults below do not select them. Review the
+[backend and role checks](e2e-gbdt.md#enable-native-capture), including the
+SGLang counter correction and serial-scheduling boundary. P/D collection needs
+real transfer and separate worker identities; keep each role's resources and
+training inputs separate. The optional [P/D setup reference](native-pd-setup.md)
+provides tested runtime pins and role-specific launch settings.
+
+#### Self-benchmarking collection choices
 
 Establish the intended serving role before reviewing runtime settings. For P/D disaggregation, create independently accepted `--worker-type prefill` and `--worker-type decode` configurations; their topology, graph settings, scheduler limits and memory budget may differ. For aggregated serving, use `--worker-type aggregated`: both probe launches receive the same accepted serving configuration, while actual per-batch graph execution may differ. Inspect runtime support before proposing modes; do not assume every model/backend supports prefill FULL graphs. See [serving roles](#serving-roles-and-cuda-graph-settings) for the CLI and multi-configuration format. Omitted roles in existing requests retain their historical shared-profile behavior and are not relabeled as independently measured P/D profiles.
 
@@ -132,14 +163,31 @@ Present a concise **options table with one row per joint combination**, includin
 | Conditions and controls | Pinned version, GPU, backend and topology dependencies; required runtime flags/environment settings and defaults. |
 | Sources and confidence | Checkpoint revision and metadata path; official source URL/path and tag/commit for each claim. Distinguish source-confirmed behavior, inference and unresolved or untested conditions. |
 | Runtime support | Supported by the inspected version, conditional/unverified, or ruled out, with the reason. Source review does not establish successful target execution. |
-| Collector compatibility | Compatible with the current profile collector's identity checks, blocked, or unresolved, independently of runtime support. |
+| Collection compatibility | For self-benchmarking, check the profile collector's identity rules; for native profiling, check instrumentation, counters and timing conventions. Record blocked or unresolved conditions separately from runtime support. |
 | Resource effects and limits | Expected changes to weights, attention cache, fixed state, workspaces/padding and memory fit; retain unknown bounds. Accuracy remains unmeasured without matched evidence. |
 
-The profile collector preserves the selected KV dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Checkpoint-inferred KV defaults do not restrict explicit selections. The pinned runtime must support the selected combination, and observed precision must match the plan. Mark any blocked alternative with its precise limitation; a schema-valid profile does not prove runtime support. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
+For **self-benchmarking**, the profile collector preserves the selected KV dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Checkpoint-inferred KV defaults do not restrict explicit selections. The pinned runtime must support the selected combination, and observed precision must match the plan. Mark any blocked alternative with its precise limitation; a schema-valid profile does not prove runtime support. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
 
-Treat runtime defaults as one proposal and let the user choose the precision combination(s) to cover, preserving prior explicit choices. Record the choice, rationale, sources and unresolved conditions in profile provenance. A blocked selection stays blocked until the required capability is available; do not substitute a default silently. For multiple selected combinations, use a separate fresh output root per precision combination and the existing `--parallel-configs` topology list within each. Duplicate resolved topologies within the same serving role are rejected even if their precision overrides differ. This is agent orchestration over the existing CLI, not a new precision-matrix command or schema. Recompute resources and review each exact precision/topology profile in stage 3 before accepting it.
+For either route, treat runtime defaults as one proposal and let the user choose the precision combination(s) to cover, preserving prior explicit choices. Record the choice, rationale, sources and unresolved conditions with the collection identity. A blocked selection stays blocked until the required capability is available; do not substitute a default silently. For self-benchmarking with multiple selected combinations, use a separate fresh output root per precision combination and the existing `--parallel-configs` topology list within each. Duplicate resolved topologies within the same serving role are rejected even if their precision overrides differ. This is agent orchestration over the existing CLI, not a new precision-matrix command or schema. Recompute resources and review each exact precision/topology profile in stage 3 before accepting it.
 
 ### 3. Derive, review and save the profile
+
+For both routes, review each exact configuration's identity, precision, topology,
+cache geometry and runtime settings. Separate sourced facts, planning estimates
+and measured capacity; never replace unknown memory with guessed byte bounds.
+Preserve the user's acceptance of those exact choices and record changes with
+their rationale before proceeding.
+
+**End-to-end offline profiling.** Prepare the chapter's
+[deployment identity](e2e-gbdt.md#before-you-start), preserve launch settings and
+model/tokenizer pins, and record expected worker/source IDs and unresolved
+resources. Save these as ordinary files and session context per configuration.
+Keep measured KV geometry/capacity for later Replay qualification; the capture
+itself does not supply it. Native observations are not an `fpm_profile` timing
+table: do not invent an `onboard init` request or use `--accept-profile` to
+certify them. Continue with the native plan in stage 4.
+
+#### Self-benchmarking profile review
 
 Use [a local model config](#start-from-a-local-model-config), or [a supplied profile](#provide-identity-and-resource-metadata), for the selected deployment. Both produce a class-independent direct-FPM plan. Derive supported cache geometry and runtime facts before asking for unresolved inputs. Explain each value's source and limitations. Do not ask users to guess activation, runtime, communication or aggregate non-KV bytes. Fresh config-derived profiles keep memory pending; optional estimates remain planning evidence until collection observes the actual cache allocation. Resolve effective weight, FMHA, communication and KV precision separately; a quantized checkpoint label does not determine all of them. Preserve replacements and their rationale in overrides/provenance. Review all effective values and assumptions using the appropriate flow below.
 
@@ -162,7 +210,18 @@ Model identity, runtime and topology are not profile-review edit fields. If they
 
 ### 4. Plan collection
 
-Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. For directory output, read `onboarding.json` and use each emitted `aisimulate onboard plan` command to create that configuration's `collection/` directory. Inspect each `support-plan.json`, embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
+**End-to-end offline profiling.** Save the workload/client configuration,
+per-worker native capture settings, retention/storage budget, warmup,
+measurement and drain boundaries, and client completion criteria. Follow
+[smoke and workload planning](e2e-gbdt.md#smoke-then-run-your-workload) and the
+[backend examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers).
+Use the user's deployment tools or an existing instrumented deployment; for
+completed captures, inspect the recorded plan and provenance. Plan bounded
+smoke and pilot runs before full traffic. Save the agreed scope and existing
+execution authorization; no `onboard plan` is required for this route. For P/D,
+include the [launch and smoke checks](native-pd-setup.md#check-role-and-transfer-behavior-before-the-workload) in the plan.
+
+**Self-benchmarking.** Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. For directory output, read `onboarding.json` and use each emitted `aisimulate onboard plan` command to create that configuration's `collection/` directory. Inspect each `support-plan.json`, embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
 Explain each configuration's minimum collection GPUs, rank-local scheduler/resource envelope and [shared collection policy](#how-the-collection-grid-is-determined). AISimulate configures collection inputs and Dynamo generates the exact points; the plan does not derive a second grid from trace requests. In runtime graph mode, report the capture list and exact point count as unresolved until engine initialization. Each plan selects one parallel tuple and generates single-worker validation configs. Continue stages 5 and 6 separately for each configuration, preserving its data and result paths. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
 
@@ -170,7 +229,23 @@ Prepare the per-configuration execution table in [Orchestrate independent collec
 
 ### 5. Collect and verify data
 
-First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage or because historical native campaign artifacts are unavailable. For new or continuing collection, [check timing readiness](#check-timing-readiness-before-full-collection) against saved native artifacts for each configuration. Where evidence is missing, prepare a bounded smoke for each phase required by the selected role before a full grid; explicit aggregated and role-less historical requests require both prefill and decode. A completed runtime memory probe does not replace this timing check.
+**End-to-end offline profiling.** Reuse completed captures when their identity
+and coverage match. Otherwise run the agreed native smoke, pilot and workload,
+then drain and close capture files using the deployment owner's procedure.
+[Validate and select native rows](e2e-gbdt.md#2-check-and-prepare-the-data),
+checking every expected worker/role, unchanged counters and seconds-valued
+labels, file hashes, client completion and work-kind coverage. Record smoke,
+warmup and drain exclusions. The preparation helper alternates observations
+within each work kind into training and test files from the same capture;
+cross-run or cross-workload evaluation requires independently collected data.
+Preserve raw files, receipts and logs. These checks do not prove lossless
+publication or accurate prediction. Resolve resource evidence separately; do
+not send native JSONL to `onboard finalize` or the timing-table quality assay.
+For P/D, use the [troubleshooting and completion reference](native-pd-troubleshooting.md)
+and retain the [completion record](native-pd-troubleshooting.md#keep-a-reviewable-completion-record).
+Continue to GBDT training in stage 6.
+
+**Self-benchmarking.** First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage or because historical native campaign artifacts are unavailable. For new or continuing collection, [check timing readiness](#check-timing-readiness-before-full-collection) against saved native artifacts for each configuration. Where evidence is missing, prepare a bounded smoke for each phase required by the selected role before a full grid; explicit aggregated and role-less historical requests require both prefill and decode. A completed runtime memory probe does not replace this timing check.
 
 For new collection, prepare the compatible pinned Dynamo/vLLM image, accessible checkpoint and GPU resources. Choose the existing collection executor at this stage: Kubernetes needs its namespace and deployment permissions; Slurm needs a caller-owned `sbatch`/`salloc` allocation with Pyxis and shared storage. Follow the [deployment options](#choose-the-collection-executor) below and the [environment prerequisites](#prepare-the-environment). An already-running HTTP server is not required: the AISimulate collector generates the runtime and launches benchmark workers through the selected executor. The engine initializes the model and cache, resolves its graph configuration, and Dynamo self-benchmark generates and times the admitted points. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute --smoke` collects diagnostic evidence without a formal FPM pair; full execution requires matching usable timing evidence for every selected cell. Inspect effective precision, graph mode/capture sizes, cache allocation/padding and supported benchmark seeding during bring-up; preserve checkpoints, initialization logs and raw evidence.
 
@@ -182,7 +257,29 @@ Run the standard [collection quality checks](#validate-collection-and-serving-ac
 
 Then, for a pending profile, [finalize runtime memory](#finalize-runtime-memory) into a fresh directory. Supply the collection report through optional `--collection-report` to preserve its independently verified quality status in the resolved profile; omission records `not_assessed`. Review and accept the resolved profile separately, save its provenance in the session checkpoint, then use that directory in stage 6. Matching timing data alone cannot finalize memory when initialization evidence is missing. Exploratory prediction/recommendation remains available with resolved memory while accuracy is unqualified.
 
-### 6. Validate replay and run predict/recommend
+<a id="6-validate-replay-and-run-predictrecommend"></a>
+
+### 6. Validate and use the model
+
+**End-to-end offline profiling.** [Train and evaluate](e2e-gbdt.md#3-train-and-qualify-accuracy)
+one AISimulate-compatible GBDT per role. Retain inference artifacts and online
+seed checkpoints; report held-out error, successful prediction coverage and
+excluded rows together. Missing stores require more representative observations
+and another fit. Follow the [Replay setup and consumer checks](e2e-gbdt.md#4-use-the-model-in-replay)
+with explicit learned selection and measured resources. Assess matched serving
+metrics separately from FPM error; SGLang capture does not by itself qualify its
+Replay mapping. Optionally [adapt and save](e2e-gbdt.md#5-optional-adapt-and-save)
+with later measured observations, scoring before each update. These commands use
+the standalone trainer, ordinary Replay and model APIs; `onboard validate-fpm`
+is not the native-GBDT handoff.
+
+At native-route handoff, save each configuration's stage/result, next action,
+source identity, capture/selection receipts, training/evaluation results,
+artifact paths and Replay qualification limits in the session checkpoint. Keep
+the onboarding checkpoint distinct from the GBDT's fitting checkpoint. It
+records the work; it does not restore the model or a live feedback stream.
+
+#### Self-benchmarking validation and use
 
 For heterogeneous P/D recommendation, candidate enumeration uses each role’s
 hardware and explicit `prefill` or `decode` worker identity.
@@ -199,7 +296,8 @@ Complete the standard [matched serving validation](#validate-collection-and-serv
 
 Use one `onboarding-checkpoint.json` for the whole session, including every selected precision/topology configuration. The agent creates it during stage 1, before all inputs are known, and saves after meaningful findings, user decisions, draft edits, acceptance and command results. Users do not need to request a save. These commands persist the supplied state; they do not observe conversations, investigate remote capabilities or automatically intercept other onboarding commands. The agent is responsible for invoking them.
 
-Keep the file outside fresh `init --output-dir` roots, for example beside `drafts/` and separate final precision directories under `model-onboarding/`. Those directories must still satisfy the existing fresh-output rules. Create the checkpoint with:
+Keep the file outside fresh `init --output-dir` roots and the GBDT chapter's
+fresh run directory, for example beside `drafts/` and separate final precision directories under `model-onboarding/`. Those directories must still satisfy the existing fresh-output rules. Create the checkpoint with:
 
 ```bash
 aisimulate onboard checkpoint \
@@ -238,9 +336,20 @@ JSON
 
 Replace these illustrative inputs with the user's facts. The example revision assumes the preceding creation was the only save; always use the actual current revision.
 
+For the native profiling route, keep effective deployment/workload choices in
+`inputs`, user review decisions in `decisions`, and per-configuration results in
+`progress`. Register existing receipts, identity files and model/evaluation
+outputs as `kind: file` with the appropriate scope. The request/profile
+acceptance fields below validate self-benchmark requests; an otherwise valid
+native session can retain `profile_accepted: false` and `effective_status:
+draft`. Those fields do not determine native capture or GBDT readiness. Inspect
+the actual artifacts and preserve explicit review decisions; do not fabricate a
+self-benchmark request to change that status. The model's online checkpoint is
+a separate artifact, not this session file.
+
 #### Preserve partial profile review
 
-Use [headless draft generation](#3-derive-review-and-save-the-profile) for checkpointed agent sessions. Save each complete generated request, including its embedded profile and provenance, as that configuration's `draft_request`. Incomplete draft requests may also be saved while resolving inputs, but cannot be accepted. For example, after generating two draft requests at `model-onboarding/draft-a.yaml` and `model-onboarding/draft-b.yaml`, prepare their update without changing the requests:
+For self-benchmarking, use [headless draft generation](#3-derive-review-and-save-the-profile) for checkpointed agent sessions. Save each complete generated request, including its embedded profile and provenance, as that configuration's `draft_request`. Incomplete draft requests may also be saved while resolving inputs, but cannot be accepted. For example, after generating two draft requests at `model-onboarding/draft-a.yaml` and `model-onboarding/draft-b.yaml`, prepare their update without changing the requests:
 
 ```bash
 python - <<'PY'
@@ -340,6 +449,12 @@ Resume verifies checkpoint integrity and current referenced file snapshots; arch
 
 #### Preserve collection deployment options
 
+This subsection describes **self-benchmarking** deployment through
+`collect-fpm`. For native profiling, save the user's deployment and workload
+choices in the generic `inputs` fields and resume through the
+[GBDT chapter](e2e-gbdt.md); the collector flags and request-acceptance machinery
+below do not apply.
+
 At the collection stage, save the exact executor, pinned image, mounts, networking and other deployment options in the existing configuration's `inputs.collection_deployment`. Record them before registering collection artifacts so the checkpoint binds those artifacts to the selected deployment. For example, if the current checkpoint revision is 8:
 
 ```bash
@@ -372,9 +487,15 @@ As with other effective input changes, changing these values invalidates that co
 
 ### Resume from existing work
 
-If a session checkpoint exists, run `onboard resume` first, resolve integrity issues and continue each configuration's unfinished work without repeating shared intake or accepted review. If older work has no session checkpoint, inspect the saved request/profile, plan, data pair and results, then record their verified state and any explicit acceptance evidence in a new checkpoint. For directory output, `onboarding.json` locates configurations and next plan commands; it is an output index, not the session checkpoint. A saved file without evidence of acceptance still needs stage 3 review.
+If a session checkpoint exists, run `onboard resume` first, resolve integrity issues and continue each configuration's unfinished work without repeating shared intake or accepted review. If older work has no session checkpoint, inspect its deployment identity, saved inputs, plan, measurements and results, then record their verified state and any explicit acceptance evidence in a new checkpoint. For directory output, `onboarding.json` locates configurations and next plan commands; it is an output index, not the session checkpoint. A saved file without evidence of acceptance still needs stage 3 review.
 
-Validate that artifacts still match the checkout's CLI, selected deployment and collection settings using the existing checks below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. Preserve completed artifacts when blocked and save the specific missing input and next action. Changed deployment, resource profile or collection bounds require review and a new collection directory. Validation-only changes can reuse the verified collection plan; use a separate results directory for each replay. Collection's `--resume` continues its matching collector campaign, while `onboard resume` supplies the broader session context.
+For native profiling, resume from the recorded stage and inspect the chapter's
+capture, selection, training and Replay receipts. A verified completed capture
+can continue at data preparation or training; a saved learned model still needs
+identity, coverage and consumer review. Session resume does not restart a
+serving deployment, train a model or restore online fitting state.
+
+For self-benchmarking, validate that artifacts still match the checkout's CLI, selected deployment and collection settings using the existing checks below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. Preserve completed artifacts when blocked and save the specific missing input and next action. Changed deployment, resource profile or collection bounds require review and a new collection directory. Validation-only changes can reuse the verified collection plan; use a separate results directory for each replay. Collection's `--resume` continues its matching collector campaign, while `onboard resume` supplies the broader session context.
 
 ## Create the request
 

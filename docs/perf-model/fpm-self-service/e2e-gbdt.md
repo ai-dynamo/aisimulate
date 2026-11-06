@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # End-to-end offline profiling and GBDT
 
-This chapter describes end-to-end offline profiling alongside
-[FPM self-service onboarding](README.md). Collect native
+This chapter implements the end-to-end offline profiling route in
+[FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
 forward-pass metrics (FPM) on your cluster, train a gradient-boosted decision tree
 (GBDT) model, and use it in AISimulate Replay. These metrics describe the
 scheduled batch work and its measured duration.
@@ -17,11 +17,10 @@ apply **online updates** using later measured feedback.
 **Native FPM capture** is the collection mechanism used for both the initial
 profiling run and later **online observations**, which supply measured feedback
 for online adaptation. This guide uses aggregate batch features, so per-request
-length lists are not required.
+length lists are not required. Per-request data hooks are a future extension.
 
-In the scenario notation, **A** means self-benchmark, **B** means end-to-end
-offline profiling, and **C** means online observations. This guide covers B and
-B+C. For C-only initialization or A+C fallback, follow
+For initialization from online observations alone, or self-benchmark seeds with
+online feedback, follow
 [Start and adapt a GBDT with online observations](online-gbdt.md).
 
 Follow [Collect](#1-collect) → [Check](#2-check-and-prepare-the-data) →
@@ -55,38 +54,22 @@ Use a fresh run directory. Training runs on CPU; serving data collection needs
 your GPUs. The online-seed exporter requires scikit-learn 1.9.1. Source-build
 prerequisites are in the [installation guide](../../getting-started/installation.md#use-current-source).
 
-Save the following as `$FPM_RUN/$FPM_ROLE.identity.json`, replacing the model,
-packaged system, backend/version, role and parallelism with your deployment's
-values. These TP4/EP4 values illustrate the fields:
-
-```json
-{
-  "model": "YOUR_MODEL_ID",
-  "system": "YOUR_PACKAGED_SYSTEM",
-  "backend": "vllm",
-  "backend_version": "YOUR_ENGINE_VERSION",
-  "worker_type": "aggregated",
-  "tp": 4,
-  "pp": 1,
-  "attention_dp": 1,
-  "moe_tp_size": 1,
-  "moe_ep_size": 4
-}
-```
-
-For Replay or Recommend, omit both `moe_tp_size` and `moe_ep_size` from the
-training identity when `moe_tp_size * moe_ep_size == 1`. The Replay YAML can
-still use `parallelism.moe_tensor: 1` and `parallelism.moe_expert: 1`; its
-compiler represents those unsharded dimensions as `None` in the canonical
-identity. Training with explicit `1, 1` preserves a different identity, so the
-resulting artifact fails the exact identity check when Replay loads it.
-For a sharded topology, retain both fields, including a dimension equal to 1
-as in the example above. Use the same reviewed identity for training and
-subsequent SDK construction.
-
-Include the actual precision, KV block size and kernel settings from the
-[configuration reference](../configuration.md#choosing-a-forward-pass-api).
+Copy the [identity template](../../../scripts/fpm_self_service/identity.json) to `ROLE.identity.json` in the
+run directory. Replace the model, packaged system, backend/version, role and
+parallelism. Add the actual precision, KV block size and kernel settings from
+the [configuration reference](../configuration.md#choosing-a-forward-pass-api).
+The template's TP4/EP4 values are examples, not inferred deployment settings.
 Leave learned source paths out of this identity; training creates the source.
+
+For Replay, omit both `moe_tp_size` and `moe_ep_size` from the training identity
+when `moe_tp_size * moe_ep_size == 1`. The Replay YAML can still use
+`parallelism.moe_tensor: 1` and `parallelism.moe_expert: 1`; its compiler represents
+those unsharded dimensions as `None` in the canonical identity. Training with
+explicit `1, 1` preserves a different identity and fails the exact identity check
+when Replay loads the artifact. For a sharded topology, retain both fields,
+including a dimension equal to 1 as in the template. Use the same reviewed
+identity for training and subsequent SDK construction.
+
 Review and save this identity, the runtime/model/tokenizer pins, launch settings
 and expected worker IDs before capture. Keep unresolved resource facts explicit;
 measured KV geometry and usable capacity are required before Replay. In an
@@ -109,9 +92,9 @@ hardware, topology or backend needs its own model and qualification.
 
 ### How this fits onboarding
 
-Use the [six onboarding stages](README.md#workflow) to organize target review
-and evidence collection. For end-to-end offline profiling, the work maps to
-those stages as follows:
+Follow the [six onboarding stages](README.md#workflow) to review the target and
+choose this route. The detailed commands below implement its collection,
+training and model operations:
 
 | Onboarding stages | Work in this guide |
 | --- | --- |
@@ -120,12 +103,13 @@ those stages as follows:
 | 5. Collect and verify | Steps 1–2: collect native traces, inspect them and prepare training inputs. |
 | 6. Validate and use | Steps 3–5: train, qualify accuracy, use Replay, and optionally apply online updates and save. |
 
-Native JSONL is input to the standalone trainer;
+The five steps below expand the corresponding onboarding stages; they are not
+another onboarding procedure. Native JSONL is input to the standalone trainer;
 `onboard finalize` expects self-benchmark timing tables and does not perform
 this handoff. Keep measured resource capacity, prediction coverage and matched
 serving accuracy as separate checks. The
 [canonical agent procedure](implementation.md#onboard-with-an-agent) describes
-the session checkpoint and review requirements.
+both routes and their session checkpoint requirements.
 
 ## 1. Collect
 
@@ -144,14 +128,20 @@ export DYN_FPM_MAX_SEGMENTS=64  # size retention for your full run
 | Backend | Aggregated | P/D disaggregated |
 | --- | --- | --- |
 | vLLM | Verify its native instrumented scheduler is active. Keep the role `aggregated` for prefill, decode and mixed batches. | Enable capture on both roles, with separate output prefixes and worker identities. Use real KV transfer. |
-| SGLang | Enable forward-pass metrics, verify scheduled-prefill counters and disable the overlap scheduler during capture. | Apply those producer checks to both roles, with separate GPUs and reachable KV-transfer addresses. |
+| SGLang | Verify forward-pass metrics are enabled and scheduled-prefill counters are correct. The qualified recipe uses serial scheduling with overlap disabled. | Apply those producer checks to both roles, with separate GPUs and reachable KV-transfer addresses. |
 
-For SGLang, the [capture reference](../fpm_ml/learned-forward-pass-model.md#1-collect-the-fpm-stream)
-explains why overlap scheduling can merge or omit timing intervals. Check that
-your producer counts the tokens scheduled in each pass, including partial
-prefill chunks. Verify counter and timer behavior again when changing scheduler,
-speculation or parallelism settings; a successful capture does not qualify a
-different execution mode.
+For separate roles, the optional [P/D setup reference](native-pd-setup.md) gives
+tested runtime pins and launch settings; use [P/D troubleshooting](native-pd-troubleshooting.md)
+during the pilot and completion checks.
+
+For SGLang, affected producers need the [native counter correction](examples.md#d1-pin-the-aggregated-sglang-runtime)
+or an equivalent verified fix. The qualified capture configuration also disables
+mixed chunks, speculation, attention DP and prefill CP. Changing these settings
+needs new counter/timer checks. The
+[capture reference](../fpm_ml/learned-forward-pass-model.md#1-collect-the-fpm-stream)
+explains why overlap scheduling can merge or omit timing intervals; verify that
+prefill counters describe the tokens scheduled in each pass, including partial
+chunks.
 
 Native labels are forward-pass durations in **seconds**. Keep them unchanged:
 vLLM and SGLang have different timer and decode-context conventions. Keep all
@@ -221,74 +211,89 @@ settings, expected worker/role IDs, workload configuration, phase boundaries,
 completion counts, logs and file hashes. Identify smoke/pilot exclusions and any
 other traffic sharing the workers.
 
+**SGLang configuration example.** The tested
+[aggregated recipe](examples.md#example-d-collect-native-fpm-from-an-aggregated-worker)
+uses DeepSeek-V4-Flash-0731 on four B200 GPUs with TP4/EP4, FP8 KV and an
+8192-token prefill chunk. It covers pure-prefill and pure-decode work, with no
+mixed-row coverage. Use your own workload and load settings.
+
 ## 2. Check and prepare the data
 
-Retain closed native files under `traces/ROLE/` and inspect them with your
-deployment's capture tools. Review each expected worker and attention-DP rank,
-with P/D roles and worker restarts kept separate. Confirm that busy observations
-have finite positive `wall_time`, valid scheduled-work counters and the expected
-source identity. Reconcile segment boundaries, duplicate records and missing
-intervals with worker logs and client outcomes. Readable files and continuous
-counters alone do not prove lossless publication.
-
-Use your trace-selection tooling to prepare separate training and held-out
-files. Keep the native records and seconds-valued labels unchanged. Exclude
-smoke/pilot traffic, state whether warmup and drain are included, and record
-source hashes and the exact selected intervals. Preserve aggregated mixed rows
-under their original role; do not relabel them as dedicated prefill or decode.
-
-Prefer separate capture runs, or disjoint time blocks, for qualification.
-Adjacent iterations are correlated, so a random split is only an initial fit
-check. Review workload-class coverage in both populations. The commands below
-expect one accepted JSONL or JSONL.GZ file per population:
+Copy closed native files into `traces/ROLE/`. Validate them locally, replacing
+the identity placeholders with your deployment's native source/worker values:
 
 ```bash
-export FPM_TRAIN=/absolute/path/to/accepted-training.jsonl.gz
-export FPM_TEST=/absolute/path/to/accepted-heldout.jsonl.gz
-shasum -a 256 "$FPM_TRAIN" "$FPM_TEST" \
-  > "$FPM_RUN/receipts/$FPM_ROLE.input-sha256.txt"
+python3 "$AIS_REPO/scripts/fpm_accuracy/validate_native_capture.py" \
+  --trace-dir "$FPM_RUN/traces/$FPM_ROLE" \
+  --expect "$FPM_ROLE" NAMESPACE COMPONENT PRODUCER_ID WORKER_ID 0 \
+  --report "$FPM_RUN/receipts/$FPM_ROLE.capture.json"
 ```
 
-The trainer accepts flat FPM records and native trace envelopes containing
-`event.fpm`. Its reader skips malformed JSON and unrecognized records, and
-training excludes idle or incompatible rows. Before training, save an external
-validation report from your trace-selection workflow as
-`$FPM_RUN/receipts/$FPM_ROLE.selection.json`. Include:
+The last argument to `--expect` is the attention-DP rank. Repeat that option for
+each expected stream. Validate P/D roles separately and keep worker restarts in
+separate inputs. The helper reads full `dynamo.fpm.trace.v1` envelopes; it is a
+source-checkout utility, not an installed AISimulate command.
 
-- The source and selected input file paths and their SHA-256 hashes.
-- Total source-record counts and accepted-record counts for training and
-  held-out data separately.
-- Exclusion counts by reason, such as malformed JSON, unrecognized records,
-  idle observations, incompatible roles or intervals outside the selection.
-  Use disjoint categories so the accepted and excluded counts reconcile with
-  the source total.
+**Proceed when** the report is `valid`, every expected worker has busy rows, and
+your client completion checks passed. Inspect counts and warnings. Exit 1 means
+invalid data; exit 2 requires review or corrected arguments. Readable files and
+continuous counters do not prove lossless publication.
 
-Compare the report with the selected files and the input-hash receipt above,
-then retain them together. The training CLI does not produce this report,
-report parser exclusions or validate capture completeness. Its resulting
-iteration and store counts do not account for every source record.
+Choose the workload rows to retain. Save one reviewed inclusive line range per
+file in `$FPM_RUN/$FPM_ROLE.selection.json`, replacing every value below with
+actual evidence:
 
-**Proceed when** every expected worker has accepted busy observations, the
-training and held-out populations are disjoint, the report counts reconcile,
-and the client completion and source checks are recorded. Supported input and
-split options are described in the
-[training reference](../fpm_ml/learned-forward-pass-model.md#2-train).
+```json
+[
+  {
+    "path": "traces/aggregated/fpm.YOUR_WORKER.000000.jsonl.gz",
+    "sha256": "COPY_FROM_CAPTURE_REPORT",
+    "first_line": 101,
+    "last_line": 5000
+  }
+]
+```
+
+Exclude smoke/pilot rows and state whether warmup and drain are included. List
+files in segment order. Then prepare an initial 50/50 split within each work kind:
+
+```bash
+python3 "$AIS_REPO/scripts/fpm_accuracy/prepare_native_training.py" \
+  --run-dir "$FPM_RUN" --role "$FPM_ROLE"
+```
+
+This writes `selected/ROLE.train.jsonl`, `selected/ROLE.test.jsonl` and a selection
+receipt. It preserves native rows and labels, checks source hashes and excludes
+idle rows. Adjacent iterations can remain correlated across this split, so its
+held-out error describes the captured population. Use independently collected
+evaluation data when assessing another run or workload. Keep
+decode-admission/mixed rows under their original role and account for any trainer
+exclusions. Retain the original selection, capture report and both exports;
+the optional online-selection step uses them to exclude offline observations.
+
+The trainer's reader can skip malformed JSON and unrecognized records, and
+training can exclude incompatible rows. Its iteration/store counts do not
+account for every source record or establish capture completeness. Retain the
+validation and selection reports, reconcile accepted/excluded counts, and check
+trainer exclusions separately. See the
+[training reference](../fpm_ml/learned-forward-pass-model.md#2-train) for supported
+input and split options.
 
 ## 3. Train and qualify accuracy
 
 Use the deployment identity reviewed before collection. Confirm it still
 matches the selected native files and role; resolve mismatches before fitting.
 
-Train one AISimulate-compatible GBDT per role. These training and evaluation
-commands support attention DP=1 only. `--join-ranks none` treats each record
-independently, while `--join-ranks counter` refuses cross-rank joins. For higher
-attention DP, the Python `train` and `evaluate` APIs accept complete iteration
-groups established using a trustworthy shared iteration identity. Producing
-and validating those synchronized groups is outside this walkthrough.
+Train one AISimulate-compatible GBDT per role. These CLI commands support
+attention DP=1: `--join-ranks none` treats each record independently, while
+`--join-ranks counter` refuses cross-rank joins. For higher attention DP, the
+Python `train` and `evaluate` APIs accept complete iteration groups established
+using a trustworthy shared iteration identity. Producing and validating those
+synchronized groups is outside this walkthrough.
 
 ```bash
 python -m aisimulate_core.sdk.fpm_learned train \
-  --fpm "$FPM_TRAIN" \
+  --fpm "$FPM_RUN/selected/$FPM_ROLE.train.jsonl" \
   --worker-type "$FPM_ROLE" --features fpm5 --join-ranks none \
   --identity "$FPM_RUN/$FPM_ROLE.identity.json" \
   --holdout-frac 0 --seed 42 \
@@ -297,7 +302,7 @@ python -m aisimulate_core.sdk.fpm_learned train \
 
 python -m aisimulate_core.sdk.fpm_learned evaluate \
   --model "$FPM_RUN/models/$FPM_ROLE.learned.json" \
-  --fpm "$FPM_TEST" --join-ranks none
+  --fpm "$FPM_RUN/selected/$FPM_ROLE.test.jsonl" --join-ranks none
 ```
 
 Check each command's status and retain its output. The learned JSON is the
@@ -355,69 +360,32 @@ generalization and Replay TTFT/TPOT accuracy need separate validation.
 
 ## 4. Use the model in Replay
 
-Save the following as `replay.yaml` and replace every angle-bracket placeholder
-and absolute path. It describes aggregated vLLM with attention DP=1, PP=1 and
-no context parallelism. Set the captured topology, precision and scheduler
-limits, plus **measured** KV block geometry and usable capacity. Include any
-additional precision and kernel controls from the reviewed identity using the
-[engine configuration fields](../configuration.md#flat-engine-precision-and-execution-controls).
-The worker's `timing` block selects the trained GBDT explicitly:
-
-```yaml
-traffic:
-  source:
-    type: trace
-    format: mooncake
-    paths: [/absolute/path/requests.jsonl]
-    block_size: <trace-hash-block-size>
-  load:
-    type: trace_timestamps
-    speedup: 1.0
-
-engine:
-  mode: aggregated
-  model: <captured-model-id>
-  hardware: <packaged-system-name>
-  backend: vllm
-  backend_version: "<captured-engine-version>"
-  context_length: <captured-context-limit>
-  kvcache_quant_mode: <captured-kv-precision>
-  workers:
-    aggregated:
-      parallelism:
-        replicas: 1
-        tensor: <captured-tp>
-        pipeline: 1
-        attention_data: 1
-        moe_tensor: <captured-moe-tp>
-        moe_expert: <captured-ep>
-      scheduler:
-        max_batched_tokens: <captured-scheduler-token-limit>
-        max_sequences: <captured-sequence-limit>
-      kv_cache:
-        block_size: <observed-kv-block-size>
-        bytes_per_token: <observed-bytes-per-token-per-tp-shard>
-        prefix_caching: <captured-true-or-false>
-        capacity:
-          type: fixed
-          blocks: <observed-usable-blocks-per-dp-rank>
-      timing:
-        type: default
-        estimation_mode: fpm_learned
-        fallback_policy: deny
-        estimator_config:
-          fpm_learned:
-            artifact_path: /absolute/path/fpm-run/models/aggregated.learned.json
-            adaptation: frozen
-          correction:
-            enabled: false
-```
-
-`traffic.source` reads a request trace, not FPM training records. The trace's
-hash-block size describes its prefix hashes; the worker's KV block size describes
-the serving cache. Set each from its own source. The
+Copy the [Replay template](../../../scripts/fpm_self_service/replay-aggregated.yaml) to `replay.yaml` and
+replace every placeholder. It starts with aggregated vLLM, attention DP=1,
+PP=1 and no context parallelism. Set the captured topology, precision and
+scheduler limits, plus **measured** KV block geometry and usable capacity.
+Include additional precision and kernel controls from the reviewed identity
+using the [engine configuration fields](../configuration.md#flat-engine-precision-and-execution-controls).
+Point `traffic.source` at your request trace, not the FPM training data. Its hash
+block size describes the trace's prefix hashes; the worker's KV block size
+describes the serving cache. Set each from its own source. The
 [KV-cache reference](../../replay/engine/kv-cache.md) explains the units for
 `bytes_per_token` and capacity.
+
+The worker's timing block selects the trained GBDT explicitly:
+
+```yaml
+timing:
+  type: default
+  estimation_mode: fpm_learned
+  fallback_policy: deny
+  estimator_config:
+    fpm_learned:
+      artifact_path: /absolute/path/fpm-run/models/aggregated.learned.json
+      adaptation: frozen
+    correction:
+      enabled: false
+```
 
 ```bash
 aisimulate predict --stack engine --config replay.yaml --output-dir replay-result
@@ -467,100 +435,92 @@ iteration; worker IDs and equal counter values do not establish synchronization.
 
 ## 5. Optional: adapt and save
 
-Supply later measured observations from the same deployment as
-`$FPM_RUN/selected/$FPM_ROLE.online.jsonl`. Inspect and select them as in step 2,
-keep them separate from the frozen test set, and retain their order. This example
-accepts busy observations from one worker with attention DP=1. Its identity and
-initial training checkpoint come from step 3.
+Collect later measured observations from the same deployment. Recheck the
+model/runtime, topology and serving settings against `ROLE.identity.json`;
+native worker IDs alone do not establish that identity. This example supports
+one worker stream with attention DP=1 (rank 0), one worker lifetime per capture,
+and separate files for each P/D role.
 
-Run the following Python code in the activated environment. It creates a fresh
-`models/ROLE.adapted` directory, predicts before admitting each label, then saves
-and restores the resulting state:
+Copy the closed later capture into a new `traces/ROLE-online/` directory under
+`$FPM_RUN`, keeping the original capture, selection, receipts and train/test
+exports unchanged. Validate the later files with their actual worker identity:
 
-```python
-import json
-import math
-import os
-from copy import deepcopy
-from pathlib import Path
-
-from aisimulate_core.sdk import RustForwardPassPerfModel
-from aisimulate_core.sdk.fpm_learned import iter_fpm_records
-
-run = Path(os.environ["FPM_RUN"]).resolve()
-role = os.environ["FPM_ROLE"]
-identity = json.loads((run / f"{role}.identity.json").read_text())
-assert identity["worker_type"] == role
-assert identity.get("attention_dp", 1) == 1
-config = deepcopy(identity)
-config.update(
-    estimation_mode="fpm_learned",
-    fallback_policy="deny",
-    estimator_config={
-        "fpm_learned": {
-            "checkpoint_path": str(run / "models" / f"{role}.online-seed"),
-            "adaptation": "online",
-            "update_every": 1,
-        },
-        "correction": {"enabled": False},
-    },
-)
-online = RustForwardPassPerfModel.best_available(config)
-rows = list(iter_fpm_records([run / "selected" / f"{role}.online.jsonl"]))
-assert rows, "No accepted feedback observations"
-worker_ids = {row["worker_id"] for row in rows}
-assert len(worker_ids) == 1 and "" not in worker_ids
-
-scores = []
-for row in rows:
-    assert row["dp_rank"] == 0
-    observed_ms = 1000.0 * row["wall_time"]
-    assert math.isfinite(observed_ms) and observed_ms > 0
-    query = [{key: value for key, value in row.items() if key != "wall_time"}]
-    predicted_ms = online.estimate_forward_pass_time_ms(query)
-    if predicted_ms is None:
-        raise ValueError("Feedback reached an uncovered workload store")
-    scores.append(abs(predicted_ms / observed_ms - 1.0))
-    online.tune_with_fpms([[row]])
-
-output = run / "models" / f"{role}.adapted"
-output.mkdir()  # use a fresh destination
-checkpoint = output / "checkpoint"
-online.save_online_checkpoint(str(checkpoint))
-(output / "model.json").write_text(
-    json.dumps(online.export_learned_artifact(), indent=2) + "\n"
-)
-resume_config = deepcopy(online.diagnostics()["provenance"]["config"])
-learned = resume_config["estimator_config"]["fpm_learned"]
-learned["checkpoint_path"] = str(checkpoint)
-learned.pop("source_sha256", None)  # constructor pins the new checkpoint
-(output / "resume-config.json").write_text(
-    json.dumps(resume_config, indent=2) + "\n"
-)
-resumed = RustForwardPassPerfModel.best_available(resume_config)
-assert resumed.estimate_forward_pass_time_ms(query) == online.estimate_forward_pass_time_ms(query)
-print({"observations": len(scores), "mape_pct": 100.0 * sum(scores) / len(scores)})
+```bash
+python3 "$AIS_REPO/scripts/fpm_accuracy/validate_native_capture.py" \
+  --trace-dir "$FPM_RUN/traces/${FPM_ROLE}-online" \
+  --expect "$FPM_ROLE" NAMESPACE COMPONENT PRODUCER_ID WORKER_ID 0 \
+  --report "$FPM_RUN/receipts/$FPM_ROLE.online.capture.json"
 ```
 
-The code uses the public [online fitting and persistence APIs](../fpm_ml/learned-forward-pass-model.md#online-tree-adaptation).
-Its input checks do not replace the source review in step 2. Keep each feedback
-row's role compatible with the model and record the source selection externally.
-Use the exported `model.json` with frozen adaptation in Replay. The reported
-MAPE scores predictions made before each label was admitted; it does not assess
-request TTFT or TPOT.
+Require a `valid` report. Save `$FPM_RUN/$FPM_ROLE.online.selection.json` using
+the [selection format above](#2-check-and-prepare-the-data): point each entry at
+its later capture file, use its validated hash and reviewed line range, and list
+segments in capture order. Exclude smoke/pilot rows and record warmup/drain
+choices as before. Then prepare the feedback file:
 
-Saving retains pending fitting rows without fitting them. With `update_every`
-greater than one, call `flush_updates()` before saving only when you intend to
-fit a partial batch. Preserve the model trained offline for comparison. Your
-application owns feedback delivery and the last admitted position; coordinate
-that position with checkpoint saving to avoid replaying labels on resume.
+```bash
+python3 "$AIS_REPO/scripts/fpm_accuracy/prepare_native_training.py" \
+  --run-dir "$FPM_RUN" --role "$FPM_ROLE" --mode online
+```
+
+This writes `selected/ROLE.online.jsonl` and
+`receipts/ROLE.online.selection.json`. It preserves the native bytes and order
+of eligible busy rows, excluding idle rows and work classes incompatible with
+the selected role. The receipt records hashes, admitted counts and exclusions.
+Require the completed receipt before adaptation.
+
+Online selection verifies the original offline receipts and exports, rejects
+reused offline source/export files, and requires feedback observation timestamps
+to be strictly later than every offline train/test row. Within the feedback,
+timestamps must not go backward and counters must increase. A continuing worker
+stream must also advance beyond the original capture's last counter. A timestamp
+tied with the offline boundary is rejected; choose a distinct later capture instead
+of relabeling records. These checks establish selection boundaries, not native
+timer alignment or deployment identity. Do not rename or concatenate the
+offline train/test files into feedback.
+
+Run the [online update example](../../../scripts/fpm_self_service/adapt_gbdt.py):
+
+```bash
+python "$AIS_REPO/scripts/fpm_self_service/adapt_gbdt.py" \
+  --run-dir "$FPM_RUN" --role "$FPM_ROLE" \
+  --output-dir "$FPM_RUN/models/$FPM_ROLE.adapted"
+```
+
+The example loads the initial online seed through `best_available`, predicts
+before admitting each label with `tune_with_fpms`, and saves an updated checkpoint
+and inference ensemble. It also restores the checkpoint to check prediction
+consistency. Use the exported ensemble with frozen adaptation in Replay.
+The output directory contains `model.json`, `checkpoint/`, a restore
+configuration and an adaptation receipt. The public
+[online fitting and persistence APIs](../fpm_ml/learned-forward-pass-model.md#online-tree-adaptation)
+provide these operations; a restore check does not qualify prediction accuracy.
+
+Saving retains pending fitting rows. Add `--flush-updates` only when you intend
+to fit a partial update batch. Preserve the model trained offline for comparison.
+For continued online operation, your application owns feedback delivery and the
+last admitted position; coordinate that position with checkpoint saving.
 Replay's simulated outputs are not new training evidence.
 
 ### Understand the update loop
 
-Let $M_t$ be the scheduled workload for pass $t$, $x_t=\phi(M_t)$ its feature
-vector, and $\theta_t$ the model state before that pass's label is admitted.
-For workload class $s$, $F_{s,t}$ predicts milliseconds using this state:
+The essential sequence inside the example is:
+
+```python
+# config identifies this deployment and its online-seed checkpoint.
+online = RustForwardPassPerfModel.best_available(config)
+for row in iter_fpm_records([feedback_path]):
+    query = [{key: value for key, value in row.items() if key != "wall_time"}]
+    predicted_ms = online.estimate_forward_pass_time_ms(query)
+    # Score this prediction against 1000 * row["wall_time"] before updating.
+    online.tune_with_fpms([[row]])  # one measured iteration, one DP rank
+```
+
+This excerpt shows ordering; the linked runnable example also checks role,
+coverage, input integrity and persistence. Let $M_t$ be the scheduled workload
+for pass $t$, $x_t=\phi(M_t)$ its feature vector, and $\theta_t$ the model state
+before that pass's label is admitted. For workload class $s$, $F_{s,t}$ predicts
+milliseconds using this state:
 
 $$
 \begin{array}{rl}
@@ -573,10 +533,10 @@ $$
 successful fitting update. `estimator_config.fpm_learned.update_every` counts
 admitted observations, while
 your application controls how often feedback is sampled. The example admits
-every supplied row. To use a five-second feedback interval, the caller must
-select at most one observation every five seconds after initialization. The
-standalone default fits after each admission; larger batches can reduce update
-frequency.
+every supplied row. A five-second feedback interval requires the caller to
+select at most one observation every five seconds after initialization;
+`update_every` does not establish a wall-clock sampling interval. The standalone
+default fits after each admission; larger batches can reduce update frequency.
 
 Online fitting retains the seed history and a bounded recent window. It can
 change leaf values and eligible splits, while preserving the seed's feature
@@ -586,7 +546,8 @@ representative initial coverage important even when you plan to adapt.
 ### Choose how online updates change the model
 
 The example above uses the first option. The other two are alternatives when
-you want to retain a fixed GBDT or compare its calibrated prediction with an adaptive one:
+you want to retain a fixed GBDT or compare its calibrated prediction with an
+adaptive one:
 
 | Mode | Configuration under `estimator_config` | Effect of measured feedback |
 | --- | --- | --- |
@@ -618,7 +579,7 @@ $$
 Here $A_r$ is rank $r$'s weighted attention term, $Q_{p,r}$ is its prefill-token
 count, $B_{d,r}$ is its decode-request count, and $\gamma$ is the FFN token
 weight. This fallback uses the group key rather than selecting one rank's
-vector. See the [A+C fallback walkthrough](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest)
+vector. See the [self-benchmark and online fallback walkthrough](online-gbdt.md#4-calibrate-fallback-and-fit-the-missing-mixed-forest)
 for its source requirements and update workflow.
 
 For calibration of the frozen GBDT, let $y_i>0$ be an earlier measurement and
@@ -685,9 +646,7 @@ calibration determines $q$. These histories are separate from calibration cells.
 
 For each admitted observation, both experts predict before either uses its
 label. Let $n$ count valid paired comparisons in history $k$, and let $e$
-identify the calibrated expert ($e=\mathrm C$) or adaptive expert
-($e=\mathrm A$). These expert superscripts differ from the A and C data-source
-labels. Its fractional absolute error and
+identify the calibrated or adaptive expert. Its fractional absolute error and
 exponentially weighted mean are
 
 $$
@@ -742,8 +701,8 @@ $$
 For direct interpolation, the decode baseline $T_0(B_d;K_d)$ uses each selected
 decode curve's timing at its smallest collected KV count, combined with the
 same batch-axis interpolation weights as $T_d$. It can therefore depend on
-$K_d$; it is neither an empty-pass
-measurement nor an extrapolation to zero KV. Subtraction treats that baseline
+$K_d$; it is neither an empty-pass measurement nor an extrapolation to zero KV.
+Subtraction treats that baseline
 cost as already represented in prefill and adds only the nonnegative increment.
 This is an empirical composition assumption, not an exact separation of costs.
 
@@ -765,6 +724,6 @@ remains a collection/training task.
 | --- | --- |
 | Requests succeed but no native rows appear | Inspect the active producer, worker output prefix, permissions and retention. |
 | Queuing, retractions or stalled requests | Reduce offered load, check memory/transfer limits, then repeat in a fresh run directory. |
-| Capture checks find missing or inconsistent rows | Preserve the source files and findings; recover closed files or reconcile worker identities/restarts before selecting rows. |
+| Capture validation fails | Preserve the report; recover closed files or reconcile worker identities/restarts before selecting rows. |
 | Missing stores or many excluded rows | Check role and work-kind coverage; collect the missing operating region and fit again. |
 | Low FPM error but poor Replay results | Check workload semantics, native-feature mapping, scheduler settings, KV capacity and transfer behavior. |

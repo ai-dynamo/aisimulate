@@ -304,8 +304,54 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
 
     assert "silicon_ttft_ms" not in serialized
     assert "silicon_workflow_run_id" not in serialized
-    assert "gitlab-master.nvidia.com" not in serialized
+    assert "gitlab" not in serialized.lower()
     assert "linear.app/nvidia" not in serialized
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_public_summary_rejects_gitlab_provenance(hostname):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["hf_model_path"] = f"{hostname}/private-model"
+    with pytest.raises(OVERVIEW.SnapshotError, match="forbidden fragment"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+        )
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_prediction_error_redacts_complete_gitlab_hostname(hostname):
+    row = _inputs()[0]["rows"][0]
+    row.update(aisimulate_status="failed", aisimulate_error=f"source unavailable at {hostname}")
+    assert OVERVIEW._prediction_error(row) == "source unavailable at [redacted]"
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("missing GITLAB_REPOSITORY", "missing [redacted]_REPOSITORY"),
+        ("missing my_GiTlAb_token", "missing my_[redacted]_token"),
+        ("missing SILICON_WORKFLOW_RUN_ID", "missing [redacted]"),
+    ],
+)
+def test_public_summary_redacts_case_insensitive_error_fragments(message, expected):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][2]["aisimulate_error"] = message
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    errors = [point["aisim_error"] for topology in topologies for point in topology["points"]]
+    assert expected in errors
+    serialized = json.dumps(summary).lower()
+    assert not any(fragment in serialized for fragment in OVERVIEW.FORBIDDEN_PUBLIC_FRAGMENTS)
 
 
 def test_prediction_errors_retain_details_without_local_provenance():
