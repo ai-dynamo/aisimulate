@@ -241,7 +241,7 @@ def main() -> int:
     for parser in (p, g):
         parser.add_argument("--sm", required=True, help="e.g. sm100")
         parser.add_argument("--fw", default=None, help="comma list of backends (default: every backend)")
-        parser.add_argument("--op", default=None, help="only the gates of these collector ops (comma list), across the backends")
+        parser.add_argument("--op", default=None, help="only the gates of these collector ops (comma list)")
         parser.add_argument("--repo", default=None, help="only the gates that name this checkpoint")
     p.add_argument("--family", default=None, help="only the gates whose name starts with this family")
     p.add_argument("--out", required=True, type=Path)
