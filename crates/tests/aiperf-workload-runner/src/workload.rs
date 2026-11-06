@@ -222,6 +222,7 @@ pub(crate) fn lower_scheduled(
         model,
         &aiperf_multiturn::DEFAULT_RESIDENT_DATASET_LOWERER,
         None,
+        phases.iter().any(|phase| phase.common().is_warmup()),
     )?;
     prepared.resident_endpoint_binding = Some(binding);
     Ok(ScheduledPrep { prepared, phases, origins, model: model.clone(), tokenizer: tokenizer.clone(), identity_source, resolver })

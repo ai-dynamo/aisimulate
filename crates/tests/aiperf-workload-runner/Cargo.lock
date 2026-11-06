@@ -282,6 +282,7 @@ dependencies = [
  "image",
  "libc",
  "linkme",
+ "memchr",
  "percent-encoding",
  "rayon",
  "serde",
@@ -630,6 +631,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "aiperf-engine-graph"
+version = "0.14.0"
+dependencies = [
+ "aiperf-adaptive",
+ "aiperf-agentx",
+ "aiperf-clock",
+ "aiperf-clock-runtime",
+ "aiperf-config",
+ "aiperf-dataset",
+ "aiperf-dataset-synthesis",
+ "aiperf-distributed-model",
+ "aiperf-endpoints",
+ "aiperf-engine-input",
+ "aiperf-engine-kernel",
+ "aiperf-engine-phase",
+ "aiperf-engine-request",
+ "aiperf-env",
+ "aiperf-exchange-model",
+ "aiperf-graph",
+ "aiperf-graph-model",
+ "aiperf-graph-replay",
+ "aiperf-graph-tools",
+ "aiperf-host-probe",
+ "aiperf-metrics",
+ "aiperf-metrics-model",
+ "aiperf-playback",
+ "aiperf-protocol",
+ "aiperf-records",
+ "aiperf-registry",
+ "aiperf-report-model",
+ "aiperf-request-execution",
+ "aiperf-rng",
+ "aiperf-routing",
+ "aiperf-segment-store",
+ "aiperf-streaming",
+ "aiperf-timing",
+ "aiperf-transport-http-wire",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aiperf-engine-input"
 version = "0.14.0"
 dependencies = [
@@ -674,6 +729,7 @@ dependencies = [
  "aiperf-report-model",
  "aiperf-rng",
  "aiperf-segment-store",
+ "aiperf-streaming",
  "aiperf-tokenizers",
  "aiperf-transport-http-wire",
  "anyhow",
@@ -728,6 +784,7 @@ dependencies = [
  "aiperf-routing",
  "aiperf-segment-store",
  "aiperf-server-metrics",
+ "aiperf-streaming",
  "aiperf-timing",
  "aiperf-tokenizers",
  "anyhow",
@@ -792,6 +849,7 @@ dependencies = [
  "aiperf-rng",
  "aiperf-routing",
  "aiperf-segment-store",
+ "aiperf-streaming",
  "aiperf-timing",
  "aiperf-tokenizers",
  "aiperf-transports",
@@ -823,6 +881,7 @@ dependencies = [
  "aiperf-dataset",
  "aiperf-dispatch",
  "aiperf-endpoints",
+ "aiperf-engine-capture",
  "aiperf-engine-input",
  "aiperf-engine-kernel",
  "aiperf-exchange-model",
@@ -836,6 +895,7 @@ dependencies = [
  "aiperf-request-execution",
  "aiperf-rng",
  "aiperf-segment-store",
+ "aiperf-streaming",
  "aiperf-timing",
  "aiperf-transport-http-wire",
  "aiperf-transport-sdk",
@@ -1329,6 +1389,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aiperf-report-io"
+version = "0.14.0"
+dependencies = [
+ "aiperf-clock",
+ "aiperf-exchange-model",
+ "aiperf-fsio",
+ "anyhow",
+ "blake3",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "aiperf-report-model"
 version = "0.14.0"
 dependencies = [
@@ -1437,6 +1515,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "aiperf-streaming"
+version = "0.14.0"
+dependencies = [
+ "aiperf-clock",
+ "aiperf-digest",
+ "aiperf-endpoints",
+ "aiperf-exchange-model",
+ "aiperf-graph-model",
+ "aiperf-graph-recorded-trace",
+ "aiperf-host-probe",
+ "aiperf-registry",
+ "aiperf-report-model",
+ "aiperf-segment-store",
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "futures",
+ "linkme",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aiperf-test-support"
 version = "0.14.0"
 dependencies = [
@@ -1489,13 +1594,12 @@ dependencies = [
  "minijinja",
  "rayon",
  "regex",
- "rustc-hash 1.1.0",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "tiktoken-rs",
+ "tiktoken-rs 0.12.1",
  "tokenizers",
  "tokio",
  "tracing",
@@ -1601,6 +1705,7 @@ dependencies = [
 name = "aisim-aiperf-workload-runner"
 version = "0.0.0"
 dependencies = [
+ "aiperf-adaptive",
  "aiperf-agentx",
  "aiperf-clock",
  "aiperf-clock-runtime",
@@ -1612,12 +1717,12 @@ dependencies = [
  "aiperf-distributed-model",
  "aiperf-endpoints",
  "aiperf-engine-capture",
+ "aiperf-engine-graph",
  "aiperf-engine-input",
  "aiperf-engine-kernel",
  "aiperf-engine-phase",
  "aiperf-engine-request",
  "aiperf-exchange-model",
- "aiperf-fsio",
  "aiperf-graph",
  "aiperf-graph-model",
  "aiperf-metrics",
@@ -1626,6 +1731,7 @@ dependencies = [
  "aiperf-protocol",
  "aiperf-records",
  "aiperf-registry",
+ "aiperf-report-io",
  "aiperf-report-model",
  "aiperf-request-execution",
  "aiperf-rng",
@@ -2140,6 +2246,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.1",
+ "rayon-core",
 ]
 
 [[package]]
@@ -2234,9 +2341,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2783,7 +2890,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "tiktoken-rs",
+ "tiktoken-rs 0.9.1",
  "tokenizers",
  "tracing",
 ]
@@ -2806,7 +2913,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.27.2",
- "tiktoken-rs",
+ "tiktoken-rs 0.9.1",
  "tokenizers",
  "tracing",
 ]
@@ -6034,6 +6141,20 @@ dependencies = [
  "lazy_static",
  "regex",
  "rustc-hash 1.1.0",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2aeff724640cfe13037336ddf35befdffd2909cbdb65cf041cc8a4cf8c584cfa"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bstr",
+ "fancy-regex 0.19.2",
+ "regex",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
