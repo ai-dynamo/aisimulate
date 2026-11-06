@@ -377,7 +377,9 @@ impl GroupedPrefixRules {
 
     /// Modified simulation of the align split (v0.31 `sched:414-527`, v0.32
     /// `sched:443-556`). `known` is the request's token count and `budget`
-    /// the step budget. `desired` is clamped to the tokens the request has.
+    /// the step budget. Without a State rule the split is off and returns
+    /// `desired`. During the prefill, `desired` is clamped to the tokens the
+    /// request has.
     pub(crate) fn align_split(
         &self,
         start: usize,
@@ -387,6 +389,19 @@ impl GroupedPrefixRules {
         junction: usize,
         budget: usize,
     ) -> usize {
+        // vLLM splits only with a MambaSpec layer in align mode (v0.31
+        // `sched:354-356`, `iface:1568-1574`, v0.32 `sched:377-379`,
+        // `iface:1563-1569`), for running and waiting requests (v0.31
+        // `sched:695-697`, `:1127-1129`, v0.32 `sched:724-726`, `:1173-1175`).
+        // A State rule is a prefix-cacheable Mamba group, admitted only in
+        // align mode. A tail ring is not a MambaSpec.
+        if !self
+            .groups
+            .iter()
+            .any(|rule| rule.kind == GroupRuleKind::State)
+        {
+            return desired;
+        }
         let prefill_end = prompt.max(known.saturating_sub(1));
         if start >= prefill_end {
             return desired;
