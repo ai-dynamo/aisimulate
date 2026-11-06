@@ -246,6 +246,14 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             // The participant owns its own concurrency policy; replay supplies
             // only the logical clock and the cluster's in-flight count.
             let step = participant.advance_to(now_ms, cluster_in_flight)?;
+            // A participant owns internal polling and must park before returning.
+            // Validate that promise here, before any callback can wake it again.
+            if let Some(wakeup_ms) = participant.next_wakeup_ms() {
+                anyhow::ensure!(
+                    wakeup_ms.is_finite() && wakeup_ms > now_ms,
+                    "workload participant did not park after advance_to({now_ms}ms): next wakeup {wakeup_ms}ms"
+                );
+            }
             // Validate the whole step before any admission side effect.
             for request in &step.submits {
                 if request.uuid.is_none() {
