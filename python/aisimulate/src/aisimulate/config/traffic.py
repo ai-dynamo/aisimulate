@@ -184,7 +184,7 @@ class AgenticProfileOptions(StrictModel):
 
 
 class TrafficPredictionLoad(StrictModel):
-    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
 
     @model_serializer(mode="wrap")
     def _omit_default_warmup_policy(self, handler):
@@ -224,7 +224,7 @@ class TrafficPredictionLoad(StrictModel):
 
 
 class TrafficRecommendationLoad(StrictModel):
-    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"] = "repeated_prefixes"
 
     @model_serializer(mode="wrap")
     def _omit_default_warmup_policy(self, handler):
@@ -343,6 +343,8 @@ class _TrafficConfigBase(StrictModel):
             not load.agentic_warmup or load.agentic_profile is None
         ):
             raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+        if load.agentic_warmup_policy == "primers_only" and not load.agentic_warmup:
+            raise ValueError("primers_only requires agentic_warmup")
         if load.agentic_snapshot is not None and load.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (

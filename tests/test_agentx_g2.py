@@ -22,6 +22,7 @@ from aisimulate.runner import (
     _materialize_engine_execution_spec,
 )
 from aisimulate.sweeper.replay import AdapterReplaySpec, ReplayOutputRequirements, RuntimeHookSpec
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -239,6 +240,89 @@ def test_agentic_g2_runs_on_several_aggregated_workers_with_private_pools() -> N
     assert report["agentic_qualification"] == "functional_only"
     workers = {entry["logical_worker_id"] for row in report["per_request"] for entry in row["routing_history"]}
     assert workers == {0, 1}
+
+
+def _planner_pass(prefills: int, prefill_tokens: int, decodes: int, kv: int) -> list[dict]:
+    ms = 2.0 + 0.004 * prefill_tokens + 0.3 * decodes + 2e-5 * kv
+    counters = {"num_prefill_requests": prefills, "sum_prefill_tokens": prefill_tokens}
+    counters |= {"num_decode_requests": decodes, "sum_decode_kv_tokens": kv}
+    return [{"version": 1, "wall_time": ms / 1000, "scheduled_requests": counters}]
+
+
+def _planner_snapshot(path: Path, worker_type: str, kinds: tuple[str, ...]) -> str:
+    """A planner fits its regression for an unknown deployment, so the snapshot records attention DP as unknown."""
+    unknown = dict.fromkeys(("system", "backend_version", "tp", "pp", "attention_dp"), "unknown")
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model=str(ROOT / "tests/e2e/configs/unified_cli/fixtures/tiny-model"),
+            backend="vllm",
+            worker_type=worker_type,
+            kv_block_size=4,
+            estimation_mode="fpm_regression",
+            **unknown,
+        )
+    )
+    passes = []
+    for i in range(48):
+        decodes, kv = 1 + i % 8, (1 + i % 8) * (128 + 37 * (i % 11))
+        shapes = {
+            "prefill": (1 + i % 3, 128 * (1 + i % 5), 0, 0),
+            "decode": (0, 0, decodes, kv),
+            "mixed": (1, 32 * (1 + i % 6), decodes, kv),
+        }
+        passes += [_planner_pass(*shapes[kind]) for kind in kinds]
+    model.tune_with_fpms(passes)
+    model.save_state_snapshot(str(path))
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "name,kinds",
+    [
+        ("agentx-g2-local.yaml", {"aggregated": ("prefill", "decode", "mixed")}),
+        ("agentx-g2-shared-pd.yaml", {"prefill": ("prefill",), "decode": ("decode",)}),
+    ],
+)
+def test_agentic_g2_replays_planner_snapshots_with_an_unknown_attention_dp(name, kinds, tmp_path) -> None:
+    config = _config(name)
+    workers = config["engine"]["workers"]
+    for role, role_kinds in kinds.items():
+        snapshot = _planner_snapshot(tmp_path / role, role, role_kinds)
+        timing = {"estimation_mode": "fpm_regression", "estimator_config": {"state_snapshot": {"path": snapshot}}}
+        workers[role] = {**workers[role], "timing": timing}  # The P/D example aliases one worker block.
+    report = _run(config)
+    assert report["completed_requests"] == 4
+    # The snapshots, not the example's fixed timing, price the passes.
+    fixed = _run(_config(name))
+    assert [row["ttft_ms"] for row in report["per_request"]] != [row["ttft_ms"] for row in fixed["per_request"]]
+
+
+@pytest.mark.parametrize(
+    "name,args_field,fault",
+    [
+        ("agentx-g2-local.yaml", "agg_engine_args", None),
+        ("agentx-g2-local.yaml", "agg_engine_args", "role"),
+        ("agentx-g2-local.yaml", "agg_engine_args", "identity"),
+        ("agentx-g2-shared-pd.yaml", "decode_engine_args", None),
+        ("agentx-g2-shared-pd.yaml", "decode_engine_args", "role"),
+    ],
+)
+def test_agentic_g2_takes_the_role_dp_when_the_timing_identity_spells_it_unknown(name, args_field, fault) -> None:
+    """An unknown attention DP in the timing identity leaves the role's own DP, which must still be 1."""
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_config(name)))
+    args = getattr(spec.backend_deployment, args_field)
+    identity = {"backend": "vllm", "tp": "unknown", "attention_dp": "unknown"}
+    args["timing_model"] = {"type": "external", "provider": "aic", "config": identity}
+    if fault == "role":
+        args["aic_attention_dp_size"] = 2
+    elif fault == "identity":
+        identity["attention_dp_size"] = 2
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    if fault is None:
+        capabilities.require_compatible(spec)
+    else:
+        with pytest.raises(ValueError, match="agentic host offload requires attention DP=1 on every role"):
+            capabilities.require_compatible(spec)
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])

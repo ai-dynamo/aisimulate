@@ -141,6 +141,37 @@ pinned repository's `LICENSE` and its full text is included here as `LICENSE`.
 Modified for AISimulate's synchronous leases, synthetic token IDs and fixed
 timing model. No upstream implementation or production request is vendored.
 
+## SGLang native FPM counter correction
+
+The following repository-root files derive from
+`python/sglang/srt/managers/scheduler_components/metrics_reporter.py` in SGLang:
+
+- `scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch`
+- `scripts/fpm_self_service/native_patches/fixtures/metrics_reporter_scheduled_method.py.txt`
+
+Upstream: https://github.com/sgl-project/sglang , immutable revision
+`e087e662ba1ac4ef7747537e2a9141085efd4561`. Original source:
+https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py .
+Copyright 2023-2024 SGLang Team; Apache-2.0. The unmodified upstream license is
+retained at
+`scripts/fpm_self_service/native_patches/licenses/sglang-e087e662-LICENSE`.
+The pinned repository has no separate NOTICE on this source's ancestor paths.
+
+Modification status: the patch changes scheduled-prefill accounting to use
+pre-forward batch lengths and adds a prominent modification comment. The fixture
+extracts the unmodified original method into a standalone class wrapper; its
+comments identify the extraction and SGLang ownership. It is stored as text to
+preserve its byte-addressed provenance through formatters.
+
+The adjacent `materialize_sglang_patch.py` and tests are original orchestration.
+The helper generates a modified full SGLang source file, preserves the upstream
+license and explicit modification marker, and copies the patch and provenance
+beside it. The expected generated SHA256 is
+`80ca324b60beb470b4ea6057fde7ee9553dd32e851e9741831459614e40bee63`.
+`provenance.json` identifies the original, patch, fixture and license hashes.
+These notices also apply to generated source copies; materialization alone does
+not qualify a runtime or captured labels.
+
 ## AIPerf AgentX snapshot oracle
 
 The reference sampling vectors and recycling contract in repository-root
@@ -171,6 +202,16 @@ source-clock frontier handoff. NVIDIA modified these algorithms to use the
 native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
+
+The primers-only warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs`, its regression test there, and its
+descriptions in `docs/replay/agentic/warmup.md` and `docs/replay/workloads.md`
+model the snapshot warmup of NVIDIA AIPerf without a cache-pressure warmup
+(https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py,
+`_execute_warmup` and `_capped_warmup_lead_ms`): one primer per stream, leads
+capped at the idle cap and aligned on the cut, and no further warmup request.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
+Licensed under Apache-2.0; no upstream implementation is vendored.
 
 The continuous-profile release rules in the same `driver.rs`, their regression
 tests there, and the release descriptions in
@@ -351,11 +392,22 @@ The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/
 
 The vLLM copyright in `src/aisimulate_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISimulate.
 
-Upstream source:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+Public reference source: [SGLang v0.5.18 at `71de97b264b04dcd514cf904003028aefe9775c8`](https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt).
+The corresponding public files are:
 
-Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team. These source files are licensed under the Apache License, Version 2.0. The upstream license is at:
-https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fbc6632270e26edc84b/LICENSE
+- [`models/deepseek_v2.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/models/deepseek_v2.py)
+- [`layers/communicator.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/communicator.py)
+- [`layers/quantization/modelopt_quant.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/modelopt_quant.py)
+- [`layers/quantization/utils.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/utils.py)
+
+These public files contain the corresponding dense MLP, communication, and
+quantization-exclusion behavior. The original audit revision above identifies
+the fork used for the adaptation; the public reference is not a verified
+byte-for-byte mirror of that fork.
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team.
+These source files are licensed under the Apache License, Version 2.0; see the
+[public SGLang license at the reference revision](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/LICENSE).
 
 ## vLLM
 
@@ -1445,7 +1497,8 @@ and does not relicense model weights, producer code or their upstream projects.
 
 ## AISim FPM Gym
 
-- Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym
+- Public migrated source: [FPM evaluator and overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+  This is the modified public copy; the predecessor revision and paths follow.
 - Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
 - Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
   `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
@@ -1457,6 +1510,7 @@ and does not relicense model weights, producer code or their upstream projects.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility.
+- Public dashboard migration: [dashboard source](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
 - Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
   Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
   `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,

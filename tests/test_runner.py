@@ -6,7 +6,7 @@
 import json
 import math
 import pickle
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 from pydantic import ValidationError
@@ -30,6 +30,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
+    RunnerCapabilities,
     RuntimeHookSpec,
 )
 from aisimulate.sweeper.config import Workload
@@ -2700,7 +2701,14 @@ def test_agentic_profile_capability_is_explicit() -> None:
         )
 
 
-def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native():
+@pytest.mark.parametrize(
+    "policy,capability,unsupported",
+    [
+        ("live_trajectory_v1", "supports_agentic_live_warmup", "live agentic warmup"),
+        ("primers_only", "supports_agentic_primers_only", "primers-only agentic warmup"),
+    ],
+)
+def test_agentic_warmup_policy_requires_its_own_runner_capability_and_reaches_native(policy, capability, unsupported):
     workload = {
         "source_type": "trace",
         "load_type": "trace_timestamps",
@@ -2710,15 +2718,29 @@ def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_nat
         "agentic_snapshot": {"seed": 42},
         "agentic_warmup": True,
         "agentic_profile": {},
-        "agentic_warmup_policy": "live_trajectory_v1",
+        "agentic_warmup_policy": policy,
     }
     capabilities = EngineReplayRunnerFactory().capabilities()
-    assert capabilities.supports_agentic_live_warmup
-    with pytest.raises(ValueError, match="does not support live agentic warmup"):
-        replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    assert getattr(capabilities, capability)
+    # The other policy's capability alone does not admit this policy.
+    with pytest.raises(ValueError, match=f"does not support {unsupported}"):
+        replace(capabilities, **{capability: False}).require_compatible(_spec(workload=workload))
+    if policy == "primers_only":
+        with pytest.raises(ValueError, match="primers_only requires agentic_warmup"):
+            capabilities.require_compatible(_spec(workload={**workload, "agentic_warmup": False}))
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
-    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
+    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == policy
+
+
+def test_primers_only_capability_keeps_existing_positional_arguments():
+    # RunnerCapabilities is public: an adapter passing the earlier fields positionally keeps their meaning.
+    default = RunnerCapabilities()
+    earlier = [field.name for field in fields(RunnerCapabilities) if field.name != "supports_agentic_primers_only"]
+    positional = RunnerCapabilities(
+        *(True if name == "supports_weka_client" else getattr(default, name) for name in earlier)
+    )
+    assert positional == replace(default, supports_weka_client=True)
 
 
 def test_weka_client_requires_explicit_runner_capability_and_reaches_native():

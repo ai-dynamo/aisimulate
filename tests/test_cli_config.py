@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -92,6 +95,48 @@ def test_replay_estimation_schema_advertises_supported_modes(config_type, schema
 def test_timing_config_accepts_learned_without_loading_source(estimator_config):
     timing = TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
     assert TimingConfig.model_validate_json(timing.model_dump_json()) == timing
+
+
+def test_self_service_replay_template_preserves_learned_timing_after_config_roundtrip(tmp_path):
+    template = Path(__file__).resolve().parents[1] / "scripts/fpm_self_service/replay-aggregated.yaml"
+    values = {
+        "<trace-hash-block-size>": 16,
+        "<captured-model-id>": "example/model",
+        "<packaged-system-name>": "h200_sxm",
+        "<captured-engine-version>": "0.10.0",
+        "<captured-context-limit>": 8192,
+        "<captured-tp>": 4,
+        "<captured-moe-tp>": 1,
+        "<captured-ep>": 4,
+        "<captured-scheduler-token-limit>": 8192,
+        "<captured-sequence-limit>": 64,
+        "<observed-kv-block-size>": 16,
+        "<observed-bytes-per-token-per-tp-shard>": 16384,
+        "<captured-true-or-false>": True,
+        "<observed-usable-blocks-per-dp-rank>": 10000,
+        "/absolute/path/requests.jsonl": str(tmp_path / "requests.jsonl"),
+        "/absolute/path/fpm-run/models/aggregated.learned.json": str(tmp_path / "aggregated.learned.json"),
+    }
+
+    def replace_placeholders(value):
+        if isinstance(value, dict):
+            return {key: replace_placeholders(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_placeholders(item) for item in value]
+        if isinstance(value, str) and (value.startswith("<") or value.startswith("/absolute/path/")):
+            return values[value]
+        return value
+
+    config = CorePredictionConfig.model_validate(replace_placeholders(yaml.safe_load(template.read_text())))
+    restored = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    assert restored == config
+    timing = restored.engine.workers.aggregated.timing
+    assert timing.estimation_mode == "fpm_learned"
+    assert timing.fallback_policy == "deny"
+    assert timing.estimator_config == {
+        "fpm_learned": {"artifact_path": str(tmp_path / "aggregated.learned.json"), "adaptation": "frozen"},
+        "correction": {"enabled": False},
+    }
 
 
 @pytest.mark.parametrize(
@@ -2131,6 +2176,31 @@ def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, 
     recommended = Workload.model_validate(_recommendation_workload(traffic))
     assert recommended.model_dump(mode="json")["agentic_profile"] == expected
     assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
+
+
+@pytest.mark.parametrize("policy", ["live_trajectory_v1", "primers_only"])
+def test_agentic_warmup_policy_compiles_for_prediction_and_recommendation(policy: str) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 2,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_warmup_policy": policy,
+    }
+    if policy == "live_trajectory_v1":
+        load["agentic_profile"] = {}
+    traffic = {"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load}
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_warmup_policy"] == policy
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_warmup_policy"] == policy
+    assert Workload.model_validate(recommended).agentic_warmup_policy == policy
 
 
 @pytest.mark.parametrize(

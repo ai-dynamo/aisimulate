@@ -320,6 +320,10 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
     ranks = [(role, args, args.get("rank", args)) for role, args in roles]
     if not any(isinstance(rank, Mapping) and rank.get("native_host_offload") is not None for _, _, rank in ranks):
         return
+    # Imported here: the SDK loads the Rust runtime, and this module is read
+    # where it is not built, through result.py.
+    from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
     deployment = spec.backend_deployment
     if spec.execution_mode != "offline":
         raise ValueError("agentic host offload requires offline execution")
@@ -378,12 +382,15 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         ):
             raise ValueError("agentic replay requires speculative decoding disabled")
         prefix = "" if role == "aggregated" else f"{role}_"
+        # A fitted snapshot's identity may spell its width unknown; as in the
+        # runner, that leaves the role's own DP, which the other sources give.
+        known_identity = {name: value for name, value in identity.items() if value != UNKNOWN_IDENTITY}
         dp_values = [
             source[name]
             for source, names in (
                 (args, ("dp_size", "aic_attention_dp_size")),
                 (rank, ("dp_size", "aic_attention_dp_size")),
-                (identity, ("attention_dp", "attention_dp_size")),
+                (known_identity, ("attention_dp", "attention_dp_size")),
                 (deployment.parallel_config, (f"{prefix}attention_dp",)),
             )
             for name in names
@@ -426,6 +433,7 @@ class RunnerCapabilities:
     supports_tokenization: bool = False
     supports_detokenization: bool = False
     supports_deferred_encoder_overlay: bool = False
+    supports_agentic_primers_only: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -658,7 +666,11 @@ class RunnerCapabilities:
             if not self.supports_agentic_warmup:
                 raise ValueError("runner does not support agentic warmup")
         warmup_policy = spec.workload.get("agentic_warmup_policy", "repeated_prefixes")
-        if not isinstance(warmup_policy, str) or warmup_policy not in {"repeated_prefixes", "live_trajectory_v1"}:
+        if not isinstance(warmup_policy, str) or warmup_policy not in {
+            "repeated_prefixes",
+            "live_trajectory_v1",
+            "primers_only",
+        }:
             raise ValueError("unknown agentic_warmup_policy")
         if warmup_policy == "live_trajectory_v1":
             if not agentic_warmup or agentic_profile is None:
@@ -667,6 +679,14 @@ class RunnerCapabilities:
                 raise ValueError(
                     "runner does not support live agentic warmup; "
                     "update the adapter before selecting live_trajectory_v1"
+                )
+        if warmup_policy == "primers_only":
+            if not agentic_warmup:
+                raise ValueError("primers_only requires agentic_warmup")
+            if not self.supports_agentic_primers_only:
+                raise ValueError(
+                    "runner does not support primers-only agentic warmup; "
+                    "update the adapter before selecting primers_only"
                 )
         if agentic_snapshot is not None:
             try:

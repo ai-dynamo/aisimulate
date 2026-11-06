@@ -409,6 +409,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_snapshots=True,
             supports_agentic_warmup=True,
             supports_agentic_live_warmup=True,
+            supports_agentic_primers_only=True,
             supports_weka_client=True,
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
