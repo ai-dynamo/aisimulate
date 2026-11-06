@@ -1438,9 +1438,9 @@ impl SglangCore {
             oracle.retire_requests(admit.can_run.iter().map(|request| request.uuid));
         }
 
-        // Freshly prefilled requests join `running` only once this pass is done, so a
-        // prefill pass never moves the requests that were already running.
-        let mut prefilled = Vec::with_capacity(admit.can_run.len());
+        // Freshly prefilled requests stay out of `running` until this pass is done, then join
+        // its back in FIFO order, so the requests that were already running never move.
+        let mut prefilled = Vec::with_capacity(batch_size);
         let mut prefill_completed = Vec::new();
         let mut chunk_commits = Vec::new();
         for mut req in admit.can_run {
@@ -1556,7 +1556,6 @@ impl SglangCore {
         let forward = forward
             && (!decode.output_signals.is_empty()
                 || decode.decode.as_ref().is_none_or(|shape| shape.charged));
-        // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
         self.running.append(&mut prefilled);
 
         if self.host.is_some() && self.config.worker_type == WorkerType::Prefill {
