@@ -1240,10 +1240,18 @@ class BaseBackend:
 
         Numeric FPM power covers text-only models without a draft scheme whose
         run meets the 0.9 energy-coverage rule. Op-level runs keep raw watts.
+        A ``language_only`` (EPD) worker is withheld too: its deployment always
+        adds an op-level encode stage, which the EPD overlay would blend with
+        the FPM watts.
         """
         if not _is_fpm_model(model):
             return False
-        return _has_draft_scheme(model) or bool(model.encoder_ops) or not summary.has_sufficient_power_data()
+        return (
+            _has_draft_scheme(model)
+            or bool(model.encoder_ops)
+            or getattr(model.config, "language_only", False)
+            or not summary.has_sufficient_power_data()
+        )
 
     def run_static(
         self,

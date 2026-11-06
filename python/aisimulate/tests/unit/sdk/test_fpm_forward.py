@@ -2175,6 +2175,112 @@ class TestFPMPowerPublication:
         latency_only = run(None).get_result_dict()
         assert (result["ttft"], result["tpot"]) == (latency_only["ttft"], latency_only["tpot"])
 
+    @pytest.mark.parametrize("forward_model", ["fpm", "op_level"])
+    def test_epd_disagg_estimate_withholds_watts(self, fpm_power_root, cli_parser, monkeypatch, capfd, forward_model):
+        import aisimulate.legacy_cli.main as cli_main
+        from aisimulate.sdk.task_v2 import Task
+
+        database, model = _epd_database(fpm_power_root)
+        monkeypatch.setattr(Task, "_load_database", lambda self, *_args: database)
+        monkeypatch.setattr(cli_main.perf_database, "set_systems_paths", lambda _paths: None)
+        rows = []
+        run_single_disagg = Task.run_single_disagg
+
+        def capture(self, **kwargs):
+            rows.append(run_single_disagg(self, **kwargs))
+            return rows[-1]
+
+        monkeypatch.setattr(Task, "run_single_disagg", capture)
+        args = cli_parser.parse_args(
+            ["estimate", "--model-path", _EPD_MODEL, "--system", SYSTEM, "--backend", BACKEND]
+            + ["--backend-version", _POWER_VERSION, "--forward-model", forward_model, "--estimate-mode", "disagg"]
+            + ["--enable-epd", "--image-height", "448", "--image-width", "448", "--isl", "512", "--osl", "2"]
+            + ["--prefill-batch-size", "2", "--decode-batch-size", "2", "--encoder-tp", "1"]
+            + ["--prefill-num-workers", "1", "--decode-num-workers", "1"]
+        )
+        cli_main.main(args)
+        (row,) = rows
+        assert row["encoder_latency"] > 0
+        if forward_model == "op_level":
+            # Scope guard: the SDK row keeps op-level EPD's raw blended watts
+            # (the CLI's 0.9 gate alone decides what it prints).
+            assert row["power_w"] > 0
+            return
+        # Decision P3: the row would mix op-level encoder watts with FPM
+        # watts, so it publishes none, although its true coverage (kept on
+        # the row) passes the CLI's 0.9 gate.
+        assert row["power_w"] is None
+        assert row["power_coverage"] > 0.9
+        assert "power_w          unavailable" in capfd.readouterr().out
+        # Each language worker keeps its FPM energy and coverage internally.
+        summary = _run_static(model, database, **_EPD_IMAGE)
+        _assert_power_withheld(summary)
+        assert summary.has_sufficient_power_data()
+        assert summary.get_context_energy_wms_dict()["fpm_forward_prefill"] == pytest.approx(40.0 * 300.0)
+        assert summary.get_generation_energy_wms_dict()["fpm_forward_decode"] == pytest.approx(6.0 * 450.0)
+
+    @pytest.mark.parametrize("full_encoder_coverage", [False, True], ids=["encoder_as_measured", "encoder_covered"])
+    def test_epd_disagg_sweep_withholds_watts(self, fpm_power_root, monkeypatch, full_encoder_coverage):
+        from aisimulate.sdk import sweep
+        from aisimulate.sdk.config import RuntimeConfig
+        from aisimulate.sdk.sweep import sweep_disagg
+        from aisimulate_core.sdk.backends.base_backend import BaseBackend
+
+        if full_encoder_coverage:
+            # Sweep rows carry no coverage field: the overlay blends the
+            # encoder watts only for a fully covered encoder (and writes the
+            # 0.0 sentinel otherwise), so pin both branches.
+            candidates = sweep._get_encoder_worker_candidates
+            monkeypatch.setattr(
+                sweep,
+                "_get_encoder_worker_candidates",
+                lambda **kwargs: [dict(worker, power_coverage=1.0) for worker in candidates(**kwargs)],
+            )
+        database, _model = _epd_database(fpm_power_root)
+        runtime = RuntimeConfig(isl=512, osl=2, ttft=1e6, tpot=1e6, **_EPD_IMAGE)
+        parallel = [(1, 1, 1, 1, 1, 1)]
+        rows = sweep_disagg(
+            model_path=_EPD_MODEL,
+            runtime_config=runtime,
+            prefill_database=database,
+            prefill_backend_name=BACKEND,
+            prefill_model_config=_model_config(forward_model="fpm"),
+            prefill_parallel_config_list=parallel,
+            prefill_latency_correction=1.0,
+            decode_database=database,
+            decode_backend_name=BACKEND,
+            decode_model_config=_model_config(forward_model="fpm"),
+            decode_parallel_config_list=parallel,
+            decode_latency_correction=1.0,
+            prefill_max_num_tokens=2 * BaseBackend.effective_prefill_isl(_EPD_MODEL, runtime),
+            decode_max_num_tokens=2,
+            prefill_num_worker_list=[1],
+            decode_num_worker_list=[1],
+            enable_epd=True,
+            encoder_tp_list=[1],
+            encoder_batch_list=[1],
+        )
+        assert len(rows) > 0
+        assert (rows["(e)workers"] > 0).all()
+        assert rows["power_w"].isna().all()
+
+
+_EPD_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
+_EPD_IMAGE = {"image_height": 448, "image_width": 448, "num_images_per_request": 1}
+
+
+def _epd_database(fpm_power_root):
+    """A v8 pair (300 W prefill, 450 W decode) over the EPD language-only identity."""
+    from aisimulate.sdk.config import RuntimeConfig
+    from aisimulate_core.sdk.backends.base_backend import BaseBackend
+
+    model = models.get_model(_EPD_MODEL, _model_config(forward_model="fpm", language_only=True), BACKEND)
+    assert not model.encoder_ops
+    visual_tokens = BaseBackend.effective_prefill_isl(_EPD_MODEL, RuntimeConfig(isl=512, **_EPD_IMAGE)) - 512
+    assert visual_tokens > 0
+    rows = _power_rows(model, visual_tokens=visual_tokens)
+    return fpm_power_root(model, _full_power, rows=rows), model
+
 
 def _trajectory_rows(model, decode_steps) -> tuple[list[dict], dict[tuple[str, int], float | None]]:
     """A powered batch-2, isl-512 prefill row plus one exact decode row per step.
