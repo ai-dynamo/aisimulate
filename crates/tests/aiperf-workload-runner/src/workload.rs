@@ -99,6 +99,9 @@ pub(crate) fn parse_head(
 /// preparation invariant fails immediately rather than being folded into a zero count.
 struct NoTextTokenizer;
 impl TextTokenizer for NoTextTokenizer {
+    fn name(&self) -> &str {
+        "trace-hashes:no-text-tokenizer"
+    }
     fn encode(&self, _text: &str) -> aiperf_exchange_model::TokenizerResult<Vec<u32>> {
         panic!("direct trace hash invariant: text encoding must not be called")
     }
@@ -338,7 +341,7 @@ pub(crate) fn lower_scheduled(
     let registry = aiperf_endpoints::EndpointRegistry::builtin()?;
     let mut profile = default_endpoint_profile(run, &registry)?;
     if *input_projection == crate::participant_adapter::NativeInputProjection::TraceHashes {
-        profile.endpoint_id = "aisimulate".to_owned();
+        profile.endpoint_id = aiperf_registry::RegistryId::new("aisimulate")?;
     }
     let endpoint_id = profile.endpoint_id;
     let endpoint = registry.prepare(&endpoint_id, profile.config)?;
