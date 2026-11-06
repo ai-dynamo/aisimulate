@@ -1804,8 +1804,9 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
-        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups on vLLM 0.31.0. "
-        "Other runtime versions need a campaign-local instrumentation bundle (guide: "
+        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
+        "0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "unsupported runtime cache specs (guide: "
         "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
     assert (limit in captured.err) is import_limit

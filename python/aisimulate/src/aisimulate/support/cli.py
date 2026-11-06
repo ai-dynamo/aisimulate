@@ -940,8 +940,9 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
     # matching per-token size then gives back a linear profile.
     if draft.layout_markers:
         lines.append(
-            "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups on vLLM "
-            "0.31.0. Other runtime versions need a campaign-local instrumentation bundle (guide: "
+            "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from "
+            "vLLM 0.31.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, "
+            "as unsupported runtime cache specs (guide: "
             "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
         )
     elif not draft.declares_window:
