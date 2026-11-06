@@ -906,7 +906,8 @@ def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, ca
 
 
 # The groups that the GLM-5.3-Flash TP4 probe fixture imports: the 11 MLA and 11 indexer layers, the 11 tail layers
-# and four KDA groups. Every page is one pool block of 13,045,120 bytes.
+# and four KDA groups. Every page is one pool block of 13,045,120 bytes. Only the tail takes no part in prefix caching,
+# and a block transfer moves the bytes of each layer without padding.
 _GLM_GROUPS = [
     {
         "name": f"runtime_group_{index}",
@@ -916,8 +917,13 @@ _GLM_GROUPS = [
         "page_size_bytes": 13_045_120,
         "sliding_window": None,
         **({} if index == 0 else {"blocks_per_request": 1}),
+        "prefix_cacheable": index != 1,
+        "transfer_bytes_per_block": transfer,
+        **({"prefill_checkpoint_blocks": 0} if index > 1 else {}),
     }
-    for index, layers in enumerate((22, 11, 9, 9, 8, 8))
+    for index, (layers, transfer) in enumerate(
+        ((22, 13_045_120), (11, 22_528), (9, 9_768_960), (9, 9_768_960), (8, 8_683_520), (8, 8_683_520))
+    )
 ]
 
 
@@ -957,6 +963,48 @@ def test_state_group_claim_must_match_blocks_per_request(tmp_path, capsys, block
         assert status == 1
         assert "resource_overrides.cache_groups" in diagnostics
         assert '"blocks_per_request":2' in diagnostics and "differs from the runtime probe's measured" in diagnostics
+
+
+# The cache group fields that only the runtime probe import writes.
+_PROBE_FIELDS = (
+    "prefix_cacheable",
+    "transfer_bytes_per_block",
+    "prefill_checkpoint_blocks",
+    "prefill_checkpoint_alignment",
+)
+
+
+@pytest.mark.parametrize(
+    ("stated", "accepted"),
+    [
+        # The documented claim gives the geometry only, without the fields that only the probe import writes.
+        ({}, True),
+        # A stated field must match the probe, and here it does.
+        ({"prefix_cacheable": [True, False, True, True, True, True]}, True),
+        # The tail ring takes no part in prefix caching.
+        ({"prefix_cacheable": [True] * 6}, False),
+        # A field stated for one group is compared on every group, and the other groups then differ.
+        ({"prefix_cacheable": [None, False, None, None, None, None]}, False),
+        # The ring moves 2,048 bytes per layer, not its 71,808-byte padded page.
+        ({"transfer_bytes_per_block": [13_045_120, 11 * 71_808, 9_768_960, 9_768_960, 8_683_520, 8_683_520]}, False),
+    ],
+)
+def test_cache_group_claim_compares_probe_fields_only_when_stated(tmp_path, capsys, stated, accepted):
+    claim = [{key: value for key, value in group.items() if key not in _PROBE_FIELDS} for group in _GLM_GROUPS]
+    for field, values in stated.items():
+        for group, value in zip(claim, values, strict=True):
+            if value is not None:
+                group[field] = value
+    checkpoint, index, _ = _campaign(tmp_path, tp=4, layout="glm_tp4", resource_overrides={"cache_groups": claim})
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if accepted:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert "differs from the runtime probe's measured" in diagnostics
 
 
 @pytest.mark.parametrize("claim", [False, True])

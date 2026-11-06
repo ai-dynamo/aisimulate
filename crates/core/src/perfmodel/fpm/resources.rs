@@ -64,6 +64,28 @@ pub struct FpmCacheGroup {
     /// for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocks_per_request: Option<u32>,
+    /// Whether vLLM's manager for this group takes part in prefix caching. A
+    /// ring spec does not. Replay with prefix caching on needs it on every
+    /// group, and does not read it yet. `None` in a profile imported before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_cacheable: Option<bool>,
+    /// The payload that a P/D transfer moves for one block of this group,
+    /// without padding. Positive and at most `page_size_bytes`. `None` in a
+    /// profile imported before this field existed. Sizing and replay do not
+    /// read it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_bytes_per_block: Option<u64>,
+    /// The `num_prefill_checkpoint_blocks` of a Mamba spec: 0 or 1, and only
+    /// in a `state` group. In vLLM 0.32.0, a KDA layer that prefills with
+    /// FlashKDA has one checkpoint block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_checkpoint_blocks: Option<u32>,
+    /// The `prefill_checkpoint_alignment` of a Mamba spec, in tokens: 16 for
+    /// FlashKDA in vLLM 0.32.0. Positive, and only with
+    /// `prefill_checkpoint_blocks` of 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_checkpoint_alignment: Option<u32>,
 }
 
 impl FpmCacheGroup {
@@ -94,6 +116,30 @@ impl FpmCacheGroup {
         } else if self.blocks_per_request.is_some() {
             return Err(invalid(
                 "blocks_per_request applies only to state cache groups",
+            ));
+        }
+        if self
+            .transfer_bytes_per_block
+            .is_some_and(|bytes| bytes == 0 || bytes > self.page_size_bytes)
+        {
+            return Err(invalid(
+                "transfer_bytes_per_block must be positive and at most page_size_bytes",
+            ));
+        }
+        if self
+            .prefill_checkpoint_blocks
+            .is_some_and(|blocks| self.kind != FpmCacheKind::State || blocks > 1)
+        {
+            return Err(invalid(
+                "prefill_checkpoint_blocks requires a state group and must be 0 or 1",
+            ));
+        }
+        if self
+            .prefill_checkpoint_alignment
+            .is_some_and(|alignment| self.prefill_checkpoint_blocks != Some(1) || alignment == 0)
+        {
+            return Err(invalid(
+                "prefill_checkpoint_alignment requires prefill_checkpoint_blocks=1 and must be positive",
             ));
         }
         Ok(())
@@ -740,6 +786,10 @@ mod tests {
             page_size_bytes: 160,
             sliding_window: window,
             blocks_per_request: None,
+            prefix_cacheable: None,
+            transfer_bytes_per_block: None,
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
         }
     }
 
@@ -1366,6 +1416,70 @@ mod tests {
     }
 
     #[test]
+    fn transfer_bytes_per_block_must_fit_the_page() {
+        let text = "transfer_bytes_per_block must be positive and at most page_size_bytes";
+        for base in [group(None), state_group(Some(1))] {
+            let page = base.page_size_bytes;
+            for bytes in [0, page + 1] {
+                let invalid = FpmCacheGroup {
+                    transfer_bytes_per_block: Some(bytes),
+                    ..base.clone()
+                };
+                assert_eq!(rejection(&invalid), text);
+            }
+            for bytes in [1, page] {
+                FpmCacheGroup {
+                    transfer_bytes_per_block: Some(bytes),
+                    ..base.clone()
+                }
+                .validate()
+                .unwrap();
+            }
+            // The marker has no rule of its own.
+            for cacheable in [false, true] {
+                FpmCacheGroup {
+                    prefix_cacheable: Some(cacheable),
+                    ..base.clone()
+                }
+                .validate()
+                .unwrap();
+            }
+        }
+        // The kind checks run first, so an invalid group keeps its first error.
+        let unusable = FpmCacheGroup {
+            transfer_bytes_per_block: Some(0),
+            ..state_group(None)
+        };
+        assert_eq!(
+            rejection(&unusable),
+            "state cache groups require a positive blocks_per_request"
+        );
+    }
+
+    #[test]
+    fn checkpoint_fields_need_a_state_group_and_each_other() {
+        let blocks_text = "prefill_checkpoint_blocks requires a state group and must be 0 or 1";
+        let alignment_text = "prefill_checkpoint_alignment requires prefill_checkpoint_blocks=1 and must be positive";
+        let checkpoint = |blocks, alignment| FpmCacheGroup {
+            prefill_checkpoint_blocks: blocks,
+            prefill_checkpoint_alignment: alignment,
+            ..state_group(Some(1))
+        };
+        for (blocks, alignment) in [(Some(0), None), (Some(1), None), (Some(1), Some(16))] {
+            checkpoint(blocks, alignment).validate().unwrap();
+        }
+        let attention = FpmCacheGroup {
+            prefill_checkpoint_blocks: Some(0),
+            ..group(None)
+        };
+        assert_eq!(rejection(&attention), blocks_text);
+        assert_eq!(rejection(&checkpoint(Some(2), None)), blocks_text);
+        for (blocks, alignment) in [(None, Some(16)), (Some(0), Some(16)), (Some(1), Some(0))] {
+            assert_eq!(rejection(&checkpoint(blocks, alignment)), alignment_text);
+        }
+    }
+
+    #[test]
     fn state_group_holds_a_fixed_range_for_any_length() {
         let state = state_group(Some(2));
         // No tokens, no state; any positive target holds the same two blocks.
@@ -1405,6 +1519,10 @@ mod tests {
             page_size_bytes: 13_045_120,
             sliding_window: None,
             blocks_per_request,
+            prefix_cacheable: None,
+            transfer_bytes_per_block: None,
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
         };
         let attention = pool_group("mla_indexer", FpmCacheKind::Attention, 22, None);
         let states = [
@@ -1448,7 +1566,32 @@ mod tests {
         let saved = serde_json::to_value(&state).unwrap();
         assert_eq!(saved["kind"], "state");
         assert_eq!(saved["blocks_per_request"], 1);
-        for original in [attention, state] {
+        // A group saved without the prefix-caching and checkpoint fields loads with all four absent and saves unchanged.
+        let earlier = r#"{"name":"state","kind":"state","num_layers":2,"block_size_tokens":16,"page_size_bytes":160,"sliding_window":null,"blocks_per_request":1}"#;
+        let loaded = serde_json::from_str::<FpmCacheGroup>(earlier).unwrap();
+        assert_eq!(loaded, state);
+        assert_eq!(
+            (
+                loaded.prefix_cacheable,
+                loaded.transfer_bytes_per_block,
+                loaded.prefill_checkpoint_blocks,
+                loaded.prefill_checkpoint_alignment
+            ),
+            (None, None, None, None)
+        );
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), earlier);
+        // Set fields follow the block count in declaration order.
+        let marked = FpmCacheGroup {
+            prefix_cacheable: Some(false),
+            transfer_bytes_per_block: Some(64),
+            prefill_checkpoint_blocks: Some(1),
+            prefill_checkpoint_alignment: Some(16),
+            ..state_group(Some(1))
+        };
+        assert!(serde_json::to_string(&marked).unwrap().ends_with(
+            r#""blocks_per_request":1,"prefix_cacheable":false,"transfer_bytes_per_block":64,"prefill_checkpoint_blocks":1,"prefill_checkpoint_alignment":16}"#
+        ));
+        for original in [attention, state, marked] {
             let saved = serde_json::to_string(&original).unwrap();
             assert_eq!(
                 serde_json::from_str::<FpmCacheGroup>(&saved).unwrap(),
