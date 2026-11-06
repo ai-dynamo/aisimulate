@@ -98,6 +98,8 @@ impl BackendReporting {
     /// Drain using the same epoch boundary and report arithmetic as SteppableAgg.
     pub(crate) fn take_report(&mut self, end_ms: f64) -> ReplayReport {
         self.advance_to(end_ms);
-        self.collector.take_report(end_ms)
+        // The owning offline host stamps processing rates with elapsed virtual
+        // execution time, not CPU wall time. This binding begins at time zero.
+        self.collector.take_report(end_ms).with_wall_time_ms(end_ms)
     }
 }

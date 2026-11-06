@@ -59,9 +59,17 @@ pub fn execute(
     let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
+    if kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !legacy_weka {
+        ensure!(proof_wait.is_none(), "graph control rendezvous is not implemented");
+        let prepared = crate::graph::prepare(
+            run, raw_input.get("dataset").context("raw graph dataset missing")?,
+            tokenizer.as_ref(), &phases,
+        )?;
+        return crate::graph::execute(run, prepared, phases, cancel, observer, model_factory);
+    }
     ensure!(
         kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
-        "typed workload {kind:?} requires its graph execution binding"
+        "typed workload {kind:?} has no simulator execution binding"
     );
     let (mut prepared, phases, origins) = if legacy_weka {
     let raw_dataset: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =

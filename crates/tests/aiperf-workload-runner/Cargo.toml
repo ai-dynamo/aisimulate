@@ -56,6 +56,14 @@ aiperf-protocol = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simp
 aiperf-request-execution = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/request-execution" }
 aiperf-rng = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/libs/rng" }
 aiperf-tokenizers = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/inference/tokenizers" }
+aiperf-adaptive = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/scheduling/adaptive" }
+aiperf-engine-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/graph" }
+aiperf-graph = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/graph" }
+aiperf-graph-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/graph/model" }
+aiperf-metrics = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/metrics" }
+aiperf-metrics-model = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/model" }
+aiperf-records = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/metrics/records" }
+aiperf-segment-store = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/dataset/segment-store" }
 
 [[test]]
 name = "agentx_semantics"

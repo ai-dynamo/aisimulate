@@ -400,10 +400,10 @@ impl Execution for ModelExecution {
             .state
             .borrow_mut()
             .scripts
-            .remove(&request.turn.uuid)
+            .remove(&request.prepared.request.uuid)
             .unwrap_or_default();
         Box::pin(async move {
-            let uuid = request.turn.uuid;
+            let uuid = request.prepared.request.uuid;
             let id = uuid.as_u128();
             if cancel.is_cancelled() {
                 return Ok(None);
@@ -417,7 +417,7 @@ impl Execution for ModelExecution {
                 execution: self,
                 id,
             };
-            let image_count = if let Some(body) = &request.turn.request_body {
+            let image_count = if let Some(body) = &request.prepared.request.body {
                 let wire = body
                     .to_wire()
                     .map_err(|error| ExecutionError::Failed(error.to_string()))?;
@@ -440,7 +440,7 @@ impl Execution for ModelExecution {
                     })
                     .count()
             } else {
-                request.turn.image_count.unwrap_or(0) as usize
+                request.prepared.request.image_count.unwrap_or(0) as usize
             };
             if image_count != request.images.len() {
                 return Err(ExecutionError::Failed(
@@ -480,7 +480,7 @@ impl Execution for ModelExecution {
                     "duplicate active request identity".into(),
                 ));
             }
-            let cap = request.turn.max_output_tokens;
+            let cap = request.prepared.request.max_output_tokens;
             // This experimental population-producing adapter has an explicit bound;
             // do not silently truncate a supported source request or risk OOM.
             const MAX_POPULATION: usize = 1_048_576;
@@ -553,7 +553,7 @@ impl Execution for ModelExecution {
                                 tokens: request.input_token_ids,
                                 max_output_tokens: population_len,
                                 output_token_ids: population,
-                                session_id: Some(request.turn.x_correlation_id.clone()),
+                                session_id: Some(request.prepared.runtime_session_id.clone()),
                                 images: request
                                     .images
                                     .into_iter()

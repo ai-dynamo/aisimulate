@@ -8,6 +8,7 @@
 //! AIPerf-owned; this package supplies the actual AISim Engine binding.
 
 mod dispatch;
+mod graph;
 /// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
 pub mod model;
 mod rendezvous;

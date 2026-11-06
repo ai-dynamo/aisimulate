@@ -90,9 +90,13 @@ impl Dispatcher {
             .ok_or_else(|| anyhow::anyhow!("prepared request body absent"))?
             .to_wire()?;
         let body: serde_json::Value = serde_json::from_slice(&wire)?;
+        let model = turn.effective_model.as_deref()
+            .or_else(|| body["model"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("prepared request model absent"))?
+            .to_owned();
         let ids = OpenAiRequestEncoder::default().encode_turn(
             &turn,
-            turn.effective_model.as_deref().unwrap_or_default(),
+            &model,
             |hash_ids, block_size, input_length| {
                 let hash_ids = hash_ids
                     .iter()
@@ -161,11 +165,7 @@ impl Dispatcher {
         let outcome = self
             .execution
             .infer(
-                Request {
-                    turn,
-                    input_token_ids: ids,
-                    images: Vec::new(),
-                },
+                Request::from_turn(turn, &model, ids, Vec::new()),
                 &cancel,
                 observer,
                 &mut callback,
