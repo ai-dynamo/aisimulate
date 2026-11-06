@@ -1114,7 +1114,7 @@ mod agentic_feedback_tests {
         let uuid = driver.pop_ready(0.0, usize::MAX)[0].request_uuid;
         let mut admission = AdmissionQueue::<()>::new_workload(driver, ReplayMode::Trace);
 
-        admission.defer_output_token(uuid, 7).unwrap();
+        admission.defer_output_token(uuid, 7, 1.0).unwrap();
         assert!(
             !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
             "full-prompt output progress has no consumer and must not be batched"
