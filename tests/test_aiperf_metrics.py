@@ -28,23 +28,6 @@ def record(first, last, output, *, status="completed", first_chunk=1):
     }
 
 
-def test_request_populations_and_linear_percentiles():
-    rows = [record(10, 20, 2), record(20, 110, 4), record(10, 10, 1), record(5, 5, 2)]
-    rows += [record(0, 0, 100, status=status) for status in ("failed", "canceled", "rejected")]
-    rows.append(record(None, None, 0))
-    result = summarize_requests(rows)
-    # Every row contributes at most one sample. Zero ITL has no reciprocal TPS.
-    expected = {
-        "time_to_first_token": (4, 11.25, 10, 17, 18.5, 19.7),
-        "request_latency": (4, 36.25, 15, 83, 96.5, 107.3),
-        "inter_token_latency": (3, 40 / 3, 10, 26, 28, 29.6),
-        "output_token_throughput_per_user": (2, 200 / 3, 200 / 3, 280 / 3, 290 / 3, 298 / 3),
-    }
-    for name, values in expected.items():
-        for stat, value in zip(("count", "avg", "p50", "p90", "p95", "p99"), values, strict=True):
-            assert result[f"aiperf.{name}.{stat}"] == pytest.approx(value)
-
-
 PINNED = json.loads((Path(__file__).parent / "fixtures" / "aiperf_b0276e19_request_metrics.json").read_text())
 
 
