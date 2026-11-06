@@ -266,9 +266,10 @@ def test_declared_ssm_cache_dtype_sets_the_state_element_size(declared, monkeypa
     assert model._mamba_state_bytes_per_request() == 86_343_680
 
 
-def test_unsupported_ssm_cache_dtype_fails_loudly(monkeypatch):
+@pytest.mark.parametrize("declared", ["float8_e4m3", ""])
+def test_unsupported_ssm_cache_dtype_fails_loudly(declared, monkeypatch):
     info = dict(core_models._get_model_info(MODEL))
-    info["extra_params"] = dataclasses.replace(info["extra_params"], mamba_ssm_cache_dtype="float8_e4m3")
+    info["extra_params"] = dataclasses.replace(info["extra_params"], mamba_ssm_cache_dtype=declared)
     monkeypatch.setattr(core_models, "_get_model_info", lambda _model_path: info)
 
     with pytest.raises(ValueError, match="mamba_ssm_cache_dtype"):

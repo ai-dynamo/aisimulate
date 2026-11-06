@@ -1005,7 +1005,10 @@ def _parse_hf_config_json(config: dict) -> dict:
             # HF config uses None to mean "no compression"; map to 0 here.
             moe_latent_size=config.get("moe_latent_size") or 0,
             # Optional: SSM state cache dtype; HF config may omit it or set it to None.
-            mamba_ssm_cache_dtype=config.get("mamba_ssm_cache_dtype") or "float32",
+            # Any other value passes through so that set_hybrid_config can reject it.
+            mamba_ssm_cache_dtype=(
+                "float32" if config.get("mamba_ssm_cache_dtype") is None else config["mamba_ssm_cache_dtype"]
+            ),
         )
         logger.info(
             f"NemotronH hybrid config: pattern={extra_params.hybrid_override_pattern}, "

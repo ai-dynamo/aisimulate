@@ -244,6 +244,32 @@ class TestParseHFConfig:
         assert extra_params.moe_shared_expert_intermediate_size == 0
         assert extra_params.mamba_ssm_cache_dtype == "float32"  # absent field
 
+    @pytest.mark.parametrize(("declared", "parsed"), [(None, "float32"), ("", ""), (0, 0)])
+    def test_parse_nemotronh_ssm_cache_dtype_defaults_only_when_null(self, declared, parsed):
+        # Only an absent or null field selects float32; an explicit value, valid or
+        # not, reaches NemotronHConfig unchanged so that set_hybrid_config can reject it.
+        config = {
+            "architectures": ["NemotronHForCausalLM"],
+            "num_hidden_layers": 118,
+            "num_key_value_heads": 8,
+            "hidden_size": 8192,
+            "num_attention_heads": 64,
+            "intermediate_size": 32768,
+            "vocab_size": 131072,
+            "max_position_embeddings": 8192,
+            "attention_head_dim": 128,
+            "hybrid_override_pattern": "M-M*-",
+            "mamba_num_heads": 256,
+            "mamba_head_dim": 64,
+            "ssm_state_size": 256,
+            "conv_kernel": 4,
+            "n_groups": 8,
+            "chunk_size": 128,
+            "mamba_ssm_cache_dtype": declared,
+        }
+
+        assert _parse_hf_config_json(config)["extra_params"].mamba_ssm_cache_dtype == parsed
+
     @pytest.mark.parametrize("architecture", ["NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"])
     @pytest.mark.parametrize("attention_names", [("mamba", "attention"), ("linear_attention", "full_attention")])
     def test_parse_nemotronh_layers_block_type_config(self, architecture, attention_names, tmp_path):
