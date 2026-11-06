@@ -124,11 +124,7 @@ fn native_frame(
         panic!("file dataset fixture required");
     };
     dataset.records = Some(serde_json::value::RawValue::from_string(records.into()).unwrap());
-    serde_json::to_string(&aiperf_protocol::runner_v2::RunRequestV2 {
-        protocol_version: 2,
-        run: native,
-    })
-    .unwrap()
+    serde_json::to_string(&native).unwrap()
 }
 
 /// Two distinct roots, each with two sequential parent turns and one spawned

@@ -146,7 +146,8 @@ fn run(scenario: Scenario) -> (Result<()>, Vec<(u128, f64)>) {
             terminals: terminals.clone(),
         })))
         .run()
-        .map(|_| ());
+        .map(|_| ())
+        .map_err(anyhow::Error::from);
     (result, terminals.borrow().clone())
 }
 
