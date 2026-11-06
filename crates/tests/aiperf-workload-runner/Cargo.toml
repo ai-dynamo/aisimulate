@@ -58,6 +58,7 @@ name = "agentx_semantics"
 path = "tests/agentx_semantics.rs"
 
 [dev-dependencies]
+aiperf-engine-kernel = { path = "../../../../../../../aiperf-rs/.worktrees/prove-simple-execution/crates/engine/kernel", features = ["test-support"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 bytes = "1"
