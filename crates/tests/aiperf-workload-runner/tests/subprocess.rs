@@ -43,8 +43,8 @@ fn direct_library_executes_native_scheduled_synthetic_and_conversation_sources()
     let datasets = [
         json!({
             "type":"synthetic", "entries":1, "sampling":"sequential",
-            "turns":{"value":2},
-            "prompts":{"corpus":"sonnet","isl":{"value":16},"osl":{"value":2}}
+            "turns":{"value":2}, "turn_delay_ratio":1.0,
+            "prompts":{"corpus":"sonnet","batch_size":1,"random_corpus_style":"vllm","isl":{"value":16},"osl":{"value":2}}
         }),
         json!({
             "type":"file", "format":"single_turn", "sampling":"sequential", "options":{},

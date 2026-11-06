@@ -9,7 +9,6 @@ use aiperf_engine_input::graph_input::{
 };
 use aiperf_exchange_model::TextTokenizer;
 use anyhow::{Context, Result, ensure};
-use aiperf_clock::clock::Clock;
 use aiperf_clock_runtime::clock::{SimClock, driver::drive_sim_with_source};
 use aiperf_engine_graph::{
     graph_execution::{GraphExecutionEvent, GraphExecutionEventSink, GraphNodeIssueAssociation, GraphNodeFinished},
