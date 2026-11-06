@@ -36,68 +36,65 @@ pub struct Rendezvous {
 impl SimEventSource for Rendezvous {
     fn next_event_ns(&self) -> Result<Option<i64>, SimDriveError> {
         let next = self.model.next_event_ns()?;
-        if let Some(deadline) = next {
-            if deadline > self.clock.now_ns() && !self.entered.replace(true) {
-                let now = self.clock.now_ns();
-                self.events
-                    .enqueue_reliable_with(&self.sequencer, |sequence| {
-                        RunEventV2::MetricsSnapshot(MetricsSnapshotV2 {
-                            protocol_version: 2,
-                            event: RunEventKindV2::MetricsSnapshot,
-                            sequence,
-                            benchmark_id: self.benchmark_id.clone(),
-                            scope: SnapshotScopeV2::Run,
-                            revision: sequence,
-                            observed_at_ns: now,
-                            coverage: SnapshotCoverageV2 {
-                                worker_groups_observed: 1,
-                                worker_groups_expected: 1,
-                                stale_worker_groups: Vec::new(),
-                            },
-                            metrics: std::collections::BTreeMap::from([
-                                ("proof_rendezvous_waiting".into(), Some(1.0)),
-                                (
-                                    "proof_pending_model_deadline_ns".into(),
-                                    Some(deadline as f64),
-                                ),
-                            ]),
-                        })
+        if let Some(deadline) = next
+            && deadline > self.clock.now_ns()
+            && !self.entered.replace(true)
+        {
+            let now = self.clock.now_ns();
+            self.events
+                .enqueue_reliable_with(&self.sequencer, |sequence| {
+                    RunEventV2::MetricsSnapshot(MetricsSnapshotV2 {
+                        protocol_version: 2,
+                        event: RunEventKindV2::MetricsSnapshot,
+                        sequence,
+                        benchmark_id: self.benchmark_id.clone(),
+                        scope: SnapshotScopeV2::Run,
+                        revision: sequence,
+                        observed_at_ns: now,
+                        coverage: SnapshotCoverageV2 {
+                            worker_groups_observed: 1,
+                            worker_groups_expected: 1,
+                            stale_worker_groups: Vec::new(),
+                        },
+                        metrics: std::collections::BTreeMap::from([
+                            ("proof_rendezvous_waiting".into(), Some(1.0)),
+                            (
+                                "proof_pending_model_deadline_ns".into(),
+                                Some(deadline as f64),
+                            ),
+                        ]),
                     })
-                    .map_err(|error| {
-                        SimDriveError::EventSource(format!("rendezvous event: {error:?}"))
-                    })?;
-                // The virtual driver is deliberately paused BEFORE advancing a
-                // committed pass. Only the proof flag admits this real IPC wait.
-                // A separate reactor waits for native ControlAuthority's token;
-                // it owns no model and sends no token-level IPC.
-                let cancellation = self.cancellation.clone();
-                let (sender, receiver) = mpsc::sync_channel(1);
-                let waiter =
-                    std::thread::spawn(move || match tokio::runtime::Builder::new_current_thread()
-                        .build()
-                    {
-                        Ok(runtime) => {
-                            runtime.block_on(cancellation.cancelled());
-                            let _ = sender.send(());
-                        }
-                        Err(_) => {}
-                    });
-                let result = receiver.recv_timeout(Duration::from_secs(10));
-                if result.is_err() {
-                    self.cancellation.cancel();
-                }
-                let _ = waiter.join();
-                result.map_err(|_| {
-                    SimDriveError::EventSource(
-                        "proof rendezvous timed out without framed cancellation".into(),
-                    )
+                })
+                .map_err(|error| {
+                    SimDriveError::EventSource(format!("rendezvous event: {error:?}"))
                 })?;
-                // Return at the CURRENT instant, then make one no-op source
-                // step so the driver polls the cancellation-woken application
-                // before it completes the suspended model pass.
-                self.resume_application.set(true);
-                return Ok(Some(now));
+            // The virtual driver is deliberately paused BEFORE advancing a
+            // committed pass. Only the proof flag admits this real IPC wait.
+            // A separate reactor waits for native ControlAuthority's token;
+            // it owns no model and sends no token-level IPC.
+            let cancellation = self.cancellation.clone();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let waiter = std::thread::spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() {
+                    runtime.block_on(cancellation.cancelled());
+                    let _ = sender.send(());
+                }
+            });
+            let result = receiver.recv_timeout(Duration::from_secs(10));
+            if result.is_err() {
+                self.cancellation.cancel();
             }
+            let _ = waiter.join();
+            result.map_err(|_| {
+                SimDriveError::EventSource(
+                    "proof rendezvous timed out without framed cancellation".into(),
+                )
+            })?;
+            // Return at the CURRENT instant, then make one no-op source
+            // step so the driver polls the cancellation-woken application
+            // before it completes the suspended model pass.
+            self.resume_application.set(true);
+            return Ok(Some(now));
         }
         Ok(next)
     }
