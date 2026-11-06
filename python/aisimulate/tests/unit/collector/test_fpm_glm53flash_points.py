@@ -236,15 +236,18 @@ def test_decode_batches_use_the_raw_token_budget(monkeypatch):
     assert max(point["total_prefill_tokens"] for point in payload["prefill"]) == 8192
 
 
-def test_smoke_subset_is_four_points_of_the_list(tmp_path):
+def test_smoke_subset_is_five_points_of_the_list(tmp_path):
     payload, _, _ = glm_point_manifest(**_TP4)
     subset, canonical, digest = glm_smoke_subset(payload, 2176)
 
+    # The third prefill point runs two hash blocks after one block of prefix. Its chunk holds the block boundary at
+    # 4,352, which vLLM's Mamba align mode runs in one step.
     assert subset == {
         "schema_version": 3,
         "prefill": [
             {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
             {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
         ],
         "decode": [
             {"batch_size": 1, "total_kv_read_tokens": 4096},
@@ -257,7 +260,7 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
     path.write_text(json.dumps(subset))
     assert _freeze_benchmark_points(str(path)) == (canonical, digest)
     # The live smoke of an aggregated TP4 request stages these bytes, so their digest stays pinned.
-    assert digest == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
+    assert digest == "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd"
     assert digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     # Without the point of two requests at 4,096, the pair comes from 8,192, the next context that holds both.
     without = {**payload, "decode": [point for point in payload["decode"] if point != subset["decode"][1]]}
@@ -279,39 +282,51 @@ def test_smoke_subset_is_four_points_of_the_list(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("token_budget", "decode", "digest"),
+    ("token_budget", "prefill", "decode", "digest"),
     [
         # Two suffixes of 1,919 tokens at 4,096 fit the default budget in one step, so the pair stays at 4,096.
         (
             8192,
+            [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
+            ],
             [{"batch_size": 1, "total_kv_read_tokens": 4096}, {"batch_size": 2, "total_kv_read_tokens": 8192}],
-            "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce",
+            "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd",
         ),
         # 3,836 tokens hold one suffix of 1,919 tokens at 4,096 but not two, so 4,096 holds one request only. Two
-        # suffixes of 1,663 tokens at 8,192 fit, so the pair comes from 8,192.
+        # suffixes of 1,663 tokens at 8,192 fit, so the pair comes from 8,192. The budget holds no prefill of two hash
+        # blocks.
         (
             3836,
+            [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            ],
             [{"batch_size": 1, "total_kv_read_tokens": 8192}, {"batch_size": 2, "total_kv_read_tokens": 16384}],
             "b817a7f76c7aea73992af154bee98fed24a0bd1e417e714e8654b62a8d075a70",
         ),
     ],
     ids=["default-budget", "budget-3836"],
 )
-def test_smoke_decode_pair_is_at_the_smallest_context_that_holds_both(token_budget, decode, digest):
+def test_smoke_decode_pair_is_at_the_smallest_context_that_holds_both(token_budget, prefill, decode, digest):
     payload, _, _ = glm_point_manifest(**{**_TP4, "token_budget": token_budget})
     subset, canonical, subset_digest = glm_smoke_subset(payload, 2176)
 
-    assert subset == {"schema_version": 3, "prefill": _PREFILL_PAIR, "decode": decode}
+    assert subset == {"schema_version": 3, "prefill": prefill, "decode": decode}
     assert all(point in payload[phase] for phase in ("prefill", "decode") for point in subset[phase])
     assert subset_digest == digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def test_smoke_subset_serves_every_tp4_token_budget():
     # 256 sequences need a budget of at least 256 tokens. Every budget up to 8,192 gives four smoke points of its list.
+    # A budget of two hash blocks or more also gives the prefill of two blocks.
     for token_budget in range(256, 8193, 4):
         payload, _, _ = glm_point_manifest(**{**_TP4, "token_budget": token_budget})
         subset, _, _ = glm_smoke_subset(payload, 2176)
-        assert [len(subset[phase]) for phase in ("prefill", "decode")] == [2, 2], token_budget
+        prefill = 3 if token_budget >= 2 * 2176 else 2
+        assert [len(subset[phase]) for phase in ("prefill", "decode")] == [prefill, 2], token_budget
         assert all(point in payload[phase] for phase in ("prefill", "decode") for point in subset[phase])
 
 
@@ -319,6 +334,8 @@ _PREFILL_PAIR = [
     {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
     {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
 ]
+# The smoke prefill points of a list that holds two hash blocks of new tokens after one block of prefix.
+_PREFILL_POINTS = [*_PREFILL_PAIR, {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176}]
 _TWO_REQUEST_DECODE_PAIR = [
     {"batch_size": 1, "total_kv_read_tokens": 4096},
     {"batch_size": 2, "total_kv_read_tokens": 8192},
@@ -330,8 +347,8 @@ def test_smoke_subset_keeps_the_points_of_the_collected_phases_only():
     payload, _, _ = glm_point_manifest(**_TP4)
 
     for phases, expected in (
-        (("prefill", "decode"), {"prefill": _PREFILL_PAIR, "decode": _TWO_REQUEST_DECODE_PAIR}),
-        (("prefill",), {"prefill": _PREFILL_PAIR, "decode": []}),
+        (("prefill", "decode"), {"prefill": _PREFILL_POINTS, "decode": _TWO_REQUEST_DECODE_PAIR}),
+        (("prefill",), {"prefill": _PREFILL_POINTS, "decode": []}),
         (("decode",), {"prefill": [], "decode": _TWO_REQUEST_DECODE_PAIR}),
     ):
         subset, canonical, digest = glm_smoke_subset(payload, 2176, phases)
@@ -380,7 +397,7 @@ def test_smoke_subset_of_a_decode_role_needs_no_prefill_points():
 def test_smoke_subset_of_one_phase_refuses_a_list_without_its_points(phase):
     payload, _, _ = glm_point_manifest(**_TP4)
     smoke = glm_smoke_subset(payload, 2176)[0]["prefill"]
-    # The prefill smoke takes these two points only. The decode smoke can take any context above one hash block, so
+    # The prefill smoke takes these three points only. The decode smoke can take any context above one hash block, so
     # only a list without a decode point above the block lacks its points.
     keep = {
         "prefill": lambda point: point not in smoke,
@@ -411,6 +428,7 @@ def test_smoke_subset_of_a_list_without_two_request_decode_points_takes_two_cont
         "prefill": [
             {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
             {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
         ],
         "decode": [
             {"batch_size": 1, "total_kv_read_tokens": 4096},

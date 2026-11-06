@@ -2025,7 +2025,7 @@ def test_probe_backed_glm_collection_renders_the_producer_launch(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm_smoke_stages_the_four_point_subset(tmp_path):
+def test_glm_smoke_stages_the_five_point_subset(tmp_path):
     plan = _glm_plan(tmp_path)
     frozen = json.loads(plan.options.benchmark_points_json)
 
@@ -2038,21 +2038,23 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
 
     for cell in plan.cells:
         subset = staged(f"smoke-{cell.workload_kind}", cell, True)
-        # One 64-token request without a prefix and after one hash block of prefix, and the decode of one and of two
-        # requests at the smallest context of the list above one hash block.
+        # One 64-token request without a prefix and after one hash block of prefix, one request of two hash blocks
+        # after one block of prefix, and the decode of one and of two requests at the smallest context of the list
+        # above one hash block.
         assert json.loads(subset) == {
             "schema_version": 3,
             "prefill": [
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
             ],
             "decode": [
                 {"batch_size": 1, "total_kv_read_tokens": 4096},
                 {"batch_size": 2, "total_kv_read_tokens": 8192},
             ],
         }
-        # Both cells of an aggregated plan stage the same four points, byte for byte.
-        assert hashlib.sha256(subset).hexdigest() == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
+        # Both cells of an aggregated plan stage the same five points, byte for byte.
+        assert hashlib.sha256(subset).hexdigest() == "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd"
         # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
         for phase in ("prefill", "decode"):
             assert all(point in frozen[phase] for point in json.loads(subset)[phase])
@@ -2060,7 +2062,7 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
         policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
         assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
             "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
-            "requested_point_count": 2,
+            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
             "smoke_manifest": "glm53flash_grid_v1_smoke",
             **policy,
         }
@@ -2076,7 +2078,7 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm_smoke_of_a_one_sequence_request_stages_two_points_per_phase(tmp_path):
+def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_path):
     # A request with max_batch_size 1 reaches the collector as --fpm-max-num-seqs 1 and --fpm-max-prefill-batch-size 1.
     plan = _glm_plan(tmp_path, max_batch_size=1)
     assert (plan.options.max_num_seqs, plan.options.max_prefill_batch_size) == (1, 1)
@@ -2094,6 +2096,7 @@ def test_glm_smoke_of_a_one_sequence_request_stages_two_points_per_phase(tmp_pat
             "prefill": [
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
                 {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
             ],
             "decode": [
                 {"batch_size": 1, "total_kv_read_tokens": 4096},
@@ -2105,7 +2108,7 @@ def test_glm_smoke_of_a_one_sequence_request_stages_two_points_per_phase(tmp_pat
         policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
         assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
             "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
-            "requested_point_count": 2,
+            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
             "smoke_manifest": "glm53flash_grid_v1_smoke",
             **policy,
         }

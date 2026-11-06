@@ -225,24 +225,27 @@ def glm_smoke_subset(
     """Return the smoke points of a generated list, with their canonical JSON and its SHA-256.
 
     Each phase that the plan collects takes two points, so an aggregated plan takes four and a prefill or decode role
-    takes two. The other phase of a role keeps an empty list, because the cells of the plan never measure it.
+    takes two. The prefill phase takes a third point when the list holds it. The other phase of a role keeps an empty
+    list, because the cells of the plan never measure it.
 
     The prefill points are the 64-token prefill of one request, once without a prefix and once after one hash block
-    of prefix. The context of a decode point is its total KV read tokens divided by its batch size. The decode points
-    are the points of one request and of two requests at the smallest context above one hash block where the list
-    holds both. A small token budget can leave a smaller context with one request only. If no context above one hash
-    block holds a point of two requests, as in the list of a request limited to one sequence, the decode points are
-    the points of one request at the two smallest contexts above one hash block. A point is taken at a context only if
-    its total KV read tokens equal its batch size times that context. A list that does not give two points for each
-    collected phase is refused. So is a list whose points of two requests above one hash block have no point of one
-    request at the same context, because the generator puts one request on the batch axis of every context.
+    of prefix. The third point is the prefill of two hash blocks for one request after one hash block of prefix. Its
+    chunk holds a block boundary that vLLM's Mamba align mode does not stop at, so the smoke shows that such a point
+    runs in one step. The context of a decode point is its total KV read tokens divided by its batch size. The decode
+    points are the points of one request and of two requests at the smallest context above one hash block where the
+    list holds both. A small token budget can leave a smaller context with one request only. If no context above one
+    hash block holds a point of two requests, as in the list of a request limited to one sequence, the decode points
+    are the points of one request at the two smallest contexts above one hash block. A point is taken at a context only
+    if its total KV read tokens equal its batch size times that context. A list that does not give the two 64-token
+    prefill points or the two decode points of a collected phase is refused. So is a list whose points of two requests
+    above one hash block have no point of one request at the same context, because the generator puts one request on
+    the batch axis of every context.
     """
+    taken = ((64, 0), (64, hash_block_size), (2 * hash_block_size, hash_block_size))
     prefill = [
         point
         for point in payload["prefill"]
-        if point["batch_size"] == 1
-        and point["total_prefill_tokens"] == 64
-        and point["total_kv_read_tokens"] in (0, hash_block_size)
+        if point["batch_size"] == 1 and (point["total_prefill_tokens"], point["total_kv_read_tokens"]) in taken
     ]
 
     def context(point: dict[str, Any]) -> int:
@@ -275,7 +278,9 @@ def glm_smoke_subset(
     ]
     # The cells of the plan never measure a phase that it does not collect, so that phase keeps no point and needs none.
     smoke = {"prefill": prefill if "prefill" in phases else [], "decode": decode if "decode" in phases else []}
-    if any(len(smoke[phase]) != 2 for phase in phases):
+    # A small token budget or context leaves no prefill of two hash blocks, so only the two 64-token points are needed.
+    required = {"prefill": sum(point["total_prefill_tokens"] == 64 for point in prefill), "decode": len(decode)}
+    if any(required[phase] != 2 for phase in phases):
         held = "four points" if len(phases) == 2 else f"two {phases[0]} points"
         raise ValueError(f"GLM-5.3-Flash smoke subset requires the generated list to hold its {held}")
     return _manifest({"schema_version": payload["schema_version"], **smoke})

@@ -1762,7 +1762,7 @@ def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
         }
         assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["smoke_manifest"]) == (
             subset_sha256,
-            2,
+            {"prefill": 3, "decode": 2}[cell.workload_kind],
             "glm53flash_grid_v1_smoke",
         )
 

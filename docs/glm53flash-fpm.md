@@ -229,18 +229,24 @@ blocks (the profile's `kv_cache_bytes` divided by its largest
 `page_size_bytes`).
 
 The smoke measures two points of this list for each phase that the plan
-collects. An aggregated request collects both phases, so its smoke measures
-four points. A prefill or decode role collects one phase, so its smoke measures
-the two points of that phase. The smoke takes no point of the other phase. The
-smoke runs under the plan hash of formal collection and keeps its own campaign
-directory. The prefill points are one request with 64 new tokens, once without
-a prefix and once after one hash block of prefix. The decode points are one
-request and two requests at the smallest context above one hash block where the
-list holds both. The token budget can leave a smaller context with one request
-only. If no context above one hash block holds two requests, the smoke takes one
-request at each of the two smallest contexts above the block. A `max_batch_size`
-of 1 or a cache with room for one request causes this. So does a budget too
-small for two suffixes at each context above the block.
+collects. If the list holds the third prefill point below, the smoke also
+measures it. An aggregated request collects both phases, so its smoke measures
+four or five points. A prefill or decode role collects one phase, so its smoke
+measures the points of that phase. The smoke takes no point of the other phase.
+The smoke runs under the plan hash of formal collection and keeps its own
+campaign directory. The prefill points are one request with 64 new tokens, once
+without a prefix and once after one hash block of prefix. The third prefill
+point is one request with two hash blocks of new tokens after one hash block of
+prefix. Its chunk holds a block boundary before its end, and vLLM's `align`
+mode does not stop there. So the smoke shows that such a point runs in one
+step. The TP4 list above holds this point, so its aggregated smoke measures
+five points. The decode points are one request and two requests at the
+smallest context above one hash block where the list holds both. The token
+budget can leave a smaller context with one request only. If no context above
+one hash block holds two requests, the smoke takes one request at each of the
+two smallest contexts above the block. A `max_batch_size` of 1 or a cache with
+room for one request causes this. So does a budget too small for two suffixes
+at each context above the block.
 A direct `collector --fpm` call can pass its own manifest with
 `--fpm-benchmark-points-file`. The collector refuses that file together with
 `--smoke`.
