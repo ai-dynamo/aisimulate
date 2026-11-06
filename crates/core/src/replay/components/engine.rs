@@ -1365,6 +1365,7 @@ fn lower_completion<Observation: ReplayEngineObservation>(
                 token_id: output.token_id,
                 completed: output.completed,
                 rejected: output.rejected,
+                rejection_cause: output.rejection_cause,
                 handoff_delay_ms: None,
                 cached_tokens: output.cached_tokens,
             })

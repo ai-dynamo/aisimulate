@@ -2058,7 +2058,7 @@ impl VllmCore {
         let mut batch_total_prefix = 0usize;
         let mut admissions = Vec::with_capacity(waiting_capacity_hint);
         let mut preempted_any = false;
-        let mut rejected_uuids: Vec<Uuid> = Vec::new();
+        let mut rejected_uuids = Vec::new();
 
         let mut req_index = 0usize;
         while req_index < self.state.running.len() && token_budget > 0 {
@@ -2073,7 +2073,7 @@ impl VllmCore {
                 })
             {
                 tracing::warn!(%uuid, "request exceeds the cache allocation limit");
-                rejected_uuids.push(uuid);
+                rejected_uuids.push((uuid, crate::engine::RejectionCause::KvCapacity));
                 self.drop_request_at(uuid, Some(now_ms), Some(now_ms));
                 self.state.compact_running();
                 continue;
@@ -2183,21 +2183,31 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_before_admission, admission_stage, admissible_from_pass) = {
+            let (rejection_cause, admission_stage, admissible_from_pass) = {
                 let request = self
                     .state
                     .requests
                     .get(&uuid)
                     .expect("waiting request missing from state");
                 (
-                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len)
-                        || !self
-                            .kv_manager
-                            .accepts_sequence_length(request.sequence.len()),
+                    if policy::should_reject_for_model_len(
+                        &request.sequence,
+                        self.args.max_model_len,
+                    ) {
+                        Some(crate::engine::RejectionCause::ContextOverflow)
+                    } else if !self
+                        .kv_manager
+                        .accepts_sequence_length(request.sequence.len())
+                    {
+                        Some(crate::engine::RejectionCause::KvCapacity)
+                    } else {
+                        None
+                    },
                     admission.stage_for(request.prompt_is_prebuilt()),
                     request.admissible_from_pass,
                 )
             };
+            let reject_before_admission = rejection_cause.is_some();
             // vLLM committed this pass before the request arrived; FCFS keeps
             // later arrivals behind it. A committed batch without other work
             // runs no forward, so the arrivals then run in this pass.
@@ -2349,7 +2359,10 @@ impl VllmCore {
                         num_gpu_blocks = self.args.num_gpu_blocks,
                         "rejecting request that exceeds a worker admission limit"
                     );
-                    rejected_uuids.push(uuid);
+                    rejected_uuids.push((
+                        uuid,
+                        rejection_cause.unwrap_or(crate::engine::RejectionCause::KvCapacity),
+                    ));
                     self.drop_request_at(uuid, Some(now_ms), Some(now_ms));
                     self.update_pass_prefill_reservation(
                         &mut pass_prefill_reserved_blocks,
@@ -2529,12 +2542,13 @@ impl VllmCore {
             self.emit_ready_tokens(now_ms, &scheduled, &mut decode_acceptance)?;
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
-        for uuid in rejected_uuids {
+        for (uuid, cause) in rejected_uuids {
             output_signals.push(OutputSignal {
                 uuid,
                 token_id: None,
                 completed: true,
                 rejected: true,
+                rejection_cause: Some(cause),
                 handoff_delay_ms: None,
                 cached_tokens: None,
             });
@@ -3300,6 +3314,7 @@ impl VllmCore {
                 token_id: None,
                 completed: true,
                 rejected: false,
+                rejection_cause: None,
                 handoff_delay_ms,
                 cached_tokens,
             });
@@ -3374,6 +3389,7 @@ impl VllmCore {
                 token_id: Some(token_id),
                 completed,
                 rejected: false,
+                rejection_cause: None,
                 handoff_delay_ms,
                 cached_tokens,
             };
@@ -3482,6 +3498,7 @@ impl VllmCore {
                         token_id: None,
                         completed: true,
                         rejected: true,
+                        rejection_cause: Some(crate::engine::RejectionCause::KvCapacity),
                         handoff_delay_ms: None,
                         cached_tokens: None,
                     });
@@ -3588,6 +3605,7 @@ impl VllmCore {
                         token_id: Some(token_id),
                         completed: is_complete,
                         rejected: false,
+                        rejection_cause: None,
                         cached_tokens: request.take_cached_tokens_for_signal(),
                         // Only a completed prefill-worker request carries a handoff delay.
                         handoff_delay_ms: if is_complete {

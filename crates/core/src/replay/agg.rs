@@ -653,6 +653,10 @@ where
             // including callbacks delivered after their quiescence barrier.
             return Ok(());
         }
+        if let Some(cause) = signal.rejection_cause {
+            self.admission
+                .on_rejection_cause(signal.uuid, cause, self.now_ms)?;
+        }
         if let Some(tokens) = signal.cached_tokens {
             self.admission
                 .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
@@ -3149,6 +3153,7 @@ mod agentic_warmup_tests {
                             token_id: Some(999),
                             completed,
                             rejected: false,
+                            rejection_cause: None,
                             handoff_delay_ms: None,
                             cached_tokens: None,
                         },
@@ -3167,6 +3172,7 @@ mod agentic_warmup_tests {
                             token_id: None,
                             completed: true,
                             rejected: false,
+                            rejection_cause: None,
                             handoff_delay_ms: None,
                             cached_tokens: None,
                         },

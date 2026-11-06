@@ -763,6 +763,7 @@ fn split_pass(
                 token_id: output.token_id,
                 completed: output.completed,
                 rejected: output.rejected,
+                rejection_cause: output.rejection_cause,
                 cached_tokens: output.cached_tokens,
             })
             .collect(),

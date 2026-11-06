@@ -948,6 +948,7 @@ impl SimEventSource for ModelExecution {
                     completed: event.terminal_status.is_some(),
                     rejected: event.terminal_status
                         == Some(aisimulate_core::replay::ReplayTerminalStatus::Rejected),
+                    rejection_cause: None,
                     cached_tokens: admissions
                         .get(&event.uuid)
                         .copied()

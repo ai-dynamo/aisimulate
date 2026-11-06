@@ -119,6 +119,8 @@ pub(crate) struct OutputSignal {
     #[serde(default)]
     pub rejected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rejection_cause: Option<crate::engine::RejectionCause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_delay_ms: Option<f64>,
     /// Prompt tokens served from KV cache at admission (scheduler truth,
     /// post-eviction). Set once, on the request's first output signal.

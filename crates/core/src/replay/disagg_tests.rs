@@ -1281,6 +1281,7 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
                 token_id: Some(42),
                 completed: true,
                 rejected: false,
+                rejection_cause: None,
                 handoff_delay_ms: None,
                 cached_tokens: None,
             },
@@ -4069,6 +4070,7 @@ mod agentic_pd_qualification {
                         token_id: Some(999),
                         completed: true,
                         rejected: false,
+                        rejection_cause: None,
                         handoff_delay_ms: None,
                         cached_tokens: None,
                     };

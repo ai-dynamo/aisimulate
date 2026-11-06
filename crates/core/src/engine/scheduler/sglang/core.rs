@@ -1685,6 +1685,7 @@ impl SglangCore {
                 token_id: None,
                 completed: true,
                 rejected: true,
+                rejection_cause: None,
                 cached_tokens: None,
                 handoff_delay_ms: None,
             });

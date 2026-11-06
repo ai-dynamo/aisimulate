@@ -328,6 +328,16 @@ pub struct PressureEvent {
     pub required_blocks_before: Option<usize>,
 }
 
+/// Authoritative reason a scheduler rejected a physically impossible request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RejectionCause {
+    /// The known sequence exceeds the configured model context limit.
+    ContextOverflow,
+    /// The sequence or lookahead cannot fit the physical KV allocation limit.
+    KvCapacity,
+}
+
 /// One client-visible output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Output {
@@ -339,6 +349,8 @@ pub struct Output {
     pub completed: bool,
     /// Whether admission rejected the request as physically impossible.
     pub rejected: bool,
+    /// Scheduler-reported cause; absent is unknown, not evidence of no overflow.
+    pub rejection_cause: Option<RejectionCause>,
     /// Prompt tokens served from KV cache at first admission, reported once
     /// on the request's first output.
     pub cached_tokens: Option<usize>,

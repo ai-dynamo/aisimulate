@@ -53,6 +53,36 @@ fn prefix_cache_args() -> MockEngineArgs {
 }
 
 #[test]
+fn rejection_cause_distinguishes_context_overflow_from_impossible_kv() {
+    use crate::engine::RejectionCause;
+    for (max_model_len, blocks, cause) in [
+        (Some(4), 6, RejectionCause::ContextOverflow),
+        (Some(64), 1, RejectionCause::KvCapacity),
+        // Both limits fail: the model context violation remains authoritative.
+        (Some(4), 1, RejectionCause::ContextOverflow),
+    ] {
+        let mut args = make_args();
+        args.max_model_len = max_model_len;
+        args.num_gpu_blocks = blocks;
+        let mut core = VllmCore::new(args);
+        let uuid = Uuid::from_u128(82_000);
+        core.receive(DirectRequest {
+            uuid: Some(uuid),
+            tokens: (0..8).collect(),
+            max_output_tokens: 2,
+            ..Default::default()
+        });
+        let pass = core.try_execute_hidden_pass(0.0).unwrap();
+        assert_eq!(pass.output_signals.len(), 1);
+        let output = &pass.output_signals[0];
+        assert_eq!(output.uuid, uuid);
+        assert!(output.completed && output.rejected);
+        assert_eq!(output.rejection_cause, Some(cause));
+        assert!(pass.admissions.is_empty());
+    }
+}
+
+#[test]
 fn g1_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
     let mut core = VllmCore::new(prefix_cache_args());
     let request = |id, output| DirectRequest {

@@ -443,6 +443,7 @@ fn prefill_first_tokens(
             token_id: Some(token_id),
             completed,
             rejected: false,
+            rejection_cause: None,
             cached_tokens: None,
             handoff_delay_ms: compute_prefill_handoff_delay_ms(
                 config.worker_type,
@@ -561,6 +562,7 @@ fn simulate_step(
                 token_id: None,
                 completed: true,
                 rejected: false,
+                rejection_cause: None,
                 cached_tokens: None,
                 handoff_delay_ms: compute_prefill_handoff_delay_ms(
                     config.worker_type,
@@ -719,6 +721,7 @@ fn simulate_step(
                 token_id: Some(token_id),
                 completed: is_complete,
                 rejected: false,
+                rejection_cause: None,
                 cached_tokens: None,
                 handoff_delay_ms: compute_prefill_handoff_delay_ms(
                     config.worker_type,

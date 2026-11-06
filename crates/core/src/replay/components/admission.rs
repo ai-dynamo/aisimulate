@@ -467,6 +467,18 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         Ok(ready)
     }
 
+    pub(crate) fn on_rejection_cause(
+        &mut self,
+        uuid: Uuid,
+        cause: crate::engine::RejectionCause,
+        now_ms: f64,
+    ) -> Result<()> {
+        if let AdmissionSource::External(participant) = &mut self.source {
+            participant.on_rejection_cause(uuid, cause, now_ms)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn on_request_terminal(
         &mut self,
         uuid: Uuid,

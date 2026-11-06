@@ -630,3 +630,82 @@ fn native_agentx_cancels_in_flight_requests_inside_committed_pass() {
 fn native_agentx_cancellation_timer_wins_first_output_tie() {
     assert_native_cancellation(10.0);
 }
+
+/// The scheduler's typed cause, not the generic Rejected status, controls both
+/// AgentX's nonfinal-return stop and native records-side overflow accounting.
+#[test]
+fn context_overflow_stops_agentx_but_impossible_kv_remains_an_ordinary_failure() {
+    use aisimulate_core::replay::ReplayEngineConfig;
+    for topology in [ReplayTopology::aggregated(1), disaggregated()] {
+        for (is_context_overflow, scenario) in [(true, false), (true, true), (false, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut frame = run_fixture::request(directory.path());
+            if scenario {
+                // Explicit non-comparable local fixture; no pinned-corpus claim.
+                frame["run"]["cfg"]["scenario"] = json!("inferencex-agentx-mvp");
+                frame["run"]["cfg"]["unsafe_override"] = json!(true);
+            }
+            let run = native_run(&frame.to_string());
+            let (participant, handle) =
+                aisim_aiperf_workload_runner::participant_adapter::native_hosted(
+                    &run,
+                    RunCancellation::new(),
+                    Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
+                    Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
+                        IDENTITY_SEED,
+                    )),
+                )
+                .unwrap();
+            let mut replay_spec = spec(topology.clone());
+            let mut engine: ReplayEngineConfig =
+                serde_json::from_value(replay_spec.engine.clone()).unwrap();
+            engine.rank.block_size = 8;
+            engine.rank.max_model_len = Some(if is_context_overflow { 8 } else { 1024 });
+            engine.rank.num_gpu_blocks = if is_context_overflow { 64 } else { 1 };
+            replay_spec.engine = serde_json::to_value(engine).unwrap();
+            let report = Replayer::new(replay_spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::External(Box::new(participant)))
+                .with_capture_options(ReplayCaptureOptions {
+                    capture_per_request: true,
+                    ..Default::default()
+                })
+                .run()
+                .unwrap();
+            let hosted = handle.into_typed_report().unwrap();
+            let expected = if is_context_overflow { 1 } else { 2 };
+            assert_eq!(
+                hosted.dispatch.submitted_requests, expected,
+                "only true overflow stops the remaining nonfinal AgentX turns"
+            );
+            assert_eq!(report.per_request.len(), expected);
+            let rows = &hosted.dispatch.requests;
+            assert_eq!(rows.len(), expected);
+            assert!(rows.iter().all(|row| row["terminal"] == "rejected"));
+            assert!(
+                rows.iter()
+                    .all(|row| row["model_response"]["context_overflow"] == is_context_overflow)
+            );
+            let records: Vec<_> = hosted
+                .records
+                .iter()
+                .flat_map(|phase| &phase.records)
+                .collect();
+            assert_eq!(records.len(), expected);
+            for (_, record) in records {
+                assert_eq!(record.context_overflow, is_context_overflow);
+                assert_eq!(
+                    record.context_overflow_skip,
+                    is_context_overflow && scenario
+                );
+            }
+            let skipped: u64 = hosted
+                .phased
+                .reports
+                .iter()
+                .map(|phase| phase.report.native_metrics.skipped_context_overflow_count())
+                .sum();
+            assert_eq!(skipped, u64::from(is_context_overflow && scenario));
+        }
+    }
+}

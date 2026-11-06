@@ -2461,6 +2461,10 @@ where
         {
             return Ok(());
         }
+        if let Some(cause) = signal.rejection_cause {
+            self.admission
+                .on_rejection_cause(signal.uuid, cause, self.now_ms)?;
+        }
         if let Some(tokens) = signal.cached_tokens {
             self.admission
                 .on_prompt_cache_read_tokens(signal.uuid, tokens, self.now_ms)?;
@@ -2496,6 +2500,10 @@ where
             && self.admission.knows_preparation_request(signal.uuid)
         {
             return Ok(());
+        }
+        if let Some(cause) = signal.rejection_cause {
+            self.admission
+                .on_rejection_cause(signal.uuid, cause, self.now_ms)?;
         }
         if let Some(tokens) = signal.cached_tokens {
             self.admission

@@ -82,6 +82,17 @@ pub trait WorkloadParticipant {
         Ok(())
     }
 
+    /// Authoritative scheduler rejection cause, delivered before the terminal.
+    /// No callback means the cause is unknown; status alone cannot classify it.
+    fn on_rejection_cause(
+        &mut self,
+        _request_id: Uuid,
+        _cause: crate::engine::RejectionCause,
+        _now_ms: f64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Mailbox fact: `request_id` reached a terminal state at `now_ms`.
     fn on_terminal(
         &mut self,

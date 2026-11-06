@@ -32,6 +32,7 @@ use aiperf_metrics_model::{Phase, ingest::RecordIngest};
 use aiperf_request_execution::execution::{
     Execution, ExecutionError, Observation, Request, RequestOutcome,
 };
+use aisimulate_core::engine::RejectionCause;
 use aisimulate_core::replay::{
     DirectRequest, ParticipantStep, ReplayTerminalStatus as AisimTerminal, WorkloadParticipant,
 };
@@ -112,6 +113,7 @@ struct Mailbox {
     outputs: RefCell<VecDeque<(i64, u32)>>,
     terminal: RefCell<Option<(i64, AisimTerminal)>>,
     prompt_cache_read_tokens: RefCell<Option<usize>>,
+    rejection_cause: RefCell<Option<RejectionCause>>,
     ready: Notify,
 }
 
@@ -130,13 +132,15 @@ struct ExecState {
 pub struct ParticipantExecution {
     clock: Rc<SimClock>,
     state: RefCell<ExecState>,
+    skip_context_overflow: bool,
 }
 
 impl ParticipantExecution {
-    fn new(clock: Rc<SimClock>) -> Rc<Self> {
+    fn new(clock: Rc<SimClock>, skip_context_overflow: bool) -> Rc<Self> {
         Rc::new(Self {
             clock,
             state: RefCell::default(),
+            skip_context_overflow,
         })
     }
 
@@ -298,6 +302,11 @@ impl Execution for ParticipantExecution {
             self.state.borrow_mut().live.remove(&id);
             self.state.borrow_mut().retired.insert(id);
             let terminal = aiperf_terminal(status);
+            let context_overflow = status == AisimTerminal::Rejected
+                && *mailbox.rejection_cause.borrow() == Some(RejectionCause::ContextOverflow);
+            if context_overflow {
+                observer.on_context_overflow(uuid, self.skip_context_overflow);
+            }
             let completion_error = match status {
                 AisimTerminal::Rejected | AisimTerminal::Failed => CompletionError::Present,
                 _ => CompletionError::Absent,
@@ -324,7 +333,10 @@ impl Execution for ParticipantExecution {
                 last_content_ns,
                 terminal,
                 response_text,
-                model_response: Default::default(),
+                model_response: aiperf_exchange_model::measure::observe::ModelResponseMetadata {
+                    context_overflow,
+                    ..Default::default()
+                },
                 chat_capture: None,
                 prompt_tokens: Some(input_tokens as u64),
                 completion_tokens: Some(tokens.len() as u64),
@@ -397,6 +409,16 @@ pub struct HostedRunHandle {
 }
 
 impl HostedRunHandle {
+    /// Opt into compact dispatch evidence before any workload request is submitted.
+    pub fn use_compact_dispatch_evidence(&self) -> Result<()> {
+        ensure!(
+            self.shared.execution.state.borrow().total == 0,
+            "compact dispatch evidence must be selected before execution"
+        );
+        self.shared.dispatcher.set_compact_capture();
+        Ok(())
+    }
+
     /// AIPerf's own phase report plus every dispatcher-issued request row.
     /// Backend measurements belong to the Replayer's `ReplayReport`.
     pub fn into_report(self) -> Result<serde_json::Value> {
@@ -573,6 +595,21 @@ impl WorkloadParticipant for AgentXParticipant {
         Ok(())
     }
 
+    fn on_rejection_cause(
+        &mut self,
+        request_id: Uuid,
+        cause: RejectionCause,
+        _now_ms: f64,
+    ) -> Result<()> {
+        let state = self.shared.execution.state.borrow();
+        if let Some(mailbox) = state.live.get(&request_id.as_u128()) {
+            mailbox.rejection_cause.borrow_mut().get_or_insert(cause);
+        } else if !state.retired.contains(&request_id.as_u128()) {
+            bail!("rejection cause for unknown request {request_id}");
+        }
+        Ok(())
+    }
+
     fn on_terminal(&mut self, request_id: Uuid, now_ms: f64, status: AisimTerminal) -> Result<()> {
         self.dirty = true;
         self.last_now_ms = now_ms;
@@ -638,11 +675,13 @@ pub fn native_hosted(
             captured: captured_records.clone(),
         }));
     }
-    let execution = ParticipantExecution::new(clock.clone());
-    let dispatcher = Rc::new(Dispatcher {
-        execution: execution.clone(),
-        records: RefCell::new(Vec::new()),
-    });
+    let execution = ParticipantExecution::new(
+        clock.clone(),
+        aiperf_agentx::scenario::scenario_drops_agentic_overflow_records(
+            run.cfg.scenario.as_deref(),
+        ),
+    );
+    let dispatcher = Rc::new(Dispatcher::new(execution.clone()));
     let shared = Rc::new(Shared {
         dispatcher: dispatcher.clone(),
         execution,

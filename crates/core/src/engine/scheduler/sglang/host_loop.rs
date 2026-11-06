@@ -241,6 +241,7 @@ mod tests {
             token_id: Some(1),
             completed: false,
             rejected: false,
+            rejection_cause: None,
             cached_tokens: None,
             handoff_delay_ms: None,
         }
