@@ -2737,27 +2737,35 @@ where
     /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> Result<bool> {
         let mut released_any = false;
-        let cluster_in_flight = self.cluster_in_flight();
-        let arrivals =
-            CoreAdmissionSource::drain_ready(&mut self.admission, self.now_ms, cluster_in_flight)?;
-        // Participant cancels use the native cancel path before this step's
-        // submissions are admitted and before any worker commits its next pass.
-        for uuid in self.admission.take_participant_cancels() {
-            released_any |= self.cancel_dynamic(uuid)?.is_some();
-        }
-        for mut ready in arrivals {
-            if self.encoder.is_some() {
-                self.register_parked_arrival(&mut ready)?;
-                self.encoder
-                    .as_mut()
-                    .expect("encoder pool checked")
-                    .submit(ready);
-            } else {
-                self.admit_ready(ready, false)?;
+        for _ in 0..100_000 {
+            let cluster_in_flight = self.cluster_in_flight();
+            let arrivals = CoreAdmissionSource::drain_ready(
+                &mut self.admission,
+                self.now_ms,
+                cluster_in_flight,
+            )?;
+            // Cancellation callbacks can release successors. Settle those
+            // mailbox reactions before committing another physical batch.
+            for uuid in self.admission.take_participant_cancels() {
+                released_any |= self.cancel_dynamic(uuid)?.is_some();
             }
-            released_any = true;
+            for mut ready in arrivals {
+                if self.encoder.is_some() {
+                    self.register_parked_arrival(&mut ready)?;
+                    self.encoder
+                        .as_mut()
+                        .expect("encoder pool checked")
+                        .submit(ready);
+                } else {
+                    self.admit_ready(ready, false)?;
+                }
+                released_any = true;
+            }
+            if !self.admission.external_timer_due(self.now_ms) {
+                return Ok(released_any);
+            }
         }
-        Ok(released_any)
+        bail!("external workload did not park at {} ms", self.now_ms)
     }
 
     /// A request entering the encoder pool has arrived: the collector and the
@@ -2857,6 +2865,9 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
+            if self.admission.external_timer_due(self.now_ms) {
+                self.release_ready_arrivals()?;
+            }
             if self.step_yield_pending() {
                 return Ok(changed);
             }
@@ -2879,6 +2890,9 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
+            if self.admission.external_timer_due(self.now_ms) {
+                self.release_ready_arrivals()?;
+            }
             if self.step_yield_pending() {
                 return Ok(changed);
             }
