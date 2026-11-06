@@ -74,6 +74,7 @@ fn host(
 ) -> (ReplayReport, Value) {
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         run,
+        aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
         RunCancellation::new(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
         Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(

@@ -79,6 +79,7 @@ fn host_with_detokenization(
 ) -> (ReplayReport, Value) {
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         run,
+        aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
         aiperf_clock_runtime::cancellation::RunCancellation::new(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
         Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
@@ -507,6 +508,7 @@ fn assert_native_cancellation(at_ms: f64) {
     let cancel = RunCancellation::new();
     let (inner, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         &run,
+        aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
         cancel.clone(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
         Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
@@ -649,6 +651,7 @@ fn context_overflow_stops_agentx_but_impossible_kv_remains_an_ordinary_failure()
             let (participant, handle) =
                 aisim_aiperf_workload_runner::participant_adapter::native_hosted(
                     &run,
+                    aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
                     RunCancellation::new(),
                     Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
                     Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(

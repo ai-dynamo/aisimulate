@@ -72,6 +72,7 @@ fn host(
 ) -> (ReplayReport, Value) {
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         run,
+        aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
         RunCancellation::new(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
         Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
@@ -305,6 +306,7 @@ fn native_prompt_cache_reuse_reaches_the_hosted_participant() {
     let reads = Rc::new(RefCell::new(Vec::new()));
     let (participant, handle) = aisim_aiperf_workload_runner::participant_adapter::native_hosted(
         &run,
+        aisim_aiperf_workload_runner::participant_adapter::NativeInputProjection::Text,
         RunCancellation::new(),
         Rc::new(aiperf_timing::RecordingPhaseObserver::default()),
         Rc::new(aiperf_rng::identity::DeterministicIdentitySource::new(
