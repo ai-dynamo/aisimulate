@@ -137,6 +137,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
     """Grade every gate in scope; returns {gate: verdict}."""
     sys.path.insert(0, str(HERE))
     import path_diff
+    import probe_driver
 
     version = version or _manifest_default(fw)
     out_dir = verdict_dir(sm, fw, version)
@@ -173,7 +174,7 @@ def grade(fw: str, sm: str, results: Path, version: str | None = None) -> dict:
             gate_name=g["gate"],
             target_roles=roles,
             phase=phase,
-            isl=g.get("isl"),
+            isl=g.get("isl", probe_driver.DEFAULT_ISL),
         )
         verdicts[g["gate"]] = "no-serving-record" if rc == 2 else json.loads(out.read_text())["verdict"]
     return verdicts

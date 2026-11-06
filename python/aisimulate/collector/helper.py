@@ -136,6 +136,10 @@ def _die_with_worker_preexec():
 
 
 TRACE_CHILD_DIR_ENV = "AIS_TRACE_CHILD_DIR"
+# While probe.trace_case runs, benchmark_with_power marks what it times with this profiler
+# range, so the trace keeps the measured kernels and drops the module build and the cache
+# fill before them (the DSA decode case fills its indexer cache with a kernel serving fuses).
+TRACE_TIMED_RANGE = "ais::timed"
 
 
 def trace_child_argv(argv: list[str]) -> list[str]:
@@ -466,6 +470,11 @@ def benchmark_with_power(
     dev_mod = get_device_module(device)
     # One beat per measurement: the executor's stall watchdog counts it as progress.
     worker_heartbeat()
+    # probe.trace_case only: the warmups, capture and timed runs are the measured path. A warmup
+    # that raises leaves the range open, and the failed case's trace keeps the whole run.
+    timed = torch.profiler.record_function(TRACE_TIMED_RANGE) if os.environ.get(TRACE_CHILD_DIR_ENV) else None
+    if timed is not None:
+        timed.__enter__()
 
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
@@ -652,6 +661,9 @@ def benchmark_with_power(
         # Calculate latency
         latency_ms = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
 
+        if timed is not None:
+            timed.__exit__(None, None, None)
+            timed = None
         # Return results
         yield {
             "latency_ms": latency_ms,
@@ -662,6 +674,8 @@ def benchmark_with_power(
             "phase_seconds": phase_seconds,
         }
     finally:
+        if timed is not None:
+            timed.__exit__(None, None, None)
         # Preserve default cleanup after timing starts. Explicit cleanup also
         # resets graphs retained by capture tracebacks; framework-owned tensors
         # must still be released by the collector to reclaim their pool memory.

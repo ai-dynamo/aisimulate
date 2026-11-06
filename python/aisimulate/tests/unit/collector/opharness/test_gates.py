@@ -78,3 +78,19 @@ def test_plan_narrows_to_a_repo_or_family(gates):
     assert by_repo and all("Qwen3.5-0.8B" in s["name"] for s in by_repo)
     by_family = gates.shard_plan("vllm", "sm90", family="gdn_")["shards"]
     assert {s["name"] for s in by_family} == {"gdn_ctx_Qwen3.5-0.8B", "gdn_gen_Qwen3.5-0.8B"}
+
+
+def test_a_prefill_gate_reads_the_serving_record_of_its_prompt_length(gates):
+    """vLLM picks the DSA prefill kernel by length on SM100 (sparse at 512, dense at 4096): a
+    seq_len-512 case graded against the default-length record diverged, and passed before
+    only because the 512 campaign was the newest import."""
+    sys.path.insert(0, str(COMPONENTS))
+    import probe_driver
+
+    wrong = []
+    for g in gates.load()["gates"]:
+        _, phase = gates.gate_target(g["op"], g["select"])
+        length = g["select"].get("seq_len") or g["select"].get("input_len")
+        if phase == "prefill" and length and length != g.get("isl", probe_driver.DEFAULT_ISL):
+            wrong.append(f"{g['gate']}@{g['backend']}: case length {length}, serving isl {g.get('isl')}")
+    assert wrong == []

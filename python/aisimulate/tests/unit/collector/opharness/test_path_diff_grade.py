@@ -134,10 +134,6 @@ def test_unscoped_gate_grades_every_non_glue_role_the_collector_ran():
 # --------------------------------------------------------------------- phase
 
 
-def _is_launcher(_):
-    return False
-
-
 def test_review_p1_prefill_gate_cannot_borrow_decode_evidence():
     # record: FA3 ran in prefill only, the Triton unified kernel in decode only
     record = {
@@ -145,13 +141,13 @@ def test_review_p1_prefill_gate_cannot_borrow_decode_evidence():
         "orphan_kernels": ["flash::FlashAttnFwdSm90", "kernel_unified_attention"],
         "kernel_phases": {"flash::FlashAttnFwdSm90": ["prefill"], "kernel_unified_attention": ["decode"]},
     }
-    srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
+    srv, scoped = path_diff.select_serving(record, "prefill", None)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is True
     # a decode-only capture graded as a PREFILL gate: diverged (collector-only family)
     g = grade(["kernel_unified_attention"], srv, ("attention",))
     assert g["verdict"] == "diverged"
     # the same capture as a decode gate: aligned
-    srv_dec, _ = path_diff.select_serving(record, "decode", None, _is_launcher)
+    srv_dec, _ = path_diff.select_serving(record, "decode", None)
     assert grade(["kernel_unified_attention"], srv_dec, ("attention",))["verdict"] == "aligned"
 
 
@@ -161,8 +157,8 @@ def test_profile_run_evidence_is_a_separate_phase():
         "orphan_kernels": ["flash::FlashAttnFwdSm90"],
         "kernel_phases": {"flash::FlashAttnFwdSm90": ["profile_run"]},
     }
-    assert path_diff.select_serving(record, "prefill", None, _is_launcher)[0] == set()
-    assert path_diff.select_serving(record, "profile_run", None, _is_launcher)[0] == {"flash::FlashAttnFwdSm90"}
+    assert path_diff.select_serving(record, "prefill", None)[0] == set()
+    assert path_diff.select_serving(record, "profile_run", None)[0] == {"flash::FlashAttnFwdSm90"}
 
 
 def test_a_span_only_kernel_is_kept_but_leaves_the_selection_unscoped():
@@ -170,7 +166,7 @@ def test_a_span_only_kernel_is_kept_but_leaves_the_selection_unscoped():
         "ops": [{"phase": "decode", "kernels": ["kernel_unified_attention", "flash::FlashAttnFwdSm90"]}],
         "kernel_phases": {"kernel_unified_attention": ["decode"]},
     }
-    srv, scoped = path_diff.select_serving(record, "prefill", None, _is_launcher)
+    srv, scoped = path_diff.select_serving(record, "prefill", None)
     assert srv == {"flash::FlashAttnFwdSm90"} and scoped is False
 
 

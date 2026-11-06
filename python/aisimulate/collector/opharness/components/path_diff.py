@@ -94,7 +94,7 @@ def equiv_key(kernel: str, role: str | None) -> str:
 def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     """The verdict rule, pure (unit-tested in tests/unit/collector/opharness).
 
-    col_kernels / srv_kernels: normalized, launcher-filtered kernel names of
+    col_kernels / srv_kernels: normalized CUDA kernel names of
     the collector capture and the (phase-selected) serving record.
     target_roles: the op roles this gate must prove; None = every labeled
     non-glue role the collector executed (unscoped gate, recorded as such).
@@ -175,7 +175,7 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     }
 
 
-def select_serving(record: dict, phase: str | None, op_hint: str | None, is_launcher) -> tuple[set, bool]:
+def select_serving(record: dict, phase: str | None, op_hint: str | None) -> tuple[set, bool]:
     """Serving kernels for the comparison, scoped to `phase`.
 
     Phase truth is the record's `kernel_phases` (every kernel the device tables saw, by
@@ -197,7 +197,7 @@ def select_serving(record: dict, phase: str | None, op_hint: str | None, is_laun
         elif ph is None:
             kernels.add(k)
             scoped = False
-    return {k for k in kernels if not is_launcher(k)}, scoped
+    return kernels, scoped
 
 
 def load_collector_side(files) -> dict:
@@ -217,11 +217,12 @@ def load_collector_side(files) -> dict:
 
 
 def serving_records(
-    repo: str, framework: str, version: str, sm: str, kv_dtype: str | None, isl: int | None = None
+    repo: str, framework: str, version: str, sm: str, kv_dtype: str | None, isl: int = probe_driver.DEFAULT_ISL
 ) -> list[dict]:
     """The probe records of every campaign in the workspace for (repo, framework, version)
-    on this SM with a clean outcome, the kv class (and prompt length, when asked) matching,
-    newest first."""
+    on this SM with a clean outcome, the kv class and prompt length matching, newest first.
+    A gate that names no prompt length reads the default one: an --isl campaign is newer
+    but answers a different shape."""
     out = []
     for path in sorted((probe_driver.ROOT / "campaigns").glob("*/records.jsonl")):
         for r in map(json.loads, path.open()):
@@ -233,7 +234,7 @@ def serving_records(
                 and rt.get("sm") == sm
                 and (r.get("outcome") or {}).get("status") == "ok"
                 and (kv_dtype is None or _kv_equiv(rt.get("kv_cache_dtype"), kv_dtype))
-                and (isl is None or rt.get("isl") == isl)
+                and (rt.get("isl") or probe_driver.DEFAULT_ISL) == isl
             ):
                 out.append({**r, "campaign": path.parent.name})
     # no kv asked: the RENDERED configuration is the serving truth, a kv-variant record never
@@ -245,18 +246,6 @@ def serving_records(
         )
     )
     return out[::-1]
-
-
-# custom-op LAUNCHERS shadow their kernels under a second name (_vllm_fa3_C::fwd wraps
-# flash::FlashAttnFwdSm90; trtllm::<op> wraps tensorrt_llm::_v1::kernels::...)
-_LAUNCHER = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm|trtllm)::(?!.*_kernel)")
-
-
-def _is_launcher(name: str) -> bool:
-    # a tail naming a kernel or a GEMM instantiation is the kernel itself: vllm::cutlass_3x_gemm_sm90_fp8
-    # IS the CUTLASS GEMM (the fp8 GEMM gate was once graded on the quant kernel alone)
-    tail = name.split("::")[-1].lower()
-    return bool(_LAUNCHER.match(name)) and "kernel" not in tail and "gemm" not in tail
 
 
 def diff(
@@ -271,14 +260,14 @@ def diff(
     gate_name: str | None = None,
     target_roles: tuple | None = None,
     phase: str | None = None,
-    isl: int | None = None,
+    isl: int = probe_driver.DEFAULT_ISL,
 ) -> int:
     cap = load_collector_side(capture_files)
-    col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k)) and not _is_launcher(n)})
+    col_kernels = sorted({n for k in cap["kernels"] if (n := probe_driver.normalize_kernel(k))})
     col_backends, _ = probe_driver.label_kernels(col_kernels, sm)
     candidates = serving_records(repo, framework, version, sm, kv_dtype, isl)
     if not candidates:
-        _hint = (f" kv={kv_dtype}" if kv_dtype else "") + (f" isl={isl}" if isl else "")
+        _hint = (f" kv={kv_dtype}" if kv_dtype else "") + f" isl={isl}"
         print(f"[no-serving-record] {repo} {framework}-{version} {sm}{_hint} — probe that config first")
         return 2
     serving = candidates[0]
@@ -288,7 +277,7 @@ def diff(
             f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')})",
             file=sys.stderr,
         )
-    srv_kernels, phase_scoped = select_serving(serving, phase, op_hint, _is_launcher)
+    srv_kernels, phase_scoped = select_serving(serving, phase, op_hint)
     srv_backends, _ = probe_driver.label_kernels(srv_kernels, sm)
     g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), lambda k: probe_driver.kernel_role(k, sm))
     files = [capture_files] if isinstance(capture_files, (str, Path)) else list(capture_files)
@@ -348,7 +337,9 @@ def main() -> int:
     ap.add_argument("--op-hint", default=None, help="regex over serving op labels/kernels to scope the comparison")
     ap.add_argument("--target-roles", required=True, help="comma list of taxonomy roles the capture must prove")
     ap.add_argument("--phase", default=None, choices=["prefill", "decode", "profile_run"])
-    ap.add_argument("--isl", type=int, default=None, help="only serving records probed at this prompt length")
+    ap.add_argument(
+        "--isl", type=int, default=probe_driver.DEFAULT_ISL, help="serving records probed at this prompt length"
+    )
     ap.add_argument("--save", default=None, help="write the verdict json here")
     args = ap.parse_args()
     return diff(

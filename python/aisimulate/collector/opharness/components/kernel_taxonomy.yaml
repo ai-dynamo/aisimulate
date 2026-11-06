@@ -23,7 +23,7 @@ rules:
   - {backend: flashmla, role: attention,
      match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
   - {backend: dsa_nsa, role: attention,
-     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
+     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow|^_scatter_topk(_single_req)?_kernel$"}
   - {backend: triton, role: attention,
      match: "_flash_attn_fwd_with_block_score|^_decode_score_kernel"}
   - {backend: trtllm_mha, role: attention,
@@ -93,13 +93,13 @@ rules:
   - {backend: trtllm_internal, role: quant,
      match: "scaleMatrixPerTensorVec|scale_1x128_kernel|_dequant_nvfp4|_cast_scatter_fp32|_gather_cast_vk"}
   - {backend: framework_native, role: kvcache,
-     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_"}
+     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_|^_indexer_decode_metadata_kernel$"}
   - {backend: framework_native, role: norm_rope,
      match: "rmsnorm|RMSNorm|rms_norm|LayerNormFn|_layer_norm_fwd|flashinfernormkernels|l2norm_fwd|rotary_embedding|BatchQKApplyRotary|fusedQKNormRope|_fused_qk_rmsnorm_rope|_gemma_(dual_rmsnorm|qkv_rmsnorm)"}
   - {backend: framework_native, role: activation,
      match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
   - {backend: dsa_nsa, role: dsa_indexer,
-     match: "^_fused_q_kernel$|FilteredTopKUnifiedKernel|^_get_k_and_s_triton_kernel$|^deep_gemm::sched::smxx_paged_mqa_logits_metadata|^deep_gemm::smxx_clean_logits"}
+     match: "^_fused_q_kernel$|deepseek_v32nvidiaopsfused_q_cutedslFusedQKernel|FilteredTopKUnifiedKernel|^_get_k_and_s_triton_kernel$|^deep_gemm::sched::smxx_paged_mqa_logits_metadata|^deep_gemm::smxx_clean_logits"}
   - {backend: fla_triton, role: linear_attention,
      match: "chunk_gla_fwd_kernel|chunk_kda_fwd_kernel|fused_recurrent_kda|kda_gate_chunk_cumsum|^_fused_post_conv_kernel$"}
   - {backend: triton_fused_moe, role: moe_gemm,
@@ -227,7 +227,7 @@ rules:
   - {backend: fla_triton, role: linear_attention, sms: [sm89],
      match: "^chunk_scaled_dot_kkt_fwd_kernel$|^merge_16x16_to_64x64_inverse_kernel$"}
   - {backend: trtllm_fmha, role: attention, sms: [sm100, sm103],
-     match: "^fmhaSm10[03][af]?Kernel_Qkv(Bfloat16|E4m3|Fp16)"}
+     match: "^fmhaSm10[03][af]?Kernel_Qkv(Bfloat16|E4m3|Fp16)|^tensorrt_llm::kernels::fmhaReductionKernel$"}
   - {backend: torch, role: gemm, sms: [sm89],
      match: "^sm86_xmma_fprop_implicit_gemm"}
   - {backend: infra, role: infra, sms: [sm89],

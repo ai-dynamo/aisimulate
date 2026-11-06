@@ -76,27 +76,34 @@ def test_planned_row_restricts_a_batch_row_to_the_selected_point():
 
 
 class _Event:
-    def __init__(self, key, device_time):
-        self.key, self.self_device_time_total = key, device_time
+    def __init__(self, name, device_type="cuda", start=1.0, end=None, annotation=False):
+        self.name, self.device_type, self.is_user_annotation = name, device_type, annotation
+        self.time_range = types.SimpleNamespace(start=start, end=start + 1 if end is None else end)
 
 
 def _fake_torch(monkeypatch, events):
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.autograd = types.ModuleType("torch.autograd")
+    torch.autograd.DeviceType = types.SimpleNamespace(CUDA="cuda", CPU="cpu")
     profiler = types.ModuleType("torch.profiler")
     profiler.ProfilerActivity = types.SimpleNamespace(CPU="cpu", CUDA="cuda")
 
     @contextmanager
     def profile(activities):
-        yield types.SimpleNamespace(key_averages=lambda: events)
+        yield types.SimpleNamespace(events=lambda: events)
 
     profiler.profile = profile
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "torch.profiler", profiler)
+    monkeypatch.setitem(sys.modules, "torch.autograd", torch.autograd)
 
 
 def test_trace_case_runs_the_planned_row_with_its_perf_file_discarded(monkeypatch, tmp_path):
-    _fake_torch(monkeypatch, [_Event("gemm_kernel", 5.0), _Event("aten::mm", 5.0), _Event("cpu_only", 0)])
+    # a custom op launching its kernel directly carries self device time on the CPU side: it
+    # is the op, not a kernel
+    events = [_Event("gemm_kernel"), _Event("vllm::fp8_gemm_nt_op", "cpu"), _Event("Memcpy HtoD (Pageable -> Device)")]
+    _fake_torch(monkeypatch, events)
     calls = []
 
     def run_func(a, b, *, perf_filename, device):
@@ -109,6 +116,7 @@ def test_trace_case_runs_the_planned_row_with_its_perf_file_discarded(monkeypatc
     monkeypatch.setattr("collector.helper.get_sm_version", lambda: 100)
     out = trace_case.run({"backend": "vllm", "op": "gemm", "m": "4096"}, tmp_path)
     assert out["kernels"] == ["gemm_kernel"] and out["failed"] is False and out["select"] == {"m": "4096"}
+    assert out["timed_only"] is False  # the row timed outside benchmark_with_power: the whole run
     assert calls[0][:2] == (4096, 7) and not Path(calls[0][2]).exists()  # the scratch perf file is gone
 
     def broken(*row, perf_filename, device):
@@ -145,7 +153,7 @@ def test_trace_child_argv_wraps_a_measurement_child_only_while_tracing(monkeypat
 def test_traced_child_runs_the_code_and_records_its_kernels(monkeypatch, tmp_path):
     from collector.probes import _traced_child
 
-    _fake_torch(monkeypatch, [_Event("sparse_mla_kernel", 3.0)])
+    _fake_torch(monkeypatch, [_Event("sparse_mla_kernel")])
     marker = tmp_path / "ran.txt"
     monkeypatch.setattr(sys, "argv", ["w", str(tmp_path / "kernels"), "-c", f"open({str(marker)!r}, 'w').write('ok')"])
     monkeypatch.setattr(sys, "path", list(sys.path))
@@ -153,18 +161,40 @@ def test_traced_child_runs_the_code_and_records_its_kernels(monkeypatch, tmp_pat
         _traced_child.main()
     assert done.value.code == 0 and marker.read_text() == "ok"
     (record,) = [json.loads(p.read_text()) for p in (tmp_path / "kernels").glob("child_*.json")]
-    assert record["kernels"] == ["sparse_mla_kernel"] and record["status"] == 0
+    assert record["kernels"] == ["sparse_mla_kernel"] and record["timed"] is False and record["status"] == 0
 
 
-def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tmp_path):
+def test_only_kernels_inside_the_timed_range_count(monkeypatch, tmp_path):
+    """The DSA decode case fills its indexer cache with indexer_k_quant_and_cache before timing;
+    serving fuses that write, so a whole-run trace graded the case as diverged."""
+    from collector import helper
+    from collector.probes import _traced_child
+
+    assert helper.TRACE_TIMED_RANGE == _traced_child.TIMED_RANGE
+    events = [
+        _Event("indexer_k_quant_and_cache_kernel", start=2.0),
+        _Event(helper.TRACE_TIMED_RANGE, "cpu", start=10.0, end=20.0),
+        _Event(helper.TRACE_TIMED_RANGE, start=10.5, end=19.0, annotation=True),
+        _Event("fmhaSm100fKernel", start=12.0),
+        _Event("sparse_attn_fwd_kernel", start=30.0),  # after the timed range: teardown
+    ]
+    _fake_torch(monkeypatch, events)
+    prof = types.SimpleNamespace(events=lambda: events)
+    assert _traced_child.kernel_names(prof) == (["fmhaSm100fKernel"], True)
+
+
+@pytest.mark.parametrize("child_timed, expect", [(True, ["child_attn"]), (False, ["child_attn", "parent_gemm"])])
+def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tmp_path, child_timed, expect):
+    """A parent that only spawned a timed child built the module: its kernels are setup."""
     from collector import helper
 
-    _fake_torch(monkeypatch, [_Event("parent_gemm", 1.0)])
+    _fake_torch(monkeypatch, [_Event("parent_gemm")])
 
     def spawning_run(*row, perf_filename, device):
         child_dir = Path(os.environ[helper.TRACE_CHILD_DIR_ENV])
         child_dir.mkdir(parents=True, exist_ok=True)
-        (child_dir / "child_1.json").write_text(json.dumps({"kernels": ["child_attn"], "status": 0}))
+        record = {"kernels": ["child_attn"], "timed": child_timed, "status": 0}
+        (child_dir / "child_1.json").write_text(json.dumps(record))
 
     entry = types.SimpleNamespace(perf_filename="mla_perf.txt", extra_perf_filenames=(), run_kwargs=None)
     monkeypatch.setattr(trace_case, "_resolve", lambda backend, op: (entry, spawning_run))
@@ -172,7 +202,7 @@ def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tm
     monkeypatch.setattr("collector.helper.get_sm_version", lambda: 100)
     monkeypatch.delenv(helper.TRACE_CHILD_DIR_ENV, raising=False)
     out = trace_case.run({"backend": "sglang", "op": "mla_context_module"}, tmp_path)
-    assert out["kernels"] == ["child_attn", "parent_gemm"] and out["measurement_children"] == 1
+    assert out["kernels"] == expect and out["timed_only"] is child_timed and out["measurement_children"] == 1
     assert helper.TRACE_CHILD_DIR_ENV not in os.environ  # restored after the probe
 
 
@@ -192,7 +222,7 @@ def test_planned_row_narrows_a_sweep_field_to_a_subset_of_its_planned_values():
 
 
 def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
-    _fake_torch(monkeypatch, [_Event("fused_kda", 1.0)])
+    _fake_torch(monkeypatch, [_Event("fused_kda")])
     seen = {}
 
     def run_func(*row, perf_filename, device):
