@@ -137,7 +137,21 @@ fn real_kv_disaggregated_reports_match_native_pull_driver_bytes() {
         assert!(candidate.is_idle());
     }
     let actual = candidate.take_report(candidate.now_ms()).unwrap();
-    assert_eq!(serde_json::to_vec(&reference).unwrap(), serde_json::to_vec(&actual).unwrap(),
+    // Native run measures host execution cost; the external driver receives
+    // this stamp explicitly. Supply the same stamp, not an estimated cost.
+    let actual = actual.with_wall_time_ms(reference.throughput.wall_time_ms);
+    let reference_bytes = serde_json::to_vec(&reference).unwrap();
+    let actual_bytes = serde_json::to_vec(&actual).unwrap();
+    if reference_bytes != actual_bytes {
+        let reference_value = serde_json::to_value(&reference).unwrap();
+        let actual_value = serde_json::to_value(&actual).unwrap();
+        for (key, value) in reference_value.as_object().unwrap() {
+            if actual_value.get(key) != Some(value) {
+                eprintln!("DIFF {key}: reference={value} candidate={}", actual_value[key]);
+            }
+        }
+    }
+    assert_eq!(reference_bytes, actual_bytes,
         "all aggregate, routing, handoff, cache and per-request fields must retain exact values");
 }
 
