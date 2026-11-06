@@ -38,17 +38,21 @@ pub(crate) fn default_endpoint_profile(
     Ok(profile)
 }
 
-pub fn execute(
-    run: &aiperf_config::model::BenchmarkRun,
-    cancel: RunCancellation,
-    observer: Rc<dyn aiperf_timing::PhaseObserver>,
-    model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
-    identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
-    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
-) -> Result<serde_json::Value> {
+/// Authored run projection shared by every execution binding (owned; no borrows).
+pub(crate) struct Head {
+    pub(crate) input: serde_json::Value,
+    pub(crate) raw_input: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>,
+    pub(crate) phases: Vec<PhaseSpec>,
+    pub(crate) models: aiperf_protocol::protocol_dto::ModelsSpec,
+    pub(crate) tokenizer: Arc<dyn TextTokenizer>,
+    pub(crate) kind: aiperf_config::model::workload_kind::WorkloadKind,
+    pub(crate) legacy_weka: bool,
+}
+
+pub(crate) fn parse_head(run: &aiperf_config::model::BenchmarkRun) -> Result<Head> {
     let (_, raw) = aiperf_engine_input::execution_input::factory_workload_input_resolved(run)?;
     let input: serde_json::Value = serde_json::from_str(raw.get())?;
-    let dataset = input.get("dataset").context("dataset missing")?;
+    input.get("dataset").context("dataset missing")?;
     let phases: Vec<PhaseSpec> = serde_json::from_value(input["phases"].clone())?;
     ensure!(!phases.is_empty(), "explicit phases required");
     ensure!(
@@ -69,15 +73,68 @@ pub fn execute(
     let kind = aiperf_config::model::workload_kind::workload_kind(&run.cfg);
     let legacy_weka = aiperf_config::model::workload_kind::weka_legacy_agentic(&run.cfg)
         .map_err(anyhow::Error::msg)?;
-    if kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !legacy_weka {
+    Ok(Head { input, raw_input, phases, models, tokenizer, kind, legacy_weka })
+}
+
+pub fn execute(
+    run: &aiperf_config::model::BenchmarkRun,
+    cancel: RunCancellation,
+    observer: Rc<dyn aiperf_timing::PhaseObserver>,
+    model_factory: Option<(&aisimulate_core::engine::EngineFactory, usize)>,
+    identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
+    deployment: Option<(Box<dyn aisimulate_core::replay::loadgen::SteppableReplay>, usize)>,
+) -> Result<serde_json::Value> {
+    let head = parse_head(run)?;
+    if head.kind == aiperf_config::model::workload_kind::WorkloadKind::Graph && !head.legacy_weka {
         let prepared = crate::graph::prepare(
-            run, raw_input.get("dataset").context("raw graph dataset missing")?,
-            tokenizer.as_ref(), &phases,
+            run, head.raw_input.get("dataset").context("raw graph dataset missing")?,
+            head.tokenizer.as_ref(), &head.phases,
         )?;
-        return crate::graph::execute(run, prepared, phases, cancel, observer, model_factory, deployment);
+        return crate::graph::execute(run, prepared, head.phases, cancel, observer, model_factory, deployment);
     }
+    let prep = lower_scheduled(run, &head, cancel.clone(), identity_source)?;
+    let clock = Rc::new(SimClock::new());
+    let engine = if let Some((deployment, capacity)) = deployment {
+        ModelExecution::from_deployment(clock.clone(), deployment, capacity)?
+    } else { match model_factory {
+        Some((factory, capacity)) => {
+            ModelExecution::from_factory(clock.clone(), factory, capacity)?
+        }
+        None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
+    }};
+    let dispatcher = Rc::new(Dispatcher {
+        execution: engine.clone(),
+        records: RefCell::new(Vec::new()),
+    });
+    let plans = build_plans(run, &prep, clock.clone())?;
+    run_with_engine(plans, clock, engine, dispatcher, observer, cancel)
+}
+
+/// Everything the scheduler needs that does not depend on a backend or clock.
+pub(crate) struct ScheduledPrep {
+    pub(crate) prepared: aiperf_engine_input::dataset_input::PreparedDatasetInput,
+    pub(crate) phases: Vec<PhaseSpec>,
+    pub(crate) origins: Vec<Option<usize>>,
+    pub(crate) model: String,
+    pub(crate) tokenizer: Arc<dyn TextTokenizer>,
+    pub(crate) identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
+    pub(crate) resolver: Rc<dyn aiperf_multiturn::PreparedTurnEndpointResolver>,
+}
+
+/// Dataset acquisition, endpoint binding and resident-dataset lowering through
+/// the owning native adapters. Moved verbatim from `execute`; no policy copy.
+pub(crate) fn lower_scheduled(
+    run: &aiperf_config::model::BenchmarkRun,
+    head: &Head,
+    cancel: RunCancellation,
+    identity_source: Rc<dyn aiperf_rng::identity::IdentitySource>,
+) -> Result<ScheduledPrep> {
+    let Head { input, raw_input, phases, models, tokenizer, kind, legacy_weka } = head;
+    let legacy_weka = *legacy_weka;
+    let dataset = input.get("dataset").context("dataset missing")?;
+    let phases = phases.clone();
     ensure!(
-        kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
+        *kind == aiperf_config::model::workload_kind::WorkloadKind::Scheduled || legacy_weka,
         "typed workload {kind:?} has no simulator execution binding"
     );
     let (mut prepared, phases, origins) = if legacy_weka {
@@ -167,10 +224,21 @@ pub fn execute(
         None,
     )?;
     prepared.resident_endpoint_binding = Some(binding);
+    Ok(ScheduledPrep { prepared, phases, origins, model: model.clone(), tokenizer: tokenizer.clone(), identity_source, resolver })
+}
+
+/// Build every phase plan against the supplied clock. Plans own all state
+/// (`Rc`, no borrows), so they are `'static` and can be spawned or hosted.
+pub(crate) fn build_plans(
+    run: &aiperf_config::model::BenchmarkRun,
+    prep: &ScheduledPrep,
+    clock: Rc<SimClock>,
+) -> Result<Vec<aiperf_engine_phase::phase_runtime::ScheduledPhasePlan>> {
+    let ScheduledPrep { prepared, phases, origins, model, tokenizer, identity_source, resolver } = prep;
     let samplers = aiperf_dataset::sampler::SamplerRegistry::with_builtin_strategies()?;
     let factory = PreparedNativeConversationSourceFactory {
-        identity_source,
-        endpoint_resolver: resolver,
+        identity_source: identity_source.clone(),
+        endpoint_resolver: resolver.clone(),
         samplers: &samplers,
         materializer: Arc::new(aiperf_dataset::EndpointRequestMaterializer),
         defer_grpc_operations: false,
@@ -181,19 +249,6 @@ pub fn execute(
         whole_corpus_positions: false,
         run_sampler: aiperf_multiturn::RunScopedSampler::new(),
     };
-    let clock = Rc::new(SimClock::new());
-    let engine = if let Some((deployment, capacity)) = deployment {
-        ModelExecution::from_deployment(clock.clone(), deployment, capacity)?
-    } else { match model_factory {
-        Some((factory, capacity)) => {
-            ModelExecution::from_factory(clock.clone(), factory, capacity)?
-        }
-        None => ModelExecution::fixed(clock.clone(), 1.0, 1.0, 64)?,
-    }};
-    let dispatcher = Rc::new(Dispatcher {
-        execution: engine.clone(),
-        records: RefCell::new(Vec::new()),
-    });
     let resources = native_scheduled_resources(&phases);
     let root = aiperf_rng::RngRoot::new(run.random_seed);
     let dataset_root = aiperf_rng::RngRoot::new(prepared.random_seed.or(run.random_seed));
@@ -242,6 +297,17 @@ pub fn execute(
             user_centric_phase_scope(&phases, index),
         )?);
     }
+    Ok(plans)
+}
+
+fn run_with_engine(
+    plans: Vec<aiperf_engine_phase::phase_runtime::ScheduledPhasePlan>,
+    clock: Rc<SimClock>,
+    engine: Rc<ModelExecution>,
+    dispatcher: Rc<Dispatcher>,
+    observer: Rc<dyn aiperf_timing::PhaseObserver>,
+    cancel: RunCancellation,
+) -> Result<serde_json::Value> {
     let mut result = None;
     let event_source: Rc<dyn aiperf_clock_runtime::clock::driver::SimEventSource> =
         engine.clone();
@@ -284,21 +350,8 @@ pub fn execute(
     // source sampling, dispatch order, callbacks, or the scheduler's frontier.
     // Distinct runtime sessions sharing a source template get distinct labels;
     // all turns in the same runtime session keep that occurrence.
-    let mut occurrences = std::collections::BTreeMap::<String, Vec<String>>::new();
     let mut records = dispatcher.records.borrow_mut();
-    for row in records.iter_mut() {
-        let template = row["request"]["conversation_id"].as_str().unwrap_or("").to_owned();
-        let session = row["request"]["correlation_id"].as_str().unwrap_or("").to_owned();
-        let sessions = occurrences.entry(template).or_default();
-        let occurrence = match sessions.iter().position(|existing| *existing == session) {
-            Some(index) => index,
-            None => {
-                sessions.push(session);
-                sessions.len() - 1
-            }
-        };
-        row["runtime_occurrence"] = serde_json::json!(occurrence);
-    }
+    label_occurrences(&mut records);
     Ok(serde_json::json!({
         "format": "aisim-aiperf-library-proof-v1",
         "capture_format": "aisim-runtime-values-raw-v1",
@@ -314,6 +367,24 @@ pub fn execute(
         "virtual_end_ns": clock.now_ns(),
         "engine_drained": true,
     }))
+}
+
+/// Post-run occurrence labels; shared by every execution binding.
+pub(crate) fn label_occurrences(records: &mut [serde_json::Value]) {
+    let mut occurrences = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for row in records.iter_mut() {
+        let template = row["request"]["conversation_id"].as_str().unwrap_or("").to_owned();
+        let session = row["request"]["correlation_id"].as_str().unwrap_or("").to_owned();
+        let sessions = occurrences.entry(template).or_default();
+        let occurrence = match sessions.iter().position(|existing| *existing == session) {
+            Some(index) => index,
+            None => {
+                sessions.push(session);
+                sessions.len() - 1
+            }
+        };
+        row["runtime_occurrence"] = serde_json::json!(occurrence);
+    }
 }
 
 fn acquire(

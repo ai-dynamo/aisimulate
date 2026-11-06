@@ -818,7 +818,7 @@ impl Execution for ModelExecution {
 
 /// Least integer clock instant whose forward conversion reaches the deadline.
 /// Multiplication/ceiling alone is not the inverse of ns-to-ms division (123ns).
-fn deployment_deadline_ns(at_ms: f64) -> Result<i64, SimDriveError> {
+pub(crate) fn deployment_deadline_ns(at_ms: f64) -> Result<i64, SimDriveError> {
     if !at_ms.is_finite() || at_ms < 0.0 || at_ms >= i64::MAX as f64 / 1_000_000.0 {
         return Err(source_error("invalid deployment event deadline"));
     }

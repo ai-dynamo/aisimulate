@@ -11,6 +11,7 @@ mod dispatch;
 mod graph;
 /// Actual simulator-owned Engine binding, exposed for cross-owner semantic proofs.
 pub mod model;
+pub mod participant_adapter;
 mod reporting;
 mod scheduled;
 mod workload;
