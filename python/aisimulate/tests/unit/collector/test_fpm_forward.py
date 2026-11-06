@@ -1754,6 +1754,33 @@ def test_malformed_text_config_is_refused_as_config_intake_refuses_it(tmp_path, 
     assert str(render.value) == refusal
 
 
+@pytest.mark.parametrize("llm_config", [None, {}, "decoder", []], ids=["null", "empty-object", "string", "list"])
+def test_malformed_llm_config_of_a_registered_wrapper_is_refused_as_config_intake_refuses_it(tmp_path, llm_config):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisimulate_core.sdk.fpm_profile import _validate_checkpoint_architecture
+
+    # The registry maps this wrapper to llm_config, so the key holds its decoder whenever it is present. The wrapper's
+    # flat fields describe a valid decoder, so only the refusal keeps the readers off them.
+    wrapper = "NemotronH_Omni_Reasoning_V3"
+    document = {**_packaged_config(_NEMOTRON_SUPER), "architectures": [wrapper], "llm_config": llm_config}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(document))
+    problem = "llm_config must be a nonempty object describing one text decoder"
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == f"{problem}; supply its decoder config or a complete --fpm-profile"
+    with pytest.raises(ValueError) as effective:
+        _ = ResolvedModelConfig(document, source_kind="explicit", source_reference="test").effective_payload
+    assert str(effective.value) == f"{problem}; supply one text decoder config"
+    profile = SimpleNamespace(model=str(tmp_path), model_revision=None, architecture=wrapper)
+    with pytest.raises(ValueError) as check:
+        _validate_checkpoint_architecture(profile)
+    identity = f"{str(tmp_path)!r} at model_revision=None"
+    assert str(check.value) == (
+        f"FPM profile checkpoint config.json for {identity} has no single text decoder: {problem}"
+    )
+
+
 @pytest.mark.parametrize(
     "extra",
     [{}, {"llm_config": None}, {"llm_config": {}}, {"llm_config": []}, {"llm_config": "decoder"}],
