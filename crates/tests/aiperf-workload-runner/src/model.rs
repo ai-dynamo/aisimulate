@@ -118,6 +118,7 @@ pub enum ModelEvent {
 #[derive(Default)]
 struct Mailbox {
     outputs: RefCell<VecDeque<Output>>,
+    terminal: RefCell<Option<ReplayTerminalStatus>>,
     ready: Notify,
 }
 struct State {
@@ -583,7 +584,11 @@ impl Execution for ModelExecution {
             {
                 let mut state = self.state.borrow_mut();
                 if let Some(deployment) = state.deployment.as_mut() {
-                    deployment.advance_now_ms(start_ns as f64 / 1_000_000.0);
+                    let start_ms = start_ns as f64 / 1_000_000.0;
+                    deployment.advance_now_ms(start_ms);
+                    if deployment.now_ms() != start_ms {
+                        return Err(ExecutionError::Failed("deployment has an unprocessed event before request arrival".into()));
+                    }
                     let assigned = deployment.submit(aisimulate_core::replay::DirectRequest {
                         tokens: request.input_token_ids,
                         max_output_tokens: population_len,
@@ -602,6 +607,7 @@ impl Execution for ModelExecution {
                         ..Default::default()
                     }).map_err(|error| ExecutionError::Failed(error.to_string()))?;
                     if assigned != uuid {
+                        deployment.cancel(assigned).map_err(|error| ExecutionError::Failed(error.to_string()))?;
                         return Err(ExecutionError::Failed("deployment changed explicit request identity".into()));
                     }
                 } else {
@@ -720,12 +726,12 @@ impl Execution for ModelExecution {
                 }
             }
             let end_ns = self.now();
-            let terminal = if rejected {
+            let terminal = mailbox.terminal.borrow().unwrap_or_else(|| if rejected {
                 ReplayTerminalStatus::Rejected
             } else {
                 script.terminal
-            };
-            let completion_error = if rejected {
+            });
+            let completion_error = if matches!(terminal, ReplayTerminalStatus::Rejected | ReplayTerminalStatus::Failed) {
                 CompletionError::Present
             } else {
                 script.completion_error
@@ -863,9 +869,6 @@ impl SimEventSource for ModelExecution {
                 (event.uuid, deployment.request_admission(event.uuid))
             }).collect::<BTreeMap<_, _>>();
             for event in outcome.events {
-                if matches!(event.terminal_status, Some(aisimulate_core::replay::ReplayTerminalStatus::Failed | aisimulate_core::replay::ReplayTerminalStatus::Canceled)) {
-                    return Err(source_error(format!("deployment request {} terminated as {:?}", event.uuid, event.terminal_status)));
-                }
                 let output = Output {
                     request_id: event.uuid, token_id: event.token_id,
                     completed: event.terminal_status.is_some(),
@@ -873,6 +876,14 @@ impl SimEventSource for ModelExecution {
                     cached_tokens: admissions.get(&event.uuid).copied().flatten().map(|(_, reused)| reused),
                 };
                 if let Some(mailbox) = state.requests.get(&event.uuid.as_u128()) {
+                    if let Some(status) = event.terminal_status {
+                        *mailbox.terminal.borrow_mut() = Some(match status {
+                            aisimulate_core::replay::ReplayTerminalStatus::Completed => ReplayTerminalStatus::Completed,
+                            aisimulate_core::replay::ReplayTerminalStatus::Rejected => ReplayTerminalStatus::Rejected,
+                            aisimulate_core::replay::ReplayTerminalStatus::Canceled => ReplayTerminalStatus::Canceled,
+                            aisimulate_core::replay::ReplayTerminalStatus::Failed => ReplayTerminalStatus::Failed,
+                        });
+                    }
                     mailbox.outputs.borrow_mut().push_back(output);
                     mailbox.ready.notify_one();
                 }

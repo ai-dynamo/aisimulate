@@ -538,10 +538,23 @@ where
         self.runtime.now_ms()
     }
 
+    /// Move the clock to an external time without processing or committing any
+    /// physical decision, so a caller-owned wake that precedes the runtime's
+    /// next event stamps its submissions at the right instant. The move is
+    /// permitted only when the target does not pass the next pending event (or
+    /// the runtime is idle); the trait cannot return an error, so a request to
+    /// skip an event is ignored and the clock is left unchanged. The caller
+    /// must step to that event first and can check [`Self::now_ms`].
     fn advance_now_ms(&mut self, now_ms: f64) {
-        // Only an idle runtime has no internal event to skip over; with work
-        // outstanding the caller must step to it instead.
-        if now_ms.is_finite() && now_ms > self.runtime.now_ms() && self.runtime.is_workload_done() {
+        if !now_ms.is_finite() || now_ms <= self.runtime.now_ms() {
+            return;
+        }
+        let allowed = self.runtime.is_workload_done()
+            || self
+                .runtime
+                .next_dynamic_timestamp()
+                .is_some_and(|next_ms| now_ms <= next_ms);
+        if allowed {
             self.runtime.advance_now_ms(now_ms);
         }
     }
@@ -1178,7 +1191,7 @@ mod tests {
         assert!(!engine.is_idle());
         // Work is outstanding, so an external idle-gap skip must not move time.
         let before_ms = engine.now_ms();
-        engine.advance_now_ms(before_ms + 1_000.0);
+        engine.advance_now_ms(before_ms + 1.0e9);
         assert_eq!(engine.now_ms(), before_ms);
     }
 
@@ -1402,5 +1415,40 @@ mod tests {
         );
         let report = engine.take_report(engine.now_ms()).unwrap();
         assert_eq!(report.request_counts.completed_requests, 1);
+    }
+
+    /// A clock-only wake between physical events: time moves to the external
+    /// instant without stepping, a submission there is stamped at that instant
+    /// and runs on an idle worker at once, and the clock never skips an event.
+    #[test]
+    fn external_time_advances_to_a_pending_event_but_never_past_it() {
+        let mut engine = SteppableDisagg::new(
+            fixed_timing_config(10.0, 5.0),
+            &ReplayEngineFactory::new(),
+            2,
+            1,
+        )
+        .unwrap();
+        engine.submit(request(80, 64, 2)).unwrap();
+        // Commit the first prefill pass (0 -> 10 ms) and rest at 3 ms.
+        while engine.now_ms() < 3.0 {
+            engine.step_until(3.0).unwrap();
+        }
+        assert_eq!(engine.now_ms(), 3.0);
+        assert_eq!(engine.next_event_ms(), Some(10.0));
+
+        engine.advance_now_ms(7.0);
+        assert_eq!(engine.now_ms(), 7.0);
+        // Skipping the 10 ms completion is refused and leaves time alone.
+        engine.advance_now_ms(11.0);
+        assert_eq!(engine.now_ms(), 7.0);
+        assert_eq!(engine.next_event_ms(), Some(10.0));
+
+        let late = engine.submit(request(81, 64, 2)).unwrap();
+        engine.step_until(7.0).unwrap();
+        // Stamped at 7 ms, not the stale 3 ms, and started on the idle second
+        // prefill worker while the first is still busy until 10 ms.
+        assert_eq!(engine.request_admission(late).unwrap().0, 7.0);
+        assert_eq!(engine.now_ms(), 7.0);
     }
 }
