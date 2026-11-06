@@ -446,6 +446,7 @@ impl VllmKvManager {
                 )
                 .expect("validated state cache geometry");
             self.enable_state_cache(blocks, mtp_enabled);
+            self.state_cache.as_mut().unwrap().sliding_window = config.sliding_window;
         }
     }
 
@@ -1036,7 +1037,40 @@ impl VllmKvManager {
             self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
-        if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
+        let window_hashes = match &self.state_cache {
+            Some(manager)
+                // Accepted tokens are final, so every token of an MTP burst
+                // can complete a window, not only the last one.
+                if manager.sliding_window.is_some()
+                    && self.enable_prefix_caching
+                    && sequence.enable_prefix_caching() =>
+            {
+                manager
+                    .sliding_window_boundaries(
+                        self.block_size,
+                        sequence.num_input_tokens(),
+                        computed_before,
+                        computed_after,
+                    )
+                    .map(|boundary| {
+                        lease
+                            .state_hash(boundary, self.block_size)
+                            .expect("completed boundary block has a hash")
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state)
+            && manager.sliding_window.is_some()
+        {
+            let mut removed = Vec::new();
+            for hash in window_hashes {
+                manager.publish_window(&mut self.pool, state, hash, &mut removed);
+            }
+            manager.commit(&mut self.pool, state, computed_after, None);
+            self.publish_removed(removed);
+        } else if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
             // Modified default-retention behavior from vLLM v0.29.0:
             // https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
             // Copyright contributors to the vLLM project. Apache-2.0.
@@ -1576,6 +1610,9 @@ impl VllmKvManager {
                     })
                     .unwrap_or(0)
             };
+            // vLLM drops the MTP block from the hit. For a sliding window the
+            // MTP group's dropped block must lie inside the block-aligned token
+            // hit, so the state hit also lands one block lower.
             if needs_logits && manager.mtp_enabled {
                 overlap_blocks = overlap_blocks.saturating_sub(1);
             }

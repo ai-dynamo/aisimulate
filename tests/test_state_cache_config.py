@@ -623,7 +623,7 @@ def test_auto_dsv4_geometry_reaches_native_wire(
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(config.model_dump_json()))
     args = spec.backend_deployment.agg_engine_args
     assert (args["block_size"], args["kv_cache_bytes_per_token"], args["num_gpu_blocks"]) == (256, token_bytes, 64)
-    assert args["state_cache"] == {"bytes_per_request": state_bytes}
+    assert args["state_cache"] == {"bytes_per_request": state_bytes, "sliding_window": {"lookahead_tokens": 64}}
     info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
     indexer = state_cache.get("indexer_cache_dtype", "fp8")
     assert (info["source"], info["state_blocks"], info["indexer_cache_dtype"]) == ("inferred", 26, indexer)
@@ -643,7 +643,13 @@ def test_auto_state_sizes_the_worker_kv_dtype(auto_dsv4_payload, forbid_estimato
             prediction_to_replay_spec(config)
         return
     args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
-    assert args["state_cache"] == {"bytes_per_request": 26058240}
+    assert args["state_cache"] == {"bytes_per_request": 26058240, "sliding_window": {"lookahead_tokens": 64}}
+
+
+def test_auto_dsv4_rejects_prefix_match_unit(auto_dsv4_payload, forbid_estimators):
+    auto_dsv4_payload["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_match_unit"] = 64
+    with pytest.raises(ValueError, match="leave prefix_match_unit unset"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
 
 
 def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estimators):
@@ -651,8 +657,12 @@ def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estim
     auto_dsv4_payload["engine"].update(hardware="b200_sxm", nextn=1, nextn_accepted=1.0)
     worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
     worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
+    worker["kv_cache"]["state_cache"] = {"retention_interval": 32768}
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
-    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 30067200}
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {
+        "bytes_per_request": 30067200,
+        "sliding_window": {"lookahead_tokens": 64, "retention_interval": 32768},
+    }
 
 
 def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimators):
@@ -660,7 +670,7 @@ def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimat
     deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload)).backend_deployment
     for args in (deployment.prefill_engine_args, deployment.decode_engine_args):
         assert args["kv_transfer_bytes_per_token"] == 3915
-        assert args["state_cache"] == {"bytes_per_request": 26058240}
+        assert args["state_cache"] == {"bytes_per_request": 26058240, "sliding_window": {"lookahead_tokens": 64}}
 
 
 @pytest.mark.parametrize(
@@ -668,6 +678,7 @@ def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimat
     [
         ({"capacity": {"type": "fixed", "bytes": 4 * 21233664 - 1}}, "capacity must fit"),
         ({"prefix_match_unit": 512}, "divisor"),
+        ({"state_cache": {"retention_interval": 768}}, "requires inferred DeepSeek V4"),
     ],
 )
 def test_auto_state_validates_capacity_and_prefix_after_resolution(auto_k3_payload, changes, error):

@@ -3,6 +3,9 @@
 
 //! Metadata-only recurrent-state caching for the manual G1 model.
 //!
+//! A sliding-window state (DeepSeek V4) instead copies the state at each
+//! retained boundary; see `sliding_window_boundaries` and `publish_window`.
+//!
 //! Default align retention is modified from vLLM (Apache-2.0).
 //! Copyright contributors to the vLLM project.
 //! https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
@@ -19,6 +22,7 @@ use crate::engine::cache::vllm_block_pool::{
     BlockCopyId, BlockReservation, CacheKey, VllmBlockPool,
 };
 use crate::engine::common::hashing::SequenceHash;
+use crate::engine::config::SlidingWindowStateConfig;
 use rustc_hash::FxHashSet;
 
 #[derive(Debug, Default)]
@@ -48,6 +52,7 @@ pub(crate) struct StateCacheManager {
     pub(crate) blocks_per_state: usize,
     pub(crate) mtp_enabled: bool,
     pub(crate) align_block_size: Option<usize>,
+    pub(crate) sliding_window: Option<SlidingWindowStateConfig>,
     // Preserve insertion order for deterministic LRU release. A cancelled
     // request takes its own entries; holes disappear at the next begin_step.
     step_copy_holds: Vec<Option<BlockCopyId>>,
@@ -62,6 +67,7 @@ impl StateCacheManager {
             blocks_per_state,
             mtp_enabled,
             align_block_size: None,
+            sliding_window: None,
             step_copy_holds: Vec::new(),
             published_this_step: FxHashSet::default(),
             step: 0,
@@ -83,6 +89,95 @@ impl StateCacheManager {
     pub(crate) fn has_snapshot(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
         !self.published_this_step.contains(&prefix)
             && self.keys(prefix).all(|key| pool.key_hit(key).is_some())
+    }
+
+    /// Sliding-window boundaries whose window the pass `(before, after]`
+    /// completed and that vLLM's retention keeps cached.
+    ///
+    /// Modified Rust simulation of vLLM v0.32.0 (Apache-2.0),
+    /// `replay_boundaries` in `vllm/v1/core/kv_cache_coordinator.py` and
+    /// `SlidingWindowManager.reachable_block_mask` in
+    /// `vllm/v1/core/single_type_kv_cache_manager.py`. Copyright contributors
+    /// to the vLLM project. See the root THIRD_PARTY_NOTICES.md.
+    pub(crate) fn sliding_window_boundaries(
+        &self,
+        block_size: usize,
+        prompt_tokens: usize,
+        before: usize,
+        after: usize,
+    ) -> impl Iterator<Item = usize> {
+        let window = self.sliding_window.expect("sliding-window state");
+        // The MTP group must also cache the block after the boundary.
+        let lookahead = if self.mtp_enabled {
+            window.lookahead_tokens
+        } else {
+            0
+        };
+        // Where a resend (capped at the prompt minus one token) or a longer
+        // prompt resumes. With MTP vLLM keeps one block below each, so the
+        // MTP group's dropped block stays inside the prompt.
+        let resend = prompt_tokens.saturating_sub(1) / block_size * block_size;
+        let replay = if self.mtp_enabled {
+            [
+                resend.saturating_sub(block_size),
+                (prompt_tokens / block_size * block_size).saturating_sub(block_size),
+            ]
+        } else {
+            [resend; 2]
+        };
+        let first = before.saturating_sub(lookahead) / block_size + 1;
+        let last = after
+            .checked_sub(lookahead)
+            .map_or(0, |tokens| tokens / block_size);
+        (first..=last)
+            .map(move |index| index * block_size)
+            .filter(move |&boundary| {
+                let kept = match window.retention_interval {
+                    None => true,
+                    Some(interval) => {
+                        replay.contains(&boundary)
+                            || (interval > 0 && boundary.is_multiple_of(interval))
+                    }
+                };
+                kept
+            })
+    }
+
+    /// Cache one sliding-window checkpoint as reclaimable state blocks.
+    /// vLLM keeps these window blocks after the request moves past them, so
+    /// they cost capacity only while nothing evicts them. Appends token
+    /// hashes evicted to make room to `removed`. vLLM keeps these blocks
+    /// in the request's own allocation; replay copies the whole state, so a
+    /// pool with no free or evictable room skips the checkpoint.
+    pub(crate) fn publish_window(
+        &mut self,
+        pool: &mut VllmBlockPool,
+        state: &mut StateRequest,
+        hash: SequenceHash,
+        removed: &mut Vec<SequenceHash>,
+    ) {
+        if self.published_this_step.contains(&hash)
+            || self.keys(hash).all(|key| pool.key_hit(key).is_some())
+        {
+            return;
+        }
+        let Some(mut outcome) = pool.reserve(&[], self.blocks_per_state) else {
+            return;
+        };
+        if state.snapshot_step != self.step {
+            state.snapshot.clear();
+            state.snapshot_step = self.step;
+        }
+        for key in self.keys(hash) {
+            let id = pool.allocate_private(&mut outcome.reservation);
+            pool.cache_private_key(id, key);
+            pool.release(id);
+            // Non-owning: a same-pass preemption discards it.
+            state.snapshot.push(id);
+        }
+        pool.cancel(outcome.reservation);
+        self.published_this_step.insert(hash);
+        removed.append(&mut outcome.removed);
     }
 
     pub(crate) fn release_previous(&self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
