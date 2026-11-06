@@ -161,6 +161,69 @@ def test_text_graph_compiles_in_sol_on_blackwell(backend, monkeypatch):
     }
 
 
+@pytest.mark.parametrize(("tp", "nheads", "n_groups"), [(1, 128, 8), (2, 64, 4), (4, 32, 2), (8, 16, 1), (16, 8, 1)])
+def test_mamba2_kernels_ask_for_the_per_shard_shape(tp, nheads, n_groups):
+    # mamba_num_heads // tp and max(n_groups // tp, 1): the sharding of the in_proj GEMM and the TRT-LLM mixer.
+    model_config = config.ModelConfig(tp_size=tp, pp_size=1, moe_tp_size=1, moe_ep_size=tp, attention_dp_size=1)
+    model = get_model(MODEL, model_config, backend_name="trtllm")
+    specs = {
+        op._name: json.loads(op._spec_json())["Mamba2"]
+        for op in model.context_ops + model.generation_ops
+        if "Mamba2" in json.loads(op._spec_json())
+    }
+    assert set(specs) == {
+        "context_mamba_conv1d",
+        "context_mamba_ssm",
+        "generation_mamba_conv1d",
+        "generation_mamba_ssm",
+    }
+    for name, spec in specs.items():
+        shape = (
+            spec["d_model"],
+            spec["nheads"],
+            spec["head_dim"],
+            spec["n_groups"],
+            spec["d_state"],
+            spec["d_conv"],
+            spec["chunk_size"],
+        )
+        assert shape == (4096, nheads, 64, n_groups, 128, 4, 128), name
+
+
+def _trtllm_silicon_56b(tp):
+    return ForwardPassPerfModelConfig(
+        model="nvidia/Nemotron-H-56B-Base-8K",
+        system="b200_sxm",
+        backend="trtllm",
+        backend_version="1.3.0rc20",
+        worker_type="aggregated",
+        tp=tp,
+        moe_tp_size=1,
+        moe_ep_size=tp,
+        database_mode="SILICON",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+        enable_shared_layer=False,
+    )
+
+
+@pytest.mark.parametrize(("tp", "conv_source"), [(1, "silicon"), (8, "sol")])
+def test_trtllm_silicon_prices_the_mamba2_conv_kernels_at_the_per_shard_shape(tp, conv_source):
+    # The packaged TRT-LLM rc20 table holds the TP 1 geometry (256 heads, 8 groups) of the conv kernels only:
+    # it has no scan or state-update rows, so the SSM kernels report sol at every TP and do not discriminate.
+    # The conv kernels hit their measured row at TP 1 and miss the per-shard shape (32 heads, 1 group) at TP 8,
+    # where they report the analytic estimate instead of the full-layer row.
+    model = RustForwardPassPerfModel.best_available(_trtllm_silicon_56b(tp))
+    try:
+        prefill, decode = _sources(model, prefill=True), _sources(model, prefill=False)
+    finally:
+        model.close()
+    assert prefill["context_mamba_conv1d"] == conv_source
+    assert decode["generation_mamba_conv1d"] == conv_source
+    # The in_proj GEMM of the same shard still reads measured rows: only the Mamba2 lookup lacks per-shard data.
+    assert prefill["context_mamba_in_proj_gemm"] in {"silicon", "estimated"}
+
+
 def _silicon(backend, version):
     return ForwardPassPerfModelConfig(
         model=MODEL,
